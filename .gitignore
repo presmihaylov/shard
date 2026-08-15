@@ -1,0 +1,17 @@
+# Build output
+/bin/
+/dist/
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Editor and OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Stray binary from `go build ./...` in the module root
+/shard
