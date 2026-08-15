@@ -27,42 +27,56 @@ make vuln               govulncheck
 
 ## Layout
 
-Three buckets, plus `cmd/` and `cli/` which belong to none of them.
+Code goes in one of three buckets. `cmd/` and `cli/` belong to none of them.
+
+- **`models/`** domain structs. No behavior, no I/O.
+- **`pkg/`** thin drivers over external things. Mechanism, no domain policy.
+- **`services/`** business logic. Owns the rules.
+
+Create a package when the ticket that needs it lands, not before. The tree below
+is the shape to grow into, not a checklist to build up front.
 
 ```
 cmd/shard/                 main only, thin: wire dependencies and exit
 cli/                       command definitions and flag parsing
 
-models/                    domain structs, no behavior, no I/O
-pkg/                       thin drivers over external things, no domain policy
-  runsc/                   the runsc binary
-  firecracker/             the firecracker binary and its API socket
-  registry/                OCI registry transport
-  netns/                   netns, veth, bridge, NAT rules
-  store/                   atomic file write, lockfile
-  proxy/                   intercepting HTTP and TLS proxy
+models/                    Sandbox, states, Provider, Capabilities, Policy
 
-services/                  business logic, owns the rules
-  sandbox/                 the orchestrator, owns the state machine
-  image/                   pull, unpack, cache policy
-  bundle/                  build the OCI bundle from an image config
-  provider/gvisor/         implements models.Provider on gVisor
-  provider/firecracker/    implements models.Provider on Firecracker
-  state/                   the sandbox record repository
-  egress/                  compile and apply policy
-  secret/                  grants and destination binding
+pkg/runsc/                 the runsc binary
+pkg/firecracker/           the firecracker binary and its API socket
+pkg/registry/              OCI registry transport
+pkg/netns/                 netns, veth, bridge, NAT rules
+pkg/store/                 atomic file write, lockfile
+pkg/proxy/                 intercepting HTTP and TLS proxy
+
+services/sandbox/          the orchestrator, owns the state machine
+services/image/            pull, unpack, cache policy
+services/bundle/           build the OCI bundle from an image config
+services/state/            the sandbox record repository
+services/egress/           compile and apply policy
+services/secret/           grants and destination binding
+services/provider/gvisor/       implements models.Provider on gVisor
+services/provider/firecracker/  implements models.Provider on Firecracker
 
 docs/
 ```
 
+### Rules
+
 - **`pkg/` never imports `models/`.** If a driver needs a domain type, it is not
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
+- **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
+  under all of them.
 - **`models/` is one package with several files, and it is a leaf.** It imports
   nothing else in the module. Splitting it per concern creates import cycles.
 - **The `Provider` interface lives in `models/`.** Both provider implementations
   and `cli` need it, so it does not live at a single consumer. Do not move it.
-- `pkg/firecracker` and `services/provider/firecracker` share a package name.
-  A file importing both must alias the driver, as `fcapi`.
+- **`services/provider/` holds no Go code of its own.** It is a parent directory
+  only, so the substrates stay siblings.
+- **Name a `pkg` after the thing it drives, and a provider after the substrate.**
+  So `pkg/runsc` drives the binary, `services/provider/gvisor` is the substrate.
+  `pkg/firecracker` and `services/provider/firecracker` therefore collide: a file
+  importing both must alias the driver, as `fcapi`.
 - The module stays at `v0`. Expect the `Provider` interface to change as each
   substrate lands.
 
