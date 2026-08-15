@@ -1,4 +1,5 @@
 # shard
+This is a work in progress, will announce when it's live and ready to be used!
 
 A single-node sandbox manager. One binary runs isolated sandboxes on a Linux host, with or without
 hardware virtualization, and gives them the same lifecycle verbs either way: run, exec, sleep, wake
