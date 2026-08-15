@@ -112,7 +112,12 @@ runs through `make test-integration`. CI runs `make check` only.
 
 - Avoid `else`. An early return reads better than an indented branch.
 - Comments explain the non-obvious why. Skip what the code already says.
-- Wrap errors with context (`fmt.Errorf("...: %w", err)`). Never discard one.
+- **Handle every error explicitly.** Return it, wrapped with context
+  (`fmt.Errorf("...: %w", err)`). Never swallow one, never log and continue, and
+  never assign one to `_`. If an error is genuinely not worth propagating, that
+  is a decision to be asked for, not assumed: the only exception is an explicit
+  instruction to "silently log and continue", granted per case, and recorded in
+  a comment at the call site that says who decided it and why.
 - One word for one thing. The noun is `sandbox`, in the CLI, the docs, the state
   records and the API. Never `instance`, never `box`, never `container`.
 
