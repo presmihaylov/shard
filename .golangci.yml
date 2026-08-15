@@ -1,0 +1,58 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Enable explicitly rather than curating a default set, so the list here is the
+  # whole truth about what runs.
+  default: none
+  enable:
+    - bodyclose      # unclosed HTTP response bodies (we will drive the Firecracker API over HTTP)
+    - copyloopvar    # stale loop-variable captures
+    - errcheck       # unchecked errors
+    - errorlint      # error comparison and wrapping mistakes
+    - govet          # the standard vet suite
+    - gosec          # security rules; shard runs as root and shells out to runsc
+    - ineffassign    # assignments that are never read
+    - misspell       # typos in comments and strings
+    - modernize      # suggest modern stdlib and language features
+    - revive         # style and naming
+    - staticcheck    # correctness and simplification
+    - unused         # dead code
+    - usetesting     # prefer t.TempDir, t.Setenv and friends over manual equivalents
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gosec:
+      excludes:
+        # We deliberately exec external binaries (runsc, firecracker) with paths
+        # built from config. G204 fires on every one of those calls.
+        - G204
+    revive:
+      rules:
+        - name: exported
+          # Only demand doc comments once a package is actually exported for reuse.
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Tests may ignore errors and use weak randomness without it meaning anything.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/presmihaylov/shard

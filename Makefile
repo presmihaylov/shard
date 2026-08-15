@@ -3,7 +3,9 @@ PKG     := github.com/presmihaylov/shard
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build build-linux test vet fmt check clean
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+.PHONY: all build build-linux test vet lint lint-fix fmt fmt-check vuln check clean
 
 all: check build
 
@@ -20,10 +22,23 @@ test:
 vet:
 	go vet ./...
 
-fmt:
-	gofmt -l -w .
+# Needs golangci-lint v2: brew install golangci-lint
+lint:
+	golangci-lint run ./...
 
-check: vet test
+lint-fix:
+	golangci-lint run --fix ./...
+
+fmt:
+	golangci-lint fmt
+
+fmt-check:
+	golangci-lint fmt --diff
+
+vuln:
+	go run $(GOVULNCHECK) ./...
+
+check: fmt-check vet lint test
 
 clean:
 	rm -rf bin
