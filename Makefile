@@ -5,7 +5,7 @@ LDFLAGS := -X main.version=$(VERSION)
 
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
-.PHONY: all build build-linux test vet lint lint-fix fmt fmt-check vuln check clean
+.PHONY: all build build-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean
 
 all: check build
 
@@ -18,6 +18,10 @@ build-linux:
 
 test:
 	go test ./...
+
+# Needs runsc, netns or KVM, so it only runs on the Linux box, as root.
+test-integration:
+	go test -tags integration ./...
 
 vet:
 	go vet ./...
