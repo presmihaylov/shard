@@ -10,6 +10,7 @@ linters:
   enable:
     - bodyclose      # unclosed HTTP response bodies (we will drive the Firecracker API over HTTP)
     - copyloopvar    # stale loop-variable captures
+    - depguard       # the layout boundaries in AGENTS.md; see settings below
     - errcheck       # unchecked errors
     - errorlint      # error comparison and wrapping mistakes
     - govet          # the standard vet suite
@@ -23,6 +24,29 @@ linters:
     - usetesting     # prefer t.TempDir, t.Setenv and friends over manual equivalents
 
   settings:
+    depguard:
+      rules:
+        # pkg/ holds thin drivers over external things. The moment one needs a
+        # domain type it stops being a driver, so this is the whole boundary.
+        pkg-knows-no-domain:
+          files:
+            - "**/pkg/**"
+          deny:
+            - pkg: github.com/presmihaylov/shard/models
+              desc: "pkg/ must not import models/. If it needs a domain type, it belongs in services/."
+            - pkg: github.com/presmihaylov/shard/services
+              desc: "pkg/ must not import services/. Dependencies point services -> pkg, never back."
+        # models/ is a leaf so that it never participates in an import cycle.
+        models-is-a-leaf:
+          files:
+            - "**/models/**"
+          deny:
+            - pkg: github.com/presmihaylov/shard/pkg
+              desc: "models/ is a leaf: domain structs only, no I/O and no drivers."
+            - pkg: github.com/presmihaylov/shard/services
+              desc: "models/ is a leaf: domain structs only, no business logic."
+            - pkg: github.com/presmihaylov/shard/cli
+              desc: "models/ is a leaf: domain structs only, no command wiring."
     errcheck:
       check-type-assertions: true
     gosec:

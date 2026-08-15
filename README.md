@@ -14,6 +14,22 @@ gVisor. An optional `shard serve` exposes the same verbs over a self-hostable RE
 `make fmt` and `make lint-fix` apply what can be fixed automatically.
 Linting needs [golangci-lint](https://golangci-lint.run/) v2 (`brew install golangci-lint`).
 
+The code sits in three buckets: `models/` for domain structs, `pkg/` for thin drivers over external
+things, and `services/` for business logic. `pkg/` never imports `models/`, and `depguard` enforces
+that in CI. [AGENTS.md](AGENTS.md) has the full layout and the rules that go with it.
+
+`shard` is a Linux server tool and does not run on macOS. `make test` stays green on a Mac; anything
+that needs `runsc`, netns or KVM lives behind the `integration` build tag and runs on a Linux box
+through `make test-integration`.
+
+`CLAUDE.md` is a symlink to `AGENTS.md`, so one document serves every agent. A Windows checkout
+needs `core.symlinks=true`.
+
+## API stability
+
+The module stays at `v0` until launch and promises nothing. The provider interface is scheduled to
+change twice, once after each substrate is real.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
