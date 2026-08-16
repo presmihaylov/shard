@@ -19,23 +19,21 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 )
 
-// GuestInitPath is where the supervisor binary appears inside every sandbox.
-const GuestInitPath = "/.shard/init"
-
 // guestShardDir is the guest mount point of the per-sandbox host directory shard-init writes to.
 const guestShardDir = "/.shard"
 
-const exitFileName = "exit.json"
+// GuestInitPath is where the supervisor binary appears inside every sandbox.
+const GuestInitPath = guestShardDir + "/init"
 
-// defaultPath is what the OCI image spec says to use when the image config sets no PATH.
-const defaultPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const exitFileName = "exit.json"
 
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ExitFile is the host path shard-init writes the entrypoint exit status to.
+	// ShardDir is bind mounted at guestShardDir, and ExitFile is what shard-init writes into it.
+	ShardDir string
 	ExitFile string
 
 	// Lower is the shared read-only image rootfs; Upper and Work belong to this sandbox alone.
@@ -51,41 +49,26 @@ type Service struct {
 }
 
 // New takes the host path of the shard-init binary, which is /usr/local/bin/shard-init on the box.
-func New(initPath string) *Service {
-	return &Service{initPath: initPath}
+func New(initPath string) (*Service, error) {
+	if initPath == "" {
+		return nil, errors.New("no shard-init path: every sandbox needs the supervisor")
+	}
+
+	return &Service{initPath: initPath}, nil
 }
 
 // Build lays out the bundle for spec over the image config and writes config.json. It does not mount.
 func (s *Service) Build(spec models.SandboxSpec, cfg image.Config) (Bundle, error) {
-	if s.initPath == "" {
-		return Bundle{}, errors.New("no shard-init path: every sandbox needs the supervisor")
-	}
-	if spec.StateDir == "" {
-		return Bundle{}, errors.New("the sandbox spec has no state directory")
-	}
-	if spec.RootFS == "" {
-		return Bundle{}, errors.New("the sandbox spec has no image rootfs")
-	}
-	// Refuse rather than build a sandbox that silently trusts nothing. The proxy CA lands in chunk 4.
-	if len(spec.CACert) > 0 {
-		return Bundle{}, errors.New("the bundle builder cannot install a CA certificate yet")
-	}
-
-	hostShardDir := filepath.Join(spec.StateDir, "shard")
-	b := Bundle{
-		Dir:      filepath.Join(spec.StateDir, "bundle"),
-		RootFS:   filepath.Join(spec.StateDir, "bundle", "rootfs"),
-		ExitFile: filepath.Join(hostShardDir, exitFileName),
-		Lower:    spec.RootFS,
-		Upper:    filepath.Join(spec.StateDir, "overlay", "upper"),
-		Work:     filepath.Join(spec.StateDir, "overlay", "work"),
-	}
-
-	if err := layout(b, hostShardDir); err != nil {
+	b, err := newBundle(spec)
+	if err != nil {
 		return Bundle{}, err
 	}
 
-	runtimeSpec, err := s.runtimeSpec(spec, cfg, b, hostShardDir)
+	if err := layout(b); err != nil {
+		return Bundle{}, err
+	}
+
+	runtimeSpec, err := s.runtimeSpec(spec, cfg, b)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -103,30 +86,71 @@ func (s *Service) Build(spec models.SandboxSpec, cfg image.Config) (Bundle, erro
 	return b, nil
 }
 
-// layout creates the directories. Upper carries the mode the guest root shows, because overlay takes it from there.
-func layout(b Bundle, hostShardDir string) error {
-	dirs := map[string]os.FileMode{
-		b.Dir:        0o750,
-		b.RootFS:     0o755,
-		b.Upper:      0o755,
-		b.Work:       0o750,
-		hostShardDir: 0o750,
+// newBundle derives every path this sandbox uses. It touches no disk, so the layout is testable anywhere.
+func newBundle(spec models.SandboxSpec) (Bundle, error) {
+	if spec.ID == "" {
+		return Bundle{}, errors.New("the sandbox spec has no id")
+	}
+	if spec.StateDir == "" {
+		return Bundle{}, errors.New("the sandbox spec has no state directory")
+	}
+	if spec.RootFS == "" {
+		return Bundle{}, errors.New("the sandbox spec has no image rootfs")
+	}
+	// Refuse rather than build a sandbox that silently trusts nothing. The proxy CA lands in chunk 4.
+	if len(spec.CACert) > 0 {
+		return Bundle{}, errors.New("the bundle builder cannot install a CA certificate yet")
 	}
 
-	for _, dir := range slices.Sorted(maps.Keys(dirs)) {
-		if err := os.MkdirAll(dir, dirs[dir]); err != nil {
-			return fmt.Errorf("create %s: %w", dir, err)
+	shardDir := filepath.Join(spec.StateDir, "shard")
+	b := Bundle{
+		Dir:      filepath.Join(spec.StateDir, "bundle"),
+		RootFS:   filepath.Join(spec.StateDir, "bundle", "rootfs"),
+		ShardDir: shardDir,
+		ExitFile: filepath.Join(shardDir, exitFileName),
+		Lower:    spec.RootFS,
+		Upper:    filepath.Join(spec.StateDir, "overlay", "upper"),
+		Work:     filepath.Join(spec.StateDir, "overlay", "work"),
+	}
+
+	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
+	for _, dir := range []string{b.Lower, b.Upper, b.Work} {
+		if strings.ContainsAny(dir, ":,") {
+			return Bundle{}, fmt.Errorf("the layer path %q contains a character overlayfs uses as a separator", dir)
+		}
+	}
+
+	return b, nil
+}
+
+// layout creates the directories, parent first. Upper carries the mode the guest root shows.
+func layout(b Bundle) error {
+	dirs := []struct {
+		path string
+		mode os.FileMode
+	}{
+		{b.Dir, 0o750},
+		{b.RootFS, 0o755},
+		// Overlay takes the merged root's mode from the upper layer, not from the mount point.
+		{b.Upper, 0o755},
+		{b.Work, 0o750},
+		{b.ShardDir, 0o750},
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir.path, dir.mode); err != nil {
+			return fmt.Errorf("create %s: %w", dir.path, err)
 		}
 		// MkdirAll leaves an existing directory alone and a fresh one trimmed by the umask.
-		if err := os.Chmod(dir, dirs[dir]); err != nil { // #nosec G302
-			return fmt.Errorf("chmod %s: %w", dir, err)
+		if err := os.Chmod(dir.path, dir.mode); err != nil { // #nosec G302
+			return fmt.Errorf("chmod %s: %w", dir.path, err)
 		}
 	}
 
 	return nil
 }
 
-func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundle, hostShardDir string) (*specs.Spec, error) {
+func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundle) (*specs.Spec, error) {
 	argv, err := supervisorArgv(spec, cfg)
 	if err != nil {
 		return nil, err
@@ -159,10 +183,10 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundl
 			// The supervisor must not gain privileges the sandbox did not grant it.
 			NoNewPrivileges: true,
 			Rlimits: []specs.POSIXRlimit{
-				{Type: "RLIMIT_NOFILE", Hard: 1024, Soft: 1024},
+				{Type: "RLIMIT_NOFILE", Hard: defaultNoFile, Soft: defaultNoFile},
 			},
 		},
-		Mounts: mounts(hostShardDir, s.initPath),
+		Mounts: mounts(b.ShardDir, s.initPath),
 		Linux: &specs.Linux{
 			Namespaces:        namespaces(spec.Network.NetnsPath),
 			Resources:         resources(spec.Resources),
@@ -192,15 +216,12 @@ func supervisorArgv(spec models.SandboxSpec, cfg image.Config) ([]string, error)
 func environment(overrides map[string]string, imageEnv []string) []string {
 	env := make([]string, 0, len(imageEnv)+len(overrides)+1)
 	applied := make(map[string]bool, len(overrides))
-	hasPath := false
 
 	for _, entry := range imageEnv {
 		key, _, found := strings.Cut(entry, "=")
+		// An image entry with no "=" is not an assignment, so no runtime would accept it.
 		if !found {
 			continue
-		}
-		if key == "PATH" {
-			hasPath = true
 		}
 
 		value, override := overrides[key]
@@ -218,44 +239,15 @@ func environment(overrides map[string]string, imageEnv []string) []string {
 		if applied[key] {
 			continue
 		}
-		if key == "PATH" {
-			hasPath = true
-		}
 
 		env = append(env, key+"="+overrides[key])
 	}
 
-	if !hasPath {
+	if !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
 		env = append(env, defaultPath)
 	}
 
 	return env
-}
-
-func mounts(hostShardDir, initPath string) []specs.Mount {
-	return []specs.Mount{
-		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
-		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
-		{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}},
-		{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}},
-		{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
-		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
-		// The host side of this one is where shard-init writes the exit status the provider watches.
-		{Destination: guestShardDir, Type: "bind", Source: hostShardDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
-		// Mounted after its parent, and read-only: the guest may run the supervisor and never replace it.
-		{Destination: GuestInitPath, Type: "bind", Source: initPath, Options: []string{"rbind", "ro", "nosuid", "nodev"}},
-	}
-}
-
-// namespaces gives the sandbox its own everything. An empty netns path means one the runtime creates.
-func namespaces(netnsPath string) []specs.LinuxNamespace {
-	return []specs.LinuxNamespace{
-		{Type: specs.PIDNamespace},
-		{Type: specs.IPCNamespace},
-		{Type: specs.UTSNamespace},
-		{Type: specs.MountNamespace},
-		{Type: specs.NetworkNamespace, Path: netnsPath},
-	}
 }
 
 // resources is advisory here: gVisor may ignore both, and Firecracker needs them to boot at all.

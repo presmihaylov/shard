@@ -31,10 +31,10 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 	stateDir := t.TempDir()
 	b := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "echo written-by-the-first-run > /root/marker"})
 
-	if err := bundle.Mount(b); err != nil {
+	if err := b.Mount(); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
-	t.Cleanup(func() { bundle.Unmount(b) })
+	t.Cleanup(func() { b.Unmount() })
 
 	runSandbox(t, b, "shard-11-first")
 
@@ -45,14 +45,15 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 	}
 
 	// A stop drops the merged view and nothing else. This is exactly what shard stop will do.
-	if err := bundle.Unmount(b); err != nil {
+	if err := b.Unmount(); err != nil {
 		t.Fatalf("unmount after the first run: %v", err)
 	}
 
 	second := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "cp /root/marker /root/read-back"})
-	if err := bundle.Mount(second); err != nil {
+	if err := second.Mount(); err != nil {
 		t.Fatalf("mount the overlay again: %v", err)
 	}
+	t.Cleanup(func() { second.Unmount() })
 
 	runSandbox(t, second, "shard-11-second")
 
@@ -66,10 +67,10 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 	requireRunsc(t)
 
 	b := buildBundle(t, t.TempDir(), []string{"/bin/true"})
-	if err := bundle.Mount(b); err != nil {
+	if err := b.Mount(); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
-	t.Cleanup(func() { bundle.Unmount(b) })
+	t.Cleanup(func() { b.Unmount() })
 
 	id := "shard-11-keepalive"
 	runscRoot := start(t, b, id)
@@ -94,7 +95,12 @@ func buildBundle(t *testing.T, stateDir string, entrypoint []string) bundle.Bund
 
 	img := pullTestImage(t)
 
-	b, err := bundle.New(hostInitPath).Build(models.SandboxSpec{
+	svc, err := bundle.New(hostInitPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	b, err := svc.Build(models.SandboxSpec{
 		ID:         "shard-11",
 		StateDir:   stateDir,
 		RootFS:     img.RootFS,

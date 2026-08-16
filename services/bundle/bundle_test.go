@@ -161,6 +161,38 @@ func TestBuildResolvesNumericIds(t *testing.T) {
 	}
 }
 
+// A numeric USER must pick up the primary group of its passwd entry, the way runc does.
+func TestBuildResolvesANumericUserThroughPasswd(t *testing.T) {
+	_, got := build(t, models.SandboxSpec{User: "1000"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+
+	if got.Process.User.UID != 1000 || got.Process.User.GID != 2000 {
+		t.Errorf("got uid %d gid %d, want 1000 and 2000 from the passwd entry", got.Process.User.UID, got.Process.User.GID)
+	}
+}
+
+func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
+	_, got := build(t, models.SandboxSpec{User: "4242"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+
+	if got.Process.User.UID != 4242 || got.Process.User.GID != 0 {
+		t.Errorf("got uid %d gid %d, want 4242 and 0", got.Process.User.UID, got.Process.User.GID)
+	}
+}
+
+func TestBuildRefusesALayerPathOverlayfsCannotParse(t *testing.T) {
+	spec := newSpec(t)
+	spec.StateDir = filepath.Join(spec.StateDir, "state:dir")
+
+	if _, err := newService(t).Build(spec, image.Config{Entrypoint: []string{"/bin/sh"}}); err == nil {
+		t.Fatal("Build accepted a state directory overlayfs would read as two layers")
+	}
+}
+
+func TestNewRefusesAnEmptySupervisorPath(t *testing.T) {
+	if _, err := bundle.New(""); err == nil {
+		t.Fatal("New accepted a service with no supervisor")
+	}
+}
+
 func TestBuildRefusesAUserTheImageDoesNotHave(t *testing.T) {
 	_, err := newService(t).Build(newSpec(t), image.Config{Entrypoint: []string{"/bin/sh"}, User: "ghost"})
 	if err == nil {
@@ -240,6 +272,9 @@ func build(t *testing.T, spec models.SandboxSpec, cfg image.Config) (bundle.Bund
 	t.Helper()
 
 	base := newSpec(t)
+	if spec.ID == "" {
+		spec.ID = base.ID
+	}
 	if spec.StateDir == "" {
 		spec.StateDir = base.StateDir
 	}
@@ -263,7 +298,12 @@ func build(t *testing.T, spec models.SandboxSpec, cfg image.Config) (bundle.Bund
 func newService(t *testing.T) *bundle.Service {
 	t.Helper()
 
-	return bundle.New(supervisorPath)
+	svc, err := bundle.New(supervisorPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	return svc
 }
 
 // newSpec gives a state directory and an image rootfs whose passwd and group name one user.
@@ -278,7 +318,7 @@ func newSpec(t *testing.T) models.SandboxSpec {
 	write(t, filepath.Join(rootfs, "etc/passwd"), "root:x:0:0:root:/root:/bin/sh\napp:x:1000:2000::/home/app:/bin/sh\n")
 	write(t, filepath.Join(rootfs, "etc/group"), "root:x:0:\nstaff:x:50:\n")
 
-	return models.SandboxSpec{StateDir: t.TempDir(), RootFS: rootfs}
+	return models.SandboxSpec{ID: "s-test", StateDir: t.TempDir(), RootFS: rootfs}
 }
 
 func write(t *testing.T, path, content string) {
