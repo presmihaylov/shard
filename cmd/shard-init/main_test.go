@@ -44,13 +44,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// It mirrors main, exit code included, or a test would pin a code the real binary never returns.
 func runSupervisor() int {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init:", err)
-		return 1
+	err := run(os.Args[1:])
+	if err == nil {
+		return 0
 	}
 
-	return 0
+	fmt.Fprintln(os.Stderr, "shard-init:", err)
+
+	return exitCodeFor(err)
 }
 
 // spawnOrphans stands in for reparented grandchildren, which macOS cannot produce without a subreaper.
@@ -273,6 +276,28 @@ func TestNoZombiesAfterManyChildren(t *testing.T) {
 
 		return true
 	})
+}
+
+func TestSupervisorReportsItsOwnFailure(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+
+	// A missing parent directory is the lasting fault that no amount of retrying can get past.
+	unwritable := filepath.Join(t.TempDir(), "no-such-dir", "exit.json")
+	cmd := exec.Command(exe, "-exit-file", unwritable, "--", exe, childPrefix+"exit:0")
+	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
+
+	var exit *exec.ExitError
+	if err := cmd.Run(); !errors.As(err, &exit) {
+		t.Fatalf("the supervisor returned %v, want it to exit non-zero", err)
+	}
+
+	if exit.ExitCode() != models.SupervisorFailedExitCode {
+		t.Errorf("exit code is %d, want %d so the host can name the failure",
+			exit.ExitCode(), models.SupervisorFailedExitCode)
+	}
 }
 
 func TestRunRejectsBadArguments(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -19,11 +20,26 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 Usage:
   shard-init -exit-file <path> -- <entrypoint> [args...]`
 
+// errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
+var errSupervisor = errors.New("the supervisor failed")
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init:", err)
-		os.Exit(1)
+	err := run(os.Args[1:])
+	if err == nil {
+		return
 	}
+
+	fmt.Fprintln(os.Stderr, "shard-init:", err)
+	os.Exit(exitCodeFor(err))
+}
+
+// The host reads this back with runsc wait, so a dead supervisor is diagnosable and not a mystery.
+func exitCodeFor(err error) int {
+	if errors.Is(err, errSupervisor) {
+		return models.SupervisorFailedExitCode
+	}
+
+	return 1
 }
 
 func run(args []string) error {
@@ -41,7 +57,11 @@ func run(args []string) error {
 		return errors.New("no entrypoint given")
 	}
 
-	return supervise(flags.Args(), *exitFile)
+	if err := supervise(flags.Args(), *exitFile); err != nil {
+		return fmt.Errorf("%w: %w", errSupervisor, err)
+	}
+
+	return nil
 }
 
 // supervise never returns once the entrypoint starts: a sandbox outlives it, so only a kill ends us.
@@ -133,13 +153,36 @@ func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
-// Provider.Wait watches this file from the host, so it must never read a half-written one.
+// A full disk is usually transient, and losing a whole sandbox to one is worse than waiting it out.
+const (
+	exitFileAttempts = 5
+	exitFileBackoff  = 200 * time.Millisecond
+)
+
+// Giving up here ends the sandbox, so retry first: only a lasting fault is worth dying for.
 func writeExitStatus(path string, status models.ExitStatus) error {
 	encoded, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("marshal the exit status: %w", err)
 	}
 
+	var last error
+	for attempt := range exitFileAttempts {
+		if attempt > 0 {
+			time.Sleep(exitFileBackoff)
+		}
+
+		last = writeFile(path, encoded)
+		if last == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
+}
+
+// Provider.Wait watches this file from the host, so it must never read a half-written one.
+func writeFile(path string, encoded []byte) error {
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", tmpPath, err)
