@@ -8,7 +8,10 @@ GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
 DEVBOX ?= devbox-shard
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test
+# Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
+ITEST_PKG ?= ./services/bundle/...
+
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest
 
 all: check build
 
@@ -40,9 +43,13 @@ devbox-sync: build-linux build-shard-init-linux
 	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 /usr/local/bin/shard && \
 		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init && shard version'
 
-# Runs the integration suite on the box, as root. gVisor only: Hetzner has no KVM.
-devbox-test: devbox-sync
-	tar czf - --exclude bin --exclude .git . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration ./...'
+# Runs integration tests on the box, as root, over the binaries devbox-sync just installed.
+itest: devbox-sync
+	tar czf - --exclude bin --exclude .git . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration -count=1 -v $(ITEST_PKG)'
+
+# The whole suite, which is the same target with no package filter. gVisor only: Hetzner has no KVM.
+devbox-test: ITEST_PKG = ./...
+devbox-test: itest
 
 vet:
 	go vet ./...
