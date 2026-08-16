@@ -6,7 +6,9 @@ LDFLAGS  := -X main.version=$(VERSION)
 
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean
+DEVBOX ?= devbox-shard
+
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test
 
 all: check build
 
@@ -31,6 +33,16 @@ test:
 # Needs runsc, netns or KVM, so it only runs on the Linux box, as root.
 test-integration:
 	go test -tags integration ./...
+
+# The hardened sshd runs no sftp subsystem, so scp needs -O.
+devbox-sync: build-linux build-shard-init-linux
+	scp -O -q $(BIN)-linux-amd64 $(SHARD_INIT_BIN)-linux-amd64 $(DEVBOX):/tmp/
+	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 /usr/local/bin/shard && \
+		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init && shard version'
+
+# Runs the integration suite on the box, as root. gVisor only: Hetzner has no KVM.
+devbox-test: devbox-sync
+	tar czf - --exclude bin --exclude .git . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration ./...'
 
 vet:
 	go vet ./...
