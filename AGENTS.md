@@ -14,15 +14,17 @@ repository.
 ## Commands
 
 ```
-make build              build ./cmd/shard into bin/shard
-make build-linux        cross-compile for the box (GOOS=linux GOARCH=amd64)
-make test               unit tests; must stay green on macOS
-make test-integration   integration tests; Linux box only, needs root
-make lint               golangci-lint (v2: brew install golangci-lint)
-make lint-fix           apply the fixes golangci-lint can make
-make fmt                apply formatting
-make check              the same gates as CI; must pass before every commit
-make vuln               govulncheck
+make build                   build ./cmd/shard into bin/shard
+make build-linux             cross-compile for the box (GOOS=linux GOARCH=amd64)
+make build-shard-init        build ./cmd/shard-init into bin/shard-init (static, CGO_ENABLED=0)
+make build-shard-init-linux  cross-compile the supervisor for the box
+make test                    unit tests; must stay green on macOS
+make test-integration        integration tests; Linux box only, needs root
+make lint                    golangci-lint (v2: brew install golangci-lint)
+make lint-fix                apply the fixes golangci-lint can make
+make fmt                     apply formatting
+make check                   the same gates as CI; must pass before every commit
+make vuln                    govulncheck
 ```
 
 ## Layout
@@ -38,6 +40,7 @@ is the shape to grow into, not a checklist to build up front.
 
 ```
 cmd/shard/                 main only, thin: wire dependencies and exit
+cmd/shard-init/            the guest supervisor, PID 1 in every sandbox
 cli/                       command definitions and flag parsing
 
 models/                    Sandbox, states, Provider, Capabilities, Policy

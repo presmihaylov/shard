@@ -93,3 +93,6 @@ type ExitStatus struct {
 	// Signal is what killed the entrypoint, or 0 if it exited on its own.
 	Signal syscall.Signal `json:"signal"`
 }
+
+// SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
+const SupervisorFailedExitCode = 125
