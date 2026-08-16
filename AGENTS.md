@@ -57,6 +57,7 @@ services/egress/           compile and apply policy
 services/secret/           grants and destination binding
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
+services/provider/conformance/  the test suite both substrates must pass
 
 docs/
 ```
@@ -72,7 +73,8 @@ docs/
 - **The `Provider` interface lives in `models/`.** Both provider implementations
   and `cli` need it, so it does not live at a single consumer. Do not move it.
 - **`services/provider/` holds no Go code of its own.** It is a parent directory
-  only, so the substrates stay siblings.
+  only, so the substrates stay siblings. `conformance/` is the one sibling that
+  is not a substrate: it is the suite they both import from their own tests.
 - **Name a `pkg` after the thing it drives, and a provider after the substrate.**
   So `pkg/runsc` drives the binary, `services/provider/gvisor` is the substrate.
   `pkg/firecracker` and `services/provider/firecracker` therefore collide: a file
@@ -100,6 +102,11 @@ runs through `make test-integration`. CI runs `make check` only.
 - **Refuse, never downgrade.** An unsupported verb fails fast with an error that
   names the provider and the verb. Never fall back to a weaker mechanism.
   Capabilities are per provider, one boolean per optional verb.
+- **A sandbox outlives its entrypoint.** When the entrypoint exits the sandbox
+  stays `running`, and you can still exec, pause or fork it. `stop` is the only
+  thing that ends one. There is no policy, no idle timer and no on-exit setting
+  to change any of this. This is why `shard-init` is PID 1 in every sandbox and
+  the image entrypoint is its child.
 - **Never log a secret value, and never write one into a state file.** A sandbox
   references a secret by name and never holds a value. A secret is granted to a
   destination, never to a sandbox alone.
@@ -111,7 +118,14 @@ runs through `make test-integration`. CI runs `make check` only.
 ## Code style
 
 - Avoid `else`. An early return reads better than an indented branch.
-- Comments explain the non-obvious why. Skip what the code already says.
+- **One line per comment, no exceptions.** A comment explains the non-obvious why
+  and never what the code already says. If the reason needs a paragraph, it
+  belongs in `docs/`, in the ticket, or in the commit message, not above the
+  declaration.
+- **Run a deslop round before every commit.** Re-read the diff and cut what a
+  human would not have written: restated code, multi-line comment blocks,
+  defensive checks nothing calls, and anything that does not match the file
+  around it.
 - **Handle every error explicitly.** Return it, wrapped with context
   (`fmt.Errorf("...: %w", err)`). Never swallow one, never log and continue, and
   never assign one to `_`. If an error is genuinely not worth propagating, that
