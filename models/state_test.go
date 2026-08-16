@@ -6,8 +6,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// allStates is every state, so the table below is exhaustive rather than a
-// sample of the moves someone remembered.
+// Every state, so the table below is exhaustive rather than the moves someone remembered.
 var allStates = []models.State{
 	models.StateCreated,
 	models.StateRunning,
@@ -33,9 +32,7 @@ func TestCanTransitionTo(t *testing.T) {
 	}
 }
 
-// A stopped sandbox keeps its writable layer, so shard start re-runs the
-// entrypoint over it. This is the transition most likely to be deleted by
-// someone who assumes stopped means finished.
+// The transition most likely to be deleted by someone who reads stopped as finished.
 func TestStoppedIsNotTerminal(t *testing.T) {
 	if !models.StateStopped.CanTransitionTo(models.StateRunning) {
 		t.Error("stopped -> running must stay legal; shard start depends on it")

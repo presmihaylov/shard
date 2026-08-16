@@ -113,7 +113,14 @@ runs through `make test-integration`. CI runs `make check` only.
 ## Code style
 
 - Avoid `else`. An early return reads better than an indented branch.
-- Comments explain the non-obvious why. Skip what the code already says.
+- **One line per comment, no exceptions.** A comment explains the non-obvious why
+  and never what the code already says. If the reason needs a paragraph, it
+  belongs in `docs/`, in the ticket, or in the commit message, not above the
+  declaration.
+- **Run a deslop round before every commit.** Re-read the diff and cut what a
+  human would not have written: restated code, multi-line comment blocks,
+  defensive checks nothing calls, and anything that does not match the file
+  around it.
 - **Handle every error explicitly.** Return it, wrapped with context
   (`fmt.Errorf("...: %w", err)`). Never swallow one, never log and continue, and
   never assign one to `_`. If an error is genuinely not worth propagating, that

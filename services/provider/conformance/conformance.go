@@ -1,11 +1,4 @@
-// Package conformance is the shared test suite every models.Provider must pass.
-//
-// It exists for one reason: a provider can report Fork: true from Capabilities
-// and return ErrUnsupported from Fork, and no compiler can catch that. This
-// suite calls each verb and checks that the two answers agree.
-//
-// A provider's own test package supplies a Subject and calls Run from a test
-// behind //go:build integration, because every real verb here needs a box.
+// Package conformance is the suite every models.Provider must pass: Capabilities must match the verbs.
 package conformance
 
 import (
@@ -15,25 +8,16 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Subject is what a provider's tests hand to Run. The suite drives the verbs
-// itself; the provider only supplies the host-shaped things it cannot invent.
+// Subject is what a provider's tests hand to Run.
 type Subject struct {
-	// Provider under test, built by its own constructor so Capabilities has
-	// already probed this host.
 	Provider models.Provider
-
-	// NewSpec returns a spec for one new sandbox: a fresh ID, network, state
-	// directory and rootfs. The suite calls it for every sandbox it needs,
-	// including the one Fork creates, so it must not return the same ID twice.
-	// Register teardown with t.Cleanup.
+	// NewSpec returns a fresh spec on every call. Register teardown with t.Cleanup.
 	NewSpec func(t *testing.T) models.SandboxSpec
-
 	// SnapshotDir returns an empty directory the suite may write a snapshot into.
 	SnapshotDir func(t *testing.T) string
 }
 
-// Run executes the suite. Optional verbs whose capability is false are skipped
-// after the suite has checked that they refuse; required verbs are always run.
+// Run executes the suite. A verb with a false capability must refuse before its subtest skips.
 func Run(t *testing.T, s Subject) {
 	t.Helper()
 
@@ -91,12 +75,10 @@ func Run(t *testing.T, s Subject) {
 	})
 }
 
-// killSignal is SIGKILL. The suite tests that Kill reaches the sandbox, not that
-// the entrypoint handles signals well.
+// SIGKILL. The suite tests that Kill reaches the sandbox, not that the entrypoint handles signals.
 const killSignal = 9
 
-// running creates and starts one sandbox and returns its ID. Create and Start
-// are required verbs, so a failure here is a failure of the provider, not a skip.
+// Create and Start are required verbs, so a failure here is a failure, never a skip.
 func (s Subject) running(t *testing.T) string {
 	t.Helper()
 
@@ -112,9 +94,7 @@ func (s Subject) running(t *testing.T) string {
 	return spec.ID
 }
 
-// snapshotOf pauses the sandbox and returns the snapshot directory. When the
-// provider cannot pause, it returns an empty directory instead, so that Resume
-// and Fork are still called and still have to refuse.
+// Returns an empty dir when the provider cannot pause, so Resume and Fork still have to refuse.
 func (s Subject) snapshotOf(t *testing.T, id string, canPause bool) string {
 	t.Helper()
 
@@ -130,9 +110,7 @@ func (s Subject) snapshotOf(t *testing.T, id string, canPause bool) string {
 	return dir
 }
 
-// check is the whole point of the suite: Capabilities and the verb must agree.
-// It skips the rest of a subtest for a verb the provider does not have, but only
-// after that verb has refused properly.
+// The whole point of the suite: Capabilities and the verb must agree.
 func (s Subject) check(t *testing.T, verb string, supported bool, err error) {
 	t.Helper()
 
