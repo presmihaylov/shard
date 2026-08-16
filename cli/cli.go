@@ -85,6 +85,9 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	if a.Timeout == 0 {
 		a.Timeout = DefaultTimeout
 	}
+	if a.Root == "" {
+		a.Root = DefaultRoot
+	}
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -96,26 +99,12 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 		return nil, fmt.Errorf("parse the flags: %w", err)
 	}
 
-	// Only an absent --root falls back: an empty or relative one would put the state tree under the cwd.
-	if a.Root == "" && !given(flags, "root") {
-		a.Root = DefaultRoot
-	}
+	// The fallback is the flag default, so an explicit empty or relative --root still lands here.
 	if !filepath.IsAbs(a.Root) {
 		return nil, fmt.Errorf("--root must be an absolute path, got %q", a.Root)
 	}
 
 	return flags.Args(), nil
-}
-
-func given(flags *flag.FlagSet, name string) bool {
-	found := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			found = true
-		}
-	})
-
-	return found
 }
 
 // hostList collects a repeatable flag, which the flag package has no built-in type for.

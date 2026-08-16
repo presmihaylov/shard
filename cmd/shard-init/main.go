@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
@@ -93,21 +94,15 @@ func supervise(entrypointArgv []string, exitFile string) error {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
 
-	entrypointRunning := true
 	for {
 		select {
 		case <-childDeaths:
 			// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
-			watched := 0
-			if entrypointRunning {
-				watched = entrypointPID
-			}
-
-			if collectDeadChildren(watched, exitFile) {
-				entrypointRunning = false
+			if collectDeadChildren(entrypointPID, exitFile) {
+				entrypointPID = 0
 			}
 		case received := <-stopSignals:
-			if !entrypointRunning {
+			if entrypointPID == 0 {
 				continue
 			}
 			if err := forwardToEntrypoint(entrypointPID, received); err != nil {
@@ -181,8 +176,8 @@ const (
 	exitFileBackoff  = 500 * time.Millisecond
 )
 
-// permanent names the faults no amount of waiting clears, so retrying them only delays the message.
-var permanent = []syscall.Errno{
+// permanentErrnos names the faults no amount of waiting clears, so retrying them only delays the message.
+var permanentErrnos = []syscall.Errno{
 	syscall.EROFS, syscall.EACCES, syscall.EPERM, syscall.ENOENT, syscall.ENOTDIR, syscall.ENOTEMPTY,
 }
 
@@ -199,47 +194,17 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 			time.Sleep(exitFileBackoff)
 		}
 
-		last = writeFile(path, encoded)
+		// pkg/store lands it through a random temp name and an fsync, so no planted path and no lost write.
+		last = store.WriteFile(path, encoded, 0o600)
 		if last == nil {
 			return nil
 		}
-		if slices.ContainsFunc(permanent, func(code syscall.Errno) bool { return errors.Is(last, code) }) {
+		if slices.ContainsFunc(permanentErrnos, func(code syscall.Errno) bool { return errors.Is(last, code) }) {
 			return fmt.Errorf("write the exit status: %w", last)
 		}
 	}
 
 	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
-}
-
-// Provider.Wait watches this file from the host, so it must never read a half-written one.
-func writeFile(path string, encoded []byte) error {
-	tmpPath := path + ".tmp"
-
-	// The workload shares this directory, so it can plant a symlink, a fifo or a stale temp on the path.
-	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove the stale %s: %w", tmpPath, err)
-	}
-
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
-	file, err := os.OpenFile(tmpPath, flags, 0o600)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", tmpPath, err)
-	}
-
-	_, werr := file.Write(encoded)
-	cerr := file.Close()
-	if werr != nil {
-		return fmt.Errorf("write %s: %w", tmpPath, werr)
-	}
-	if cerr != nil {
-		return fmt.Errorf("close %s: %w", tmpPath, cerr)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename %s to %s: %w", tmpPath, path, err)
-	}
-
-	return nil
 }
 
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.

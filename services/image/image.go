@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -130,42 +129,21 @@ func (s *Service) List() ([]Image, error) {
 
 // Remove deletes the image and its rootfs. SHARD-26 adds the refcount that makes this safe under a sandbox.
 func (s *Service) Remove(ref string) error {
-	// Match reads index.json only, so an image whose blobs are damaged is still removable.
-	dropped, err := s.store.Match(ref)
-	if err != nil {
-		return err
-	}
-
-	shared, err := s.sharesRootFS(dropped)
+	// Orphaned reads index.json only, so an image whose blobs are damaged is still removable.
+	orphaned, err := s.store.Orphaned(ref)
 	if err != nil {
 		return err
 	}
 
 	// The rootfs goes first: index.json is the record of what the store holds, so it changes last.
-	if !shared {
-		dir := s.rootfsDir(dropped[0].Digest)
+	for _, digest := range orphaned {
+		dir := s.rootfsDir(digest)
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)
 		}
 	}
 
 	return s.store.Remove(ref)
-}
-
-// sharesRootFS asks whether an entry that survives this removal still names the same digest.
-func (s *Service) sharesRootFS(dropped []registry.Entry) (bool, error) {
-	all, err := s.store.Entries()
-	if err != nil {
-		return false, err
-	}
-
-	for _, entry := range all {
-		if entry.Digest == dropped[0].Digest && !slices.Contains(dropped, entry) {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }
 
 func (s *Service) describe(img registry.Image) (Image, error) {

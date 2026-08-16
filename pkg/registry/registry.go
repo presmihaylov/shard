@@ -139,12 +139,6 @@ type Image struct {
 	img v1.Image
 }
 
-// Entry is one index.json record. Remove and the rootfs refcount work off these, so neither reads a blob.
-type Entry struct {
-	Reference string
-	Digest    string
-}
-
 // Config is the image config: entrypoint, env and the rest of what the bundle builder needs.
 func (i Image) Config() (*v1.ConfigFile, error) {
 	if i.Broken != nil {
@@ -200,7 +194,7 @@ func (s *Store) Pull(ctx context.Context, ref string) (Image, error) {
 
 // Get returns a cached image and never touches the network.
 func (s *Store) Get(ref string) (Image, error) {
-	matched, err := s.match(ref)
+	matched, _, err := s.split(ref)
 	if err != nil {
 		return Image{}, err
 	}
@@ -208,52 +202,61 @@ func (s *Store) Get(ref string) (Image, error) {
 	return s.image(matched[0])
 }
 
-// Match returns every index entry ref names, by tag or by digest. It reads index.json and no blob.
-func (s *Store) Match(ref string) ([]Entry, error) {
-	matched, err := s.match(ref)
+// Orphaned lists the digests no entry would name once ref goes. It reads index.json and no blob.
+func (s *Store) Orphaned(ref string) ([]string, error) {
+	matched, rest, err := s.split(ref)
 	if err != nil {
 		return nil, err
 	}
 
-	return entriesOf(matched), nil
+	held := make(map[string]bool, len(rest))
+	for _, desc := range rest {
+		held[desc.Digest.String()] = true
+	}
+
+	var orphaned []string
+	for _, desc := range matched {
+		digest := desc.Digest.String()
+		if held[digest] || slices.Contains(orphaned, digest) {
+			continue
+		}
+
+		orphaned = append(orphaned, digest)
+	}
+
+	return orphaned, nil
 }
 
-func (s *Store) match(ref string) ([]v1.Descriptor, error) {
+// split partitions the index into what ref names and what it does not, in one read of index.json.
+func (s *Store) split(ref string) (matched, rest []v1.Descriptor, err error) {
 	parsed, err := parseRef(ref)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	manifests, err := s.manifests()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	matched := slices.DeleteFunc(slices.Clone(manifests), func(d v1.Descriptor) bool { return !names(d, parsed) })
-	if len(matched) == 0 {
-		return nil, s.notCached(parsed, manifests)
-	}
-
-	return matched, nil
-}
-
-// Entries returns every index.json record, without reading a single blob.
-func (s *Store) Entries() ([]Entry, error) {
-	manifests, err := s.manifests()
-	if err != nil {
-		return nil, err
-	}
-
-	return entriesOf(manifests), nil
-}
-
-func entriesOf(manifests []v1.Descriptor) []Entry {
-	entries := make([]Entry, 0, len(manifests))
+	// Both halves are non-nil, because an empty index must still encode as [] and never as null.
+	matched = make([]v1.Descriptor, 0, len(manifests))
+	rest = make([]v1.Descriptor, 0, len(manifests))
 	for _, desc := range manifests {
-		entries = append(entries, Entry{Reference: desc.Annotations[refAnnotation], Digest: desc.Digest.String()})
+		if names(desc, parsed) {
+			matched = append(matched, desc)
+
+			continue
+		}
+
+		rest = append(rest, desc)
 	}
 
-	return entries
+	if len(matched) == 0 {
+		return nil, nil, s.notCached(parsed, manifests)
+	}
+
+	return matched, rest, nil
 }
 
 // names matches the tag annotation, and the descriptor digest too, so image ls output feeds image rm.
@@ -312,22 +315,12 @@ func (s *Store) List() ([]Image, error) {
 
 // Remove drops ref from the index and deletes every blob no remaining image references.
 func (s *Store) Remove(ref string) error {
-	matched, err := s.match(ref)
+	_, rest, err := s.split(ref)
 	if err != nil {
 		return err
 	}
 
-	manifests, err := s.manifests()
-	if err != nil {
-		return err
-	}
-
-	dropped := entriesOf(matched)
-	kept := slices.DeleteFunc(slices.Clone(manifests), func(d v1.Descriptor) bool {
-		return slices.Contains(dropped, Entry{Reference: d.Annotations[refAnnotation], Digest: d.Digest.String()})
-	})
-
-	if err := s.writeIndex(kept); err != nil {
+	if err := s.writeIndex(rest); err != nil {
 		return err
 	}
 
@@ -406,9 +399,10 @@ func (s *Store) reachable() (map[v1.Hash]bool, error) {
 	for _, desc := range manifests {
 		reachable[desc.Digest] = true
 
+		// SHARD-91 decided both skips: an entry we cannot parse is already broken, and treating it as
+		// reachable would pin its layers and wedge every later rm, which is the fault we are fixing here.
 		raw, err := s.path.Bytes(desc.Digest)
 		if err != nil {
-			// An entry whose own manifest is gone is already broken, and holding its layers would wedge every rm.
 			continue
 		}
 
