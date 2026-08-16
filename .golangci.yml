@@ -52,8 +52,10 @@ linters:
     gosec:
       excludes:
         # We deliberately exec external binaries (runsc, firecracker) with paths
-        # built from config. G204 fires on every one of those calls.
+        # built from config. G204 fires on every one of those calls, and G702 on
+        # the shard-init ForkExec, whose whole job is to run the image entrypoint.
         - G204
+        - G702
     revive:
       rules:
         - name: exported
