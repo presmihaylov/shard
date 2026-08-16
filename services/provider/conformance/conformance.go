@@ -1,4 +1,4 @@
-// Package conformance is the suite every models.Provider must pass: Capabilities must match the verbs.
+// Package conformance is the suite every models.Provider must pass: keep-alive, and Capabilities matching the verbs.
 package conformance
 
 import (
@@ -49,6 +49,18 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Wait: %v", err)
 		}
 
+		if !s.alive(t, id) {
+			t.Fatal("the sandbox died with its entrypoint, and it must outlive it")
+		}
+
+		if err := s.Provider.Stop(t.Context(), id); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		if s.alive(t, id) {
+			t.Fatal("the sandbox is still alive after Stop")
+		}
+
 		if err := s.Provider.Delete(t.Context(), id); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
@@ -75,8 +87,20 @@ func Run(t *testing.T, s Subject) {
 	})
 }
 
-// SIGKILL. The suite tests that Kill reaches the sandbox, not that the entrypoint handles signals.
+// SIGKILL. The suite tests that Kill reaches the entrypoint, not that the entrypoint handles signals.
 const killSignal = 9
+
+// Only Stop ends a sandbox, so this is the assertion the whole keep-alive default rests on.
+func (s Subject) alive(t *testing.T, id string) bool {
+	t.Helper()
+
+	alive, err := s.Provider.Alive(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Alive: %v", err)
+	}
+
+	return alive
+}
 
 // Create and Start are required verbs, so a failure here is a failure, never a skip.
 func (s Subject) running(t *testing.T) string {

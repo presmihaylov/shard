@@ -102,6 +102,12 @@ runs through `make test-integration`. CI runs `make check` only.
 - **Refuse, never downgrade.** An unsupported verb fails fast with an error that
   names the provider and the verb. Never fall back to a weaker mechanism.
   Capabilities are per provider, one boolean per optional verb.
+- **A sandbox outlives its entrypoint.** When the entrypoint exits the sandbox
+  stays `running`, and you can still exec, pause or fork it. `stop` is the only
+  thing that ends one. `kill` signals the entrypoint and leaves the sandbox up.
+  There is no policy, no idle timer and no on-exit setting to change any of this.
+  This is why `shard-init` is PID 1 in every sandbox and the image entrypoint is
+  its child.
 - **Never log a secret value, and never write one into a state file.** A sandbox
   references a secret by name and never holds a value. A secret is granted to a
   destination, never to a sandbox alone.

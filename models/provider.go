@@ -15,12 +15,16 @@ type Provider interface {
 
 	// Create prepares a sandbox in StateCreated. Nothing in the guest runs yet.
 	Create(ctx context.Context, spec SandboxSpec) (Runtime, error)
-	// Start runs the entrypoint.
+	// Start runs the entrypoint under the supervisor that is already PID 1.
 	Start(ctx context.Context, id string) error
-	// Wait blocks until the sandbox exits. A resumed sandbox needs a new Wait.
+	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
-	// Kill signals the entrypoint. Any grace period is the caller's rule, not the provider's.
+	// Kill signals the entrypoint through the supervisor and leaves the sandbox running.
 	Kill(ctx context.Context, id string, sig syscall.Signal) error
+	// Stop brings the sandbox down, and nothing else does. Any grace period is the caller's rule.
+	Stop(ctx context.Context, id string) error
+	// Alive asks the substrate, because a record saying running can outlive a shard restart.
+	Alive(ctx context.Context, id string) (bool, error)
 	// Delete removes the substrate's own state, not the shard record and not a snapshot.
 	Delete(ctx context.Context, id string) error
 
@@ -49,6 +53,7 @@ type SandboxSpec struct {
 	// StateDir is the per-sandbox directory the provider owns. Snapshots are passed per verb.
 	StateDir string
 
+	// Entrypoint is the supervisor's argv, so it is PID 2 and its exit does not end the sandbox.
 	Entrypoint []string
 	// Env never carries a secret value; the proxy substitutes those on the wire.
 	Env     map[string]string
@@ -76,14 +81,15 @@ type Resources struct {
 
 // Runtime is what only the provider knows once a sandbox exists.
 type Runtime struct {
+	// PID is the sandbox process on the host, never the entrypoint, which has no host pid.
 	PID int
 	// HostInterface is the veth or tap that host netfilter rules target.
 	HostInterface string
 }
 
-// ExitStatus is how a sandbox ended.
+// ExitStatus is how the entrypoint ended. A sandbox outlives it and has no exit status of its own.
 type ExitStatus struct {
 	Code int `json:"code"`
-	// Signal is what killed the sandbox, or 0 if it exited on its own.
+	// Signal is what killed the entrypoint, or 0 if it exited on its own.
 	Signal syscall.Signal `json:"signal"`
 }

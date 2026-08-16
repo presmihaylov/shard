@@ -6,9 +6,9 @@ Four states, seven legal moves. `models/state.go` is the code; this page is the 
 stateDiagram-v2
     [*] --> created: shard run / create
     created --> running: start
-    created --> stopped: kill before start
+    created --> stopped: stop before start
     running --> paused: pause (snapshot to disk, memory freed)
-    running --> stopped: stop, kill, or the entrypoint exits
+    running --> stopped: stop, and nothing else
     paused --> running: resume (the snapshot survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
@@ -20,14 +20,23 @@ stateDiagram-v2
 | From | To | Verb |
 |---|---|---|
 | `created` | `running` | `start` |
-| `created` | `stopped` | `kill` before the entrypoint runs |
+| `created` | `stopped` | `stop` before the entrypoint runs |
 | `running` | `paused` | `pause` |
-| `running` | `stopped` | `stop`, `kill`, or the entrypoint exits |
+| `running` | `stopped` | `stop` |
 | `paused` | `running` | `resume` |
 | `paused` | `stopped` | `stop` |
 | `stopped` | `running` | `start` |
 
 ## What the picture does not say
+
+**A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
+the sandbox is up, not that a workload executes in it. When the entrypoint finishes the sandbox stays
+`running` and you can still `exec`, `pause` or `fork` it. This is what E2B, Modal, Vercel and Daytona
+all do. There is no fifth state for it: the record keeps the last exit status instead, so `shard ps`
+can print `running (exited 0)`. **`stop` is the only thing that ends a sandbox.**
+
+**`kill` is not `stop`.** `kill` signals the entrypoint and leaves the sandbox up; `stop` brings the
+sandbox down. They are separate verbs on the `Provider` interface for that reason alone.
 
 **`stopped` is not terminal.** It is terminal at the `runsc` level, and it is not terminal here.
 Every sandbox has its own writable layer over the shared read-only image, so `shard start` re-runs
