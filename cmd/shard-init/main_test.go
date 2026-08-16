@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,7 +76,11 @@ func runChild(spec string) int {
 	case "exit":
 		return atoi(arg)
 	case "sigkill":
-		syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
+			fmt.Fprintln(os.Stderr, "kill self:", err)
+			return 2
+		}
+
 		select {}
 	case "term":
 		sigs := make(chan os.Signal, 1)
@@ -130,8 +135,15 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 	}
 
 	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill the supervisor: %v", err)
+		}
+
+		// The supervisor never exits on its own, so Wait always reports the kill above.
+		var exit *exec.ExitError
+		if err := cmd.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Errorf("wait for the supervisor: %v", err)
+		}
 	})
 
 	return &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
@@ -235,20 +247,31 @@ func TestTermReachesTheEntrypoint(t *testing.T) {
 func TestNoZombiesAfterManyChildren(t *testing.T) {
 	super := startSupervisor(t, roleOrphans, "sleep:600")
 
-	pids, found := strings.CutPrefix(super.line(t), "orphans ")
+	list, found := strings.CutPrefix(super.line(t), "orphans ")
 	if !found {
 		t.Fatal("the supervisor did not report the orphan pids")
 	}
 
-	super.awaitExitStatus(t)
-	waitFor(t, 15*time.Second, "every orphan to be reaped", func() bool {
-		out, err := exec.Command("ps", "-o", "pid=", "-p", pids).Output()
+	pids := make([]int, 0, orphanCount)
+	for field := range strings.SplitSeq(list, ",") {
+		pid, err := strconv.Atoi(field)
 		if err != nil {
-			// ps exits non-zero once no listed pid is left, which is the outcome under test.
-			return true
+			t.Fatalf("the supervisor reported %q as an orphan pid: %v", field, err)
 		}
 
-		return strings.TrimSpace(string(out)) == ""
+		pids = append(pids, pid)
+	}
+
+	super.awaitExitStatus(t)
+	// A zombie still answers signal 0, so only ESRCH proves the reaper collected the pid.
+	waitFor(t, 15*time.Second, "every orphan to be reaped", func() bool {
+		for _, pid := range pids {
+			if !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+				return false
+			}
+		}
+
+		return true
 	})
 }
 
