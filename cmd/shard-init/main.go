@@ -27,52 +27,52 @@ func main() {
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("shard-init", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), usage) }
-	exitFile := fs.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
+	flags := flag.NewFlagSet("shard-init", flag.ContinueOnError)
+	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
+	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
 
-	if err := fs.Parse(args); err != nil {
+	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 	if *exitFile == "" {
 		return errors.New("-exit-file is required")
 	}
-	if fs.NArg() == 0 {
+	if flags.NArg() == 0 {
 		return errors.New("no entrypoint given")
 	}
 
-	return supervise(fs.Args(), *exitFile)
+	return supervise(flags.Args(), *exitFile)
 }
 
 // supervise never returns once the entrypoint starts: a sandbox outlives it, so only a kill ends us.
-func supervise(argv []string, exitFile string) error {
-	// Two channels, so a burst of SIGCHLD can never push a forwardable signal out of the buffer.
-	chld := make(chan os.Signal, 1)
-	fwd := make(chan os.Signal, 4)
-	signal.Notify(chld, syscall.SIGCHLD)
-	signal.Notify(fwd, syscall.SIGTERM, syscall.SIGINT)
+func supervise(entrypointArgv []string, exitFile string) error {
+	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
+	childDeaths := make(chan os.Signal, 1)
+	stopSignals := make(chan os.Signal, 4)
+	signal.Notify(childDeaths, syscall.SIGCHLD)
+	signal.Notify(stopSignals, syscall.SIGTERM, syscall.SIGINT)
 
-	pid, err := spawn(argv)
+	entrypointPID, err := startProcess(entrypointArgv)
 	if err != nil {
-		return fmt.Errorf("start entrypoint %q: %w", argv[0], err)
+		return fmt.Errorf("start entrypoint %q: %w", entrypointArgv[0], err)
 	}
 
-	running := true
+	entrypointRunning := true
 	for {
 		select {
-		case <-chld:
-			exited, err := reap(pid, exitFile)
+		case <-childDeaths:
+			entrypointExited, err := collectDeadChildren(entrypointPID, exitFile)
 			if err != nil {
 				return err
 			}
-			if exited {
-				running = false
+			if entrypointExited {
+				entrypointRunning = false
 			}
-		case sig := <-fwd:
-			if !running {
+		case received := <-stopSignals:
+			if !entrypointRunning {
 				continue
 			}
-			if err := forward(pid, sig); err != nil {
+			if err := forwardToEntrypoint(entrypointPID, received); err != nil {
 				return err
 			}
 		}
@@ -80,90 +80,91 @@ func supervise(argv []string, exitFile string) error {
 }
 
 // PID 1 in a namespace has no default disposition, so a stop only works if we pass it on ourselves.
-func forward(pid int, sig os.Signal) error {
-	s, ok := sig.(syscall.Signal)
+func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
+	unixSignal, ok := received.(syscall.Signal)
 	if !ok {
-		return fmt.Errorf("cannot forward signal %v to the entrypoint", sig)
+		return fmt.Errorf("cannot forward signal %v to the entrypoint", received)
 	}
 
-	err := syscall.Kill(pid, s)
+	err := syscall.Kill(entrypointPID, unixSignal)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
 
-	return fmt.Errorf("forward %s to the entrypoint: %w", s, err)
+	return fmt.Errorf("forward %s to the entrypoint: %w", unixSignal, err)
 }
 
-// reap drains every exited child, not only the entrypoint: orphaned grandchildren land on PID 1.
-func reap(entrypoint int, exitFile string) (bool, error) {
-	exited := false
+// It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.
+func collectDeadChildren(entrypointPID int, exitFile string) (bool, error) {
+	entrypointExited := false
 	for {
-		var ws syscall.WaitStatus
-		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		var waitStatus syscall.WaitStatus
+		deadPID, err := syscall.Wait4(-1, &waitStatus, syscall.WNOHANG, nil)
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
 		if errors.Is(err, syscall.ECHILD) {
-			return exited, nil
+			return entrypointExited, nil
 		}
 		if err != nil {
-			return exited, fmt.Errorf("wait for a child: %w", err)
+			return entrypointExited, fmt.Errorf("wait for a child: %w", err)
 		}
-		if pid <= 0 {
-			return exited, nil
+		// Zero means children are alive but none has died, so nothing is left to collect right now.
+		if deadPID <= 0 {
+			return entrypointExited, nil
 		}
-		if pid != entrypoint {
+		if deadPID != entrypointPID {
 			continue
 		}
 
-		if err := writeExitStatus(exitFile, statusOf(ws)); err != nil {
+		if err := writeExitStatus(exitFile, exitStatusFrom(waitStatus)); err != nil {
 			return true, err
 		}
-		exited = true
+		entrypointExited = true
 	}
 }
 
 // A signalled entrypoint has no exit code of its own, so report the 128+n that a shell reports.
-func statusOf(ws syscall.WaitStatus) models.ExitStatus {
-	if ws.Signaled() {
-		return models.ExitStatus{Code: 128 + int(ws.Signal()), Signal: ws.Signal()}
+func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
+	if waitStatus.Signaled() {
+		return models.ExitStatus{Code: 128 + int(waitStatus.Signal()), Signal: waitStatus.Signal()}
 	}
 
-	return models.ExitStatus{Code: ws.ExitStatus()}
+	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
 // Provider.Wait watches this file from the host, so it must never read a half-written one.
 func writeExitStatus(path string, status models.ExitStatus) error {
-	blob, err := json.Marshal(status)
+	encoded, err := json.Marshal(status)
 	if err != nil {
 		return fmt.Errorf("marshal the exit status: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename %s to %s: %w", tmp, path, err)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", tmpPath, path, err)
 	}
 
 	return nil
 }
 
-// ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that reaps everything else.
-func spawn(argv []string) (int, error) {
-	path, err := exec.LookPath(argv[0])
+// ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
+func startProcess(argv []string) (int, error) {
+	binary, err := exec.LookPath(argv[0])
 	if err != nil {
 		return 0, fmt.Errorf("look up %q: %w", argv[0], err)
 	}
 
 	// The child gets our own stdio fds: shard streams them through, it does not proxy them.
-	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
+	pid, err := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("fork and exec %q: %w", path, err)
+		return 0, fmt.Errorf("fork and exec %q: %w", binary, err)
 	}
 
 	return pid, nil

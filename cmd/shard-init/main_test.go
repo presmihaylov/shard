@@ -58,7 +58,7 @@ func spawnOrphans() {
 	pids := make([]string, 0, orphanCount)
 	for range orphanCount {
 		// They outlive the handler installation on purpose, so no SIGCHLD arrives before it.
-		pid, err := spawn([]string{os.Args[0], childPrefix + "sleep:300"})
+		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "spawn orphan:", err)
 			os.Exit(1)
