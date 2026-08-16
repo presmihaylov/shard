@@ -57,6 +57,7 @@ services/egress/           compile and apply policy
 services/secret/           grants and destination binding
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
+services/provider/conformance/  the test suite both substrates must pass
 
 docs/
 ```
@@ -72,7 +73,8 @@ docs/
 - **The `Provider` interface lives in `models/`.** Both provider implementations
   and `cli` need it, so it does not live at a single consumer. Do not move it.
 - **`services/provider/` holds no Go code of its own.** It is a parent directory
-  only, so the substrates stay siblings.
+  only, so the substrates stay siblings. `conformance/` is the one sibling that
+  is not a substrate: it is the suite they both import from their own tests.
 - **Name a `pkg` after the thing it drives, and a provider after the substrate.**
   So `pkg/runsc` drives the binary, `services/provider/gvisor` is the substrate.
   `pkg/firecracker` and `services/provider/firecracker` therefore collide: a file
