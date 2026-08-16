@@ -4,6 +4,7 @@ package conformance
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -11,7 +12,7 @@ import (
 // Subject is what a provider's tests hand to Run.
 type Subject struct {
 	Provider models.Provider
-	// NewSpec returns a fresh spec on every call. Register teardown with t.Cleanup.
+	// NewSpec returns a fresh spec whose entrypoint exits 0 quickly. Register teardown with t.Cleanup.
 	NewSpec func(t *testing.T) models.SandboxSpec
 	// SnapshotDir returns an empty directory the suite may write a snapshot into.
 	SnapshotDir func(t *testing.T) string
@@ -41,19 +42,20 @@ func Run(t *testing.T, s Subject) {
 	t.Run("Lifecycle", func(t *testing.T) {
 		id := s.running(t)
 
-		if err := s.Provider.Kill(t.Context(), id, killSignal); err != nil {
-			t.Fatalf("Kill: %v", err)
+		status, err := s.Provider.Wait(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
 		}
 
-		if _, err := s.Provider.Wait(t.Context(), id); err != nil {
-			t.Fatalf("Wait: %v", err)
+		if status.Code != 0 {
+			t.Errorf("Wait: got exit code %d, want 0", status.Code)
 		}
 
 		if !s.alive(t, id) {
 			t.Fatal("the sandbox died with its entrypoint, and it must outlive it")
 		}
 
-		if err := s.Provider.Stop(t.Context(), id); err != nil {
+		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
 
@@ -61,8 +63,8 @@ func Run(t *testing.T, s Subject) {
 			t.Fatal("the sandbox is still alive after Stop")
 		}
 
-		if err := s.Provider.Delete(t.Context(), id); err != nil {
-			t.Fatalf("Delete: %v", err)
+		if err := s.Provider.Remove(t.Context(), id); err != nil {
+			t.Fatalf("Remove: %v", err)
 		}
 	})
 
@@ -87,8 +89,8 @@ func Run(t *testing.T, s Subject) {
 	})
 }
 
-// SIGKILL. The suite tests that Kill reaches the entrypoint, not that the entrypoint handles signals.
-const killSignal = 9
+// Long enough that a provider which ignores grace still passes, short enough to keep the suite quick.
+const stopGrace = 5 * time.Second
 
 // Only Stop ends a sandbox, so this is the assertion the whole keep-alive default rests on.
 func (s Subject) alive(t *testing.T, id string) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"syscall"
+	"time"
 )
 
 // Provider runs sandboxes on one substrate. It is v0: SHARD-15 and SHARD-45 will change it.
@@ -17,16 +18,15 @@ type Provider interface {
 	Create(ctx context.Context, spec SandboxSpec) (Runtime, error)
 	// Start runs the entrypoint under the supervisor that is already PID 1.
 	Start(ctx context.Context, id string) error
+	// Stop ends the sandbox, and nothing else does. It signals, waits out grace, then kills.
+	Stop(ctx context.Context, id string, grace time.Duration) error
+	// Remove deletes the substrate's own state, not the shard record and not a snapshot.
+	Remove(ctx context.Context, id string) error
+
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
-	// Kill signals the entrypoint through the supervisor and leaves the sandbox running.
-	Kill(ctx context.Context, id string, sig syscall.Signal) error
-	// Stop brings the sandbox down, and nothing else does. Any grace period is the caller's rule.
-	Stop(ctx context.Context, id string) error
 	// Alive asks the substrate, because a record saying running can outlive a shard restart.
 	Alive(ctx context.Context, id string) (bool, error)
-	// Delete removes the substrate's own state, not the shard record and not a snapshot.
-	Delete(ctx context.Context, id string) error
 
 	// Pause writes a snapshot into dir and frees the memory. Optional, see Capabilities.
 	Pause(ctx context.Context, id string, dir string) error

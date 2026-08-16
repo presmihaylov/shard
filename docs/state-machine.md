@@ -35,9 +35,6 @@ the sandbox is up, not that a workload executes in it. When the entrypoint finis
 all do. There is no fifth state for it: the record keeps the last exit status instead, so `shard ps`
 can print `running (exited 0)`. **`stop` is the only thing that ends a sandbox.**
 
-**`kill` is not `stop`.** `kill` signals the entrypoint and leaves the sandbox up; `stop` brings the
-sandbox down. They are separate verbs on the `Provider` interface for that reason alone.
-
 **`stopped` is not terminal.** It is terminal at the `runsc` level, and it is not terminal here.
 Every sandbox has its own writable layer over the shared read-only image, so `shard start` re-runs
 the entrypoint and finds the files the last run wrote. Memory, pids and sockets are gone; files are
