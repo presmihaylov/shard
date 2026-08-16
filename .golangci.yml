@@ -56,6 +56,10 @@ linters:
         # the shard-init ForkExec, whose whole job is to run the image entrypoint.
         - G204
         - G702
+        # shard is a root-run file manager: it opens, writes and renames paths it
+        # builds itself, from a root it owns. G304 and G703 fire on every one.
+        - G304
+        - G703
     revive:
       rules:
         - name: exported
