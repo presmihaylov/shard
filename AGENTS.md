@@ -94,6 +94,19 @@ Any package a developer might import must still compile on macOS. Keep types and
 interfaces pure Go, and put anything that shells out behind a Linux build tag,
 with a stub that returns a clear unsupported-platform error.
 
+### The devbox
+
+`ssh devbox-shard` is a throwaway Debian 13 box with `runsc` and Go on it. It is
+the `shard` fleet in `nairi-infra`, provisioned by `make provision TARGET=shard`.
+
+```
+make devbox-sync     build for linux and install the two binaries on the box
+make devbox-test     the same, then run the integration suite there as root
+```
+
+Hetzner Cloud exposes no `/dev/kvm`, so the devbox covers gVisor only.
+Firecracker needs a dedicated server, which is a decision for SHARD-20.
+
 ## Tests
 
 Unit tests run anywhere and need no box. `make test` must stay green on macOS.
