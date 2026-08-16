@@ -12,7 +12,7 @@ import (
 // Subject is what a provider's tests hand to Run.
 type Subject struct {
 	Provider models.Provider
-	// NewSpec returns a fresh spec whose entrypoint exits 0 quickly. Register teardown with t.Cleanup.
+	// NewSpec returns a fresh spec whose entrypoint exits 0 quickly. Its t.Cleanup must tolerate a sandbox a subtest already removed.
 	NewSpec func(t *testing.T) models.SandboxSpec
 	// SnapshotDir returns an empty directory the suite may write a snapshot into.
 	SnapshotDir func(t *testing.T) string
