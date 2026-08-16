@@ -4,6 +4,9 @@ package bundle_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +73,7 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 
 	id := "shard-11-keepalive"
 	runscRoot := start(t, b, id)
-	waitForExitFile(t, b)
+	requireCleanExit(t, b)
 
 	// The entrypoint is gone and the supervisor is not, so exec must still land in a live sandbox.
 	out, err := runsc(runscRoot, "exec", id, "/bin/echo", "still-here").CombinedOutput()
@@ -128,23 +131,46 @@ func runSandbox(t *testing.T, b bundle.Bundle, id string) {
 	t.Helper()
 
 	runscRoot := start(t, b, id)
-	waitForExitFile(t, b)
+	requireCleanExit(t, b)
 	stop(t, runscRoot, id)
 }
 
 func start(t *testing.T, b bundle.Bundle, id string) string {
 	t.Helper()
 
-	runscRoot := filepath.Join(t.TempDir(), "runsc")
-	cmd := runsc(runscRoot, "run", "--detach", "--bundle", b.Dir, id)
+	dir := t.TempDir()
+	runscRoot := filepath.Join(dir, "runsc")
 
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("runsc run: %v: %s", err, out)
+	// A restart reuses the state directory, so the previous run's status must not answer for this one.
+	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("clear %s: %v", b.ExitFile, err)
 	}
+
+	// The detached sandbox keeps the inherited stdio open, so a pipe here would never reach EOF.
+	logPath := filepath.Join(dir, "run.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create %s: %v", logPath, err)
+	}
+
+	cmd := runsc(runscRoot, "run", "--detach", "--bundle", b.Dir, id)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	runErr := cmd.Run()
+	if err := logFile.Close(); err != nil {
+		t.Fatalf("close %s: %v", logPath, err)
+	}
+	if runErr != nil {
+		t.Fatalf("runsc run: %v: %s", runErr, readFile(t, logPath))
+	}
+
 	t.Cleanup(func() {
+		// A failed test leaves a sandbox behind, so this is best effort and its errors say nothing new.
 		runsc(runscRoot, "kill", "--all", id, "KILL").Run()
 		runsc(runscRoot, "delete", "--force", id).Run()
+		// --network=none leaves a bind mount in the runsc root that TempDir removal would trip over.
+		exec.Command("umount", "-l", filepath.Join(runscRoot, "null-netns")).Run()
 	})
 
 	return runscRoot
@@ -161,25 +187,39 @@ func stop(t *testing.T, runscRoot, id string) {
 	}
 }
 
-// waitForExitFile is what Provider.Wait will do: runsc wait would block forever on a supervisor.
-func waitForExitFile(t *testing.T, b bundle.Bundle) {
+// This is what Provider.Wait will do: runsc wait would block forever on a supervisor.
+func requireCleanExit(t *testing.T, b bundle.Bundle) {
 	t.Helper()
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(b.ExitFile); err == nil {
-			return
+		blob, err := os.ReadFile(b.ExitFile)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+
+			continue
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		var status models.ExitStatus
+		if err := json.Unmarshal(blob, &status); err != nil {
+			t.Fatalf("read the exit status from %s: %v", b.ExitFile, err)
+		}
+		if status.Code != 0 {
+			t.Fatalf("the entrypoint exited with %+v, want code 0", status)
+		}
+
+		return
 	}
 
 	t.Fatalf("the entrypoint exit status never appeared at %s", b.ExitFile)
 }
 
 // The sandbox needs no network here, and no cgroup: SHARD-13 and the provider own those.
+// --overlay2=none matters: runsc defaults to root:self, whose writes land in a filestore a stop throws away.
 func runsc(root string, args ...string) *exec.Cmd {
-	return exec.Command("runsc", append([]string{"--root", root, "--network=none", "--ignore-cgroups"}, args...)...)
+	base := []string{"--root", root, "--network=none", "--ignore-cgroups", "--overlay2=none"}
+
+	return exec.Command("runsc", append(base, args...)...)
 }
 
 func requireRunsc(t *testing.T) {
