@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/services/image"
 )
 
@@ -20,6 +22,10 @@ func (a App) pull(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// A registry that accepts the connection and then stalls would otherwise pin this process forever.
+	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
+	defer cancel()
 
 	img, err := svc.Pull(ctx, args[0])
 	if err != nil {
@@ -63,7 +69,13 @@ func (a App) imageList(args []string) error {
 	fmt.Fprintln(w, "REFERENCE\tDIGEST\tSIZE\tCREATED")
 
 	for _, img := range images {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Reference, shortDigest(img.Digest), humanSize(img.Size), humanAge(img.Created))
+		size, created := humanSize(img.Size), humanAge(img.Created)
+		// An entry the index still names but whose blobs are gone is listed, not hidden and not fatal.
+		if img.Broken != nil {
+			size, created = "unreadable", "unreadable"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Reference, shortDigest(img.Digest), size, created)
 	}
 
 	if err := w.Flush(); err != nil {
@@ -83,7 +95,13 @@ func (a App) imageRemove(args []string) error {
 		return err
 	}
 
-	if err := svc.Remove(args[0]); err != nil {
+	err = svc.Remove(args[0])
+	// The image is gone by this point, so a blob that could not be reclaimed costs disk and not correctness.
+	if errors.Is(err, image.ErrNotReclaimed) {
+		a.warn(err.Error())
+		err = nil
+	}
+	if err != nil {
 		return err
 	}
 
@@ -91,7 +109,7 @@ func (a App) imageRemove(args []string) error {
 }
 
 func (a App) images() (*image.Service, error) {
-	return image.New(filepath.Join(a.Root, "images"))
+	return image.New(filepath.Join(a.Root, "images"), registry.WithInsecureRegistries(a.Insecure...))
 }
 
 func shortDigest(digest string) string {

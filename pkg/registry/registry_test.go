@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,12 +27,9 @@ import (
 
 func TestPullThenGetOffline(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
-	store := openStore(t)
+	store := openStore(t, server)
 
-	pulled, err := store.Pull(t.Context(), ref)
-	if err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
+	pulled := pull(t, store, ref)
 
 	if pulled.Size <= 0 {
 		t.Errorf("got size %d, want the sum of the layers", pulled.Size)
@@ -71,15 +69,9 @@ func TestPullThenGetOffline(t *testing.T) {
 func TestPullIsReachableFromASecondStore(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
 	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
 
-	store, err := registry.Open(dir, registry.WithTransport(server.Client().Transport))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	if _, err := store.Pull(t.Context(), ref); err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
+	pull(t, store, ref)
 
 	server.Close()
 
@@ -95,7 +87,7 @@ func TestPullIsReachableFromASecondStore(t *testing.T) {
 }
 
 func TestGetMissingImage(t *testing.T) {
-	store := openStore(t)
+	store := openStore(t, nil)
 
 	if _, err := store.Get("app:1.0"); !errors.Is(err, registry.ErrNotCached) {
 		t.Fatalf("got %v, want ErrNotCached", err)
@@ -105,12 +97,10 @@ func TestGetMissingImage(t *testing.T) {
 func TestListIsOrderedByReference(t *testing.T) {
 	server, first := servedImage(t, "beta:1.0", map[string]string{"/beta": "1"})
 	second := pushImage(t, server, "alpha:1.0", map[string]string{"/alpha": "1"})
-	store := openStore(t)
+	store := openStore(t, server)
 
 	for _, ref := range []string{first, second} {
-		if _, err := store.Pull(t.Context(), ref); err != nil {
-			t.Fatalf("Pull %s: %v", ref, err)
-		}
+		pull(t, store, ref)
 	}
 
 	images, err := store.List()
@@ -128,13 +118,11 @@ func TestListIsOrderedByReference(t *testing.T) {
 }
 
 func TestPullTwiceKeepsOneEntry(t *testing.T) {
-	_, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
-	store := openStore(t)
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	store := openStore(t, server)
 
 	for range 2 {
-		if _, err := store.Pull(t.Context(), ref); err != nil {
-			t.Fatalf("Pull: %v", err)
-		}
+		pull(t, store, ref)
 	}
 
 	images, err := store.List()
@@ -150,15 +138,9 @@ func TestPullTwiceKeepsOneEntry(t *testing.T) {
 func TestRemoveDropsTheBlobs(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
 	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
 
-	store, err := registry.Open(dir, registry.WithTransport(server.Client().Transport))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	if _, err := store.Pull(t.Context(), ref); err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
+	pull(t, store, ref)
 
 	if err := store.Remove(ref); err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -179,22 +161,55 @@ func TestRemoveDropsTheBlobs(t *testing.T) {
 }
 
 func TestRemoveMissingImage(t *testing.T) {
-	store := openStore(t)
+	store := openStore(t, nil)
 
 	if err := store.Remove("app:1.0"); !errors.Is(err, registry.ErrNotCached) {
 		t.Fatalf("got %v, want ErrNotCached", err)
 	}
 }
 
-func openStore(t *testing.T) *registry.Store {
+func openStore(t *testing.T, server *httptest.Server) *registry.Store {
 	t.Helper()
 
-	store, err := registry.Open(t.TempDir())
+	return openStoreAt(t, t.TempDir(), server)
+}
+
+func openStoreAt(t *testing.T, dir string, server *httptest.Server) *registry.Store {
+	t.Helper()
+
+	var opts []registry.Option
+	if server != nil {
+		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server)))
+	}
+
+	store, err := registry.Open(dir, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
 	return store
+}
+
+func hostOf(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse the server URL: %v", err)
+	}
+
+	return parsed.Host
+}
+
+func pull(t *testing.T, store *registry.Store, ref string) registry.Image {
+	t.Helper()
+
+	img, err := store.Pull(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("Pull %s: %v", ref, err)
+	}
+
+	return img
 }
 
 // servedImage starts an in-process registry and pushes one image into it.
@@ -272,4 +287,127 @@ func tarLayer(t *testing.T, files map[string]string) v1.Layer {
 	}
 
 	return layer
+}
+
+func TestPullRefusesPlaintextHTTP(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+
+	// The same store, minus the opt-in: ggcr would downgrade a loopback or RFC1918 registry silently.
+	store, err := registry.Open(t.TempDir(), registry.WithTransport(server.Client().Transport))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	_, err = store.Pull(t.Context(), ref)
+	if err == nil {
+		t.Fatal("Pull over plaintext http returned no error")
+	}
+
+	if !strings.Contains(err.Error(), "--insecure-registry") {
+		t.Errorf("got %v, want an error that names --insecure-registry", err)
+	}
+}
+
+func TestPullRefusesADotDotSegment(t *testing.T) {
+	store := openStore(t, nil)
+
+	_, err := store.Pull(t.Context(), "127.0.0.1:5000/../v2/app:1.0")
+	if err == nil || !strings.Contains(err.Error(), "path segment") {
+		t.Fatalf("got %v, want a rejected .. segment", err)
+	}
+}
+
+func TestRemoveAcceptsTheDigestListPrints(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	store := openStore(t, server)
+
+	pulled := pull(t, store, ref)
+
+	byDigest := strings.Split(ref, ":")[0] + "@" + pulled.Digest
+	if err := store.Remove(byDigest); err != nil {
+		t.Fatalf("Remove by digest: %v", err)
+	}
+
+	if _, err := store.Get(ref); !errors.Is(err, registry.ErrNotCached) {
+		t.Fatalf("got %v after Remove, want ErrNotCached", err)
+	}
+}
+
+func TestRemoveNamesTheTagsTheStoreHolds(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	store := openStore(t, server)
+
+	pull(t, store, ref)
+
+	// The tag-less form parses as :latest, which the store does not hold, so the miss must name what it does.
+	repository := strings.Split(ref, ":1.0")[0]
+	err := store.Remove(repository)
+	if !errors.Is(err, registry.ErrNotCached) {
+		t.Fatalf("got %v, want ErrNotCached", err)
+	}
+
+	if !strings.Contains(err.Error(), ref) {
+		t.Errorf("got %v, want an error that names the held tag %s", err, ref)
+	}
+}
+
+func TestRemoveSurvivesATempBlobFromAKilledPull(t *testing.T) {
+	server, first := servedImage(t, "beta:1.0", map[string]string{"/beta": "1"})
+	second := pushImage(t, server, "alpha:1.0", map[string]string{"/alpha": "1"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	for _, ref := range []string{first, second} {
+		pull(t, store, ref)
+	}
+
+	// ggcr writes a layer through os.CreateTemp(dir, hash.Hex), so a killed pull leaves a name like this.
+	blobs := filepath.Join(dir, "blobs", "sha256")
+	debris := filepath.Join(blobs, strings.Repeat("a", 64)+"1234567890")
+	if err := os.WriteFile(debris, []byte("partial"), 0o600); err != nil {
+		t.Fatalf("plant the temp blob: %v", err)
+	}
+
+	if err := store.Remove(first); err != nil {
+		t.Fatalf("Remove with a temp blob present: %v", err)
+	}
+
+	if _, err := os.Stat(debris); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the temp blob survived the collect: %v", err)
+	}
+}
+
+func TestListDegradesOnAnUnreadableEntry(t *testing.T) {
+	server, first := servedImage(t, "beta:1.0", map[string]string{"/beta": "1"})
+	second := pushImage(t, server, "alpha:1.0", map[string]string{"/alpha": "1"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	broken := pull(t, store, first)
+	pull(t, store, second)
+
+	hex := strings.TrimPrefix(broken.Digest, "sha256:")
+	if err := os.Remove(filepath.Join(dir, "blobs", "sha256", hex)); err != nil {
+		t.Fatalf("remove the manifest blob: %v", err)
+	}
+
+	images, err := store.List()
+	if err != nil {
+		t.Fatalf("List with one broken entry: %v", err)
+	}
+
+	if len(images) != 2 {
+		t.Fatalf("got %d images, want both entries listed", len(images))
+	}
+
+	for _, img := range images {
+		if (img.Reference == first) != (img.Broken != nil) {
+			t.Errorf("%s: got Broken %v, want it set only on the damaged entry", img.Reference, img.Broken)
+		}
+	}
+
+	// The healthy image must still be removable, which ggcr's collector was not able to do.
+	if err := store.Remove(second); err != nil {
+		t.Fatalf("Remove the healthy image: %v", err)
+	}
 }

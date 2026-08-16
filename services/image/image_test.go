@@ -193,7 +193,12 @@ func newServiceAt(t *testing.T, root string, server *httptest.Server) *image.Ser
 
 	var opts []registry.Option
 	if server != nil {
-		opts = append(opts, registry.WithTransport(server.Client().Transport))
+		host, err := url.Parse(server.URL)
+		if err != nil {
+			t.Fatalf("parse the server URL: %v", err)
+		}
+
+		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(host.Host))
 	}
 
 	svc, err := image.New(root, opts...)
@@ -282,4 +287,52 @@ func tarLayer(t *testing.T, files map[string]string) v1.Layer {
 	}
 
 	return layer
+}
+
+func TestNewSweepsAStaleStagingTree(t *testing.T) {
+	server, _ := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	root := t.TempDir()
+	newServiceAt(t, root, server)
+
+	// A killed pull leaves the tree os.MkdirTemp made, and no other verb ever reclaims it.
+	stale := filepath.Join(root, "rootfs", ".unpack-123456")
+	if err := os.MkdirAll(filepath.Join(stale, "etc"), 0o755); err != nil {
+		t.Fatalf("plant the staging tree: %v", err)
+	}
+
+	newServiceAt(t, root, server)
+
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging tree survived: %v", err)
+	}
+}
+
+func TestFailedUnpackLeavesNoIndexEntry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test relies on")
+	}
+
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	root := t.TempDir()
+	svc := newServiceAt(t, root, server)
+
+	// The unpack stages under rootfs, so a directory it cannot write in is the cheapest way to fail one.
+	rootfs := filepath.Join(root, "rootfs")
+	if err := os.Chmod(rootfs, 0o500); err != nil {
+		t.Fatalf("chmod %s: %v", rootfs, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(rootfs, 0o750) })
+
+	if _, err := svc.Pull(t.Context(), ref); err == nil {
+		t.Fatal("Pull with an unwritable rootfs returned no error")
+	}
+
+	images, err := svc.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(images) != 0 {
+		t.Errorf("got %d images after a failed unpack, want the index entry rolled back", len(images))
+	}
 }

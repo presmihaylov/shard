@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -23,6 +25,9 @@ Usage:
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
 
+// errNoEntrypoint marks a broken image, not a broken supervisor, so the two do not share an exit code.
+var errNoEntrypoint = errors.New("the entrypoint did not start")
+
 func main() {
 	err := run(os.Args[1:])
 	if err == nil {
@@ -35,6 +40,9 @@ func main() {
 
 // The host reads this back with runsc wait, so a dead supervisor is diagnosable and not a mystery.
 func exitCodeFor(err error) int {
+	if errors.Is(err, errNoEntrypoint) {
+		return models.EntrypointNotStartedExitCode
+	}
 	if errors.Is(err, errSupervisor) {
 		return models.SupervisorFailedExitCode
 	}
@@ -53,11 +61,19 @@ func run(args []string) error {
 	if *exitFile == "" {
 		return errors.New("-exit-file is required")
 	}
+	// This also rejects -exit-file --, which the flag package otherwise takes as the value.
+	if !filepath.IsAbs(*exitFile) {
+		return fmt.Errorf("-exit-file must be an absolute path, got %q", *exitFile)
+	}
 	if flags.NArg() == 0 {
 		return errors.New("no entrypoint given")
 	}
 
-	if err := supervise(flags.Args(), *exitFile); err != nil {
+	err := supervise(flags.Args(), *exitFile)
+	if errors.Is(err, errNoEntrypoint) {
+		return err
+	}
+	if err != nil {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
@@ -74,18 +90,20 @@ func supervise(entrypointArgv []string, exitFile string) error {
 
 	entrypointPID, err := startProcess(entrypointArgv)
 	if err != nil {
-		return fmt.Errorf("start entrypoint %q: %w", entrypointArgv[0], err)
+		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
 
 	entrypointRunning := true
 	for {
 		select {
 		case <-childDeaths:
-			entrypointExited, err := collectDeadChildren(entrypointPID, exitFile)
-			if err != nil {
-				return err
+			// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
+			watched := 0
+			if entrypointRunning {
+				watched = entrypointPID
 			}
-			if entrypointExited {
+
+			if collectDeadChildren(watched, exitFile) {
 				entrypointRunning = false
 			}
 		case received := <-stopSignals:
@@ -115,7 +133,7 @@ func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 }
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.
-func collectDeadChildren(entrypointPID int, exitFile string) (bool, error) {
+func collectDeadChildren(entrypointPID int, exitFile string) bool {
 	entrypointExited := false
 	for {
 		var waitStatus syscall.WaitStatus
@@ -124,21 +142,25 @@ func collectDeadChildren(entrypointPID int, exitFile string) (bool, error) {
 			continue
 		}
 		if errors.Is(err, syscall.ECHILD) {
-			return entrypointExited, nil
+			return entrypointExited
 		}
+		// PID 1 must survive, so an unexpected wait error is reported and the next SIGCHLD tries again.
 		if err != nil {
-			return entrypointExited, fmt.Errorf("wait for a child: %w", err)
+			fmt.Fprintln(os.Stderr, "shard-init: wait for a child:", err)
+
+			return entrypointExited
 		}
 		// Zero means children are alive but none has died, so nothing is left to collect right now.
 		if deadPID <= 0 {
-			return entrypointExited, nil
+			return entrypointExited
 		}
-		if deadPID != entrypointPID {
+		if entrypointPID == 0 || deadPID != entrypointPID {
 			continue
 		}
 
+		// A sandbox outlives its entrypoint, so a lost exit status is reported and never fatal (AGENTS.md).
 		if err := writeExitStatus(exitFile, exitStatusFrom(waitStatus)); err != nil {
-			return true, err
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
 		}
 		entrypointExited = true
 	}
@@ -153,13 +175,18 @@ func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
-// A full disk is usually transient, and losing a whole sandbox to one is worse than waiting it out.
+// A full disk is usually transient, so the budget is tens of seconds and not the length of one hiccup.
 const (
-	exitFileAttempts = 5
-	exitFileBackoff  = 200 * time.Millisecond
+	exitFileAttempts = 60
+	exitFileBackoff  = 500 * time.Millisecond
 )
 
-// Giving up here ends the sandbox, so retry first: only a lasting fault is worth dying for.
+// permanent names the faults no amount of waiting clears, so retrying them only delays the message.
+var permanent = []syscall.Errno{
+	syscall.EROFS, syscall.EACCES, syscall.EPERM, syscall.ENOENT, syscall.ENOTDIR, syscall.ENOTEMPTY,
+}
+
+// Retry first: a transient full disk must not cost the exit status of an otherwise healthy sandbox.
 func writeExitStatus(path string, status models.ExitStatus) error {
 	encoded, err := json.Marshal(status)
 	if err != nil {
@@ -176,6 +203,9 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 		if last == nil {
 			return nil
 		}
+		if slices.ContainsFunc(permanent, func(code syscall.Errno) bool { return errors.Is(last, code) }) {
+			return fmt.Errorf("write the exit status: %w", last)
+		}
 	}
 
 	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
@@ -184,9 +214,27 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 // Provider.Wait watches this file from the host, so it must never read a half-written one.
 func writeFile(path string, encoded []byte) error {
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tmpPath, err)
+
+	// The workload shares this directory, so it can plant a symlink, a fifo or a stale temp on the path.
+	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove the stale %s: %w", tmpPath, err)
 	}
+
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	file, err := os.OpenFile(tmpPath, flags, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", tmpPath, err)
+	}
+
+	_, werr := file.Write(encoded)
+	cerr := file.Close()
+	if werr != nil {
+		return fmt.Errorf("write %s: %w", tmpPath, werr)
+	}
+	if cerr != nil {
+		return fmt.Errorf("close %s: %w", tmpPath, cerr)
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename %s to %s: %w", tmpPath, path, err)
 	}
