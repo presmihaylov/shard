@@ -19,7 +19,8 @@ make build-linux             cross-compile for the box (GOOS=linux GOARCH=amd64)
 make build-shard-init        build ./cmd/shard-init into bin/shard-init (static, CGO_ENABLED=0)
 make build-shard-init-linux  cross-compile the supervisor for the box
 make test                    unit tests; must stay green on macOS
-make test-integration        integration tests; Linux box only, needs root
+make test-integration        integration tests, on this host; Linux box only, needs root
+make itest                   integration tests for ITEST_PKG, on the devbox
 make lint                    golangci-lint (v2: brew install golangci-lint)
 make lint-fix                apply the fixes golangci-lint can make
 make fmt                     apply formatting
@@ -101,8 +102,20 @@ the `shard` fleet in `nairi-infra`, provisioned by `make provision TARGET=shard`
 
 ```
 make devbox-sync     build for linux and install the two binaries on the box
-make devbox-test     the same, then run the integration suite there as root
+make itest           the same, then run ONE package's integration tests there as root
+make devbox-test     the same, for every package
 ```
+
+`itest` is the loop to use while a ticket is in flight. It installs the two binaries,
+copies the source to `~/shard` on the box, and runs
+`go test -tags integration -count=1 -v $(ITEST_PKG)` as root. `ITEST_PKG` defaults to
+the package the current ticket owns; override it per run:
+
+```
+make itest ITEST_PKG=./services/image/...
+```
+
+`devbox-test` is the same target with `ITEST_PKG=./...`.
 
 Hetzner Cloud exposes no `/dev/kvm`, so the devbox covers gVisor only.
 Firecracker needs a dedicated server, which is a decision for SHARD-20.
@@ -111,7 +124,13 @@ Firecracker needs a dedicated server, which is a decision for SHARD-20.
 
 Unit tests run anywhere and need no box. `make test` must stay green on macOS.
 Anything touching `runsc`, netns or KVM goes behind `//go:build integration` and
-runs through `make test-integration`. CI runs `make check` only.
+runs through `make itest`. CI runs `make check` only.
+
+**The build tag is the whole mechanism.** A file whose first line is `//go:build
+integration` does not exist to the compiler without `-tags integration`, so plain
+`go test ./...` never sees it and can never skip it. The `_integration_test.go`
+suffix is for humans; keep both. Every such test also guards itself at runtime
+(`euid == 0`, the binary is on PATH) and skips rather than fails.
 
 ## Rules that outrank convenience
 
