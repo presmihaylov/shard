@@ -6,7 +6,19 @@ hardware virtualization, and gives them the same lifecycle verbs either way: run
 and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host without one it drives
 gVisor. An optional `shard serve` exposes the same verbs over a self-hostable REST API.
 
-**Status: pre-alpha.** Nothing here works yet. The repository is a skeleton.
+**Status: pre-alpha.** No sandbox runs yet. Images do.
+
+## Images
+
+```
+shard pull python:3.12       pull an image and unpack its rootfs
+shard image ls               list the pulled images
+shard image rm python:3.12   remove one, with the rootfs no other tag needs
+```
+
+Everything lands under `/var/lib/shard`, which `--root` overrides. An image is unpacked once per
+digest, into a read-only rootfs that every sandbox built from it layers over. A tag shard already
+holds is never re-resolved: `shard image rm` and pull again is how you ask for a newer one.
 
 ## Development
 
