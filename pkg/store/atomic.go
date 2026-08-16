@@ -31,7 +31,7 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 		return fmt.Errorf("rename %s to %s: %w", tmp.Name(), path, err)
 	}
 
-	return syncDir(dir)
+	return SyncDir(dir)
 }
 
 func writeAndSync(f *os.File, data []byte, perm fs.FileMode) error {
@@ -51,8 +51,8 @@ func writeAndSync(f *os.File, data []byte, perm fs.FileMode) error {
 	return nil
 }
 
-// syncDir makes the rename itself durable, which the file's own fsync does not do.
-func syncDir(dir string) error {
+// SyncDir makes an entry that appeared in dir durable, which the file's own fsync does not do.
+func SyncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", dir, err)

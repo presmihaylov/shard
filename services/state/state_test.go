@@ -42,6 +42,28 @@ func repo(t *testing.T) (*state.Repository, string) {
 	return r, root
 }
 
+func sandboxDir(t *testing.T, r *state.Repository, id string) string {
+	t.Helper()
+
+	dir, err := r.Dir(id)
+	if err != nil {
+		t.Fatalf("Dir(%s): %v", id, err)
+	}
+
+	return dir
+}
+
+func snapshotDir(t *testing.T, r *state.Repository, id string) string {
+	t.Helper()
+
+	dir, err := r.SnapshotDir(id)
+	if err != nil {
+		t.Fatalf("SnapshotDir(%s): %v", id, err)
+	}
+
+	return dir
+}
+
 func create(t *testing.T, r *state.Repository, sb models.Sandbox) {
 	t.Helper()
 
@@ -286,6 +308,59 @@ func TestListIsOrderedByIDAndIgnoresStrayEntries(t *testing.T) {
 	}
 }
 
+// A half-done delete leaves a directory with no record. It must not take the other sandboxes down.
+func TestADirectoryWithNoRecordIsNotASandbox(t *testing.T) {
+	r, root := repo(t)
+	create(t, r, sandbox("sb1"))
+
+	for _, dir := range []string{"sb2", "not an id"} {
+		if err := os.MkdirAll(filepath.Join(root, "sandboxes", dir), 0o750); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	all, err := r.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(all) != 1 || all[0].ID != "sb1" {
+		t.Fatalf("List returned %+v, want sb1 alone", all)
+	}
+
+	err = r.Update("sb1", func(sb *models.Sandbox) error {
+		sb.PID = 7
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Update beside a directory with no record: %v", err)
+	}
+}
+
+func TestDirRefusesABadID(t *testing.T) {
+	r, _ := repo(t)
+
+	if _, err := r.Dir("../escape"); err == nil {
+		t.Error("Dir built a path outside the root")
+	}
+
+	if _, err := r.SnapshotDir("../escape"); err == nil {
+		t.Error("SnapshotDir built a path outside the root")
+	}
+}
+
+func TestCreateRefusesABadName(t *testing.T) {
+	r, _ := repo(t)
+
+	sb := sandbox("sb1")
+	sb.Name = "../escape"
+
+	if err := r.Create(sb); err == nil {
+		t.Fatal("Create with a name that is not a plain word was accepted")
+	}
+}
+
 func TestListOfAnEmptyRepositoryIsEmpty(t *testing.T) {
 	r, _ := repo(t)
 
@@ -404,7 +479,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 	r, _ := repo(t)
 	create(t, r, sandbox("sb1"))
 
-	snapshot := r.SnapshotDir("sb1")
+	snapshot := snapshotDir(t, r, "sb1")
 	if err := os.MkdirAll(snapshot, 0o750); err != nil {
 		t.Fatalf("create the snapshot directory: %v", err)
 	}
@@ -417,7 +492,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 		t.Errorf("Get after Delete returned %v, want ErrNotFound", err)
 	}
 
-	for _, dir := range []string{r.Dir("sb1"), snapshot} {
+	for _, dir := range []string{sandboxDir(t, r, "sb1"), snapshot} {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s still exists after Delete", dir)
 		}
@@ -483,7 +558,7 @@ func TestARecordIsReadableOnlyByItsOwner(t *testing.T) {
 	r, _ := repo(t)
 	create(t, r, sandbox("sb1"))
 
-	info, err := os.Stat(filepath.Join(r.Dir("sb1"), "sandbox.json"))
+	info, err := os.Stat(filepath.Join(sandboxDir(t, r, "sb1"), "sandbox.json"))
 	if err != nil {
 		t.Fatalf("stat the record: %v", err)
 	}
@@ -497,7 +572,7 @@ func TestACorruptRecordIsAnError(t *testing.T) {
 	r, _ := repo(t)
 	create(t, r, sandbox("sb1"))
 
-	if err := os.WriteFile(filepath.Join(r.Dir("sb1"), "sandbox.json"), []byte("{"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(sandboxDir(t, r, "sb1"), "sandbox.json"), []byte("{"), 0o640); err != nil {
 		t.Fatalf("corrupt the record: %v", err)
 	}
 

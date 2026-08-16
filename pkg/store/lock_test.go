@@ -1,6 +1,7 @@
 package store
 
 import (
+	"io/fs"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,41 @@ func lockPath(t *testing.T) string {
 	t.Helper()
 
 	return filepath.Join(t.TempDir(), "sub", ".lock")
+}
+
+// inBackground reports when the background holder takes the lock, and joins before the test ends,
+// so a failure it reports never lands after the test has finished.
+func inBackground(t *testing.T, path string, take func(string, fs.FileMode) (*Lock, error)) <-chan struct{} {
+	t.Helper()
+
+	held, done := make(chan struct{}), make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		l, err := take(path, 0o600)
+		if err != nil {
+			t.Errorf("the background lock: %v", err)
+
+			return
+		}
+
+		close(held)
+
+		if err := l.Release(); err != nil {
+			t.Errorf("Release: %v", err)
+		}
+	}()
+
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the background holder never finished")
+		}
+	})
+
+	return held
 }
 
 func TestAcquireCreatesTheFileAndItsDirectory(t *testing.T) {
@@ -31,22 +67,7 @@ func TestTheExclusiveLockBlocksASecondHolder(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 
-	held := make(chan struct{})
-
-	go func() {
-		second, err := Acquire(path, 0o600)
-		if err != nil {
-			t.Errorf("the second Acquire: %v", err)
-
-			return
-		}
-
-		close(held)
-
-		if err := second.Release(); err != nil {
-			t.Errorf("Release: %v", err)
-		}
-	}()
+	held := inBackground(t, path, Acquire)
 
 	select {
 	case <-held:
@@ -62,6 +83,33 @@ func TestTheExclusiveLockBlocksASecondHolder(t *testing.T) {
 	case <-held:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the second Acquire never went through after the release")
+	}
+}
+
+func TestTheExclusiveLockBlocksAReader(t *testing.T) {
+	path := lockPath(t)
+
+	writer, err := Acquire(path, 0o600)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	held := inBackground(t, path, AcquireShared)
+
+	select {
+	case <-held:
+		t.Fatal("a reader went through while a writer held the lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := writer.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader never went through after the release")
 	}
 }
 
@@ -84,47 +132,5 @@ func TestSharedLocksAreHeldTogether(t *testing.T) {
 
 	if err := first.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
-	}
-}
-
-func TestTheExclusiveLockBlocksAReader(t *testing.T) {
-	path := lockPath(t)
-
-	writer, err := Acquire(path, 0o600)
-	if err != nil {
-		t.Fatalf("Acquire: %v", err)
-	}
-
-	held := make(chan struct{})
-
-	go func() {
-		reader, err := AcquireShared(path, 0o600)
-		if err != nil {
-			t.Errorf("AcquireShared: %v", err)
-
-			return
-		}
-
-		close(held)
-
-		if err := reader.Release(); err != nil {
-			t.Errorf("Release: %v", err)
-		}
-	}()
-
-	select {
-	case <-held:
-		t.Fatal("a reader went through while a writer held the lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	if err := writer.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
-	}
-
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the reader never went through after the release")
 	}
 }
