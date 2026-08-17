@@ -6,10 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 // DefaultRoot is where shard keeps everything on the box.
 const DefaultRoot = "/var/lib/shard"
+
+// DefaultTimeout bounds one pull. Without it a registry that accepts and stalls pins a root process.
+const DefaultTimeout = 30 * time.Minute
 
 const usage = `shard - a single-node sandbox manager (pre-alpha)
 
@@ -20,7 +26,10 @@ Usage:
   shard version            print the version
 
 Flags:
-  --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)`
+  --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
+  --timeout <duration>     how long a pull may take (default 30m)
+  --insecure-registry <host>
+                           allow plaintext http to this registry host, repeatable`
 
 // App is the wiring one shard process needs.
 type App struct {
@@ -28,6 +37,12 @@ type App struct {
 	// Root defaults to DefaultRoot when empty.
 	Root string
 	Out  io.Writer
+	// Err carries warnings that must not fail the command. It defaults to nowhere.
+	Err io.Writer
+	// Insecure lists the registry hosts shard may reach over plaintext http. Every other host is https.
+	Insecure []string
+	// Timeout defaults to DefaultTimeout when zero.
+	Timeout time.Duration
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
@@ -67,6 +82,9 @@ func (a App) Run(ctx context.Context, args []string) error {
 
 // parseGlobals takes the flags that precede the command and returns what is left.
 func (a *App) parseGlobals(args []string) ([]string, error) {
+	if a.Timeout == 0 {
+		a.Timeout = DefaultTimeout
+	}
 	if a.Root == "" {
 		a.Root = DefaultRoot
 	}
@@ -74,12 +92,39 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&a.Root, "root", a.Root, "where shard keeps its state")
+	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
+	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("parse the flags: %w", err)
 	}
 
+	// The fallback is the flag default, so an explicit empty or relative --root still lands here.
+	if !filepath.IsAbs(a.Root) {
+		return nil, fmt.Errorf("--root must be an absolute path, got %q", a.Root)
+	}
+
 	return flags.Args(), nil
+}
+
+// hostList collects a repeatable flag, which the flag package has no built-in type for.
+type hostList []string
+
+func (h *hostList) String() string { return strings.Join(*h, ",") }
+
+func (h *hostList) Set(value string) error {
+	*h = append(*h, value)
+
+	return nil
+}
+
+// warn reports something the operator should know that is not a reason to fail the command.
+func (a App) warn(message string) {
+	if a.Err == nil {
+		return
+	}
+
+	fmt.Fprintln(a.Err, "shard: warning:", message)
 }
 
 func (a App) print(s string) error {

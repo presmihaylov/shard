@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/presmihaylov/shard/cli"
 )
@@ -13,9 +15,13 @@ import (
 var version = "dev"
 
 func main() {
-	app := cli.App{Version: version, Out: os.Stdout}
+	// A pull is the long verb, so a stop signal has to cancel it rather than kill it mid-write.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	if err := app.Run(context.Background(), os.Args[1:]); err != nil {
+	app := cli.App{Version: version, Out: os.Stdout, Err: os.Stderr}
+
+	if err := app.Run(ctx, os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "shard:", err)
 		os.Exit(1)
 	}

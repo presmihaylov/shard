@@ -102,3 +102,33 @@ func TestHumanSize(t *testing.T) {
 		}
 	}
 }
+
+func TestRootMustBeAbsolute(t *testing.T) {
+	// An empty or relative root would put the whole state tree under whatever directory shard ran in.
+	for _, root := range []string{"", "images", "./images"} {
+		var out bytes.Buffer
+
+		err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "ls"})
+		if err == nil || !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("--root %q: got %v, want a rejected relative root", root, err)
+		}
+	}
+}
+
+func TestTimeoutFlagIsParsed(t *testing.T) {
+	var out bytes.Buffer
+	app := App{Version: "test", Out: &out}
+
+	if err := app.Run(t.Context(), []string{"--timeout", "5s", "--root", t.TempDir(), "image", "ls"}); err != nil {
+		t.Fatalf("image ls: %v", err)
+	}
+}
+
+func TestBadTimeoutIsRejected(t *testing.T) {
+	var out bytes.Buffer
+
+	err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--timeout", "never", "image", "ls"})
+	if err == nil {
+		t.Fatal("a bad --timeout returned no error")
+	}
+}

@@ -15,3 +15,6 @@ coverage.*
 
 # Stray binary from `go build ./...` in the module root
 /shard
+
+# Local Claude Code worktrees, one per in-flight ticket
+/.claude/worktrees/

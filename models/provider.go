@@ -96,3 +96,6 @@ type ExitStatus struct {
 
 // SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
 const SupervisorFailedExitCode = 125
+
+// EntrypointNotStartedExitCode is what a shell reports for a command it cannot run, and so is a broken image.
+const EntrypointNotStartedExitCode = 127

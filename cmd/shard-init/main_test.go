@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -278,7 +279,7 @@ func TestNoZombiesAfterManyChildren(t *testing.T) {
 	})
 }
 
-func TestSupervisorReportsItsOwnFailure(t *testing.T) {
+func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("locate the test binary: %v", err)
@@ -289,21 +290,93 @@ func TestSupervisorReportsItsOwnFailure(t *testing.T) {
 	cmd := exec.Command(exe, "-exit-file", unwritable, "--", exe, childPrefix+"exit:0")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
+	pipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("pipe the supervisor stderr: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the supervisor: %v", err)
+	}
+
+	defer func() {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill the supervisor: %v", err)
+		}
+
+		var exit *exec.ExitError
+		if err := cmd.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Errorf("wait for the supervisor: %v", err)
+		}
+	}()
+
+	// A sandbox outlives its entrypoint, so the lost status is reported and the supervisor stays up.
+	reported := readLine(t, pipe)
+	if !strings.Contains(reported, "write the exit status") {
+		t.Errorf("the supervisor reported %q, want it to name the failed write", reported)
+	}
+
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Errorf("the supervisor died on a lost exit status: %v", err)
+	}
+}
+
+func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+
+	exitFile := filepath.Join(t.TempDir(), "exit.json")
+	cmd := exec.Command(exe, "-exit-file", exitFile, "--", "/no/such/entrypoint")
+	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
+
 	var exit *exec.ExitError
 	if err := cmd.Run(); !errors.As(err, &exit) {
 		t.Fatalf("the supervisor returned %v, want it to exit non-zero", err)
 	}
 
-	if exit.ExitCode() != models.SupervisorFailedExitCode {
-		t.Errorf("exit code is %d, want %d so the host can name the failure",
-			exit.ExitCode(), models.SupervisorFailedExitCode)
+	if exit.ExitCode() != models.EntrypointNotStartedExitCode {
+		t.Errorf("exit code is %d, want %d so a broken image is not read as a broken supervisor",
+			exit.ExitCode(), models.EntrypointNotStartedExitCode)
 	}
+}
+
+// readLine bounds the read, because a supervisor that says nothing is the failure under test here.
+func readLine(t *testing.T, r io.Reader) string {
+	t.Helper()
+
+	lines := make(chan string, 1)
+	go func() {
+		text, err := bufio.NewReader(r).ReadString('\n')
+		if err != nil {
+			close(lines)
+
+			return
+		}
+
+		lines <- text
+	}()
+
+	select {
+	case text, ok := <-lines:
+		if !ok {
+			t.Fatal("the supervisor closed its stderr without reporting anything")
+		}
+
+		return strings.TrimSpace(text)
+	case <-time.After(15 * time.Second):
+		t.Fatal("the supervisor reported nothing within 15s")
+	}
+
+	return ""
 }
 
 func TestRunRejectsBadArguments(t *testing.T) {
 	cases := map[string][]string{
-		"no exit file":  {"--", "/bin/true"},
-		"no entrypoint": {"-exit-file", "/tmp/exit.json"},
+		"no exit file":       {"--", "/bin/true"},
+		"no entrypoint":      {"-exit-file", "/tmp/exit.json"},
+		"relative exit file": {"-exit-file", "exit.json", "--", "/bin/true"},
+		"exit file eats --":  {"-exit-file", "--", "/bin/true"},
 	}
 
 	for name, args := range cases {

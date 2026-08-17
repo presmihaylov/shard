@@ -19,6 +19,12 @@ import (
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
 var ErrNotFound = registry.ErrNotCached
 
+// ErrNotReclaimed marks a removal that finished but could not free the blobs behind it.
+var ErrNotReclaimed = registry.ErrNotReclaimed
+
+// stagingPrefix names the tree an unpack builds before it renames it into place under the digest.
+const stagingPrefix = ".unpack-"
+
 // Service owns the image tree: the layout under blobs, and one unpacked rootfs per image.
 type Service struct {
 	root  string
@@ -35,6 +41,8 @@ type Image struct {
 	Size    int64
 	Created time.Time
 	Config  Config
+	// Broken is set when the index still names the image but its blobs do not read back.
+	Broken error
 }
 
 // Config is the part of the image config the bundle builder needs. The entrypoint becomes the supervisor's argv.
@@ -53,8 +61,13 @@ func New(root string, opts ...registry.Option) (*Service, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Join(root, "rootfs"), 0o750); err != nil {
+	rootfs := filepath.Join(root, "rootfs")
+	if err := os.MkdirAll(rootfs, 0o750); err != nil {
 		return nil, fmt.Errorf("create the rootfs directory under %s: %w", root, err)
+	}
+
+	if err := sweepStaging(rootfs); err != nil {
+		return nil, err
 	}
 
 	return &Service{root: root, store: store}, nil
@@ -74,14 +87,24 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 
 	pulled, err := s.store.Pull(ctx, ref)
 	if err != nil {
-		return Image{}, err
+		return Image{}, errors.Join(err, s.reclaim())
 	}
 
+	// index.json is the record of what the store holds, so an image with no rootfs must not stay in it.
 	if err := s.unpack(ctx, pulled); err != nil {
-		return Image{}, err
+		return Image{}, errors.Join(err, s.store.Remove(ref))
 	}
 
 	return s.describe(pulled)
+}
+
+// reclaim drops the blobs a failed pull left behind, which nothing else reaches once the index misses them.
+func (s *Service) reclaim() error {
+	if err := s.store.Collect(); err != nil {
+		return fmt.Errorf("reclaim the blobs of the failed pull: %w", err)
+	}
+
+	return nil
 }
 
 // List returns every pulled image, ordered by reference.
@@ -106,79 +129,82 @@ func (s *Service) List() ([]Image, error) {
 
 // Remove deletes the image and its rootfs. SHARD-26 adds the refcount that makes this safe under a sandbox.
 func (s *Service) Remove(ref string) error {
-	cached, err := s.store.Get(ref)
+	// Orphaned reads index.json only, so an image whose blobs are damaged is still removable.
+	orphaned, err := s.store.Orphaned(ref)
 	if err != nil {
 		return err
 	}
 
-	if err := s.store.Remove(ref); err != nil {
-		return err
-	}
-
-	// Another tag can name the same digest, so the rootfs only goes when the last one does.
-	shared, err := s.sharesRootFS(cached)
-	if err != nil {
-		return err
-	}
-
-	if shared {
-		return nil
-	}
-
-	dir := s.rootfsDir(cached)
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("remove %s: %w", dir, err)
-	}
-
-	return nil
-}
-
-func (s *Service) sharesRootFS(img registry.Image) (bool, error) {
-	others, err := s.store.List()
-	if err != nil {
-		return false, err
-	}
-
-	for _, other := range others {
-		if other.Digest == img.Digest {
-			return true, nil
+	// The rootfs goes first: index.json is the record of what the store holds, so it changes last.
+	for _, digest := range orphaned {
+		dir := s.rootfsDir(digest)
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove %s: %w", dir, err)
 		}
 	}
 
-	return false, nil
+	return s.store.Remove(ref)
 }
 
 func (s *Service) describe(img registry.Image) (Image, error) {
+	described := Image{
+		Reference: img.Reference,
+		Digest:    img.Digest,
+		RootFS:    s.rootfsDir(img.Digest),
+		Size:      img.Size,
+		Created:   img.Created,
+		Broken:    img.Broken,
+	}
+	if img.Broken != nil {
+		return described, nil
+	}
+
 	cfg, err := img.Config()
 	if err != nil {
 		return Image{}, err
 	}
 
-	return Image{
-		Reference: img.Reference,
-		Digest:    img.Digest,
-		RootFS:    s.rootfsDir(img),
-		Size:      img.Size,
-		Created:   img.Created,
-		Config: Config{
-			Entrypoint: cfg.Config.Entrypoint,
-			Cmd:        cfg.Config.Cmd,
-			Env:        cfg.Config.Env,
-			WorkDir:    cfg.Config.WorkingDir,
-			User:       cfg.Config.User,
-		},
-	}, nil
+	described.Config = Config{
+		Entrypoint: cfg.Config.Entrypoint,
+		Cmd:        cfg.Config.Cmd,
+		Env:        cfg.Config.Env,
+		WorkDir:    cfg.Config.WorkingDir,
+		User:       cfg.Config.User,
+	}
+
+	return described, nil
 }
 
 // rootfsDir is keyed by digest, not by tag, so two tags of one image unpack once.
-func (s *Service) rootfsDir(img registry.Image) string {
-	return filepath.Join(s.root, "rootfs", strings.ReplaceAll(img.Digest, ":", "-"))
+func (s *Service) rootfsDir(digest string) string {
+	return filepath.Join(s.root, "rootfs", strings.ReplaceAll(digest, ":", "-"))
 }
 
 func (s *Service) unpacked(img registry.Image) bool {
-	info, err := os.Stat(s.rootfsDir(img))
+	info, err := os.Stat(s.rootfsDir(img.Digest))
 
 	return err == nil && info.IsDir()
+}
+
+// sweepStaging drops the tree a killed pull left mid-unpack, which no other verb ever reclaims.
+func sweepStaging(rootfs string) error {
+	entries, err := os.ReadDir(rootfs)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", rootfs, err)
+	}
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), stagingPrefix) {
+			continue
+		}
+
+		path := filepath.Join(rootfs, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove the stale staging tree %s: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 // unpack applies the layers into a temporary directory and renames it, so a half unpack never looks done.
@@ -195,7 +221,7 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 	parent := filepath.Join(s.root, "rootfs")
 
 	// The temp directory is a sibling of the final one so that the rename stays on one filesystem.
-	tmp, err := os.MkdirTemp(parent, ".unpack-")
+	tmp, err := os.MkdirTemp(parent, stagingPrefix)
 	if err != nil {
 		return fmt.Errorf("create a temporary directory under %s: %w", parent, err)
 	}
@@ -212,7 +238,7 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 		}
 	}
 
-	if err := os.Rename(tmp, s.rootfsDir(img)); err != nil {
+	if err := os.Rename(tmp, s.rootfsDir(img.Digest)); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 
