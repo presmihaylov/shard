@@ -609,6 +609,29 @@ func TestDeleteRemovesTheLockFile(t *testing.T) {
 	}
 }
 
+func TestAWriteOfAMissingSandboxLeavesNoLockFile(t *testing.T) {
+	r, root := repo(t)
+
+	for _, call := range []struct {
+		name string
+		run  func() error
+	}{
+		{"Update", func() error { return r.Update("quiet-heron-3f0a", func(*models.Sandbox) error { return nil }) }},
+		{"Delete", func() error { return r.Delete("quiet-heron-3f0a") }},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			if err := call.run(); !errors.Is(err, sandboxstate.ErrNotFound) {
+				t.Fatalf("%s of a missing sandbox: %v", call.name, err)
+			}
+
+			path := filepath.Join(root, "locks", "quiet-heron-3f0a.lock")
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("%s left a lock file behind: %v", call.name, err)
+			}
+		})
+	}
+}
+
 func TestARecordIsReadableOnlyByItsOwner(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)

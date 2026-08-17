@@ -93,7 +93,8 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 
 	sb.ID = id
 	if err := r.write(sb); err != nil {
-		return models.Sandbox{}, err
+		// Give the id back: no verb can reach a claimed directory that holds no record.
+		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
 	}
 
 	return sb, nil
@@ -266,6 +267,16 @@ func (r *Repository) writeLock(id string) (*store.Lock, error) {
 	path, err := r.lockPath(id)
 	if err != nil {
 		return nil, err
+	}
+
+	// Refuse before Acquire creates the file, or a mistyped id would leave a lock file behind forever.
+	dir := r.dir(id)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
+		}
+
+		return nil, fmt.Errorf("stat %s: %w", dir, err)
 	}
 
 	return store.Acquire(path, lockPerm)
