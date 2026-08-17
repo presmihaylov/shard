@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -88,8 +90,9 @@ func TestNewCreatesTheLayout(t *testing.T) {
 			t.Errorf("%s is not a directory", dir)
 		}
 
-		if info.Mode().Perm() != 0o750 {
-			t.Errorf("%s is %v, want 0750", dir, info.Mode().Perm())
+		// The umask of the host can only trim the mode, so assert that nothing wider got through.
+		if perm := info.Mode().Perm(); perm&^0o750 != 0 {
+			t.Errorf("%s is %v, which is wider than 0750", dir, perm)
 		}
 	}
 }
@@ -152,7 +155,8 @@ func TestCreateAndGetRoundTrip(t *testing.T) {
 	}
 
 	got.CreatedAt, want.CreatedAt = time.Time{}, time.Time{}
-	if got != want {
+	// DeepEqual, not ==: ExitStatus is a pointer, so == would compare two addresses.
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the record came back as %+v, want %+v", got, want)
 	}
 }
@@ -174,6 +178,50 @@ func TestStateSurvivesAProcessRestart(t *testing.T) {
 
 	if !got.CreatedAt.Equal(want.CreatedAt) || got.ID != want.ID || got.Address != want.Address {
 		t.Errorf("the record changed over the restart: %+v", got)
+	}
+}
+
+// TestTheRecordReaderChild runs only as the child of TestStateSurvivesARealProcessRestart.
+func TestTheRecordReaderChild(t *testing.T) {
+	root, id := os.Getenv("SHARD_TEST_ROOT"), os.Getenv("SHARD_TEST_ID")
+	if root == "" {
+		t.Skip("this test is the child of TestStateSurvivesARealProcessRestart")
+	}
+
+	r, err := sandboxstate.New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got, err := r.Get(id)
+	if err != nil {
+		t.Fatalf("Get in the second process: %v", err)
+	}
+
+	want := newSandbox()
+	want.ID = id
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the second process read %+v, want %+v", got, want)
+	}
+}
+
+// A second Repository is not a restart. This one re-execs the test binary and reads from there.
+func TestStateSurvivesARealProcessRestart(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestTheRecordReaderChild$", "-test.v")
+	cmd.Env = append(os.Environ(), "SHARD_TEST_ROOT="+root, "SHARD_TEST_ID="+sb.ID)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the second process: %v\n%s", err, out)
+	}
+
+	// Without this the child could skip itself and the parent would still call that a pass.
+	if !strings.Contains(string(out), "--- PASS: TestTheRecordReaderChild") {
+		t.Errorf("the child did not run the read:\n%s", out)
 	}
 }
 
@@ -205,6 +253,38 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 
 	if got.ExitStatus.Code != 137 || got.ExitStatus.Signal != syscall.SIGKILL {
 		t.Errorf("the exit status is %+v, want code 137 and signal SIGKILL", *got.ExitStatus)
+	}
+}
+
+// A clean exit is the case a value type with omitempty would drop, so it must round trip too.
+func TestACleanExitIsRecordedAndNotMistakenForNone(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.ExitStatus = &models.ExitStatus{}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := r.Get(sb.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.ExitStatus == nil {
+		t.Fatal("the exit status is nil, and the entrypoint exited 0: that is not the same as never running")
+	}
+
+	if got.ExitStatus.Code != 0 || got.ExitStatus.Signal != 0 {
+		t.Errorf("the exit status is %+v, want code 0 and no signal", *got.ExitStatus)
+	}
+
+	if got.State != models.StateRunning {
+		t.Errorf("state is %q, want running: the sandbox outlives its entrypoint", got.State)
 	}
 }
 
@@ -364,6 +444,14 @@ func TestABadIDNeverLeavesTheRoot(t *testing.T) {
 
 		if _, err := r.SnapshotDir(id); err == nil {
 			t.Errorf("SnapshotDir(%q) went through", id)
+		}
+
+		if err := r.Update(id, func(*models.Sandbox) error { return nil }); err == nil {
+			t.Errorf("Update(%q) went through, and the id names the lock file too", id)
+		}
+
+		if err := r.Delete(id); err == nil {
+			t.Errorf("Delete(%q) went through, and Delete hands that path to RemoveAll", id)
 		}
 	}
 

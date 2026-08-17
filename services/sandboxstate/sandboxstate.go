@@ -103,7 +103,7 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 // claimID makes the kernel decide uniqueness: mkdir refuses the second claim of the same id.
 func (r *Repository) claimID() (string, error) {
 	for range idAttempts {
-		id, err := generateID()
+		id, err := newID()
 		if err != nil {
 			return "", err
 		}

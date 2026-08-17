@@ -30,6 +30,9 @@ var nouns = [wordsPerList]string{
 	"sky", "smoke", "snow", "sound", "star", "sun", "surf", "thunder",
 }
 
+// newID is a variable so a test can force the collision that only mkdir refuses.
+var newID = generateID
+
 // generateID reads as words because an operator types it. The suffix keeps a repeat rare, and the
 // mkdir that claims the id is what makes a repeat impossible.
 func generateID() (string, error) {
