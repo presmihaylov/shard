@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -14,17 +16,15 @@ import (
 	"github.com/presmihaylov/shard/services/state"
 )
 
-func sandbox(id string) models.Sandbox {
+func newSandbox() models.Sandbox {
 	return models.Sandbox{
-		ID:            id,
-		Name:          id + "-name",
 		Image:         "docker.io/library/alpine:3.20",
 		Provider:      "gvisor",
 		State:         models.StateRunning,
 		PID:           4242,
-		NetnsPath:     "/var/run/netns/" + id,
+		NetnsPath:     "/var/run/netns/sb",
 		Address:       netip.MustParsePrefix("10.88.0.7/24"),
-		HostInterface: "veth-" + id,
+		HostInterface: "veth-sb",
 		CreatedAt:     time.Date(2026, 8, 16, 10, 0, 0, 0, time.UTC),
 	}
 }
@@ -40,6 +40,17 @@ func repo(t *testing.T) (*state.Repository, string) {
 	}
 
 	return r, root
+}
+
+func create(t *testing.T, r *state.Repository) models.Sandbox {
+	t.Helper()
+
+	sb, err := r.Create(newSandbox())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	return sb
 }
 
 func sandboxDir(t *testing.T, r *state.Repository, id string) string {
@@ -64,14 +75,6 @@ func snapshotDir(t *testing.T, r *state.Repository, id string) string {
 	return dir
 }
 
-func create(t *testing.T, r *state.Repository, sb models.Sandbox) {
-	t.Helper()
-
-	if err := r.Create(sb); err != nil {
-		t.Fatalf("Create(%s): %v", sb.ID, err)
-	}
-}
-
 func TestNewCreatesTheLayout(t *testing.T) {
 	_, root := repo(t)
 
@@ -82,39 +85,81 @@ func TestNewCreatesTheLayout(t *testing.T) {
 		}
 
 		if !info.IsDir() {
-			t.Fatalf("%s is not a directory", dir)
+			t.Errorf("%s is not a directory", dir)
 		}
 
-		if perm := info.Mode().Perm(); perm != 0o750 {
-			t.Errorf("%s has mode %o, want 750", dir, perm)
+		if info.Mode().Perm() != 0o750 {
+			t.Errorf("%s is %v, want 0750", dir, info.Mode().Perm())
 		}
+	}
+}
+
+func TestCreateGeneratesAHumanReadableID(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	if sb.ID == "" {
+		t.Fatal("Create returned an empty id")
+	}
+
+	if strings.Count(sb.ID, "-") != 2 {
+		t.Errorf("the id %q does not read as adjective-noun-suffix", sb.ID)
+	}
+
+	got, err := r.Get(sb.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", sb.ID, err)
+	}
+
+	if got.ID != sb.ID {
+		t.Errorf("the stored id is %q, want %q", got.ID, sb.ID)
+	}
+}
+
+func TestCreateRefusesAnIDTheCallerSet(t *testing.T) {
+	r, _ := repo(t)
+
+	sb := newSandbox()
+	sb.ID = "chosen-by-hand"
+
+	if _, err := r.Create(sb); err == nil {
+		t.Fatal("Create took an id from the caller, and only the repository may generate one")
+	}
+}
+
+func TestCreateRefusesAnUnknownState(t *testing.T) {
+	r, _ := repo(t)
+
+	sb := newSandbox()
+	sb.State = "melting"
+
+	if _, err := r.Create(sb); err == nil {
+		t.Fatal("Create accepted an unknown state")
 	}
 }
 
 func TestCreateAndGetRoundTrip(t *testing.T) {
 	r, _ := repo(t)
-	want := sandbox("sb1")
+	want := create(t, r)
 
-	create(t, r, want)
-
-	got, err := r.Get("sb1")
+	got, err := r.Get(want.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 
 	if !got.CreatedAt.Equal(want.CreatedAt) {
-		t.Errorf("CreatedAt is %s, want %s", got.CreatedAt, want.CreatedAt)
+		t.Errorf("CreatedAt is %v, want %v", got.CreatedAt, want.CreatedAt)
 	}
 
 	got.CreatedAt, want.CreatedAt = time.Time{}, time.Time{}
 	if got != want {
-		t.Errorf("Get returned\n%+v\nwant\n%+v", got, want)
+		t.Errorf("the record came back as %+v, want %+v", got, want)
 	}
 }
 
 func TestStateSurvivesAProcessRestart(t *testing.T) {
 	r, root := repo(t)
-	create(t, r, sandbox("sb1"))
+	want := create(t, r)
 
 	// A second repository over the same root is what the next shard process sees.
 	restarted, err := state.New(root)
@@ -122,12 +167,11 @@ func TestStateSurvivesAProcessRestart(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	got, err := restarted.Get("sb1")
+	got, err := restarted.Get(want.ID)
 	if err != nil {
 		t.Fatalf("Get after the restart: %v", err)
 	}
 
-	want := sandbox("sb1")
 	if !got.CreatedAt.Equal(want.CreatedAt) || got.ID != want.ID || got.Address != want.Address {
 		t.Errorf("the record changed over the restart: %+v", got)
 	}
@@ -135,9 +179,9 @@ func TestStateSurvivesAProcessRestart(t *testing.T) {
 
 func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	err := r.Update("sb1", func(sb *models.Sandbox) error {
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
 		sb.ExitStatus = &models.ExitStatus{Code: 137, Signal: syscall.SIGKILL}
 
 		return nil
@@ -146,7 +190,7 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	got, err := r.Get("sb1")
+	got, err := r.Get(sb.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -166,9 +210,9 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 
 func TestAnExitStatusIsAbsentUntilOneHappens(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	got, err := r.Get("sb1")
+	got, err := r.Get(sb.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -181,43 +225,48 @@ func TestAnExitStatusIsAbsentUntilOneHappens(t *testing.T) {
 func TestGetMissingIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
-	if _, err := r.Get("sb1"); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("Get of a missing sandbox returned %v, want ErrNotFound", err)
+	if _, err := r.Get("quiet-otter-0000"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("Get of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }
 
-func TestCreateRefusesADuplicateID(t *testing.T) {
+func TestEveryGeneratedIDIsUnique(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
 
-	second := sandbox("sb1")
-	second.Name = "other"
+	const sandboxes = 64
 
-	if err := r.Create(second); !errors.Is(err, state.ErrExists) {
-		t.Fatalf("the second Create returned %v, want ErrExists", err)
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		ids  = map[string]bool{}
+		errs = make(chan error, sandboxes)
+	)
+
+	for range sandboxes {
+		wg.Go(func() {
+			sb, err := r.Create(newSandbox())
+			if err != nil {
+				errs <- err
+
+				return
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if ids[sb.ID] {
+				errs <- errors.New("the id " + sb.ID + " came back twice")
+			}
+
+			ids[sb.ID] = true
+		})
 	}
-}
 
-func TestCreateRefusesADuplicateName(t *testing.T) {
-	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	wg.Wait()
+	close(errs)
 
-	second := sandbox("sb2")
-	second.Name = sandbox("sb1").Name
-
-	if err := r.Create(second); !errors.Is(err, state.ErrExists) {
-		t.Fatalf("Create with a taken name returned %v, want ErrExists", err)
-	}
-}
-
-func TestCreateAllowsManyUnnamedSandboxes(t *testing.T) {
-	r, _ := repo(t)
-
-	for _, id := range []string{"sb1", "sb2"} {
-		sb := sandbox(id)
-		sb.Name = ""
-
-		create(t, r, sb)
+	for err := range errs {
+		t.Errorf("concurrent Create: %v", err)
 	}
 
 	all, err := r.List()
@@ -225,76 +274,22 @@ func TestCreateAllowsManyUnnamedSandboxes(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 
-	if len(all) != 2 {
-		t.Fatalf("List returned %d sandboxes, want 2", len(all))
-	}
-}
-
-func TestCreateRefusesABadID(t *testing.T) {
-	r, root := repo(t)
-
-	for _, id := range []string{"", "../escape", "sb/1", "sb 1", "sb.1"} {
-		sb := sandbox("placeholder")
-		sb.ID = id
-
-		if err := r.Create(sb); err == nil {
-			t.Errorf("Create with the id %q was accepted", id)
-		}
-	}
-
-	entries, err := os.ReadDir(filepath.Dir(root))
-	if err != nil {
-		t.Fatalf("read the parent of the root: %v", err)
-	}
-
-	for _, entry := range entries {
-		if entry.Name() == "escape" {
-			t.Fatal("a record escaped the root")
-		}
-	}
-}
-
-func TestCreateRefusesAnUnknownState(t *testing.T) {
-	r, _ := repo(t)
-
-	sb := sandbox("sb1")
-	sb.State = "exploded"
-
-	if err := r.Create(sb); err == nil {
-		t.Fatal("Create with an unknown state was accepted")
-	}
-}
-
-func TestByName(t *testing.T) {
-	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
-	create(t, r, sandbox("sb2"))
-
-	got, err := r.ByName("sb2-name")
-	if err != nil {
-		t.Fatalf("ByName: %v", err)
-	}
-
-	if got.ID != "sb2" {
-		t.Errorf("ByName returned %s, want sb2", got.ID)
-	}
-
-	if _, err := r.ByName("nobody"); !errors.Is(err, state.ErrNotFound) {
-		t.Errorf("ByName of an unknown name returned %v, want ErrNotFound", err)
-	}
-
-	if _, err := r.ByName(""); err == nil {
-		t.Error("ByName of the empty name was accepted")
+	if len(all) != sandboxes {
+		t.Errorf("List returned %d records, want %d: a claim was lost", len(all), sandboxes)
 	}
 }
 
 func TestListIsOrderedByIDAndIgnoresStrayEntries(t *testing.T) {
 	r, root := repo(t)
-	create(t, r, sandbox("sb2"))
-	create(t, r, sandbox("sb1"))
 
-	stray := filepath.Join(root, "sandboxes", "notes.txt")
-	if err := os.WriteFile(stray, []byte("not a record"), 0o600); err != nil {
+	want := make([]string, 0, 3)
+	for range 3 {
+		want = append(want, create(t, r).ID)
+	}
+
+	slices.Sort(want)
+
+	if err := os.WriteFile(filepath.Join(root, "sandboxes", "stray.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write the stray file: %v", err)
 	}
 
@@ -303,17 +298,21 @@ func TestListIsOrderedByIDAndIgnoresStrayEntries(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 
-	if len(all) != 2 || all[0].ID != "sb1" || all[1].ID != "sb2" {
-		t.Fatalf("List returned %+v, want sb1 then sb2", all)
+	got := make([]string, 0, len(all))
+	for _, sb := range all {
+		got = append(got, sb.ID)
+	}
+
+	if !slices.Equal(got, want) {
+		t.Errorf("List returned %v, want %v", got, want)
 	}
 }
 
-// A half-done delete leaves a directory with no record. It must not take the other sandboxes down.
 func TestADirectoryWithNoRecordIsNotASandbox(t *testing.T) {
 	r, root := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	for _, dir := range []string{"sb2", "not an id"} {
+	for _, dir := range []string{"claimed-but-unwritten-0001", "not an id"} {
 		if err := os.MkdirAll(filepath.Join(root, "sandboxes", dir), 0o750); err != nil {
 			t.Fatalf("create %s: %v", dir, err)
 		}
@@ -324,40 +323,17 @@ func TestADirectoryWithNoRecordIsNotASandbox(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 
-	if len(all) != 1 || all[0].ID != "sb1" {
-		t.Fatalf("List returned %+v, want sb1 alone", all)
+	if len(all) != 1 || all[0].ID != sb.ID {
+		t.Fatalf("List returned %+v, want %s alone", all, sb.ID)
 	}
 
-	err = r.Update("sb1", func(sb *models.Sandbox) error {
+	err = r.Update(sb.ID, func(sb *models.Sandbox) error {
 		sb.PID = 7
 
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("Update beside a directory with no record: %v", err)
-	}
-}
-
-func TestDirRefusesABadID(t *testing.T) {
-	r, _ := repo(t)
-
-	if _, err := r.Dir("../escape"); err == nil {
-		t.Error("Dir built a path outside the root")
-	}
-
-	if _, err := r.SnapshotDir("../escape"); err == nil {
-		t.Error("SnapshotDir built a path outside the root")
-	}
-}
-
-func TestCreateRefusesABadName(t *testing.T) {
-	r, _ := repo(t)
-
-	sb := sandbox("sb1")
-	sb.Name = "../escape"
-
-	if err := r.Create(sb); err == nil {
-		t.Fatal("Create with a name that is not a plain word was accepted")
 	}
 }
 
@@ -370,17 +346,44 @@ func TestListOfAnEmptyRepositoryIsEmpty(t *testing.T) {
 	}
 
 	if len(all) != 0 {
-		t.Fatalf("List returned %d sandboxes, want none", len(all))
+		t.Errorf("List returned %+v, want nothing", all)
+	}
+}
+
+func TestABadIDNeverLeavesTheRoot(t *testing.T) {
+	r, root := repo(t)
+
+	for _, id := range []string{"", "../escape", "with/slash", "with space", "..", strings.Repeat("a", 65)} {
+		if _, err := r.Get(id); err == nil {
+			t.Errorf("Get(%q) went through, and the id is not one plain directory name", id)
+		}
+
+		if _, err := r.Dir(id); err == nil {
+			t.Errorf("Dir(%q) went through, and the caller hands that path to RemoveAll", id)
+		}
+
+		if _, err := r.SnapshotDir(id); err == nil {
+			t.Errorf("SnapshotDir(%q) went through", id)
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(root))
+	if err != nil {
+		t.Fatalf("read the parent of the root: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Errorf("the parent of the root holds %d entries, want the root alone", len(entries))
 	}
 }
 
 func TestUpdatePersists(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	err := r.Update("sb1", func(sb *models.Sandbox) error {
-		sb.State = models.StateStopped
-		sb.PID = 0
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.State = models.StatePaused
+		sb.PID = 99
 
 		return nil
 	})
@@ -388,129 +391,113 @@ func TestUpdatePersists(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	got, err := r.Get("sb1")
+	got, err := r.Get(sb.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.State != models.StateStopped || got.PID != 0 {
-		t.Errorf("the record is %+v, want stopped and pid 0", got)
+	if got.State != models.StatePaused || got.PID != 99 {
+		t.Errorf("the record is %+v, want paused with pid 99", got)
 	}
 }
 
 func TestUpdateOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
-	err := r.Update("sb1", func(sb *models.Sandbox) error { return nil })
+	err := r.Update("quiet-otter-0000", func(*models.Sandbox) error { return nil })
 	if !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("Update of a missing sandbox returned %v, want ErrNotFound", err)
+		t.Fatalf("Update of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }
 
 func TestUpdateWritesNothingWhenMutateFails(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	boom := errors.New("boom")
+	stop := errors.New("stop")
 
-	err := r.Update("sb1", func(sb *models.Sandbox) error {
-		sb.State = models.StateStopped
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.PID = 1
 
-		return boom
+		return stop
 	})
-	if !errors.Is(err, boom) {
-		t.Fatalf("Update returned %v, want boom", err)
+	if !errors.Is(err, stop) {
+		t.Fatalf("Update: %v, want the error mutate returned", err)
 	}
 
-	got, err := r.Get("sb1")
+	got, err := r.Get(sb.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.State != models.StateRunning {
-		t.Errorf("the record changed to %q after a failed mutate", got.State)
-	}
-}
-
-func TestUpdateRefusesToRenameOntoATakenName(t *testing.T) {
-	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
-	create(t, r, sandbox("sb2"))
-
-	err := r.Update("sb2", func(sb *models.Sandbox) error {
-		sb.Name = "sb1-name"
-
-		return nil
-	})
-	if !errors.Is(err, state.ErrExists) {
-		t.Fatalf("the rename returned %v, want ErrExists", err)
-	}
-}
-
-func TestUpdateKeepsTheNameItAlreadyHolds(t *testing.T) {
-	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
-
-	err := r.Update("sb1", func(sb *models.Sandbox) error {
-		sb.State = models.StatePaused
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Update: %v", err)
+	if got.PID != sb.PID {
+		t.Errorf("the pid is %d, want %d: a failed mutate wrote the record", got.PID, sb.PID)
 	}
 }
 
 func TestUpdateRefusesToChangeTheID(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	err := r.Update("sb1", func(sb *models.Sandbox) error {
-		sb.ID = "sb2"
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.ID = "renamed-by-hand-0001"
 
 		return nil
 	})
 	if err == nil {
-		t.Fatal("an update that changed the id was accepted")
+		t.Fatal("Update changed the id, which would move the record out from under its own path")
+	}
+}
+
+func TestUpdateRefusesAnUnknownState(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.State = "melting"
+
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Update accepted an unknown state")
 	}
 }
 
 func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	snapshot := snapshotDir(t, r, "sb1")
+	snapshot := snapshotDir(t, r, sb.ID)
 	if err := os.MkdirAll(snapshot, 0o750); err != nil {
 		t.Fatalf("create the snapshot directory: %v", err)
 	}
 
-	if err := r.Delete("sb1"); err != nil {
+	if err := r.Delete(sb.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := r.Get("sb1"); !errors.Is(err, state.ErrNotFound) {
-		t.Errorf("Get after Delete returned %v, want ErrNotFound", err)
+	for _, dir := range []string{sandboxDir(t, r, sb.ID), snapshot} {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is still there after the delete", dir)
+		}
 	}
 
-	for _, dir := range []string{sandboxDir(t, r, "sb1"), snapshot} {
-		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("%s still exists after Delete", dir)
-		}
+	if _, err := r.Get(sb.ID); !errors.Is(err, state.ErrNotFound) {
+		t.Errorf("Get after the delete: %v, want ErrNotFound", err)
 	}
 }
 
 func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
-	if err := r.Delete("sb1"); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("Delete of a missing sandbox returned %v, want ErrNotFound", err)
+	if err := r.Delete("quiet-otter-0000"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("Delete of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }
 
-// The lock is what makes this pass: without it the readers and the writers lose each other's field.
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
 	const writers = 32
 
@@ -520,7 +507,7 @@ func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 
 	for range writers {
 		wg.Go(func() {
-			err := r.Update("sb1", func(sb *models.Sandbox) error {
+			err := r.Update(sb.ID, func(sb *models.Sandbox) error {
 				sb.PID++
 
 				return nil
@@ -531,7 +518,7 @@ func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 		})
 
 		wg.Go(func() {
-			if _, err := r.Get("sb1"); err != nil {
+			if _, err := r.Get(sb.ID); err != nil {
 				errs <- err
 			}
 		})
@@ -544,43 +531,40 @@ func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 		t.Errorf("concurrent access: %v", err)
 	}
 
-	got, err := r.Get("sb1")
+	got, err := r.Get(sb.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if want := sandbox("sb1").PID + writers; got.PID != want {
+	if want := sb.PID + writers; got.PID != want {
 		t.Errorf("the pid is %d, want %d: an update was lost", got.PID, want)
 	}
 }
 
 func TestARecordIsReadableOnlyByItsOwner(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	info, err := os.Stat(filepath.Join(sandboxDir(t, r, "sb1"), "sandbox.json"))
+	info, err := os.Stat(filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json"))
 	if err != nil {
 		t.Fatalf("stat the record: %v", err)
 	}
 
-	if perm := info.Mode().Perm(); perm != 0o640 {
-		t.Errorf("the record has mode %o, want 640", perm)
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("the record is %v, want 0640", info.Mode().Perm())
 	}
 }
 
 func TestACorruptRecordIsAnError(t *testing.T) {
 	r, _ := repo(t)
-	create(t, r, sandbox("sb1"))
+	sb := create(t, r)
 
-	if err := os.WriteFile(filepath.Join(sandboxDir(t, r, "sb1"), "sandbox.json"), []byte("{"), 0o640); err != nil {
+	path := filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
 		t.Fatalf("corrupt the record: %v", err)
 	}
 
-	if _, err := r.Get("sb1"); err == nil {
-		t.Fatal("a corrupt record read as a sandbox")
-	}
-
-	if _, err := r.List(); err == nil {
-		t.Fatal("List hid a corrupt record")
+	if _, err := r.Get(sb.ID); err == nil {
+		t.Fatal("Get returned a sandbox from a corrupt record")
 	}
 }

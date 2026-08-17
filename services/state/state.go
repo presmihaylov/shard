@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,22 +18,20 @@ import (
 // ErrNotFound is what a read of a sandbox shard does not hold returns. Match it with errors.Is.
 var ErrNotFound = errors.New("sandbox not found")
 
-// ErrExists is what a second Create of the same id or the same name returns.
-var ErrExists = errors.New("sandbox already exists")
-
 const (
 	sandboxesDir = "sandboxes"
 	snapshotsDir = "snapshots"
 	recordFile   = "sandbox.json"
 	lockFile     = ".lock"
 
-	dirPerm  = 0o750
-	filePerm = 0o640
-	lockPerm = 0o600
-	maxChars = 64
+	dirPerm    = 0o750
+	filePerm   = 0o640
+	lockPerm   = 0o600
+	maxChars   = 64
+	idAttempts = 10
 )
 
-// Repository is the sandbox record repository. Every method takes the repository lock.
+// Repository is the sandbox record repository. Every method but Create takes the repository lock.
 type Repository struct {
 	root string
 }
@@ -75,41 +74,57 @@ func (r *Repository) snapshotDir(id string) string {
 	return filepath.Join(r.root, snapshotsDir, id)
 }
 
-// Create records a new sandbox. The id and the name must both be free.
-func (r *Repository) Create(sb models.Sandbox) (err error) {
-	if err := validate(sb); err != nil {
-		return err
+// Create generates the id, claims it and writes the record. It returns the sandbox that it stored.
+// It takes no lock: the mkdir that claims the id is atomic, and the record write is atomic too.
+func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
+	if sb.ID != "" {
+		return models.Sandbox{}, fmt.Errorf("the sandbox carries the id %q, which the repository generates", sb.ID)
 	}
 
-	l, err := r.writeLock()
+	if !sb.State.Valid() {
+		return models.Sandbox{}, fmt.Errorf("the new sandbox has an unknown state %q", sb.State)
+	}
+
+	id, err := r.claimID()
 	if err != nil {
-		return err
-	}
-	defer unlock(l, &err)
-
-	_, readErr := r.read(sb.ID)
-	if readErr == nil {
-		return fmt.Errorf("sandbox %s: %w", sb.ID, ErrExists)
-	}
-	if !errors.Is(readErr, ErrNotFound) {
-		return readErr
+		return models.Sandbox{}, err
 	}
 
-	if err := r.nameIsFreeFor(sb.Name, sb.ID); err != nil {
-		return err
+	sb.ID = id
+	if err := r.write(sb); err != nil {
+		return models.Sandbox{}, err
 	}
 
-	dir := r.dir(sb.ID)
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
+	return sb, nil
+}
+
+// claimID makes the kernel decide uniqueness: mkdir refuses the second claim of the same id.
+func (r *Repository) claimID() (string, error) {
+	for range idAttempts {
+		id, err := generateID()
+		if err != nil {
+			return "", err
+		}
+
+		dir := r.dir(id)
+
+		err = os.Mkdir(dir, dirPerm)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("create %s: %w", dir, err)
+		}
+
+		// The record's own write syncs dir; this makes dir itself survive a power loss too.
+		if err := store.SyncDir(filepath.Join(r.root, sandboxesDir)); err != nil {
+			return "", err
+		}
+
+		return id, nil
 	}
 
-	// The record's own write syncs dir; this makes dir itself survive a power loss too.
-	if err := store.SyncDir(filepath.Join(r.root, sandboxesDir)); err != nil {
-		return err
-	}
-
-	return r.write(sb)
+	return "", fmt.Errorf("no free sandbox id after %d attempts", idAttempts)
 }
 
 // Get returns the record, or ErrNotFound.
@@ -121,32 +136,6 @@ func (r *Repository) Get(id string) (sb models.Sandbox, err error) {
 	defer unlock(l, &err)
 
 	return r.read(id)
-}
-
-// ByName returns the record that carries name. An unnamed sandbox is unreachable through it.
-func (r *Repository) ByName(name string) (sb models.Sandbox, err error) {
-	if name == "" {
-		return models.Sandbox{}, errors.New("the sandbox name is empty")
-	}
-
-	l, err := r.readLock()
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-	defer unlock(l, &err)
-
-	all, err := r.list()
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-
-	for _, candidate := range all {
-		if candidate.Name == name {
-			return candidate, nil
-		}
-	}
-
-	return models.Sandbox{}, fmt.Errorf("sandbox named %s: %w", name, ErrNotFound)
 }
 
 // List returns every record, ordered by id.
@@ -162,7 +151,7 @@ func (r *Repository) List() (sandboxes []models.Sandbox, err error) {
 
 // Update applies mutate to the record and writes the result back. The lock spans the read and the
 // write, so two callers never lose each other's field. mutate holds the lock: it must not call the
-// repository again.
+// repository again, and it must not do slow work.
 func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) (err error) {
 	l, err := r.writeLock()
 	if err != nil {
@@ -183,12 +172,8 @@ func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) (err 
 		return fmt.Errorf("the update of sandbox %s changed its id to %s", id, sb.ID)
 	}
 
-	if err := validate(sb); err != nil {
-		return err
-	}
-
-	if err := r.nameIsFreeFor(sb.Name, id); err != nil {
-		return err
+	if !sb.State.Valid() {
+		return fmt.Errorf("the update of sandbox %s set an unknown state %q", id, sb.State)
 	}
 
 	return r.write(sb)
@@ -270,7 +255,7 @@ func (r *Repository) list() ([]models.Sandbox, error) {
 		}
 
 		sb, err := r.read(entry.Name())
-		// A directory with no record is not a sandbox: a half-done delete must not break every read.
+		// A directory with no record is a claimed id whose write has not landed, or a half-done delete.
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -284,26 +269,6 @@ func (r *Repository) list() ([]models.Sandbox, error) {
 	slices.SortFunc(sandboxes, func(a, b models.Sandbox) int { return strings.Compare(a.ID, b.ID) })
 
 	return sandboxes, nil
-}
-
-// nameIsFreeFor lets the sandbox keep the name it already holds, so an update is not a conflict.
-func (r *Repository) nameIsFreeFor(name, id string) error {
-	if name == "" {
-		return nil
-	}
-
-	all, err := r.list()
-	if err != nil {
-		return err
-	}
-
-	for _, sb := range all {
-		if sb.Name == name && sb.ID != id {
-			return fmt.Errorf("sandbox named %s: %w", name, ErrExists)
-		}
-	}
-
-	return nil
 }
 
 func (r *Repository) writeLock() (*store.Lock, error) {
@@ -323,49 +288,20 @@ func unlock(l *store.Lock, err *error) {
 	*err = errors.Join(*err, l.Release())
 }
 
-func validate(sb models.Sandbox) error {
-	if err := validID(sb.ID); err != nil {
-		return err
-	}
-
-	if err := validName(sb.Name); err != nil {
-		return err
-	}
-
-	if !sb.State.Valid() {
-		return fmt.Errorf("sandbox %s has an unknown state %q", sb.ID, sb.State)
-	}
-
-	return nil
-}
-
 // The id is a directory name under the root, so anything that is not one plain component is refused.
 func validID(id string) error {
 	if id == "" {
 		return errors.New("the sandbox id is empty")
 	}
 
-	return plainWord("id", id)
-}
-
-// A name is not a path, but it goes on a terminal and into a URL, so it obeys the same charset.
-func validName(name string) error {
-	if name == "" {
-		return nil
+	if len(id) > maxChars {
+		return fmt.Errorf("the sandbox id %q is longer than %d characters", id, maxChars)
 	}
 
-	return plainWord("name", name)
-}
-
-func plainWord(kind, word string) error {
-	if len(word) > maxChars {
-		return fmt.Errorf("the sandbox %s %q is longer than %d characters", kind, word, maxChars)
-	}
-
-	for _, c := range word {
+	for _, c := range id {
 		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return fmt.Errorf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, word, c)
+			return fmt.Errorf("the sandbox id %q holds %q, which is not a letter, a digit, - or _", id, c)
 		}
 	}
 
