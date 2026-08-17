@@ -41,11 +41,18 @@ test-integration:
 devbox-sync: build-linux build-shard-init-linux
 	scp -O -q $(BIN)-linux-amd64 $(SHARD_INIT_BIN)-linux-amd64 $(DEVBOX):/tmp/
 	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 /usr/local/bin/shard && \
-		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init && shard version'
+		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init'
+	@installed=$$(ssh $(DEVBOX) shard version); \
+		if [ "$$installed" != "$(VERSION)" ]; then \
+			echo "the devbox runs $$installed, not $(VERSION): the install did not land"; \
+			exit 1; \
+		fi; \
+		echo "the devbox runs $$installed"
 
 # Runs integration tests on the box, as root, over the binaries devbox-sync just installed.
+# .claude holds a worktree per in-flight ticket, which is a second checkout and never the one under test.
 itest: devbox-sync
-	tar czf - --exclude bin --exclude .git . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration -count=1 -v $(ITEST_PKG)'
+	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration -count=1 -v $(ITEST_PKG)'
 
 # The whole suite, which is the same target with no package filter. gVisor only: Hetzner has no KVM.
 devbox-test: ITEST_PKG = ./...

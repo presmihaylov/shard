@@ -20,7 +20,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/services/image"
@@ -193,12 +195,7 @@ func newServiceAt(t *testing.T, root string, server *httptest.Server) *image.Ser
 
 	var opts []registry.Option
 	if server != nil {
-		host, err := url.Parse(server.URL)
-		if err != nil {
-			t.Fatalf("parse the server URL: %v", err)
-		}
-
-		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(host.Host))
+		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server)))
 	}
 
 	svc, err := image.New(root, opts...)
@@ -207,6 +204,17 @@ func newServiceAt(t *testing.T, root string, server *httptest.Server) *image.Ser
 	}
 
 	return svc
+}
+
+func hostOf(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse the server URL: %v", err)
+	}
+
+	return parsed.Host
 }
 
 // servedImage starts an in-process registry and pushes one image, one layer per map of files.
@@ -222,12 +230,7 @@ func servedImage(t *testing.T, tag string, layers ...map[string]string) (*httpte
 func pushImage(t *testing.T, server *httptest.Server, tag string, layers ...map[string]string) string {
 	t.Helper()
 
-	host, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse the server URL: %v", err)
-	}
-
-	ref, err := name.ParseReference(host.Host + "/shard/" + tag)
+	ref, err := name.ParseReference(hostOf(t, server) + "/shard/" + tag)
 	if err != nil {
 		t.Fatalf("parse the reference: %v", err)
 	}
@@ -308,23 +311,15 @@ func TestNewSweepsAStaleStagingTree(t *testing.T) {
 }
 
 func TestFailedUnpackLeavesNoIndexEntry(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the directory mode this test relies on")
-	}
+	server := httptest.NewServer(ggcr.New())
+	t.Cleanup(server.Close)
 
-	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	ref := pushCorruptImage(t, server, "app:1.0")
 	root := t.TempDir()
 	svc := newServiceAt(t, root, server)
 
-	// The unpack stages under rootfs, so a directory it cannot write in is the cheapest way to fail one.
-	rootfs := filepath.Join(root, "rootfs")
-	if err := os.Chmod(rootfs, 0o500); err != nil {
-		t.Fatalf("chmod %s: %v", rootfs, err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(rootfs, 0o750) })
-
 	if _, err := svc.Pull(t.Context(), ref); err == nil {
-		t.Fatal("Pull with an unwritable rootfs returned no error")
+		t.Fatal("Pull of an image with a corrupt layer returned no error")
 	}
 
 	images, err := svc.List()
@@ -335,4 +330,35 @@ func TestFailedUnpackLeavesNoIndexEntry(t *testing.T) {
 	if len(images) != 0 {
 		t.Errorf("got %d images after a failed unpack, want the index entry rolled back", len(images))
 	}
+
+	// The unpack got as far as staging, so the rollback has to take that tree with it.
+	entries, err := os.ReadDir(filepath.Join(root, "rootfs"))
+	if err != nil {
+		t.Fatalf("read the rootfs directory: %v", err)
+	}
+
+	if len(entries) != 0 {
+		t.Errorf("got %d entries under rootfs, want the staging tree gone", len(entries))
+	}
+}
+
+// pushCorruptImage serves a layer whose body is not gzip, which fails the unpack for root and for anyone else.
+func pushCorruptImage(t *testing.T, server *httptest.Server, tag string) string {
+	t.Helper()
+
+	ref, err := name.ParseReference(hostOf(t, server) + "/shard/" + tag)
+	if err != nil {
+		t.Fatalf("parse the reference: %v", err)
+	}
+
+	img, err := mutate.AppendLayers(empty.Image, static.NewLayer([]byte("not a gzip stream"), types.DockerLayer))
+	if err != nil {
+		t.Fatalf("append the corrupt layer: %v", err)
+	}
+
+	if err := remote.Write(ref, img, remote.WithTransport(server.Client().Transport)); err != nil {
+		t.Fatalf("push %s: %v", ref, err)
+	}
+
+	return ref.Name()
 }
