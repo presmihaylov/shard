@@ -8,8 +8,8 @@ import (
 
 // Sandbox is the record shard keeps for one sandbox. It never holds a secret value.
 type Sandbox struct {
+	// ID is generated, human readable, and the only handle. Every verb takes it and nothing else.
 	ID       string `json:"id"`
-	Name     string `json:"name"`
 	Image    string `json:"image"`
 	Provider string `json:"provider"`
 	State    State  `json:"state"`
