@@ -1,4 +1,4 @@
-package state_test
+package sandboxstate_test
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/state"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 func newSandbox() models.Sandbox {
@@ -29,12 +29,12 @@ func newSandbox() models.Sandbox {
 	}
 }
 
-func repo(t *testing.T) (*state.Repository, string) {
+func repo(t *testing.T) (*sandboxstate.Repository, string) {
 	t.Helper()
 
 	root := t.TempDir()
 
-	r, err := state.New(root)
+	r, err := sandboxstate.New(root)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -42,7 +42,7 @@ func repo(t *testing.T) (*state.Repository, string) {
 	return r, root
 }
 
-func create(t *testing.T, r *state.Repository) models.Sandbox {
+func create(t *testing.T, r *sandboxstate.Repository) models.Sandbox {
 	t.Helper()
 
 	sb, err := r.Create(newSandbox())
@@ -53,7 +53,7 @@ func create(t *testing.T, r *state.Repository) models.Sandbox {
 	return sb
 }
 
-func sandboxDir(t *testing.T, r *state.Repository, id string) string {
+func sandboxDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 	t.Helper()
 
 	dir, err := r.Dir(id)
@@ -64,7 +64,7 @@ func sandboxDir(t *testing.T, r *state.Repository, id string) string {
 	return dir
 }
 
-func snapshotDir(t *testing.T, r *state.Repository, id string) string {
+func snapshotDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 	t.Helper()
 
 	dir, err := r.SnapshotDir(id)
@@ -162,7 +162,7 @@ func TestStateSurvivesAProcessRestart(t *testing.T) {
 	want := create(t, r)
 
 	// A second repository over the same root is what the next shard process sees.
-	restarted, err := state.New(root)
+	restarted, err := sandboxstate.New(root)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestAnExitStatusIsAbsentUntilOneHappens(t *testing.T) {
 func TestGetMissingIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
-	if _, err := r.Get("quiet-otter-0000"); !errors.Is(err, state.ErrNotFound) {
+	if _, err := r.Get("quiet-otter-0000"); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Fatalf("Get of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }
@@ -405,7 +405,7 @@ func TestUpdateOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
 	err := r.Update("quiet-otter-0000", func(*models.Sandbox) error { return nil })
-	if !errors.Is(err, state.ErrNotFound) {
+	if !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Fatalf("Update of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }
@@ -482,7 +482,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 		}
 	}
 
-	if _, err := r.Get(sb.ID); !errors.Is(err, state.ErrNotFound) {
+	if _, err := r.Get(sb.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Errorf("Get after the delete: %v, want ErrNotFound", err)
 	}
 }
@@ -490,7 +490,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
-	if err := r.Delete("quiet-otter-0000"); !errors.Is(err, state.ErrNotFound) {
+	if err := r.Delete("quiet-otter-0000"); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Fatalf("Delete of a missing sandbox: %v, want ErrNotFound", err)
 	}
 }

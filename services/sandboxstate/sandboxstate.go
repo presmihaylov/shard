@@ -1,5 +1,5 @@
-// Package state persists the sandbox records under the shard root. Files only, no database.
-package state
+// Package sandboxstate persists the sandbox records under the shard root. Files only, no database.
+package sandboxstate
 
 import (
 	"encoding/json"

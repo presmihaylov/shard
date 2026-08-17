@@ -56,7 +56,7 @@ pkg/proxy/                 intercepting HTTP and TLS proxy
 services/sandbox/          the orchestrator, owns the state machine
 services/image/            pull, unpack, cache policy
 services/bundle/           build the OCI bundle from an image config
-services/state/            the sandbox record repository
+services/sandboxstate/     the sandbox record repository
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
 services/provider/gvisor/       implements models.Provider on gVisor
