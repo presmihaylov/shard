@@ -46,6 +46,10 @@ func New(root string) (*Repository, error) {
 		}
 	}
 
+	if err := store.SyncDir(root); err != nil {
+		return nil, err
+	}
+
 	return &Repository{root: root}, nil
 }
 
@@ -171,17 +175,19 @@ func (r *Repository) Delete(id string) (err error) {
 		return err
 	}
 
-	lock, err := r.lockPath(id)
-	if err != nil {
-		return err
-	}
-
 	// The snapshot goes first: it is the one a half-done delete would leave with no id to reach it.
-	// The lock file goes last, once the record is gone, so nobody can hold a stale one over a live
-	// sandbox. Removing it while we hold it is fine; the kernel keeps the lock on the open file.
-	for _, path := range []string{r.snapshotDir(id), r.dir(id), lock} {
+	// The lock file goes last, once the record is gone. Removing it while we hold it is fine, because
+	// store.Acquire moves a waiter onto the file that has the name.
+	for _, path := range []string{r.snapshotDir(id), r.dir(id), l.Path()} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+
+	// Without this a power loss can bring the sandbox back, and claimID syncs the create side already.
+	for _, dir := range []string{snapshotsDir, sandboxesDir, locksDir} {
+		if err := store.SyncDir(filepath.Join(r.root, dir)); err != nil {
+			return err
 		}
 	}
 
@@ -227,8 +233,12 @@ func (r *Repository) write(sb models.Sandbox) error {
 	return nil
 }
 
-// List returns every record, ordered by id. It takes no lock, because it holds none of them open: a
-// record arrives by rename, so each one reads whole, and the set is a walk rather than a snapshot.
+// List returns every record it can read, ordered by id, and an error naming the ones it could not.
+// Both can be set at once: one unreadable record must not hide every other sandbox from an operator,
+// because the sandbox behind it still holds a process, a netns and its rules.
+//
+// It takes no lock, because it holds none of them open: a record arrives by rename, so each one
+// reads whole, and the set is a walk rather than a snapshot.
 func (r *Repository) List() ([]models.Sandbox, error) {
 	dir := filepath.Join(r.root, sandboxesDir)
 
@@ -238,6 +248,8 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 	}
 
 	sandboxes := make([]models.Sandbox, 0, len(entries))
+
+	var unreadable error
 
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
@@ -251,7 +263,9 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			unreadable = errors.Join(unreadable, err)
+
+			continue
 		}
 
 		sandboxes = append(sandboxes, sb)
@@ -259,7 +273,7 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 
 	slices.SortFunc(sandboxes, func(a, b models.Sandbox) int { return strings.Compare(a.ID, b.ID) })
 
-	return sandboxes, nil
+	return sandboxes, unreadable
 }
 
 // writeLock serializes the writers of one sandbox. Two sandboxes never wait on each other.

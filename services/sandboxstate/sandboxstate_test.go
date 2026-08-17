@@ -747,3 +747,27 @@ func TestACorruptRecordIsAnError(t *testing.T) {
 		t.Fatal("Get returned a sandbox from a corrupt record")
 	}
 }
+
+// An operator must still see the sandboxes that read, because each one holds a process and a netns.
+func TestOneCorruptRecordDoesNotHideTheOthers(t *testing.T) {
+	r, _ := repo(t)
+	broken, good := create(t, r), create(t, r)
+
+	path := filepath.Join(sandboxDir(t, r, broken.ID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	all, err := r.List()
+	if err == nil {
+		t.Error("List reported no error, and one record does not decode")
+	}
+
+	if !strings.Contains(err.Error(), broken.ID) {
+		t.Errorf("the error does not name the corrupt sandbox: %v", err)
+	}
+
+	if len(all) != 1 || all[0].ID != good.ID {
+		t.Fatalf("List returned %+v, want only the sandbox that reads", all)
+	}
+}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,6 +83,87 @@ func TestTheExclusiveLockBlocksASecondHolder(t *testing.T) {
 	case <-held:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the second Acquire never went through after the release")
+	}
+}
+
+// A delete unlinks the lock file while it holds it, so the waiter wakes on an inode with no name.
+// It must move onto the file that has the name, or it excludes nobody.
+func TestALockFileThatWasUnlinkedStillExcludes(t *testing.T) {
+	path := lockPath(t)
+
+	first, err := Acquire(path, 0o600)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	errs := make(chan error, 2)
+	held := make(chan *Lock, 1)
+
+	go func() {
+		l, err := Acquire(path, 0o600)
+		if err != nil {
+			errs <- err
+
+			return
+		}
+
+		held <- l
+	}()
+
+	// Let the waiter reach flock, so it is already on the old file when the name goes away.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	var waiter *Lock
+
+	select {
+	case waiter = <-held:
+	case err := <-errs:
+		t.Fatalf("the waiting Acquire: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting Acquire never went through")
+	}
+
+	third := make(chan struct{})
+
+	go func() {
+		l, err := Acquire(path, 0o600)
+		if err != nil {
+			errs <- err
+
+			return
+		}
+
+		close(third)
+
+		if err := l.Release(); err != nil {
+			errs <- err
+		}
+	}()
+
+	select {
+	case <-third:
+		t.Fatal("a third Acquire went through, so the waiter holds a file that names nothing")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := waiter.Release(); err != nil {
+		t.Fatalf("the release of the waiter: %v", err)
+	}
+
+	select {
+	case <-third:
+	case err := <-errs:
+		t.Fatalf("the third Acquire: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the third Acquire never went through after the release")
 	}
 }
 
