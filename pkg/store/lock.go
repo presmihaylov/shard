@@ -16,27 +16,17 @@ type Lock struct {
 
 // Acquire blocks until it holds path exclusively. It creates the lock file if it does not exist.
 func Acquire(path string, perm fs.FileMode) (*Lock, error) {
-	return acquire(path, perm, os.O_RDWR, syscall.LOCK_EX)
-}
-
-// AcquireShared blocks until it holds path for reading. Many readers hold it at once, no writer does.
-// It opens read-only, so a shared lock needs no write access to the file.
-func AcquireShared(path string, perm fs.FileMode) (*Lock, error) {
-	return acquire(path, perm, os.O_RDONLY, syscall.LOCK_SH)
-}
-
-func acquire(path string, perm fs.FileMode, mode, how int) (*Lock, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|mode, perm)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, perm)
 	if err != nil {
 		return nil, fmt.Errorf("open the lock file %s: %w", path, err)
 	}
 
-	if err := flock(f, how); err != nil {
+	if err := flock(f, syscall.LOCK_EX); err != nil {
 		return nil, errors.Join(fmt.Errorf("lock %s: %w", path, err), f.Close())
 	}
 

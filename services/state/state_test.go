@@ -78,7 +78,7 @@ func snapshotDir(t *testing.T, r *state.Repository, id string) string {
 func TestNewCreatesTheLayout(t *testing.T) {
 	_, root := repo(t)
 
-	for _, dir := range []string{"sandboxes", "snapshots"} {
+	for _, dir := range []string{"sandboxes", "snapshots", "locks"} {
 		info, err := os.Stat(filepath.Join(root, dir))
 		if err != nil {
 			t.Fatalf("stat %s: %v", dir, err)
@@ -538,6 +538,74 @@ func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 
 	if want := sb.PID + writers; got.PID != want {
 		t.Errorf("the pid is %d, want %d: an update was lost", got.PID, want)
+	}
+}
+
+func TestTwoSandboxesDoNotWaitOnEachOther(t *testing.T) {
+	r, _ := repo(t)
+	first, second := create(t, r), create(t, r)
+
+	held, release := make(chan struct{}), make(chan struct{})
+	locked := make(chan error, 1)
+
+	go func() {
+		locked <- r.Update(first.ID, func(*models.Sandbox) error {
+			close(held)
+			<-release
+
+			return nil
+		})
+	}()
+
+	<-held
+
+	defer func() {
+		close(release)
+
+		if err := <-locked; err != nil {
+			t.Errorf("the update that held the lock: %v", err)
+		}
+	}()
+
+	other := make(chan error, 1)
+
+	go func() {
+		other <- r.Update(second.ID, func(sb *models.Sandbox) error {
+			sb.PID = 7
+
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-other:
+		if err != nil {
+			t.Fatalf("Update of the second sandbox: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second sandbox waited on the first, so the lock is not per sandbox")
+	}
+}
+
+func TestDeleteRemovesTheLockFile(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	if err := r.Update(sb.ID, func(*models.Sandbox) error { return nil }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	path := filepath.Join(root, "locks", sb.ID+".lock")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stat the lock file after an update: %v", err)
+	}
+
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the lock file is still there after the delete: %v", err)
 	}
 }
 

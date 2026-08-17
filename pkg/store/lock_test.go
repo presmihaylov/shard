@@ -1,7 +1,6 @@
 package store
 
 import (
-	"io/fs"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,7 +14,7 @@ func lockPath(t *testing.T) string {
 
 // inBackground reports when the background holder takes the lock, and joins before the test ends,
 // so a failure it reports never lands after the test has finished.
-func inBackground(t *testing.T, path string, take func(string, fs.FileMode) (*Lock, error)) <-chan struct{} {
+func inBackground(t *testing.T, path string) <-chan struct{} {
 	t.Helper()
 
 	held, done := make(chan struct{}), make(chan struct{})
@@ -23,7 +22,7 @@ func inBackground(t *testing.T, path string, take func(string, fs.FileMode) (*Lo
 	go func() {
 		defer close(done)
 
-		l, err := take(path, 0o600)
+		l, err := Acquire(path, 0o600)
 		if err != nil {
 			t.Errorf("the background lock: %v", err)
 
@@ -67,7 +66,7 @@ func TestTheExclusiveLockBlocksASecondHolder(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 
-	held := inBackground(t, path, Acquire)
+	held := inBackground(t, path)
 
 	select {
 	case <-held:
@@ -86,51 +85,22 @@ func TestTheExclusiveLockBlocksASecondHolder(t *testing.T) {
 	}
 }
 
-func TestTheExclusiveLockBlocksAReader(t *testing.T) {
-	path := lockPath(t)
+func TestTwoPathsDoNotBlockEachOther(t *testing.T) {
+	dir := t.TempDir()
 
-	writer, err := Acquire(path, 0o600)
+	first, err := Acquire(filepath.Join(dir, "a.lock"), 0o600)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
-	held := inBackground(t, path, AcquireShared)
-
-	select {
-	case <-held:
-		t.Fatal("a reader went through while a writer held the lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	if err := writer.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
-	}
-
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the reader never went through after the release")
-	}
-}
-
-func TestSharedLocksAreHeldTogether(t *testing.T) {
-	path := lockPath(t)
-
-	first, err := AcquireShared(path, 0o600)
+	second, err := Acquire(filepath.Join(dir, "b.lock"), 0o600)
 	if err != nil {
-		t.Fatalf("AcquireShared: %v", err)
+		t.Fatalf("the lock on the second path: %v", err)
 	}
 
-	second, err := AcquireShared(path, 0o600)
-	if err != nil {
-		t.Fatalf("the second AcquireShared: %v", err)
-	}
-
-	if err := second.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
-	}
-
-	if err := first.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
+	for _, l := range []*Lock{second, first} {
+		if err := l.Release(); err != nil {
+			t.Fatalf("Release: %v", err)
+		}
 	}
 }
