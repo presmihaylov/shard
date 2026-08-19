@@ -13,6 +13,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/archive"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/registry"
 )
 
@@ -40,18 +41,9 @@ type Image struct {
 	// Size is the download size, not the size on disk after the unpack.
 	Size    int64
 	Created time.Time
-	Config  Config
+	Config  models.ImageConfig
 	// Broken is set when the index still names the image but its blobs do not read back.
 	Broken error
-}
-
-// Config is the part of the image config the bundle builder needs. The entrypoint becomes the supervisor's argv.
-type Config struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	WorkDir    string
-	User       string
 }
 
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
@@ -164,7 +156,7 @@ func (s *Service) describe(img registry.Image) (Image, error) {
 		return Image{}, err
 	}
 
-	described.Config = Config{
+	described.Config = models.ImageConfig{
 		Entrypoint: cfg.Config.Entrypoint,
 		Cmd:        cfg.Config.Cmd,
 		Env:        cfg.Config.Env,

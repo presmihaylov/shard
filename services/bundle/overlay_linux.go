@@ -13,6 +13,11 @@ import (
 
 // Mount stacks the sandbox's writable layer over the shared image rootfs. It is safe to call twice.
 func (b Bundle) Mount() error {
+	// Open leaves Lower empty, and an empty lowerdir would mount the writable layer over nothing.
+	if b.Lower == "" {
+		return fmt.Errorf("bundle %s has no image rootfs to stack over", b.Dir)
+	}
+
 	mounted, err := b.mounted()
 	if err != nil {
 		return err

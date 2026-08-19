@@ -53,6 +53,9 @@ type SandboxSpec struct {
 	// StateDir is the per-sandbox directory the provider owns. Snapshots are passed per verb.
 	StateDir string
 
+	// ImageConfig is what the image asks for. Every field below overrides its counterpart here.
+	ImageConfig ImageConfig
+
 	// Entrypoint is the supervisor's argv, so it is PID 2 and its exit does not end the sandbox.
 	Entrypoint []string
 	// Env never carries a secret value; the proxy substitutes those on the wire.
@@ -64,6 +67,15 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
+}
+
+// ImageConfig is the part of an OCI image config a sandbox is built from. The spec overrides it.
+type ImageConfig struct {
+	Entrypoint []string
+	Cmd        []string
+	Env        []string
+	WorkDir    string
+	User       string
 }
 
 // NetworkSpec is allocated before Create. The provider joins it and reports the host side back.

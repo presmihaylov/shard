@@ -101,11 +101,12 @@ func buildBundle(t *testing.T, stateDir string, entrypoint []string) bundle.Bund
 	}
 
 	b, err := svc.Build(models.SandboxSpec{
-		ID:         "shard-11",
-		StateDir:   stateDir,
-		RootFS:     img.RootFS,
-		Entrypoint: entrypoint,
-	}, img.Config)
+		ID:          "shard-11",
+		StateDir:    stateDir,
+		RootFS:      img.RootFS,
+		ImageConfig: img.Config,
+		Entrypoint:  entrypoint,
+	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
