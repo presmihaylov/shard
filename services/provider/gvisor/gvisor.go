@@ -76,6 +76,11 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) (models.
 }
 
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (runtime models.Runtime, err error) {
+	// A create over a state directory that already ran must not let the previous run's status answer a wait.
+	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return models.Runtime{}, fmt.Errorf("clear %s: %w", b.ExitFile, err)
+	}
+
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
 	if err != nil {
 		return models.Runtime{}, err
@@ -96,25 +101,31 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	return models.Runtime{PID: state.PID}, nil
 }
 
-// Start runs the entrypoint under the supervisor that runsc create already made PID 1.
+// Start runs the entrypoint under the supervisor that runsc create already made PID 1. A stopped
+// sandbox never starts again: runsc refuses it, so a second run goes through Remove and Create, which
+// keeps the writable layer the state directory holds.
 func (p *Provider) Start(ctx context.Context, id string) error {
-	b, err := p.open(id)
-	if err != nil {
-		return err
-	}
-
-	// A start after a stop re-runs the entrypoint, so the previous run's status must not answer for it.
-	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear %s: %w", b.ExitFile, err)
-	}
-
 	return p.runsc.Start(ctx, id)
 }
 
 // Stop is the only thing that ends a sandbox. It signals, waits out grace, then kills.
 func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) error {
+	state, err := p.runsc.State(ctx, id)
+	if err != nil && !errors.Is(err, runsc.ErrNotFound) {
+		return err
+	}
+
+	// runsc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
+	if state.Status == runsc.StatusCreated {
+		if err := p.delete(ctx, id); err != nil {
+			return err
+		}
+
+		return p.unmount(id)
+	}
+
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
-	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !errors.Is(err, runsc.ErrNotRunning) {
+	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		return err
 	}
 
@@ -129,17 +140,11 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	b, err := p.open(id)
-	if err != nil {
-		return err
-	}
-
-	// The upper layer stays, which is what a later start reads its files back from.
-	return b.Unmount()
+	return p.unmount(id)
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
-	if err := p.runsc.Kill(ctx, id, "KILL", true); err != nil && !errors.Is(err, runsc.ErrNotRunning) {
+	if err := p.runsc.Kill(ctx, id, "KILL", true); err != nil && !gone(err) {
 		return err
 	}
 
@@ -156,18 +161,36 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 
 // Remove deletes runsc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	// --force, because a sandbox that is still running holds the rootfs this unmounts next.
+	if err := p.delete(ctx, id); err != nil {
+		return err
+	}
+
+	// The repository removes the directory after this, and it must never remove a live mount.
+	return p.unmount(id)
+}
+
+// delete drops what runsc holds. --force, because a sandbox that is still running holds the rootfs.
+func (p *Provider) delete(ctx context.Context, id string) error {
 	if err := p.runsc.Delete(ctx, id, true); err != nil && !errors.Is(err, runsc.ErrNotFound) {
 		return err
 	}
 
+	return nil
+}
+
+// unmount drops the merged view. The upper layer stays, which is what a later create reads back.
+func (p *Provider) unmount(id string) error {
 	b, err := p.open(id)
 	if err != nil {
 		return err
 	}
 
-	// The repository removes the directory after this, and it must never remove a live mount.
 	return b.Unmount()
+}
+
+// gone reports whether a signal failed because the sandbox had already ended, which is what a stop wants.
+func gone(err error) bool {
+	return errors.Is(err, runsc.ErrNotRunning) || errors.Is(err, runsc.ErrNotFound)
 }
 
 // Wait blocks until the entrypoint exits. runsc wait cannot serve it: PID 1 is the supervisor and it
@@ -274,7 +297,7 @@ func (p *Provider) awaitStopped(ctx context.Context, id string, budget time.Dura
 	}
 }
 
-// openLog appends, so a start after a stop adds to the sandbox's output rather than truncating it.
+// openLog appends, so a second create over the same state directory adds to the sandbox's output.
 func openLog(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

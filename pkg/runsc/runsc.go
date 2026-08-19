@@ -24,8 +24,8 @@ var ErrNotRunning = errors.New("the sandbox is not running")
 
 // runsc reports every missing container through the same load failure, so its text is the only signal.
 const (
-	notFoundMessage   = "file does not exist"
-	notRunningMessage = "is not running"
+	notFoundMessage   = "loading container: file does not exist"
+	notRunningMessage = "sandbox is not running"
 )
 
 // Status is the container status runsc reports. It is the OCI set, and stopped is the terminal one.

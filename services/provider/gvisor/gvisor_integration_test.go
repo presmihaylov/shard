@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -149,6 +150,238 @@ func TestAliveIsFalseForASandboxRunscNeverHeld(t *testing.T) {
 	}
 	if alive {
 		t.Error("Alive reported a sandbox runsc does not hold")
+	}
+}
+
+// A stop must end a sandbox whose entrypoint never started. runsc refuses to signal that container,
+// so the only thing that ends it is a delete.
+func TestStopEndsASandboxThatNeverStarted(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
+
+	if _, err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop a created sandbox: %v", err)
+	}
+
+	assertAlive(t, h, spec.ID, false)
+	assertMounted(t, h, spec.ID, false)
+}
+
+// Stop is what a caller retries, so it must answer the same way every time it is called.
+func TestStopIsIdempotentAndSurvivesARemove(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/true")
+
+	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	for _, when := range []string{"first", "second"} {
+		if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+			t.Fatalf("the %s Stop: %v", when, err)
+		}
+	}
+
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Nothing holds the sandbox now, and a stop of something already gone is still a stop that worked.
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Errorf("Stop after Remove: %v", err)
+	}
+}
+
+// A stop is final. Only Remove and a second Create re-run an entrypoint, which is what keeps the
+// writable layer: runsc refuses to start a container it has already stopped.
+func TestStartRefusesASandboxThatWasStopped(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/true")
+
+	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); err == nil {
+		t.Fatal("Start accepted a stopped sandbox, and runsc cannot run one")
+	}
+}
+
+// The merged view is the sandbox's rootfs, so nothing may remove the state directory while it stands.
+func TestStopAndRemoveBothDropTheWritableLayerMount(t *testing.T) {
+	h := newHarness(t)
+
+	stopped := h.start(t, "/bin/true")
+	assertMounted(t, h, stopped.ID, true)
+	if err := h.provider.Stop(t.Context(), stopped.ID, stopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	assertMounted(t, h, stopped.ID, false)
+
+	// Remove takes the same sandbox down from running, because --force is what makes that safe.
+	removed := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	assertMounted(t, h, removed.ID, true)
+	if err := h.provider.Remove(t.Context(), removed.ID); err != nil {
+		t.Fatalf("Remove a running sandbox: %v", err)
+	}
+	assertAlive(t, h, removed.ID, false)
+	assertMounted(t, h, removed.ID, false)
+}
+
+// This is the restart story: a stop keeps the upper layer, and a second create over the same state
+// directory reads it back.
+func TestASecondCreateReadsBackWhatTheFirstRunWrote(t *testing.T) {
+	h := newHarness(t)
+	first := h.start(t, "/bin/sh", "-c", "echo written-by-the-first-run > /root/marker")
+
+	if _, err := h.provider.Wait(t.Context(), first.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := h.provider.Remove(t.Context(), first.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	second := first
+	second.Entrypoint = []string{"/bin/sh", "-c", "cat /root/marker"}
+
+	if _, err := h.provider.Create(t.Context(), second); err != nil {
+		t.Fatalf("the second Create: %v", err)
+	}
+	if err := h.provider.Start(t.Context(), second.ID); err != nil {
+		t.Fatalf("the second Start: %v", err)
+	}
+	if _, err := h.provider.Wait(t.Context(), second.ID); err != nil {
+		t.Fatalf("the second Wait: %v", err)
+	}
+
+	path, err := h.provider.LogPath(second.ID)
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+	if got := readFile(t, path); !strings.Contains(got, "written-by-the-first-run") {
+		t.Errorf("the second run read back %q, want what the first run wrote", got)
+	}
+}
+
+// A wait in flight when a stop lands must report the signal, and never a clean exit that never happened.
+func TestAWaitInFlightSeesTheStopSignal(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+
+	answered := make(chan models.ExitStatus, 1)
+	failed := make(chan error, 1)
+	go func() {
+		status, err := h.provider.Wait(context.Background(), spec.ID)
+		if err != nil {
+			failed <- err
+
+			return
+		}
+		answered <- status
+	}()
+
+	// Long enough for the wait to be polling, and short enough that the entrypoint is still asleep.
+	time.Sleep(500 * time.Millisecond)
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case status := <-answered:
+		if status.Signal != syscall.SIGTERM {
+			t.Errorf("the wait reported signal %v, want SIGTERM: the stop is what ended the entrypoint", status.Signal)
+		}
+	case err := <-failed:
+		t.Fatalf("the wait failed: %v", err)
+	case <-time.After(stopGrace):
+		t.Fatal("the wait never answered after the stop ended the sandbox")
+	}
+}
+
+// An entrypoint that refuses SIGTERM must cost its grace and no more, and the kill must still end it.
+func TestStopKillsAnEntrypointThatIgnoresSIGTERM(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done")
+
+	// The trap has to be installed before the stop, or SIGTERM ends the shell and proves nothing.
+	time.Sleep(time.Second)
+
+	const grace = 3 * time.Second
+
+	started := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, grace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	if elapsed < grace {
+		t.Errorf("Stop took %s, and an entrypoint that ignores SIGTERM is owed its whole %s grace", elapsed, grace)
+	}
+	assertAlive(t, h, spec.ID, false)
+}
+
+// One runsc root holds every sandbox, so a verb on one must not reach any other.
+func TestOneSandboxIsUnmovedByAnother(t *testing.T) {
+	h := newHarness(t)
+
+	long := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	short := h.start(t, "/bin/sh", "-c", "exit 9")
+
+	status, err := h.provider.Wait(t.Context(), short.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if status.Code != 9 {
+		t.Errorf("got exit code %d, want 9", status.Code)
+	}
+
+	if err := h.provider.Stop(t.Context(), short.ID, stopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	assertAlive(t, h, long.ID, true)
+	assertMounted(t, h, long.ID, true)
+}
+
+func assertAlive(t *testing.T, h *harness, id string, want bool) {
+	t.Helper()
+
+	alive, err := h.provider.Alive(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Alive: %v", err)
+	}
+	if alive != want {
+		t.Errorf("sandbox %s reports alive=%v, want %v", id, alive, want)
+	}
+}
+
+// assertMounted reads the host's own mount table, because that is what a state directory removal trips over.
+func assertMounted(t *testing.T, h *harness, id string, want bool) {
+	t.Helper()
+
+	dir, err := h.stateDir(id)
+	if err != nil {
+		t.Fatalf("state directory of %s: %v", id, err)
+	}
+
+	blob, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Fatalf("read the mount table: %v", err)
+	}
+
+	got := strings.Contains(string(blob), filepath.Join(dir, "bundle", "rootfs"))
+	if got != want {
+		t.Errorf("the rootfs of %s is mounted=%v, want %v", id, got, want)
 	}
 }
 
