@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is what a verb aimed at a container runsc does not hold returns. Match it with errors.Is.
@@ -23,6 +24,9 @@ var ErrNotFound = errors.New("no such container")
 var ErrNotRunning = errors.New("the sandbox is not running")
 
 // runsc reports every missing container through the same load failure, so its text is the only signal.
+// waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
+const waitDelay = 2 * time.Second
+
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
@@ -165,6 +169,11 @@ func (r *Runner) run(ctx context.Context, stdout io.Writer, args ...string) erro
 	cmd.Stdout, cmd.Stderr = stdout, &stderr
 
 	if err := cmd.Run(); err != nil {
+		// A cancelled call says nothing about the sandbox, so report the context and not what the kill looked like.
+		if ctx.Err() != nil {
+			return fmt.Errorf("runsc %s: %w", strings.Join(args, " "), ctx.Err())
+		}
+
 		message := strings.TrimSpace(stderr.String())
 
 		return fmt.Errorf("runsc %s: %w: %s", strings.Join(args, " "), sentinel(message, err), message)
@@ -178,7 +187,11 @@ func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
 	// the sandbox's writable layer is the overlayfs mount services/bundle owns.
 	global := []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
 
-	return exec.CommandContext(ctx, r.binary, append(global, args...)...)
+	cmd := exec.CommandContext(ctx, r.binary, append(global, args...)...)
+	// Without this a cancelled call still blocks until every child runsc forked closes the pipes it inherited.
+	cmd.WaitDelay = waitDelay
+
+	return cmd
 }
 
 // sentinel turns the two failures a caller must act on into errors it can match.

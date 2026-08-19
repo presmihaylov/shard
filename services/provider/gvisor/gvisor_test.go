@@ -1,10 +1,12 @@
 package gvisor_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/runsc"
@@ -16,9 +18,16 @@ import (
 func newProvider(t *testing.T) *gvisor.Provider {
 	t.Helper()
 
+	return newProviderOver(t, "exit 1")
+}
+
+// newProviderOver stands a fake runsc up from a shell script, so a hang and a state are both scriptable.
+func newProviderOver(t *testing.T, script string) *gvisor.Provider {
+	t.Helper()
+
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "runsc")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatalf("write the fake runsc: %v", err)
 	}
 
@@ -73,5 +82,37 @@ func TestTheOptionalVerbsRefuseRatherThanDowngrade(t *testing.T) {
 		if !errors.Is(err, models.ErrUnsupported) {
 			t.Errorf("%s returned %v, want ErrUnsupported", verb, err)
 		}
+	}
+}
+
+// A runsc that never answers must not hang a verb forever. Only the context bounds one, so a wedged
+// sentry has to surface as an error rather than as a caller that never returns.
+func TestAWedgedRunscFailsWithTheContextRatherThanHanging(t *testing.T) {
+	p := newProviderOver(t, "sleep 60")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	if _, err := p.Alive(ctx, "amber-otter-1a2b"); err == nil {
+		t.Fatal("Alive answered for a runsc that never replied")
+	}
+
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("Alive took %s, so the context did not cut the runsc call short", elapsed)
+	}
+}
+
+// Wait polls for a file that may never arrive, so its context is the only thing that ends it.
+func TestWaitGivesUpWithItsContext(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	// The sandbox reads as alive and never writes an exit status, which is the case that would spin.
+	_, err := p.Wait(ctx, "amber-otter-1a2b")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Wait returned %v, want the context deadline", err)
 	}
 }
