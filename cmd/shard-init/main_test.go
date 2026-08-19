@@ -115,6 +115,8 @@ type supervisor struct {
 	cmd      *exec.Cmd
 	exitFile string
 	out      *bufio.Reader
+	// waited records that a test collected the exit itself, so the cleanup does not wait twice.
+	waited bool
 }
 
 func startSupervisor(t *testing.T, role, child string) *supervisor {
@@ -138,19 +140,24 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 		t.Fatalf("start the supervisor: %v", err)
 	}
 
+	super := &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
+
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("kill the supervisor: %v", err)
 		}
+		// Only a stop signal makes the supervisor exit, so most tests end with the kill above.
+		if super.waited {
+			return
+		}
 
-		// The supervisor never exits on its own, so Wait always reports the kill above.
 		var exit *exec.ExitError
 		if err := cmd.Wait(); err != nil && !errors.As(err, &exit) {
 			t.Errorf("wait for the supervisor: %v", err)
 		}
 	})
 
-	return &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
+	return super
 }
 
 func (s *supervisor) line(t *testing.T) string {
@@ -182,6 +189,25 @@ func (s *supervisor) awaitExitStatus(t *testing.T) models.ExitStatus {
 	})
 
 	return status
+}
+
+// awaitExit collects the supervisor's own exit, which nothing but a stop signal produces.
+func (s *supervisor) awaitExit(t *testing.T) {
+	t.Helper()
+
+	s.waited = true
+
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the supervisor stayed up after a stop signal, so a stop can only ever kill it")
+	}
 }
 
 func (s *supervisor) alive(t *testing.T) bool {
@@ -232,7 +258,8 @@ func TestSignalledEntrypointRecordsItsSignal(t *testing.T) {
 	}
 }
 
-func TestTermReachesTheEntrypoint(t *testing.T) {
+// TERM must reach the entrypoint, and a stop must not have to wait out its grace afterwards.
+func TestTermEndsTheSupervisorOnceTheEntrypointIsReaped(t *testing.T) {
 	super := startSupervisor(t, roleSupervisor, "term:42")
 
 	if got := super.line(t); got != "ready" {
@@ -242,10 +269,23 @@ func TestTermReachesTheEntrypoint(t *testing.T) {
 		t.Fatalf("signal the supervisor: %v", err)
 	}
 
-	status := super.awaitExitStatus(t)
-	if status.Code != 42 {
-		t.Errorf("exit status is %+v, want code 42, so SIGTERM did not reach the entrypoint", status)
+	super.awaitExit(t)
+
+	if status := super.awaitExitStatus(t); status.Code != 42 {
+		t.Errorf("exit status is %+v, want code 42: SIGTERM must reach the entrypoint and be reaped", status)
 	}
+}
+
+// The common case: the entrypoint finished long ago and the sandbox stayed up until the stop.
+func TestTermEndsASupervisorWhoseEntrypointAlreadyExited(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:0")
+	super.awaitExitStatus(t)
+
+	if err := super.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+
+	super.awaitExit(t)
 }
 
 func TestNoZombiesAfterManyChildren(t *testing.T) {

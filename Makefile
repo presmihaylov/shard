@@ -9,7 +9,7 @@ GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 DEVBOX ?= devbox-shard
 
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
-ITEST_PKG ?= ./services/bundle/...
+ITEST_PKG ?= ./services/provider/gvisor/...
 
 .PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest
 
