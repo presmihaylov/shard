@@ -12,7 +12,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
-	"github.com/presmihaylov/shard/services/image"
 )
 
 const guestExitFile = "/.shard/exit.json"
@@ -21,7 +20,7 @@ const guestExitFile = "/.shard/exit.json"
 const supervisorPath = "/usr/local/bin/shard-init"
 
 func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
+	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
 
 	want := []string{bundle.GuestInitPath, "-exit-file", guestExitFile, "--", "/bin/sh", "-c", "true"}
 	if !slices.Equal(got.Process.Args, want) {
@@ -31,7 +30,7 @@ func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 
 func TestBuildPrefersTheSpecEntrypoint(t *testing.T) {
 	spec := models.SandboxSpec{Entrypoint: []string{"/bin/echo", "hello"}}
-	_, got := build(t, spec, image.Config{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
 
 	want := []string{bundle.GuestInitPath, "-exit-file", guestExitFile, "--", "/bin/echo", "hello"}
 	if !slices.Equal(got.Process.Args, want) {
@@ -40,7 +39,7 @@ func TestBuildPrefersTheSpecEntrypoint(t *testing.T) {
 }
 
 func TestBuildRefusesAnImageWithNothingToRun(t *testing.T) {
-	_, err := newService(t).Build(newSpec(t), image.Config{})
+	_, err := newService(t).Build(newSpec(t))
 	if err == nil {
 		t.Fatal("Build accepted an image with no entrypoint and no cmd")
 	}
@@ -50,14 +49,15 @@ func TestBuildRefusesACACert(t *testing.T) {
 	spec := newSpec(t)
 	spec.CACert = []byte("-----BEGIN CERTIFICATE-----")
 
-	_, err := newService(t).Build(spec, image.Config{Entrypoint: []string{"/bin/sh"}})
-	if err == nil {
+	spec.ImageConfig = models.ImageConfig{Entrypoint: []string{"/bin/sh"}}
+
+	if _, err := newService(t).Build(spec); err == nil {
 		t.Fatal("Build accepted a CA certificate it cannot install")
 	}
 }
 
 func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
-	b, got := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	b, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	init := mountAt(t, got, bundle.GuestInitPath)
 	if init.Source != supervisorPath {
@@ -79,7 +79,7 @@ func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
 }
 
 func TestBuildRootIsWritableAndRelative(t *testing.T) {
-	b, got := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	b, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Root.Path != "rootfs" {
 		t.Errorf("got root path %q, want rootfs", got.Root.Path)
@@ -94,7 +94,7 @@ func TestBuildRootIsWritableAndRelative(t *testing.T) {
 }
 
 func TestBuildCreatesTheOverlayLayers(t *testing.T) {
-	b, _ := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	for _, dir := range []string{b.RootFS, b.Upper, b.Work} {
 		info, err := os.Stat(dir)
@@ -118,7 +118,7 @@ func TestBuildCreatesTheOverlayLayers(t *testing.T) {
 
 func TestBuildKeepsTheImageEnvironmentAndAppliesOverrides(t *testing.T) {
 	spec := models.SandboxSpec{Env: map[string]string{"LANG": "C.UTF-8", "APP": "shard"}}
-	cfg := image.Config{Env: []string{"PATH=/usr/bin", "LANG=en_US", "TZ=UTC"}}
+	cfg := models.ImageConfig{Env: []string{"PATH=/usr/bin", "LANG=en_US", "TZ=UTC"}}
 	cfg.Entrypoint = []string{"/bin/sh"}
 
 	_, got := build(t, spec, cfg)
@@ -130,7 +130,7 @@ func TestBuildKeepsTheImageEnvironmentAndAppliesOverrides(t *testing.T) {
 }
 
 func TestBuildAddsAPathWhenTheImageHasNone(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}, Env: []string{"TZ=UTC"}})
+	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Env: []string{"TZ=UTC"}})
 
 	if !slices.ContainsFunc(got.Process.Env, func(e string) bool { return strings.HasPrefix(e, "PATH=/usr/local/sbin:") }) {
 		t.Errorf("got env %v, want a default PATH", got.Process.Env)
@@ -138,7 +138,7 @@ func TestBuildAddsAPathWhenTheImageHasNone(t *testing.T) {
 }
 
 func TestBuildResolvesANamedUserFromTheImage(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{}, image.Config{Entrypoint: []string{"/bin/sh"}, User: "app"})
+	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "app"})
 
 	if got.Process.User.UID != 1000 || got.Process.User.GID != 2000 {
 		t.Errorf("got uid %d gid %d, want 1000 and 2000", got.Process.User.UID, got.Process.User.GID)
@@ -146,7 +146,7 @@ func TestBuildResolvesANamedUserFromTheImage(t *testing.T) {
 }
 
 func TestBuildResolvesAUserAndGroupPair(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{User: "app:staff"}, image.Config{Entrypoint: []string{"/bin/sh"}, User: "root"})
+	_, got := build(t, models.SandboxSpec{User: "app:staff"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "root"})
 
 	if got.Process.User.UID != 1000 || got.Process.User.GID != 50 {
 		t.Errorf("got uid %d gid %d, want 1000 and 50", got.Process.User.UID, got.Process.User.GID)
@@ -154,7 +154,7 @@ func TestBuildResolvesAUserAndGroupPair(t *testing.T) {
 }
 
 func TestBuildResolvesNumericIds(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{User: "65534:65534"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, models.SandboxSpec{User: "65534:65534"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Process.User.UID != 65534 || got.Process.User.GID != 65534 {
 		t.Errorf("got uid %d gid %d, want 65534 twice", got.Process.User.UID, got.Process.User.GID)
@@ -163,7 +163,7 @@ func TestBuildResolvesNumericIds(t *testing.T) {
 
 // A numeric USER must pick up the primary group of its passwd entry, the way runc does.
 func TestBuildResolvesANumericUserThroughPasswd(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{User: "1000"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, models.SandboxSpec{User: "1000"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Process.User.UID != 1000 || got.Process.User.GID != 2000 {
 		t.Errorf("got uid %d gid %d, want 1000 and 2000 from the passwd entry", got.Process.User.UID, got.Process.User.GID)
@@ -171,7 +171,7 @@ func TestBuildResolvesANumericUserThroughPasswd(t *testing.T) {
 }
 
 func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{User: "4242"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, models.SandboxSpec{User: "4242"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Process.User.UID != 4242 || got.Process.User.GID != 0 {
 		t.Errorf("got uid %d gid %d, want 4242 and 0", got.Process.User.UID, got.Process.User.GID)
@@ -181,8 +181,9 @@ func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
 func TestBuildRefusesALayerPathOverlayfsCannotParse(t *testing.T) {
 	spec := newSpec(t)
 	spec.StateDir = filepath.Join(spec.StateDir, "state:dir")
+	spec.ImageConfig = models.ImageConfig{Entrypoint: []string{"/bin/sh"}}
 
-	if _, err := newService(t).Build(spec, image.Config{Entrypoint: []string{"/bin/sh"}}); err == nil {
+	if _, err := newService(t).Build(spec); err == nil {
 		t.Fatal("Build accepted a state directory overlayfs would read as two layers")
 	}
 }
@@ -194,7 +195,10 @@ func TestNewRefusesAnEmptySupervisorPath(t *testing.T) {
 }
 
 func TestBuildRefusesAUserTheImageDoesNotHave(t *testing.T) {
-	_, err := newService(t).Build(newSpec(t), image.Config{Entrypoint: []string{"/bin/sh"}, User: "ghost"})
+	spec := newSpec(t)
+	spec.ImageConfig = models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "ghost"}
+
+	_, err := newService(t).Build(spec)
 	if err == nil {
 		t.Fatal("Build accepted a user that is not in the image passwd")
 	}
@@ -202,7 +206,7 @@ func TestBuildRefusesAUserTheImageDoesNotHave(t *testing.T) {
 
 func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 	spec := models.SandboxSpec{Network: models.NetworkSpec{NetnsPath: "/var/run/netns/shard-1"}}
-	_, got := build(t, spec, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	i := slices.IndexFunc(got.Linux.Namespaces, func(n specs.LinuxNamespace) bool { return n.Type == specs.NetworkNamespace })
 	if i < 0 {
@@ -215,7 +219,7 @@ func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 
 func TestBuildCarriesTheResourceLimits(t *testing.T) {
 	spec := models.SandboxSpec{Resources: models.Resources{MemoryMiB: 512, VCPUs: 2}}
-	_, got := build(t, spec, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Linux.Resources.Memory == nil || *got.Linux.Resources.Memory.Limit != 512*1024*1024 {
 		t.Errorf("got memory %v, want 536870912", got.Linux.Resources.Memory)
@@ -226,7 +230,7 @@ func TestBuildCarriesTheResourceLimits(t *testing.T) {
 }
 
 func TestBuildIsAValidRuntimeSpec(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{ID: "s-1", Name: "web"}, image.Config{Entrypoint: []string{"/bin/sh"}})
+	_, got := build(t, models.SandboxSpec{ID: "s-1", Name: "web"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if got.Version != specs.Version {
 		t.Errorf("got ociVersion %q, want %q", got.Version, specs.Version)
@@ -251,15 +255,15 @@ func TestBuildIsAValidRuntimeSpec(t *testing.T) {
 func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 	svc := newService(t)
 	spec := newSpec(t)
-	cfg := image.Config{Entrypoint: []string{"/bin/sh"}}
+	spec.ImageConfig = models.ImageConfig{Entrypoint: []string{"/bin/sh"}}
 
-	first, err := svc.Build(spec, cfg)
+	first, err := svc.Build(spec)
 	if err != nil {
 		t.Fatalf("first Build: %v", err)
 	}
 	before := readFile(t, filepath.Join(first.Dir, "config.json"))
 
-	if _, err := svc.Build(spec, cfg); err != nil {
+	if _, err := svc.Build(spec); err != nil {
 		t.Fatalf("second Build: %v", err)
 	}
 
@@ -268,8 +272,10 @@ func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 	}
 }
 
-func build(t *testing.T, spec models.SandboxSpec, cfg image.Config) (bundle.Bundle, specs.Spec) {
+func build(t *testing.T, spec models.SandboxSpec, cfg models.ImageConfig) (bundle.Bundle, specs.Spec) {
 	t.Helper()
+
+	spec.ImageConfig = cfg
 
 	base := newSpec(t)
 	if spec.ID == "" {
@@ -282,7 +288,7 @@ func build(t *testing.T, spec models.SandboxSpec, cfg image.Config) (bundle.Bund
 		spec.RootFS = base.RootFS
 	}
 
-	b, err := newService(t).Build(spec, cfg)
+	b, err := newService(t).Build(spec)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

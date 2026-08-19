@@ -81,7 +81,8 @@ func run(args []string) error {
 	return nil
 }
 
-// supervise never returns once the entrypoint starts: a sandbox outlives it, so only a kill ends us.
+// supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
+// else may end one. The host sends that signal, waits out the grace and then kills what is left.
 func supervise(entrypointArgv []string, exitFile string) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
@@ -94,6 +95,8 @@ func supervise(entrypointArgv []string, exitFile string) error {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
 
+	stopping := false
+
 	for {
 		select {
 		case <-childDeaths:
@@ -101,9 +104,15 @@ func supervise(entrypointArgv []string, exitFile string) error {
 			if collectDeadChildren(entrypointPID, exitFile) {
 				entrypointPID = 0
 			}
+			// The exit status is written by now, so a stop that was waiting for it may finish.
+			if stopping && entrypointPID == 0 {
+				return nil
+			}
 		case received := <-stopSignals:
+			stopping = true
+			// Nothing is left to forward to, and a stop that had to wait out its grace is a stop that failed.
 			if entrypointPID == 0 {
-				continue
+				return nil
 			}
 			if err := forwardToEntrypoint(entrypointPID, received); err != nil {
 				return err

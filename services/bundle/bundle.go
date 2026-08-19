@@ -16,7 +16,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
-	"github.com/presmihaylov/shard/services/image"
 )
 
 // guestShardDir is the guest mount point of the per-sandbox host directory shard-init writes to.
@@ -58,8 +57,12 @@ func New(initPath string) (*Service, error) {
 }
 
 // Build lays out the bundle for spec over the image config and writes config.json. It does not mount.
-func (s *Service) Build(spec models.SandboxSpec, cfg image.Config) (Bundle, error) {
-	b, err := newBundle(spec)
+func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
+	if err := validate(spec); err != nil {
+		return Bundle{}, err
+	}
+
+	b, err := newBundle(spec.StateDir, spec.RootFS)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -68,7 +71,7 @@ func (s *Service) Build(spec models.SandboxSpec, cfg image.Config) (Bundle, erro
 		return Bundle{}, err
 	}
 
-	runtimeSpec, err := s.runtimeSpec(spec, cfg, b)
+	runtimeSpec, err := s.runtimeSpec(spec, b)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -86,36 +89,51 @@ func (s *Service) Build(spec models.SandboxSpec, cfg image.Config) (Bundle, erro
 	return b, nil
 }
 
-// newBundle derives every path this sandbox uses. It touches no disk, so the layout is testable anywhere.
-func newBundle(spec models.SandboxSpec) (Bundle, error) {
+// Open derives an existing sandbox's paths from its state directory alone, so a later shard process
+// can unmount it and read its exit status without the image the bundle was built from.
+func Open(stateDir string) (Bundle, error) {
+	if stateDir == "" {
+		return Bundle{}, errors.New("no state directory: nothing names the bundle")
+	}
+
+	return newBundle(stateDir, "")
+}
+
+func validate(spec models.SandboxSpec) error {
 	if spec.ID == "" {
-		return Bundle{}, errors.New("the sandbox spec has no id")
+		return errors.New("the sandbox spec has no id")
 	}
 	if spec.StateDir == "" {
-		return Bundle{}, errors.New("the sandbox spec has no state directory")
+		return errors.New("the sandbox spec has no state directory")
 	}
 	if spec.RootFS == "" {
-		return Bundle{}, errors.New("the sandbox spec has no image rootfs")
+		return errors.New("the sandbox spec has no image rootfs")
 	}
 	// Refuse rather than build a sandbox that silently trusts nothing. The proxy CA lands in chunk 4.
 	if len(spec.CACert) > 0 {
-		return Bundle{}, errors.New("the bundle builder cannot install a CA certificate yet")
+		return errors.New("the bundle builder cannot install a CA certificate yet")
 	}
 
-	shardDir := filepath.Join(spec.StateDir, "shard")
+	return nil
+}
+
+// newBundle derives every path this sandbox uses. It touches no disk, so the layout is testable anywhere.
+func newBundle(stateDir, lower string) (Bundle, error) {
+	shardDir := filepath.Join(stateDir, "shard")
 	b := Bundle{
-		Dir:      filepath.Join(spec.StateDir, "bundle"),
-		RootFS:   filepath.Join(spec.StateDir, "bundle", "rootfs"),
+		Dir:      filepath.Join(stateDir, "bundle"),
+		RootFS:   filepath.Join(stateDir, "bundle", "rootfs"),
 		ShardDir: shardDir,
 		ExitFile: filepath.Join(shardDir, exitFileName),
-		Lower:    spec.RootFS,
-		Upper:    filepath.Join(spec.StateDir, "overlay", "upper"),
-		Work:     filepath.Join(spec.StateDir, "overlay", "work"),
+		Lower:    lower,
+		Upper:    filepath.Join(stateDir, "overlay", "upper"),
+		Work:     filepath.Join(stateDir, "overlay", "work"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
 	for _, dir := range []string{b.Lower, b.Upper, b.Work} {
-		if strings.ContainsAny(dir, ":,") {
+		// Lower is empty when Open derives the paths of a bundle that already exists.
+		if dir != "" && strings.ContainsAny(dir, ":,") {
 			return Bundle{}, fmt.Errorf("the layer path %q contains a character overlayfs uses as a separator", dir)
 		}
 	}
@@ -150,13 +168,13 @@ func layout(b Bundle) error {
 	return nil
 }
 
-func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundle) (*specs.Spec, error) {
-	argv, err := supervisorArgv(spec, cfg)
+func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, error) {
+	argv, err := supervisorArgv(spec)
 	if err != nil {
 		return nil, err
 	}
 
-	user, err := resolveUser(b.Lower, firstNonEmpty(spec.User, cfg.User))
+	user, err := resolveUser(b.Lower, firstNonEmpty(spec.User, spec.ImageConfig.User))
 	if err != nil {
 		return nil, err
 	}
@@ -171,8 +189,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundl
 		Hostname: firstNonEmpty(spec.Name, spec.ID),
 		Process: &specs.Process{
 			Args: argv,
-			Env:  environment(spec.Env, cfg.Env),
-			Cwd:  firstNonEmpty(spec.WorkDir, cfg.WorkDir, "/"),
+			Env:  environment(spec.Env, spec.ImageConfig.Env),
+			Cwd:  firstNonEmpty(spec.WorkDir, spec.ImageConfig.WorkDir, "/"),
 			User: user,
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
@@ -198,10 +216,10 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, cfg image.Config, b Bundl
 }
 
 // supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint is its child.
-func supervisorArgv(spec models.SandboxSpec, cfg image.Config) ([]string, error) {
+func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 	entrypoint := spec.Entrypoint
 	if len(entrypoint) == 0 {
-		entrypoint = slices.Concat(cfg.Entrypoint, cfg.Cmd)
+		entrypoint = slices.Concat(spec.ImageConfig.Entrypoint, spec.ImageConfig.Cmd)
 	}
 	if len(entrypoint) == 0 {
 		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
