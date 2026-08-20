@@ -9,7 +9,7 @@ GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 DEVBOX ?= devbox-shard
 
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
-ITEST_PKG ?= ./services/provider/gvisor/...
+ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
 
 .PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest
 
@@ -34,8 +34,9 @@ test:
 	go test ./...
 
 # Needs runsc, netns or KVM, so it only runs on the Linux box, as root.
+# -p 1 because these tests own host state: the bridge, the nft table and /var/run/netns.
 test-integration:
-	go test -tags integration ./...
+	go test -tags integration -p 1 ./...
 
 # The hardened sshd runs no sftp subsystem, so scp needs -O.
 devbox-sync: build-linux build-shard-init-linux
@@ -52,7 +53,7 @@ devbox-sync: build-linux build-shard-init-linux
 # Runs integration tests on the box, as root, over the binaries devbox-sync just installed.
 # .claude holds a worktree per in-flight ticket, which is a second checkout and never the one under test.
 itest: devbox-sync
-	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration -count=1 -v $(ITEST_PKG)'
+	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'rm -rf ~/shard && mkdir -p ~/shard && tar xzf - -C ~/shard && cd ~/shard && sudo $$(command -v go || echo /usr/local/go/bin/go) test -tags integration -count=1 -p 1 -v $(ITEST_PKG)'
 
 # The whole suite, which is the same target with no package filter. gVisor only: Hetzner has no KVM.
 devbox-test: ITEST_PKG = ./...

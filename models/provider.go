@@ -78,11 +78,15 @@ type ImageConfig struct {
 	User       string
 }
 
-// NetworkSpec is allocated before Create. The provider joins it and reports the host side back.
+// NetworkSpec is allocated before Create, so the provider joins a namespace it did not build.
 type NetworkSpec struct {
 	NetnsPath string
 	Address   netip.Prefix
 	Gateway   netip.Addr
+	// HostInterface is the veth or tap on the host side of the link. Netfilter rules target it.
+	HostInterface string
+	// Nameservers is what the guest resolver reads. gVisor's netstack resolves no name itself.
+	Nameservers []netip.Addr
 }
 
 // Resources bounds the sandbox. Firecracker needs both to boot; gVisor may ignore them.

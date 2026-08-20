@@ -97,8 +97,8 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return models.Runtime{}, err
 	}
 
-	// HostInterface stays empty: SHARD-13 creates the veth and is what fills it in.
-	return models.Runtime{PID: state.PID}, nil
+	// The veth is the network service's, not the provider's: gVisor only joins the namespace it is given.
+	return models.Runtime{PID: state.PID, HostInterface: spec.Network.HostInterface}, nil
 }
 
 // Start runs the entrypoint under the supervisor that runsc create already made PID 1. A stopped

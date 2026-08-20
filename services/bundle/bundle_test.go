@@ -2,6 +2,8 @@ package bundle_test
 
 import (
 	"encoding/json"
+	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,4 +361,34 @@ func mountAt(t *testing.T, spec specs.Spec, destination string) specs.Mount {
 
 func indexOfMount(spec specs.Spec, destination string) int {
 	return slices.IndexFunc(spec.Mounts, func(m specs.Mount) bool { return m.Destination == destination })
+}
+
+// The guest resolver reads these two files, and neither netstack nor a microVM resolves a name.
+func TestBuildWritesTheResolverConfigIntoTheWritableLayer(t *testing.T) {
+	spec := models.SandboxSpec{Name: "amber-otter", Network: models.NetworkSpec{
+		Address:     netip.MustParsePrefix("10.87.0.2/16"),
+		Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")},
+	}}
+
+	b, _ := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if got := readFile(t, filepath.Join(b.Upper, "etc/resolv.conf")); got != "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" {
+		t.Errorf("got resolv.conf %q", got)
+	}
+
+	hosts := readFile(t, filepath.Join(b.Upper, "etc/hosts"))
+	for _, want := range []string{"127.0.0.1\tlocalhost", "10.87.0.2\tamber-otter"} {
+		if !strings.Contains(hosts, want) {
+			t.Errorf("the hosts file has no %q:\n%s", want, hosts)
+		}
+	}
+}
+
+// A sandbox with no network keeps whatever the image shipped, rather than an empty resolv.conf.
+func TestBuildLeavesTheImageResolverConfigAloneWithoutANetwork(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if _, err := os.Stat(filepath.Join(b.Upper, "etc/resolv.conf")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("got %v, want no resolv.conf in the writable layer", err)
+	}
 }
