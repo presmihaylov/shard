@@ -1,0 +1,346 @@
+// Package netns drives the host network stack: namespaces, veth pairs, a bridge and nftables rules.
+// It runs iproute2 and nft, and it knows nothing about sandboxes. Which address a sandbox gets, and
+// which packets it may send, is the caller's policy and never this driver's.
+package netns
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// RunDir is where iproute2 binds a namespace so it outlives the process that created it.
+const RunDir = "/var/run/netns"
+
+// ErrExists is what a create of something already there returns, which is how EnsureBridge is idempotent.
+var ErrExists = errors.New("the object already exists")
+
+// ErrNotFound is what a delete of something already gone returns. Match both with errors.Is.
+var ErrNotFound = errors.New("no such object")
+
+// ErrUnsupported keeps a developer Mac honest. pkg/ may not import models, so this is its own sentinel.
+var ErrUnsupported = errors.New("the host network needs Linux")
+
+// forwardingPath is the switch that lets the host route a sandbox's packets out of the box.
+const forwardingPath = "/proc/sys/net/ipv4/ip_forward"
+
+// waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
+const waitDelay = 2 * time.Second
+
+// iproute2 and nft are not translated, so matching their text is stable. Each verb has its own
+// phrasing for the same condition: ip addr says a duplicate is assigned where ip link says it exists.
+var (
+	existsMessages   = []string{"File exists", "Address already assigned"}
+	notFoundMessages = []string{
+		"Cannot find device",
+		"does not exist",
+		"No such file or directory",
+		"Cannot remove namespace file",
+		"No such process",
+	}
+)
+
+// Manager runs one host's network commands. It holds no state between calls, so any shard process
+// can tear down what another one built.
+type Manager struct {
+	ip  string
+	nft string
+}
+
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithIP points at an iproute2 other than the one on PATH.
+func WithIP(path string) Option {
+	return func(m *Manager) { m.ip = path }
+}
+
+// WithNFT points at an nft other than the one on PATH.
+func WithNFT(path string) Option {
+	return func(m *Manager) { m.nft = path }
+}
+
+// New finds the binaries. It refuses off Linux rather than failing later with a missing executable.
+func New(opts ...Option) (*Manager, error) {
+	if !supported {
+		return nil, fmt.Errorf("%w: this host is not Linux", ErrUnsupported)
+	}
+
+	m := &Manager{ip: "ip", nft: "nft"}
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	for _, binary := range []string{m.ip, m.nft} {
+		if _, err := exec.LookPath(binary); err != nil {
+			return nil, fmt.Errorf("find %s: %w", binary, err)
+		}
+	}
+
+	return m, nil
+}
+
+// NamespacePath is what an OCI spec points at to join a namespace this manager made.
+func NamespacePath(name string) string {
+	return filepath.Join(RunDir, name)
+}
+
+// AddNamespace creates a named namespace, which survives until DeleteNamespace. A namespace the
+// runtime makes for itself would die with the sandbox, and a sandbox outlives its entrypoint.
+func (m *Manager) AddNamespace(ctx context.Context, name string) error {
+	return m.run(ctx, "netns", "add", name)
+}
+
+// DeleteNamespace drops the namespace and every interface in it, which includes one end of each veth
+// pair, so the host end goes with it.
+func (m *Manager) DeleteNamespace(ctx context.Context, name string) error {
+	err := m.run(ctx, "netns", "delete", name)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+
+	return err
+}
+
+// NamespaceExists asks the filesystem, because the bind mount is the namespace's only name.
+func NamespaceExists(name string) (bool, error) {
+	_, err := os.Stat(NamespacePath(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", NamespacePath(name), err)
+	}
+
+	return true, nil
+}
+
+// AddVeth creates the pair and puts the peer end straight into the namespace, so the host never
+// carries an interface named after the guest side.
+func (m *Manager) AddVeth(ctx context.Context, host, peer, namespace string) error {
+	return m.run(ctx, "link", "add", host, "type", "veth", "peer", "name", peer, "netns", namespace)
+}
+
+// DeleteLink removes an interface from the host namespace. Deleting one end of a veth pair takes both.
+func (m *Manager) DeleteLink(ctx context.Context, name string) error {
+	err := m.run(ctx, "link", "delete", name)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+
+	return err
+}
+
+// LinkExists reports whether the host namespace holds the interface.
+func (m *Manager) LinkExists(ctx context.Context, name string) (bool, error) {
+	err := m.run(ctx, "link", "show", name)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// EnsureBridge creates the bridge, gives it the gateway address and brings it up. It is idempotent,
+// so every sandbox create may call it.
+func (m *Manager) EnsureBridge(ctx context.Context, name string, gateway netip.Prefix) error {
+	if err := m.run(ctx, "link", "add", "name", name, "type", "bridge"); err != nil && !errors.Is(err, ErrExists) {
+		return err
+	}
+
+	if err := m.run(ctx, "addr", "add", gateway.String(), "dev", name); err != nil && !errors.Is(err, ErrExists) {
+		return err
+	}
+
+	return m.SetUp(ctx, name)
+}
+
+// AttachBridge makes the interface a port of the bridge.
+func (m *Manager) AttachBridge(ctx context.Context, link, bridge string) error {
+	return m.run(ctx, "link", "set", link, "master", bridge)
+}
+
+// IsolatePort stops this port reaching any other isolated port on the same bridge, while it still
+// reaches the bridge itself. Two sandboxes share one layer 2 segment, and netfilter's forward hook
+// never sees traffic the bridge switches, so this is what keeps them apart.
+func (m *Manager) IsolatePort(ctx context.Context, link string) error {
+	return m.run(ctx, "link", "set", "dev", link, "type", "bridge_slave", "isolated", "on")
+}
+
+// SetUp brings a host interface up.
+func (m *Manager) SetUp(ctx context.Context, link string) error {
+	return m.run(ctx, "link", "set", link, "up")
+}
+
+// SetUpIn brings an interface inside a namespace up.
+func (m *Manager) SetUpIn(ctx context.Context, namespace, link string) error {
+	return m.run(ctx, "-netns", namespace, "link", "set", link, "up")
+}
+
+// AddAddressIn gives an interface inside a namespace its address and the prefix it is reached on.
+func (m *Manager) AddAddressIn(ctx context.Context, namespace, link string, address netip.Prefix) error {
+	return m.run(ctx, "-netns", namespace, "addr", "add", address.String(), "dev", link)
+}
+
+// AddDefaultRouteIn points everything the namespace does not know at the gateway.
+func (m *Manager) AddDefaultRouteIn(ctx context.Context, namespace, link string, gateway netip.Addr) error {
+	return m.run(ctx, "-netns", namespace, "route", "add", "default", "via", gateway.String(), "dev", link)
+}
+
+// AddressesIn lists the addresses an interface inside a namespace carries.
+func (m *Manager) AddressesIn(ctx context.Context, namespace, link string) ([]netip.Prefix, error) {
+	var out bytes.Buffer
+	if err := m.output(ctx, &out, "-netns", namespace, "-brief", "addr", "show", link); err != nil {
+		return nil, err
+	}
+
+	// The brief form is one line of "name state addr/bits addr/bits ...", so every field with a / is one.
+	var addresses []netip.Prefix
+
+	for field := range strings.FieldsSeq(out.String()) {
+		if !strings.Contains(field, "/") {
+			continue
+		}
+
+		prefix, err := netip.ParsePrefix(field)
+		if err != nil {
+			return nil, fmt.Errorf("read the address %q of %s in %s: %w", field, link, namespace, err)
+		}
+
+		addresses = append(addresses, prefix)
+	}
+
+	return addresses, nil
+}
+
+// EnableForwarding lets the host route between the bridge and the outside. It is a host-wide switch
+// and shard turns it on for good, the way every container runtime does.
+func (m *Manager) EnableForwarding() error {
+	if err := os.WriteFile(forwardingPath, []byte("1\n"), 0o644); err != nil { // #nosec G306
+		return fmt.Errorf("write %s: %w", forwardingPath, err)
+	}
+
+	return nil
+}
+
+// ApplyRuleset feeds nft one ruleset on stdin, which the kernel applies as a single transaction.
+// The text is the caller's: this driver holds no policy of its own.
+func (m *Manager) ApplyRuleset(ctx context.Context, ruleset string) error {
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, m.nft, "-f", "-")
+	cmd.Stdin = strings.NewReader(ruleset)
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = waitDelay
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("nft -f -: %w", ctx.Err())
+		}
+
+		return fmt.Errorf("nft -f -: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+// TableExists reports whether nft holds the table, which is how a caller checks its own ruleset landed.
+func (m *Manager) TableExists(ctx context.Context, family, table string) (bool, error) {
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, m.nft, "list", "table", family, table)
+	cmd.Stdout, cmd.Stderr = nil, &stderr
+	cmd.WaitDelay = waitDelay
+
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("nft list table %s %s: %w", family, table, ctx.Err())
+	}
+
+	message := strings.TrimSpace(stderr.String())
+	if errors.Is(sentinel(message, err), ErrNotFound) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("nft list table %s %s: %w: %s", family, table, err, message)
+}
+
+// DeleteTable drops a whole nft table, which takes every rule in it with it.
+func (m *Manager) DeleteTable(ctx context.Context, family, table string) error {
+	exists, err := m.TableExists(ctx, family, table)
+	if err != nil || !exists {
+		return err
+	}
+
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, m.nft, "delete", "table", family, table)
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = waitDelay
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("nft delete table %s %s: %w: %s", family, table, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+func (m *Manager) run(ctx context.Context, args ...string) error {
+	return m.output(ctx, nil, args...)
+}
+
+// output runs one ip command, collecting stderr so a failure can be classified.
+func (m *Manager) output(ctx context.Context, stdout *bytes.Buffer, args ...string) error {
+	var stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, m.ip, args...)
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = waitDelay
+
+	if stdout != nil {
+		cmd.Stdout = stdout
+	}
+
+	if err := cmd.Run(); err != nil {
+		// A cancelled call says nothing about the host, so report the context and not what the kill looked like.
+		if ctx.Err() != nil {
+			return fmt.Errorf("ip %s: %w", strings.Join(args, " "), ctx.Err())
+		}
+
+		message := strings.TrimSpace(stderr.String())
+
+		return fmt.Errorf("ip %s: %w: %s", strings.Join(args, " "), sentinel(message, err), message)
+	}
+
+	return nil
+}
+
+// sentinel turns the two failures a caller must act on into errors it can match.
+func sentinel(message string, err error) error {
+	for _, present := range existsMessages {
+		if strings.Contains(message, present) {
+			return ErrExists
+		}
+	}
+
+	for _, absent := range notFoundMessages {
+		if strings.Contains(message, absent) {
+			return ErrNotFound
+		}
+	}
+
+	return err
+}

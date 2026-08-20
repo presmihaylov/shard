@@ -2,6 +2,9 @@ version: "2"
 
 run:
   timeout: 5m
+  # Without this the integration files are invisible to the linter: the tag is the whole mechanism.
+  build-tags:
+    - integration
 
 linters:
   # Enable explicitly rather than curating a default set, so the list here is the
