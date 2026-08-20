@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -236,78 +237,51 @@ func (m *Manager) EnableForwarding() error {
 // ApplyRuleset feeds nft one ruleset on stdin, which the kernel applies as a single transaction.
 // The text is the caller's: this driver holds no policy of its own.
 func (m *Manager) ApplyRuleset(ctx context.Context, ruleset string) error {
-	var stderr bytes.Buffer
-
-	cmd := exec.CommandContext(ctx, m.nft, "-f", "-")
-	cmd.Stdin = strings.NewReader(ruleset)
-	cmd.Stderr = &stderr
-	cmd.WaitDelay = waitDelay
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("nft -f -: %w", ctx.Err())
-		}
-
-		return fmt.Errorf("nft -f -: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-
-	return nil
+	return m.nftRun(ctx, strings.NewReader(ruleset), "-f", "-")
 }
 
 // TableExists reports whether nft holds the table, which is how a caller checks its own ruleset landed.
 func (m *Manager) TableExists(ctx context.Context, family, table string) (bool, error) {
-	var stderr bytes.Buffer
-
-	cmd := exec.CommandContext(ctx, m.nft, "list", "table", family, table)
-	cmd.Stdout, cmd.Stderr = nil, &stderr
-	cmd.WaitDelay = waitDelay
-
-	err := cmd.Run()
-	if err == nil {
-		return true, nil
-	}
-	if ctx.Err() != nil {
-		return false, fmt.Errorf("nft list table %s %s: %w", family, table, ctx.Err())
-	}
-
-	message := strings.TrimSpace(stderr.String())
-	if errors.Is(sentinel(message, err), ErrNotFound) {
+	err := m.nftRun(ctx, nil, "list", "table", family, table)
+	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
 
-	return false, fmt.Errorf("nft list table %s %s: %w: %s", family, table, err, message)
+	return true, nil
 }
 
 // DeleteTable drops a whole nft table, which takes every rule in it with it.
 func (m *Manager) DeleteTable(ctx context.Context, family, table string) error {
-	exists, err := m.TableExists(ctx, family, table)
-	if err != nil || !exists {
-		return err
+	err := m.nftRun(ctx, nil, "delete", "table", family, table)
+	if errors.Is(err, ErrNotFound) {
+		return nil
 	}
 
-	var stderr bytes.Buffer
-
-	cmd := exec.CommandContext(ctx, m.nft, "delete", "table", family, table)
-	cmd.Stderr = &stderr
-	cmd.WaitDelay = waitDelay
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("nft delete table %s %s: %w: %s", family, table, err, strings.TrimSpace(stderr.String()))
-	}
-
-	return nil
+	return err
 }
 
 func (m *Manager) run(ctx context.Context, args ...string) error {
-	return m.output(ctx, nil, args...)
+	return m.execute(ctx, m.ip, nil, nil, args...)
 }
 
-// output runs one ip command, collecting stderr so a failure can be classified.
 func (m *Manager) output(ctx context.Context, stdout *bytes.Buffer, args ...string) error {
+	return m.execute(ctx, m.ip, nil, stdout, args...)
+}
+
+func (m *Manager) nftRun(ctx context.Context, stdin io.Reader, args ...string) error {
+	return m.execute(ctx, m.nft, stdin, nil, args...)
+}
+
+// execute runs one host binary, collecting stderr so a failure can be classified. Every verb goes
+// through it, so an nft failure is reported and matched the same way an ip one is.
+func (m *Manager) execute(ctx context.Context, binary string, stdin io.Reader, stdout *bytes.Buffer, args ...string) error {
 	var stderr bytes.Buffer
 
-	cmd := exec.CommandContext(ctx, m.ip, args...)
-	cmd.Stderr = &stderr
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Stdin, cmd.Stderr = stdin, &stderr
 	cmd.WaitDelay = waitDelay
 
 	if stdout != nil {
@@ -315,14 +289,15 @@ func (m *Manager) output(ctx context.Context, stdout *bytes.Buffer, args ...stri
 	}
 
 	if err := cmd.Run(); err != nil {
+		called := filepath.Base(binary) + " " + strings.Join(args, " ")
 		// A cancelled call says nothing about the host, so report the context and not what the kill looked like.
 		if ctx.Err() != nil {
-			return fmt.Errorf("ip %s: %w", strings.Join(args, " "), ctx.Err())
+			return fmt.Errorf("%s: %w", called, ctx.Err())
 		}
 
 		message := strings.TrimSpace(stderr.String())
 
-		return fmt.Errorf("ip %s: %w: %s", strings.Join(args, " "), sentinel(message, err), message)
+		return fmt.Errorf("%s: %w: %s", called, sentinel(message, err), message)
 	}
 
 	return nil

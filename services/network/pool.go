@@ -123,8 +123,9 @@ func (p *pool) find(id string) (netip.Addr, bool, error) {
 
 	for _, entry := range entries {
 		address, err := netip.ParseAddr(entry.Name())
-		// Anything that is not an address is not a lease this pool wrote.
-		if err != nil {
+		// Anything outside this pool's subnet is not a lease it wrote, which a reconfigured subnet
+		// leaves behind. Honouring one would name a host interface after an offset into the wrong pool.
+		if err != nil || !p.subnet.Contains(address) {
 			continue
 		}
 

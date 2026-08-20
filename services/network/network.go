@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"slices"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
@@ -123,7 +124,8 @@ func (s *Service) Gateway() netip.Addr { return s.gateway }
 func (s *Service) Bridge() string { return s.cfg.Bridge }
 
 // Ensure builds the host side: the bridge, forwarding and the nft table. It is idempotent and cheap,
-// so Allocate calls it rather than making a caller remember to.
+// so Allocate calls it rather than making a caller remember to. The ruleset is replaced whole, which
+// SHARD-70 must revisit once the table carries a rule per sandbox rather than one policy for all.
 func (s *Service) Ensure(ctx context.Context) error {
 	if err := s.manager.EnsureBridge(ctx, s.cfg.Bridge, netip.PrefixFrom(s.gateway, s.cfg.Subnet.Bits())); err != nil {
 		return err
@@ -183,7 +185,8 @@ func (s *Service) spec(id string, address netip.Addr) models.NetworkSpec {
 		Address:       netip.PrefixFrom(address, s.cfg.Subnet.Bits()),
 		Gateway:       s.gateway,
 		HostInterface: s.hostInterface(address),
-		Nameservers:   s.cfg.Nameservers,
+		// Cloned: the spec crosses into the provider and the bundle, and neither may reach back here.
+		Nameservers: slices.Clone(s.cfg.Nameservers),
 	}
 }
 
