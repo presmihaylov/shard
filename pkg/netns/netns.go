@@ -51,8 +51,8 @@ var (
 // Manager runs one host's network commands. It holds no state between calls, so any shard process
 // can tear down what another one built.
 type Manager struct {
-	ip  string
-	nft string
+	ipPath  string
+	nftPath string
 }
 
 // Option configures a Manager.
@@ -60,12 +60,12 @@ type Option func(*Manager)
 
 // WithIP points at an iproute2 other than the one on PATH.
 func WithIP(path string) Option {
-	return func(m *Manager) { m.ip = path }
+	return func(m *Manager) { m.ipPath = path }
 }
 
 // WithNFT points at an nft other than the one on PATH.
 func WithNFT(path string) Option {
-	return func(m *Manager) { m.nft = path }
+	return func(m *Manager) { m.nftPath = path }
 }
 
 // New finds the binaries. It refuses off Linux rather than failing later with a missing executable.
@@ -74,12 +74,12 @@ func New(opts ...Option) (*Manager, error) {
 		return nil, fmt.Errorf("%w: this host is not Linux", ErrUnsupported)
 	}
 
-	m := &Manager{ip: "ip", nft: "nft"}
+	m := &Manager{ipPath: "ip", nftPath: "nft"}
 	for _, opt := range opts {
 		opt(m)
 	}
 
-	for _, binary := range []string{m.ip, m.nft} {
+	for _, binary := range []string{m.ipPath, m.nftPath} {
 		if _, err := exec.LookPath(binary); err != nil {
 			return nil, fmt.Errorf("find %s: %w", binary, err)
 		}
@@ -264,15 +264,15 @@ func (m *Manager) DeleteTable(ctx context.Context, family, table string) error {
 }
 
 func (m *Manager) run(ctx context.Context, args ...string) error {
-	return m.execute(ctx, m.ip, nil, nil, args...)
+	return m.execute(ctx, m.ipPath, nil, nil, args...)
 }
 
 func (m *Manager) output(ctx context.Context, stdout *bytes.Buffer, args ...string) error {
-	return m.execute(ctx, m.ip, nil, stdout, args...)
+	return m.execute(ctx, m.ipPath, nil, stdout, args...)
 }
 
 func (m *Manager) nftRun(ctx context.Context, stdin io.Reader, args ...string) error {
-	return m.execute(ctx, m.nft, stdin, nil, args...)
+	return m.execute(ctx, m.nftPath, stdin, nil, args...)
 }
 
 // execute runs one host binary, collecting stderr so a failure can be classified. Every verb goes

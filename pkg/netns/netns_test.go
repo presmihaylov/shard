@@ -29,7 +29,7 @@ func fake(t *testing.T, stdout, stderr string, exitCode int) (*Manager, string) 
 		t.Fatalf("write the fake ip: %v", err)
 	}
 
-	return &Manager{ip: binary, nft: binary}, argvFile
+	return &Manager{ipPath: binary, nftPath: binary}, argvFile
 }
 
 // fakeFailing stands in for ip when only some of a verb's calls must fail: it fails the ones whose
@@ -46,7 +46,7 @@ func fakeFailing(t *testing.T, needle, stderr string, exitCode int) *Manager {
 		t.Fatalf("write the fake ip: %v", err)
 	}
 
-	return &Manager{ip: binary, nft: binary}
+	return &Manager{ipPath: binary, nftPath: binary}
 }
 
 func argv(t *testing.T, path string) []string {
