@@ -71,7 +71,7 @@ func WithNFT(path string) Option {
 // New finds the binaries. It refuses off Linux rather than failing later with a missing executable.
 func New(opts ...Option) (*Manager, error) {
 	if !supported {
-		return nil, fmt.Errorf("%w: this host is not Linux", ErrUnsupported)
+		return nil, ErrUnsupported
 	}
 
 	m := &Manager{ipPath: "ip", nftPath: "nft"}
