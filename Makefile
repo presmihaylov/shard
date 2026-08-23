@@ -11,7 +11,7 @@ DEVBOX ?= devbox-shard
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
 ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e
 
 all: check build
 
@@ -58,6 +58,14 @@ itest: devbox-sync
 # The whole suite, which is the same target with no package filter. gVisor only: Hetzner has no KVM.
 devbox-test: ITEST_PKG = ./...
 devbox-test: itest
+
+# SHARD-17: the whole lifecycle on this host, the way a stranger with a fresh box would drive it.
+e2e:
+	./scripts/e2e.sh
+
+# The same script on the box, over a fresh copy of this tree.
+devbox-e2e:
+	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
 
 vet:
 	go vet ./...
