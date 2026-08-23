@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -184,5 +186,44 @@ func TestTwoPathsDoNotBlockEachOther(t *testing.T) {
 		if err := l.Release(); err != nil {
 			t.Fatalf("Release: %v", err)
 		}
+	}
+}
+
+func TestAcquireContextTakesAFreeLock(t *testing.T) {
+	l, err := AcquireContext(t.Context(), lockPath(t), 0o600)
+	if err != nil {
+		t.Fatalf("AcquireContext: %v", err)
+	}
+
+	if err := l.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+}
+
+// TestAcquireContextGivesUpOnTheHolder is why the context version exists: a blocking flock ignores a
+// signal, so a Ctrl-C while another process holds the lock would otherwise reach nobody.
+func TestAcquireContextGivesUpOnTheHolder(t *testing.T) {
+	path := lockPath(t)
+
+	held, err := Acquire(path, 0o600)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() {
+		if err := held.Release(); err != nil {
+			t.Errorf("Release: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	l, err := AcquireContext(ctx, path, 0o600)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AcquireContext returned %v, want it to give up on the holder", err)
+	}
+
+	if l != nil {
+		t.Fatal("AcquireContext returned a lock it did not take")
 	}
 }

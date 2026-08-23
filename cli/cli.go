@@ -72,7 +72,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 	case "pull":
 		return a.pull(ctx, args[1:])
 	case "image":
-		return a.image(args[1:])
+		return a.image(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}
