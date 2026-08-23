@@ -229,3 +229,67 @@ func TestCreateNamesOurOwnCancellation(t *testing.T) {
 		t.Errorf("got %q, want no diagnostic about output we cut short ourselves", err)
 	}
 }
+
+func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
+	r, argvFile := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
+		Argv:    []string{"/bin/sh", "-c", "echo hi"},
+		Env:     []string{"A=1", "B=2"},
+		WorkDir: "/srv",
+		User:    "65534:65534",
+	}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	got := argv(t, argvFile)
+
+	id := slices.Index(got, "amber-otter-1a2b")
+	if id < 0 {
+		t.Fatalf("the argv %q names no sandbox", got)
+	}
+
+	// Everything after the id is the guest's own command, and runsc reads no flag past it.
+	if command := got[id+1:]; !slices.Equal(command, []string{"/bin/sh", "-c", "echo hi"}) {
+		t.Errorf("the command is %q, want the argv Exec was given", command)
+	}
+
+	flags := pairs(got[:id])
+	for _, want := range []string{"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2"} {
+		if !slices.Contains(flags, want) {
+			t.Errorf("the flags before the id are %q, want %q in them", got[:id], want)
+		}
+	}
+}
+
+// pairs reads a flag list as the flag-value pairs it is, so a repeated flag is matched by its value.
+func pairs(args []string) []string {
+	var out []string
+	for i := 0; i+1 < len(args); i++ {
+		out = append(out, args[i]+" "+args[i+1])
+	}
+
+	return out
+}
+
+// The point of exec: a command that exits 7 is an answer, not a failure of the driver.
+func TestExecReturnsTheCommandExitCode(t *testing.T) {
+	r, _ := fake(t, "", "", 7)
+
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/false"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if code != 7 {
+		t.Errorf("Exec returned %d, want 7", code)
+	}
+}
+
+func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
+	r, _ := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{}); err == nil {
+		t.Fatal("Exec accepted a spec with no command")
+	}
+}

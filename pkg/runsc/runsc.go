@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -29,6 +31,9 @@ const waitDelay = 2 * time.Second
 
 // diagnosticTail bounds what a failed create quotes back, because the guest shares that file with it.
 const diagnosticTail = 4 << 10
+
+// signalBudget bounds the signal a cancelled exec sends into the sandbox, which runs off its own context.
+const signalBudget = 5 * time.Second
 
 const (
 	notFoundMessage   = "loading container: file does not exist"
@@ -141,6 +146,117 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 	}
 
 	return nil
+}
+
+// ExecOptions is one process in a sandbox that already runs. It is never the entrypoint, so it has
+// no supervisor and its exit ends nothing.
+type ExecOptions struct {
+	Argv    []string
+	Env     []string
+	WorkDir string
+	// User is uid[:gid], and the caller resolves it: config.json's process user is the supervisor's.
+	User string
+	// TTY says the three files below are one pty replica, which is the only way the guest gets a terminal.
+	TTY bool
+	// The files the guest process gets. They are files, not pipes, so a pty replica passes straight through.
+	Stdin  *os.File
+	Stdout *os.File
+	Stderr *os.File
+}
+
+// Exec runs a command in a running sandbox and returns the code it exited with, which is no failure
+// of this driver. runsc writes its own startup failures to the same stderr the guest gets, so an
+// exit code alone cannot tell the two apart; the caller checks the sandbox is running first.
+func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
+	if len(opts.Argv) == 0 {
+		return 0, errors.New("no command: runsc exec has nothing to run")
+	}
+
+	dir, err := os.MkdirTemp("", "shard-exec-")
+	if err != nil {
+		return 0, fmt.Errorf("create a directory for the exec pid file: %w", err)
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
+
+	pidFile := filepath.Join(dir, "pid")
+
+	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
+
+	if opts.TTY {
+		// runsc gives the guest a terminal only when its own stdio is one it controls.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	}
+
+	// Killing runsc exec leaves the guest process running, so a cancellation has to reach into the sandbox.
+	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }
+
+	if err := cmd.Run(); err != nil {
+		// A cancelled call says nothing about how the command would have ended.
+		if ctx.Err() != nil {
+			return 0, fmt.Errorf("runsc exec %s: %w", id, ctx.Err())
+		}
+
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return exit.ExitCode(), nil
+		}
+
+		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
+	}
+
+	return 0, nil
+}
+
+// execArgs spells one runsc exec. The flags precede the id, and everything after it is the command.
+func execArgs(id, pidFile string, opts ExecOptions) []string {
+	args := []string{"exec", "--internal-pid-file", pidFile}
+
+	if opts.WorkDir != "" {
+		args = append(args, "--cwd", opts.WorkDir)
+	}
+	if opts.User != "" {
+		args = append(args, "--user", opts.User)
+	}
+	for _, entry := range opts.Env {
+		args = append(args, "--env", entry)
+	}
+
+	return append(append(args, id), opts.Argv...)
+}
+
+// interrupt ends the guest process a cancelled exec started. It is SIGKILL because nothing above this
+// can wait out a process that refuses to leave, and it never touches the sandbox: only Stop ends one.
+func (r *Runner) interrupt(cmd *exec.Cmd, id, pidFile string) error {
+	pid, err := readPID(pidFile)
+	// The file lands as soon as the guest process forks, so an unreadable one means none did.
+	if err != nil {
+		return cmd.Process.Kill()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), signalBudget)
+	defer cancel()
+
+	if err := r.run(ctx, io.Discard, "kill", "--pid", strconv.Itoa(pid), id, "KILL"); err != nil {
+		return errors.Join(err, cmd.Process.Kill())
+	}
+
+	return nil
+}
+
+// readPID reads the guest pid runsc wrote, which is the only handle a signal into the sandbox has.
+func readPID(path string) (int, error) {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(blob)))
+	if err != nil {
+		return 0, fmt.Errorf("the exec pid file %s holds %q: %w", path, blob, err)
+	}
+
+	return pid, nil
 }
 
 // Start runs the container's process, which is the supervisor shard-init.
