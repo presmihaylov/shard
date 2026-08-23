@@ -191,6 +191,79 @@ func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
 	}
 }
 
+// The keep-alive rule: the entrypoint exits, the sandbox stays running, and exec still works on it.
+func TestExecRunsInASandboxWhoseEntrypointHasExited(t *testing.T) {
+	provider := &fakeExecProvider{state: models.StateRunning}
+	app := execApp(provider)
+
+	if err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if provider.calls != 1 {
+		t.Errorf("the provider ran %d commands, want 1", provider.calls)
+	}
+}
+
+func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
+	provider := &fakeExecProvider{state: models.StateStopped}
+	app := execApp(provider)
+
+	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
+	if err == nil {
+		t.Fatal("exec accepted a stopped sandbox")
+	}
+	if !strings.Contains(err.Error(), "one-two-0000") || !strings.Contains(err.Error(), "stopped") {
+		t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
+	}
+	if provider.calls != 0 {
+		t.Error("exec reached the provider for a stopped sandbox")
+	}
+}
+
+// A record outlives a shard restart, so the substrate is the one that answers for the state.
+func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
+	provider := &fakeExecProvider{forgotten: true}
+	app := execApp(provider)
+
+	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
+	if err == nil {
+		t.Fatal("exec accepted a sandbox the provider has forgotten")
+	}
+	if !strings.Contains(err.Error(), "one-two-0000") {
+		t.Errorf("the refusal is %q, and it must name the sandbox", err)
+	}
+	if provider.calls != 0 {
+		t.Error("exec reached the provider for a sandbox it does not hold")
+	}
+}
+
+// runsc says 128 for a command that never ran, and a shell says 127 for one it cannot find.
+func TestExecTurnsARefusedCommandIntoAShellExitCode(t *testing.T) {
+	cases := map[int]*models.CommandNotStartedError{
+		127: {Sandbox: "one-two-0000", Reason: "failed to load /bin/nope: no such file or directory", Code: 127},
+		126: {Sandbox: "one-two-0000", Reason: "failed to load /tmp/data: permission denied", Code: 126},
+	}
+
+	for want, refusal := range cases {
+		provider := &fakeExecProvider{err: refusal}
+		app := execApp(provider)
+
+		err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "/bin/nope"})
+
+		var exit *ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("Run returned %v, want an ExitError", err)
+		}
+		if exit.Code != want {
+			t.Errorf("exit code = %d, want %d", exit.Code, want)
+		}
+		if !strings.Contains(exit.Message, refusal.Reason) {
+			t.Errorf("the message is %q, and it must say why the command never ran", exit.Message)
+		}
+	}
+}
+
 // A terminal cannot be faked with a pipe, so -t must refuse rather than hang on one.
 func TestExecRefusesATerminalWhenStdinIsNotOne(t *testing.T) {
 	app := execApp(&fakeExecProvider{})
@@ -219,10 +292,29 @@ type fakeExecProvider struct {
 
 	status models.ExitStatus
 	err    error
+	// state is what the substrate says the sandbox is doing, and the empty one is running.
+	state models.State
+	// forgotten is a sandbox the substrate does not hold at all, which a stale record still names.
+	forgotten bool
 
 	calls int
 	id    string
 	spec  models.ExecSpec
+}
+
+func (f *fakeExecProvider) Name() string { return "fake" }
+
+func (f *fakeExecProvider) Status(context.Context, string) (models.Status, error) {
+	if f.forgotten {
+		return models.Status{}, nil
+	}
+
+	state := f.state
+	if state == "" {
+		state = models.StateRunning
+	}
+
+	return models.Status{Exists: true, State: state}, nil
 }
 
 func (f *fakeExecProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {

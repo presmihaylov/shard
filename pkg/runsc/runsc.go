@@ -38,6 +38,11 @@ const signalBudget = 5 * time.Second
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
+	// The kernel gives runsc EACCES for a file it may not execute and ENOENT for everything else,
+	// a missing interpreter of a script included, which is what a shell answers 126 and 127 for.
+	notExecutableMessage = "permission denied"
+	// runsc wraps a refusal in the call that hit it, and only the innermost part of that says why.
+	innermostMessage = "failed to "
 )
 
 // Status is the container status runsc reports. It is the OCI set, and stopped is the terminal one.
@@ -181,8 +186,10 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 
 	pidFile := filepath.Join(dir, "pid")
+	logFile := filepath.Join(dir, "log")
 
-	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
+	// --log is global, and r.command puts what it is given after its own globals and before the subcommand.
+	cmd := r.command(ctx, append([]string{"--log", logFile, "--log-format=json"}, execArgs(id, pidFile, opts)...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
 	if opts.TTY {
@@ -206,6 +213,14 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 				return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, err)
 			}
 
+			// An exit code is the command's unless both say it never ran: the pid file, which lands
+			// as soon as the guest process forks, and a refusal runsc logged.
+			_, perr := readPID(pidFile)
+			reason, rerr := logReason(logFile)
+			if perr != nil && rerr == nil {
+				return 0, fmt.Errorf("runsc exec %s: %w", id, startFailure(reason))
+			}
+
 			return exit.ExitCode(), nil
 		}
 
@@ -213,6 +228,55 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	}
 
 	return 0, nil
+}
+
+// ExecStartError is an exec whose command never ran, which runsc reports as its own exit code 128.
+type ExecStartError struct {
+	// Reason is runsc's own words, taken from the log this one call wrote.
+	Reason string
+	// NotExecutable separates a command the sandbox found and could not run from one it never found.
+	NotExecutable bool
+}
+
+func (e *ExecStartError) Error() string { return e.Reason }
+
+// startFailure names the refusal the kernel gave runsc, which is all a shell needs to tell a command
+// it cannot find from one it may not run.
+func startFailure(reason string) error {
+	if at := strings.LastIndex(reason, innermostMessage); at >= 0 {
+		reason = reason[at:]
+	}
+
+	return &ExecStartError{Reason: reason, NotExecutable: strings.Contains(reason, notExecutableMessage)}
+}
+
+// logReason keeps the last error runsc logged, which is the refusal that ended the call. runsc writes
+// the same words to the guest's stderr, so this log is the only copy shard can read back on its own.
+func logReason(path string) (string, error) {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var reason string
+	for line := range strings.Lines(strings.TrimSpace(string(blob))) {
+		var entry struct {
+			Message string `json:"msg"`
+			Level   string `json:"level"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return "", fmt.Errorf("decode %s: %w", path, err)
+		}
+		if entry.Level == "error" {
+			reason = entry.Message
+		}
+	}
+
+	if reason == "" {
+		return "", errors.New("runsc logged nothing")
+	}
+
+	return reason, nil
 }
 
 // execArgs spells one runsc exec. The flags precede the id, and everything after it is the command.

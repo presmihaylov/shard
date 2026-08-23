@@ -143,3 +143,10 @@ const SupervisorFailedExitCode = 125
 
 // EntrypointNotStartedExitCode is what a shell reports for a command it cannot run, and so is a broken image.
 const EntrypointNotStartedExitCode = 127
+
+// The two codes a shell answers for a command that never ran. A substrate's own code is never one
+// of these: runsc says 128 for both, which no shell means anything by.
+const (
+	CommandNotFoundExitCode      = 127
+	CommandNotExecutableExitCode = 126
+)

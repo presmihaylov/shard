@@ -19,13 +19,21 @@ import (
 // drainBudget is how long the command's last output may take to arrive once the command itself is gone.
 const drainBudget = 2 * time.Second
 
-// ExitError carries a guest command's own exit code out to the process. It is not a failure of
-// shard, so main prints nothing for it: the command already wrote whatever it had to write.
+// ExitError carries an exit code out to the process. A command that ran carries no message with it,
+// because it already wrote whatever it had to write, and main prints nothing for that one.
 type ExitError struct {
 	Code int
+	// Message is what shard has to say about a command that never ran at all.
+	Message string
 }
 
-func (e *ExitError) Error() string { return fmt.Sprintf("the command exited with code %d", e.Code) }
+func (e *ExitError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+
+	return fmt.Sprintf("the command exited with code %d", e.Code)
+}
 
 // execOptions is one parsed shard exec invocation.
 type execOptions struct {
@@ -67,6 +75,10 @@ func (a App) exec(ctx context.Context, args []string) error {
 		return err
 	}
 
+	if err := refuseUnlessAlive(ctx, provider, opts.id); err != nil {
+		return err
+	}
+
 	spec := models.ExecSpec{
 		Argv:    opts.argv,
 		Env:     opts.env,
@@ -77,7 +89,7 @@ func (a App) exec(ctx context.Context, args []string) error {
 
 	status, err := a.runExec(ctx, d, provider, opts, spec)
 	if err != nil {
-		return err
+		return shellCode(err)
 	}
 
 	if status.Code != 0 {
@@ -85,6 +97,36 @@ func (a App) exec(ctx context.Context, args []string) error {
 	}
 
 	return nil
+}
+
+// refuseUnlessAlive asks the substrate, not the record, because a record saying running outlives a
+// shard restart. A sandbox whose entrypoint exited is still alive and still takes an exec; a created
+// one is alive too, and the provider refuses that one by name because only it knows what it holds.
+func refuseUnlessAlive(ctx context.Context, provider models.Provider, id string) error {
+	status, err := provider.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return nil
+	}
+
+	if !status.Exists {
+		return fmt.Errorf("sandbox %s is gone from %s: remove it with shard rm %s and create another", id, provider.Name(), id)
+	}
+
+	return fmt.Errorf("sandbox %s is %s: a stopped sandbox never runs again, so remove it with shard rm %s and create another", id, status.State, id)
+}
+
+// shellCode answers a command that never ran the way a shell does, because runsc reports every one
+// of those as its own 128, which nothing outside runsc means anything by.
+func shellCode(err error) error {
+	var notStarted *models.CommandNotStartedError
+	if !errors.As(err, &notStarted) {
+		return err
+	}
+
+	return &ExitError{Code: notStarted.Code, Message: notStarted.Error()}
 }
 
 // runExec picks the stdio the guest process gets. Ctrl-C during either path ends that process and
