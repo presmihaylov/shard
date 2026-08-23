@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"syscall"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
@@ -19,6 +20,9 @@ import (
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
+
+// drainBudget is how long the command's last output may take to arrive once the command itself is gone.
+const drainBudget = 2 * time.Second
 
 // ExitError carries a guest command's own exit code out to the process. It is not a failure of
 // shard, so main prints nothing for it: the command already wrote whatever it had to write.
@@ -163,7 +167,13 @@ func (a App) execOnTerminal(ctx context.Context, deps execDeps, opts execOptions
 	if closeErr != nil {
 		return status, errors.Join(err, fmt.Errorf("close the pseudo terminal replica: %w", closeErr))
 	}
-	<-drained
+
+	// A process the command left behind holds the replica too, and then nothing ever ends the copy.
+	// The status is already in hand, so the wait is bounded: the terminal is raw until this returns.
+	select {
+	case <-drained:
+	case <-time.After(drainBudget):
+	}
 
 	return status, err
 }
@@ -197,7 +207,10 @@ func forwardResize(pair *pty.Pty, terminal *os.File, warn func(string)) func() {
 	signal.Notify(changed, syscall.SIGWINCH)
 
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
+
 		for {
 			select {
 			case <-done:
@@ -219,6 +232,8 @@ func forwardResize(pair *pty.Pty, terminal *os.File, warn func(string)) func() {
 	return func() {
 		signal.Stop(changed)
 		close(done)
+		// The caller closes the master next, and an ioctl on a descriptor that is gone goes to whatever took it.
+		<-exited
 	}
 }
 
