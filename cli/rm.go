@@ -43,10 +43,18 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The warning below names what the operator typed, which is a name that resolved to nothing.
+	ref := opts.id
+
+	opts.id, err = repo.Resolve(ref)
+	if err != nil {
+		return err
+	}
+
 	// The record dies last below, so an id with no record has nothing else left on the host either.
 	_, err = repo.Get(opts.id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
-		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
+		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", ref))
 
 		return nil
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/runspec"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
@@ -30,6 +31,7 @@ type createOptions struct {
 	ref  string
 	argv []string
 
+	name    string
 	env     []string
 	workDir string
 	user    string
@@ -54,6 +56,7 @@ func parseCreate(args []string) (createOptions, error) {
 
 	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.name, "name", "", "a handle every verb takes in place of the id")
 	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
@@ -62,6 +65,13 @@ func parseCreate(args []string) (createOptions, error) {
 
 	if err := flags.Parse(args); err != nil {
 		return createOptions{}, fmt.Errorf("parse the create flags: %w", err)
+	}
+
+	// The spelling is checked here, so a name no verb could take back never costs the operator a pull.
+	if named(flags) {
+		if err := sandboxstate.ValidName(opts.name); err != nil {
+			return createOptions{}, err
+		}
 	}
 
 	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
@@ -92,6 +102,18 @@ func parseCreate(args []string) (createOptions, error) {
 	}
 
 	return opts, nil
+}
+
+// named says --name was given, so an explicit empty one is refused rather than read as no name.
+func named(flags *flag.FlagSet) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "name" {
+			set = true
+		}
+	})
+
+	return set
 }
 
 // envList refuses anything that is not an assignment, because a merge drops such an entry and
@@ -170,6 +192,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:         id,
+		Name:       opts.name,
 		RootFS:     img.RootFS,
 		StateDir:   dir,
 		Entrypoint: opts.argv,
@@ -235,6 +258,7 @@ func (a App) pullImage(ctx context.Context, images imageService, ref string) (im
 // claimRecord takes the id, which is the only handle every later step is named by.
 func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img image.Image, opts createOptions) (string, string, error) {
 	sb, err := repo.Create(models.Sandbox{
+		Name:      opts.name,
 		Image:     img.Reference,
 		Provider:  provider.Name(),
 		State:     models.StateCreated,
@@ -265,7 +289,6 @@ func recordCreated(ctx context.Context, repo sandboxRepo, provider models.Provid
 	}
 
 	return repo.Update(spec.ID, func(sb *models.Sandbox) error {
-		sb.Name = spec.Name
 		sb.PID = status.PID
 		sb.NetnsPath = spec.Network.NetnsPath
 		sb.Address = spec.Network.Address

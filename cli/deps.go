@@ -28,6 +28,7 @@ type imageService interface {
 type sandboxRepo interface {
 	Create(sb models.Sandbox) (models.Sandbox, error)
 	Get(id string) (models.Sandbox, error)
+	Resolve(ref string) (string, error)
 	List() ([]models.Sandbox, error)
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error

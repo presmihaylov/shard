@@ -70,6 +70,12 @@ func (a App) exec(ctx context.Context, args []string) error {
 		return errors.New("-t needs a terminal on stdin, and this one is not one")
 	}
 
+	// Everything below this line names an id, so a name becomes one here and nowhere else.
+	opts.id, err = repo.Resolve(opts.id)
+	if err != nil {
+		return err
+	}
+
 	// The record answers for an id nobody ever created; the provider answers for its state.
 	if _, err := repo.Get(opts.id); err != nil {
 		return err

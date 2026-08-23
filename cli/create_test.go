@@ -152,6 +152,8 @@ type fakeRepo struct {
 	r       *recorder
 	dir     string
 	updates int
+	// created is the record as Create was handed it, so a test says what the flags put in it.
+	created models.Sandbox
 	// last is the record as the final Update left it.
 	last models.Sandbox
 }
@@ -162,6 +164,7 @@ func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
 	}
 
 	sb.ID = "sandbox1"
+	f.created = sb
 
 	return sb, nil
 }
@@ -206,14 +209,20 @@ func (f fakeNet) Release(ctx context.Context, _ string) error {
 	return f.r.cleanup(ctx, "net.Release")
 }
 
-type fakeProvider struct{ r *recorder }
+type fakeProvider struct {
+	r *recorder
+	// spec is what Create was handed, so a test says what reached the substrate.
+	spec models.SandboxSpec
+}
 
 func (f *fakeProvider) Name() string                                      { return "fake" }
 func (f *fakeProvider) Capabilities() models.Capabilities                 { return models.Capabilities{} }
 func (f *fakeProvider) LogPath(string) (string, error)                    { return "", nil }
 func (f *fakeProvider) Stop(context.Context, string, time.Duration) error { return nil }
 
-func (f *fakeProvider) Create(context.Context, models.SandboxSpec) error {
+func (f *fakeProvider) Create(_ context.Context, spec models.SandboxSpec) error {
+	f.spec = spec
+
 	return f.r.record("provider.Create")
 }
 

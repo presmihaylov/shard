@@ -34,6 +34,14 @@ func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
 	return f.sb, nil
 }
 
+func (f *fakeLifecycleRepo) Resolve(ref string) (string, error) {
+	if f.sb.Name != "" && ref == f.sb.Name {
+		return f.sb.ID, nil
+	}
+
+	return ref, nil
+}
+
 func (f *fakeLifecycleRepo) List() ([]models.Sandbox, error) {
 	if err := f.r.record("repo.List"); err != nil {
 		return nil, err

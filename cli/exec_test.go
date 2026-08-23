@@ -330,8 +330,12 @@ func (presentRepo) Get(id string) (models.Sandbox, error) {
 	return models.Sandbox{ID: id, State: models.StateRunning}, nil
 }
 
+func (presentRepo) Resolve(ref string) (string, error) { return ref, nil }
+
 type missingRepo struct{ sandboxRepo }
 
 func (missingRepo) Get(id string) (models.Sandbox, error) {
 	return models.Sandbox{}, errors.New("sandbox " + id + ": sandbox not found")
 }
+
+func (missingRepo) Resolve(ref string) (string, error) { return ref, nil }
