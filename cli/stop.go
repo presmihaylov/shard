@@ -38,6 +38,11 @@ func (a App) stop(ctx context.Context, args []string) error {
 		return err
 	}
 
+	opts.id, err = repo.Resolve(opts.id)
+	if err != nil {
+		return err
+	}
+
 	if err := a.stopSandbox(ctx, repo, provider, opts.id, opts.grace); err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -20,6 +21,7 @@ var ErrNotFound = errors.New("sandbox not found")
 
 const (
 	sandboxesDir = "sandboxes"
+	namesDir     = "names"
 	snapshotsDir = "snapshots"
 	locksDir     = "locks"
 	recordFile   = "sandbox.json"
@@ -39,7 +41,7 @@ type Repository struct {
 
 // New prepares the state tree under root, which is /var/lib/shard on the box.
 func New(root string) (*Repository, error) {
-	for _, dir := range []string{sandboxesDir, snapshotsDir, locksDir} {
+	for _, dir := range []string{sandboxesDir, namesDir, snapshotsDir, locksDir} {
 		path := filepath.Join(root, dir)
 		if err := os.MkdirAll(path, dirPerm); err != nil {
 			return nil, fmt.Errorf("create %s: %w", path, err)
@@ -96,12 +98,82 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	}
 
 	sb.ID = id
-	if err := r.write(sb); err != nil {
-		// Give the id back: no verb can reach a claimed directory that holds no record.
+	// The name is claimed after the id, so it never points at a sandbox that does not exist yet.
+	if err := r.claimName(sb.Name, id); err != nil {
 		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
 	}
 
+	if err := r.write(sb); err != nil {
+		// Give the id back: no verb can reach a claimed directory that holds no record.
+		return models.Sandbox{}, errors.Join(err, r.dropName(sb.Name), os.RemoveAll(r.dir(id)))
+	}
+
 	return sb, nil
+}
+
+// claimName makes the kernel decide uniqueness a second time: symlink refuses the second claim of
+// the same name, so two creates racing for one name never both win.
+func (r *Repository) claimName(name, id string) error {
+	if name == "" {
+		return nil
+	}
+
+	if err := validName(name); err != nil {
+		return err
+	}
+
+	err := os.Symlink(filepath.Join("..", sandboxesDir, id), r.namePath(name))
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("the name %q is taken by sandbox %s", name, r.nameHolder(name))
+	}
+	if err != nil {
+		return fmt.Errorf("claim the name %q: %w", name, err)
+	}
+
+	return store.SyncDir(filepath.Join(r.root, namesDir))
+}
+
+// nameHolder is for the collision error only, so an unreadable link answers with a placeholder
+// rather than turning one clear refusal into two errors an operator has to read.
+func (r *Repository) nameHolder(name string) string {
+	id, err := os.Readlink(r.namePath(name))
+	if err != nil {
+		return "another sandbox"
+	}
+
+	return filepath.Base(id)
+}
+
+func (r *Repository) dropName(name string) error {
+	if name == "" {
+		return nil
+	}
+
+	path := r.namePath(name)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func (r *Repository) namePath(name string) string {
+	return filepath.Join(r.root, namesDir, name)
+}
+
+// Resolve turns what an operator typed into the id every other method takes. A name is a symlink, so
+// this is one readlink; anything else is already an id, and Get answers for one that names nothing.
+func (r *Repository) Resolve(ref string) (string, error) {
+	if err := validID(ref); err != nil {
+		return "", err
+	}
+
+	target, err := os.Readlink(r.namePath(ref))
+	if err != nil {
+		return ref, nil
+	}
+
+	return filepath.Base(target), nil
 }
 
 // claimID makes the kernel decide uniqueness: mkdir refuses the second claim of the same id.
@@ -148,12 +220,19 @@ func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) (err 
 		return err
 	}
 
+	name := sb.Name
+
 	if err := mutate(&sb); err != nil {
 		return err
 	}
 
 	if sb.ID != id {
 		return fmt.Errorf("the update of sandbox %s changed its id to %s", id, sb.ID)
+	}
+
+	// The name is claimed by a symlink, so a rename here would leave the index answering for the old one.
+	if sb.Name != name {
+		return fmt.Errorf("the update of sandbox %s changed its name to %q, which the repository does not rename", id, sb.Name)
 	}
 
 	if !sb.State.Valid() {
@@ -171,11 +250,17 @@ func (r *Repository) Delete(id string) (err error) {
 	}
 	defer unlock(l, &err)
 
-	if _, err := r.Get(id); err != nil {
+	sb, err := r.Get(id)
+	if err != nil {
 		return err
 	}
 
-	// The snapshot goes first: it is the one a half-done delete would leave with no id to reach it.
+	// The name goes first: a link that outlived its sandbox would answer for an id nothing holds.
+	if err := r.dropName(sb.Name); err != nil {
+		return err
+	}
+
+	// The snapshot goes next: it is the one a half-done delete would leave with no id to reach it.
 	// The lock file goes last, once the record is gone. Removing it while we hold it is fine, because
 	// store.Acquire moves a waiter onto the file that has the name.
 	for _, path := range []string{r.snapshotDir(id), r.dir(id), l.Path()} {
@@ -185,7 +270,7 @@ func (r *Repository) Delete(id string) (err error) {
 	}
 
 	// Without this a power loss can bring the sandbox back, and claimID syncs the create side already.
-	for _, dir := range []string{snapshotsDir, sandboxesDir, locksDir} {
+	for _, dir := range []string{namesDir, snapshotsDir, sandboxesDir, locksDir} {
 		if err := store.SyncDir(filepath.Join(r.root, dir)); err != nil {
 			return err
 		}
@@ -309,6 +394,24 @@ func (r *Repository) lockPath(id string) (string, error) {
 // unlock joins the release into the caller's error: a lock we cannot drop blocks every later caller.
 func unlock(l *store.Lock, err *error) {
 	*err = errors.Join(*err, l.Release())
+}
+
+// idShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
+// refused at the door rather than resolved by a precedence rule nobody would remember.
+var generatedIDShape = regexp.MustCompile(`^[a-z]+-[a-z]+-[0-9a-f]{4}$`)
+
+// validName refuses a name no verb could take back. It is a link name under the root, so it carries
+// the same restrictions as an id, and it may not be spelled like one.
+func validName(name string) error {
+	if err := validID(name); err != nil {
+		return fmt.Errorf("the sandbox name is not usable: %w", err)
+	}
+
+	if generatedIDShape.MatchString(name) {
+		return fmt.Errorf("the sandbox name %q is spelled like a generated id, which no name may be", name)
+	}
+
+	return nil
 }
 
 // The id is a directory name under the root, so anything that is not one plain component is refused.

@@ -30,6 +30,7 @@ type createOptions struct {
 	ref  string
 	argv []string
 
+	name    string
 	env     []string
 	workDir string
 	user    string
@@ -54,6 +55,7 @@ func parseCreate(args []string) (createOptions, error) {
 
 	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.name, "name", "", "a handle any verb takes in place of the id")
 	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
@@ -170,6 +172,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:         id,
+		Name:       opts.name,
 		RootFS:     img.RootFS,
 		StateDir:   dir,
 		Entrypoint: opts.argv,
@@ -235,6 +238,7 @@ func (a App) pullImage(ctx context.Context, images imageService, ref string) (im
 // claimRecord takes the id, which is the only handle every later step is named by.
 func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img image.Image, opts createOptions) (string, string, error) {
 	sb, err := repo.Create(models.Sandbox{
+		Name:      opts.name,
 		Image:     img.Reference,
 		Provider:  provider.Name(),
 		State:     models.StateCreated,
@@ -265,7 +269,6 @@ func recordCreated(ctx context.Context, repo sandboxRepo, provider models.Provid
 	}
 
 	return repo.Update(spec.ID, func(sb *models.Sandbox) error {
-		sb.Name = spec.Name
 		sb.PID = status.PID
 		sb.NetnsPath = spec.Network.NetnsPath
 		sb.Address = spec.Network.Address

@@ -43,6 +43,11 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
+	opts.id, err = repo.Resolve(opts.id)
+	if err != nil {
+		return err
+	}
+
 	// The record dies last below, so an id with no record has nothing else left on the host either.
 	_, err = repo.Get(opts.id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {

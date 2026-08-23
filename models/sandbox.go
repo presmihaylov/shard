@@ -10,8 +10,8 @@ import (
 type Sandbox struct {
 	// ID is generated, human readable, and the only handle. Every verb takes it and nothing else.
 	ID string `json:"id"`
-	// Name is the guest hostname too, so a later process rebuilds the same spec from the record.
-	Name     string `json:"name"`
+	// Name is the handle --name gave it, empty when none. It is the guest hostname too.
+	Name     string `json:"name,omitempty"`
 	Image    string `json:"image"`
 	Provider string `json:"provider"`
 	State    State  `json:"state"`

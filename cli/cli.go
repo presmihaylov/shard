@@ -23,33 +23,36 @@ const usage = `shard - a single-node sandbox manager (pre-alpha)
 Usage:
   shard create [flags] <image> [-- <argv>...]
                            create a sandbox, start its entrypoint and print its id
-  shard exec [flags] <id> -- <argv>...
+  shard exec [flags] <id|name> -- <argv>...
                            run a command in a sandbox that is already running
-  shard stop [flags] <id>  end a sandbox and keep everything it holds
-  shard rm [flags] <id>    free what a stopped sandbox still holds
+  shard stop [flags] <id|name>
+                           end a sandbox and keep everything it holds
+  shard rm [flags] <id|name>
+                           free what a stopped sandbox still holds
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
   shard version            print the version
 
 Create flags, which must precede the image:
+  --name <name>            a handle every verb takes in place of the id
   --env KEY=VALUE          set an environment variable, repeatable
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
   --cpus <n>               the vcpu bound, 0 for unbounded
 
-Exec flags, which must precede the id:
+Exec flags, which must precede the id or name:
   -i                       keep stdin open on the command
   -t                       run the command on a terminal, and -it for both
   --env KEY=VALUE          set an environment variable, repeatable
   --workdir <dir>          the directory the command starts in
   --user <user>            the user the command runs as
 
-Stop flags, which must precede the id:
+Stop flags, which must precede the id or name:
   --time <duration>        how long the entrypoint gets before it is killed (default 10s)
 
-Rm flags, which must precede the id:
+Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
 
