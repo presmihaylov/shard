@@ -258,6 +258,7 @@ func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
 		Env:     []string{"A=1", "B=2"},
 		WorkDir: "/srv",
 		User:    "65534:65534",
+		Groups:  []uint32{65534, 10},
 	}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -275,7 +276,11 @@ func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
 	}
 
 	flags := pairs(got[:id])
-	for _, want := range []string{"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2"} {
+	wanted := []string{
+		"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2",
+		"--additional-gids 65534", "--additional-gids 10",
+	}
+	for _, want := range wanted {
 		if !slices.Contains(flags, want) {
 			t.Errorf("the flags before the id are %q, want %q in them", got[:id], want)
 		}

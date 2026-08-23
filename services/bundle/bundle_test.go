@@ -173,8 +173,31 @@ func TestBuildLeavesTheSupervisorAsRoot(t *testing.T) {
 func TestBuildPassesNoUserWhenNothingAsksForOne(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
-	if slices.Contains(got.Process.Args, "-user") {
-		t.Errorf("got args %v, want no -user", got.Process.Args)
+	for _, flag := range []string{"-user", "-groups"} {
+		if slices.Contains(got.Process.Args, flag) {
+			t.Errorf("got args %v, want no %s", got.Process.Args, flag)
+		}
+	}
+}
+
+// Dropping to a user means adopting its whole identity, so the image's group file comes along too.
+func TestBuildPassesTheSecondaryGroups(t *testing.T) {
+	cases := map[string]struct{ user, want string }{
+		// The primary gid leads the set, then the groups whose member list names the user.
+		"a name":         {user: "app", want: "2000,50,10"},
+		"a named group":  {user: "app:staff", want: "50,10"},
+		"an unlisted id": {user: "4242", want: "0"},
+		"root":           {user: "root", want: "0"},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, got := build(t, models.SandboxSpec{User: c.user}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+			if flagArg(t, got, "-groups") != c.want {
+				t.Errorf("got -groups %q, want %q", flagArg(t, got, "-groups"), c.want)
+			}
+		})
 	}
 }
 
@@ -182,13 +205,19 @@ func TestBuildPassesNoUserWhenNothingAsksForOne(t *testing.T) {
 func userArg(t *testing.T, got specs.Spec) string {
 	t.Helper()
 
-	i := slices.Index(got.Process.Args, "-user")
+	return flagArg(t, got, "-user")
+}
+
+func flagArg(t *testing.T, got specs.Spec, flag string) string {
+	t.Helper()
+
+	i := slices.Index(got.Process.Args, flag)
 	if i < 0 || i+1 >= len(got.Process.Args) {
-		t.Fatalf("got args %v, want a -user flag with a value", got.Process.Args)
+		t.Fatalf("got args %v, want a %s flag with a value", got.Process.Args, flag)
 	}
 	// Every flag must precede the separator, or shard-init reads it as part of the entrypoint.
 	if separator := slices.Index(got.Process.Args, "--"); separator >= 0 && separator < i {
-		t.Errorf("got args %v, want -user before the -- separator", got.Process.Args)
+		t.Errorf("got args %v, want %s before the -- separator", got.Process.Args, flag)
 	}
 
 	return got.Process.Args[i+1]
@@ -280,6 +309,10 @@ func TestRuntimeReadsBackTheUserTheEntrypointRunsAs(t *testing.T) {
 	if runtime.User != "1000:2000" {
 		t.Errorf("Runtime reports the user %q, want 1000:2000", runtime.User)
 	}
+	// An exec into the sandbox adopts the same identity, and the groups are half of what that means.
+	if want := []uint32{2000, 50, 10}; !slices.Equal(runtime.Groups, want) {
+		t.Errorf("Runtime reports the groups %v, want %v", runtime.Groups, want)
+	}
 }
 
 // Nobody named a user, so nothing may claim one: an empty answer is what makes the exec run as root.
@@ -293,6 +326,9 @@ func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
 
 	if runtime.User != "" {
 		t.Errorf("Runtime reports the user %q, and the -user in it is the command's own argument", runtime.User)
+	}
+	if runtime.Groups != nil {
+		t.Errorf("Runtime reports the groups %v, want none", runtime.Groups)
 	}
 }
 
@@ -363,7 +399,7 @@ func newSpec(t *testing.T) models.SandboxSpec {
 	}
 
 	write(t, filepath.Join(rootfs, "etc/passwd"), "root:x:0:0:root:/root:/bin/sh\napp:x:1000:2000::/home/app:/bin/sh\n")
-	write(t, filepath.Join(rootfs, "etc/group"), "root:x:0:\nstaff:x:50:\n")
+	write(t, filepath.Join(rootfs, "etc/group"), "root:x:0:\nstaff:x:50:app\nwheel:x:10:app\n")
 
 	return models.SandboxSpec{ID: "s-test", StateDir: t.TempDir(), RootFS: rootfs}
 }

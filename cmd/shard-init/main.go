@@ -23,7 +23,7 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] -- <entrypoint> [args...]`
+  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...] -- <entrypoint> [args...]`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -59,6 +59,7 @@ func run(args []string) error {
 	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
 	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
+	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -80,7 +81,7 @@ func run(args []string) error {
 		return errors.New("no entrypoint given")
 	}
 
-	credential, err := parseCredential(*user)
+	credential, err := parseCredential(*user, *groups)
 	if err != nil {
 		return err
 	}
@@ -237,9 +238,13 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 }
 
 // PID 1 keeps its own ids, so it can always write the exit file into the root owned host directory.
-// The host resolved the name against the image rootfs, so only numbers ever reach this flag.
-func parseCredential(user string) (*syscall.Credential, error) {
+// The host resolved the name against the image rootfs, so only numbers ever reach these flags.
+func parseCredential(user, groups string) (*syscall.Credential, error) {
 	if user == "" {
+		if groups != "" {
+			return nil, fmt.Errorf("-groups %q names no user to give them to", groups)
+		}
+
 		return nil, nil
 	}
 
@@ -258,7 +263,33 @@ func parseCredential(user string) (*syscall.Credential, error) {
 		return nil, fmt.Errorf("-user has an unreadable gid: %w", err)
 	}
 
-	return &syscall.Credential{Uid: uid, Gid: gid}, nil
+	supplementary, err := parseGroups(groups)
+	if err != nil {
+		return nil, err
+	}
+
+	// NoSetGroups stays false, so the fork calls setgroups even for an empty set: an entrypoint that
+	// drops to a user must never inherit the group set of PID 1, which is root.
+	return &syscall.Credential{Uid: uid, Gid: gid, Groups: supplementary}, nil
+}
+
+// parseGroups reads the supplementary set the host resolved out of the image's own group file.
+func parseGroups(groups string) ([]uint32, error) {
+	if groups == "" {
+		return nil, nil
+	}
+
+	var out []uint32
+	for field := range strings.SplitSeq(groups, ",") {
+		gid, err := parseID(field)
+		if err != nil {
+			return nil, fmt.Errorf("-groups has an unreadable gid: %w", err)
+		}
+
+		out = append(out, gid)
+	}
+
+	return out, nil
 }
 
 // ParseUint with a bit size of 32 is the bound check: a uid the kernel cannot hold is not an id.

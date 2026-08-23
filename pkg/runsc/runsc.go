@@ -156,6 +156,8 @@ type ExecOptions struct {
 	WorkDir string
 	// User is uid[:gid], and the caller resolves it: config.json's process user is the supervisor's.
 	User string
+	// Groups is the supplementary set that goes with User, which runsc gives no process without one.
+	Groups []uint32
 	// TTY says the three files below are one pty replica, which is the only way the guest gets a terminal.
 	TTY bool
 	// The files the guest process gets. They are files, not pipes, so a pty replica passes straight through.
@@ -222,6 +224,9 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 	}
 	if opts.User != "" {
 		args = append(args, "--user", opts.User)
+		for _, gid := range opts.Groups {
+			args = append(args, "--additional-gids", strconv.FormatUint(uint64(gid), 10))
+		}
 	}
 	for _, entry := range opts.Env {
 		args = append(args, "--env", entry)
