@@ -27,6 +27,9 @@ var ErrNotRunning = errors.New("the sandbox is not running")
 // waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
 const waitDelay = 2 * time.Second
 
+// diagnosticTail bounds what a failed create quotes back, because the guest shares that file with it.
+const diagnosticTail = 4 << 10
+
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
@@ -119,11 +122,17 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 		return errors.New("no bundle: runsc create has nothing to run")
 	}
 
+	// The caller may delete the log the moment this fails, so the diagnostics have to travel in the error.
+	start, err := logEnd(opts.Stderr)
+	if err != nil {
+		return fmt.Errorf("runsc create %s: %w", id, err)
+	}
+
 	cmd := r.command(ctx, "create", "--bundle", opts.Bundle, id)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("runsc create %s: %w: its diagnostics went to %s", id, err, fileName(opts.Stderr))
+		return fmt.Errorf("runsc create %s: %w%s", id, err, diagnostics(opts.Stderr, start))
 	}
 
 	return nil
@@ -214,11 +223,56 @@ func sentinel(message string, err error) error {
 	return err
 }
 
-// fileName names the log a create failure went to, and says so plainly when there is none.
-func fileName(f *os.File) string {
+// logEnd is where a create's own output begins, because the file it writes to already holds the
+// guest's output from an earlier run.
+func logEnd(f *os.File) (int64, error) {
 	if f == nil {
-		return "nowhere"
+		return 0, nil
 	}
 
-	return f.Name()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", f.Name(), err)
+	}
+
+	return info.Size(), nil
+}
+
+// diagnostics quotes what a failed create printed, as the suffix of the error that reports it.
+func diagnostics(f *os.File, offset int64) string {
+	if f == nil {
+		return ": it printed nothing"
+	}
+
+	blob, err := readTail(f.Name(), offset)
+	if err != nil {
+		return fmt.Sprintf(": its diagnostics were unreadable: %v", err)
+	}
+
+	text := strings.TrimSpace(string(blob))
+	if text == "" {
+		return ": it printed nothing"
+	}
+
+	return ": " + text
+}
+
+// readTail reads the file from offset, keeping the last diagnosticTail bytes of it.
+func readTail(path string, offset int64) (blob []byte, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if info.Size()-offset > diagnosticTail {
+		offset = info.Size() - diagnosticTail
+	}
+
+	return io.ReadAll(io.NewSectionReader(f, offset, diagnosticTail))
 }
