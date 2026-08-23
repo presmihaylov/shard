@@ -170,11 +170,6 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		return nil, err
 	}
 
-	user, err := resolveUser(spec.RootFS, spec.User)
-	if err != nil {
-		return nil, err
-	}
-
 	return &specs.Spec{
 		Version: specs.Version,
 		Root: &specs.Root{
@@ -183,11 +178,11 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			Readonly: false,
 		},
 		Hostname: spec.Name,
+		// No User here: PID 1 stays root to write the exit file, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
 			Env:  environment(spec.Env),
 			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
-			User: user,
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
 				Effective:   defaultCapabilities,
@@ -218,9 +213,20 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
 	}
 
-	argv := []string{GuestInitPath, "-exit-file", path.Join(guestShardDir, exitFileName), "--"}
+	argv := []string{GuestInitPath, "-exit-file", path.Join(guestShardDir, exitFileName)}
 
-	return append(argv, entrypoint...), nil
+	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
+	if spec.User != "" {
+		user, err := resolveUser(spec.RootFS, spec.User)
+		if err != nil {
+			return nil, err
+		}
+
+		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
+		argv = append(argv, "-user", fmt.Sprintf("%d:%d", user.UID, user.GID))
+	}
+
+	return append(append(argv, "--"), entrypoint...), nil
 }
 
 // environment adds the one default that is runtime policy rather than image data.

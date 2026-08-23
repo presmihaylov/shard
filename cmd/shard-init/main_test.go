@@ -62,7 +62,7 @@ func spawnOrphans() {
 	pids := make([]string, 0, orphanCount)
 	for range orphanCount {
 		// They outlive the handler installation on purpose, so no SIGCHLD arrives before it.
-		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"})
+		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"}, nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "spawn orphan:", err)
 			os.Exit(1)
@@ -417,12 +417,53 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		"no entrypoint":      {"-exit-file", "/tmp/exit.json"},
 		"relative exit file": {"-exit-file", "exit.json", "--", "/bin/true"},
 		"exit file eats --":  {"-exit-file", "--", "/bin/true"},
+		"user with no gid":   {"-exit-file", "/tmp/exit.json", "-user", "1000", "--", "/bin/true"},
+		"user with a name":   {"-exit-file", "/tmp/exit.json", "-user", "nobody:nobody", "--", "/bin/true"},
+		"user with no ids":   {"-exit-file", "/tmp/exit.json", "-user", ":", "--", "/bin/true"},
+		"user with an extra": {"-exit-file", "/tmp/exit.json", "-user", "1000:1000:10", "--", "/bin/true"},
+		"an id past 32 bits": {"-exit-file", "/tmp/exit.json", "-user", "4294967296:0", "--", "/bin/true"},
+		"a negative id":      {"-exit-file", "/tmp/exit.json", "-user", "-1:0", "--", "/bin/true"},
 	}
 
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			if err := run(args); err == nil {
 				t.Errorf("run(%q) returned no error", args)
+			}
+		})
+	}
+}
+
+// The host resolves the name, so the supervisor only ever reads ids off the flag.
+func TestParseCredential(t *testing.T) {
+	cases := map[string]struct {
+		user string
+		want *syscall.Credential
+	}{
+		"none":     {user: "", want: nil},
+		"root":     {user: "0:0", want: &syscall.Credential{Uid: 0, Gid: 0}},
+		"a pair":   {user: "1000:2000", want: &syscall.Credential{Uid: 1000, Gid: 2000}},
+		"the most": {user: "4294967295:4294967295", want: &syscall.Credential{Uid: 4294967295, Gid: 4294967295}},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseCredential(c.user)
+			if err != nil {
+				t.Fatalf("parseCredential(%q): %v", c.user, err)
+			}
+			if c.want == nil {
+				if got != nil {
+					t.Fatalf("got %+v, want no credential", got)
+				}
+
+				return
+			}
+			if got == nil {
+				t.Fatalf("got no credential, want %+v", c.want)
+			}
+			if got.Uid != c.want.Uid || got.Gid != c.want.Gid {
+				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
 	}

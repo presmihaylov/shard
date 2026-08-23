@@ -109,24 +109,24 @@ func TestBuildAddsAPathWhenTheImageHasNone(t *testing.T) {
 func TestBuildResolvesANamedUserFromTheImage(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "app"})
 
-	if got.Process.User.UID != 1000 || got.Process.User.GID != 2000 {
-		t.Errorf("got uid %d gid %d, want 1000 and 2000", got.Process.User.UID, got.Process.User.GID)
+	if want := "1000:2000"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q", userArg(t, got), want)
 	}
 }
 
 func TestBuildResolvesAUserAndGroupPair(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "app:staff"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "root"})
 
-	if got.Process.User.UID != 1000 || got.Process.User.GID != 50 {
-		t.Errorf("got uid %d gid %d, want 1000 and 50", got.Process.User.UID, got.Process.User.GID)
+	if want := "1000:50"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q", userArg(t, got), want)
 	}
 }
 
 func TestBuildResolvesNumericIds(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "65534:65534"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
-	if got.Process.User.UID != 65534 || got.Process.User.GID != 65534 {
-		t.Errorf("got uid %d gid %d, want 65534 twice", got.Process.User.UID, got.Process.User.GID)
+	if want := "65534:65534"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -134,17 +134,58 @@ func TestBuildResolvesNumericIds(t *testing.T) {
 func TestBuildResolvesANumericUserThroughPasswd(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "1000"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
-	if got.Process.User.UID != 1000 || got.Process.User.GID != 2000 {
-		t.Errorf("got uid %d gid %d, want 1000 and 2000 from the passwd entry", got.Process.User.UID, got.Process.User.GID)
+	if want := "1000:2000"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q from the passwd entry", userArg(t, got), want)
 	}
 }
 
 func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "4242"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
-	if got.Process.User.UID != 4242 || got.Process.User.GID != 0 {
-		t.Errorf("got uid %d gid %d, want 4242 and 0", got.Process.User.UID, got.Process.User.GID)
+	if want := "4242:0"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q", userArg(t, got), want)
 	}
+}
+
+func TestBuildResolvesRoot(t *testing.T) {
+	_, got := build(t, models.SandboxSpec{User: "root"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if want := "0:0"; userArg(t, got) != want {
+		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+	}
+}
+
+// The supervisor writes the exit file into a root owned directory, so it must never drop its own ids.
+func TestBuildLeavesTheSupervisorAsRoot(t *testing.T) {
+	_, got := build(t, models.SandboxSpec{User: "app"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if got.Process.User.UID != 0 || got.Process.User.GID != 0 {
+		t.Errorf("the OCI process runs as %d:%d, want root", got.Process.User.UID, got.Process.User.GID)
+	}
+}
+
+func TestBuildPassesNoUserWhenNothingAsksForOne(t *testing.T) {
+	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if slices.Contains(got.Process.Args, "-user") {
+		t.Errorf("got args %v, want no -user", got.Process.Args)
+	}
+}
+
+// userArg reads the ids the supervisor is told to drop its child to.
+func userArg(t *testing.T, got specs.Spec) string {
+	t.Helper()
+
+	i := slices.Index(got.Process.Args, "-user")
+	if i < 0 || i+1 >= len(got.Process.Args) {
+		t.Fatalf("got args %v, want a -user flag with a value", got.Process.Args)
+	}
+	// Every flag must precede the separator, or shard-init reads it as part of the entrypoint.
+	if separator := slices.Index(got.Process.Args, "--"); separator >= 0 && separator < i {
+		t.Errorf("got args %v, want -user before the -- separator", got.Process.Args)
+	}
+
+	return got.Process.Args[i+1]
 }
 
 func TestBuildRefusesALayerPathOverlayfsCannotParse(t *testing.T) {

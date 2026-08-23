@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +23,7 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> -- <entrypoint> [args...]`
+  shard-init -exit-file <path> [-user <uid>:<gid>] -- <entrypoint> [args...]`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -55,6 +57,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("shard-init", flag.ContinueOnError)
 	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
 	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
+	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -70,7 +73,12 @@ func run(args []string) error {
 		return errors.New("no entrypoint given")
 	}
 
-	err := supervise(flags.Args(), *exitFile)
+	credential, err := parseCredential(*user)
+	if err != nil {
+		return err
+	}
+
+	err = supervise(flags.Args(), *exitFile, credential)
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -83,14 +91,14 @@ func run(args []string) error {
 
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, exitFile string) error {
+func supervise(entrypointArgv []string, exitFile string, credential *syscall.Credential) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
 	stopSignals := make(chan os.Signal, 4)
 	signal.Notify(childDeaths, syscall.SIGCHLD)
 	signal.Notify(stopSignals, syscall.SIGTERM, syscall.SIGINT)
 
-	entrypointPID, err := startProcess(entrypointArgv)
+	entrypointPID, err := startProcess(entrypointArgv, credential)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
@@ -216,8 +224,43 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
 }
 
+// PID 1 keeps its own ids, so it can always write the exit file into the root owned host directory.
+// The host resolved the name against the image rootfs, so only numbers ever reach this flag.
+func parseCredential(user string) (*syscall.Credential, error) {
+	if user == "" {
+		return nil, nil
+	}
+
+	uidField, gidField, hasGroup := strings.Cut(user, ":")
+	if !hasGroup {
+		return nil, fmt.Errorf("-user must be uid:gid, got %q", user)
+	}
+
+	uid, err := parseID(uidField)
+	if err != nil {
+		return nil, fmt.Errorf("-user has an unreadable uid: %w", err)
+	}
+
+	gid, err := parseID(gidField)
+	if err != nil {
+		return nil, fmt.Errorf("-user has an unreadable gid: %w", err)
+	}
+
+	return &syscall.Credential{Uid: uid, Gid: gid}, nil
+}
+
+// ParseUint with a bit size of 32 is the bound check: a uid the kernel cannot hold is not an id.
+func parseID(field string) (uint32, error) {
+	id, err := strconv.ParseUint(field, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not an id: %w", field, err)
+	}
+
+	return uint32(id), nil
+}
+
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
-func startProcess(argv []string) (int, error) {
+func startProcess(argv []string, credential *syscall.Credential) (int, error) {
 	binary, err := exec.LookPath(argv[0])
 	if err != nil {
 		return 0, fmt.Errorf("look up %q: %w", argv[0], err)
@@ -227,6 +270,7 @@ func startProcess(argv []string) (int, error) {
 	pid, err := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
+		Sys:   &syscall.SysProcAttr{Credential: credential},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("fork and exec %q: %w", binary, err)
