@@ -20,10 +20,24 @@ const DefaultTimeout = 30 * time.Minute
 const usage = `shard - a single-node sandbox manager (pre-alpha)
 
 Usage:
+  shard run [flags] <image> [-- <argv>...]
+                           run a sandbox in the foreground and stream its output
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
   shard version            print the version
+
+Run flags, which must precede the image:
+  --env KEY=VALUE          set an environment variable, repeatable
+  --workdir <dir>          the directory the entrypoint starts in
+  --user <user>            the user the entrypoint runs as
+  --memory <MiB>           the memory bound, 0 for unbounded
+  --cpus <n>               the vcpu bound, 0 for unbounded
+  --shard-init <path>      the host path of the guest supervisor
+
+The guest's stdout and stderr are interleaved into one stream, so shard run cannot
+separate them. The sandbox outlives the command: run prints its id and Ctrl-C only
+detaches from it.
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
@@ -43,6 +57,9 @@ type App struct {
 	Insecure []string
 	// Timeout defaults to DefaultTimeout when zero.
 	Timeout time.Duration
+
+	// newRunDeps builds what run wires together. A test replaces it: every real part needs Linux and root.
+	newRunDeps func(a App, opts runOptions) (runDeps, error)
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
@@ -69,6 +86,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "version":
 		return a.print(a.Version)
+	case "run":
+		return a.run(ctx, args[1:])
 	case "pull":
 		return a.pull(ctx, args[1:])
 	case "image":
@@ -93,7 +112,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&a.Root, "root", a.Root, "where shard keeps its state")
 	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
-	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
+	flags.Var((*stringList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("parse the flags: %w", err)
@@ -107,12 +126,12 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	return flags.Args(), nil
 }
 
-// hostList collects a repeatable flag, which the flag package has no built-in type for.
-type hostList []string
+// stringList collects a repeatable flag, which the flag package has no built-in type for.
+type stringList []string
 
-func (h *hostList) String() string { return strings.Join(*h, ",") }
+func (h *stringList) String() string { return strings.Join(*h, ",") }
 
-func (h *hostList) Set(value string) error {
+func (h *stringList) Set(value string) error {
 	*h = append(*h, value)
 
 	return nil
@@ -125,6 +144,15 @@ func (a App) warn(message string) {
 	}
 
 	fmt.Fprintln(a.Err, "shard: warning:", message)
+}
+
+// note tells the operator something they need and that is not a warning, such as the sandbox handle.
+func (a App) note(message string) {
+	if a.Err == nil {
+		return
+	}
+
+	fmt.Fprintln(a.Err, "shard:", message)
 }
 
 func (a App) print(s string) error {

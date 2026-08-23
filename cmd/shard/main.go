@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -19,10 +20,33 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go escape(ctx)
+
 	app := cli.App{Version: version, Out: os.Stdout, Err: os.Stderr}
 
-	if err := app.Run(ctx, os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "shard:", err)
-		os.Exit(1)
+	err := app.Run(ctx, os.Args[1:])
+	if err == nil {
+		return
 	}
+
+	var exit cli.ExitError
+	if errors.As(err, &exit) {
+		os.Exit(exit.Code)
+	}
+
+	fmt.Fprintln(os.Stderr, "shard:", err)
+	os.Exit(1)
+}
+
+// escape leaves the second signal to the process rather than to the work the first one cancelled, so
+// a teardown that hangs cannot trap the user at the keyboard.
+func escape(ctx context.Context) {
+	<-ctx.Done()
+
+	second := make(chan os.Signal, 1)
+	signal.Notify(second, os.Interrupt, syscall.SIGTERM)
+	<-second
+	signal.Stop(second)
+
+	os.Exit(cli.InterruptedExitCode)
 }
