@@ -99,7 +99,9 @@ func TestParseCreateRejections(t *testing.T) {
 		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":    {"--env", "=1", "alpine:3.20"},
 		"a negative memory":      {"--memory", "-512", "alpine:3.20"},
-		"a negative cpu bound":   {"--cpus", "-2", "alpine:3.20"},
+		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
+		"a memory that overflows": {"--memory", "17592186044416", "alpine:3.20"},
+		"a negative cpu bound":    {"--cpus", "-2", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

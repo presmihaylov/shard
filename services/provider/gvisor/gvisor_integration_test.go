@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -586,6 +587,8 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	sweepCgroups()
+
 	for _, target := range roots {
 		if err := os.RemoveAll(*target); err != nil {
 			fmt.Fprintln(os.Stderr, "remove", *target, err)
@@ -593,6 +596,24 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// sweepCgroups removes what a failed create leaves at the cgroup root. runsc removes its own cgroup
+// on delete, but one left behind silently unbounds the next sandbox that takes the same id, and the
+// ids here repeat on every run.
+func sweepCgroups() {
+	left, err := filepath.Glob(filepath.Join(cgroup.Root, "shard-1?-*"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "list the cgroups the tests left:", err)
+
+		return
+	}
+
+	for _, dir := range left {
+		if err := os.Remove(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "remove the leftover cgroup", dir+":", err)
+		}
+	}
 }
 
 func readFile(t *testing.T, path string) string {
