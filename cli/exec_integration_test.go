@@ -205,14 +205,8 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 		}
 	}()
 
-	app.newExecDeps = func(a App) (execDeps, error) {
-		deps, err := defaultExecDeps(a)
-		if err != nil {
-			return execDeps{}, err
-		}
-		deps.stdin, deps.stdout, deps.stderr = terminal.Replica, terminal.Replica, terminal.Replica
-
-		return deps, nil
+	app.newDeps = func(a App) *deps {
+		return &deps{app: a, inFile: terminal.Replica, outFile: terminal.Replica, errFile: terminal.Replica}
 	}
 
 	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "--", "/bin/sh", "-c", "stty size; exit 7"})
@@ -295,14 +289,8 @@ func runExecTo(app App, path string, args ...string) error {
 		return err
 	}
 
-	app.newExecDeps = func(a App) (execDeps, error) {
-		deps, err := defaultExecDeps(a)
-		if err != nil {
-			return execDeps{}, err
-		}
-		deps.stdout, deps.stderr = out, out
-
-		return deps, nil
+	app.newDeps = func(a App) *deps {
+		return &deps{app: a, outFile: out, errFile: out}
 	}
 
 	return errors.Join(app.Run(context.Background(), args), out.Close())
@@ -318,14 +306,14 @@ func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
 	holder := &replicaHolder{t: t}
 
 	app := App{Version: "test", Root: t.TempDir(), Out: io.Discard}
-	app.newExecDeps = func(App) (execDeps, error) {
-		return execDeps{
-			repo:     presentRepo{},
-			provider: holder,
-			stdin:    terminal.Replica,
-			stdout:   terminal.Replica,
-			stderr:   terminal.Replica,
-		}, nil
+	app.newDeps = func(App) *deps {
+		return &deps{
+			repoSvc:     presentRepo{},
+			providerSvc: holder,
+			inFile:      terminal.Replica,
+			outFile:     terminal.Replica,
+			errFile:     terminal.Replica,
+		}
 	}
 
 	done := make(chan error, 1)
@@ -404,6 +392,8 @@ func testTerminal(t *testing.T) *pty.Pty {
 
 // replicaHolder is a command that left something behind: it keeps the terminal it was given open.
 type replicaHolder struct {
+	models.Provider
+
 	t *testing.T
 }
 

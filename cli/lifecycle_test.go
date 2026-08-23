@@ -13,6 +13,8 @@ import (
 
 // fakeLifecycleRepo answers for one sandbox, so a test says what the record held before the verb ran.
 type fakeLifecycleRepo struct {
+	sandboxRepo
+
 	r       *recorder
 	sb      models.Sandbox
 	missing bool
@@ -48,6 +50,8 @@ func (f *fakeLifecycleRepo) Delete(string) error {
 }
 
 type fakeLifecycleNet struct {
+	sandboxNetwork
+
 	r        *recorder
 	released bool
 }
@@ -62,6 +66,8 @@ func (f *fakeLifecycleNet) Release(context.Context, string) error {
 }
 
 type fakeLifecycleProvider struct {
+	models.Provider
+
 	r      *recorder
 	status models.Status
 	exit   models.ExitStatus
@@ -112,25 +118,25 @@ func (f *fakeLifecycleProvider) Wait(context.Context, string) (models.ExitStatus
 }
 
 // newLifecycleApp wires stop and rm onto fakes, so the order and the refusals are testable off Linux.
-func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.Sandbox) (App, lifecycleDeps) {
+func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.Sandbox) (App, *deps) {
 	t.Helper()
 
 	r.live = map[string]bool{}
 
-	deps := lifecycleDeps{
-		repo:     &fakeLifecycleRepo{r: r, sb: sb},
-		net:      &fakeLifecycleNet{r: r},
-		provider: &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
+	d := &deps{
+		repoSvc:     &fakeLifecycleRepo{r: r, sb: sb},
+		netSvc:      &fakeLifecycleNet{r: r},
+		providerSvc: &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
 	}
 
 	return App{
-		Version:          "test",
-		Root:             t.TempDir(),
-		Out:              out,
-		Err:              out,
-		Timeout:          time.Minute,
-		newLifecycleDeps: func(App) (lifecycleDeps, error) { return deps, nil },
-	}, deps
+		Version: "test",
+		Root:    t.TempDir(),
+		Out:     out,
+		Err:     out,
+		Timeout: time.Minute,
+		newDeps: func(App) *deps { return d },
+	}, d
 }
 
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -25,13 +26,25 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	deps, err := a.lifecycle()
+	d := a.deps()
+
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	net, err := d.net()
+	if err != nil {
+		return err
+	}
+
+	provider, err := d.provider()
 	if err != nil {
 		return err
 	}
 
 	// The record dies last below, so an id with no record has nothing else left on the host either.
-	_, err = deps.repo.Get(opts.id)
+	_, err = repo.Get(opts.id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
 		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
 
@@ -41,11 +54,11 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if err := a.endIfAlive(ctx, deps, opts); err != nil {
+	if err := a.endIfAlive(ctx, repo, provider, opts); err != nil {
 		return err
 	}
 
-	if err := free(ctx, deps, opts.id); err != nil {
+	if err := free(ctx, repo, net, provider, opts.id); err != nil {
 		return err
 	}
 
@@ -54,8 +67,8 @@ func (a App) remove(ctx context.Context, args []string) error {
 
 // endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps.
 // --force is the shorthand for the stop the operator would otherwise type first.
-func (a App) endIfAlive(ctx context.Context, deps lifecycleDeps, opts rmOptions) error {
-	status, err := deps.provider.Status(ctx, opts.id)
+func (a App) endIfAlive(ctx context.Context, repo sandboxRepo, provider models.Provider, opts rmOptions) error {
+	status, err := provider.Status(ctx, opts.id)
 	if err != nil {
 		return err
 	}
@@ -67,7 +80,7 @@ func (a App) endIfAlive(ctx context.Context, deps lifecycleDeps, opts rmOptions)
 		return fmt.Errorf("sandbox %s is %s: stop it first with shard stop %s, or pass --force", opts.id, status.State, opts.id)
 	}
 
-	return a.stopSandbox(ctx, deps, opts.id, opts.grace)
+	return a.stopSandbox(ctx, repo, provider, opts.id, opts.grace)
 }
 
 // holding is one of the things a stopped sandbox still holds on the host.
@@ -79,11 +92,11 @@ type holding struct {
 // free gives back everything a stop kept, and stops at the first failure: a step that failed still
 // holds what the steps below it name. The record goes last, because it is the only handle by which
 // the mount and the namespace can be found again.
-func free(ctx context.Context, deps lifecycleDeps, id string) error {
+func free(ctx context.Context, repo sandboxRepo, net sandboxNetwork, provider models.Provider, id string) error {
 	held := []holding{
-		{"runsc state and rootfs mount", func() error { return deps.provider.Remove(ctx, id) }},
-		{"netns, veth and address lease", func() error { return deps.net.Release(ctx, id) }},
-		{"record and state directory", func() error { return deps.repo.Delete(id) }},
+		{"runsc state and rootfs mount", func() error { return provider.Remove(ctx, id) }},
+		{"netns, veth and address lease", func() error { return net.Release(ctx, id) }},
+		{"record and state directory", func() error { return repo.Delete(id) }},
 	}
 
 	for i, h := range held {

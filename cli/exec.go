@@ -8,17 +8,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
-	"github.com/presmihaylov/shard/pkg/runsc"
-	"github.com/presmihaylov/shard/services/bundle"
-	"github.com/presmihaylov/shard/services/provider/gvisor"
-	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // drainBudget is how long the command's last output may take to arrive once the command itself is gone.
@@ -45,50 +40,30 @@ type execOptions struct {
 	tty         bool
 }
 
-// execRepo is the part of sandboxstate.Repository that exec drives.
-type execRepo interface {
-	Get(id string) (models.Sandbox, error)
-}
-
-// execProvider is the one verb exec drives.
-type execProvider interface {
-	Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error)
-}
-
-// execDeps is what exec wires together. A test replaces the factory, because the real parts need root.
-type execDeps struct {
-	repo     execRepo
-	provider execProvider
-
-	// The terminal this shard process holds. A test replaces them: a pipe is not a terminal.
-	stdin  *os.File
-	stdout *os.File
-	stderr *os.File
-}
-
 func (a App) exec(ctx context.Context, args []string) error {
 	opts, err := parseExec(args)
 	if err != nil {
 		return err
 	}
 
-	build := a.newExecDeps
-	if build == nil {
-		build = defaultExecDeps
-	}
+	d := a.deps()
 
-	deps, err := build(a)
+	repo, err := d.repo()
 	if err != nil {
 		return err
 	}
-	deps = deps.withHostStdio()
 
-	if opts.tty && !pty.IsTerminal(deps.stdin) {
+	provider, err := d.provider()
+	if err != nil {
+		return err
+	}
+
+	if opts.tty && !pty.IsTerminal(d.stdin()) {
 		return errors.New("-t needs a terminal on stdin, and this one is not one")
 	}
 
 	// The record answers for an id nobody ever created; the provider answers for its state.
-	if _, err := deps.repo.Get(opts.id); err != nil {
+	if _, err := repo.Get(opts.id); err != nil {
 		return err
 	}
 
@@ -100,7 +75,7 @@ func (a App) exec(ctx context.Context, args []string) error {
 		TTY:     opts.tty,
 	}
 
-	status, err := a.runExec(ctx, deps, opts, spec)
+	status, err := a.runExec(ctx, d, provider, opts, spec)
 	if err != nil {
 		return err
 	}
@@ -114,29 +89,29 @@ func (a App) exec(ctx context.Context, args []string) error {
 
 // runExec picks the stdio the guest process gets. Ctrl-C during either path ends that process and
 // nothing else: the cancelled exec signals the one guest pid, and only stop ends a sandbox.
-func (a App) runExec(ctx context.Context, deps execDeps, opts execOptions, spec models.ExecSpec) (models.ExitStatus, error) {
+func (a App) runExec(ctx context.Context, d *deps, provider models.Provider, opts execOptions, spec models.ExecSpec) (models.ExitStatus, error) {
 	if opts.tty {
-		return a.execOnTerminal(ctx, deps, opts, spec)
+		return a.execOnTerminal(ctx, d, provider, opts, spec)
 	}
 
 	if opts.interactive {
-		spec.Stdin = deps.stdin
+		spec.Stdin = d.stdin()
 	}
-	spec.Stdout, spec.Stderr = deps.stdout, deps.stderr
+	spec.Stdout, spec.Stderr = d.stdout(), d.stderr()
 
-	return deps.provider.Exec(ctx, opts.id, spec)
+	return provider.Exec(ctx, opts.id, spec)
 }
 
 // execOnTerminal gives the guest a pty replica and puts this terminal into raw mode, so a keystroke
 // reaches the guest untouched. The restore runs on every path out of here, a panic included.
-func (a App) execOnTerminal(ctx context.Context, deps execDeps, opts execOptions, spec models.ExecSpec) (status models.ExitStatus, err error) {
+func (a App) execOnTerminal(ctx context.Context, d *deps, provider models.Provider, opts execOptions, spec models.ExecSpec) (status models.ExitStatus, err error) {
 	pair, err := pty.Open()
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
 	defer func() { err = errors.Join(err, pair.Close()) }()
 
-	size, err := pty.SizeOf(deps.stdin)
+	size, err := pty.SizeOf(d.stdin())
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
@@ -144,21 +119,21 @@ func (a App) execOnTerminal(ctx context.Context, deps execDeps, opts execOptions
 		return models.ExitStatus{}, err
 	}
 
-	restore, err := pty.MakeRaw(deps.stdin)
+	restore, err := pty.MakeRaw(d.stdin())
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
 	defer func() { err = errors.Join(err, restore()) }()
 
-	stop := forwardResize(pair, deps.stdin, a.warn)
+	stop := forwardResize(pair, d.stdin(), a.warn)
 	defer stop()
 
 	// A terminal carries one stream, so all three fds are the same file.
 	spec.Stdin, spec.Stdout, spec.Stderr = pair.Replica, pair.Replica, pair.Replica
 
-	drained := pump(pair, deps, a.warn)
+	drained := pump(pair, d, a.warn)
 
-	status, err = deps.provider.Exec(ctx, opts.id, spec)
+	status, err = provider.Exec(ctx, opts.id, spec)
 
 	// Our copy of the replica is what keeps the master readable, so the output drains only after it goes.
 	closeErr := pair.Replica.Close()
@@ -180,9 +155,9 @@ func (a App) execOnTerminal(ctx context.Context, deps execDeps, opts execOptions
 
 // pump moves bytes both ways and reports when the guest side has nothing left to say. The keyboard
 // copier is left running: it blocks on a terminal shard does not own, and the process is about to end.
-func pump(pair *pty.Pty, deps execDeps, warn func(string)) <-chan struct{} {
+func pump(pair *pty.Pty, d *deps, warn func(string)) <-chan struct{} {
 	go func() {
-		if _, err := io.Copy(pair.Master, deps.stdin); err != nil {
+		if _, err := io.Copy(pair.Master, d.stdin()); err != nil {
 			warn(fmt.Sprintf("the keyboard stopped reaching the command: %v", err))
 		}
 	}()
@@ -192,7 +167,7 @@ func pump(pair *pty.Pty, deps execDeps, warn func(string)) <-chan struct{} {
 		defer close(drained)
 
 		// The master reports the replica's last close as an error, and that is the normal end of a session.
-		if _, err := io.Copy(deps.stdout, pair.Master); err != nil && !errors.Is(err, syscall.EIO) {
+		if _, err := io.Copy(d.stdout(), pair.Master); err != nil && !errors.Is(err, syscall.EIO) {
 			warn(fmt.Sprintf("the command's output stopped reaching the terminal: %v", err))
 		}
 	}()
@@ -305,45 +280,4 @@ func expandBundles(args []string) []string {
 	}
 
 	return out
-}
-
-// withHostStdio fills in the terminal this process holds, which is what the real command runs on.
-func (d execDeps) withHostStdio() execDeps {
-	if d.stdin == nil {
-		d.stdin = os.Stdin
-	}
-	if d.stdout == nil {
-		d.stdout = os.Stdout
-	}
-	if d.stderr == nil {
-		d.stderr = os.Stderr
-	}
-
-	return d
-}
-
-// defaultExecDeps builds the real layers, which all refuse off Linux.
-func defaultExecDeps(a App) (execDeps, error) {
-	repo, err := sandboxstate.New(a.Root)
-	if err != nil {
-		return execDeps{}, err
-	}
-
-	// The mode is fixed on the runner, and it must match the one the sandbox was created with.
-	runner, err := runsc.New(filepath.Join(a.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
-	if err != nil {
-		return execDeps{}, err
-	}
-
-	bundles, err := bundle.New(a.InitPath)
-	if err != nil {
-		return execDeps{}, err
-	}
-
-	provider, err := gvisor.New(runner, bundles, repo.Dir)
-	if err != nil {
-		return execDeps{}, err
-	}
-
-	return execDeps{repo: repo, provider: provider}, nil
 }

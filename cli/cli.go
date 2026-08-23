@@ -74,12 +74,8 @@ type App struct {
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
 	InitPath string
 
-	// newCreateDeps builds what create wires together. A test replaces it: the real parts need root.
-	newCreateDeps func(a App) (createDeps, error)
-	// newExecDeps is the same for exec.
-	newExecDeps func(a App) (execDeps, error)
-	// newLifecycleDeps is the same for stop and rm, which drive one set of layers between them.
-	newLifecycleDeps func(a App) (lifecycleDeps, error)
+	// newDeps builds the layers the commands drive. A test replaces it: the real parts need Linux and root.
+	newDeps func(a App) *deps
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.

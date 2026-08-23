@@ -1,0 +1,168 @@
+package cli
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/sandboxstate"
+)
+
+// imageService is the part of image.Service the commands drive. The service is a struct, so this is
+// the only seam a test can put a fake behind.
+type imageService interface {
+	Pull(ctx context.Context, ref string) (image.Image, error)
+	List() ([]image.Image, error)
+	Remove(ctx context.Context, ref string) error
+}
+
+// sandboxRepo is the part of sandboxstate.Repository the commands drive.
+type sandboxRepo interface {
+	Create(sb models.Sandbox) (models.Sandbox, error)
+	Get(id string) (models.Sandbox, error)
+	Update(id string, mutate func(*models.Sandbox) error) error
+	Delete(id string) error
+	Dir(id string) (string, error)
+}
+
+// sandboxNetwork is the part of network.Service the commands drive.
+type sandboxNetwork interface {
+	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
+	Release(ctx context.Context, id string) error
+}
+
+// deps is every layer a shard command can drive. Each one is built on the first ask and kept, so a
+// command that never asks for the provider or the network never needs runsc, netns or root: that is
+// what keeps version, pull and image working off Linux and off root.
+type deps struct {
+	app App
+
+	imageSvc    imageService
+	repoSvc     sandboxRepo
+	netSvc      sandboxNetwork
+	providerSvc models.Provider
+
+	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
+	inFile  *os.File
+	outFile *os.File
+	errFile *os.File
+}
+
+// deps builds what the command is about to drive, through the seam a test replaces.
+func (a App) deps() *deps {
+	if a.newDeps != nil {
+		return a.newDeps(a)
+	}
+
+	return &deps{app: a}
+}
+
+func (d *deps) images() (imageService, error) {
+	if d.imageSvc != nil {
+		return d.imageSvc, nil
+	}
+
+	svc, err := image.New(filepath.Join(d.app.Root, "images"), registry.WithInsecureRegistries(d.app.Insecure...))
+	if err != nil {
+		return nil, err
+	}
+	d.imageSvc = svc
+
+	return d.imageSvc, nil
+}
+
+func (d *deps) repo() (sandboxRepo, error) {
+	if d.repoSvc != nil {
+		return d.repoSvc, nil
+	}
+
+	repo, err := sandboxstate.New(d.app.Root)
+	if err != nil {
+		return nil, err
+	}
+	d.repoSvc = repo
+
+	return d.repoSvc, nil
+}
+
+func (d *deps) net() (sandboxNetwork, error) {
+	if d.netSvc != nil {
+		return d.netSvc, nil
+	}
+
+	manager, err := netns.New()
+	if err != nil {
+		return nil, err
+	}
+
+	svc, err := network.New(network.Config{Root: d.app.Root}, manager)
+	if err != nil {
+		return nil, err
+	}
+	d.netSvc = svc
+
+	return d.netSvc, nil
+}
+
+func (d *deps) provider() (models.Provider, error) {
+	if d.providerSvc != nil {
+		return d.providerSvc, nil
+	}
+
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	// The mode is fixed on the runner and must match the one the sandbox was created with, so every
+	// command builds it here and nowhere else.
+	runner, err := runsc.New(filepath.Join(d.app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	if err != nil {
+		return nil, err
+	}
+
+	bundles, err := bundle.New(d.app.InitPath)
+	if err != nil {
+		return nil, err
+	}
+
+	provider, err := gvisor.New(runner, bundles, repo.Dir)
+	if err != nil {
+		return nil, err
+	}
+	d.providerSvc = provider
+
+	return d.providerSvc, nil
+}
+
+func (d *deps) stdin() *os.File {
+	if d.inFile == nil {
+		d.inFile = os.Stdin
+	}
+
+	return d.inFile
+}
+
+func (d *deps) stdout() *os.File {
+	if d.outFile == nil {
+		d.outFile = os.Stdout
+	}
+
+	return d.outFile
+}
+
+func (d *deps) stderr() *os.File {
+	if d.errFile == nil {
+		d.errFile = os.Stderr
+	}
+
+	return d.errFile
+}

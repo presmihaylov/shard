@@ -133,7 +133,10 @@ func (r *recorder) cleanup(ctx context.Context, name string) error {
 	return r.record(name)
 }
 
-type fakeImages struct{ r *recorder }
+type fakeImages struct {
+	imageService
+	r *recorder
+}
 
 func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
 	if err := f.r.record("images.Pull"); err != nil {
@@ -144,6 +147,8 @@ func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
 }
 
 type fakeRepo struct {
+	sandboxRepo
+
 	r       *recorder
 	dir     string
 	updates int
@@ -249,27 +254,27 @@ func (f *fakeProvider) Fork(context.Context, string, models.SandboxSpec) error {
 }
 
 // newFakeApp wires create onto fakes, so the whole order and the whole teardown are testable off Linux.
-func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, createDeps) {
+func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, *deps) {
 	t.Helper()
 
 	r.live = map[string]bool{}
 	dir := t.TempDir()
 
-	deps := createDeps{
-		images:   fakeImages{r: r},
-		repo:     &fakeRepo{r: r, dir: dir},
-		net:      fakeNet{r: r},
-		provider: &fakeProvider{r: r},
+	d := &deps{
+		imageSvc:    fakeImages{r: r},
+		repoSvc:     &fakeRepo{r: r, dir: dir},
+		netSvc:      fakeNet{r: r},
+		providerSvc: &fakeProvider{r: r},
 	}
 
 	return App{
-		Version:       "test",
-		Root:          dir,
-		Out:           out,
-		Err:           out,
-		Timeout:       time.Minute,
-		newCreateDeps: func(App) (createDeps, error) { return deps, nil },
-	}, deps
+		Version: "test",
+		Root:    dir,
+		Out:     out,
+		Err:     out,
+		Timeout: time.Minute,
+		newDeps: func(App) *deps { return d },
+	}, d
 }
 
 func TestCreatePrintsTheIDAndTearsNothingDown(t *testing.T) {
@@ -466,7 +471,7 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 		t.Fatal("a forced failure returned no error")
 	}
 
-	repo, ok := deps.repo.(*fakeRepo)
+	repo, ok := deps.repoSvc.(*fakeRepo)
 	if !ok {
 		t.Fatal("the fake repository was replaced")
 	}
