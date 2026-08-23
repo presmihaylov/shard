@@ -1,6 +1,6 @@
 // Package network gives every sandbox its own network namespace, an address from a pool and a way
-// out through the host. Host netfilter is the policy of record: gVisor's netstack iptables do not
-// survive a checkpoint and restore, so nothing a sandbox can reach may depend on rules inside it.
+// out through the host. Host netfilter is the policy of record on every substrate: nothing a sandbox
+// can reach may depend on a rule that lives inside the sandbox, where shard does not control it.
 package network
 
 import (
@@ -248,8 +248,8 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr) err
 	return s.configureGuest(ctx, id, address)
 }
 
-// configureGuest addresses the namespace before the sandbox joins it: gVisor reads the interfaces it
-// finds there once, at create, and builds its netstack from them.
+// configureGuest addresses the namespace before the sandbox joins it, because a substrate reads the
+// interfaces it finds there once, at create, and builds the guest's view of the network from them.
 func (s *Service) configureGuest(ctx context.Context, id string, address netip.Addr) error {
 	if err := s.manager.SetUpIn(ctx, id, "lo"); err != nil {
 		return err
@@ -266,7 +266,8 @@ func (s *Service) configureGuest(ctx context.Context, id string, address netip.A
 	return s.manager.AddDefaultRouteIn(ctx, id, guestInterface, s.gateway)
 }
 
-// Release drops the namespace, the link and the lease. It is idempotent, so a stop may always call it.
+// Release drops the namespace, the link and the lease. It is idempotent, and delete is what calls it:
+// the lease must outlive a stop, because a stopped sandbox that starts again keeps its address.
 func (s *Service) Release(ctx context.Context, id string) error {
 	if err := validName(id); err != nil {
 		return err

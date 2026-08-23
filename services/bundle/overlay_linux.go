@@ -12,13 +12,8 @@ import (
 )
 
 // Mount stacks the sandbox's writable layer over the shared image rootfs. It is safe to call twice.
-func (b Bundle) Mount() error {
-	// Open leaves Lower empty, and an empty lowerdir would mount the writable layer over nothing.
-	if b.Lower == "" {
-		return fmt.Errorf("bundle %s has no image rootfs to stack over", b.Dir)
-	}
-
-	mounted, err := b.mounted()
+func (b Bundle) Mount(lower string) error {
+	mounted, err := b.Mounted()
 	if err != nil {
 		return err
 	}
@@ -26,7 +21,7 @@ func (b Bundle) Mount() error {
 		return nil
 	}
 
-	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", b.Lower, b.Upper, b.Work)
+	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, b.Upper, b.Work)
 	if err := syscall.Mount("overlay", b.RootFS, "overlay", 0, options); err != nil {
 		return fmt.Errorf("mount the overlay on %s: %w", b.RootFS, err)
 	}
@@ -36,7 +31,7 @@ func (b Bundle) Mount() error {
 
 // Unmount drops the merged view. The upper layer stays, which is what a stop and start relies on.
 func (b Bundle) Unmount() error {
-	mounted, err := b.mounted()
+	mounted, err := b.Mounted()
 	if err != nil {
 		return err
 	}
@@ -52,8 +47,8 @@ func (b Bundle) Unmount() error {
 	return nil
 }
 
-// mounted asks the kernel rather than a record, because a shard restart forgets what it mounted.
-func (b Bundle) mounted() (bool, error) {
+// Mounted asks the kernel rather than a record, because a shard restart forgets what it mounted.
+func (b Bundle) Mounted() (bool, error) {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return false, fmt.Errorf("open /proc/self/mountinfo: %w", err)

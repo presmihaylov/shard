@@ -173,7 +173,7 @@ func collectDeadChildren(entrypointPID int, exitFile string) bool {
 // A signalled entrypoint has no exit code of its own, so report the 128+n that a shell reports.
 func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	if waitStatus.Signaled() {
-		return models.ExitStatus{Code: 128 + int(waitStatus.Signal()), Signal: waitStatus.Signal()}
+		return models.ExitStatus{Code: 128 + int(waitStatus.Signal()), Signal: int(waitStatus.Signal())}
 	}
 
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}

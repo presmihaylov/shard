@@ -37,8 +37,14 @@ func TestConformance(t *testing.T) {
 	h := newHarness(t)
 
 	conformance.Run(t, conformance.Subject{
-		Provider:    h.provider,
-		NewSpec:     func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		Provider: h.provider,
+		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
+			// The marker comes after the trap, so the suite never stops an entrypoint that still dies on SIGTERM.
+			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
+
+			return h.newSpec(t, "/bin/sh", "-c", script)
+		},
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 	})
 }
@@ -102,102 +108,6 @@ func TestTheGuestOutputStreams(t *testing.T) {
 	}
 }
 
-// A sandbox outlives its entrypoint, so a wait that answered must not have ended it.
-func TestTheSandboxIsStillAliveAfterTheEntrypointExits(t *testing.T) {
-	h := newHarness(t)
-	spec := h.start(t, "/bin/true")
-
-	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	alive, err := h.provider.Alive(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("Alive: %v", err)
-	}
-	if !alive {
-		t.Fatal("the sandbox died with its entrypoint, and only Stop may end one")
-	}
-}
-
-// A stop signals first and kills only when the grace runs out, so it must not wait the grace out
-// on a sandbox that has nothing left to refuse it.
-func TestStopEndsASandboxWellInsideItsGrace(t *testing.T) {
-	h := newHarness(t)
-	spec := h.start(t, "/bin/true")
-
-	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	const grace = 60 * time.Second
-
-	started := time.Now()
-	if err := h.provider.Stop(t.Context(), spec.ID, grace); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	// A wide margin: this fails only when the TERM path does nothing and SIGKILL is what ends it.
-	if elapsed := time.Since(started); elapsed > grace/3 {
-		t.Errorf("Stop took %s of a %s grace, so SIGTERM did not end the sandbox", elapsed, grace)
-	}
-}
-
-func TestAliveIsFalseForASandboxRunscNeverHeld(t *testing.T) {
-	h := newHarness(t)
-
-	alive, err := h.provider.Alive(t.Context(), "shard-12-never-created")
-	if err != nil {
-		t.Fatalf("Alive: %v", err)
-	}
-	if alive {
-		t.Error("Alive reported a sandbox runsc does not hold")
-	}
-}
-
-// A stop must end a sandbox whose entrypoint never started. runsc refuses to signal that container,
-// so the only thing that ends it is a delete.
-func TestStopEndsASandboxThatNeverStarted(t *testing.T) {
-	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
-
-	if _, err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-		t.Fatalf("Stop a created sandbox: %v", err)
-	}
-
-	assertAlive(t, h, spec.ID, false)
-	assertMounted(t, h, spec.ID, false)
-}
-
-// Stop is what a caller retries, so it must answer the same way every time it is called.
-func TestStopIsIdempotentAndSurvivesARemove(t *testing.T) {
-	h := newHarness(t)
-	spec := h.start(t, "/bin/true")
-
-	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	for _, when := range []string{"first", "second"} {
-		if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-			t.Fatalf("the %s Stop: %v", when, err)
-		}
-	}
-
-	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-
-	// Nothing holds the sandbox now, and a stop of something already gone is still a stop that worked.
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-		t.Errorf("Stop after Remove: %v", err)
-	}
-}
-
 // A stop is final. Only Remove and a second Create re-run an entrypoint, which is what keeps the
 // writable layer: runsc refuses to start a container it has already stopped.
 func TestStartRefusesASandboxThatWasStopped(t *testing.T) {
@@ -256,7 +166,7 @@ func TestASecondCreateReadsBackWhatTheFirstRunWrote(t *testing.T) {
 	second := first
 	second.Entrypoint = []string{"/bin/sh", "-c", "cat /root/marker"}
 
-	if _, err := h.provider.Create(t.Context(), second); err != nil {
+	if err := h.provider.Create(t.Context(), second); err != nil {
 		t.Fatalf("the second Create: %v", err)
 	}
 	if err := h.provider.Start(t.Context(), second.ID); err != nil {
@@ -273,6 +183,60 @@ func TestASecondCreateReadsBackWhatTheFirstRunWrote(t *testing.T) {
 	if got := readFile(t, path); !strings.Contains(got, "written-by-the-first-run") {
 		t.Errorf("the second run read back %q, want what the first run wrote", got)
 	}
+}
+
+// A second Create on a live id must refuse. Without the check its rollback would unmount the rootfs
+// the first sandbox is running on.
+func TestCreateRefusesAnIdThatIsAlreadyLive(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+
+	if err := h.provider.Create(t.Context(), spec); err == nil {
+		t.Fatal("Create accepted an id that is already running")
+	}
+
+	assertAlive(t, h, spec.ID, true)
+	assertMounted(t, h, spec.ID, true)
+}
+
+// Create must refuse an orphaned mount too: building over it would give two sandboxes one writable layer.
+func TestCreateRefusesASandboxRunscLostThatIsStillMounted(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	h.loseTheSandbox(t, spec.ID)
+
+	if err := h.provider.Create(t.Context(), spec); err == nil {
+		t.Fatal("Create built a second sandbox over a rootfs runsc no longer holds")
+	}
+
+	assertMounted(t, h, spec.ID, true)
+}
+
+// Hand-deleted runsc metadata over a live mount is the one case where an unmount drops a running
+// sandbox's rootfs. Remove must refuse instead, and shard rm --force is SHARD-24's answer.
+func TestRemoveRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	h.loseTheSandbox(t, spec.ID)
+
+	if err := h.provider.Remove(t.Context(), spec.ID); err == nil {
+		t.Fatal("Remove unmounted a sandbox runsc no longer knows about")
+	}
+
+	assertMounted(t, h, spec.ID, true)
+}
+
+// Stop reaches the same unmount as Remove, so it owes the same refusal over hand-deleted metadata.
+func TestStopRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
+	h := newHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	h.loseTheSandbox(t, spec.ID)
+
+	if err := h.provider.Stop(t.Context(), spec.ID, 5*time.Second); err == nil {
+		t.Fatal("Stop unmounted a sandbox runsc no longer knows about")
+	}
+
+	assertMounted(t, h, spec.ID, true)
 }
 
 // A wait in flight when a stop lands must report the signal, and never a clean exit that never happened.
@@ -300,7 +264,7 @@ func TestAWaitInFlightSeesTheStopSignal(t *testing.T) {
 
 	select {
 	case status := <-answered:
-		if status.Signal != syscall.SIGTERM {
+		if status.Signal != int(syscall.SIGTERM) {
 			t.Errorf("the wait reported signal %v, want SIGTERM: the stop is what ended the entrypoint", status.Signal)
 		}
 	case err := <-failed:
@@ -308,28 +272,6 @@ func TestAWaitInFlightSeesTheStopSignal(t *testing.T) {
 	case <-time.After(stopGrace):
 		t.Fatal("the wait never answered after the stop ended the sandbox")
 	}
-}
-
-// An entrypoint that refuses SIGTERM must cost its grace and no more, and the kill must still end it.
-func TestStopKillsAnEntrypointThatIgnoresSIGTERM(t *testing.T) {
-	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done")
-
-	// The trap has to be installed before the stop, or SIGTERM ends the shell and proves nothing.
-	time.Sleep(time.Second)
-
-	const grace = 3 * time.Second
-
-	started := time.Now()
-	if err := h.provider.Stop(t.Context(), spec.ID, grace); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	elapsed := time.Since(started)
-
-	if elapsed < grace {
-		t.Errorf("Stop took %s, and an entrypoint that ignores SIGTERM is owed its whole %s grace", elapsed, grace)
-	}
-	assertAlive(t, h, spec.ID, false)
 }
 
 // One runsc root holds every sandbox, so a verb on one must not reach any other.
@@ -358,12 +300,12 @@ func TestOneSandboxIsUnmovedByAnother(t *testing.T) {
 func assertAlive(t *testing.T, h *harness, id string, want bool) {
 	t.Helper()
 
-	alive, err := h.provider.Alive(t.Context(), id)
+	status, err := h.provider.Status(t.Context(), id)
 	if err != nil {
-		t.Fatalf("Alive: %v", err)
+		t.Fatalf("Status: %v", err)
 	}
-	if alive != want {
-		t.Errorf("sandbox %s reports alive=%v, want %v", id, alive, want)
+	if status.Alive() != want {
+		t.Errorf("sandbox %s reports alive=%v, want %v", id, status.Alive(), want)
 	}
 }
 
@@ -391,6 +333,8 @@ func assertMounted(t *testing.T, h *harness, id string, want bool) {
 type harness struct {
 	provider *gvisor.Provider
 	image    image.Image
+	// runscRoot is what the tests that go behind the provider's back need, and nothing else.
+	runscRoot string
 	// net is nil unless the harness is networked, and then every spec gets an allocated namespace.
 	net *network.Service
 
@@ -426,9 +370,9 @@ func newHarnessWith(t *testing.T, mode string) *harness {
 	}
 	h.image = img
 
-	runscRoot := filepath.Join(t.TempDir(), "runsc")
+	h.runscRoot = filepath.Join(t.TempDir(), "runsc")
 
-	runner, err := runsc.New(runscRoot, runsc.WithNetwork(mode))
+	runner, err := runsc.New(h.runscRoot, runsc.WithNetwork(mode))
 	if err != nil {
 		t.Fatalf("open the runsc runner: %v", err)
 	}
@@ -437,7 +381,7 @@ func newHarnessWith(t *testing.T, mode string) *harness {
 		h.net = newNetworkService(t)
 	}
 	// --network=none leaves a bind mount in the runsc root that the TempDir removal would trip over.
-	t.Cleanup(func() { exec.Command("umount", "-l", filepath.Join(runscRoot, "null-netns")).Run() })
+	t.Cleanup(func() { exec.Command("umount", "-l", filepath.Join(h.runscRoot, "null-netns")).Run() })
 
 	bundles, err := bundle.New(hostInitPath)
 	if err != nil {
@@ -450,6 +394,31 @@ func newHarnessWith(t *testing.T, mode string) *harness {
 	}
 
 	return h
+}
+
+// loseTheSandbox deletes runsc's metadata behind the provider's back, which is the one state where an
+// unmount would drop the rootfs of a sandbox that may still run.
+func (h *harness) loseTheSandbox(t *testing.T, id string) {
+	t.Helper()
+
+	if err := h.runsc(t, "delete", "--force", id).Run(); err != nil {
+		t.Fatalf("delete the runsc metadata by hand: %v", err)
+	}
+
+	dir, err := h.stateDir(id)
+	if err != nil {
+		t.Fatalf("the state directory of %s: %v", id, err)
+	}
+
+	// Stop and Remove now refuse this mount, so only the test can drop it before the TempDir removal.
+	t.Cleanup(func() { exec.Command("umount", "-l", filepath.Join(dir, "bundle", "rootfs")).Run() })
+}
+
+// runsc drives the binary directly, which is how a test forges the state the provider must refuse.
+func (h *harness) runsc(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+
+	return exec.Command("runsc", append([]string{"--root", h.runscRoot}, args...)...)
 }
 
 func (h *harness) stateDir(id string) (string, error) {
@@ -484,14 +453,15 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 		h.provider.Remove(ctx, id)
 	})
 
-	return models.SandboxSpec{
-		ID:          id,
-		StateDir:    dir,
-		RootFS:      h.image.RootFS,
-		ImageConfig: h.image.Config,
-		Entrypoint:  entrypoint,
-		Network:     networkSpec,
+	spec := models.SandboxSpec{
+		ID:         id,
+		StateDir:   dir,
+		RootFS:     h.image.RootFS,
+		Entrypoint: entrypoint,
+		Network:    networkSpec,
 	}
+
+	return spec.Resolve(h.image.Config)
 }
 
 // allocate is a no-op on a harness with no network, which is every test outside the SHARD-13 file.
@@ -548,12 +518,8 @@ func (h *harness) start(t *testing.T, entrypoint ...string) models.SandboxSpec {
 
 	spec := h.newSpec(t, entrypoint...)
 
-	runtime, err := h.provider.Create(t.Context(), spec)
-	if err != nil {
+	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-	if runtime.PID <= 0 {
-		t.Errorf("Create reported pid %d, and the sandbox process has a real one", runtime.PID)
 	}
 
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {

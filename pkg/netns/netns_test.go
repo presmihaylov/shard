@@ -66,8 +66,8 @@ func TestNewRefusesAHostThatIsNotLinux(t *testing.T) {
 	}
 
 	_, err := New()
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported off Linux", err)
+	if !errors.Is(err, ErrNotLinux) {
+		t.Fatalf("got %v, want ErrNotLinux off Linux", err)
 	}
 }
 

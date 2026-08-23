@@ -40,6 +40,7 @@ type Provider struct {
 	runsc   *runsc.Runner
 	bundles *bundle.Service
 	dirs    StateDirs
+	caps    models.Capabilities
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -47,81 +48,88 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 		return nil, errors.New("the gvisor provider needs a runsc runner, a bundle service and a state directory lookup")
 	}
 
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs}, nil
+	// Capabilities is fixed once here, so it needs no context and cannot fail. Chunk 3 fills it in:
+	// SHARD-32 flips pause and resume, SHARD-33 flips fork.
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: models.Capabilities{}}, nil
 }
 
 func (p *Provider) Name() string { return name }
 
-// Capabilities is empty until chunk 3: SHARD-32 adds pause and resume, SHARD-33 adds fork.
-func (p *Provider) Capabilities() models.Capabilities { return models.Capabilities{} }
+func (p *Provider) Capabilities() models.Capabilities { return p.caps }
 
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
-func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) (models.Runtime, error) {
+func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
+	// A live id must not be re-created: the rollback below would unmount the rootfs the first one runs on.
+	status, err := p.Status(ctx, spec.ID)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, name, status.State)
+	}
+
+	// A rootfs that stands while runsc holds nothing may still be a live sandbox's, so never build over it.
+	existing, err := bundle.Open(spec.StateDir)
+	if err != nil {
+		return err
+	}
+	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
+		return err
+	}
+
 	b, err := p.bundles.Build(spec)
 	if err != nil {
-		return models.Runtime{}, err
+		return err
 	}
 
-	if err := b.Mount(); err != nil {
-		return models.Runtime{}, err
+	if err := b.Mount(spec.RootFS); err != nil {
+		return err
 	}
 
-	runtime, err := p.create(ctx, spec, b)
-	if err != nil {
+	if err := p.create(ctx, spec, b); err != nil {
 		// A half-created sandbox must not leave a mount behind, because nothing else knows to drop it.
-		return models.Runtime{}, errors.Join(err, b.Unmount())
+		return errors.Join(err, b.Unmount())
 	}
 
-	return runtime, nil
+	return nil
 }
 
-func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (runtime models.Runtime, err error) {
+func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
 	// A create over a state directory that already ran must not let the previous run's status answer a wait.
 	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return models.Runtime{}, fmt.Errorf("clear %s: %w", b.ExitFile, err)
+		return fmt.Errorf("clear %s: %w", b.ExitFile, err)
 	}
 
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
 	if err != nil {
-		return models.Runtime{}, err
+		return err
 	}
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	if err := p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
-		return models.Runtime{}, err
-	}
-
-	state, err := p.runsc.State(ctx, spec.ID)
-	if err != nil {
-		return models.Runtime{}, err
-	}
-
-	// The veth is the network service's, not the provider's: gVisor only joins the namespace it is given.
-	return models.Runtime{PID: state.PID, HostInterface: spec.Network.HostInterface}, nil
+	return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
 }
 
-// Start runs the entrypoint under the supervisor that runsc create already made PID 1. A stopped
-// sandbox never starts again: runsc refuses it, so a second run goes through Remove and Create, which
-// keeps the writable layer the state directory holds.
+// Start runs the entrypoint. A stopped sandbox never starts again: runsc refuses it, so a second run
+// goes through Remove and Create, which keeps the writable layer the state directory holds.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	return p.runsc.Start(ctx, id)
 }
 
 // Stop is the only thing that ends a sandbox. It signals, waits out grace, then kills.
 func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) error {
-	state, err := p.runsc.State(ctx, id)
-	if err != nil && !errors.Is(err, runsc.ErrNotFound) {
+	status, err := p.Status(ctx, id)
+	if err != nil {
 		return err
 	}
 
 	// runsc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
-	if state.Status == runsc.StatusCreated {
-		if err := p.delete(ctx, id); err != nil {
+	if status.State == models.StateCreated {
+		if err := p.runsc.Delete(ctx, id, true); err != nil {
 			return err
 		}
 
-		return p.unmount(id)
+		return p.unmount(id, status.Exists)
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
@@ -140,7 +148,8 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	return p.unmount(id)
+	// runsc still holds a sandbox it has stopped, so the status read above is what owns the mount.
+	return p.unmount(id, status.Exists)
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
@@ -161,31 +170,52 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 
 // Remove deletes runsc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	if err := p.delete(ctx, id); err != nil {
+	// runsc delete --force exits 0 for an id it never held, so only a status read says who owns the rootfs.
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// --force, because a running sandbox holds the rootfs.
+	if err := p.runsc.Delete(ctx, id, true); err != nil {
 		return err
 	}
 
 	// The repository removes the directory after this, and it must never remove a live mount.
-	return p.unmount(id)
-}
-
-// delete drops what runsc holds. --force, because a sandbox that is still running holds the rootfs.
-func (p *Provider) delete(ctx context.Context, id string) error {
-	if err := p.runsc.Delete(ctx, id, true); err != nil && !errors.Is(err, runsc.ErrNotFound) {
-		return err
-	}
-
-	return nil
+	return p.unmount(id, status.Exists)
 }
 
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
-func (p *Provider) unmount(id string) error {
+// held says whether runsc knew the sandbox, because only that answers who owns the rootfs.
+func (p *Provider) unmount(id string, held bool) error {
 	b, err := p.open(id)
 	if err != nil {
 		return err
 	}
 
+	if err := orphaned(b, id, held); err != nil {
+		return err
+	}
+
 	return b.Unmount()
+}
+
+// orphaned refuses a rootfs that stands while runsc holds nothing: something deleted the metadata by
+// hand, and the sandbox that rootfs belongs to may still be running.
+func orphaned(b bundle.Bundle, id string, held bool) error {
+	if held {
+		return nil
+	}
+
+	mounted, err := b.Mounted()
+	if err != nil {
+		return err
+	}
+	if !mounted {
+		return nil
+	}
+
+	return fmt.Errorf("runsc does not hold sandbox %s but its rootfs is still mounted at %s", id, b.RootFS)
 }
 
 // gone reports whether a signal failed because the sandbox had already ended, which is what a stop wants.
@@ -202,19 +232,19 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 
 	for {
-		status, found, err := readExitStatus(b.ExitFile)
+		exit, found, err := readExitStatus(b.ExitFile)
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
 		if found {
-			return status, nil
+			return exit, nil
 		}
 
-		alive, err := p.Alive(ctx, id)
+		status, err := p.Status(ctx, id)
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
-		if !alive {
+		if !status.Alive() {
 			// The supervisor may have written the file between the read above and this check.
 			return lastExitStatus(b.ExitFile, id)
 		}
@@ -227,29 +257,44 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 }
 
-// Alive asks the substrate, because a record saying running can outlive a shard restart.
-func (p *Provider) Alive(ctx context.Context, id string) (bool, error) {
+// Status asks the substrate, because a record saying running can outlive a shard restart.
+func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	state, err := p.runsc.State(ctx, id)
 	if errors.Is(err, runsc.ErrNotFound) {
-		return false, nil
+		return models.Status{}, nil
 	}
 	if err != nil {
-		return false, err
+		return models.Status{}, err
 	}
 
-	return state.Status != runsc.StatusStopped, nil
+	return models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}, nil
+}
+
+// stateOf maps the five runsc statuses onto the four shard states. A container runsc is still
+// creating has nothing in its guest running, which is what created means here.
+func stateOf(status runsc.Status) models.State {
+	switch status {
+	case runsc.StatusRunning:
+		return models.StateRunning
+	case runsc.StatusPaused:
+		return models.StatePaused
+	case runsc.StatusStopped:
+		return models.StateStopped
+	default:
+		return models.StateCreated
+	}
 }
 
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
-	return models.Unsupported(name, "pause")
+	return models.Unsupported(name, models.VerbPause)
 }
 
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
-	return models.Unsupported(name, "resume")
+	return models.Unsupported(name, models.VerbResume)
 }
 
-func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) (models.Runtime, error) {
-	return models.Runtime{}, models.Unsupported(name, "fork")
+func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	return models.Unsupported(name, models.VerbFork)
 }
 
 // LogPath is where the guest's stdout and stderr land. SHARD-23 turns it into shard logs.
@@ -278,11 +323,11 @@ func (p *Provider) awaitStopped(ctx context.Context, id string, budget time.Dura
 	deadline := time.Now().Add(budget)
 
 	for {
-		alive, err := p.Alive(ctx, id)
+		status, err := p.Status(ctx, id)
 		if err != nil {
 			return false, err
 		}
-		if !alive {
+		if !status.Alive() {
 			return true, nil
 		}
 		if !time.Now().Before(deadline) {

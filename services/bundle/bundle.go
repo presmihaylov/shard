@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,8 +34,7 @@ type Bundle struct {
 	ShardDir string
 	ExitFile string
 
-	// Lower is the shared read-only image rootfs; Upper and Work belong to this sandbox alone.
-	Lower string
+	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
 	Work  string
 }
@@ -62,7 +60,7 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
-	b, err := newBundle(spec.StateDir, spec.RootFS)
+	b, err := newBundle(spec.StateDir)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -100,7 +98,7 @@ func Open(stateDir string) (Bundle, error) {
 		return Bundle{}, errors.New("no state directory: nothing names the bundle")
 	}
 
-	return newBundle(stateDir, "")
+	return newBundle(stateDir)
 }
 
 func validate(spec models.SandboxSpec) error {
@@ -113,31 +111,25 @@ func validate(spec models.SandboxSpec) error {
 	if spec.RootFS == "" {
 		return errors.New("the sandbox spec has no image rootfs")
 	}
-	// Refuse rather than build a sandbox that silently trusts nothing. The proxy CA lands in chunk 4.
-	if len(spec.CACert) > 0 {
-		return errors.New("the bundle builder cannot install a CA certificate yet")
-	}
 
 	return nil
 }
 
 // newBundle derives every path this sandbox uses. It touches no disk, so the layout is testable anywhere.
-func newBundle(stateDir, lower string) (Bundle, error) {
+func newBundle(stateDir string) (Bundle, error) {
 	shardDir := filepath.Join(stateDir, "shard")
 	b := Bundle{
 		Dir:      filepath.Join(stateDir, "bundle"),
 		RootFS:   filepath.Join(stateDir, "bundle", "rootfs"),
 		ShardDir: shardDir,
 		ExitFile: filepath.Join(shardDir, exitFileName),
-		Lower:    lower,
 		Upper:    filepath.Join(stateDir, "overlay", "upper"),
 		Work:     filepath.Join(stateDir, "overlay", "work"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
-	for _, dir := range []string{b.Lower, b.Upper, b.Work} {
-		// Lower is empty when Open derives the paths of a bundle that already exists.
-		if dir != "" && strings.ContainsAny(dir, ":,") {
+	for _, dir := range []string{b.Upper, b.Work} {
+		if strings.ContainsAny(dir, ":,") {
 			return Bundle{}, fmt.Errorf("the layer path %q contains a character overlayfs uses as a separator", dir)
 		}
 	}
@@ -178,7 +170,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		return nil, err
 	}
 
-	user, err := resolveUser(b.Lower, firstNonEmpty(spec.User, spec.ImageConfig.User))
+	user, err := resolveUser(spec.RootFS, spec.User)
 	if err != nil {
 		return nil, err
 	}
@@ -190,11 +182,11 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			// The overlay upper layer is what makes this writable, and what survives a stop and start.
 			Readonly: false,
 		},
-		Hostname: firstNonEmpty(spec.Name, spec.ID),
+		Hostname: spec.Name,
 		Process: &specs.Process{
 			Args: argv,
-			Env:  environment(spec.Env, spec.ImageConfig.Env),
-			Cwd:  firstNonEmpty(spec.WorkDir, spec.ImageConfig.WorkDir, "/"),
+			Env:  environment(spec.Env),
+			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
 			User: user,
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
@@ -223,9 +215,6 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 	entrypoint := spec.Entrypoint
 	if len(entrypoint) == 0 {
-		entrypoint = slices.Concat(spec.ImageConfig.Entrypoint, spec.ImageConfig.Cmd)
-	}
-	if len(entrypoint) == 0 {
 		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
 	}
 
@@ -234,42 +223,13 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 	return append(argv, entrypoint...), nil
 }
 
-// environment keeps the image order so an image that sets a variable twice still resolves the same way.
-func environment(overrides map[string]string, imageEnv []string) []string {
-	env := make([]string, 0, len(imageEnv)+len(overrides)+1)
-	applied := make(map[string]bool, len(overrides))
-
-	for _, entry := range imageEnv {
-		key, _, found := strings.Cut(entry, "=")
-		// An image entry with no "=" is not an assignment, so no runtime would accept it.
-		if !found {
-			continue
-		}
-
-		value, override := overrides[key]
-		if !override {
-			env = append(env, entry)
-
-			continue
-		}
-
-		env = append(env, key+"="+value)
-		applied[key] = true
+// environment adds the one default that is runtime policy rather than image data.
+func environment(env []string) []string {
+	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
+		return env
 	}
 
-	for _, key := range slices.Sorted(maps.Keys(overrides)) {
-		if applied[key] {
-			continue
-		}
-
-		env = append(env, key+"="+overrides[key])
-	}
-
-	if !slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
-		env = append(env, defaultPath)
-	}
-
-	return env
+	return append(slices.Clone(env), defaultPath)
 }
 
 // resources is advisory here: gVisor may ignore both, and Firecracker needs them to boot at all.

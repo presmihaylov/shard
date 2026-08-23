@@ -230,7 +230,7 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 	sb := create(t, r)
 
 	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
-		sb.ExitStatus = &models.ExitStatus{Code: 137, Signal: syscall.SIGKILL}
+		sb.ExitStatus = &models.ExitStatus{Code: 137, Signal: int(syscall.SIGKILL)}
 
 		return nil
 	})
@@ -251,7 +251,7 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 		t.Fatal("the exit status is nil after it was recorded")
 	}
 
-	if got.ExitStatus.Code != 137 || got.ExitStatus.Signal != syscall.SIGKILL {
+	if got.ExitStatus.Code != 137 || got.ExitStatus.Signal != int(syscall.SIGKILL) {
 		t.Errorf("the exit status is %+v, want code 137 and signal SIGKILL", *got.ExitStatus)
 	}
 }

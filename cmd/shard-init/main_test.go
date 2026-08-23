@@ -250,7 +250,7 @@ func TestSignalledEntrypointRecordsItsSignal(t *testing.T) {
 	super := startSupervisor(t, roleSupervisor, "sigkill:0")
 
 	status := super.awaitExitStatus(t)
-	if status.Signal != syscall.SIGKILL {
+	if status.Signal != int(syscall.SIGKILL) {
 		t.Errorf("signal is %v, want SIGKILL", status.Signal)
 	}
 	if status.Code != 128+int(syscall.SIGKILL) {
