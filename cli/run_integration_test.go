@@ -83,7 +83,9 @@ func TestRunLeaksNothingWhenCreateFails(t *testing.T) {
 	app, _ := newRunApp(t)
 
 	// A supervisor that is not there fails the bind mount, which is the last claim before the start.
-	args := []string{"run", "--shard-init", filepath.Join(t.TempDir(), "absent"), testImage, "--", "/bin/true"}
+	app.InitPath = filepath.Join(t.TempDir(), "absent")
+
+	args := []string{"run", testImage, "--", "/bin/true"}
 	if err := app.Run(t.Context(), args); err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}

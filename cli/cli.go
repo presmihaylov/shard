@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,7 +34,6 @@ Run flags, which must precede the image:
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
   --cpus <n>               the vcpu bound, 0 for unbounded
-  --shard-init <path>      the host path of the guest supervisor
 
 The guest's stdout and stderr are interleaved into one stream, so shard run cannot
 separate them. The sandbox outlives the command: run prints its id and Ctrl-C only
@@ -57,6 +57,8 @@ type App struct {
 	Insecure []string
 	// Timeout defaults to DefaultTimeout when zero.
 	Timeout time.Duration
+	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
+	InitPath string
 
 	// newRunDeps builds what run wires together. A test replaces it: every real part needs Linux and root.
 	newRunDeps func(a App, opts runOptions) (runDeps, error)
@@ -107,6 +109,9 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	if a.Root == "" {
 		a.Root = DefaultRoot
 	}
+	if a.InitPath == "" {
+		a.InitPath = initPathFromEnv()
+	}
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -124,6 +129,15 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	}
 
 	return flags.Args(), nil
+}
+
+// initPathFromEnv resolves where the guest supervisor lives on this host.
+func initPathFromEnv() string {
+	if path := os.Getenv(InitPathEnv); path != "" {
+		return path
+	}
+
+	return DefaultInitPath
 }
 
 // stringList collects a repeatable flag, which the flag package has no built-in type for.

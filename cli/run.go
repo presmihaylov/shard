@@ -26,6 +26,9 @@ import (
 // DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
 const DefaultInitPath = "/usr/local/bin/shard-init"
 
+// InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no run flag.
+const InitPathEnv = "SHARD_INIT_PATH"
+
 // InterruptedExitCode is what a shell reports for a command a SIGINT ended.
 const InterruptedExitCode = 130
 
@@ -93,6 +96,9 @@ func (a App) run(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The supervisor path is a property of the install, not of the workload, so it comes from the App.
+	opts.initPath = a.InitPath
+
 	build := a.newRunDeps
 	if build == nil {
 		build = defaultRunDeps
@@ -109,7 +115,7 @@ func (a App) run(ctx context.Context, args []string) error {
 // parseRun splits the flags, the image and the argv. Go's flag stops at the first non-flag argument,
 // so the flags must precede the image and what is left is the image plus a literal -- plus the argv.
 func parseRun(args []string) (runOptions, error) {
-	opts := runOptions{initPath: DefaultInitPath}
+	var opts runOptions
 
 	flags := flag.NewFlagSet("shard run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -118,7 +124,6 @@ func parseRun(args []string) (runOptions, error) {
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&opts.resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
-	flags.StringVar(&opts.initPath, "shard-init", opts.initPath, "the host path of the guest supervisor")
 
 	if err := flags.Parse(args); err != nil {
 		return runOptions{}, fmt.Errorf("parse the run flags: %w", err)

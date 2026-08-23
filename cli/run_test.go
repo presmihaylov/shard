@@ -38,7 +38,6 @@ func TestParseRunFlags(t *testing.T) {
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
 		"--memory", "512", "--cpus", "2",
-		"--shard-init", "/opt/shard-init",
 		"alpine:3.20",
 	}
 
@@ -59,23 +58,36 @@ func TestParseRunFlags(t *testing.T) {
 		t.Errorf("resources = %+v, want 512 MiB and 2 vcpus", opts.resources)
 	}
 
-	if opts.initPath != "/opt/shard-init" {
-		t.Errorf("shard-init = %q", opts.initPath)
-	}
-
 	if len(opts.argv) != 0 {
 		t.Errorf("argv = %v, want the image's own entrypoint", opts.argv)
 	}
 }
 
-func TestParseRunDefaultInitPath(t *testing.T) {
-	opts, err := parseRun([]string{"alpine:3.20"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
+func TestInitPathFromEnv(t *testing.T) {
+	cases := map[string]struct {
+		env   string
+		unset bool
+		want  string
+	}{
+		"set":   {env: "/opt/shard-init", want: "/opt/shard-init"},
+		"empty": {want: DefaultInitPath},
+		"unset": {unset: true, want: DefaultInitPath},
 	}
 
-	if opts.initPath != DefaultInitPath {
-		t.Errorf("shard-init = %q, want %q", opts.initPath, DefaultInitPath)
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			// The set registers the restore, which an unset in the same test then still gets.
+			t.Setenv(InitPathEnv, c.env)
+			if c.unset {
+				if err := os.Unsetenv(InitPathEnv); err != nil {
+					t.Fatalf("unset %s: %v", InitPathEnv, err)
+				}
+			}
+
+			if got := initPathFromEnv(); got != c.want {
+				t.Errorf("initPathFromEnv() = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -86,6 +98,7 @@ func TestParseRunRejections(t *testing.T) {
 		"a flag after the image": {"alpine:3.20", "--user", "nobody"},
 		"an empty argv":          {"alpine:3.20", "--"},
 		"an unknown flag":        {"--forever", "alpine:3.20"},
+		"the old init flag":      {"--shard-init", "/opt/shard-init", "alpine:3.20"},
 		"an env with no value":   {"--env", "DEBUG", "alpine:3.20"},
 		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":    {"--env", "=1", "alpine:3.20"},
