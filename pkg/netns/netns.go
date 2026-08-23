@@ -6,6 +6,7 @@ package netns
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -223,6 +224,65 @@ func (m *Manager) AddressesIn(ctx context.Context, namespace, link string) ([]ne
 	}
 
 	return addresses, nil
+}
+
+// Routes lists the destination of every route the host holds, so a caller can see whether a subnet
+// it wants to claim is already reachable somewhere else.
+func (m *Manager) Routes(ctx context.Context) ([]netip.Prefix, error) {
+	var out bytes.Buffer
+	if err := m.output(ctx, &out, "-json", "route", "show"); err != nil {
+		return nil, err
+	}
+
+	return parseRoutes(out.Bytes())
+}
+
+// parseRoutes reads what ip -json route show prints. The default route is dropped: it matches every
+// address, so it says nothing about which ranges the host already uses.
+func parseRoutes(data []byte) ([]netip.Prefix, error) {
+	var entries []struct {
+		Dst string `json:"dst"`
+	}
+
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("read the host route table: %w", err)
+	}
+
+	routes := make([]netip.Prefix, 0, len(entries))
+
+	for _, entry := range entries {
+		if entry.Dst == "default" {
+			continue
+		}
+
+		route, err := parseDestination(entry.Dst)
+		if err != nil {
+			return nil, err
+		}
+
+		routes = append(routes, route)
+	}
+
+	return routes, nil
+}
+
+// parseDestination reads one dst, which is a prefix or the bare address of a host route.
+func parseDestination(dst string) (netip.Prefix, error) {
+	if strings.Contains(dst, "/") {
+		route, err := netip.ParsePrefix(dst)
+		if err != nil {
+			return netip.Prefix{}, fmt.Errorf("read the route destination %q: %w", dst, err)
+		}
+
+		return route, nil
+	}
+
+	address, err := netip.ParseAddr(dst)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("read the route destination %q: %w", dst, err)
+	}
+
+	return netip.PrefixFrom(address, address.BitLen()), nil
 }
 
 // EnableForwarding lets the host route between the bridge and the outside. It is a host-wide switch

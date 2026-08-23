@@ -133,3 +133,50 @@ func TestTheRulesetCreatesTheTableBeforeItDeletesIt(t *testing.T) {
 		t.Errorf("the ruleset is not idempotent:\n%s", got)
 	}
 }
+
+// A host in a VPC already routes 10.0.0.0/8, and the bridge's /16 would take a slice of it away.
+func TestConflictFindsARouteThatHoldsTheSubnet(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.87.0.0/16")
+	routes := []netip.Prefix{
+		netip.MustParsePrefix("172.17.0.0/16"),
+		netip.MustParsePrefix("10.0.0.0/8"),
+	}
+
+	route, found := conflict(subnet, routes)
+	if !found {
+		t.Fatal("conflict accepted a subnet the host already routes")
+	}
+	if want := netip.MustParsePrefix("10.0.0.0/8"); route != want {
+		t.Errorf("got %s, want %s", route, want)
+	}
+}
+
+func TestConflictFindsARouteInsideTheSubnet(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.87.0.0/16")
+
+	if _, found := conflict(subnet, []netip.Prefix{netip.MustParsePrefix("10.87.4.0/24")}); !found {
+		t.Fatal("conflict accepted a subnet that holds a host route")
+	}
+}
+
+func TestConflictAcceptsRoutesElsewhere(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.87.0.0/16")
+	routes := []netip.Prefix{
+		netip.MustParsePrefix("192.168.1.0/24"),
+		netip.MustParsePrefix("10.88.0.0/16"),
+		netip.MustParsePrefix("172.17.0.1/32"),
+	}
+
+	if route, found := conflict(subnet, routes); found {
+		t.Fatalf("conflict refused %s over the route %s", subnet, route)
+	}
+}
+
+// Ensure runs on every Allocate, and the first one puts the subnet in the route table itself.
+func TestConflictIgnoresTheBridgesOwnRoute(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.87.0.0/16")
+
+	if route, found := conflict(subnet, []netip.Prefix{subnet}); found {
+		t.Fatalf("conflict refused %s over its own route %s", subnet, route)
+	}
+}

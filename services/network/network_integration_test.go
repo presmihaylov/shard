@@ -62,6 +62,46 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	}
 }
 
+// A host that already routes the range would lose it to the bridge, whose prefix is the longer one.
+func TestEnsureRefusesASubnetTheHostAlreadyRoutes(t *testing.T) {
+	first, m := newService(t)
+
+	if err := first.Ensure(t.Context()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// A supernet of the bridge's own route, so only a real overlap check refuses it.
+	second, err := network.New(network.Config{
+		Root:   t.TempDir(),
+		Bridge: "shardt1",
+		Subnet: netip.MustParsePrefix("10.213.0.0/16"),
+	}, m)
+	if err != nil {
+		t.Fatalf("open the second network service: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := m.DeleteLink(context.Background(), "shardt1"); err != nil {
+			t.Logf("remove the second test bridge: %v", err)
+		}
+	})
+
+	err = second.Ensure(t.Context())
+	if err == nil {
+		t.Fatal("Ensure built a bridge over a range the host already routes")
+	}
+	if !strings.Contains(err.Error(), testSubnet) {
+		t.Errorf("the error is %q, and it must name the host route %s", err, testSubnet)
+	}
+
+	exists, err := m.LinkExists(t.Context(), "shardt1")
+	if err != nil {
+		t.Fatalf("LinkExists: %v", err)
+	}
+	if exists {
+		t.Error("Ensure left the bridge shardt1 behind after it refused")
+	}
+}
+
 func TestAllocateBuildsTheNamespaceAndItsRoute(t *testing.T) {
 	s, m := newService(t)
 	spec := allocate(t, s, "amber-otter")
