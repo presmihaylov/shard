@@ -1,13 +1,18 @@
-package models
+// Package runspec decides what a sandbox will actually run, from the image's defaults and the
+// caller's request, the same way on every substrate. It touches no disk, and it knows nothing about
+// gVisor, Firecracker or OCI bundles.
+package runspec
 
 import (
 	"slices"
 	"strings"
+
+	"github.com/presmihaylov/shard/models"
 )
 
 // Resolve fills the spec from the image config it will run over. Every provider needs the same
 // precedence, so it lives here rather than being redone once per substrate.
-func (s SandboxSpec) Resolve(cfg ImageConfig) SandboxSpec {
+func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 	if len(s.Entrypoint) == 0 {
 		s.Entrypoint = slices.Concat(cfg.Entrypoint, cfg.Cmd)
 	}

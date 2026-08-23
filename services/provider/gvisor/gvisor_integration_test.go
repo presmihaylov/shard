@@ -23,6 +23,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -461,7 +462,7 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 		Network:    networkSpec,
 	}
 
-	return spec.Resolve(h.image.Config)
+	return runspec.Resolve(spec, h.image.Config)
 }
 
 // allocate is a no-op on a harness with no network, which is every test outside the SHARD-13 file.
