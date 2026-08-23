@@ -232,12 +232,13 @@ func (a App) launch(ctx context.Context, deps runDeps, opts runOptions) (err err
 		Resources:  opts.resources,
 	}, img.Config)
 
+	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
+	// already forked, so the push goes above the call. Remove tolerates an id runsc never held.
+	td.push(func(ctx context.Context) error { return deps.provider.Remove(ctx, id) })
+
 	if err := deps.provider.Create(ctx, spec); err != nil {
 		return err
 	}
-
-	// Remove unmounts, and that must happen before the repository removes the directory under it.
-	td.push(func(ctx context.Context) error { return deps.provider.Remove(ctx, id) })
 
 	if err := recordCreated(ctx, deps, spec); err != nil {
 		return err
@@ -256,6 +257,15 @@ func (a App) launch(ctx context.Context, deps runDeps, opts runOptions) (err err
 	}
 
 	if err := deps.provider.Start(ctx, id); err != nil {
+		// An interrupt kills the start process, not what it may already have started, and the substrate
+		// cannot tell the two apart. Only stop ends a sandbox, so an unknown outcome is kept.
+		if ctx.Err() != nil {
+			td.discard()
+			a.note(fmt.Sprintf("sandbox %s may be running; use shard stop %s", id, id))
+
+			return ExitError{Code: InterruptedExitCode}
+		}
+
 		return err
 	}
 
@@ -341,37 +351,53 @@ func (a App) attach(ctx context.Context, deps runDeps, id, path string, offset i
 	exited := make(chan struct{})
 	tailed := make(chan error, 1)
 
-	go func() { tailed <- tail(ctx, a.Out, log, exited) }()
+	// A follower that died shows nothing more, and the entrypoint may run forever, so its failure
+	// ends the wait too rather than parking this command on a stream nobody reads.
+	stream, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	status, waitErr := deps.provider.Wait(ctx, id)
+	go func() {
+		err := tail(stream, a.Out, log, exited)
+		if err != nil {
+			cancel()
+		}
+
+		tailed <- err
+	}()
+
+	status, waitErr := deps.provider.Wait(stream, id)
 	close(exited)
-
-	// A run that could not show the guest's output failed, whatever the entrypoint went on to do.
-	if tailErr := <-tailed; tailErr != nil {
-		return errors.Join(tailErr, waitErr)
-	}
+	tailErr := <-tailed
 
 	if waitErr != nil {
 		// Ctrl-C detaches. Stopping the sandbox here would be the one on-exit behaviour shard forbids.
 		if ctx.Err() != nil {
 			a.note(fmt.Sprintf("sandbox %s is still running; use shard stop %s", id, id))
 
-			return ExitError{Code: InterruptedExitCode}
+			return errors.Join(tailErr, ExitError{Code: InterruptedExitCode})
 		}
 
-		return waitErr
+		return errors.Join(tailErr, waitErr)
 	}
 
-	// The state stays running: the entrypoint exiting is not a transition.
-	if err := deps.repo.Update(id, func(sb *models.Sandbox) error {
+	// The status is in hand, so it lands in the record whatever the stream did: a nil exit status
+	// means the entrypoint never exited. The state stays running, because its exit is no transition.
+	updateErr := deps.repo.Update(id, func(sb *models.Sandbox) error {
 		sb.ExitStatus = &status
 
 		return nil
-	}); err != nil {
-		return err
+	})
+	if updateErr != nil {
+		updateErr = fmt.Errorf("sandbox %s exited %d but its record was not updated: %w", id, status.Code, updateErr)
 	}
 
-	return ExitError{Code: status.Code}
+	// A run that could not show the guest's output failed, whatever the entrypoint went on to do.
+	if tailErr != nil {
+		return errors.Join(tailErr, updateErr)
+	}
+
+	// The record write is not a claim shard holds, so a failed one never costs the entrypoint's code.
+	return errors.Join(updateErr, ExitError{Code: status.Code})
 }
 
 // logOffset is where the guest's output for this run begins. A provider that writes the file only

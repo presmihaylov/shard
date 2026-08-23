@@ -100,6 +100,12 @@ func TestRunLeaksNothingWhenCreateFails(t *testing.T) {
 		t.Errorf("the failed run left the leases %v", held)
 	}
 
+	// The substrate claim is given back too: an interrupted create can leave a sandbox process that
+	// only runsc can reach, and the record the teardown deletes is the only handle to it.
+	if held := containers(t, app.Root); len(held) != 0 {
+		t.Errorf("the failed run left the runsc containers %v", held)
+	}
+
 	// Only the sandbox tree: runsc bind mounts a null-netns into its own root on the first create,
 	// and that one belongs to the runsc root rather than to any sandbox.
 	mounts, err := os.ReadFile("/proc/self/mounts")
@@ -208,6 +214,31 @@ func leases(t *testing.T, root string) []string {
 
 	held := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		held = append(held, entry.Name())
+	}
+
+	return held
+}
+
+// containers is what runsc holds under root. null-netns is the bind mount runsc makes for itself on
+// the first create, and it belongs to no sandbox.
+func containers(t *testing.T, root string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(filepath.Join(root, "runsc"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the runsc root: %v", err)
+	}
+
+	held := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == "null-netns" {
+			continue
+		}
+
 		held = append(held, entry.Name())
 	}
 

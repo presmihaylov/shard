@@ -35,7 +35,7 @@ func (a App) pull(ctx context.Context, args []string) error {
 	return a.print(fmt.Sprintf("%s\n%s", img.Reference, img.Digest))
 }
 
-func (a App) image(args []string) error {
+func (a App) image(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("image takes a subcommand: ls or rm")
 	}
@@ -44,7 +44,7 @@ func (a App) image(args []string) error {
 	case "ls", "list":
 		return a.imageList(args[1:])
 	case "rm", "remove":
-		return a.imageRemove(args[1:])
+		return a.imageRemove(ctx, args[1:])
 	}
 
 	return fmt.Errorf("unknown image subcommand %q; want ls or rm", args[0])
@@ -85,7 +85,7 @@ func (a App) imageList(args []string) error {
 	return nil
 }
 
-func (a App) imageRemove(args []string) error {
+func (a App) imageRemove(ctx context.Context, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("image rm takes one image reference, got %d", len(args))
 	}
@@ -95,7 +95,7 @@ func (a App) imageRemove(args []string) error {
 		return err
 	}
 
-	err = svc.Remove(args[0])
+	err = svc.Remove(ctx, args[0])
 	// The image is gone by this point, so a blob that could not be reclaimed costs disk and not correctness.
 	if errors.Is(err, image.ErrNotReclaimed) {
 		a.warn(err.Error())

@@ -30,12 +30,17 @@ func main() {
 	}
 
 	var exit cli.ExitError
-	if errors.As(err, &exit) {
-		os.Exit(exit.Code)
+	if !errors.As(err, &exit) {
+		fmt.Fprintln(os.Stderr, "shard:", err)
+		os.Exit(1)
 	}
 
-	fmt.Fprintln(os.Stderr, "shard:", err)
-	os.Exit(1)
+	// A run carries the entrypoint's code and whatever else went wrong beside it, and both must show.
+	if err.Error() != exit.Error() {
+		fmt.Fprintln(os.Stderr, "shard:", err)
+	}
+
+	os.Exit(exit.Code)
 }
 
 // escape leaves the second signal to the process rather than to the work the first one cancelled, so
