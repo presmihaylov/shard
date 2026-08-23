@@ -5,6 +5,9 @@
 #
 #   sudo ./scripts/e2e.sh
 #
+# The run keeps its own state root, but the bridge, the subnet and the veth names belong to the
+# host, so it must not run beside live sandboxes from another root. It refuses one that has any.
+#
 # Environment:
 #   PREFIX     where the binaries are installed        (default /usr/local/bin)
 #   SHARD_ROOT where this run keeps its state          (default /var/lib/shard-e2e)
@@ -21,21 +24,33 @@ SHARD_ROOT=${SHARD_ROOT:-/var/lib/shard-e2e}
 IMAGE=${IMAGE:-alpine:3.20}
 GRACE=${GRACE:-5s}
 
+# The root the run must never delete, and the name every sandbox veth on the host starts with.
+PRODUCTION_ROOT="/var/lib/shard"
+HOST_LINK_PREFIX="shardv"
+
 STEP="startup"
 ID=""
+LINK=""
+REPORTED=0
 
-# fail names the step, so a red run says what broke rather than where the shell gave up.
-fail() {
+# report names the step, so a red run says what broke rather than where the shell gave up. It speaks
+# once: a failure reaches it through fail and then again through the exit handler.
+report() {
+	[ "${REPORTED}" = "0" ] || return 0
+	REPORTED=1
+
 	echo >&2
 	echo "e2e FAILED at step: ${STEP}" >&2
 	if [ -n "${1:-}" ]; then
 		echo "  ${1}" >&2
 	fi
+}
+
+fail() {
+	report "${1:-}"
 
 	exit 1
 }
-
-trap 'fail "the command under this step exited non-zero"' ERR
 
 step() {
 	STEP="$1"
@@ -54,12 +69,123 @@ expect() {
 	say "$3"
 }
 
+# expect_exec runs a command in the sandbox and compares what it wrote. The status is checked on its
+# own, because a command substitution used as an argument throws the status of the call away.
+expect_exec() {
+	local want="$1" note="$2"
+	shift 2
+
+	local got
+	if ! got=$(shard exec "${ID}" -- "$@"); then
+		fail "shard exec $* wrote the right bytes and then exited non-zero"
+	fi
+
+	expect "${got}" "${want}" "${note}"
+}
+
 # absent fails when the pattern is still on the host, quoting what was found.
 absent() {
 	local what="$1" found="$2"
 	[ -z "${found}" ] || fail "${what} is still on the host: ${found}"
 	say "${what} is gone"
 }
+
+# normalise folds away '.', '..' and repeated or trailing slashes, so a guard can compare two paths
+# rather than two spellings of one.
+normalise() {
+	local path="$1" part out=""
+	local -a parts
+
+	IFS=/ read -r -a parts <<<"${path}"
+	for part in "${parts[@]}"; do
+		case "${part}" in
+		"" | .) ;;
+		..) out="${out%/*}" ;;
+		*) out="${out}/${part}" ;;
+		esac
+	done
+
+	printf '%s\n' "${out:-/}"
+}
+
+# check_root refuses a root this run must not delete, and rewrites SHARD_ROOT to its normal form.
+# A trailing slash is what completing a directory name appends, and it must not walk past the guard.
+check_root() {
+	case "${SHARD_ROOT}" in
+	/*) ;;
+	*) fail "SHARD_ROOT must be an absolute path, got '${SHARD_ROOT}'" ;;
+	esac
+
+	SHARD_ROOT=$(normalise "${SHARD_ROOT}")
+
+	[ "${SHARD_ROOT}" != "/" ] || fail "SHARD_ROOT must not be the filesystem root"
+	[ "${SHARD_ROOT}" != "$(normalise "${PRODUCTION_ROOT}")" ] ||
+		fail "the e2e must not run against the production root ${PRODUCTION_ROOT}"
+}
+
+# check_host_is_free refuses a host that already carries a sandbox. The lease pool lives under this
+# run's own root, so it would hand out an address another root holds and delete that sandbox's veth.
+check_host_is_free() {
+	local links
+	links=$(ip -o link show 2>/dev/null | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)
+
+	[ -z "${links% }" ] || fail "the host already carries the sandbox links ${links% }: the e2e must not run beside live sandboxes"
+}
+
+# unmount_under drops every mount under a directory, the deepest first, so a later rm -rf cannot
+# meet one and delete the record of a sandbox that is still up.
+unmount_under() {
+	local dir="$1" point
+
+	[ -n "${dir}" ] || return 0
+
+	for point in $(mount | awk -v root="${dir}/" 'index($3 "/", root) == 1 { print $3 }' | sort -r); do
+		umount -l "${point}" >/dev/null 2>&1 || true
+	done
+}
+
+# wipe_root gives the root back. The unmount comes first: runsc bind mounts a null-netns into its own
+# root on the first create, and an overlay sits under every sandbox that is still up.
+wipe_root() {
+	unmount_under "${SHARD_ROOT}"
+	rm -rf "${SHARD_ROOT}" || true
+}
+
+# teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
+# record is the only handle by which its mount and its namespace can be found again.
+teardown() {
+	if [ -n "${ID}" ]; then
+		shard rm --force "${ID}" >/dev/null 2>&1 || true
+		ip netns delete "${ID}" >/dev/null 2>&1 || true
+	fi
+	if [ -n "${LINK}" ]; then
+		ip link delete "${LINK}" >/dev/null 2>&1 || true
+	fi
+
+	wipe_root
+}
+
+# on_exit is the one handler: it names the step that broke and then gives the host back. The step is
+# named here rather than from an ERR trap, because bash runs this one first and it never returns.
+on_exit() {
+	local status=$?
+
+	trap - EXIT
+	if [ "${status}" -ne 0 ]; then
+		report "the command under this step exited non-zero"
+	fi
+
+	teardown
+
+	exit "${status}"
+}
+
+# E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
+if [ -n "${E2E_LIB_ONLY:-}" ]; then
+	return 0
+fi
+
+trap on_exit EXIT
 
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives netns, nft and runsc, so this needs root"
@@ -70,6 +196,13 @@ if [ ! -e /dev/kvm ]; then
 	say "no /dev/kvm, which is the box this ticket targets"
 fi
 say "runsc, ip, nft and go are on the host"
+
+check_host_is_free
+say "no other sandbox holds a link on this host"
+
+# The whole run owns one root, and it is never the production one.
+check_root
+say "this run owns the root ${SHARD_ROOT}"
 
 step "install shard and its guest supervisor"
 if [ "${SKIP_INSTALL:-0}" = "1" ]; then
@@ -87,9 +220,7 @@ else
 	say "installed $("${PREFIX}/shard" version) into ${PREFIX}"
 fi
 
-# The whole run owns one root, and it is never the production one.
-[ "${SHARD_ROOT}" != "/var/lib/shard" ] || fail "the e2e must not run against the production root"
-rm -rf "${SHARD_ROOT}"
+wipe_root
 
 step "create a sandbox"
 ID=$(shard create "${IMAGE}" -- /bin/sleep 600)
@@ -107,15 +238,14 @@ ip link show "${LINK}" >/dev/null || fail "there is no link named ${LINK}"
 say "the namespace and the link are up"
 
 step "exec a command in the sandbox"
-expect "$(shard exec "${ID}" -- /bin/sh -c 'echo shard-e2e > /tmp/marker; cat /tmp/marker')" \
-	"shard-e2e" "the command ran and wrote a file"
+expect_exec "shard-e2e" "the command ran and wrote a file" \
+	/bin/sh -c 'echo shard-e2e > /tmp/marker; cat /tmp/marker'
 
 step "exec again into the same filesystem state"
-expect "$(shard exec "${ID}" -- /bin/cat /tmp/marker)" "shard-e2e" \
-	"the second exec read what the first one wrote"
+expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
 
 step "propagate the exit code of a command that failed"
-# The || keeps the failure a condition rather than an error, which the trap above would report.
+# The || keeps the failure a condition rather than an error, which the exit handler would report.
 CODE=0
 shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
@@ -164,11 +294,10 @@ shard rm "${ID}" >/dev/null 2>&1
 say "a second rm is idempotent"
 
 step "clean up"
-# runsc bind mounts a null-netns into its own root on the first create, and it belongs to no sandbox.
-umount -l "${SHARD_ROOT}/runsc/null-netns" 2>/dev/null || true
-rm -rf "${SHARD_ROOT}"
+teardown
+[ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
 say "the run's own root is gone"
 
-trap - ERR
+trap - EXIT
 echo
 echo "e2e PASSED: install, create, exec, exec again, stop, rm, and a clean host"
