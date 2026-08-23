@@ -1,13 +1,18 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
+
+// pollInterval paces a wait for a lock somebody else holds, because flock cannot wait on a context.
+const pollInterval = 50 * time.Millisecond
 
 // Lock is an advisory flock. The kernel holds it against the open file, so a crash always drops it.
 type Lock struct {
@@ -18,13 +23,41 @@ type Lock struct {
 // The holder can unlink the file before it releases, and the lock we then win guards an inode that
 // path no longer names, which excludes nobody. So take it again until the two are the same file.
 func Acquire(path string, perm fs.FileMode) (*Lock, error) {
+	return acquire(path, perm, syscall.LOCK_EX)
+}
+
+// AcquireContext is Acquire that gives up when ctx does. A blocking flock ignores a signal, so a
+// Ctrl-C while another process holds the lock is invisible until that process is done with it.
+func AcquireContext(ctx context.Context, path string, perm fs.FileMode) (*Lock, error) {
+	for {
+		l, err := acquire(path, perm, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err != nil {
+			return nil, err
+		}
+		if l != nil {
+			return l, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for the lock %s: %w", path, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// acquire returns a nil lock and a nil error only when how says not to block and somebody holds it.
+func acquire(path string, perm fs.FileMode, how int) (*Lock, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 
 	for {
-		f, err := lockFile(path, perm)
+		f, err := lockFile(path, perm, how)
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -44,13 +77,13 @@ func Acquire(path string, perm fs.FileMode) (*Lock, error) {
 	}
 }
 
-func lockFile(path string, perm fs.FileMode) (*os.File, error) {
+func lockFile(path string, perm fs.FileMode, how int) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, perm)
 	if err != nil {
 		return nil, fmt.Errorf("open the lock file %s: %w", path, err)
 	}
 
-	if err := flock(f, syscall.LOCK_EX); err != nil {
+	if err := flock(f, how); err != nil {
 		return nil, errors.Join(fmt.Errorf("lock %s: %w", path, err), f.Close())
 	}
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
@@ -25,6 +26,12 @@ var ErrNotReclaimed = registry.ErrNotReclaimed
 
 // stagingPrefix names the tree an unpack builds before it renames it into place under the digest.
 const stagingPrefix = ".unpack-"
+
+// lockFile serializes the writers of one image tree. reclaim sweeps the whole store by reachability,
+// so without it one pull's rollback deletes the blobs another pull has written but not yet indexed.
+const lockFile = ".pull.lock"
+
+const lockPerm = 0o600
 
 // Service owns the image tree: the layout under blobs, and one unpacked rootfs per image.
 type Service struct {
@@ -58,23 +65,32 @@ func New(root string, opts ...registry.Option) (*Service, error) {
 		return nil, fmt.Errorf("create the rootfs directory under %s: %w", root, err)
 	}
 
-	if err := sweepStaging(rootfs); err != nil {
-		return nil, err
-	}
-
 	return &Service{root: root, store: store}, nil
 }
 
 // Pull fetches ref and unpacks it. A second pull of the same reference needs no network.
-func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
-	cached, err := s.store.Get(ref)
-	if err != nil && !errors.Is(err, registry.ErrNotCached) {
-		return Image{}, err
+func (s *Service) Pull(ctx context.Context, ref string) (_ Image, err error) {
+	// The cache is read before the lock, so a pulled image still runs while another pull downloads.
+	img, found, err := s.cached(ref)
+	if err != nil || found {
+		return img, err
 	}
 
-	// A tag we already hold is not re-resolved: shard image rm is how you ask for the newer one.
-	if err == nil && s.unpacked(cached) {
-		return s.describe(cached)
+	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)
+	if err != nil {
+		return Image{}, err
+	}
+	defer func() { err = errors.Join(err, l.Release()) }()
+
+	// Whoever held the lock may have been pulling this very reference.
+	img, found, err = s.cached(ref)
+	if err != nil || found {
+		return img, err
+	}
+
+	// The sweep runs here and not in New, because a staging tree under the lock is a live unpack.
+	if err := sweepStaging(filepath.Join(s.root, "rootfs")); err != nil {
+		return Image{}, err
 	}
 
 	pulled, err := s.store.Pull(ctx, ref)
@@ -88,6 +104,26 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 	}
 
 	return s.describe(pulled)
+}
+
+// cached answers with the image the store already holds unpacked. A tag we hold is not re-resolved:
+// shard image rm is how you ask for the newer one.
+func (s *Service) cached(ref string) (Image, bool, error) {
+	held, err := s.store.Get(ref)
+	if errors.Is(err, registry.ErrNotCached) {
+		return Image{}, false, nil
+	}
+	if err != nil {
+		return Image{}, false, err
+	}
+
+	if !s.unpacked(held) {
+		return Image{}, false, nil
+	}
+
+	img, err := s.describe(held)
+
+	return img, err == nil, err
 }
 
 // reclaim drops the blobs a failed pull left behind, which nothing else reaches once the index misses them.
@@ -120,7 +156,14 @@ func (s *Service) List() ([]Image, error) {
 }
 
 // Remove deletes the image and its rootfs. SHARD-26 adds the refcount that makes this safe under a sandbox.
-func (s *Service) Remove(ref string) error {
+func (s *Service) Remove(ctx context.Context, ref string) (err error) {
+	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
+	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, l.Release()) }()
+
 	// Orphaned reads index.json only, so an image whose blobs are damaged is still removable.
 	orphaned, err := s.store.Orphaned(ref)
 	if err != nil {
