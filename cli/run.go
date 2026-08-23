@@ -33,6 +33,10 @@ const teardownBudget = 30 * time.Second
 // tailInterval paces the log follower, because a file that grows behind our back wakes nobody.
 const tailInterval = 100 * time.Millisecond
 
+// tailChunk bounds one pass of the follower, so a guest that outruns the terminal cannot hold it
+// past an interrupt.
+const tailChunk = 64 * 1024
+
 // ExitError carries the code shard itself must exit with. Only run returns one today.
 type ExitError struct {
 	Code int
@@ -206,15 +210,15 @@ func (a App) launch(ctx context.Context, deps runDeps, opts runOptions) (err err
 		return err
 	}
 
+	// Allocate rolls back its own attach only: a failure between the lease claim and the attach leaks
+	// the lease file, so the push goes above the call. Release tolerates a lease that was never taken.
+	td.push(func(ctx context.Context) error { return deps.net.Release(ctx, id) })
+
 	// The id names the netns, the lease holder and the runsc container, so it must exist first.
 	netSpec, err := deps.net.Allocate(ctx, id)
 	if err != nil {
 		return err
 	}
-
-	// Allocate rolls back its own attach only: a failure between the lease claim and the attach
-	// leaks the lease file, so the caller owns the release.
-	td.push(func(ctx context.Context) error { return deps.net.Release(ctx, id) })
 
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:         id,
@@ -255,18 +259,18 @@ func (a App) launch(ctx context.Context, deps runDeps, opts runOptions) (err err
 		return err
 	}
 
+	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
+	// stop ends a sandbox.
+	td.discard()
+	a.note("sandbox " + id)
+
 	if err := deps.repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
 
 		return nil
 	}); err != nil {
-		// The sandbox is live, so it is left alone: deleting it would break the keep-alive rule.
 		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
 	}
-
-	// The commit point. The sandbox now outlives this command, so nothing is given back any more.
-	td.discard()
-	a.note("sandbox " + id)
 
 	return a.attach(ctx, deps, id, logPath, offset)
 }
@@ -388,9 +392,12 @@ func logOffset(path string) (int64, error) {
 // written between the last copy and its exit. runsc interleaves stdout and stderr into this one file.
 func tail(ctx context.Context, w io.Writer, log io.Reader, exited <-chan struct{}) error {
 	for {
-		n, err := io.Copy(w, log)
-		if err != nil {
+		n, err := io.CopyN(w, log, tailChunk)
+		if err != nil && !errors.Is(err, io.EOF) {
 			return fmt.Errorf("stream the sandbox output: %w", err)
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 		if n > 0 {
 			continue
@@ -422,15 +429,18 @@ func (t *teardown) push(step func(context.Context) error) { t.steps = append(t.s
 func (t *teardown) discard() { t.steps = nil }
 
 // unwind runs the stack on a fresh bounded context, because Ctrl-C cancelled the run's own and every
-// call would then fail at once and give nothing back. No error is swallowed.
+// call would then fail at once and give nothing back. It stops at the first failure, because a step
+// that failed still holds what the steps below it name.
 func (t *teardown) unwind(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownBudget)
 	defer cancel()
 
-	var err error
 	for i := len(t.steps) - 1; i >= 0; i-- {
-		err = errors.Join(err, t.steps[i](ctx))
+		if err := t.steps[i](ctx); err != nil {
+			return fmt.Errorf("gave back %d of %d claims and stopped, the rest are left on the host: %w",
+				len(t.steps)-1-i, len(t.steps), err)
+		}
 	}
 
-	return err
+	return nil
 }

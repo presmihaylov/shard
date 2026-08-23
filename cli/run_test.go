@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,15 +102,15 @@ func TestExitErrorSurvivesAJoin(t *testing.T) {
 
 // recorder is the shared log of what the fakes were asked to do and in which order.
 type recorder struct {
-	failAt string
-	calls  []string
-	live   map[string]bool
+	fail  []string
+	calls []string
+	live  map[string]bool
 }
 
 func (r *recorder) record(name string) error {
 	r.calls = append(r.calls, name)
 
-	if r.failAt == name {
+	if slices.Contains(r.fail, name) {
 		return fmt.Errorf("forced failure at %s", name)
 	}
 
@@ -318,19 +319,20 @@ func TestRunTearsDownWhatItBuilt(t *testing.T) {
 		{"images.Pull", nil},
 		{"repo.Create", nil},
 		{"repo.Dir", []string{"repo.Delete"}},
-		{"net.Allocate", []string{"repo.Delete"}},
+		{"net.Allocate", []string{"net.Release", "repo.Delete"}},
 		{"provider.Create", []string{"net.Release", "repo.Delete"}},
 		{"provider.Status", []string{"provider.Remove", "net.Release", "repo.Delete"}},
 		{"repo.Update1", []string{"provider.Remove", "net.Release", "repo.Delete"}},
 		{"provider.Start", []string{"provider.Remove", "net.Release", "repo.Delete"}},
-		{"repo.Update2", []string{"provider.Remove", "net.Release", "repo.Delete"}},
+		// The second update comes after a successful start, and a live sandbox is never given back.
+		{"repo.Update2", nil},
 	}
 
 	for _, c := range cases {
 		t.Run(c.failAt, func(t *testing.T) {
 			var out bytes.Buffer
 
-			r := &recorder{failAt: c.failAt}
+			r := &recorder{fail: []string{c.failAt}}
 			app := newFakeApp(t, &out, r, models.ExitStatus{})
 
 			if err := app.Run(t.Context(), []string{"run", "alpine:3.20"}); err == nil {
@@ -341,9 +343,15 @@ func TestRunTearsDownWhatItBuilt(t *testing.T) {
 				t.Errorf("tore down %v, want %v", got, c.cleanup)
 			}
 
-			// An empty tail matches anything, so the cases that claim nothing need their own assertion.
-			if len(c.cleanup) == 0 && slices.Contains(r.calls, "repo.Delete") {
-				t.Errorf("tore down %v, want nothing", r.calls)
+			// An empty tail matches anything, so the cases that give nothing back need their own assertion.
+			if len(c.cleanup) > 0 {
+				return
+			}
+
+			for _, step := range []string{"provider.Remove", "net.Release", "repo.Delete"} {
+				if slices.Contains(r.calls, step) {
+					t.Errorf("tore down %v, want nothing", r.calls)
+				}
 			}
 		})
 	}
@@ -354,7 +362,7 @@ func TestRunTearsDownWhatItBuilt(t *testing.T) {
 func TestRunTearsDownAfterAnInterrupt(t *testing.T) {
 	var out bytes.Buffer
 
-	r := &recorder{failAt: "provider.Start"}
+	r := &recorder{fail: []string{"provider.Start"}}
 	app := newFakeApp(t, &out, r, models.ExitStatus{})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -369,4 +377,81 @@ func TestRunTearsDownAfterAnInterrupt(t *testing.T) {
 			t.Errorf("%s ran on the cancelled run context, so it could not give anything back", step)
 		}
 	}
+}
+
+// TestRunKeepsALiveSandboxWhenTheRecordWriteFails pins the keep-alive rule at the one place that
+// nearly broke it: the record write after a successful start. Only stop ends a sandbox.
+func TestRunKeepsALiveSandboxWhenTheRecordWriteFails(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{fail: []string{"repo.Update2"}}
+	app := newFakeApp(t, &out, r, models.ExitStatus{})
+
+	err := app.Run(t.Context(), []string{"run", "alpine:3.20"})
+	if err == nil {
+		t.Fatal("a forced failure returned no error")
+	}
+
+	if !bytes.Contains(out.Bytes(), []byte("sandbox sandbox1")) {
+		t.Errorf("the id of the live sandbox was not reported: %q", out.String())
+	}
+
+	for _, step := range []string{"provider.Remove", "net.Release", "repo.Delete"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("ran %s on a started sandbox; only stop ends one", step)
+		}
+	}
+}
+
+// TestRunStopsUnwindingAtTheFirstFailure: the stack is LIFO, so a step that failed still holds what
+// the steps below it name. Deleting the record would leave that state with no handle to reach it by.
+func TestRunStopsUnwindingAtTheFirstFailure(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{fail: []string{"provider.Start", "provider.Remove"}}
+	app := newFakeApp(t, &out, r, models.ExitStatus{})
+
+	if err := app.Run(t.Context(), []string{"run", "alpine:3.20"}); err == nil {
+		t.Fatal("a forced failure returned no error")
+	}
+
+	if last := r.calls[len(r.calls)-1]; last != "provider.Remove" {
+		t.Fatalf("the unwind went on to %q after provider.Remove failed", last)
+	}
+
+	for _, step := range []string{"net.Release", "repo.Delete"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("ran %s after a failed give-back; the sandbox is still on the host", step)
+		}
+	}
+}
+
+// TestTailDetachesWhileTheGuestKeepsWriting: a guest that outruns the terminal must not hold the
+// follower past an interrupt, or the first Ctrl-C does nothing.
+func TestTailDetachesWhileTheGuestKeepsWriting(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- tail(ctx, io.Discard, endless{}, make(chan struct{})) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("tail: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tail did not detach from a log that never stops growing")
+	}
+}
+
+// endless is a log the guest never stops adding to.
+type endless struct{}
+
+func (endless) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+
+	return len(p), nil
 }
