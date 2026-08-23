@@ -3,21 +3,27 @@
 package pty
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
 
+// ptmx is a var so a test can point open at a file that is no multiplexer, which is the only way to
+// reach the failure path below.
+var ptmx = "/dev/ptmx"
+
 func open() (*Pty, error) {
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	master, err := os.OpenFile(ptmx, os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open /dev/ptmx: %w", err)
+		return nil, fmt.Errorf("open %s: %w", ptmx, err)
 	}
 
 	pair, err := replicaOf(master)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", err, master.Close())
+		// Join, not a second %w: a close that went fine is no operand, and a nil one renders as one.
+		return nil, errors.Join(err, master.Close())
 	}
 
 	return pair, nil
