@@ -71,6 +71,10 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
+	if err := writeNetworkFiles(b, spec); err != nil {
+		return Bundle{}, err
+	}
+
 	runtimeSpec, err := s.runtimeSpec(spec, b)
 	if err != nil {
 		return Bundle{}, err

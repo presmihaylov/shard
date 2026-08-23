@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 )
@@ -389,13 +391,26 @@ func assertMounted(t *testing.T, h *harness, id string, want bool) {
 type harness struct {
 	provider *gvisor.Provider
 	image    image.Image
+	// net is nil unless the harness is networked, and then every spec gets an allocated namespace.
+	net *network.Service
 
 	mu   sync.Mutex
 	dirs map[string]string
 	next atomic.Int64
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWith(t, runsc.NetworkNone) }
+
+// newNetworkedHarness gives every sandbox a namespace, an address and a route out. gVisor builds its
+// netstack from the interfaces it finds at create, so the namespace is addressed before it joins one.
+func newNetworkedHarness(t *testing.T) *harness {
+	t.Helper()
+	requireNetworkTools(t)
+
+	return newHarnessWith(t, runsc.NetworkSandbox)
+}
+
+func newHarnessWith(t *testing.T, mode string) *harness {
 	t.Helper()
 	requireRunsc(t)
 
@@ -413,9 +428,13 @@ func newHarness(t *testing.T) *harness {
 
 	runscRoot := filepath.Join(t.TempDir(), "runsc")
 
-	runner, err := runsc.New(runscRoot)
+	runner, err := runsc.New(runscRoot, runsc.WithNetwork(mode))
 	if err != nil {
 		t.Fatalf("open the runsc runner: %v", err)
+	}
+
+	if mode == runsc.NetworkSandbox {
+		h.net = newNetworkService(t)
 	}
 	// --network=none leaves a bind mount in the runsc root that the TempDir removal would trip over.
 	t.Cleanup(func() { exec.Command("umount", "-l", filepath.Join(runscRoot, "null-netns")).Run() })
@@ -452,6 +471,8 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	id := fmt.Sprintf("shard-12-%d", h.next.Add(1))
 	dir := t.TempDir()
 
+	networkSpec := h.allocate(t, id)
+
 	h.mu.Lock()
 	h.dirs[id] = dir
 	h.mu.Unlock()
@@ -469,6 +490,56 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 		RootFS:      h.image.RootFS,
 		ImageConfig: h.image.Config,
 		Entrypoint:  entrypoint,
+		Network:     networkSpec,
+	}
+}
+
+// allocate is a no-op on a harness with no network, which is every test outside the SHARD-13 file.
+func (h *harness) allocate(t *testing.T, id string) models.NetworkSpec {
+	t.Helper()
+
+	if h.net == nil {
+		return models.NetworkSpec{}
+	}
+
+	spec, err := h.net.Allocate(t.Context(), id)
+	if err != nil {
+		t.Fatalf("allocate the network of %s: %v", id, err)
+	}
+	t.Cleanup(func() {
+		if err := h.net.Release(context.Background(), id); err != nil {
+			t.Logf("release the network of %s: %v", id, err)
+		}
+	})
+
+	return spec
+}
+
+// newNetworkService shares one lease directory across the package, so no two sandboxes in one run
+// claim the same address and therefore the same host interface name.
+func newNetworkService(t *testing.T) *network.Service {
+	t.Helper()
+
+	m, err := netns.New()
+	if err != nil {
+		t.Fatalf("open the netns manager: %v", err)
+	}
+
+	s, err := network.New(network.Config{Root: networkRoot}, m)
+	if err != nil {
+		t.Fatalf("open the network service: %v", err)
+	}
+
+	return s
+}
+
+func requireNetworkTools(t *testing.T) {
+	t.Helper()
+
+	for _, binary := range []string{"ip", "nft"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("no %s on this host", binary)
+		}
 	}
 }
 
@@ -505,21 +576,30 @@ var pullTestImage = sync.OnceValues(func() (image.Image, error) {
 	return svc.Pull(ctx, testImage)
 })
 
-// imageRoot outlives every test, so TestMain owns it rather than any one t.TempDir.
-var imageRoot string
+// imageRoot and networkRoot outlive every test, so TestMain owns them rather than any one t.TempDir.
+var (
+	imageRoot   string
+	networkRoot string
+)
 
 func TestMain(m *testing.M) {
-	root, err := os.MkdirTemp("", "shard-12-images")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "create the image root:", err)
-		os.Exit(1)
+	roots := map[string]*string{"shard-12-images": &imageRoot, "shard-13-network": &networkRoot}
+
+	for prefix, target := range roots {
+		root, err := os.MkdirTemp("", prefix)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "create the", prefix, "root:", err)
+			os.Exit(1)
+		}
+		*target = root
 	}
 
-	imageRoot = root
 	code := m.Run()
 
-	if err := os.RemoveAll(root); err != nil {
-		fmt.Fprintln(os.Stderr, "remove the image root:", err)
+	for _, target := range roots {
+		if err := os.RemoveAll(*target); err != nil {
+			fmt.Fprintln(os.Stderr, "remove", *target, err)
+		}
 	}
 
 	os.Exit(code)

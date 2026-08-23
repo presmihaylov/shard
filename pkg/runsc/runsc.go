@@ -67,7 +67,15 @@ func WithBinary(path string) Option {
 	return func(r *Runner) { r.binary = path }
 }
 
-// WithNetwork picks the sandbox network mode: none, host or sandbox. SHARD-13 is what sets it.
+// The network modes runsc accepts. Sandbox is netstack over the namespace's interfaces, which is
+// what a sandbox with a veth needs; none leaves it with loopback alone.
+const (
+	NetworkNone    = "none"
+	NetworkSandbox = "sandbox"
+	NetworkHost    = "host"
+)
+
+// WithNetwork picks the sandbox network mode. Sandbox is what a sandbox with an allocated netns needs.
 func WithNetwork(mode string) Option {
 	return func(r *Runner) { r.network = mode }
 }
@@ -78,7 +86,7 @@ func New(root string, opts ...Option) (*Runner, error) {
 		return nil, fmt.Errorf("the runsc root must be an absolute path, got %q", root)
 	}
 
-	r := &Runner{binary: "runsc", root: root, network: "none"}
+	r := &Runner{binary: "runsc", root: root, network: NetworkNone}
 	for _, opt := range opts {
 		opt(r)
 	}
