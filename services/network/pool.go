@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -154,17 +155,9 @@ func (p *pool) holder(address netip.Addr) (string, error) {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 
-	return trimNewline(string(data)), nil
+	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
 func (p *pool) path(address netip.Addr) string {
 	return filepath.Join(p.dir, address.String())
-}
-
-func trimNewline(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
-		s = s[:len(s)-1]
-	}
-
-	return s
 }

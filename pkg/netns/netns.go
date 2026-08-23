@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -305,16 +306,14 @@ func (m *Manager) execute(ctx context.Context, binary string, stdin io.Reader, s
 
 // sentinel turns the two failures a caller must act on into errors it can match.
 func sentinel(message string, err error) error {
-	for _, present := range existsMessages {
-		if strings.Contains(message, present) {
-			return ErrExists
-		}
+	reported := func(phrase string) bool { return strings.Contains(message, phrase) }
+
+	if slices.ContainsFunc(existsMessages, reported) {
+		return ErrExists
 	}
 
-	for _, absent := range notFoundMessages {
-		if strings.Contains(message, absent) {
-			return ErrNotFound
-		}
+	if slices.ContainsFunc(notFoundMessages, reported) {
+		return ErrNotFound
 	}
 
 	return err
