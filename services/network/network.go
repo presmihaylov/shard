@@ -127,6 +127,15 @@ func (s *Service) Bridge() string { return s.cfg.Bridge }
 // so Allocate calls it rather than making a caller remember to. The ruleset is replaced whole, which
 // SHARD-70 must revisit once the table carries a rule per sandbox rather than one policy for all.
 func (s *Service) Ensure(ctx context.Context) error {
+	routes, err := s.manager.Routes(ctx)
+	if err != nil {
+		return err
+	}
+
+	if route, found := conflict(s.cfg.Subnet, routes); found {
+		return fmt.Errorf("the sandbox subnet %s overlaps the host route %s; set a different subnet", s.cfg.Subnet, route)
+	}
+
 	if err := s.manager.EnsureBridge(ctx, s.cfg.Bridge, netip.PrefixFrom(s.gateway, s.cfg.Subnet.Bits())); err != nil {
 		return err
 	}
@@ -136,6 +145,23 @@ func (s *Service) Ensure(ctx context.Context) error {
 	}
 
 	return s.manager.ApplyRuleset(ctx, ruleset(s.cfg.Bridge, s.cfg.Subnet))
+}
+
+// conflict reports the first host route the subnet overlaps. Claiming a range the host already routes
+// would steal it, because the bridge's prefix is the longer of the two. The subnet's own route is not
+// a conflict: the bridge carries it after the first Ensure, and every Allocate calls Ensure again.
+func conflict(subnet netip.Prefix, routes []netip.Prefix) (netip.Prefix, bool) {
+	for _, route := range routes {
+		if route == subnet {
+			continue
+		}
+
+		if route.Overlaps(subnet) {
+			return route, true
+		}
+	}
+
+	return netip.Prefix{}, false
 }
 
 // Allocate gives the sandbox a namespace, an address and a route out. It reports what the provider

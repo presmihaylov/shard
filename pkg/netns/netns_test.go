@@ -198,3 +198,49 @@ func TestAddressesInReadsTheBriefForm(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// The route table is what tells a caller a subnet is already taken, so every form of dst must read.
+func TestParseRoutesReadsEveryDestinationForm(t *testing.T) {
+	const table = `[{"dst":"default","gateway":"10.0.0.1","dev":"eth0"},` +
+		`{"dst":"10.0.0.0/8","dev":"eth0","protocol":"kernel"},` +
+		`{"dst":"10.87.0.5","dev":"eth0","scope":"link"}]`
+
+	routes, err := parseRoutes([]byte(table))
+	if err != nil {
+		t.Fatalf("parseRoutes: %v", err)
+	}
+
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("10.87.0.5/32")}
+	if !slices.Equal(routes, want) {
+		t.Errorf("got %v, want %v", routes, want)
+	}
+}
+
+func TestParseRoutesRefusesADestinationItCannotRead(t *testing.T) {
+	if _, err := parseRoutes([]byte(`[{"dst":"not-an-address"}]`)); err == nil {
+		t.Fatal("parseRoutes accepted a destination that is not an address")
+	}
+}
+
+func TestParseRoutesRefusesOutputThatIsNotJSON(t *testing.T) {
+	if _, err := parseRoutes([]byte("10.0.0.0/8 dev eth0\n")); err == nil {
+		t.Fatal("parseRoutes accepted output that is not JSON")
+	}
+}
+
+func TestRoutesAsksIpForJSON(t *testing.T) {
+	m, argvFile := fake(t, `[{"dst":"10.0.0.0/8","dev":"eth0"}]`, "", 0)
+
+	routes, err := m.Routes(t.Context())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+
+	if want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}; !slices.Equal(routes, want) {
+		t.Errorf("got %v, want %v", routes, want)
+	}
+
+	if got := argv(t, argvFile); !slices.Equal(got, []string{"-json", "route", "show"}) {
+		t.Errorf("ip was called with %v", got)
+	}
+}
