@@ -19,13 +19,15 @@ import (
 
 const guestExitFile = "/.shard/exit.json"
 
+const guestReadyFile = "/.shard/started"
+
 // Build only records the supervisor path, so the tests never need a real binary there.
 const supervisorPath = "/usr/local/bin/shard-init"
 
 func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
 
-	want := []string{bundle.GuestInitPath, "-exit-file", guestExitFile, "--", "/bin/sh", "-c", "true"}
+	want := []string{bundle.GuestInitPath, "-exit-file", guestExitFile, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
 	}
@@ -57,6 +59,10 @@ func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
 
 	if want := filepath.Join(shard.Source, "exit.json"); b.ExitFile != want {
 		t.Errorf("got the exit file at %q, want %q", b.ExitFile, want)
+	}
+	// The handshake lands beside it, and the host reads it to learn the entrypoint ever ran.
+	if want := filepath.Join(shard.Source, "started"); b.ReadyFile != want {
+		t.Errorf("got the ready file at %q, want %q", b.ReadyFile, want)
 	}
 }
 

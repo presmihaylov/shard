@@ -25,14 +25,19 @@ const GuestInitPath = guestShardDir + "/init"
 
 const exitFileName = "exit.json"
 
+// readyFileName is written once the entrypoint is forked. runsc start unblocks the task and reads
+// nothing back, so this file is the only proof the entrypoint ever ran.
+const readyFileName = "started"
+
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ShardDir is bind mounted at guestShardDir, and ExitFile is what shard-init writes into it.
-	ShardDir string
-	ExitFile string
+	// ShardDir is bind mounted at guestShardDir, and shard-init writes both files below into it.
+	ShardDir  string
+	ExitFile  string
+	ReadyFile string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -119,12 +124,13 @@ func validate(spec models.SandboxSpec) error {
 func newBundle(stateDir string) (Bundle, error) {
 	shardDir := filepath.Join(stateDir, "shard")
 	b := Bundle{
-		Dir:      filepath.Join(stateDir, "bundle"),
-		RootFS:   filepath.Join(stateDir, "bundle", "rootfs"),
-		ShardDir: shardDir,
-		ExitFile: filepath.Join(shardDir, exitFileName),
-		Upper:    filepath.Join(stateDir, "overlay", "upper"),
-		Work:     filepath.Join(stateDir, "overlay", "work"),
+		Dir:       filepath.Join(stateDir, "bundle"),
+		RootFS:    filepath.Join(stateDir, "bundle", "rootfs"),
+		ShardDir:  shardDir,
+		ExitFile:  filepath.Join(shardDir, exitFileName),
+		ReadyFile: filepath.Join(shardDir, readyFileName),
+		Upper:     filepath.Join(stateDir, "overlay", "upper"),
+		Work:      filepath.Join(stateDir, "overlay", "work"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -213,7 +219,11 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
 	}
 
-	argv := []string{GuestInitPath, "-exit-file", path.Join(guestShardDir, exitFileName)}
+	argv := []string{
+		GuestInitPath,
+		"-exit-file", path.Join(guestShardDir, exitFileName),
+		"-ready-file", path.Join(guestShardDir, readyFileName),
+	}
 
 	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
 	if spec.User != "" {

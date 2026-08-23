@@ -174,6 +174,51 @@ func TestCreateLeaksNothingWhenItFails(t *testing.T) {
 	}
 }
 
+// TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart is the whole point of the handshake.
+// runsc create and runsc start both succeed for an entrypoint that does not exist, because the root
+// process is the supervisor. Without the handshake create printed an id, wrote running and exited 0,
+// and the record, the lease, the namespace, the link and the mount all outlived the sandbox.
+func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
+	app, out := newCreateApp(t)
+
+	args := []string{"create", testImage, "--", "/no/such/entrypoint"}
+	err := app.Run(t.Context(), args)
+	if err == nil {
+		t.Fatal("create reported success for an entrypoint the image does not hold")
+	}
+	if !strings.Contains(err.Error(), "did not start") {
+		t.Errorf("create failed with %v, want it to say the entrypoint did not start", err)
+	}
+
+	// A create that failed prints no id: nothing reachable was left behind to name.
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Errorf("the failed create printed %q, want nothing", got)
+	}
+
+	left, err := records(t, app.Root).List()
+	if err != nil {
+		t.Fatalf("list the records: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("the failed create left the records %+v", left)
+	}
+
+	if held := leases(t, app.Root); len(held) != 0 {
+		t.Errorf("the failed create left the leases %v", held)
+	}
+	if held := containers(t, app.Root); len(held) != 0 {
+		t.Errorf("the failed create left the runsc containers %v", held)
+	}
+
+	mounts, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		t.Fatalf("read the mount table: %v", err)
+	}
+	if sandboxes := filepath.Join(app.Root, "sandboxes"); strings.Contains(string(mounts), sandboxes) {
+		t.Errorf("the failed create left a mount under %s", sandboxes)
+	}
+}
+
 // TestCreateLeaksNothingWhenItIsInterrupted: Ctrl-C cancels the command's own context, so the
 // give-back has to run on one the interrupt cannot have cancelled.
 func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {

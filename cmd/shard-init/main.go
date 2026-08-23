@@ -23,7 +23,7 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> [-user <uid>:<gid>] -- <entrypoint> [args...]`
+  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] -- <entrypoint> [args...]`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -57,6 +57,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("shard-init", flag.ContinueOnError)
 	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
 	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
+	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 
 	if err := flags.Parse(args); err != nil {
@@ -65,9 +66,15 @@ func run(args []string) error {
 	if *exitFile == "" {
 		return errors.New("-exit-file is required")
 	}
+	if *readyFile == "" {
+		return errors.New("-ready-file is required")
+	}
 	// This also rejects -exit-file --, which the flag package otherwise takes as the value.
 	if !filepath.IsAbs(*exitFile) {
 		return fmt.Errorf("-exit-file must be an absolute path, got %q", *exitFile)
+	}
+	if !filepath.IsAbs(*readyFile) {
+		return fmt.Errorf("-ready-file must be an absolute path, got %q", *readyFile)
 	}
 	if flags.NArg() == 0 {
 		return errors.New("no entrypoint given")
@@ -78,7 +85,7 @@ func run(args []string) error {
 		return err
 	}
 
-	err = supervise(flags.Args(), *exitFile, credential)
+	err = supervise(flags.Args(), *exitFile, *readyFile, credential)
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -91,7 +98,7 @@ func run(args []string) error {
 
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, exitFile string, credential *syscall.Credential) error {
+func supervise(entrypointArgv []string, exitFile, readyFile string, credential *syscall.Credential) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
 	stopSignals := make(chan os.Signal, 4)
@@ -101,6 +108,11 @@ func supervise(entrypointArgv []string, exitFile string, credential *syscall.Cre
 	entrypointPID, err := startProcess(entrypointArgv, credential)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
+	}
+
+	// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
+	if err := store.WriteFile(readyFile, nil, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", readyFile, err)
 	}
 
 	stopping := false

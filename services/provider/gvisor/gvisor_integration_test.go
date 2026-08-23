@@ -127,6 +127,28 @@ func TestStartRefusesASandboxThatWasStopped(t *testing.T) {
 	}
 }
 
+// runsc start only unblocks the task and reads nothing back, so a Start that returned nil used to
+// mean nothing at all: the supervisor could already be dead over an entrypoint that does not exist.
+func TestStartRefusesAnEntrypointThatNeverRan(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/no/such/entrypoint")
+
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := h.provider.Start(t.Context(), spec.ID)
+	if err == nil {
+		t.Fatal("Start reported success for an entrypoint the image does not hold")
+	}
+	// The message carries what the supervisor printed, because the caller drops the log with the rest.
+	if !strings.Contains(err.Error(), "did not start") || !strings.Contains(err.Error(), "/no/such/entrypoint") {
+		t.Errorf("Start failed with %v, want it to name the entrypoint that did not start", err)
+	}
+
+	assertAlive(t, h, spec.ID, false)
+}
+
 // The merged view is the sandbox's rootfs, so nothing may remove the state directory while it stands.
 func TestStopAndRemoveBothDropTheWritableLayerMount(t *testing.T) {
 	h := newHarness(t)
