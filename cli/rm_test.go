@@ -53,13 +53,56 @@ func TestRmFreesEveryHoldingInOrder(t *testing.T) {
 		t.Fatalf("rm: %v", err)
 	}
 
-	want := []string{"provider.Remove", "net.Release", "repo.Delete"}
+	want := []string{"provider.Remove", "net.Release", "repo.Delete", "repo.List", "substrate.DropNullNetns"}
 	if got := r.calls[len(r.calls)-len(want):]; !slices.Equal(got, want) {
 		t.Errorf("rm freed %v, want %v", got, want)
 	}
 
 	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
 		t.Errorf("rm printed %q, want the bare id", out.String())
+	}
+}
+
+// TestRmOfTheLastSandboxDropsWhatTheSubstrateKeeps: runsc bind mounts a null-netns into its own
+// root and never drops it, and an operator then meets it as an rm -rf of the root that fails.
+func TestRmOfTheLastSandboxDropsWhatTheSubstrateKeeps(t *testing.T) {
+	var out bytes.Buffer
+
+	sb := running()
+	sb.State = models.StateStopped
+
+	r := &recorder{}
+	app, deps := newLifecycleApp(t, &out, r, sb)
+	deps.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
+
+	if err := app.Run(t.Context(), []string{"rm", "sandbox1"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+
+	if !deps.substrateSvc.(*fakeLifecycleSubstrate).dropped {
+		t.Errorf("the rm of the last sandbox left the substrate mount: %v", r.calls)
+	}
+}
+
+// TestRmKeepsWhatTheSubstrateSharesWhileASandboxIsLeft: the mount belongs to the root rather than to
+// a sandbox, so only the rm that empties the root gives it back.
+func TestRmKeepsWhatTheSubstrateSharesWhileASandboxIsLeft(t *testing.T) {
+	var out bytes.Buffer
+
+	sb := running()
+	sb.State = models.StateStopped
+
+	r := &recorder{}
+	app, deps := newLifecycleApp(t, &out, r, sb)
+	deps.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
+	deps.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox2"}}
+
+	if err := app.Run(t.Context(), []string{"rm", "sandbox1"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+
+	if deps.substrateSvc.(*fakeLifecycleSubstrate).dropped {
+		t.Error("the rm dropped the substrate mount while another sandbox still uses the root")
 	}
 }
 

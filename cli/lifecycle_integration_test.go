@@ -5,7 +5,6 @@ package cli
 import (
 	"bytes"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -285,11 +284,13 @@ func assertNothingLeft(t *testing.T, root string, sb models.Sandbox) {
 		t.Errorf("the rm left the host interface %s", sb.HostInterface)
 	}
 
+	// The whole root, not only the sandbox tree: the rm that empties the root also gives back the
+	// null-netns runsc bind mounts into its own root and never drops.
 	mounts, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
 		t.Fatalf("read the mount table: %v", err)
 	}
-	if sandboxes := filepath.Join(root, "sandboxes"); strings.Contains(string(mounts), sandboxes) {
-		t.Errorf("the rm left a mount under %s", sandboxes)
+	if strings.Contains(string(mounts), root) {
+		t.Errorf("the rm left a mount under %s", root)
 	}
 }

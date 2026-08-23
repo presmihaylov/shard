@@ -62,6 +62,10 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
+	if err := dropSubstrateRoot(d); err != nil {
+		return fmt.Errorf("sandbox %s is removed, but %w", opts.id, err)
+	}
+
 	return a.print(opts.id)
 }
 
@@ -114,6 +118,32 @@ func free(ctx context.Context, repo sandboxRepo, net sandboxNetwork, provider mo
 	}
 
 	return nil
+}
+
+// dropSubstrateRoot gives back what the substrate keeps for itself once no sandbox is left to use
+// it. An operator otherwise meets it as an rm -rf of the root that fails with EBUSY.
+// A create that runs beside this one is no reason to keep it: runsc binds the mount again on its
+// next create, and a live sandbox does not need this mount to stay up.
+func dropSubstrateRoot(d *deps) error {
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	left, err := repo.List()
+	if err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		return nil
+	}
+
+	sub, err := d.substrate()
+	if err != nil {
+		return err
+	}
+
+	return sub.DropNullNetns()
 }
 
 func parseRm(args []string) (rmOptions, error) {
