@@ -8,6 +8,10 @@ import (
 // ErrUnsupported is the sentinel behind every refused verb. Match it with errors.Is.
 var ErrUnsupported = errors.New("verb not supported")
 
+// ErrNoExitStatus is what a sandbox that was killed leaves behind: the supervisor died before it
+// could record how the entrypoint ended. It is a normal outcome of a stop, not a failure.
+var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited")
+
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
 	VerbPause  = "pause"
