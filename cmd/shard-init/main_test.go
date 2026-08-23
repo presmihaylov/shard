@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -494,6 +495,63 @@ func TestParseCredential(t *testing.T) {
 			}
 			if got.Uid != c.want.Uid || got.Gid != c.want.Gid {
 				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// The permitted set is the ceiling config.json granted the supervisor, and the entrypoint is handed
+// exactly it: a uid change away from root clears the set the sandbox spec advertises.
+func TestPermittedMask(t *testing.T) {
+	const status = "Name:\tshard-init\nCapInh:\t00000000a80425fb\nCapPrm:\t00000000a80425fb\nCapEff:\t0000000000000000\n"
+
+	mask, err := permittedMask(status)
+	if err != nil {
+		t.Fatalf("permittedMask: %v", err)
+	}
+	if want := uint64(0xa80425fb); mask != want {
+		t.Errorf("got mask %#x, want %#x", mask, want)
+	}
+
+	// CAP_NET_BIND_SERVICE is 10, and it is the one a --user entrypoint most visibly loses without this.
+	if got := capabilitiesIn(mask); !slices.Contains(got, uintptr(10)) {
+		t.Errorf("got the capabilities %v, want CAP_NET_BIND_SERVICE among them", got)
+	}
+	if got := capabilitiesIn(0); got != nil {
+		t.Errorf("an empty set gave %v, want none", got)
+	}
+}
+
+func TestPermittedMaskRefusesAStatusItCannotRead(t *testing.T) {
+	cases := map[string]string{
+		"no field":     "Name:\tshard-init\n",
+		"not a number": "CapPrm:\tnot-a-mask\n",
+	}
+
+	for name, status := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := permittedMask(status); err == nil {
+				t.Errorf("permittedMask(%q) returned no error", status)
+			}
+		})
+	}
+}
+
+// A child that keeps the supervisor's own ids loses nothing, so it needs no ambient set at all.
+func TestNoAmbientSetWithoutADrop(t *testing.T) {
+	cases := map[string]*syscall.Credential{
+		"no credential": nil,
+		"still root":    {Uid: 0, Gid: 0},
+	}
+
+	for name, credential := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := inheritedCapabilities(credential)
+			if err != nil {
+				t.Fatalf("inheritedCapabilities: %v", err)
+			}
+			if got != nil {
+				t.Errorf("got the ambient set %v, want none", got)
 			}
 		})
 	}

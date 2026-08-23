@@ -278,15 +278,79 @@ func startProcess(argv []string, credential *syscall.Credential) (int, error) {
 		return 0, fmt.Errorf("look up %q: %w", argv[0], err)
 	}
 
+	ambient, err := inheritedCapabilities(credential)
+	if err != nil {
+		return 0, err
+	}
+
 	// The child gets our own stdio fds: shard streams them through, it does not proxy them.
 	pid, err := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
-		Sys:   &syscall.SysProcAttr{Credential: credential},
+		Sys:   sysProcAttr(credential, ambient),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("fork and exec %q: %w", binary, err)
 	}
 
 	return pid, nil
+}
+
+// statusFile is where the kernel, and the sentry that emulates it, prints this process's own sets.
+const statusFile = "/proc/self/status"
+
+// permittedField names the set config.json granted the supervisor, which is the ceiling it may pass on.
+const permittedField = "CapPrm:"
+
+// inheritedCapabilities names what the entrypoint must be handed as ambient. A uid change away from
+// root clears the permitted and the effective set, and config.json would then advertise a set the
+// entrypoint never receives. A child that keeps our own ids keeps them without any of this.
+func inheritedCapabilities(credential *syscall.Credential) ([]uintptr, error) {
+	if credential == nil || credential.Uid == 0 {
+		return nil, nil
+	}
+
+	blob, err := os.ReadFile(statusFile)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", statusFile, err)
+	}
+
+	mask, err := permittedMask(string(blob))
+	if err != nil {
+		return nil, err
+	}
+
+	return capabilitiesIn(mask), nil
+}
+
+// permittedMask pulls the permitted set out of the process status, where it is one hex word.
+func permittedMask(status string) (uint64, error) {
+	for line := range strings.Lines(status) {
+		if !strings.HasPrefix(line, permittedField) {
+			continue
+		}
+
+		value := strings.TrimSpace(strings.TrimPrefix(line, permittedField))
+
+		mask, err := strconv.ParseUint(value, 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s holds an unreadable %s %q: %w", statusFile, permittedField, value, err)
+		}
+
+		return mask, nil
+	}
+
+	return 0, fmt.Errorf("%s names no %s", statusFile, permittedField)
+}
+
+// capabilitiesIn turns the mask into the numbers prctl raises one at a time.
+func capabilitiesIn(mask uint64) []uintptr {
+	var caps []uintptr
+	for bit := range uintptr(64) {
+		if mask&(1<<bit) != 0 {
+			caps = append(caps, bit)
+		}
+	}
+
+	return caps
 }

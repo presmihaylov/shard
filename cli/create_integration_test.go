@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,32 @@ func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 
 	if got := guestOutput(t, deps, id); !strings.Contains(got, "65534") {
 		t.Errorf("the entrypoint reported uid %q, want 65534", strings.TrimSpace(got))
+	}
+}
+
+// A --user entrypoint keeps what config.json grants it. The drop happens in the supervisor now, and
+// a uid change away from root clears the permitted and the effective set unless they are raised into
+// the ambient one, so without that the entrypoint got nothing and bind(80) returned EACCES.
+func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
+	app, _ := newCreateApp(t)
+	deps := createApp(t, app)
+
+	args := []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "grep CapEff /proc/self/status"}
+	if err := app.Run(t.Context(), args); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	id := onlySandbox(t, app.Root)
+	t.Cleanup(func() { cleanUp(t, deps, id) })
+
+	if status := awaitEntrypoint(t, deps, id); status.Code != 0 {
+		t.Fatalf("the entrypoint ended %+v, want a clean exit", status)
+	}
+
+	mask := effectiveCapabilities(t, guestOutput(t, deps, id))
+	// CAP_NET_BIND_SERVICE is bit 10. It is in the set the spec grants, so the entrypoint must hold it.
+	if mask&(1<<10) == 0 {
+		t.Errorf("the entrypoint holds the effective set %#x, want CAP_NET_BIND_SERVICE in it", mask)
 	}
 }
 
@@ -328,6 +355,28 @@ func guestOutput(t *testing.T, deps createDeps, id string) string {
 	}
 
 	return string(blob)
+}
+
+// effectiveCapabilities reads the one hex word the guest printed out of /proc/self/status.
+func effectiveCapabilities(t *testing.T, output string) uint64 {
+	t.Helper()
+
+	for line := range strings.Lines(output) {
+		if !strings.HasPrefix(line, "CapEff:") {
+			continue
+		}
+
+		mask, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "CapEff:")), 16, 64)
+		if err != nil {
+			t.Fatalf("the guest printed an unreadable CapEff %q: %v", line, err)
+		}
+
+		return mask
+	}
+
+	t.Fatalf("the guest printed %q, which names no CapEff", output)
+
+	return 0
 }
 
 // cleanUp ends the sandbox the test left running and gives its address back. It builds its own
