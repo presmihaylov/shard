@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -490,8 +491,8 @@ func (t *teardown) unwind(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownBudget)
 	defer cancel()
 
-	for i := len(t.steps) - 1; i >= 0; i-- {
-		if err := t.steps[i](ctx); err != nil {
+	for i, step := range slices.Backward(t.steps) {
+		if err := step(ctx); err != nil {
 			return fmt.Errorf("gave back %d of %d claims and stopped, the rest are left on the host: %w",
 				len(t.steps)-1-i, len(t.steps), err)
 		}
