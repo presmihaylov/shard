@@ -6,20 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/netns"
-	"github.com/presmihaylov/shard/pkg/runsc"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
-	"github.com/presmihaylov/shard/services/network"
-	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/runspec"
-	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
@@ -44,51 +37,13 @@ type createOptions struct {
 	resources models.Resources
 }
 
-// imageService is the part of image.Service that create drives.
-type imageService interface {
-	Pull(ctx context.Context, ref string) (image.Image, error)
-}
-
-// sandboxRepo is the part of sandboxstate.Repository that create drives.
-type sandboxRepo interface {
-	Create(sb models.Sandbox) (models.Sandbox, error)
-	Update(id string, mutate func(*models.Sandbox) error) error
-	Delete(id string) error
-	Dir(id string) (string, error)
-}
-
-// sandboxNetwork is the part of network.Service that create drives.
-type sandboxNetwork interface {
-	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
-	Release(ctx context.Context, id string) error
-}
-
-// createDeps is every layer create wires together. A test replaces the factory, because each real
-// part needs Linux and root.
-type createDeps struct {
-	images   imageService
-	repo     sandboxRepo
-	net      sandboxNetwork
-	provider models.Provider
-}
-
 func (a App) create(ctx context.Context, args []string) error {
 	opts, err := parseCreate(args)
 	if err != nil {
 		return err
 	}
 
-	build := a.newCreateDeps
-	if build == nil {
-		build = defaultCreateDeps
-	}
-
-	deps, err := build(a)
-	if err != nil {
-		return err
-	}
-
-	return a.launch(ctx, deps, opts)
+	return a.launch(ctx, a.deps(), opts)
 }
 
 // parseCreate splits the flags, the image and the argv. Go's flag stops at the first non-flag
@@ -159,52 +114,30 @@ func (e *envList) Set(value string) error {
 	return nil
 }
 
-// defaultCreateDeps builds the real layers. Every one of them refuses off Linux, which is why the
-// factory is a field the wiring test replaces rather than something create calls directly.
-func defaultCreateDeps(a App) (createDeps, error) {
-	images, err := a.images()
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	repo, err := sandboxstate.New(a.Root)
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	manager, err := netns.New()
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	net, err := network.New(network.Config{Root: a.Root}, manager)
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	// The mode is fixed on the runner, and a sandbox with an allocated netns needs netstack over it.
-	runner, err := runsc.New(filepath.Join(a.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	bundles, err := bundle.New(a.InitPath)
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	provider, err := gvisor.New(runner, bundles, repo.Dir)
-	if err != nil {
-		return createDeps{}, err
-	}
-
-	return createDeps{images: images, repo: repo, net: net, provider: provider}, nil
-}
-
 // launch claims the image, the record, the network and the sandbox, then starts the entrypoint and
 // prints the id. Every claim before the commit point is pushed onto the teardown stack, because
 // half-built state is a bug. Nothing is torn down after it: the sandbox outlives this command.
-func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (err error) {
+func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error) {
+	images, err := d.images()
+	if err != nil {
+		return err
+	}
+
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	net, err := d.net()
+	if err != nil {
+		return err
+	}
+
+	provider, err := d.provider()
+	if err != nil {
+		return err
+	}
+
 	var td teardown
 
 	defer func() {
@@ -215,22 +148,22 @@ func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (e
 
 	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
 	// claims nothing this command has to give back.
-	img, err := a.pullImage(ctx, deps, opts.ref)
+	img, err := a.pullImage(ctx, images, opts.ref)
 	if err != nil {
 		return err
 	}
 
-	id, dir, err := claimRecord(deps, &td, img, opts)
+	id, dir, err := claimRecord(repo, provider, &td, img, opts)
 	if err != nil {
 		return err
 	}
 
 	// Allocate rolls back its own attach only: a failure between the lease claim and the attach leaks
 	// the lease file, so the push goes above the call. Release tolerates a lease that was never taken.
-	td.push(func(ctx context.Context) error { return deps.net.Release(ctx, id) })
+	td.push(func(ctx context.Context) error { return net.Release(ctx, id) })
 
 	// The id names the netns, the lease holder and the runsc container, so it must exist first.
-	netSpec, err := deps.net.Allocate(ctx, id)
+	netSpec, err := net.Allocate(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -249,17 +182,17 @@ func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (e
 
 	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
 	// already forked, so the push goes above the call. Remove tolerates an id runsc never held.
-	td.push(func(ctx context.Context) error { return deps.provider.Remove(ctx, id) })
+	td.push(func(ctx context.Context) error { return provider.Remove(ctx, id) })
 
-	if err := deps.provider.Create(ctx, spec); err != nil {
+	if err := provider.Create(ctx, spec); err != nil {
 		return err
 	}
 
-	if err := recordCreated(ctx, deps, spec); err != nil {
+	if err := recordCreated(ctx, repo, provider, spec); err != nil {
 		return err
 	}
 
-	if err := deps.provider.Start(ctx, id); err != nil {
+	if err := provider.Start(ctx, id); err != nil {
 		// An interrupt kills the start process, not what it may already have started, and the substrate
 		// cannot tell the two apart. Only stop ends a sandbox, so an unknown outcome is kept.
 		if ctx.Err() != nil {
@@ -280,7 +213,7 @@ func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (e
 		return err
 	}
 
-	if err := deps.repo.Update(id, func(sb *models.Sandbox) error {
+	if err := repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
 
 		return nil
@@ -291,19 +224,19 @@ func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (e
 	return nil
 }
 
-func (a App) pullImage(ctx context.Context, deps createDeps, ref string) (image.Image, error) {
+func (a App) pullImage(ctx context.Context, images imageService, ref string) (image.Image, error) {
 	// A registry that accepts the connection and then stalls would otherwise pin this process forever.
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 
-	return deps.images.Pull(ctx, ref)
+	return images.Pull(ctx, ref)
 }
 
 // claimRecord takes the id, which is the only handle every later step is named by.
-func claimRecord(deps createDeps, td *teardown, img image.Image, opts createOptions) (string, string, error) {
-	sb, err := deps.repo.Create(models.Sandbox{
+func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img image.Image, opts createOptions) (string, string, error) {
+	sb, err := repo.Create(models.Sandbox{
 		Image:     img.Reference,
-		Provider:  deps.provider.Name(),
+		Provider:  provider.Name(),
 		State:     models.StateCreated,
 		Resources: opts.resources,
 		CreatedAt: time.Now().UTC(),
@@ -313,9 +246,9 @@ func claimRecord(deps createDeps, td *teardown, img image.Image, opts createOpti
 	}
 
 	// Create is atomic, so there is nothing to give back until it returns; a failed Dir still deletes.
-	td.push(func(context.Context) error { return deps.repo.Delete(sb.ID) })
+	td.push(func(context.Context) error { return repo.Delete(sb.ID) })
 
-	dir, err := deps.repo.Dir(sb.ID)
+	dir, err := repo.Dir(sb.ID)
 	if err != nil {
 		return "", "", err
 	}
@@ -325,13 +258,13 @@ func claimRecord(deps createDeps, td *teardown, img image.Image, opts createOpti
 
 // recordCreated copies what the substrate decided into the record, so a later shard process can
 // reach the sandbox without asking the provider again. The state stays created until the start.
-func recordCreated(ctx context.Context, deps createDeps, spec models.SandboxSpec) error {
-	status, err := deps.provider.Status(ctx, spec.ID)
+func recordCreated(ctx context.Context, repo sandboxRepo, provider models.Provider, spec models.SandboxSpec) error {
+	status, err := provider.Status(ctx, spec.ID)
 	if err != nil {
 		return err
 	}
 
-	return deps.repo.Update(spec.ID, func(sb *models.Sandbox) error {
+	return repo.Update(spec.ID, func(sb *models.Sandbox) error {
 		sb.Name = spec.Name
 		sb.PID = status.PID
 		sb.NetnsPath = spec.Network.NetnsPath

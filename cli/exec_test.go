@@ -175,8 +175,8 @@ func TestExecWithoutInteractiveGivesTheCommandNoStdin(t *testing.T) {
 func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
 	provider := &fakeExecProvider{}
 	app := execApp(provider)
-	app.newExecDeps = func(App) (execDeps, error) {
-		return execDeps{repo: missingRepo{}, provider: provider, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}, nil
+	app.newDeps = func(App) *deps {
+		return &deps{repoSvc: missingRepo{}, providerSvc: provider}
 	}
 
 	err := app.Run(context.Background(), []string{"exec", "gone-away-0000", "--", "true"})
@@ -207,14 +207,16 @@ func TestExecRefusesATerminalWhenStdinIsNotOne(t *testing.T) {
 // execApp wires exec onto fakes and onto a stdin that is a pipe, which is what a test process holds.
 func execApp(provider *fakeExecProvider) App {
 	app := App{Version: "test", Out: os.Stdout}
-	app.newExecDeps = func(App) (execDeps, error) {
-		return execDeps{repo: presentRepo{}, provider: provider, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}, nil
+	app.newDeps = func(App) *deps {
+		return &deps{repoSvc: presentRepo{}, providerSvc: provider}
 	}
 
 	return app
 }
 
 type fakeExecProvider struct {
+	models.Provider
+
 	status models.ExitStatus
 	err    error
 
@@ -230,13 +232,13 @@ func (f *fakeExecProvider) Exec(_ context.Context, id string, spec models.ExecSp
 	return f.status, f.err
 }
 
-type presentRepo struct{}
+type presentRepo struct{ sandboxRepo }
 
 func (presentRepo) Get(id string) (models.Sandbox, error) {
 	return models.Sandbox{ID: id, State: models.StateRunning}, nil
 }
 
-type missingRepo struct{}
+type missingRepo struct{ sandboxRepo }
 
 func (missingRepo) Get(id string) (models.Sandbox, error) {
 	return models.Sandbox{}, errors.New("sandbox " + id + ": sandbox not found")

@@ -132,3 +132,31 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 		t.Fatal("a bad --timeout returned no error")
 	}
 }
+
+// TestImageLsBuildsOnlyTheImageService is the reason every layer is built on the first ask: the
+// provider needs runsc on the host and the network service needs root, and image ls needs neither.
+func TestImageLsBuildsOnlyTheImageService(t *testing.T) {
+	var out bytes.Buffer
+
+	d := &deps{}
+	app := App{Version: "test", Root: t.TempDir(), Out: &out}
+	app.newDeps = func(a App) *deps {
+		d.app = a
+
+		return d
+	}
+
+	if err := app.Run(t.Context(), []string{"image", "ls"}); err != nil {
+		t.Fatalf("image ls: %v", err)
+	}
+
+	if d.imageSvc == nil {
+		t.Error("image ls built no image service")
+	}
+
+	for name, built := range map[string]bool{"provider": d.providerSvc != nil, "network service": d.netSvc != nil, "repository": d.repoSvc != nil} {
+		if built {
+			t.Errorf("image ls built the %s, which needs a Linux host and root", name)
+		}
+	}
+}

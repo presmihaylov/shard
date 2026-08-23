@@ -26,12 +26,19 @@ func (a App) stop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	deps, err := a.lifecycle()
+	d := a.deps()
+
+	repo, err := d.repo()
 	if err != nil {
 		return err
 	}
 
-	if err := a.stopSandbox(ctx, deps, opts.id, opts.grace); err != nil {
+	provider, err := d.provider()
+	if err != nil {
+		return err
+	}
+
+	if err := a.stopSandbox(ctx, repo, provider, opts.id, opts.grace); err != nil {
 		return err
 	}
 
@@ -40,8 +47,8 @@ func (a App) stop(ctx context.Context, args []string) error {
 
 // stopSandbox ends the processes and keeps everything rm frees: the record, the lease, the address
 // and the writable layer all outlive it, so SHARD-96 can start the sandbox again.
-func (a App) stopSandbox(ctx context.Context, deps lifecycleDeps, id string, grace time.Duration) error {
-	sb, err := deps.repo.Get(id)
+func (a App) stopSandbox(ctx context.Context, repo sandboxRepo, provider models.Provider, id string, grace time.Duration) error {
+	sb, err := repo.Get(id)
 	if err != nil {
 		return err
 	}
@@ -51,16 +58,16 @@ func (a App) stopSandbox(ctx context.Context, deps lifecycleDeps, id string, gra
 		return nil
 	}
 
-	if err := deps.provider.Stop(ctx, id, grace); err != nil {
+	if err := provider.Stop(ctx, id, grace); err != nil {
 		return err
 	}
 
-	exit, err := lastExit(ctx, deps, id)
+	exit, err := lastExit(ctx, provider, id)
 	if err != nil {
 		return err
 	}
 
-	return deps.repo.Update(id, func(sb *models.Sandbox) error {
+	return repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		if exit != nil {
@@ -73,8 +80,8 @@ func (a App) stopSandbox(ctx context.Context, deps lifecycleDeps, id string, gra
 
 // lastExit reads how the entrypoint ended, once the sandbox is already stopped. A sandbox the grace
 // ran out on was killed, so its supervisor never recorded one, and that is an outcome not a failure.
-func lastExit(ctx context.Context, deps lifecycleDeps, id string) (*models.ExitStatus, error) {
-	status, err := deps.provider.Wait(ctx, id)
+func lastExit(ctx context.Context, provider models.Provider, id string) (*models.ExitStatus, error) {
+	status, err := provider.Wait(ctx, id)
 	if errors.Is(err, models.ErrNoExitStatus) {
 		return nil, nil
 	}

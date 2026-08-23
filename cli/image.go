@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/services/image"
 )
 
@@ -18,7 +16,7 @@ func (a App) pull(ctx context.Context, args []string) error {
 		return fmt.Errorf("pull takes one image reference, got %d", len(args))
 	}
 
-	svc, err := a.images()
+	svc, err := a.deps().images()
 	if err != nil {
 		return err
 	}
@@ -55,7 +53,7 @@ func (a App) imageList(args []string) error {
 		return fmt.Errorf("image ls takes no arguments, got %d", len(args))
 	}
 
-	svc, err := a.images()
+	svc, err := a.deps().images()
 	if err != nil {
 		return err
 	}
@@ -90,7 +88,7 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 		return fmt.Errorf("image rm takes one image reference, got %d", len(args))
 	}
 
-	svc, err := a.images()
+	svc, err := a.deps().images()
 	if err != nil {
 		return err
 	}
@@ -106,10 +104,6 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 	}
 
 	return a.print(args[0])
-}
-
-func (a App) images() (*image.Service, error) {
-	return image.New(filepath.Join(a.Root, "images"), registry.WithInsecureRegistries(a.Insecure...))
 }
 
 func shortDigest(digest string) string {

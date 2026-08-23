@@ -47,7 +47,7 @@ func TestRmFreesEveryHoldingInOrder(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, sb)
-	deps.provider.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
+	deps.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
 
 	if err := app.Run(t.Context(), []string{"rm", "sandbox1"}); err != nil {
 		t.Fatalf("rm: %v", err)
@@ -95,7 +95,7 @@ func TestRmForceStopsThenRemoves(t *testing.T) {
 		t.Fatalf("rm --force: %v", err)
 	}
 
-	provider := deps.provider.(*fakeLifecycleProvider)
+	provider := deps.providerSvc.(*fakeLifecycleProvider)
 	if !provider.stopped || !provider.removed {
 		t.Errorf("rm --force stopped=%v removed=%v, want both", provider.stopped, provider.removed)
 	}
@@ -113,7 +113,7 @@ func TestRmIsIdempotent(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, running())
-	deps.repo.(*fakeLifecycleRepo).missing = true
+	deps.repoSvc.(*fakeLifecycleRepo).missing = true
 
 	if err := app.Run(t.Context(), []string{"rm", "sandbox1"}); err != nil {
 		t.Fatalf("rm of an id that is already gone: %v", err)
@@ -136,7 +136,7 @@ func TestRmNamesWhatIsLeftOnTheHost(t *testing.T) {
 
 	r := &recorder{fail: []string{"net.Release"}}
 	app, deps := newLifecycleApp(t, &out, r, sb)
-	deps.provider.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
+	deps.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateStopped}
 
 	err := app.Run(t.Context(), []string{"rm", "sandbox1"})
 	if err == nil {
@@ -152,7 +152,7 @@ func TestRmNamesWhatIsLeftOnTheHost(t *testing.T) {
 		t.Errorf("rm failed with %v, but it did free the runsc state", err)
 	}
 
-	if deps.repo.(*fakeLifecycleRepo).deleted {
+	if deps.repoSvc.(*fakeLifecycleRepo).deleted {
 		t.Error("rm deleted the record past a failure, so nothing can reach what is left")
 	}
 }

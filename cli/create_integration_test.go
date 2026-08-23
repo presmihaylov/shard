@@ -313,21 +313,39 @@ func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
 	return app, out
 }
 
-// createApp builds a second view of the same layers, so the test can stop what create left running.
-func createApp(t *testing.T, app App) createDeps {
+// layers is a second view of what a command builds, so the test can stop what create left running.
+type layers struct {
+	repo     sandboxRepo
+	net      sandboxNetwork
+	provider models.Provider
+}
+
+func createApp(t *testing.T, app App) layers {
 	t.Helper()
 
-	deps, err := defaultCreateDeps(app)
+	d := app.deps()
+
+	repo, err := d.repo()
 	if err != nil {
-		t.Fatalf("build the create dependencies: %v", err)
+		t.Fatalf("build the repository: %v", err)
 	}
 
-	return deps
+	net, err := d.net()
+	if err != nil {
+		t.Fatalf("build the network service: %v", err)
+	}
+
+	provider, err := d.provider()
+	if err != nil {
+		t.Fatalf("build the provider: %v", err)
+	}
+
+	return layers{repo: repo, net: net, provider: provider}
 }
 
 // awaitEntrypoint waits for the exit status shard-init writes. It is bounded, because the bug this
 // ticket fixes made that file never arrive and the wait then never returned.
-func awaitEntrypoint(t *testing.T, deps createDeps, id string) models.ExitStatus {
+func awaitEntrypoint(t *testing.T, deps layers, id string) models.ExitStatus {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), waitBudget)
@@ -341,7 +359,7 @@ func awaitEntrypoint(t *testing.T, deps createDeps, id string) models.ExitStatus
 	return status
 }
 
-func guestOutput(t *testing.T, deps createDeps, id string) string {
+func guestOutput(t *testing.T, deps layers, id string) string {
 	t.Helper()
 
 	path, err := deps.provider.LogPath(id)
@@ -381,7 +399,7 @@ func effectiveCapabilities(t *testing.T, output string) uint64 {
 
 // cleanUp ends the sandbox the test left running and gives its address back. It builds its own
 // context, because the test's own is already cancelled by the time a cleanup runs.
-func cleanUp(t *testing.T, deps createDeps, id string) {
+func cleanUp(t *testing.T, deps layers, id string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

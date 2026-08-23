@@ -61,17 +61,17 @@ func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 
-	provider := deps.provider.(*fakeLifecycleProvider)
+	provider := deps.providerSvc.(*fakeLifecycleProvider)
 	if !provider.stopped {
 		t.Errorf("stop never reached the provider: %v", r.calls)
 	}
 	if provider.removed {
 		t.Error("stop removed the sandbox from the substrate, which frees the writable layer")
 	}
-	if deps.net.(*fakeLifecycleNet).released {
+	if deps.netSvc.(*fakeLifecycleNet).released {
 		t.Error("stop released the address, which a start would then not get back")
 	}
-	if deps.repo.(*fakeLifecycleRepo).deleted {
+	if deps.repoSvc.(*fakeLifecycleRepo).deleted {
 		t.Error("stop deleted the record, which is the only handle a start has")
 	}
 
@@ -85,13 +85,13 @@ func TestStopRecordsTheExitStatus(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, running())
-	deps.provider.(*fakeLifecycleProvider).exit = models.ExitStatus{Code: 143, Signal: 15}
+	deps.providerSvc.(*fakeLifecycleProvider).exit = models.ExitStatus{Code: 143, Signal: 15}
 
 	if err := app.Run(t.Context(), []string{"stop", "sandbox1"}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	sb := deps.repo.(*fakeLifecycleRepo).sb
+	sb := deps.repoSvc.(*fakeLifecycleRepo).sb
 	if sb.State != models.StateStopped {
 		t.Errorf("the record says %q, want stopped", sb.State)
 	}
@@ -109,13 +109,13 @@ func TestStopRecordsNoExitStatusWhenTheSandboxWasKilled(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, running())
-	deps.provider.(*fakeLifecycleProvider).waitErr = models.ErrNoExitStatus
+	deps.providerSvc.(*fakeLifecycleProvider).waitErr = models.ErrNoExitStatus
 
 	if err := app.Run(t.Context(), []string{"stop", "sandbox1"}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	sb := deps.repo.(*fakeLifecycleRepo).sb
+	sb := deps.repoSvc.(*fakeLifecycleRepo).sb
 	if sb.State != models.StateStopped {
 		t.Errorf("the record says %q, want stopped", sb.State)
 	}
@@ -143,7 +143,7 @@ func TestStopIsIdempotent(t *testing.T) {
 		t.Errorf("the second stop changed something: %v", r.calls)
 	}
 
-	if got := deps.repo.(*fakeLifecycleRepo).sb.ExitStatus; got == nil || got.Signal != 15 {
+	if got := deps.repoSvc.(*fakeLifecycleRepo).sb.ExitStatus; got == nil || got.Signal != 15 {
 		t.Errorf("the record holds %+v, want the exit status the first stop recorded", got)
 	}
 }
@@ -153,7 +153,7 @@ func TestStopRefusesAnIDThatNeverExisted(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, running())
-	deps.repo.(*fakeLifecycleRepo).missing = true
+	deps.repoSvc.(*fakeLifecycleRepo).missing = true
 
 	err := app.Run(t.Context(), []string{"stop", "sandbox1"})
 	if err == nil {
@@ -178,7 +178,7 @@ func TestStopPassesTheGraceToTheProvider(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 
-	if got := deps.provider.(*fakeLifecycleProvider).grace; got != 3*time.Second {
+	if got := deps.providerSvc.(*fakeLifecycleProvider).grace; got != 3*time.Second {
 		t.Errorf("the provider got the grace %s, want 3s", got)
 	}
 }
@@ -200,7 +200,7 @@ func TestStopReportsAWaitThatFailedForAnotherReason(t *testing.T) {
 
 	r := &recorder{}
 	app, deps := newLifecycleApp(t, &out, r, running())
-	deps.provider.(*fakeLifecycleProvider).waitErr = errors.New("the exit status was unreadable")
+	deps.providerSvc.(*fakeLifecycleProvider).waitErr = errors.New("the exit status was unreadable")
 
 	if err := app.Run(t.Context(), []string{"stop", "sandbox1"}); err == nil {
 		t.Fatal("an unreadable exit status returned no error")
