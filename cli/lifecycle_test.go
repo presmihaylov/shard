@@ -15,8 +15,10 @@ import (
 type fakeLifecycleRepo struct {
 	sandboxRepo
 
-	r       *recorder
-	sb      models.Sandbox
+	r  *recorder
+	sb models.Sandbox
+	// left is what List answers with, which is what says whether an rm removed the last sandbox.
+	left    []models.Sandbox
 	missing bool
 	deleted bool
 }
@@ -30,6 +32,14 @@ func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
 	}
 
 	return f.sb, nil
+}
+
+func (f *fakeLifecycleRepo) List() ([]models.Sandbox, error) {
+	if err := f.r.record("repo.List"); err != nil {
+		return nil, err
+	}
+
+	return f.left, nil
 }
 
 func (f *fakeLifecycleRepo) Update(_ string, mutate func(*models.Sandbox) error) error {
@@ -117,6 +127,21 @@ func (f *fakeLifecycleProvider) Wait(context.Context, string) (models.ExitStatus
 	return f.exit, nil
 }
 
+// fakeLifecycleSubstrate stands in for the runsc root, which off Linux has no mount to give back.
+type fakeLifecycleSubstrate struct {
+	r       *recorder
+	dropped bool
+}
+
+func (f *fakeLifecycleSubstrate) DropNullNetns() error {
+	if err := f.r.record("substrate.DropNullNetns"); err != nil {
+		return err
+	}
+	f.dropped = true
+
+	return nil
+}
+
 // newLifecycleApp wires stop and rm onto fakes, so the order and the refusals are testable off Linux.
 func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.Sandbox) (App, *deps) {
 	t.Helper()
@@ -124,9 +149,10 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 	r.live = map[string]bool{}
 
 	d := &deps{
-		repoSvc:     &fakeLifecycleRepo{r: r, sb: sb},
-		netSvc:      &fakeLifecycleNet{r: r},
-		providerSvc: &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
+		repoSvc:      &fakeLifecycleRepo{r: r, sb: sb},
+		netSvc:       &fakeLifecycleNet{r: r},
+		providerSvc:  &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
+		substrateSvc: &fakeLifecycleSubstrate{r: r},
 	}
 
 	return App{

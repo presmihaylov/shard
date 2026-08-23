@@ -299,8 +299,8 @@ func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	root := t.TempDir()
 
-	// runsc bind mounts a null-netns into its own root on the first create, and the TempDir removal
-	// trips over it. Cleanup is LIFO, so this runs before that removal and after the sandbox is gone.
+	// shard rm gives the null-netns back, but a test whose create failed never reaches one and the
+	// TempDir removal then trips over it. Cleanup is LIFO, so this runs before that removal.
 	t.Cleanup(func() {
 		if err := exec.Command("umount", "-l", filepath.Join(root, "runsc", "null-netns")).Run(); err != nil {
 			t.Logf("unmount the runsc null-netns: %v", err)

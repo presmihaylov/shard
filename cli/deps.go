@@ -28,6 +28,7 @@ type imageService interface {
 type sandboxRepo interface {
 	Create(sb models.Sandbox) (models.Sandbox, error)
 	Get(id string) (models.Sandbox, error)
+	List() ([]models.Sandbox, error)
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
 	Dir(id string) (string, error)
@@ -39,16 +40,24 @@ type sandboxNetwork interface {
 	Release(ctx context.Context, id string) error
 }
 
+// substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
+// teardown gives it back.
+type substrate interface {
+	DropNullNetns() error
+}
+
 // deps is every layer a shard command can drive. Each one is built on the first ask and kept, so a
 // command that never asks for the provider or the network never needs runsc, netns or root: that is
 // what keeps version, pull and image working off Linux and off root.
 type deps struct {
 	app App
 
-	imageSvc    imageService
-	repoSvc     sandboxRepo
-	netSvc      sandboxNetwork
-	providerSvc models.Provider
+	imageSvc     imageService
+	repoSvc      sandboxRepo
+	netSvc       sandboxNetwork
+	providerSvc  models.Provider
+	substrateSvc substrate
+	runnerSvc    *runsc.Runner
 
 	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
 	inFile  *os.File
@@ -122,9 +131,7 @@ func (d *deps) provider() (models.Provider, error) {
 		return nil, err
 	}
 
-	// The mode is fixed on the runner and must match the one the sandbox was created with, so every
-	// command builds it here and nowhere else.
-	runner, err := runsc.New(filepath.Join(d.app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	runner, err := d.runner()
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +148,36 @@ func (d *deps) provider() (models.Provider, error) {
 	d.providerSvc = provider
 
 	return d.providerSvc, nil
+}
+
+// runner drives the runsc binary. The mode is fixed on it and must match the one the sandbox was
+// created with, so every command builds it here and nowhere else.
+func (d *deps) runner() (*runsc.Runner, error) {
+	if d.runnerSvc != nil {
+		return d.runnerSvc, nil
+	}
+
+	runner, err := runsc.New(filepath.Join(d.app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	if err != nil {
+		return nil, err
+	}
+	d.runnerSvc = runner
+
+	return d.runnerSvc, nil
+}
+
+func (d *deps) substrate() (substrate, error) {
+	if d.substrateSvc != nil {
+		return d.substrateSvc, nil
+	}
+
+	runner, err := d.runner()
+	if err != nil {
+		return nil, err
+	}
+	d.substrateSvc = runner
+
+	return d.substrateSvc, nil
 }
 
 func (d *deps) stdin() *os.File {
