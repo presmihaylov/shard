@@ -37,9 +37,9 @@ func TestParseRmRejections(t *testing.T) {
 	}
 }
 
-// TestRmFreesTheFiveHoldingsInOrder: the record dies last, because it is the only handle by which
-// the mount and the namespace can be found again.
-func TestRmFreesTheFiveHoldingsInOrder(t *testing.T) {
+// TestRmFreesEveryHoldingInOrder: the record dies last, because it is the only handle by which the
+// mount and the namespace can be found again.
+func TestRmFreesEveryHoldingInOrder(t *testing.T) {
 	var out bytes.Buffer
 
 	sb := running()
