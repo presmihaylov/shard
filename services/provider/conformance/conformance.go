@@ -42,6 +42,8 @@ const (
 	waitSlack = 30 * time.Second
 	// readyPoll paces the wait for the marker, which arrives as fast as the guest shell starts.
 	readyPoll = 20 * time.Millisecond
+	// execCancelDelay is how long a command that outlives its caller runs before the cancellation lands.
+	execCancelDelay = 500 * time.Millisecond
 )
 
 // Run executes the suite. A verb with a false capability must refuse before its subtest skips.
@@ -314,6 +316,26 @@ func Run(t *testing.T, s Subject) {
 		}
 		if !strings.Contains(err.Error(), "conformance-never-created") {
 			t.Errorf("the refusal is %q, and it must name the sandbox", err)
+		}
+	})
+
+	// A cancelled exec ends the command it started and nothing else: only Stop ends a sandbox.
+	t.Run("ACancelledExecLeavesTheSandboxRunning", func(t *testing.T) {
+		id := s.running(t)
+
+		ctx, cancel := context.WithTimeout(t.Context(), execCancelDelay)
+		defer cancel()
+
+		if status, err := s.Provider.Exec(ctx, id, models.ExecSpec{Argv: s.Shell("sleep 60")}); err == nil {
+			t.Fatalf("a cancelled Exec reported %+v, want the cancellation", status)
+		}
+
+		status, err := s.Provider.Status(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if !status.Alive() {
+			t.Errorf("the sandbox is %+v after a cancelled exec, and only Stop ends one", status)
 		}
 	})
 
