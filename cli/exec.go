@@ -157,7 +157,10 @@ func (a App) execOnTerminal(ctx context.Context, deps execDeps, opts execOptions
 	status, err = deps.provider.Exec(ctx, opts.id, spec)
 
 	// Our copy of the replica is what keeps the master readable, so the output drains only after it goes.
-	if closeErr := pair.Replica.Close(); closeErr != nil {
+	closeErr := pair.Replica.Close()
+	// The deferred Close takes the master alone now, because a second close of the replica is an error.
+	pair.Replica = nil
+	if closeErr != nil {
 		return status, errors.Join(err, fmt.Errorf("close the pseudo terminal replica: %w", closeErr))
 	}
 	<-drained

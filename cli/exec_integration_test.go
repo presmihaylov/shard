@@ -10,7 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/presmihaylov/shard/pkg/pty"
 )
+
+// terminalReadBudget bounds the wait for what a command wrote to a terminal this test holds open.
+const terminalReadBudget = 5 * time.Second
 
 // TestExecReturnsTheCommandExitCode is the SHARD-22 acceptance criterion: a command that exits 7
 // makes shard exec exit 7. Create prints an id and exits 0; exec is the opposite.
@@ -139,6 +145,73 @@ func TestConcurrentExecsAllSucceed(t *testing.T) {
 	for range 3 {
 		if err := <-failures; err != nil {
 			t.Errorf("a concurrent exec failed: %v", err)
+		}
+	}
+}
+
+// A terminal is the other half of the verb, and it must keep the exit code the non-TTY path keeps.
+func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
+	app, id := runningSandbox(t)
+
+	terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a terminal for the test: %v", err)
+	}
+	defer func() {
+		if err := terminal.Close(); err != nil {
+			t.Logf("close the test terminal: %v", err)
+		}
+	}()
+
+	want := pty.Size{Rows: 40, Cols: 120}
+	if err := terminal.Resize(want); err != nil {
+		t.Fatalf("size the test terminal: %v", err)
+	}
+
+	// The chunks are collected rather than read to the end: a pty master hangs up only once every copy
+	// of the replica is gone, and this test holds one itself.
+	chunks := make(chan string, 16)
+	go func() {
+		for {
+			buf := make([]byte, 4096)
+			n, err := terminal.Master.Read(buf)
+			if n > 0 {
+				chunks <- string(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	app.newExecDeps = func(a App) (execDeps, error) {
+		deps, err := defaultExecDeps(a)
+		if err != nil {
+			return execDeps{}, err
+		}
+		deps.stdin, deps.stdout, deps.stderr = terminal.Replica, terminal.Replica, terminal.Replica
+
+		return deps, nil
+	}
+
+	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "--", "/bin/sh", "-c", "stty size; exit 7"})
+
+	var exit *ExitError
+	if !errors.As(runErr, &exit) {
+		t.Fatalf("exec on a terminal returned %v, want an ExitError", runErr)
+	}
+	if exit.Code != 7 {
+		t.Errorf("exec on a terminal exited %d, want 7", exit.Code)
+	}
+
+	deadline := time.After(terminalReadBudget)
+	var out string
+	for !strings.Contains(out, "40 120") {
+		select {
+		case chunk := <-chunks:
+			out += chunk
+		case <-deadline:
+			t.Fatalf("the command wrote %q to its terminal, want the window 40 120", strings.TrimSpace(out))
 		}
 	}
 }
