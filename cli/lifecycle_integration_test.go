@@ -187,8 +187,11 @@ func TestRmRefusesASandboxThatIsStillUp(t *testing.T) {
 // TestRmFreesEveryHolding is the SHARD-24 acceptance criterion: nothing is left on the host.
 func TestRmFreesEveryHolding(t *testing.T) {
 	app, out := newCreateApp(t)
+	deps := createApp(t, app)
 
 	id := create(t, app, out, "/bin/sleep", "600")
+	// A step below that fails ends the test with the sandbox still up, and the devbox is shared.
+	t.Cleanup(func() { cleanUp(t, deps, id) })
 
 	sb, err := records(t, app.Root).Get(id)
 	if err != nil {
@@ -208,8 +211,10 @@ func TestRmFreesEveryHolding(t *testing.T) {
 // TestRmForceEndsASandboxThatIsStillUp: --force is the shorthand for the stop the operator would type first.
 func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
 	app, out := newCreateApp(t)
+	deps := createApp(t, app)
 
 	id := create(t, app, out, "/bin/sleep", "600")
+	t.Cleanup(func() { cleanUp(t, deps, id) })
 
 	sb, err := records(t, app.Root).Get(id)
 	if err != nil {
@@ -226,8 +231,10 @@ func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
 // TestASecondRmFindsNothingToFree: the record dies last, so an id with no record has nothing else left either.
 func TestASecondRmFindsNothingToFree(t *testing.T) {
 	app, out := newCreateApp(t)
+	deps := createApp(t, app)
 
 	id := create(t, app, out, "/bin/sleep", "600")
+	t.Cleanup(func() { cleanUp(t, deps, id) })
 
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
 		t.Fatalf("the first rm: %v", err)
@@ -252,7 +259,7 @@ func create(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	return id
 }
 
-// assertNothingLeft checks all five holdings, which is what the ticket asks a stranger to verify.
+// assertNothingLeft checks every holding a sandbox has, which is what the ticket asks a stranger to verify.
 func assertNothingLeft(t *testing.T, root string, sb models.Sandbox) {
 	t.Helper()
 
