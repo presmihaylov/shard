@@ -17,12 +17,19 @@ var version = "dev"
 // interruptedExitCode is what a shell reports for a command a SIGINT ended.
 const interruptedExitCode = 130
 
+// stopSignals holds two, because the escape below reads them one after the other.
+const stopSignals = 2
+
 func main() {
 	// A pull is the long verb, so a stop signal has to cancel it rather than kill it mid-write.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	signals := make(chan os.Signal, stopSignals)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
-	go escape(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go escape(signals, cancel, func() { os.Exit(interruptedExitCode) })
 
 	app := cli.App{Version: version, Out: os.Stdout, Err: os.Stderr}
 
@@ -32,15 +39,12 @@ func main() {
 	}
 }
 
-// escape leaves the second signal to the process rather than to the work the first one cancelled, so
-// a give-back that hangs cannot trap the user at the keyboard.
-func escape(ctx context.Context) {
-	<-ctx.Done()
-
-	second := make(chan os.Signal, 1)
-	signal.Notify(second, os.Interrupt, syscall.SIGTERM)
-	<-second
-	signal.Stop(second)
-
-	os.Exit(interruptedExitCode)
+// escape gives the first stop signal to the work and the second to the process, so a give-back that
+// hangs cannot trap the user at the keyboard. Both come off one channel that is registered before
+// either arrives: a channel registered only after the cancellation drops the signal that raced it.
+func escape(signals <-chan os.Signal, cancel context.CancelFunc, leave func()) {
+	<-signals
+	cancel()
+	<-signals
+	leave()
 }
