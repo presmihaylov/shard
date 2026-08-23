@@ -5,7 +5,7 @@ import specs "github.com/opencontainers/runtime-spec/specs-go"
 // defaultPath is what the OCI image spec says to use when the image config sets no PATH.
 const defaultPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// defaultNoFile is the runc default. A sandbox that needs more says so, once SHARD-13 owns limits.
+// defaultNoFile is the runc default. A sandbox that needs more says so, once a ticket owns rlimits.
 const defaultNoFile = 1024
 
 // defaultCapabilities is the runc default set. It is the ceiling, and a sandbox never gains more.

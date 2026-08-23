@@ -10,7 +10,8 @@ const (
 	StateRunning State = "running"
 	// StatePaused holds a snapshot on disk and no memory.
 	StatePaused State = "paused"
-	// StateStopped keeps the writable layer, so a start can follow it.
+	// StateStopped keeps the writable layer, so a start can follow it. A sandbox stopped before its
+	// entrypoint ran leaves nothing on the substrate, because stopping that one is a delete there.
 	StateStopped State = "stopped"
 )
 

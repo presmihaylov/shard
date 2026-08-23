@@ -121,7 +121,7 @@ func (h *harness) runNetworked(t *testing.T, command string) (int, string) {
 func (h *harness) startSpec(t *testing.T, spec models.SandboxSpec) {
 	t.Helper()
 
-	if _, err := h.provider.Create(t.Context(), spec); err != nil {
+	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {

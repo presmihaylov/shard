@@ -28,8 +28,9 @@ var ErrExists = errors.New("the object already exists")
 // ErrNotFound is what a delete of something already gone returns. Match both with errors.Is.
 var ErrNotFound = errors.New("no such object")
 
-// ErrUnsupported keeps a developer Mac honest. pkg/ may not import models, so this is its own sentinel.
-var ErrUnsupported = errors.New("the host network needs Linux")
+// ErrNotLinux keeps a developer Mac honest. It is not models.ErrUnsupported: a missing kernel is not
+// a provider refusing a verb, and pkg/ may not import models anyway.
+var ErrNotLinux = errors.New("the host network needs Linux")
 
 // forwardingPath is the switch that lets the host route a sandbox's packets out of the box.
 const forwardingPath = "/proc/sys/net/ipv4/ip_forward"
@@ -73,7 +74,7 @@ func WithNFT(path string) Option {
 // New finds the binaries. It refuses off Linux rather than failing later with a missing executable.
 func New(opts ...Option) (*Manager, error) {
 	if !supported {
-		return nil, ErrUnsupported
+		return nil, ErrNotLinux
 	}
 
 	m := &Manager{ipPath: "ip", nftPath: "nft"}

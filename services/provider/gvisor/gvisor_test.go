@@ -72,15 +72,24 @@ func TestTheOptionalVerbsRefuseRatherThanDowngrade(t *testing.T) {
 	p := newProvider(t)
 
 	verbs := map[string]error{
-		"pause":  p.Pause(t.Context(), "amber-otter-1a2b", t.TempDir()),
-		"resume": p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir()),
+		models.VerbPause:  p.Pause(t.Context(), "amber-otter-1a2b", t.TempDir()),
+		models.VerbResume: p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir()),
 	}
 
-	_, verbs["fork"] = p.Fork(t.Context(), t.TempDir(), models.SandboxSpec{})
+	verbs[models.VerbFork] = p.Fork(t.Context(), t.TempDir(), models.SandboxSpec{})
 
+	// The conformance suite asserts the provider and the verb a refusal carries, so assert both here too.
 	for verb, err := range verbs {
-		if !errors.Is(err, models.ErrUnsupported) {
-			t.Errorf("%s returned %v, want ErrUnsupported", verb, err)
+		var refusal *models.UnsupportedError
+		if !errors.As(err, &refusal) {
+			t.Errorf("%s returned %v, want an UnsupportedError", verb, err)
+			continue
+		}
+		if refusal.Provider != "gvisor" {
+			t.Errorf("the %s refusal names provider %q, want gvisor", verb, refusal.Provider)
+		}
+		if refusal.Verb != verb {
+			t.Errorf("the refusal names verb %q, want %q", refusal.Verb, verb)
 		}
 	}
 }
@@ -94,12 +103,12 @@ func TestAWedgedRunscFailsWithTheContextRatherThanHanging(t *testing.T) {
 	defer cancel()
 
 	started := time.Now()
-	if _, err := p.Alive(ctx, "amber-otter-1a2b"); err == nil {
-		t.Fatal("Alive answered for a runsc that never replied")
+	if _, err := p.Status(ctx, "amber-otter-1a2b"); err == nil {
+		t.Fatal("Status answered for a runsc that never replied")
 	}
 
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Errorf("Alive took %s, so the context did not cut the runsc call short", elapsed)
+		t.Errorf("Status took %s, so the context did not cut the runsc call short", elapsed)
 	}
 }
 

@@ -29,9 +29,9 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 	requireRunsc(t)
 
 	stateDir := t.TempDir()
-	b := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "echo written-by-the-first-run > /root/marker"})
+	b, lower := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "echo written-by-the-first-run > /root/marker"})
 
-	if err := b.Mount(); err != nil {
+	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
 	t.Cleanup(func() { b.Unmount() })
@@ -49,8 +49,8 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 		t.Fatalf("unmount after the first run: %v", err)
 	}
 
-	second := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "cp /root/marker /root/read-back"})
-	if err := second.Mount(); err != nil {
+	second, lower := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "cp /root/marker /root/read-back"})
+	if err := second.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay again: %v", err)
 	}
 	t.Cleanup(func() { second.Unmount() })
@@ -66,8 +66,8 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 	requireRunsc(t)
 
-	b := buildBundle(t, t.TempDir(), []string{"/bin/true"})
-	if err := b.Mount(); err != nil {
+	b, lower := buildBundle(t, t.TempDir(), []string{"/bin/true"})
+	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
 	t.Cleanup(func() { b.Unmount() })
@@ -86,7 +86,8 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 	}
 }
 
-func buildBundle(t *testing.T, stateDir string, entrypoint []string) bundle.Bundle {
+// buildBundle returns the bundle and the image rootfs Mount stacks it over.
+func buildBundle(t *testing.T, stateDir string, entrypoint []string) (bundle.Bundle, string) {
 	t.Helper()
 
 	if _, err := os.Stat(hostInitPath); err != nil {
@@ -100,18 +101,19 @@ func buildBundle(t *testing.T, stateDir string, entrypoint []string) bundle.Bund
 		t.Fatalf("New: %v", err)
 	}
 
-	b, err := svc.Build(models.SandboxSpec{
-		ID:          "shard-11",
-		StateDir:    stateDir,
-		RootFS:      img.RootFS,
-		ImageConfig: img.Config,
-		Entrypoint:  entrypoint,
-	})
+	spec := models.SandboxSpec{
+		ID:         "shard-11",
+		StateDir:   stateDir,
+		RootFS:     img.RootFS,
+		Entrypoint: entrypoint,
+	}
+
+	b, err := svc.Build(spec.Resolve(img.Config))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
-	return b
+	return b, img.RootFS
 }
 
 func pullTestImage(t *testing.T) image.Image {
