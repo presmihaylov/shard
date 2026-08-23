@@ -12,6 +12,19 @@ var ErrUnsupported = errors.New("verb not supported")
 // could record how the entrypoint ended. It is a normal outcome of a stop, not a failure.
 var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited")
 
+// CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
+// command: it never ran. Code is what a shell answers for the same refusal.
+type CommandNotStartedError struct {
+	Sandbox string
+	// Reason is the substrate's own words for why the command did not start.
+	Reason string
+	Code   int
+}
+
+func (e *CommandNotStartedError) Error() string {
+	return fmt.Sprintf("sandbox %s could not run the command: %s", e.Sandbox, e.Reason)
+}
+
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
 	VerbPause  = "pause"

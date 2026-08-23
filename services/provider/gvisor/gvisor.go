@@ -378,11 +378,27 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 	code, err := p.runsc.Exec(ctx, id, opts)
 	if err != nil {
-		return models.ExitStatus{}, err
+		return models.ExitStatus{}, notStarted(id, err)
 	}
 
 	// Signal stays 0: runsc reports an exec's exit code and nothing about the signal that ended it.
 	return models.ExitStatus{Code: code}, nil
+}
+
+// notStarted gives a command runsc refused to start a name the cli can answer with a shell's own
+// exit code, because runsc reports every one of them as its internal 128.
+func notStarted(id string, err error) error {
+	var start *runsc.ExecStartError
+	if !errors.As(err, &start) {
+		return err
+	}
+
+	code := models.CommandNotFoundExitCode
+	if start.NotExecutable {
+		code = models.CommandNotExecutableExitCode
+	}
+
+	return &models.CommandNotStartedError{Sandbox: id, Reason: start.Reason, Code: code}
 }
 
 // execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and

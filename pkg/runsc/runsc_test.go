@@ -333,12 +333,7 @@ func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
 // A cancelled exec must end the one guest process, because only Stop ends a sandbox.
 func TestACancelledExecKillsTheGuestProcessAlone(t *testing.T) {
 	// The fake writes the pid runsc would have written, marks it written, then hangs the way an exec does.
-	r, argvFile := fakeBinary(t, `prev=
-for arg in "$@"; do
-	if [ "$prev" = "--internal-pid-file" ]; then echo 4242 > "$arg"; fi
-	prev=$arg
-done
-case " $* " in *" exec "*) : > "$argv.ready"; sleep 30 ;; esac
+	r, argvFile := fakeBinary(t, writingPID(4242)+`case " $* " in *" exec "*) : > "$argv.ready"; sleep 30 ;; esac
 `)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -359,4 +354,75 @@ case " $* " in *" exec "*) : > "$argv.ready"; sleep 30 ;; esac
 	if at := slices.Index(got, "kill"); at < 0 || !slices.Equal(got[at:], want) {
 		t.Errorf("the cancellation ran %q, want %q at its end", got, want)
 	}
+}
+
+// runsc answers a command that never ran with its own 128, and says why only in its log and on the
+// guest's stderr. The log is the copy shard can read, and the missing pid file is what proves it.
+func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
+	cases := []struct {
+		logged        string
+		reason        string
+		notExecutable bool
+	}{
+		{
+			logged: `executing processes for container: executing command in sandbox: failed to load /bin/nope: no such file or directory`,
+			reason: "failed to load /bin/nope: no such file or directory",
+		},
+		{
+			logged:        `executing processes for container: failed to load /tmp/data: permission denied`,
+			reason:        "failed to load /tmp/data: permission denied",
+			notExecutable: true,
+		},
+	}
+
+	for _, c := range cases {
+		r, _ := fakeBinary(t, logging(c.logged)+"exit 128\n")
+
+		_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/nope"}})
+
+		var start *runsc.ExecStartError
+		if !errors.As(err, &start) {
+			t.Fatalf("Exec returned %v, want an ExecStartError", err)
+		}
+		if start.Reason != c.reason {
+			t.Errorf("the reason is %q, want %q", start.Reason, c.reason)
+		}
+		if start.NotExecutable != c.notExecutable {
+			t.Errorf("%q reported NotExecutable=%v, want %v", c.logged, start.NotExecutable, c.notExecutable)
+		}
+	}
+}
+
+// A command that ran owns its exit code, whatever runsc logged on the way: 128 is a code like any other.
+func TestExecReturnsTheExitCodeOfACommandThatRan(t *testing.T) {
+	r, _ := fakeBinary(t, writingPID(4242)+logging("failed to load /bin/nope: no such file or directory")+"exit 128\n")
+
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if code != 128 {
+		t.Errorf("Exec returned %d, want the command's own 128", code)
+	}
+}
+
+// logging is a fake runsc that writes one error line where the real one logs its refusals.
+func logging(reason string) string {
+	return `prev=
+for arg in "$@"; do
+	if [ "$prev" = "--log" ]; then printf '{"msg":"` + reason + `","level":"error"}\n' > "$arg"; fi
+	prev=$arg
+done
+`
+}
+
+// writingPID is a fake runsc whose guest process forked, which is the pid file the real one writes.
+func writingPID(pid int) string {
+	return `prev=
+for arg in "$@"; do
+	if [ "$prev" = "--internal-pid-file" ]; then echo ` + strconv.Itoa(pid) + ` > "$arg"; fi
+	prev=$arg
+done
+`
 }
