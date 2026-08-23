@@ -45,8 +45,9 @@ does not see it, its exit ends nothing, and a signal that ends it never reaches 
 It reports the command's own exit code, which is the opposite of `Create` and `Start`, and the reason
 the verb is useful. An error means the exec never ran; an exit code means it did.
 
-`ExecSpec.User` is empty for root. It does not inherit the entrypoint's user, because nothing records
-which user the supervisor dropped the entrypoint to. `docker exec` inherits; `shard exec` does not.
+`ExecSpec.User` empty is the user the entrypoint runs as, the way `docker exec` inherits it. The
+supervisor's own process user is root, so the record of it is the `-user uid:gid` in the supervisor's
+argv, which the provider reads back from the sandbox.
 
 `ExecSpec` carries `*os.File`, not `io.Reader`. A TTY is one pty replica the caller allocates on the
 host, and a pipe cannot be one.

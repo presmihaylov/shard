@@ -403,8 +403,9 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 		Stderr:  spec.Stderr,
 	}
 
-	// Empty is root, not the entrypoint's user: config.json's process user is the supervisor's, which
-	// stays privileged, and nothing records which user the supervisor dropped the entrypoint to.
+	// A named user is resolved against the sandbox's live tree; an unnamed one is the entrypoint's own,
+	// which config.json records as the -user the supervisor was given.
+	opts.User = runtime.User
 	if spec.User != "" {
 		uid, gid, err := bundle.ResolveUser(b.RootFS, spec.User)
 		if err != nil {

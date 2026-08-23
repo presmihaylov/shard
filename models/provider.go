@@ -92,7 +92,7 @@ type ExecSpec struct {
 	Env     []string
 	WorkDir string
 	// User is an image-style name or id, resolved by the provider against the sandbox's own rootfs.
-	// Empty is root: no record says which user the entrypoint dropped to.
+	// Empty is the user the entrypoint runs as, which the provider reads back from the sandbox.
 	User string
 	// TTY says the three files below are one pty replica the caller allocated on the host. A terminal
 	// carries one stream, so Stderr is then the same file as Stdout.

@@ -21,6 +21,9 @@ import (
 // terminalReadBudget bounds the wait for what a command wrote to a terminal this test holds open.
 const terminalReadBudget = 5 * time.Second
 
+// entrypointBudget bounds the wait for an entrypoint that exits at once, so an exec runs after it.
+const entrypointBudget = 30 * time.Second
+
 // TestExecReturnsTheCommandExitCode is the SHARD-22 acceptance criterion: a command that exits 7
 // makes shard exec exit 7. Create prints an id and exits 0; exec is the opposite.
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
@@ -100,6 +103,21 @@ func TestExecRunsAsTheUserItWasGiven(t *testing.T) {
 	}
 	if !strings.Contains(out, "Uid:\t0") {
 		t.Errorf("exec wrote %q, and the supervisor must still be root", out)
+	}
+}
+
+// An exec with no user of its own runs as the entrypoint does, or the confinement --user bought is
+// gone for every command after it.
+func TestExecInheritsTheUserTheEntrypointRunsAs(t *testing.T) {
+	app, id := sandboxAs(t, "nobody")
+
+	out, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "id -u")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	if strings.TrimSpace(out) != "65534" {
+		t.Errorf("exec ran as uid %q, want 65534, which is what the entrypoint runs as", strings.TrimSpace(out))
 	}
 }
 
@@ -224,15 +242,32 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 func runningSandbox(t *testing.T) (App, string) {
 	t.Helper()
 
+	return sandboxAs(t, "")
+}
+
+// sandboxAs is the same, created as the given user, which is what an exec of its own inherits.
+func sandboxAs(t *testing.T, user string) (App, string) {
+	t.Helper()
+
 	app, _ := newCreateApp(t)
 	deps := createApp(t, app)
 
-	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/sleep", "600"}); err != nil {
+	args := []string{"create"}
+	if user != "" {
+		args = append(args, "--user", user)
+	}
+	if err := app.Run(t.Context(), append(args, testImage, "--", "/bin/true")); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	id := onlySandbox(t, app.Root)
 	t.Cleanup(func() { cleanUp(t, deps, id) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), entrypointBudget)
+	defer cancel()
+	if _, err := deps.provider.Wait(ctx, id); err != nil {
+		t.Fatalf("wait for the entrypoint to exit: %v", err)
+	}
 
 	return app, id
 }

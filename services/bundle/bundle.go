@@ -101,6 +101,8 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 type Runtime struct {
 	Env     []string
 	WorkDir string
+	// User is the uid:gid the supervisor drops the entrypoint to, and empty when nobody named one.
+	User string
 }
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
@@ -121,7 +123,22 @@ func (b Bundle) Runtime() (Runtime, error) {
 		return Runtime{}, fmt.Errorf("%s names no process, so nothing says what the entrypoint runs with", configPath)
 	}
 
-	return Runtime{Env: spec.Process.Env, WorkDir: spec.Process.Cwd}, nil
+	return Runtime{Env: spec.Process.Env, WorkDir: spec.Process.Cwd, User: supervisorUser(spec.Process.Args)}, nil
+}
+
+// supervisorUser reads back the -user the supervisor was given. Its own process user is root, so the
+// argv is the only record of which user the entrypoint runs as.
+func supervisorUser(args []string) string {
+	for i, arg := range args {
+		if arg == "--" {
+			return ""
+		}
+		if arg == "-user" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+
+	return ""
 }
 
 // Open derives an existing sandbox's paths from its state directory alone, so a later shard process
