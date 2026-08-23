@@ -25,14 +25,19 @@ const GuestInitPath = guestShardDir + "/init"
 
 const exitFileName = "exit.json"
 
+// readyFileName is written once the entrypoint is forked. runsc start unblocks the task and reads
+// nothing back, so this file is the only proof the entrypoint ever ran.
+const readyFileName = "started"
+
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ShardDir is bind mounted at guestShardDir, and ExitFile is what shard-init writes into it.
-	ShardDir string
-	ExitFile string
+	// ShardDir is bind mounted at guestShardDir, and shard-init writes both files below into it.
+	ShardDir  string
+	ExitFile  string
+	ReadyFile string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -119,12 +124,13 @@ func validate(spec models.SandboxSpec) error {
 func newBundle(stateDir string) (Bundle, error) {
 	shardDir := filepath.Join(stateDir, "shard")
 	b := Bundle{
-		Dir:      filepath.Join(stateDir, "bundle"),
-		RootFS:   filepath.Join(stateDir, "bundle", "rootfs"),
-		ShardDir: shardDir,
-		ExitFile: filepath.Join(shardDir, exitFileName),
-		Upper:    filepath.Join(stateDir, "overlay", "upper"),
-		Work:     filepath.Join(stateDir, "overlay", "work"),
+		Dir:       filepath.Join(stateDir, "bundle"),
+		RootFS:    filepath.Join(stateDir, "bundle", "rootfs"),
+		ShardDir:  shardDir,
+		ExitFile:  filepath.Join(shardDir, exitFileName),
+		ReadyFile: filepath.Join(shardDir, readyFileName),
+		Upper:     filepath.Join(stateDir, "overlay", "upper"),
+		Work:      filepath.Join(stateDir, "overlay", "work"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -170,11 +176,6 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		return nil, err
 	}
 
-	user, err := resolveUser(spec.RootFS, spec.User)
-	if err != nil {
-		return nil, err
-	}
-
 	return &specs.Spec{
 		Version: specs.Version,
 		Root: &specs.Root{
@@ -183,11 +184,11 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			Readonly: false,
 		},
 		Hostname: spec.Name,
+		// No User here: PID 1 stays root to write the exit file, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
 			Env:  environment(spec.Env),
 			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
-			User: user,
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
 				Effective:   defaultCapabilities,
@@ -218,9 +219,24 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
 	}
 
-	argv := []string{GuestInitPath, "-exit-file", path.Join(guestShardDir, exitFileName), "--"}
+	argv := []string{
+		GuestInitPath,
+		"-exit-file", path.Join(guestShardDir, exitFileName),
+		"-ready-file", path.Join(guestShardDir, readyFileName),
+	}
 
-	return append(argv, entrypoint...), nil
+	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
+	if spec.User != "" {
+		user, err := resolveUser(spec.RootFS, spec.User)
+		if err != nil {
+			return nil, err
+		}
+
+		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
+		argv = append(argv, "-user", fmt.Sprintf("%d:%d", user.UID, user.GID))
+	}
+
+	return append(append(argv, "--"), entrypoint...), nil
 }
 
 // environment adds the one default that is runtime policy rather than image data.
@@ -232,7 +248,7 @@ func environment(env []string) []string {
 	return append(slices.Clone(env), defaultPath)
 }
 
-// resources is advisory here: gVisor may ignore both, and Firecracker needs them to boot at all.
+// resources bind on gVisor, as a host cgroup and again in the sentry's argv, and Firecracker needs them to boot.
 func resources(r models.Resources) *specs.LinuxResources {
 	out := &specs.LinuxResources{}
 

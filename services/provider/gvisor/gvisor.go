@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -27,7 +29,12 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after SIGKILL, which the sentry cannot refuse.
 	killGrace = 10 * time.Second
+	// startGrace bounds the wait for the supervisor's handshake, which it writes as soon as it forks.
+	startGrace = 30 * time.Second
 )
+
+// diagnosticTail bounds what a failed start quotes back from the sandbox's own output.
+const diagnosticTail = 4 << 10
 
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes:
 // every verb below takes an id, and shard runs no daemon that could remember the path from Create.
@@ -95,9 +102,12 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 }
 
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
-	// A create over a state directory that already ran must not let the previous run's status answer a wait.
-	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear %s: %w", b.ExitFile, err)
+	// A create over a state directory that already ran must not let the previous run answer a wait or
+	// a start, so both of the supervisor's files go before anything else runs.
+	for _, stale := range []string{b.ExitFile, b.ReadyFile} {
+		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("clear %s: %w", stale, err)
+		}
 	}
 
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
@@ -112,8 +122,120 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 
 // Start runs the entrypoint. A stopped sandbox never starts again: runsc refuses it, so a second run
 // goes through Remove and Create, which keeps the writable layer the state directory holds.
+// It returns only once the supervisor says the entrypoint forked, because runsc start unblocks the
+// task and reads nothing back: a broken entrypoint would otherwise report as a started sandbox.
 func (p *Provider) Start(ctx context.Context, id string) error {
-	return p.runsc.Start(ctx, id)
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	if err := p.runsc.Start(ctx, id); err != nil {
+		return err
+	}
+
+	return p.awaitStarted(ctx, id, b)
+}
+
+// awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
+// supervisor that could not run the entrypoint does within milliseconds.
+func (p *Provider) awaitStarted(ctx context.Context, id string, b bundle.Bundle) error {
+	deadline := time.Now().Add(startGrace)
+
+	for {
+		started, err := hasStarted(b.ReadyFile)
+		if err != nil {
+			return err
+		}
+		if started {
+			return nil
+		}
+
+		status, err := p.Status(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !status.Alive() {
+			return p.neverStarted(id, b)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("the entrypoint of sandbox %s did not report that it started within %s", id, startGrace)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the entrypoint of %s to start: %w", id, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// neverStarted names why the sandbox is already gone, quoting what the supervisor printed on its way
+// out: the caller gives the state directory back, so the log dies with it.
+func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
+	// The supervisor may have written the handshake between the read above and the status check.
+	started, err := hasStarted(b.ReadyFile)
+	if err != nil {
+		return err
+	}
+	if started {
+		return nil
+	}
+
+	path, err := p.LogPath(id)
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("the entrypoint of sandbox %s did not start%s", id, diagnostics(path))
+}
+
+// hasStarted reports whether the supervisor wrote its handshake. The file arrives by rename, so its
+// presence is the whole answer.
+func hasStarted(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	return true, nil
+}
+
+// diagnostics quotes the tail of the sandbox output, as the suffix of the error that reports it.
+func diagnostics(path string) string {
+	blob, err := readTail(path)
+	if err != nil {
+		return fmt.Sprintf(": its diagnostics were unreadable: %v", err)
+	}
+
+	text := strings.TrimSpace(string(blob))
+	if text == "" {
+		return ": it printed nothing"
+	}
+
+	return ": " + text
+}
+
+// readTail keeps the last diagnosticTail bytes, because the guest writes to this file for as long
+// as it lives.
+func readTail(path string) (blob []byte, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	from := max(info.Size()-diagnosticTail, 0)
+
+	return io.ReadAll(io.NewSectionReader(f, from, info.Size()-from))
 }
 
 // Stop is the only thing that ends a sandbox. It signals, waits out grace, then kills.

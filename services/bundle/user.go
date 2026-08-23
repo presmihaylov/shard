@@ -23,11 +23,8 @@ const (
 )
 
 // resolveUser turns an image USER into ids. A name is looked up in the image's own passwd and group.
+// The caller asks only when someone named a user, so an empty one never reaches here.
 func resolveUser(rootfs, user string) (specs.User, error) {
-	if user == "" {
-		return specs.User{}, nil
-	}
-
 	name, group, hasGroup := strings.Cut(user, ":")
 
 	uid, gid, err := lookupUser(rootfs, name)

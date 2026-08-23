@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +23,7 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> -- <entrypoint> [args...]`
+  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] -- <entrypoint> [args...]`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -55,6 +57,8 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("shard-init", flag.ContinueOnError)
 	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
 	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
+	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
+	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -62,15 +66,26 @@ func run(args []string) error {
 	if *exitFile == "" {
 		return errors.New("-exit-file is required")
 	}
+	if *readyFile == "" {
+		return errors.New("-ready-file is required")
+	}
 	// This also rejects -exit-file --, which the flag package otherwise takes as the value.
 	if !filepath.IsAbs(*exitFile) {
 		return fmt.Errorf("-exit-file must be an absolute path, got %q", *exitFile)
+	}
+	if !filepath.IsAbs(*readyFile) {
+		return fmt.Errorf("-ready-file must be an absolute path, got %q", *readyFile)
 	}
 	if flags.NArg() == 0 {
 		return errors.New("no entrypoint given")
 	}
 
-	err := supervise(flags.Args(), *exitFile)
+	credential, err := parseCredential(*user)
+	if err != nil {
+		return err
+	}
+
+	err = supervise(flags.Args(), *exitFile, *readyFile, credential)
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -83,16 +98,21 @@ func run(args []string) error {
 
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, exitFile string) error {
+func supervise(entrypointArgv []string, exitFile, readyFile string, credential *syscall.Credential) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
 	stopSignals := make(chan os.Signal, 4)
 	signal.Notify(childDeaths, syscall.SIGCHLD)
 	signal.Notify(stopSignals, syscall.SIGTERM, syscall.SIGINT)
 
-	entrypointPID, err := startProcess(entrypointArgv)
+	entrypointPID, err := startProcess(entrypointArgv, credential)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
+	}
+
+	// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
+	if err := store.WriteFile(readyFile, nil, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", readyFile, err)
 	}
 
 	stopping := false
@@ -216,21 +236,121 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
 }
 
+// PID 1 keeps its own ids, so it can always write the exit file into the root owned host directory.
+// The host resolved the name against the image rootfs, so only numbers ever reach this flag.
+func parseCredential(user string) (*syscall.Credential, error) {
+	if user == "" {
+		return nil, nil
+	}
+
+	uidField, gidField, hasGroup := strings.Cut(user, ":")
+	if !hasGroup {
+		return nil, fmt.Errorf("-user must be uid:gid, got %q", user)
+	}
+
+	uid, err := parseID(uidField)
+	if err != nil {
+		return nil, fmt.Errorf("-user has an unreadable uid: %w", err)
+	}
+
+	gid, err := parseID(gidField)
+	if err != nil {
+		return nil, fmt.Errorf("-user has an unreadable gid: %w", err)
+	}
+
+	return &syscall.Credential{Uid: uid, Gid: gid}, nil
+}
+
+// ParseUint with a bit size of 32 is the bound check: a uid the kernel cannot hold is not an id.
+func parseID(field string) (uint32, error) {
+	id, err := strconv.ParseUint(field, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not an id: %w", field, err)
+	}
+
+	return uint32(id), nil
+}
+
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
-func startProcess(argv []string) (int, error) {
+func startProcess(argv []string, credential *syscall.Credential) (int, error) {
 	binary, err := exec.LookPath(argv[0])
 	if err != nil {
 		return 0, fmt.Errorf("look up %q: %w", argv[0], err)
+	}
+
+	ambient, err := inheritedCapabilities(credential)
+	if err != nil {
+		return 0, err
 	}
 
 	// The child gets our own stdio fds: shard streams them through, it does not proxy them.
 	pid, err := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
+		Sys:   sysProcAttr(credential, ambient),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("fork and exec %q: %w", binary, err)
 	}
 
 	return pid, nil
+}
+
+// statusFile is where the kernel, and the sentry that emulates it, prints this process's own sets.
+const statusFile = "/proc/self/status"
+
+// permittedField names the set config.json granted the supervisor, which is the ceiling it may pass on.
+const permittedField = "CapPrm:"
+
+// inheritedCapabilities names what the entrypoint must be handed as ambient. A uid change away from
+// root clears the permitted and the effective set, and config.json would then advertise a set the
+// entrypoint never receives. A child that keeps our own ids keeps them without any of this.
+func inheritedCapabilities(credential *syscall.Credential) ([]uintptr, error) {
+	if credential == nil || credential.Uid == 0 {
+		return nil, nil
+	}
+
+	blob, err := os.ReadFile(statusFile)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", statusFile, err)
+	}
+
+	mask, err := permittedMask(string(blob))
+	if err != nil {
+		return nil, err
+	}
+
+	return capabilitiesIn(mask), nil
+}
+
+// permittedMask pulls the permitted set out of the process status, where it is one hex word.
+func permittedMask(status string) (uint64, error) {
+	for line := range strings.Lines(status) {
+		if !strings.HasPrefix(line, permittedField) {
+			continue
+		}
+
+		value := strings.TrimSpace(strings.TrimPrefix(line, permittedField))
+
+		mask, err := strconv.ParseUint(value, 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s holds an unreadable %s %q: %w", statusFile, permittedField, value, err)
+		}
+
+		return mask, nil
+	}
+
+	return 0, fmt.Errorf("%s names no %s", statusFile, permittedField)
+}
+
+// capabilitiesIn turns the mask into the numbers prctl raises one at a time.
+func capabilitiesIn(mask uint64) []uintptr {
+	var caps []uintptr
+	for bit := range uintptr(64) {
+		if mask&(1<<bit) != 0 {
+			caps = append(caps, bit)
+		}
+	}
+
+	return caps
 }

@@ -1,0 +1,370 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/runspec"
+	"github.com/presmihaylov/shard/services/sandboxstate"
+)
+
+// DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
+const DefaultInitPath = "/usr/local/bin/shard-init"
+
+// InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no create flag.
+const InitPathEnv = "SHARD_INIT_PATH"
+
+// teardownBudget bounds the whole give-back after a failed create, on a context the command's own
+// cannot cancel.
+const teardownBudget = 30 * time.Second
+
+// createOptions is one parsed shard create invocation.
+type createOptions struct {
+	ref  string
+	argv []string
+
+	env     []string
+	workDir string
+	user    string
+
+	resources models.Resources
+}
+
+// imageService is the part of image.Service that create drives.
+type imageService interface {
+	Pull(ctx context.Context, ref string) (image.Image, error)
+}
+
+// sandboxRepo is the part of sandboxstate.Repository that create drives.
+type sandboxRepo interface {
+	Create(sb models.Sandbox) (models.Sandbox, error)
+	Update(id string, mutate func(*models.Sandbox) error) error
+	Delete(id string) error
+	Dir(id string) (string, error)
+}
+
+// sandboxNetwork is the part of network.Service that create drives.
+type sandboxNetwork interface {
+	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
+	Release(ctx context.Context, id string) error
+}
+
+// createDeps is every layer create wires together. A test replaces the factory, because each real
+// part needs Linux and root.
+type createDeps struct {
+	images   imageService
+	repo     sandboxRepo
+	net      sandboxNetwork
+	provider models.Provider
+}
+
+func (a App) create(ctx context.Context, args []string) error {
+	opts, err := parseCreate(args)
+	if err != nil {
+		return err
+	}
+
+	build := a.newCreateDeps
+	if build == nil {
+		build = defaultCreateDeps
+	}
+
+	deps, err := build(a)
+	if err != nil {
+		return err
+	}
+
+	return a.launch(ctx, deps, opts)
+}
+
+// parseCreate splits the flags, the image and the argv. Go's flag stops at the first non-flag
+// argument, so the flags must precede the image and what is left is the image plus a literal --
+// plus the argv.
+func parseCreate(args []string) (createOptions, error) {
+	var opts createOptions
+
+	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
+	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
+	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
+	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
+	flags.IntVar(&opts.resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
+
+	if err := flags.Parse(args); err != nil {
+		return createOptions{}, fmt.Errorf("parse the create flags: %w", err)
+	}
+
+	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
+	if opts.resources.MemoryMiB < 0 {
+		return createOptions{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", opts.resources.MemoryMiB)
+	}
+	if opts.resources.VCPUs < 0 {
+		return createOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)
+	}
+
+	rest := flags.Args()
+	if len(rest) == 0 {
+		return createOptions{}, errors.New("create takes one image reference, got none")
+	}
+
+	opts.ref, rest = rest[0], rest[1:]
+	if len(rest) == 0 {
+		return opts, nil
+	}
+
+	if rest[0] != "--" {
+		return createOptions{}, fmt.Errorf("unexpected argument %q: the flags go before the image and the command after --", rest[0])
+	}
+
+	opts.argv = rest[1:]
+	if len(opts.argv) == 0 {
+		return createOptions{}, errors.New("-- takes the command to run, and nothing followed it")
+	}
+
+	return opts, nil
+}
+
+// envList refuses anything that is not an assignment, because a merge drops such an entry and
+// create would then report success with the variable absent.
+type envList []string
+
+func (e *envList) String() string { return strings.Join(*e, ",") }
+
+func (e *envList) Set(value string) error {
+	key, _, found := strings.Cut(value, "=")
+	if !found {
+		return fmt.Errorf("%q is not KEY=VALUE", value)
+	}
+	if key == "" {
+		return fmt.Errorf("%q has no name", value)
+	}
+
+	*e = append(*e, value)
+
+	return nil
+}
+
+// defaultCreateDeps builds the real layers. Every one of them refuses off Linux, which is why the
+// factory is a field the wiring test replaces rather than something create calls directly.
+func defaultCreateDeps(a App) (createDeps, error) {
+	images, err := a.images()
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	repo, err := sandboxstate.New(a.Root)
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	manager, err := netns.New()
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	net, err := network.New(network.Config{Root: a.Root}, manager)
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	// The mode is fixed on the runner, and a sandbox with an allocated netns needs netstack over it.
+	runner, err := runsc.New(filepath.Join(a.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	bundles, err := bundle.New(a.InitPath)
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	provider, err := gvisor.New(runner, bundles, repo.Dir)
+	if err != nil {
+		return createDeps{}, err
+	}
+
+	return createDeps{images: images, repo: repo, net: net, provider: provider}, nil
+}
+
+// launch claims the image, the record, the network and the sandbox, then starts the entrypoint and
+// prints the id. Every claim before the commit point is pushed onto the teardown stack, because
+// half-built state is a bug. Nothing is torn down after it: the sandbox outlives this command.
+func (a App) launch(ctx context.Context, deps createDeps, opts createOptions) (err error) {
+	var td teardown
+
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, td.unwind(ctx))
+		}
+	}()
+
+	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
+	// claims nothing this command has to give back.
+	img, err := a.pullImage(ctx, deps, opts.ref)
+	if err != nil {
+		return err
+	}
+
+	id, dir, err := claimRecord(deps, &td, img, opts)
+	if err != nil {
+		return err
+	}
+
+	// Allocate rolls back its own attach only: a failure between the lease claim and the attach leaks
+	// the lease file, so the push goes above the call. Release tolerates a lease that was never taken.
+	td.push(func(ctx context.Context) error { return deps.net.Release(ctx, id) })
+
+	// The id names the netns, the lease holder and the runsc container, so it must exist first.
+	netSpec, err := deps.net.Allocate(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	spec := runspec.Resolve(models.SandboxSpec{
+		ID:         id,
+		RootFS:     img.RootFS,
+		StateDir:   dir,
+		Entrypoint: opts.argv,
+		Env:        opts.env,
+		WorkDir:    opts.workDir,
+		User:       opts.user,
+		Network:    netSpec,
+		Resources:  opts.resources,
+	}, img.Config)
+
+	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
+	// already forked, so the push goes above the call. Remove tolerates an id runsc never held.
+	td.push(func(ctx context.Context) error { return deps.provider.Remove(ctx, id) })
+
+	if err := deps.provider.Create(ctx, spec); err != nil {
+		return err
+	}
+
+	if err := recordCreated(ctx, deps, spec); err != nil {
+		return err
+	}
+
+	if err := deps.provider.Start(ctx, id); err != nil {
+		// An interrupt kills the start process, not what it may already have started, and the substrate
+		// cannot tell the two apart. Only stop ends a sandbox, so an unknown outcome is kept.
+		if ctx.Err() != nil {
+			td.discard()
+
+			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
+		}
+
+		return err
+	}
+
+	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
+	// stop ends a sandbox.
+	td.discard()
+
+	// The id is printed before the record write, so a sandbox whose record failed is still reachable.
+	if err := a.print(id); err != nil {
+		return err
+	}
+
+	if err := deps.repo.Update(id, func(sb *models.Sandbox) error {
+		sb.State = models.StateRunning
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
+	}
+
+	return nil
+}
+
+func (a App) pullImage(ctx context.Context, deps createDeps, ref string) (image.Image, error) {
+	// A registry that accepts the connection and then stalls would otherwise pin this process forever.
+	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
+	defer cancel()
+
+	return deps.images.Pull(ctx, ref)
+}
+
+// claimRecord takes the id, which is the only handle every later step is named by.
+func claimRecord(deps createDeps, td *teardown, img image.Image, opts createOptions) (string, string, error) {
+	sb, err := deps.repo.Create(models.Sandbox{
+		Image:     img.Reference,
+		Provider:  deps.provider.Name(),
+		State:     models.StateCreated,
+		Resources: opts.resources,
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	// Create is atomic, so there is nothing to give back until it returns; a failed Dir still deletes.
+	td.push(func(context.Context) error { return deps.repo.Delete(sb.ID) })
+
+	dir, err := deps.repo.Dir(sb.ID)
+	if err != nil {
+		return "", "", err
+	}
+
+	return sb.ID, dir, nil
+}
+
+// recordCreated copies what the substrate decided into the record, so a later shard process can
+// reach the sandbox without asking the provider again. The state stays created until the start.
+func recordCreated(ctx context.Context, deps createDeps, spec models.SandboxSpec) error {
+	status, err := deps.provider.Status(ctx, spec.ID)
+	if err != nil {
+		return err
+	}
+
+	return deps.repo.Update(spec.ID, func(sb *models.Sandbox) error {
+		sb.Name = spec.Name
+		sb.PID = status.PID
+		sb.NetnsPath = spec.Network.NetnsPath
+		sb.Address = spec.Network.Address
+		sb.HostInterface = spec.Network.HostInterface
+
+		return nil
+	})
+}
+
+// teardown is what a failed create gives back, in the reverse of the order it was claimed.
+type teardown struct {
+	steps []func(context.Context) error
+}
+
+func (t *teardown) push(step func(context.Context) error) { t.steps = append(t.steps, step) }
+
+// discard is the commit point: what is on the stack now belongs to a sandbox that is live.
+func (t *teardown) discard() { t.steps = nil }
+
+// unwind runs the stack on a fresh bounded context, because Ctrl-C cancelled the command's own and
+// every call would then fail at once and give nothing back. It stops at the first failure, because a
+// step that failed still holds what the steps below it name.
+func (t *teardown) unwind(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownBudget)
+	defer cancel()
+
+	for i, step := range slices.Backward(t.steps) {
+		if err := step(ctx); err != nil {
+			return fmt.Errorf("gave back %d of %d claims and stopped, the rest are left on the host: %w",
+				len(t.steps)-1-i, len(t.steps), err)
+		}
+	}
+
+	return nil
+}

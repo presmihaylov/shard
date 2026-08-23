@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,10 +21,19 @@ const DefaultTimeout = 30 * time.Minute
 const usage = `shard - a single-node sandbox manager (pre-alpha)
 
 Usage:
+  shard create [flags] <image> [-- <argv>...]
+                           create a sandbox, start its entrypoint and print its id
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
   shard version            print the version
+
+Create flags, which must precede the image:
+  --env KEY=VALUE          set an environment variable, repeatable
+  --workdir <dir>          the directory the entrypoint starts in
+  --user <user>            the user the entrypoint runs as
+  --memory <MiB>           the memory bound, 0 for unbounded
+  --cpus <n>               the vcpu bound, 0 for unbounded
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
@@ -43,6 +53,11 @@ type App struct {
 	Insecure []string
 	// Timeout defaults to DefaultTimeout when zero.
 	Timeout time.Duration
+	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
+	InitPath string
+
+	// newCreateDeps builds what create wires together. A test replaces it: the real parts need root.
+	newCreateDeps func(a App) (createDeps, error)
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
@@ -69,10 +84,12 @@ func (a App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "version":
 		return a.print(a.Version)
+	case "create":
+		return a.create(ctx, args[1:])
 	case "pull":
 		return a.pull(ctx, args[1:])
 	case "image":
-		return a.image(args[1:])
+		return a.image(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}
@@ -87,6 +104,9 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	}
 	if a.Root == "" {
 		a.Root = DefaultRoot
+	}
+	if a.InitPath == "" {
+		a.InitPath = initPathFromEnv()
 	}
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
@@ -105,6 +125,15 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	}
 
 	return flags.Args(), nil
+}
+
+// initPathFromEnv resolves where the guest supervisor lives on this host.
+func initPathFromEnv() string {
+	if path := os.Getenv(InitPathEnv); path != "" {
+		return path
+	}
+
+	return DefaultInitPath
 }
 
 // hostList collects a repeatable flag, which the flag package has no built-in type for.

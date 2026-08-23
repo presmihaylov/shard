@@ -4,7 +4,7 @@ Four states, seven legal moves. `models/state.go` is the code; this page is the 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> created: shard run / create
+    [*] --> created: shard create
     created --> running: start
     created --> stopped: stop before start
     running --> paused: pause (snapshot to disk, memory freed)

@@ -3,13 +3,18 @@ package image_test
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,7 +139,7 @@ func TestListAndRemove(t *testing.T) {
 		t.Fatalf("got %+v, want the one image we pulled", images)
 	}
 
-	if err := svc.Remove(ref); err != nil {
+	if err := svc.Remove(t.Context(), ref); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -167,7 +172,7 @@ func TestRemoveKeepsARootFSASecondTagStillNeeds(t *testing.T) {
 		t.Fatalf("Pull %s: %v", second, err)
 	}
 
-	if err := svc.Remove(first); err != nil {
+	if err := svc.Remove(t.Context(), first); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -179,7 +184,7 @@ func TestRemoveKeepsARootFSASecondTagStillNeeds(t *testing.T) {
 func TestRemoveMissingImage(t *testing.T) {
 	svc := newServiceAt(t, t.TempDir(), nil)
 
-	if err := svc.Remove("app:1.0"); !errors.Is(err, image.ErrNotFound) {
+	if err := svc.Remove(t.Context(), "app:1.0"); !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
@@ -292,10 +297,12 @@ func tarLayer(t *testing.T, files map[string]string) v1.Layer {
 	return layer
 }
 
-func TestNewSweepsAStaleStagingTree(t *testing.T) {
-	server, _ := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+// TestPullSweepsAStaleStagingTree: the sweep runs under the pull lock, because a staging tree a
+// second shard is unpacking into right now is not debris.
+func TestPullSweepsAStaleStagingTree(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
 	root := t.TempDir()
-	newServiceAt(t, root, server)
+	svc := newServiceAt(t, root, server)
 
 	// A killed pull leaves the tree os.MkdirTemp made, and no other verb ever reclaims it.
 	stale := filepath.Join(root, "rootfs", ".unpack-123456")
@@ -303,11 +310,117 @@ func TestNewSweepsAStaleStagingTree(t *testing.T) {
 		t.Fatalf("plant the staging tree: %v", err)
 	}
 
-	newServiceAt(t, root, server)
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
 
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging tree survived: %v", err)
 	}
+}
+
+// A pull sweeps only on the miss path, so on a host whose images are all cached nothing there ever
+// runs. The reclaim verb is the unconditional point, or a killed unpack holds its gigabytes forever.
+func TestRemoveSweepsAStaleStagingTree(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	root := t.TempDir()
+	svc := newServiceAt(t, root, server)
+
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	// It is planted after the pull, so only the removal can be what reclaims it.
+	stale := filepath.Join(root, "rootfs", ".unpack-123456")
+	if err := os.MkdirAll(filepath.Join(stale, "etc"), 0o755); err != nil {
+		t.Fatalf("plant the staging tree: %v", err)
+	}
+
+	// A second pull of a cached reference returns from the fast path and sweeps nothing.
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("the second Pull: %v", err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("a cached pull took the lock and swept: %v", err)
+	}
+
+	if err := svc.Remove(t.Context(), ref); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging tree survived the removal: %v", err)
+	}
+}
+
+// TestPullWaitsForThePullInFlight: a rollback reclaims by reachability over the whole store, so a
+// second pull whose blobs are written but not yet indexed would lose them to it.
+func TestPullWaitsForThePullInFlight(t *testing.T) {
+	gate := &blockedBlobs{next: ggcr.New(), arrived: make(chan struct{}, 1), released: make(chan struct{})}
+	server := httptest.NewServer(gate)
+	// The release comes first, because Close waits for the requests the gate holds open.
+	t.Cleanup(server.Close)
+	t.Cleanup(gate.release)
+
+	ref := pushImage(t, server, "app:1.0", map[string]string{"etc/hostname": "box"})
+	root := t.TempDir()
+	first, second := newServiceAt(t, root, server), newServiceAt(t, root, server)
+
+	gate.arm()
+
+	pulled := make(chan error, 1)
+	go func() {
+		_, err := first.Pull(t.Context(), ref)
+		pulled <- err
+	}()
+
+	select {
+	case <-gate.arrived:
+	case err := <-pulled:
+		t.Fatalf("the first Pull ended before it fetched a blob: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	// The message matters as much as the deadline: a second pull that reached the registry at all
+	// has already written blobs the first one's rollback would collect.
+	_, err := second.Pull(ctx, ref)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the lock") {
+		t.Fatalf("the second Pull returned %v, want it to wait for the first one's lock", err)
+	}
+
+	gate.release()
+
+	if err := <-pulled; err != nil {
+		t.Fatalf("the first Pull: %v", err)
+	}
+}
+
+// blockedBlobs is a registry that holds every blob request open, so a pull can be caught mid-flight.
+type blockedBlobs struct {
+	next     http.Handler
+	armed    atomic.Bool
+	arrived  chan struct{}
+	once     sync.Once
+	released chan struct{}
+}
+
+func (b *blockedBlobs) arm() { b.armed.Store(true) }
+
+func (b *blockedBlobs) release() { b.once.Do(func() { close(b.released) }) }
+
+func (b *blockedBlobs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if b.armed.Load() && strings.Contains(r.URL.Path, "/blobs/") {
+		select {
+		case b.arrived <- struct{}{}:
+		default:
+		}
+
+		<-b.released
+	}
+
+	b.next.ServeHTTP(w, r)
 }
 
 func TestFailedUnpackLeavesNoIndexEntry(t *testing.T) {

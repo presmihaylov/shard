@@ -1,6 +1,7 @@
 package runsc_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -139,5 +140,92 @@ func TestCreateRefusesWithNoBundle(t *testing.T) {
 
 	if err := r.Create(t.Context(), "amber-otter-1a2b", runsc.CreateOptions{}); err == nil {
 		t.Fatal("Create accepted a container with no bundle")
+	}
+}
+
+// TestCreateQuotesItsDiagnostics: the caller deletes the state directory when a create fails, so a
+// message that only named the log would send the operator to a file that is already gone.
+func TestCreateQuotesItsDiagnostics(t *testing.T) {
+	r, _ := fake(t, "", "creating container: mount source /tmp/absent does not exist", 1)
+
+	log := filepath.Join(t.TempDir(), "output.log")
+	if err := os.WriteFile(log, []byte("output from an earlier run\n"), 0o600); err != nil {
+		t.Fatalf("write the log: %v", err)
+	}
+
+	f, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the log: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close the log: %v", err)
+		}
+	}()
+
+	err = r.Create(t.Context(), "amber-otter-1a2b", runsc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	if err == nil {
+		t.Fatal("Create reported success on a failing runsc")
+	}
+
+	if !strings.Contains(err.Error(), "mount source /tmp/absent does not exist") {
+		t.Errorf("got %q, want it to carry what runsc printed", err)
+	}
+	if strings.Contains(err.Error(), "output from an earlier run") {
+		t.Errorf("got %q, want only this create's own output", err)
+	}
+}
+
+// TestCreateReportsThatRunscPrintedNothing: a failure that left no output still has to read as one.
+func TestCreateReportsThatRunscPrintedNothing(t *testing.T) {
+	r, _ := fake(t, "", "", 1)
+
+	log := filepath.Join(t.TempDir(), "output.log")
+	f, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the log: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close the log: %v", err)
+		}
+	}()
+
+	err = r.Create(t.Context(), "amber-otter-1a2b", runsc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	if err == nil {
+		t.Fatal("Create reported success on a failing runsc")
+	}
+
+	if !strings.Contains(err.Error(), "printed nothing") {
+		t.Errorf("got %q, want it to say runsc left nothing behind", err)
+	}
+}
+
+// TestCreateNamesOurOwnCancellation: an interrupt kills runsc before it prints, and reporting that
+// silence as a diagnostic reads as a runsc that crashed for no reason.
+func TestCreateNamesOurOwnCancellation(t *testing.T) {
+	r, _ := fake(t, "", "", 1)
+
+	log := filepath.Join(t.TempDir(), "output.log")
+	f, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the log: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close the log: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err = r.Create(ctx, "amber-otter-1a2b", runsc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create returned %v, want it to name the cancellation", err)
+	}
+
+	if strings.Contains(err.Error(), "printed nothing") {
+		t.Errorf("got %q, want no diagnostic about output we cut short ourselves", err)
 	}
 }

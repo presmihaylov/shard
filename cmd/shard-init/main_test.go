@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,7 +63,7 @@ func spawnOrphans() {
 	pids := make([]string, 0, orphanCount)
 	for range orphanCount {
 		// They outlive the handler installation on purpose, so no SIGCHLD arrives before it.
-		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"})
+		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"}, nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "spawn orphan:", err)
 			os.Exit(1)
@@ -112,9 +113,10 @@ func atoi(s string) int {
 }
 
 type supervisor struct {
-	cmd      *exec.Cmd
-	exitFile string
-	out      *bufio.Reader
+	cmd       *exec.Cmd
+	exitFile  string
+	readyFile string
+	out       *bufio.Reader
 	// waited records that a test collected the exit itself, so the cleanup does not wait twice.
 	waited bool
 }
@@ -127,8 +129,10 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 		t.Fatalf("locate the test binary: %v", err)
 	}
 
-	exitFile := filepath.Join(t.TempDir(), "exit.json")
-	cmd := exec.Command(exe, "-exit-file", exitFile, "--", exe, childPrefix+child)
+	dir := t.TempDir()
+	exitFile := filepath.Join(dir, "exit.json")
+	readyFile := filepath.Join(dir, "started")
+	cmd := exec.Command(exe, "-exit-file", exitFile, "-ready-file", readyFile, "--", exe, childPrefix+child)
 	cmd.Env = append(os.Environ(), roleEnv+"="+role)
 	cmd.Stderr = os.Stderr
 
@@ -140,7 +144,7 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 		t.Fatalf("start the supervisor: %v", err)
 	}
 
-	super := &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
+	super := &supervisor{cmd: cmd, exitFile: exitFile, readyFile: readyFile, out: bufio.NewReader(pipe)}
 
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -326,8 +330,10 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 	}
 
 	// A missing parent directory is the lasting fault that no amount of retrying can get past.
-	unwritable := filepath.Join(t.TempDir(), "no-such-dir", "exit.json")
-	cmd := exec.Command(exe, "-exit-file", unwritable, "--", exe, childPrefix+"exit:0")
+	dir := t.TempDir()
+	unwritable := filepath.Join(dir, "no-such-dir", "exit.json")
+	cmd := exec.Command(exe, "-exit-file", unwritable,
+		"-ready-file", filepath.Join(dir, "started"), "--", exe, childPrefix+"exit:0")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
 	pipe, err := cmd.StderrPipe()
@@ -366,8 +372,10 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 		t.Fatalf("locate the test binary: %v", err)
 	}
 
-	exitFile := filepath.Join(t.TempDir(), "exit.json")
-	cmd := exec.Command(exe, "-exit-file", exitFile, "--", "/no/such/entrypoint")
+	dir := t.TempDir()
+	exitFile := filepath.Join(dir, "exit.json")
+	readyFile := filepath.Join(dir, "started")
+	cmd := exec.Command(exe, "-exit-file", exitFile, "-ready-file", readyFile, "--", "/no/such/entrypoint")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
 	var exit *exec.ExitError
@@ -379,6 +387,23 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 		t.Errorf("exit code is %d, want %d so a broken image is not read as a broken supervisor",
 			exit.ExitCode(), models.EntrypointNotStartedExitCode)
 	}
+
+	// The handshake is the host's only proof, so an entrypoint that never ran must leave none.
+	if _, err := os.Stat(readyFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s returned %v, want the handshake to be absent", readyFile, err)
+	}
+}
+
+// The handshake is what makes a started sandbox distinguishable from one whose entrypoint died on
+// the way in. runsc start unblocks the task and reads nothing back.
+func TestTheSupervisorReportsThatTheEntrypointStarted(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "sleep:5000")
+
+	waitFor(t, 15*time.Second, "the handshake", func() bool {
+		_, err := os.Stat(super.readyFile)
+
+		return err == nil
+	})
 }
 
 // readLine bounds the read, because a supervisor that says nothing is the failure under test here.
@@ -412,17 +437,121 @@ func readLine(t *testing.T, r io.Reader) string {
 }
 
 func TestRunRejectsBadArguments(t *testing.T) {
+	const exitFlag, exitPath = "-exit-file", "/tmp/exit.json"
+	const readyFlag, readyPath = "-ready-file", "/tmp/started"
+
 	cases := map[string][]string{
-		"no exit file":       {"--", "/bin/true"},
-		"no entrypoint":      {"-exit-file", "/tmp/exit.json"},
-		"relative exit file": {"-exit-file", "exit.json", "--", "/bin/true"},
-		"exit file eats --":  {"-exit-file", "--", "/bin/true"},
+		"no exit file":        {readyFlag, readyPath, "--", "/bin/true"},
+		"no ready file":       {exitFlag, exitPath, "--", "/bin/true"},
+		"no entrypoint":       {exitFlag, exitPath, readyFlag, readyPath},
+		"relative exit file":  {exitFlag, "exit.json", readyFlag, readyPath, "--", "/bin/true"},
+		"relative ready file": {exitFlag, exitPath, readyFlag, "started", "--", "/bin/true"},
+		"exit file eats --":   {exitFlag, "--", readyFlag, readyPath, "/bin/true"},
+		"ready file eats --":  {exitFlag, exitPath, readyFlag, "--", "/bin/true"},
+		"user with no gid":    {exitFlag, exitPath, readyFlag, readyPath, "-user", "1000", "--", "/bin/true"},
+		"user with a name":    {exitFlag, exitPath, readyFlag, readyPath, "-user", "nobody:nobody", "--", "/bin/true"},
+		"user with no ids":    {exitFlag, exitPath, readyFlag, readyPath, "-user", ":", "--", "/bin/true"},
+		"user with an extra":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "1000:1000:10", "--", "/bin/true"},
+		"an id past 32 bits":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "4294967296:0", "--", "/bin/true"},
+		"a negative id":       {exitFlag, exitPath, readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
 	}
 
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			if err := run(args); err == nil {
 				t.Errorf("run(%q) returned no error", args)
+			}
+		})
+	}
+}
+
+// The host resolves the name, so the supervisor only ever reads ids off the flag.
+func TestParseCredential(t *testing.T) {
+	cases := map[string]struct {
+		user string
+		want *syscall.Credential
+	}{
+		"none":     {user: "", want: nil},
+		"root":     {user: "0:0", want: &syscall.Credential{Uid: 0, Gid: 0}},
+		"a pair":   {user: "1000:2000", want: &syscall.Credential{Uid: 1000, Gid: 2000}},
+		"the most": {user: "4294967295:4294967295", want: &syscall.Credential{Uid: 4294967295, Gid: 4294967295}},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseCredential(c.user)
+			if err != nil {
+				t.Fatalf("parseCredential(%q): %v", c.user, err)
+			}
+			if c.want == nil {
+				if got != nil {
+					t.Fatalf("got %+v, want no credential", got)
+				}
+
+				return
+			}
+			if got == nil {
+				t.Fatalf("got no credential, want %+v", c.want)
+			}
+			if got.Uid != c.want.Uid || got.Gid != c.want.Gid {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// The permitted set is the ceiling config.json granted the supervisor, and the entrypoint is handed
+// exactly it: a uid change away from root clears the set the sandbox spec advertises.
+func TestPermittedMask(t *testing.T) {
+	const status = "Name:\tshard-init\nCapInh:\t00000000a80425fb\nCapPrm:\t00000000a80425fb\nCapEff:\t0000000000000000\n"
+
+	mask, err := permittedMask(status)
+	if err != nil {
+		t.Fatalf("permittedMask: %v", err)
+	}
+	if want := uint64(0xa80425fb); mask != want {
+		t.Errorf("got mask %#x, want %#x", mask, want)
+	}
+
+	// CAP_NET_BIND_SERVICE is 10, and it is the one a --user entrypoint most visibly loses without this.
+	if got := capabilitiesIn(mask); !slices.Contains(got, uintptr(10)) {
+		t.Errorf("got the capabilities %v, want CAP_NET_BIND_SERVICE among them", got)
+	}
+	if got := capabilitiesIn(0); got != nil {
+		t.Errorf("an empty set gave %v, want none", got)
+	}
+}
+
+func TestPermittedMaskRefusesAStatusItCannotRead(t *testing.T) {
+	cases := map[string]string{
+		"no field":     "Name:\tshard-init\n",
+		"not a number": "CapPrm:\tnot-a-mask\n",
+	}
+
+	for name, status := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := permittedMask(status); err == nil {
+				t.Errorf("permittedMask(%q) returned no error", status)
+			}
+		})
+	}
+}
+
+// A child that keeps the supervisor's own ids loses nothing, so it needs no ambient set at all.
+func TestNoAmbientSetWithoutADrop(t *testing.T) {
+	cases := map[string]*syscall.Credential{
+		"no credential": nil,
+		"still root":    {Uid: 0, Gid: 0},
+	}
+
+	for name, credential := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := inheritedCapabilities(credential)
+			if err != nil {
+				t.Fatalf("inheritedCapabilities: %v", err)
+			}
+			if got != nil {
+				t.Errorf("got the ambient set %v, want none", got)
 			}
 		})
 	}
