@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
@@ -98,14 +99,15 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	}
 
 	sb.ID = id
-	// The name is claimed after the id, so it never points at a sandbox that does not exist yet.
-	if err := r.claimName(sb.Name, id); err != nil {
+	if err := r.write(sb); err != nil {
+		// Give the id back: no verb can reach a claimed directory that holds no record.
 		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
 	}
 
-	if err := r.write(sb); err != nil {
-		// Give the id back: no verb can reach a claimed directory that holds no record.
-		return models.Sandbox{}, errors.Join(err, r.dropName(sb.Name), os.RemoveAll(r.dir(id)))
+	// The name is claimed last, so a crash costs this sandbox its name and never leaks the name to
+	// a record no verb can reach.
+	if err := r.claimName(sb.Name, id); err != nil {
+		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
 	}
 
 	return sb, nil
@@ -118,7 +120,7 @@ func (r *Repository) claimName(name, id string) error {
 		return nil
 	}
 
-	if err := validName(name); err != nil {
+	if err := ValidName(name); err != nil {
 		return err
 	}
 
@@ -144,12 +146,26 @@ func (r *Repository) nameHolder(name string) string {
 	return filepath.Base(id)
 }
 
-func (r *Repository) dropName(name string) error {
+// dropName unlinks the name only while it still points at this id. A create that took the name back
+// after a half-done delete holds it now, and this sandbox has no claim on it any more.
+func (r *Repository) dropName(name, id string) error {
 	if name == "" {
 		return nil
 	}
 
 	path := r.namePath(name)
+
+	holder, err := os.Readlink(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the name link %s: %w", path, err)
+	}
+	if filepath.Base(holder) != id {
+		return nil
+	}
+
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", path, err)
 	}
@@ -164,16 +180,25 @@ func (r *Repository) namePath(name string) string {
 // Resolve turns what an operator typed into the id every other method takes. A name is a symlink, so
 // this is one readlink; anything else is already an id, and Get answers for one that names nothing.
 func (r *Repository) Resolve(ref string) (string, error) {
-	if err := validID(ref); err != nil {
+	if err := validReference(ref); err != nil {
 		return "", err
 	}
 
+	// ENOENT is no such name and EINVAL is an entry that is not a link; every other error is real.
 	target, err := os.Readlink(r.namePath(ref))
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.EINVAL) {
 		return ref, nil
 	}
+	if err != nil {
+		return "", fmt.Errorf("read the name link %s: %w", r.namePath(ref), err)
+	}
 
-	return filepath.Base(target), nil
+	id := filepath.Base(target)
+	if err := validID(id); err != nil {
+		return "", fmt.Errorf("the name %q points at something that is not a sandbox id: %w", ref, err)
+	}
+
+	return id, nil
 }
 
 // claimID makes the kernel decide uniqueness: mkdir refuses the second claim of the same id.
@@ -256,7 +281,7 @@ func (r *Repository) Delete(id string) (err error) {
 	}
 
 	// The name goes first: a link that outlived its sandbox would answer for an id nothing holds.
-	if err := r.dropName(sb.Name); err != nil {
+	if err := r.dropName(sb.Name, id); err != nil {
 		return err
 	}
 
@@ -396,15 +421,15 @@ func unlock(l *store.Lock, err *error) {
 	*err = errors.Join(*err, l.Release())
 }
 
-// idShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
+// generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
 // refused at the door rather than resolved by a precedence rule nobody would remember.
 var generatedIDShape = regexp.MustCompile(`^[a-z]+-[a-z]+-[0-9a-f]{4}$`)
 
-// validName refuses a name no verb could take back. It is a link name under the root, so it carries
+// ValidName refuses a name no verb could take back. It is a link name under the root, so it carries
 // the same restrictions as an id, and it may not be spelled like one.
-func validName(name string) error {
-	if err := validID(name); err != nil {
-		return fmt.Errorf("the sandbox name is not usable: %w", err)
+func ValidName(name string) error {
+	if err := plainComponent("name", name); err != nil {
+		return err
 	}
 
 	if generatedIDShape.MatchString(name) {
@@ -414,20 +439,26 @@ func validName(name string) error {
 	return nil
 }
 
+// validReference is validID for what an operator typed, which may be either an id or a name.
+func validReference(ref string) error { return plainComponent("id or name", ref) }
+
 // The id is a directory name under the root, so anything that is not one plain component is refused.
-func validID(id string) error {
-	if id == "" {
-		return errors.New("the sandbox id is empty")
+func validID(id string) error { return plainComponent("id", id) }
+
+// plainComponent carries the noun, so a refused name never reads as a refused id.
+func plainComponent(kind, s string) error {
+	if s == "" {
+		return fmt.Errorf("the sandbox %s is empty", kind)
 	}
 
-	if len(id) > maxChars {
-		return fmt.Errorf("the sandbox id %q is longer than %d characters", id, maxChars)
+	if len(s) > maxChars {
+		return fmt.Errorf("the sandbox %s %q is longer than %d characters", kind, s, maxChars)
 	}
 
-	for _, c := range id {
+	for _, c := range s {
 		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return fmt.Errorf("the sandbox id %q holds %q, which is not a letter, a digit, - or _", id, c)
+			return fmt.Errorf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)
 		}
 	}
 
