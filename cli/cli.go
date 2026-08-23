@@ -23,6 +23,8 @@ const usage = `shard - a single-node sandbox manager (pre-alpha)
 Usage:
   shard create [flags] <image> [-- <argv>...]
                            create a sandbox, start its entrypoint and print its id
+  shard exec [flags] <id> -- <argv>...
+                           run a command in a sandbox that is already running
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
@@ -34,6 +36,13 @@ Create flags, which must precede the image:
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
   --cpus <n>               the vcpu bound, 0 for unbounded
+
+Exec flags, which must precede the id:
+  -i                       keep stdin open on the command
+  -t                       run the command on a terminal, and -it for both
+  --env KEY=VALUE          set an environment variable, repeatable
+  --workdir <dir>          the directory the command starts in
+  --user <user>            the user the command runs as
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
@@ -58,6 +67,8 @@ type App struct {
 
 	// newCreateDeps builds what create wires together. A test replaces it: the real parts need root.
 	newCreateDeps func(a App) (createDeps, error)
+	// newExecDeps is the same for exec.
+	newExecDeps func(a App) (execDeps, error)
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
@@ -86,6 +97,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.print(a.Version)
 	case "create":
 		return a.create(ctx, args[1:])
+	case "exec":
+		return a.exec(ctx, args[1:])
 	case "pull":
 		return a.pull(ctx, args[1:])
 	case "image":

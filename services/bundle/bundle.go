@@ -96,6 +96,51 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	return b, nil
 }
 
+// Runtime is what the entrypoint runs with. Nothing records it but config.json, so an exec into a
+// live sandbox reads it back from there.
+type Runtime struct {
+	Env     []string
+	WorkDir string
+	// User is the uid:gid the supervisor drops the entrypoint to, and empty when nobody named one.
+	User string
+}
+
+// Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
+func (b Bundle) Runtime() (Runtime, error) {
+	configPath := filepath.Join(b.Dir, "config.json")
+
+	blob, err := os.ReadFile(configPath)
+	if err != nil {
+		return Runtime{}, fmt.Errorf("read %s: %w", configPath, err)
+	}
+
+	var spec specs.Spec
+	if err := json.Unmarshal(blob, &spec); err != nil {
+		return Runtime{}, fmt.Errorf("decode %s: %w", configPath, err)
+	}
+
+	if spec.Process == nil {
+		return Runtime{}, fmt.Errorf("%s names no process, so nothing says what the entrypoint runs with", configPath)
+	}
+
+	return Runtime{Env: spec.Process.Env, WorkDir: spec.Process.Cwd, User: supervisorUser(spec.Process.Args)}, nil
+}
+
+// supervisorUser reads back the -user the supervisor was given. Its own process user is root, so the
+// argv is the only record of which user the entrypoint runs as.
+func supervisorUser(args []string) string {
+	for i, arg := range args {
+		if arg == "--" {
+			return ""
+		}
+		if arg == "-user" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+
+	return ""
+}
+
 // Open derives an existing sandbox's paths from its state directory alone, so a later shard process
 // can unmount it and read its exit status without the image the bundle was built from.
 func Open(stateDir string) (Bundle, error) {
@@ -227,13 +272,13 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 
 	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
 	if spec.User != "" {
-		user, err := resolveUser(spec.RootFS, spec.User)
+		uid, gid, err := ResolveUser(spec.RootFS, spec.User)
 		if err != nil {
 			return nil, err
 		}
 
 		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
-		argv = append(argv, "-user", fmt.Sprintf("%d:%d", user.UID, user.GID))
+		argv = append(argv, "-user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 
 	return append(append(argv, "--"), entrypoint...), nil

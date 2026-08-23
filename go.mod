@@ -6,6 +6,7 @@ require (
 	github.com/containerd/containerd/v2 v2.3.4
 	github.com/google/go-containerregistry v0.21.9
 	github.com/opencontainers/runtime-spec v1.3.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -30,7 +31,6 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260406210006-6f92a3bedf2d // indirect
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect

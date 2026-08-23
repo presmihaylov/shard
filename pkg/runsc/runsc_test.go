@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/runsc"
 )
@@ -17,14 +18,21 @@ import (
 func fake(t *testing.T, stdout, stderr string, exitCode int) (*runsc.Runner, string) {
 	t.Helper()
 
+	return fakeBinary(t, "printf '%s' '"+stdout+"'\n"+
+		"printf '%s' '"+stderr+"' >&2\n"+
+		"exit "+strconv.Itoa(exitCode)+"\n")
+}
+
+// fakeBinary writes a fake runsc that records its argv and then runs body. Body is what a test varies.
+func fakeBinary(t *testing.T, body string) (*runsc.Runner, string) {
+	t.Helper()
+
 	dir := t.TempDir()
 	argvFile := filepath.Join(dir, "argv")
 	binary := filepath.Join(dir, "runsc")
 
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\n" +
-		"printf '%s' '" + stdout + "'\n" +
-		"printf '%s' '" + stderr + "' >&2\n" +
-		"exit " + strconv.Itoa(exitCode) + "\n"
+	// A body that has to signal the test writes beside the argv file, so $argv is the path it needs.
+	script := "#!/bin/sh\nargv=" + argvFile + "\nprintf '%s\\n' \"$@\" > \"$argv\"\n" + body
 
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake runsc: %v", err)
@@ -36,6 +44,18 @@ func fake(t *testing.T, stdout, stderr string, exitCode int) (*runsc.Runner, str
 	}
 
 	return r, argvFile
+}
+
+// waitFor blocks until the fake runsc creates path, or gives up: a fixed sleep races a loaded machine.
+func waitFor(path string) {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func argv(t *testing.T, path string) []string {
@@ -227,5 +247,116 @@ func TestCreateNamesOurOwnCancellation(t *testing.T) {
 
 	if strings.Contains(err.Error(), "printed nothing") {
 		t.Errorf("got %q, want no diagnostic about output we cut short ourselves", err)
+	}
+}
+
+func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
+	r, argvFile := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
+		Argv:    []string{"/bin/sh", "-c", "echo hi"},
+		Env:     []string{"A=1", "B=2"},
+		WorkDir: "/srv",
+		User:    "65534:65534",
+	}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	got := argv(t, argvFile)
+
+	id := slices.Index(got, "amber-otter-1a2b")
+	if id < 0 {
+		t.Fatalf("the argv %q names no sandbox", got)
+	}
+
+	// Everything after the id is the guest's own command, and runsc reads no flag past it.
+	if command := got[id+1:]; !slices.Equal(command, []string{"/bin/sh", "-c", "echo hi"}) {
+		t.Errorf("the command is %q, want the argv Exec was given", command)
+	}
+
+	flags := pairs(got[:id])
+	for _, want := range []string{"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2"} {
+		if !slices.Contains(flags, want) {
+			t.Errorf("the flags before the id are %q, want %q in them", got[:id], want)
+		}
+	}
+}
+
+// pairs reads a flag list as the flag-value pairs it is, so a repeated flag is matched by its value.
+func pairs(args []string) []string {
+	var out []string
+	for i := 0; i+1 < len(args); i++ {
+		out = append(out, args[i]+" "+args[i+1])
+	}
+
+	return out
+}
+
+// The point of exec: a command that exits 7 is an answer, not a failure of the driver.
+func TestExecReturnsTheCommandExitCode(t *testing.T) {
+	r, _ := fake(t, "", "", 7)
+
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/false"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if code != 7 {
+		t.Errorf("Exec returned %d, want 7", code)
+	}
+}
+
+func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
+	r, _ := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{}); err == nil {
+		t.Fatal("Exec accepted a spec with no command")
+	}
+}
+
+// A driver the host killed reports no exit code at all, and -1 is not one a command chose.
+func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
+	r, _ := fakeBinary(t, "kill -9 $$\n")
+
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/true"}})
+	if err == nil {
+		t.Fatalf("Exec reported code %d and no error for a driver a signal ended", code)
+	}
+	if code != 0 {
+		t.Errorf("Exec returned code %d beside its error, want 0", code)
+	}
+	if !strings.Contains(err.Error(), "amber-otter-1a2b") || !strings.Contains(err.Error(), "signal") {
+		t.Errorf("the error is %q, and it must name the sandbox and the signal", err)
+	}
+}
+
+// A cancelled exec must end the one guest process, because only Stop ends a sandbox.
+func TestACancelledExecKillsTheGuestProcessAlone(t *testing.T) {
+	// The fake writes the pid runsc would have written, marks it written, then hangs the way an exec does.
+	r, argvFile := fakeBinary(t, `prev=
+for arg in "$@"; do
+	if [ "$prev" = "--internal-pid-file" ]; then echo 4242 > "$arg"; fi
+	prev=$arg
+done
+case " $* " in *" exec "*) : > "$argv.ready"; sleep 30 ;; esac
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		// A cancel before the pid file lands tests the fallback, not the kill this test is about.
+		defer cancel()
+
+		waitFor(argvFile + ".ready")
+	}()
+
+	if _, err := r.Exec(ctx, "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sleep", "30"}}); err == nil {
+		t.Fatal("a cancelled Exec reported success")
+	}
+
+	// The kill ran last, so the recorded argv is its own.
+	got := argv(t, argvFile)
+	want := []string{"kill", "--pid", "4242", "amber-otter-1a2b", "KILL"}
+	if at := slices.Index(got, "kill"); at < 0 || !slices.Equal(got[at:], want) {
+		t.Errorf("the cancellation ran %q, want %q at its end", got, want)
 	}
 }

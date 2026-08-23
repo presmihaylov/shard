@@ -268,6 +268,34 @@ func TestBuildIsAValidRuntimeSpec(t *testing.T) {
 	}
 }
 
+// An exec with no user of its own runs as the entrypoint does, and config.json is the only record of it.
+func TestRuntimeReadsBackTheUserTheEntrypointRunsAs(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{User: "app"}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	runtime, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+
+	if runtime.User != "1000:2000" {
+		t.Errorf("Runtime reports the user %q, want 1000:2000", runtime.User)
+	}
+}
+
+// Nobody named a user, so nothing may claim one: an empty answer is what makes the exec run as root.
+func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh", "-user", "1000:1000"}})
+
+	runtime, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+
+	if runtime.User != "" {
+		t.Errorf("Runtime reports the user %q, and the -user in it is the command's own argument", runtime.User)
+	}
+}
+
 func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 	svc := newService(t)
 	spec := runspec.Resolve(newSpec(t), models.ImageConfig{Entrypoint: []string{"/bin/sh"}})

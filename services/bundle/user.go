@@ -9,8 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"syscall"
 )
 
 // errNoEntry lets a numeric id fall back to the plain id, while a real read error still propagates.
@@ -22,26 +21,27 @@ const (
 	groupFields  = 3
 )
 
-// resolveUser turns an image USER into ids. A name is looked up in the image's own passwd and group.
+// ResolveUser turns a user into ids. A name is looked up in that rootfs's own passwd and group, so
+// an exec resolves against the sandbox's live tree and a create against the image's.
 // The caller asks only when someone named a user, so an empty one never reaches here.
-func resolveUser(rootfs, user string) (specs.User, error) {
+func ResolveUser(rootfs, user string) (uid, gid uint32, err error) {
 	name, group, hasGroup := strings.Cut(user, ":")
 
-	uid, gid, err := lookupUser(rootfs, name)
+	uid, gid, err = lookupUser(rootfs, name)
 	if err != nil {
-		return specs.User{}, err
+		return 0, 0, err
 	}
 
 	if !hasGroup {
-		return specs.User{UID: uid, GID: gid}, nil
+		return uid, gid, nil
 	}
 
 	gid, err = lookupGroup(rootfs, group)
 	if err != nil {
-		return specs.User{}, err
+		return 0, 0, err
 	}
 
-	return specs.User{UID: uid, GID: gid}, nil
+	return uid, gid, nil
 }
 
 // lookupUser returns the primary gid too, which is what a USER with no group means.
@@ -102,15 +102,28 @@ func parseID(s string) (uint32, bool) {
 }
 
 // findEntry reads one colon-separated database. A missing file is the same answer as a missing name.
+// The rootfs is the guest's own tree, so the file it names is refused unless it is a plain one: a
+// symlink would resolve against the host's root, and a fifo would block this open until the guest answers.
 func findEntry(path string, minFields int, match func(fields []string) bool) ([]string, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("the image has no %s: %w", filepath.Base(path), errNoEntry)
+	}
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("%s is a symbolic link, and a user database must be a file in the same tree", path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is a %s, and a user database must be a regular file", path, info.Mode().Type())
+	}
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

@@ -17,7 +17,7 @@ func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 		s.Entrypoint = slices.Concat(cfg.Entrypoint, cfg.Cmd)
 	}
 
-	s.Env = mergeEnv(cfg.Env, s.Env)
+	s.Env = MergeEnv(cfg.Env, s.Env)
 	s.WorkDir = firstNonEmpty(s.WorkDir, cfg.WorkDir)
 	s.User = firstNonEmpty(s.User, cfg.User)
 	// The guest hostname comes from the name, and every sandbox has one so a later process rebuilds it.
@@ -26,8 +26,9 @@ func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 	return s
 }
 
-// mergeEnv keeps the image order, so an image that sets a variable twice still resolves the same way.
-func mergeEnv(imageEnv, overrides []string) []string {
+// MergeEnv keeps the base order, so a base that sets a variable twice still resolves the same way.
+// An exec merges the same way over what the entrypoint runs with, which is why this is exported.
+func MergeEnv(imageEnv, overrides []string) []string {
 	env := make([]string, 0, len(imageEnv)+len(overrides))
 	applied := make(map[string]bool, len(overrides))
 
