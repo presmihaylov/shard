@@ -6,7 +6,23 @@ hardware virtualization, and gives them the same lifecycle verbs either way: run
 and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host without one it drives
 gVisor. An optional `shard serve` exposes the same verbs over a self-hostable REST API.
 
-**Status: pre-alpha.** No sandbox runs yet. Images do.
+**Status: pre-alpha.** `shard create` runs a sandbox on gVisor. There is no way to enter or end one yet.
+
+## Sandboxes
+
+```
+shard create python:3.12 -- python -c 'print(1)'
+```
+
+It pulls the image, claims the record, allocates the network, creates the sandbox and starts the
+entrypoint. Then it prints the id and returns. It never attaches: the entrypoint runs as the child
+of `shard-init`, and the sandbox outlives it. `--env`, `--workdir`, `--user`, `--memory` and
+`--cpus` shape the workload, and they go before the image.
+
+`--user` sets the user of the entrypoint, never of the supervisor. PID 1 stays privileged so it can
+always record how the entrypoint ended.
+
+`SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
 ## Images
 
