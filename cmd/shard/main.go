@@ -36,8 +36,13 @@ func main() {
 
 	if err := app.Run(ctx, os.Args[1:]); err != nil {
 		// An exec'd command that failed is not a shard failure, so its code leaves without a word.
+		// A command that never ran is shard's to explain, and it carries the words for it.
 		var exit *cli.ExitError
 		if errors.As(err, &exit) {
+			if exit.Message != "" {
+				fmt.Fprintln(os.Stderr, "shard:", exit.Message)
+			}
+
 			os.Exit(exit.Code)
 		}
 

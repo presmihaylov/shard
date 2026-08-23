@@ -151,6 +151,43 @@ func TestExecRefusesASandboxThatIsStopped(t *testing.T) {
 	}
 }
 
+// runsc says 128 for a command it never started, which is its own code and no shell's. A shell says
+// 127 for a command it cannot find and 126 for one it found and may not run, and so does shard.
+func TestExecAnswersACommandThatNeverRanWithAShellExitCode(t *testing.T) {
+	app, id := runningSandbox(t)
+
+	if _, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "echo x > /not-executable"); err != nil {
+		t.Fatalf("write the file the sandbox may not run: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"a command that is not there", []string{"exec", id, "--", "/bin/nope"}, 127},
+		{"a workdir that is not there", []string{"exec", "--workdir", "/no/such/dir", id, "--", "/bin/true"}, 127},
+		{"a file the sandbox may not run", []string{"exec", id, "--", "/not-executable"}, 126},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := runExec(t, app, c.args...)
+
+			var exit *ExitError
+			if !errors.As(err, &exit) {
+				t.Fatalf("exec returned %v, want an ExitError", err)
+			}
+			if exit.Code != c.want {
+				t.Errorf("exec exited %d, want %d", exit.Code, c.want)
+			}
+			if exit.Message == "" {
+				t.Error("exec said nothing about a command that never ran")
+			}
+		})
+	}
+}
+
 // Three execs at once are three processes in one sandbox, and nothing about one is shared with another.
 func TestConcurrentExecsAllSucceed(t *testing.T) {
 	app, id := runningSandbox(t)
@@ -395,6 +432,10 @@ type replicaHolder struct {
 	models.Provider
 
 	t *testing.T
+}
+
+func (h *replicaHolder) Status(context.Context, string) (models.Status, error) {
+	return models.Status{Exists: true, State: models.StateRunning}, nil
 }
 
 func (h *replicaHolder) Exec(_ context.Context, _ string, spec models.ExecSpec) (models.ExitStatus, error) {
