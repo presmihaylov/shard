@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -34,6 +35,12 @@ func main() {
 	app := cli.App{Version: version, Out: os.Stdout, Err: os.Stderr}
 
 	if err := app.Run(ctx, os.Args[1:]); err != nil {
+		// An exec'd command that failed is not a shard failure, so its code leaves without a word.
+		var exit *cli.ExitError
+		if errors.As(err, &exit) {
+			os.Exit(exit.Code)
+		}
+
 		fmt.Fprintln(os.Stderr, "shard:", err)
 		os.Exit(1)
 	}
