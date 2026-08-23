@@ -465,23 +465,27 @@ func TestRunRejectsBadArguments(t *testing.T) {
 	}
 }
 
-// The host resolves the name, so the supervisor only ever reads ids off the flag.
+// The host resolves the name, so the supervisor only ever reads ids off the flags.
 func TestParseCredential(t *testing.T) {
 	cases := map[string]struct {
-		user string
-		want *syscall.Credential
+		user   string
+		groups string
+		want   *syscall.Credential
 	}{
 		"none":     {user: "", want: nil},
-		"root":     {user: "0:0", want: &syscall.Credential{Uid: 0, Gid: 0}},
-		"a pair":   {user: "1000:2000", want: &syscall.Credential{Uid: 1000, Gid: 2000}},
-		"the most": {user: "4294967295:4294967295", want: &syscall.Credential{Uid: 4294967295, Gid: 4294967295}},
+		"root":     {user: "0:0", groups: "0", want: &syscall.Credential{Uid: 0, Gid: 0, Groups: []uint32{0}}},
+		"a pair":   {user: "1000:2000", groups: "2000", want: &syscall.Credential{Uid: 1000, Gid: 2000, Groups: []uint32{2000}}},
+		"a set":    {user: "1000:1000", groups: "1000,10,999", want: &syscall.Credential{Uid: 1000, Gid: 1000, Groups: []uint32{1000, 10, 999}}},
+		"the most": {user: "4294967295:4294967295", groups: "4294967295", want: &syscall.Credential{Uid: 4294967295, Gid: 4294967295, Groups: []uint32{4294967295}}},
+		// An image that says nothing about the user drops the entrypoint to no supplementary group at all.
+		"no groups": {user: "1000:1000", groups: "", want: &syscall.Credential{Uid: 1000, Gid: 1000}},
 	}
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := parseCredential(c.user)
+			got, err := parseCredential(c.user, c.groups)
 			if err != nil {
-				t.Fatalf("parseCredential(%q): %v", c.user, err)
+				t.Fatalf("parseCredential(%q, %q): %v", c.user, c.groups, err)
 			}
 			if c.want == nil {
 				if got != nil {
@@ -493,8 +497,31 @@ func TestParseCredential(t *testing.T) {
 			if got == nil {
 				t.Fatalf("got no credential, want %+v", c.want)
 			}
-			if got.Uid != c.want.Uid || got.Gid != c.want.Gid {
+			if got.Uid != c.want.Uid || got.Gid != c.want.Gid || !slices.Equal(got.Groups, c.want.Groups) {
 				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+			// NoSetGroups false is what makes an empty set a setgroups(0, NULL) and not an inheritance.
+			if got.NoSetGroups {
+				t.Error("the credential skips setgroups, so the entrypoint keeps the group set of PID 1")
+			}
+		})
+	}
+}
+
+func TestParseCredentialRefusesWhatItCannotRead(t *testing.T) {
+	cases := map[string]struct{ user, groups string }{
+		"no gid":             {user: "1000"},
+		"an unreadable uid":  {user: "build:1000"},
+		"an unreadable gid":  {user: "1000:build"},
+		"an unreadable set":  {user: "1000:1000", groups: "1000,wheel"},
+		"an empty field":     {user: "1000:1000", groups: "1000,"},
+		"a set with no user": {groups: "1000"},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseCredential(c.user, c.groups); err == nil {
+				t.Errorf("parseCredential(%q, %q) returned no error", c.user, c.groups)
 			}
 		})
 	}

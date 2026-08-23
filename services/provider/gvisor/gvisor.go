@@ -405,13 +405,14 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 
 	// A named user is resolved against the sandbox's live tree; an unnamed one is the entrypoint's own,
 	// which config.json records as the -user the supervisor was given.
-	opts.User = runtime.User
+	opts.User, opts.Groups = runtime.User, runtime.Groups
 	if spec.User != "" {
-		uid, gid, err := bundle.ResolveUser(b.RootFS, spec.User)
+		identity, err := bundle.ResolveUser(b.RootFS, spec.User)
 		if err != nil {
 			return runsc.ExecOptions{}, err
 		}
-		opts.User = fmt.Sprintf("%d:%d", uid, gid)
+		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
+		opts.Groups = identity.Groups
 	}
 
 	return opts, nil
