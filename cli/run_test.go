@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -85,6 +86,11 @@ func TestParseRunRejections(t *testing.T) {
 		"a flag after the image": {"alpine:3.20", "--user", "nobody"},
 		"an empty argv":          {"alpine:3.20", "--"},
 		"an unknown flag":        {"--forever", "alpine:3.20"},
+		"an env with no value":   {"--env", "DEBUG", "alpine:3.20"},
+		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
+		"an env with no name":    {"--env", "=1", "alpine:3.20"},
+		"a negative memory":      {"--memory", "-512", "alpine:3.20"},
+		"a negative cpu bound":   {"--cpus", "-2", "alpine:3.20"},
 	}
 
 	for name, args := range cases {
@@ -577,4 +583,54 @@ type fullDisk struct{}
 
 func (fullDisk) Write(p []byte) (int, error) {
 	return 0, errors.New("no space left on device")
+}
+
+// TestTheKeepAliveNotesNameNoAbsentVerb: an operator who is handed a command shard cannot dispatch
+// is worse off than one who is handed none. The stop verb lands with SHARD-24.
+func TestTheKeepAliveNotesNameNoAbsentVerb(t *testing.T) {
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^  shard ([a-z]+)`).FindAllStringSubmatch(usage, -1) {
+		documented[m[1]] = true
+	}
+
+	notes := map[string]string{
+		"an interrupted start":  keepAliveNote(t, []string{"provider.Start"}, false),
+		"an interrupted attach": keepAliveNote(t, nil, true),
+	}
+
+	for name, note := range notes {
+		if !strings.Contains(note, "sandbox sandbox1") {
+			t.Errorf("%s reported no sandbox id: %q", name, note)
+		}
+
+		for _, m := range regexp.MustCompile(`shard ([a-z]+)`).FindAllStringSubmatch(note, -1) {
+			if !documented[m[1]] {
+				t.Errorf("%s names shard %s, which shard cannot dispatch: %q", name, m[1], note)
+			}
+		}
+	}
+}
+
+// keepAliveNote runs a sandbox an interrupt catches, and returns what run told the operator.
+func keepAliveNote(t *testing.T, fail []string, blocks bool) string {
+	t.Helper()
+
+	var out bytes.Buffer
+	app, deps := newFakeApp(t, &out, &recorder{fail: fail}, models.ExitStatus{})
+
+	provider, ok := deps.provider.(*fakeProvider)
+	if !ok {
+		t.Fatal("the fake provider was replaced")
+	}
+	provider.blocks = blocks
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var exit ExitError
+	if err := app.Run(ctx, []string{"run", "alpine:3.20"}); !errors.As(err, &exit) || exit.Code != InterruptedExitCode {
+		t.Fatalf("Run returned %v, want the interrupted exit code", err)
+	}
+
+	return out.String()
 }

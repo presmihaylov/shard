@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -111,7 +112,7 @@ func parseRun(args []string) (runOptions, error) {
 
 	flags := flag.NewFlagSet("shard run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.Var((*stringList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
+	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
@@ -120,6 +121,14 @@ func parseRun(args []string) (runOptions, error) {
 
 	if err := flags.Parse(args); err != nil {
 		return runOptions{}, fmt.Errorf("parse the run flags: %w", err)
+	}
+
+	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
+	if opts.resources.MemoryMiB < 0 {
+		return runOptions{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", opts.resources.MemoryMiB)
+	}
+	if opts.resources.VCPUs < 0 {
+		return runOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)
 	}
 
 	rest := flags.Args()
@@ -142,6 +151,26 @@ func parseRun(args []string) (runOptions, error) {
 	}
 
 	return opts, nil
+}
+
+// envList refuses anything that is not an assignment, because a merge drops such an entry and the
+// run would then report success with the variable absent.
+type envList []string
+
+func (e *envList) String() string { return strings.Join(*e, ",") }
+
+func (e *envList) Set(value string) error {
+	key, _, found := strings.Cut(value, "=")
+	if !found {
+		return fmt.Errorf("%q is not KEY=VALUE", value)
+	}
+	if key == "" {
+		return fmt.Errorf("%q has no name", value)
+	}
+
+	*e = append(*e, value)
+
+	return nil
 }
 
 // defaultRunDeps builds the real layers. Every one of them refuses off Linux, which is why the
@@ -261,7 +290,7 @@ func (a App) launch(ctx context.Context, deps runDeps, opts runOptions) (err err
 		// cannot tell the two apart. Only stop ends a sandbox, so an unknown outcome is kept.
 		if ctx.Err() != nil {
 			td.discard()
-			a.note(fmt.Sprintf("sandbox %s may be running; use shard stop %s", id, id))
+			a.note(fmt.Sprintf("sandbox %s may be running and stays on the host; there is no stop verb yet", id))
 
 			return ExitError{Code: InterruptedExitCode}
 		}
@@ -372,7 +401,7 @@ func (a App) attach(ctx context.Context, deps runDeps, id, path string, offset i
 	if waitErr != nil {
 		// Ctrl-C detaches. Stopping the sandbox here would be the one on-exit behaviour shard forbids.
 		if ctx.Err() != nil {
-			a.note(fmt.Sprintf("sandbox %s is still running; use shard stop %s", id, id))
+			a.note(fmt.Sprintf("sandbox %s is still running and stays on the host; there is no stop verb yet", id))
 
 			return errors.Join(tailErr, ExitError{Code: InterruptedExitCode})
 		}
