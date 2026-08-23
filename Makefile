@@ -11,7 +11,7 @@ DEVBOX ?= devbox-shard
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
 ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e
 
 all: check build
 
@@ -59,6 +59,18 @@ itest: devbox-sync
 devbox-test: ITEST_PKG = ./...
 devbox-test: itest
 
+# SHARD-17: the whole lifecycle on this host, the way a stranger with a fresh box would drive it.
+e2e:
+	./scripts/e2e.sh
+
+# The guards in that script decide what gets deleted, so they are tested off the box, without root.
+e2e-test:
+	./scripts/e2e_test.sh
+
+# The same script on the box, over a fresh copy of this tree.
+devbox-e2e:
+	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
+
 vet:
 	go vet ./...
 
@@ -78,7 +90,7 @@ fmt-check:
 vuln:
 	go run $(GOVULNCHECK) ./...
 
-check: fmt-check vet lint test
+check: fmt-check vet lint test e2e-test
 
 clean:
 	rm -rf bin

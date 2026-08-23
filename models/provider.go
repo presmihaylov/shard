@@ -31,6 +31,7 @@ type Provider interface {
 	Exec(ctx context.Context, id string, spec ExecSpec) (ExitStatus, error)
 
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
+	// It reports ErrNoExitStatus for a sandbox a stop had to kill, which recorded no exit.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
 	// Status asks the substrate, because a record saying running can outlive a shard restart.
 	Status(ctx context.Context, id string) (Status, error)

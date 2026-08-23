@@ -25,6 +25,8 @@ Usage:
                            create a sandbox, start its entrypoint and print its id
   shard exec [flags] <id> -- <argv>...
                            run a command in a sandbox that is already running
+  shard stop [flags] <id>  end a sandbox and keep everything it holds
+  shard rm [flags] <id>    free what a stopped sandbox still holds
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
@@ -43,6 +45,13 @@ Exec flags, which must precede the id:
   --env KEY=VALUE          set an environment variable, repeatable
   --workdir <dir>          the directory the command starts in
   --user <user>            the user the command runs as
+
+Stop flags, which must precede the id:
+  --time <duration>        how long the entrypoint gets before it is killed (default 10s)
+
+Rm flags, which must precede the id:
+  --force                  stop the sandbox first if it is still up
+  --time <duration>        how long --force gives the entrypoint before it is killed
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
@@ -69,6 +78,8 @@ type App struct {
 	newCreateDeps func(a App) (createDeps, error)
 	// newExecDeps is the same for exec.
 	newExecDeps func(a App) (execDeps, error)
+	// newLifecycleDeps is the same for stop and rm, which drive one set of layers between them.
+	newLifecycleDeps func(a App) (lifecycleDeps, error)
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
@@ -99,6 +110,10 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.create(ctx, args[1:])
 	case "exec":
 		return a.exec(ctx, args[1:])
+	case "stop":
+		return a.stop(ctx, args[1:])
+	case "rm":
+		return a.remove(ctx, args[1:])
 	case "pull":
 		return a.pull(ctx, args[1:])
 	case "image":

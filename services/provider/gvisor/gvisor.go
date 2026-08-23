@@ -581,7 +581,7 @@ func lastExitStatus(path, id string) (models.ExitStatus, error) {
 		return models.ExitStatus{}, err
 	}
 	if !found {
-		return models.ExitStatus{}, fmt.Errorf("sandbox %s ended before its entrypoint exited", id)
+		return models.ExitStatus{}, fmt.Errorf("sandbox %s: %w", id, models.ErrNoExitStatus)
 	}
 
 	return status, nil
