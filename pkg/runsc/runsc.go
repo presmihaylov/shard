@@ -199,6 +199,11 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
+			// A driver something else killed says nothing about the guest process, so it is not an exit code.
+			if !exit.Exited() {
+				return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, err)
+			}
+
 			return exit.ExitCode(), nil
 		}
 
