@@ -24,6 +24,8 @@ type Subject struct {
 	NewIgnoresTermSpec func(t *testing.T) models.SandboxSpec
 	// SnapshotDir returns an empty directory the suite may write a snapshot into.
 	SnapshotDir func(t *testing.T) string
+	// Shell turns a shell script into the argv that runs it in the sandboxes NewSpec builds.
+	Shell func(script string) []string
 }
 
 // ReadyMarker is what an ignores-term entrypoint prints once it refuses SIGTERM. A stop sent before
@@ -46,8 +48,8 @@ const (
 func Run(t *testing.T, s Subject) {
 	t.Helper()
 
-	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.SnapshotDir == nil {
-		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec and SnapshotDir")
+	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.SnapshotDir == nil || s.Shell == nil {
+		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, SnapshotDir and Shell")
 	}
 
 	caps := s.Provider.Capabilities()
@@ -255,6 +257,81 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// The exit code is the whole reason exec is useful, and it is the opposite of what a create reports.
+	t.Run("ExecReturnsTheCommandExitCode", func(t *testing.T) {
+		id := s.running(t)
+
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("echo one; exit 7")})
+
+		if status.Code != 7 {
+			t.Errorf("Exec: got exit code %d, want 7", status.Code)
+		}
+		if !strings.Contains(out, "one") {
+			t.Errorf("Exec wrote %q, and the command printed \"one\"", out)
+		}
+	})
+
+	// An exec is a second process in the same sandbox, so what one writes the next one reads.
+	t.Run("TwoExecsShareTheSandbox", func(t *testing.T) {
+		id := s.running(t)
+
+		if status, _ := s.exec(t, id, models.ExecSpec{Argv: s.Shell("echo shared > /conformance-exec")}); status.Code != 0 {
+			t.Fatalf("the first Exec exited %d", status.Code)
+		}
+
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("cat /conformance-exec")})
+		if status.Code != 0 {
+			t.Fatalf("the second Exec exited %d, so it did not read what the first wrote", status.Code)
+		}
+		if !strings.Contains(out, "shared") {
+			t.Errorf("the second Exec read %q, want what the first wrote", out)
+		}
+	})
+
+	// An exec's env and workdir belong to that process alone, and the entrypoint never sees them.
+	t.Run("ExecAppliesItsOwnEnvAndWorkDir", func(t *testing.T) {
+		id := s.running(t)
+
+		spec := models.ExecSpec{Argv: s.Shell("pwd; echo $CONFORMANCE"), Env: []string{"CONFORMANCE=set"}, WorkDir: "/tmp"}
+		status, out := s.exec(t, id, spec)
+
+		if status.Code != 0 {
+			t.Fatalf("Exec exited %d", status.Code)
+		}
+		if !strings.Contains(out, "/tmp") {
+			t.Errorf("Exec ran in %q, want /tmp", out)
+		}
+		if !strings.Contains(out, "set") {
+			t.Errorf("Exec printed %q, and CONFORMANCE was set to \"set\"", out)
+		}
+	})
+
+	// Refuse, never downgrade: an exec into nothing is an error, not an exit code.
+	t.Run("ExecRefusesAnIdTheSubstrateNeverHeld", func(t *testing.T) {
+		_, err := s.Provider.Exec(t.Context(), "conformance-never-created", models.ExecSpec{Argv: s.Shell("true")})
+		if err == nil {
+			t.Fatal("Exec accepted an id the substrate never held")
+		}
+		if !strings.Contains(err.Error(), "conformance-never-created") {
+			t.Errorf("the refusal is %q, and it must name the sandbox", err)
+		}
+	})
+
+	t.Run("ExecRefusesASandboxThatIsStopped", func(t *testing.T) {
+		id := s.running(t)
+		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		_, err := s.Provider.Exec(t.Context(), id, models.ExecSpec{Argv: s.Shell("true")})
+		if err == nil {
+			t.Fatal("Exec ran a command in a sandbox that is stopped")
+		}
+		if !strings.Contains(err.Error(), id) || !strings.Contains(err.Error(), string(models.StateStopped)) {
+			t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
+		}
+	})
+
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
 		err := s.Provider.Pause(t.Context(), id, s.SnapshotDir(t))
@@ -300,6 +377,36 @@ func (s Subject) awaitReady(t *testing.T, id string) {
 	}
 
 	t.Fatalf("the entrypoint of %s never printed %q within %s", id, ReadyMarker, waitSlack)
+}
+
+// exec runs one command in a sandbox and returns how it ended, with everything it wrote. The spec
+// takes files rather than pipes, because a TTY hands the guest one pty replica.
+func (s Subject) exec(t *testing.T, id string, spec models.ExecSpec) (models.ExitStatus, string) {
+	t.Helper()
+
+	out, err := os.CreateTemp(t.TempDir(), "exec-output")
+	if err != nil {
+		t.Fatalf("create a file for the exec output: %v", err)
+	}
+	defer func() {
+		if err := out.Close(); err != nil {
+			t.Errorf("close the exec output file: %v", err)
+		}
+	}()
+
+	spec.Stdout, spec.Stderr = out, out
+
+	status, err := s.Provider.Exec(t.Context(), id, spec)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	written, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatalf("read the exec output: %v", err)
+	}
+
+	return status, string(written)
 }
 
 // Only Stop ends a sandbox, so Status is the assertion the whole keep-alive default rests on.

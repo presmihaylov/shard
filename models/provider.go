@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"net/netip"
+	"os"
 	"time"
 )
 
@@ -23,6 +24,11 @@ type Provider interface {
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	// Remove deletes the substrate's own state, not the shard record and not a snapshot.
 	Remove(ctx context.Context, id string) error
+
+	// Exec runs a command in a sandbox that already runs and returns how that command ended. It is
+	// never the entrypoint: it has no supervisor, and its exit ends nothing. ExitStatus.Signal is
+	// always 0, because a substrate reports an exec's exit code and nothing else.
+	Exec(ctx context.Context, id string, spec ExecSpec) (ExitStatus, error)
 
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
@@ -77,6 +83,25 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
+}
+
+// ExecSpec is one process in a sandbox that already runs. It is never the entrypoint.
+type ExecSpec struct {
+	Argv []string
+	// Env overrides what the entrypoint runs with, which the provider reads back from the sandbox.
+	Env     []string
+	WorkDir string
+	// User is an image-style name or id, resolved by the provider against the sandbox's own rootfs.
+	// Empty is root: no record says which user the entrypoint dropped to.
+	User string
+	// TTY says the three files below are one pty replica the caller allocated on the host. A terminal
+	// carries one stream, so Stderr is then the same file as Stdout.
+	TTY bool
+	// The fds the guest process gets. They are files, not pipes, so a pty replica passes straight
+	// through; a nil one is /dev/null.
+	Stdin  *os.File
+	Stdout *os.File
+	Stderr *os.File
 }
 
 // ImageConfig is the part of an OCI image config a sandbox is built from. The spec overrides it.

@@ -5,8 +5,9 @@ code; this page says what the signatures cannot.
 
 ## Required verbs against optional verbs
 
-Eight verbs are required. Every substrate must do all of them, and none of them has a capability
-flag: `Create`, `Start`, `Stop`, `Remove`, `Wait`, `Status`, `LogPath`, and `Capabilities` itself.
+Nine verbs are required. Every substrate must do all of them, and none of them has a capability
+flag: `Create`, `Start`, `Stop`, `Remove`, `Exec`, `Wait`, `Status`, `LogPath`, and `Capabilities`
+itself.
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
@@ -35,6 +36,21 @@ record never answers for it. The two disagree on purpose:
 `Status.Alive()` is `Exists && State != stopped`. Only `Stop` takes a sandbox out of it. The
 entrypoint exiting is not a transition, and `Wait` returning does not end anything.
 
+## What `Exec` means
+
+`Exec` is a second process in a sandbox that already runs. It is never the entrypoint: the supervisor
+does not see it, its exit ends nothing, and a signal that ends it never reaches the sandbox. Only
+`Stop` ends a sandbox.
+
+It reports the command's own exit code, which is the opposite of `Create` and `Start`, and the reason
+the verb is useful. An error means the exec never ran; an exit code means it did.
+
+`ExecSpec.User` is empty for root. It does not inherit the entrypoint's user, because nothing records
+which user the supervisor dropped the entrypoint to. `docker exec` inherits; `shard exec` does not.
+
+`ExecSpec` carries `*os.File`, not `io.Reader`. A TTY is one pty replica the caller allocates on the
+host, and a pipe cannot be one.
+
 ## Who owns what
 
 - The **provider** owns the whole layout inside `StateDir`. Nothing outside it may name a file there.
@@ -59,6 +75,10 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 - `Status` after `Create`, and `Status` on an id the substrate never held;
 - a second `Create` over a used state directory answers no stale exit status;
 - `Wait` returns the context error on a cancelled context;
+- `Exec` returns the command's own exit code, and two execs share one sandbox;
+- `Exec` applies its own env and workdir, and the entrypoint never sees them;
+- `Exec` refuses an id the substrate never held, and a sandbox that is stopped, naming both the
+  sandbox and its state;
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
 It does not prove anything about the network: there is one substrate today, so there is nothing to

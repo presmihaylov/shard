@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 const name = "gvisor"
@@ -343,6 +344,86 @@ func orphaned(b bundle.Bundle, id string, held bool) error {
 // gone reports whether a signal failed because the sandbox had already ended, which is what a stop wants.
 func gone(err error) bool {
 	return errors.Is(err, runsc.ErrNotRunning) || errors.Is(err, runsc.ErrNotFound)
+}
+
+// Exec runs a command in a sandbox that already runs. It is not the entrypoint: the supervisor never
+// sees it, and Ctrl-C during one ends this command alone, because only Stop ends a sandbox.
+func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
+	if len(spec.Argv) == 0 {
+		return models.ExitStatus{}, fmt.Errorf("sandbox %s: exec has no command to run", id)
+	}
+
+	// runsc exec writes its own startup failures to the guest's stderr, so an exit code alone cannot
+	// tell a broken exec from a command that failed. Refuse anything but a running sandbox first.
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	if !status.Exists {
+		return models.ExitStatus{}, fmt.Errorf("sandbox %s does not exist on %s", id, name)
+	}
+	if status.State != models.StateRunning {
+		return models.ExitStatus{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it", id, status.State, name)
+	}
+
+	b, err := p.open(id)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	opts, err := execOptions(b, spec)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	code, err := p.runsc.Exec(ctx, id, opts)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	// Signal stays 0: runsc reports an exec's exit code and nothing about the signal that ended it.
+	return models.ExitStatus{Code: code}, nil
+}
+
+// execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
+// the rootfs it resolves a user against is the sandbox's live tree, not the image's.
+func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, error) {
+	runtime, err := b.Runtime()
+	if err != nil {
+		return runsc.ExecOptions{}, err
+	}
+
+	opts := runsc.ExecOptions{
+		Argv:    spec.Argv,
+		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
+		TTY:     spec.TTY,
+		Stdin:   spec.Stdin,
+		Stdout:  spec.Stdout,
+		Stderr:  spec.Stderr,
+	}
+
+	// Empty is root, not the entrypoint's user: config.json's process user is the supervisor's, which
+	// stays privileged, and nothing records which user the supervisor dropped the entrypoint to.
+	if spec.User != "" {
+		uid, gid, err := bundle.ResolveUser(b.RootFS, spec.User)
+		if err != nil {
+			return runsc.ExecOptions{}, err
+		}
+		opts.User = fmt.Sprintf("%d:%d", uid, gid)
+	}
+
+	return opts, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+
+	return ""
 }
 
 // Wait blocks until the entrypoint exits. runsc wait cannot serve it: PID 1 is the supervisor and it

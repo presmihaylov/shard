@@ -228,6 +228,10 @@ func (f *fakeProvider) Status(context.Context, string) (models.Status, error) {
 	return models.Status{Exists: true, State: models.StateCreated, PID: 42}, nil
 }
 
+func (f *fakeProvider) Exec(context.Context, string, models.ExecSpec) (models.ExitStatus, error) {
+	return models.ExitStatus{}, nil
+}
+
 func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) {
 	return models.ExitStatus{}, nil
 }
