@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -108,7 +109,7 @@ func buildBundle(t *testing.T, stateDir string, entrypoint []string) (bundle.Bun
 		Entrypoint: entrypoint,
 	}
 
-	b, err := svc.Build(spec.Resolve(img.Config))
+	b, err := svc.Build(runspec.Resolve(spec, img.Config))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

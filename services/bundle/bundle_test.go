@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 const guestExitFile = "/.shard/exit.json"
@@ -149,7 +150,7 @@ func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
 func TestBuildRefusesALayerPathOverlayfsCannotParse(t *testing.T) {
 	spec := newSpec(t)
 	spec.StateDir = filepath.Join(spec.StateDir, "state:dir")
-	spec = spec.Resolve(models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	spec = runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if _, err := newService(t).Build(spec); err == nil {
 		t.Fatal("Build accepted a state directory overlayfs would read as two layers")
@@ -164,7 +165,7 @@ func TestNewRefusesAnEmptySupervisorPath(t *testing.T) {
 
 func TestBuildRefusesAUserTheImageDoesNotHave(t *testing.T) {
 	spec := newSpec(t)
-	spec = spec.Resolve(models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "ghost"})
+	spec = runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, User: "ghost"})
 
 	_, err := newService(t).Build(spec)
 	if err == nil {
@@ -222,7 +223,7 @@ func TestBuildIsAValidRuntimeSpec(t *testing.T) {
 
 func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 	svc := newService(t)
-	spec := newSpec(t).Resolve(models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	spec := runspec.Resolve(newSpec(t), models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	first, err := svc.Build(spec)
 	if err != nil {
@@ -253,7 +254,7 @@ func build(t *testing.T, spec models.SandboxSpec, cfg models.ImageConfig) (bundl
 		spec.RootFS = base.RootFS
 	}
 
-	b, err := newService(t).Build(spec.Resolve(cfg))
+	b, err := newService(t).Build(runspec.Resolve(spec, cfg))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
