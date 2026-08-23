@@ -31,7 +31,8 @@ func fakeBinary(t *testing.T, body string) (*runsc.Runner, string) {
 	argvFile := filepath.Join(dir, "argv")
 	binary := filepath.Join(dir, "runsc")
 
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\n" + body
+	// A body that has to signal the test writes beside the argv file, so $argv is the path it needs.
+	script := "#!/bin/sh\nargv=" + argvFile + "\nprintf '%s\\n' \"$@\" > \"$argv\"\n" + body
 
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake runsc: %v", err)
@@ -43,6 +44,18 @@ func fakeBinary(t *testing.T, body string) (*runsc.Runner, string) {
 	}
 
 	return r, argvFile
+}
+
+// waitFor blocks until the fake runsc creates path, or gives up: a fixed sleep races a loaded machine.
+func waitFor(path string) {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func argv(t *testing.T, path string) []string {
@@ -319,19 +332,21 @@ func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
 
 // A cancelled exec must end the one guest process, because only Stop ends a sandbox.
 func TestACancelledExecKillsTheGuestProcessAlone(t *testing.T) {
-	// The fake writes the pid runsc would have written, then hangs the way an exec that runs does.
+	// The fake writes the pid runsc would have written, marks it written, then hangs the way an exec does.
 	r, argvFile := fakeBinary(t, `prev=
 for arg in "$@"; do
 	if [ "$prev" = "--internal-pid-file" ]; then echo 4242 > "$arg"; fi
 	prev=$arg
 done
-case " $* " in *" exec "*) sleep 30 ;; esac
+case " $* " in *" exec "*) : > "$argv.ready"; sleep 30 ;; esac
 `)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		cancel()
+		// A cancel before the pid file lands tests the fallback, not the kill this test is about.
+		defer cancel()
+
+		waitFor(argvFile + ".ready")
 	}()
 
 	if _, err := r.Exec(ctx, "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sleep", "30"}}); err == nil {
