@@ -248,7 +248,7 @@ func environment(env []string) []string {
 	return append(slices.Clone(env), defaultPath)
 }
 
-// resources is advisory here: gVisor may ignore both, and Firecracker needs them to boot at all.
+// resources bind on gVisor, as a host cgroup and again in the sentry's argv, and Firecracker needs them to boot.
 func resources(r models.Resources) *specs.LinuxResources {
 	out := &specs.LinuxResources{}
 
