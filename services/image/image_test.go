@@ -319,6 +319,40 @@ func TestPullSweepsAStaleStagingTree(t *testing.T) {
 	}
 }
 
+// A pull sweeps only on the miss path, so on a host whose images are all cached nothing there ever
+// runs. The reclaim verb is the unconditional point, or a killed unpack holds its gigabytes forever.
+func TestRemoveSweepsAStaleStagingTree(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	root := t.TempDir()
+	svc := newServiceAt(t, root, server)
+
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	// It is planted after the pull, so only the removal can be what reclaims it.
+	stale := filepath.Join(root, "rootfs", ".unpack-123456")
+	if err := os.MkdirAll(filepath.Join(stale, "etc"), 0o755); err != nil {
+		t.Fatalf("plant the staging tree: %v", err)
+	}
+
+	// A second pull of a cached reference returns from the fast path and sweeps nothing.
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("the second Pull: %v", err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("a cached pull took the lock and swept: %v", err)
+	}
+
+	if err := svc.Remove(t.Context(), ref); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging tree survived the removal: %v", err)
+	}
+}
+
 // TestPullWaitsForThePullInFlight: a rollback reclaims by reachability over the whole store, so a
 // second pull whose blobs are written but not yet indexed would lose them to it.
 func TestPullWaitsForThePullInFlight(t *testing.T) {

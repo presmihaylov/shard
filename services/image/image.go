@@ -88,8 +88,7 @@ func (s *Service) Pull(ctx context.Context, ref string) (_ Image, err error) {
 		return img, err
 	}
 
-	// The sweep runs here and not in New, because a staging tree under the lock is a live unpack.
-	if err := sweepStaging(filepath.Join(s.root, "rootfs")); err != nil {
+	if err := s.sweepStaging(); err != nil {
 		return Image{}, err
 	}
 
@@ -164,6 +163,11 @@ func (s *Service) Remove(ctx context.Context, ref string) (err error) {
 	}
 	defer func() { err = errors.Join(err, l.Release()) }()
 
+	// A host whose images are all cached never reaches the sweep in Pull, so the reclaim verb runs it.
+	if err := s.sweepStaging(); err != nil {
+		return err
+	}
+
 	// Orphaned reads index.json only, so an image whose blobs are damaged is still removable.
 	orphaned, err := s.store.Orphaned(ref)
 	if err != nil {
@@ -221,8 +225,11 @@ func (s *Service) unpacked(img registry.Image) bool {
 	return err == nil && info.IsDir()
 }
 
-// sweepStaging drops the tree a killed pull left mid-unpack, which no other verb ever reclaims.
-func sweepStaging(rootfs string) error {
+// sweepStaging drops the tree a killed pull left mid-unpack. It runs under the lock and never in
+// New, because a staging tree another writer holds is a live unpack rather than debris.
+func (s *Service) sweepStaging() error {
+	rootfs := filepath.Join(s.root, "rootfs")
+
 	entries, err := os.ReadDir(rootfs)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", rootfs, err)
