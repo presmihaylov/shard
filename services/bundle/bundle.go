@@ -258,7 +258,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 				{Type: "RLIMIT_NOFILE", Hard: defaultNoFile, Soft: defaultNoFile},
 			},
 		},
-		Mounts: mounts(b.ShardDir, s.initPath),
+		Mounts: mounts(b.ShardDir, s.initPath, spec.Resources),
 		Linux: &specs.Linux{
 			Namespaces:        namespaces(spec.Network.NetnsPath),
 			Resources:         resources(spec.Resources),

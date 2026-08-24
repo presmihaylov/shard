@@ -21,9 +21,11 @@ const boundMiB = 64
 
 // fillMiB is what the guest holds in that tmpfs. Tmpfs pages are sentry memory, so the host cgroup
 // charges them, and this plus the sentry's own 26 to 31 MiB is well past the bound.
-const fillMiB = 56
+const fillMiB = 44
 
 const filledMarker = "SHARD-97-FILLED"
+
+const tmpfsMarker = "SHARD-97-TMPFS"
 
 // TestAGuestThatHoldsMostOfItsBoundStaysAlive is the SHARD-97 acceptance criterion. Before the
 // headroom the host cgroup charged the sentry against the same bound, so this guest was OOM-killed.
@@ -163,4 +165,95 @@ func awaitMarker(t *testing.T, h *harness, id, marker string) {
 	}
 
 	t.Fatalf("sandbox %s never printed %s, log: %s", id, marker, readFile(t, path))
+}
+
+// TestTheGuestCannotWriteToDev is the hole a size= cannot close. gVisor drops it on /dev and mounts
+// its own devtmpfs, which reports half the host's memory, so a guest ended its own 64 MiB sandbox
+// with dd in three and a half minutes. Read-only is the only bound left, and a device node still
+// opens for write through one, which is what keeps /dev/null working.
+func TestTheGuestCannotWriteToDev(t *testing.T) {
+	h := newHarness(t)
+
+	script := "echo probe > /dev/fill 2>/dev/null && echo " + tmpfsMarker + " writable; echo hello > /dev/null &&" +
+		" echo " + tmpfsMarker + " devnull; df -m /dev/shm | tail -1 | awk '{print \"" + tmpfsMarker + " shm \" $2}';" +
+		" echo " + tmpfsMarker + " done; while true; do sleep 1; done"
+
+	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec.Resources = models.Resources{MemoryMiB: boundMiB}
+
+	h.startSpec(t, spec)
+	awaitMarker(t, h, spec.ID, tmpfsMarker+" done")
+
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+
+	log := readFile(t, path)
+	if strings.Contains(log, tmpfsMarker+" writable") {
+		t.Error("the guest wrote a file to /dev, so it can still fill the host and end its own sandbox")
+	}
+	if !strings.Contains(log, tmpfsMarker+" devnull") {
+		t.Error("the guest cannot write to /dev/null, so a read-only /dev broke the device nodes")
+	}
+
+	// The sizes come from inside the guest, so this is the mount the sentry made and not our config.json.
+	if got := guestTmpfsMiB(t, log, "shm"); got > boundMiB {
+		t.Errorf("a %d MiB sandbox holds %d MiB of /dev/shm, which is more than its own bound", boundMiB, got)
+	}
+}
+
+// TestAGuestThatFillsItsTmpfsKeepsItsSandbox is the same hole from the other side. The fill is not
+// waited on: a guest that holds its whole bound is throttled to a crawl by memory.high, which is the
+// point. What matters is that the sandbox is still there and still usable while it happens.
+func TestAGuestThatFillsItsTmpfsKeepsItsSandbox(t *testing.T) {
+	h := newHarness(t)
+
+	script := "dd if=/dev/zero of=/dev/shm/fill bs=1M 2>/dev/null; while true; do sleep 1; done"
+
+	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec.Resources = models.Resources{MemoryMiB: boundMiB}
+
+	h.startSpec(t, spec)
+	time.Sleep(90 * time.Second)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != models.StateRunning {
+		t.Fatalf("a sandbox whose guest filled its tmpfs is %s, and OOMKilled is %v", status.State, status.OOMKilled)
+	}
+
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Errorf("exec in a sandbox with a full tmpfs exited %d", exit.Code)
+	}
+}
+
+// guestTmpfsMiB reads back a size the entrypoint printed, in MiB.
+func guestTmpfsMiB(t *testing.T, log, mount string) int64 {
+	t.Helper()
+
+	prefix := tmpfsMarker + " " + mount + " "
+	for line := range strings.SplitSeq(log, "\n") {
+		size, found := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !found {
+			continue
+		}
+
+		mib, err := strconv.ParseInt(size, 10, 64)
+		if err != nil {
+			t.Fatalf("the guest says %s is %q MiB: %v", mount, size, err)
+		}
+
+		return mib
+	}
+
+	t.Fatalf("the guest never printed a size for %s, log: %s", mount, log)
+
+	return 0
 }

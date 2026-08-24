@@ -60,6 +60,9 @@ type Status struct {
 	State  State
 	// PID is the sandbox process on the host, never the entrypoint, which has no host pid.
 	PID int
+	// OOMKilled says the host ended this sandbox for holding too much memory. It is only ever set on
+	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
+	OOMKilled bool
 }
 
 // Alive is the assertion the keep-alive default rests on: only Stop takes a sandbox out of it.

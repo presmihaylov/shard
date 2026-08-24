@@ -22,7 +22,7 @@ func fakeCgroup(t *testing.T, id, applied string) string {
 		t.Fatalf("make the fake cgroup: %v", err)
 	}
 
-	for file, value := range map[string]string{"memory.max": applied, "memory.high": "max"} {
+	for file, value := range map[string]string{"memory.max": applied, "memory.high": "max", "memory.swap.max": "max"} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(value+"\n"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", file, err)
 		}
@@ -104,5 +104,70 @@ func TestABoundBelowTheSentryCostIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least") {
 		t.Errorf("the refusal is %q, which does not name the smallest bound that works", err)
+	}
+}
+
+// TestTheSwapIsPinnedToNone keeps the throttle a wall. Guest memory is sentry shmem, which is
+// swap-backed, so a host with swap would reclaim under memory.high instead of holding there.
+func TestTheSwapIsPinnedToNone(t *testing.T) {
+	const id = "amber-otter-3c4d"
+
+	root := fakeCgroup(t, id, "134217728")
+
+	if err := gvisor.BoundMemory(root, models.SandboxSpec{ID: id, Resources: models.Resources{MemoryMiB: 128}}); err != nil {
+		t.Fatalf("BoundMemory: %v", err)
+	}
+
+	if got := read(t, root, id, "memory.swap.max"); got != "0" {
+		t.Errorf("memory.swap.max = %s, want 0", got)
+	}
+}
+
+// TestASandboxTheHostKilledForItsMemorySaysSo is the one thing an operator cannot learn any other
+// way: the exit file records a 137, which a plain kill -9 records too. The OOM killer takes the
+// sentry without running runsc's cleanup, so the cgroup outlives the sandbox and still counts.
+func TestASandboxTheHostKilledForItsMemorySaysSo(t *testing.T) {
+	const id = "amber-otter-5e6f"
+
+	root := fakeCgroup(t, id, "134217728")
+	writeEvents(t, root, id, "low 0\nhigh 355\nmax 12\noom 1\noom_kill 1\n")
+
+	p := newProviderOver(t, `printf '{"id":"amber-otter-5e6f","status":"stopped","pid":0}'`)
+	p.SetCgroupRoot(root)
+
+	status, err := p.Status(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.OOMKilled {
+		t.Error("a sandbox whose cgroup counted an oom event does not report it")
+	}
+}
+
+// TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory pins the other side. A cgroup that never
+// hit its ceiling counts zero, and runsc removes the cgroup of a sandbox that was stopped by hand.
+func TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory(t *testing.T) {
+	const id = "amber-otter-7a8b"
+
+	root := fakeCgroup(t, id, "134217728")
+	writeEvents(t, root, id, "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n")
+
+	p := newProviderOver(t, `printf '{"id":"amber-otter-7a8b","status":"stopped","pid":0}'`)
+	p.SetCgroupRoot(root)
+
+	status, err := p.Status(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OOMKilled {
+		t.Error("a sandbox that stopped cleanly is reported as out of memory")
+	}
+}
+
+func writeEvents(t *testing.T, root, id, body string) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(root, id, "memory.events"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write memory.events: %v", err)
 	}
 }

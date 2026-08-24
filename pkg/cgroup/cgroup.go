@@ -44,6 +44,52 @@ func MemoryMax(dir string) (int64, error) {
 	return readBound(dir, "memory.max")
 }
 
+// SetMemorySwapMax bounds what the cgroup may push to swap. Zero pins it to none, which is what
+// makes memory.high a wall: a cgroup that can swap reclaims under the throttle and never stops there.
+func SetMemorySwapMax(dir string, bytes int64) error {
+	return write(dir, "memory.swap.max", strconv.FormatInt(bytes, 10))
+}
+
+// Events counts what the kernel did to a cgroup. It survives the death of every process in one, so
+// it is the only record of why a sandbox is gone once its own processes cannot be asked.
+type Events struct {
+	// OOM counts the times this cgroup hit its own ceiling and called the OOM killer.
+	OOM int64
+	// OOMKill counts processes killed here by any OOM killer, this cgroup's or the host's.
+	OOMKill int64
+}
+
+// MemoryEvents reads memory.events. A cgroup that is gone answers ErrNotFound, which is the ordinary
+// answer for a sandbox that stopped cleanly, because runsc removes its cgroup on delete.
+func MemoryEvents(dir string) (Events, error) {
+	raw, err := read(dir, "memory.events")
+	if err != nil {
+		return Events{}, err
+	}
+
+	var events Events
+	for line := range strings.SplitSeq(raw, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), " ")
+		if !found {
+			continue
+		}
+
+		count, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Events{}, fmt.Errorf("read %s: %q counts %q, which is not a number", filepath.Join(dir, "memory.events"), key, value)
+		}
+
+		switch key {
+		case "oom":
+			events.OOM = count
+		case "oom_kill":
+			events.OOMKill = count
+		}
+	}
+
+	return events, nil
+}
+
 func write(dir, file, value string) error {
 	path := filepath.Join(dir, file)
 

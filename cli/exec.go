@@ -117,6 +117,12 @@ func refuseUnlessAlive(ctx context.Context, provider models.Provider, id string)
 		return nil
 	}
 
+	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
+	// is named here or an operator never learns it.
+	if status.OOMKilled {
+		return fmt.Errorf("sandbox %s ran out of memory and the host ended it: remove it with shard rm %s and create another with a larger --memory", id, id)
+	}
+
 	if !status.Exists {
 		return fmt.Errorf("sandbox %s is gone from %s: remove it with shard rm %s and create another", id, provider.Name(), id)
 	}

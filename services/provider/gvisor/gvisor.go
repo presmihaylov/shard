@@ -171,6 +171,12 @@ func boundMemory(root string, spec models.SandboxSpec) error {
 		return fmt.Errorf("throttle the memory of sandbox %s: %w", spec.ID, err)
 	}
 
+	// Guest memory is sentry shmem, and shmem is swap-backed, so on a host with swap the throttle
+	// reclaims instead of holding and stops being the wall the ceiling above it depends on.
+	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+		return fmt.Errorf("pin the swap of sandbox %s to none: %w", spec.ID, err)
+	}
+
 	return nil
 }
 
@@ -540,13 +546,30 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	state, err := p.runsc.State(ctx, id)
 	if errors.Is(err, runsc.ErrNotFound) {
-		return models.Status{}, nil
+		return models.Status{OOMKilled: p.oomKilled(id)}, nil
 	}
 	if err != nil {
 		return models.Status{}, err
 	}
 
-	return models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}, nil
+	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
+	if !status.Alive() {
+		status.OOMKilled = p.oomKilled(id)
+	}
+
+	return status, nil
+}
+
+// oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
+// any of runsc's cleanup, so the cgroup and its counters outlive the sandbox and are the only record.
+// A sandbox that stopped cleanly has no cgroup left, and that reads as false, which is correct.
+func (p *Provider) oomKilled(id string) bool {
+	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
+	if err != nil {
+		return false
+	}
+
+	return events.OOM > 0
 }
 
 // stateOf maps the five runsc statuses onto the four shard states. A container runsc is still

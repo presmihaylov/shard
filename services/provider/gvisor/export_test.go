@@ -7,3 +7,9 @@ import "github.com/presmihaylov/shard/models"
 func BoundMemory(root string, spec models.SandboxSpec) error {
 	return boundMemory(root, spec)
 }
+
+// SetCgroupRoot points a provider at a directory a test owns, so the reason a dead sandbox died can
+// be read without a real cgroup hierarchy and without root.
+func (p *Provider) SetCgroupRoot(root string) {
+	p.cgroupRoot = root
+}

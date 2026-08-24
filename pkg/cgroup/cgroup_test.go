@@ -15,7 +15,7 @@ func fake(t *testing.T, contents string) string {
 	t.Helper()
 
 	dir := t.TempDir()
-	for _, file := range []string{"memory.high", "memory.max"} {
+	for _, file := range []string{"memory.high", "memory.max", "memory.swap.max"} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(contents), 0o600); err != nil {
 			t.Fatalf("write the control file: %v", err)
 		}
@@ -80,5 +80,49 @@ func TestMaxReadsAsNoCeiling(t *testing.T) {
 func TestACeilingThatIsNotANumberIsAFailure(t *testing.T) {
 	if _, err := cgroup.MemoryMax(fake(t, "not a number\n")); err == nil {
 		t.Fatal("MemoryMax on a control file that holds no number = nil, want an error")
+	}
+}
+
+func TestPinningTheSwapToNone(t *testing.T) {
+	dir := fake(t, "max\n")
+
+	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+		t.Fatalf("SetMemorySwapMax: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "memory.swap.max"))
+	if err != nil {
+		t.Fatalf("read memory.swap.max: %v", err)
+	}
+	if string(raw) != "0" {
+		t.Fatalf("memory.swap.max = %q, want 0", raw)
+	}
+}
+
+// TestReadingTheEventCounters pins the parse against the real file's shape, which is one key and one
+// count per line, with keys this driver does not use mixed in.
+func TestReadingTheEventCounters(t *testing.T) {
+	dir := t.TempDir()
+	body := "low 0\nhigh 355\nmax 12\noom 3\noom_kill 1\noom_group_kill 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "memory.events"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write memory.events: %v", err)
+	}
+
+	got, err := cgroup.MemoryEvents(dir)
+	if err != nil {
+		t.Fatalf("MemoryEvents: %v", err)
+	}
+	if got != (cgroup.Events{OOM: 3, OOMKill: 1}) {
+		t.Fatalf("MemoryEvents = %+v, want {OOM:3 OOMKill:1}", got)
+	}
+}
+
+// TestTheEventsOfACgroupThatIsGone is the ordinary case for a sandbox that stopped cleanly: runsc
+// removed the cgroup, so there is nothing to read and nothing to report.
+func TestTheEventsOfACgroupThatIsGone(t *testing.T) {
+	_, err := cgroup.MemoryEvents(filepath.Join(t.TempDir(), "never-made-2b3c"))
+
+	if !errors.Is(err, cgroup.ErrNotFound) {
+		t.Fatalf("MemoryEvents of a missing cgroup = %v, want ErrNotFound", err)
 	}
 }
