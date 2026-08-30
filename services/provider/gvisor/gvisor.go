@@ -626,11 +626,44 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
+	if status.Alive() {
+		dead, err := zombie(state.PID)
+		if err != nil {
+			return models.Status{}, err
+		}
+		if dead {
+			status.State, status.PID = models.StateStopped, 0
+		}
+	}
 	if !status.Alive() {
 		status.OOMKilled = p.oomKilled(id)
 	}
 
 	return status, nil
+}
+
+// zombie reports a sandbox process that exited and waits for its reaper. runsc probes it with
+// kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
+func zombie(pid int) (bool, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the state of the sandbox process %d: %w", pid, err)
+	}
+
+	return zombieStat(string(stat)), nil
+}
+
+// zombieStat reads the state field, which follows the comm, and the comm may hold a parenthesis itself.
+func zombieStat(stat string) bool {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 || i+2 >= len(stat) {
+		return false
+	}
+
+	return stat[i+2] == 'Z'
 }
 
 // oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
