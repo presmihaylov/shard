@@ -269,8 +269,11 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			},
 		},
 		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
-		// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
-		Annotations: map[string]string{rootfsAnnotation: spec.RootFS},
+		Annotations: map[string]string{
+			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
+			rootfsAnnotation:      spec.RootFS,
+			cpuFeaturesAnnotation: cpuFeatures,
+		},
 		Linux: &specs.Linux{
 			CgroupsPath:       CgroupsPath(spec.ID),
 			Namespaces:        namespaces(spec.Network.NetnsPath),

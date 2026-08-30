@@ -24,6 +24,16 @@ always record how the entrypoint ended.
 
 `SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
+## Snapshots
+
+Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`: what
+Intel Broadwell, AMD Zen and everything newer have in common, and nothing a host may lack. That list
+is the CPU bound on where a snapshot can restore. A host that lacks any listed feature runs a guest
+with a smaller set and no error, and its snapshots restore only where that smaller set exists. gVisor
+does not promise a restore across machines (gvisor#11486), so shard promises it only on the host
+that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
+snapshot that exists, so it is not a thing to tune.
+
 ## Images
 
 ```
