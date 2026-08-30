@@ -31,7 +31,7 @@ Usage:
   shard fork [--name <name>] <id|name>
                            start a new sandbox from the snapshot of another
   shard clone [--name <name>] <id|name>
-                           start a new sandbox over a copy of the files a stopped one kept
+                           start a new sandbox over a copy of the files a stopped or paused one kept
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>

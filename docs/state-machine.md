@@ -62,7 +62,8 @@ plus `fork --count N` is the warm pool primitive.
 **`clone` is not a transition either.** It creates a second sandbox in `running` over a copy of the
 files a `stopped` or `paused` source kept, and runs the entrypoint from the beginning: a `start`
 under a new id. It takes no memory and reads no snapshot, so it is a required verb on every provider,
-and it refuses a `running` source rather than copy a layer that is still being written.
+and it refuses a `running` source rather than copy a layer that is still being written. A `clone`
+holds the source shared while it copies, so a `start`, `stop` or `rm` of the source waits for it.
 
 **A legal move is not always a possible move.** `State.CanTransitionTo` answers only whether the
 move is in the machine. Whether it can happen now is the orchestrator's question, and whether this

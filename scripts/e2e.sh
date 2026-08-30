@@ -451,9 +451,10 @@ step "clone the stopped sandbox twice"
 # A clone copies the files a stop kept and runs the entrypoint again under a new id: no memory, no snapshot.
 timed "clone" clone_it e2e-clone-1
 timed "clone" clone_it e2e-clone-2
+# shellcheck disable=SC2086 # the clone list is meant to split
 set -- ${CLONE_IDS}
 [ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "clone printed '${CLONE_IDS}', want two new ids"
-for CLONE_ID in $@; do
+for CLONE_ID in "$@"; do
 	CLONE_RECORD="${SHARD_ROOT}/sandboxes/${CLONE_ID}/sandbox.json"
 	CLONE_ADDRESS=$(grep -o '"address": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)
 	CLONE_LINKS="${CLONE_LINKS} $(grep -o '"host_interface": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)"
@@ -472,6 +473,7 @@ for CLONE_ID in $@; do
 		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${CLONE_ADDRESS}'"
 	expect_exec_in "${CLONE_ID}" "reachable" "clone ${CLONE_ID} gets out through the NAT" \
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+	expect_exec_in "${CLONE_ID}" "e2e-clone" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
 	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
 done
 say "both clones run the entrypoint again over the source's files, each on its own address"
@@ -485,7 +487,7 @@ grep -q '"state": *"stopped"' "${RECORD}" || fail "the clones changed the source
 say "the clones share nothing with each other or with the source, which is still stopped"
 
 step "stop and remove the clones"
-for CLONE_ID in $@; do
+for CLONE_ID in "$@"; do
 	shard stop --time "${GRACE}" "${CLONE_ID}" >/dev/null
 	shard rm "${CLONE_ID}" >/dev/null
 	absent "the record of clone ${CLONE_ID}" "$([ -e "${SHARD_ROOT}/sandboxes/${CLONE_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${CLONE_ID}" || true)"

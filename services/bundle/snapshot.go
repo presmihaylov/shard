@@ -36,8 +36,8 @@ func (b Bundle) Export(dir string) error {
 	return nil
 }
 
-// Clone lays out a new bundle from what Export wrote, and keeps everything runsc checks a restore against.
-func (s *Service) Clone(snapshot string, spec models.SandboxSpec) (Bundle, error) {
+// Fork lays out a new bundle from what Export wrote, and keeps everything runsc checks a restore against.
+func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error) {
 	layers := map[string]string{}
 	for name := range (Bundle{}).layers() {
 		layers[name] = filepath.Join(snapshot, layersDir, name)
@@ -46,9 +46,8 @@ func (s *Service) Clone(snapshot string, spec models.SandboxSpec) (Bundle, error
 	return s.clone(filepath.Join(snapshot, "config.json"), layers, spec)
 }
 
-// CloneBundle lays out a new bundle over a copy of another sandbox's layers, so a clone runs the
-// entrypoint again over the files the source kept. The source must not be mounted while it copies.
-func (s *Service) CloneBundle(source Bundle, spec models.SandboxSpec) (Bundle, error) {
+// Clone lays out a new bundle over a copy of an unmounted sandbox's layers, so its entrypoint runs again over them.
+func (s *Service) Clone(source Bundle, spec models.SandboxSpec) (Bundle, error) {
 	return s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), spec)
 }
 

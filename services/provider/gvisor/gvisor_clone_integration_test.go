@@ -126,3 +126,38 @@ func stateDirOf(t *testing.T, h *harness, id string) string {
 
 	return dir
 }
+
+// A paused source holds its layer as it was at the pause and nothing writes it, so it clones, and it
+// still resumes afterwards from the snapshot the clone never touched.
+func TestAPausedSandboxClonesAndStillResumes(t *testing.T) {
+	h := newNetworkedHarness(t)
+	source := h.start(t, "/bin/sh", "-c", "echo booted; while true; do sleep 0.2; done")
+	snapshot := filepath.Join(t.TempDir(), "snapshot")
+
+	execIn(t, h, source.ID, "echo at-the-pause > /root/marker")
+
+	if err := h.provider.Pause(t.Context(), source.ID, snapshot); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	clone := h.newSpec(t)
+	if err := h.provider.Clone(t.Context(), source.ID, clone); err != nil {
+		t.Fatalf("Clone of a paused source: %v", err)
+	}
+	assertAlive(t, h, clone.ID, true)
+	if got := execIn(t, h, clone.ID, "cat /root/marker"); !strings.Contains(got, "at-the-pause") {
+		t.Errorf("the clone has %q in /root/marker, want what the source wrote before the pause", got)
+	}
+	execIn(t, h, clone.ID, "echo from-the-clone > /root/marker")
+
+	assertAlive(t, h, source.ID, false)
+	if _, err := h.net.Allocate(t.Context(), source.ID); err != nil {
+		t.Fatalf("Allocate for the source again: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), source.ID, snapshot); err != nil {
+		t.Fatalf("Resume of the source after a clone: %v", err)
+	}
+	if got := execIn(t, h, source.ID, "cat /root/marker"); !strings.Contains(got, "at-the-pause") {
+		t.Errorf("the source has %q in /root/marker after the resume, want its own write", got)
+	}
+}

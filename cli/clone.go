@@ -104,7 +104,7 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
-	// The network lands in the record before the start, so a clone that fails after it can be given back.
+	// The network lands in the record first, so a clone that fails after it can be given back.
 	err = repo.Update(id, func(sb *models.Sandbox) error {
 		sb.NetnsPath = netSpec.NetnsPath
 		sb.Address = netSpec.Address
@@ -120,12 +120,11 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 
 	spec := models.SandboxSpec{ID: id, Name: *cloneName, StateDir: dir, Network: netSpec, Resources: sb.Resources}
 	if err := provider.Clone(ctx, source, spec); err != nil {
-		// An interrupt kills the start process, not what it may already have started, and only stop
-		// ends a sandbox, so an unknown outcome is kept.
+		// An interrupt kills the start process and not what it started, and only stop ends a sandbox.
 		if ctx.Err() != nil {
 			td.discard()
 
-			return fmt.Errorf("the clone into sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
+			return fmt.Errorf("the clone into sandbox %s was interrupted, so it may have started and it stays on the host: run shard rm %s: %w", id, id, err)
 		}
 
 		return err

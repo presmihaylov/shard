@@ -842,7 +842,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 		return err
 	}
 
-	b, err := p.bundles.Clone(dir, spec)
+	b, err := p.bundles.Fork(dir, spec)
 	if err != nil {
 		return err
 	}
@@ -874,8 +874,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	return nil
 }
 
-// Clone lays out a new sandbox over a copy of the source's layers and runs its entrypoint again: it is a
-// start after a stop, under a new id. Everything of the source is read before anything is written.
+// Clone is a start after a stop under a new id: the source's layers are copied and its entrypoint runs again.
 func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
 	source, err := p.open(sourceID)
 	if err != nil {
@@ -890,8 +889,12 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if sourceStatus.Alive() {
 		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, name)
 	}
-	if err := orphaned(source, sourceID, sourceStatus.Exists); err != nil {
+	mounted, err := source.Mounted()
+	if err != nil {
 		return err
+	}
+	if mounted {
+		return fmt.Errorf("sandbox %s is still mounted at %s: a copy of its layer would miss what the mount holds", sourceID, source.RootFS)
 	}
 	if _, err := imageOf(source, sourceID); err != nil {
 		return err
@@ -913,7 +916,7 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 
-	b, err := p.bundles.CloneBundle(source, spec)
+	b, err := p.bundles.Clone(source, spec)
 	if err != nil {
 		return err
 	}

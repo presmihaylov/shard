@@ -40,7 +40,7 @@ source as it is. A pause copies the writable layer, so it takes time and disk in
 the sandbox has written. The snapshot is the memory image plus a copy of the writable layer as it was at the
 pause, so two forks of one snapshot share nothing and a resume does not consume it.
 
-`shard clone` takes no memory at all: it copies the files a stopped or paused sandbox kept and runs
+`shard clone` takes no memory at all: it copies every file a stopped or paused sandbox kept, `/tmp` included, and runs
 its entrypoint again from the beginning, under a new id and address, the way `shard start` would
 under the old one. Two clones of one source share nothing, and the source stays as it was. It refuses
 a running source, because a running sandbox is still writing the layer it would copy.

@@ -11,8 +11,8 @@ flag: `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Wait`, `Status`, `L
 
 `Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
 another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id
-and the new network. It refuses a source that is alive, and it reads nothing of the source but its
-state directory. Firecracker will copy a disk where gVisor copies an overlay layer.
+and the new network. It refuses a source that is alive or still mounted, and it reads nothing of the
+source but its status and its state directory. Firecracker will copy a disk where gVisor copies an overlay layer.
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.

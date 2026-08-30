@@ -16,7 +16,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
-func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
+func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 	source := newSpec(t)
 	source.Name = "web"
 	source.Network = models.NetworkSpec{
@@ -46,7 +46,7 @@ func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 			Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
 		},
 	}
-	c, err := newService(t).Clone(snapshot, fork)
+	c, err := newService(t).Fork(snapshot, fork)
 	if err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
@@ -106,15 +106,15 @@ func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	}
 }
 
-func TestCloneRefusesASnapshotWithNoConfig(t *testing.T) {
+func TestForkRefusesASnapshotWithNoConfig(t *testing.T) {
 	spec := models.SandboxSpec{ID: "s-fork", StateDir: t.TempDir()}
-	if _, err := newService(t).Clone(t.TempDir(), spec); err == nil {
-		t.Error("Clone accepted an empty snapshot")
+	if _, err := newService(t).Fork(t.TempDir(), spec); err == nil {
+		t.Error("Fork accepted an empty snapshot")
 	}
 }
 
 // A clone of a bundle is the clone of its snapshot would be, read from the state directory instead.
-func TestCloneBundleIsTheSourceUnderANewIdentity(t *testing.T) {
+func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	source := newSpec(t)
 	source.Name = "web"
 	source.Network = models.NetworkSpec{NetnsPath: "/run/netns/s-test", Address: netip.MustParsePrefix("10.87.0.2/16")}
@@ -135,9 +135,9 @@ func TestCloneBundleIsTheSourceUnderANewIdentity(t *testing.T) {
 		StateDir: t.TempDir(),
 		Network:  models.NetworkSpec{NetnsPath: "/run/netns/s-clone", Address: netip.MustParsePrefix("10.87.0.3/16")},
 	}
-	c, err := newService(t).CloneBundle(opened, clone)
+	c, err := newService(t).Clone(opened, clone)
 	if err != nil {
-		t.Fatalf("CloneBundle: %v", err)
+		t.Fatalf("Clone: %v", err)
 	}
 
 	var got specs.Spec
@@ -186,13 +186,13 @@ func TestCloneBundleIsTheSourceUnderANewIdentity(t *testing.T) {
 	}
 }
 
-func TestCloneBundleRefusesASourceWithNoConfig(t *testing.T) {
+func TestCloneRefusesASourceWithNoConfig(t *testing.T) {
 	opened, err := bundle.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec := models.SandboxSpec{ID: "s-clone", StateDir: t.TempDir()}
-	if _, err := newService(t).CloneBundle(opened, spec); err == nil {
-		t.Error("CloneBundle accepted a source that was never built")
+	if _, err := newService(t).Clone(opened, spec); err == nil {
+		t.Error("Clone accepted a source that was never built")
 	}
 }

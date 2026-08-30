@@ -356,6 +356,9 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("CloneRunsTheEntrypointAgainOverWhatTheSourceKept", func(t *testing.T) {
 		source := s.running(t)
+		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo kept > /conformance-clone")}); status.Code != 0 {
+			t.Fatalf("the write into the source exited %d", status.Code)
+		}
 		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
@@ -363,6 +366,11 @@ func Run(t *testing.T, s Subject) {
 		clone := s.NewSpec(t)
 		if err := s.Provider.Clone(t.Context(), source, clone); err != nil {
 			t.Fatalf("Clone: %v", err)
+		}
+
+		// A Create under the clone's id would pass everything below but this: the file is the source's.
+		if _, out := s.exec(t, clone.ID, models.ExecSpec{Argv: s.Shell("cat /conformance-clone")}); !strings.Contains(out, "kept") {
+			t.Errorf("the clone reads %q from the file the source wrote, want kept", out)
 		}
 
 		// The entrypoint exits 0 on its own, and only a fresh run of it can say so under the new id.
