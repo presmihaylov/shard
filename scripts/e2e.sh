@@ -223,7 +223,8 @@ fi
 wipe_root
 
 step "create a sandbox"
-ID=$(shard create "${IMAGE}" -- /bin/sleep 600)
+# The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
+ID=$(shard create "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -243,6 +244,15 @@ LISTED=$(shard ls | grep "^${ID}" || true)
 echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 echo "${LISTED}" | grep -q "running" || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
+
+step "read the output of the entrypoint"
+# The line lands when the guest gets to it, which is after create returned.
+for _ in $(seq 1 50); do
+	shard logs "${ID}" | grep -q "shard-e2e-entrypoint" && break
+	sleep 0.2
+done
+shard logs "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs does not show what the entrypoint wrote"
+say "logs shows what the entrypoint wrote"
 
 step "exec a command in the sandbox"
 expect_exec "shard-e2e" "the command ran and wrote a file" \
@@ -281,6 +291,10 @@ say "the record, the address, the lease, the namespace and the link all survived
 shard ls | grep -q "^${ID}" && fail "shard ls still lists the stopped sandbox"
 shard ls --all | grep "^${ID}" | grep -q "stopped" || fail "shard ls --all does not list the sandbox as stopped"
 say "ls hides the stopped sandbox and ls --all shows it stopped"
+
+# -f ends on its own once the sandbox is stopped, so a hang here is a failure, not a wait.
+timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs -f on a stopped sandbox did not print its output and end"
+say "logs still reads a stopped sandbox, and -f ends on its own"
 
 step "stop the sandbox a second time"
 shard stop "${ID}" >/dev/null
