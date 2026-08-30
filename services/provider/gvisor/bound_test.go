@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 )
 
@@ -17,8 +18,8 @@ func fakeCgroup(t *testing.T, id, applied string) string {
 	t.Helper()
 
 	root := t.TempDir()
-	dir := filepath.Join(root, id)
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	dir := filepath.Join(root, bundle.CgroupsPath(id))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("make the fake cgroup: %v", err)
 	}
 
@@ -36,7 +37,7 @@ func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 func read(t *testing.T, root, id, file string) string {
 	t.Helper()
 
-	raw, err := os.ReadFile(filepath.Join(root, id, file))
+	raw, err := os.ReadFile(filepath.Join(root, bundle.CgroupsPath(id), file))
 	if err != nil {
 		t.Fatalf("read %s: %v", file, err)
 	}
@@ -183,7 +184,31 @@ func TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory(t *testing.T) {
 func writeEvents(t *testing.T, root, id, body string) {
 	t.Helper()
 
-	if err := os.WriteFile(filepath.Join(root, id, "memory.events"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, bundle.CgroupsPath(id), "memory.events"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write memory.events: %v", err)
+	}
+}
+
+// TestRemoveSweepsAStaleCgroup covers a sandbox runsc lost: its cgroup stays and would unbound the next.
+func TestRemoveSweepsAStaleCgroup(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	root := fakeCgroup(t, id, "max")
+	dir := filepath.Join(root, bundle.CgroupsPath(id))
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("empty the fake cgroup: %v", err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("forge the stale cgroup: %v", err)
+	}
+
+	if err := gvisor.RemoveCgroup(root, id); err != nil {
+		t.Fatalf("RemoveCgroup: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the stale cgroup is still there: %v", err)
+	}
+	if err := gvisor.RemoveCgroup(root, id); err != nil {
+		t.Errorf("a second sweep of a gone cgroup failed: %v", err)
 	}
 }

@@ -14,6 +14,14 @@ const defaultPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 // defaultNoFile is the runc default. A sandbox that needs more says so, once a ticket owns rlimits.
 const defaultNoFile = 1024
 
+// CgroupParent is the one cgroup every sandbox sits under, so nothing of shard's lands at the root.
+const CgroupParent = "shard"
+
+// CgroupsPath is where the sandbox's cgroup sits under the host cgroup root.
+func CgroupsPath(id string) string {
+	return "/" + CgroupParent + "/" + id
+}
+
 // defaultCapabilities is the runc default set. It is the ceiling, and a sandbox never gains more.
 var defaultCapabilities = []string{
 	"CAP_AUDIT_WRITE",

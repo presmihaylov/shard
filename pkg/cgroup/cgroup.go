@@ -95,6 +95,28 @@ func MemoryEvents(dir string) (Events, error) {
 	return events, nil
 }
 
+// Ensure makes a cgroup exist, and one that already does is fine.
+func Ensure(dir string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("make the cgroup %s: %w", dir, err)
+	}
+
+	return nil
+}
+
+// Remove drops an empty cgroup, and one that is already gone counts as dropped.
+func Remove(dir string) error {
+	err := os.Remove(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove the cgroup %s: %w", dir, err)
+	}
+
+	return nil
+}
+
 func write(dir, file, value string) error {
 	path := filepath.Join(dir, file)
 
