@@ -73,7 +73,7 @@ func tmpfsSize(mib int64) string {
 	return fmt.Sprintf("size=%dm", mib)
 }
 
-func mounts(shardDir, initPath string, r models.Resources) []specs.Mount {
+func mounts(shardDir, tmpDir, initPath string, r models.Resources) []specs.Mount {
 	return []specs.Mount{
 		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 		// gVisor mounts its own devtmpfs here and drops our size=, so the only bound left is ro: a
@@ -83,6 +83,8 @@ func mounts(shardDir, initPath string, r models.Resources) []specs.Mount {
 		{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", tmpfsSize(shmSize(r))}},
 		{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
 		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
+		// runsc puts an unsized tmpfs on an empty /tmp, and tmpfs is guest memory: 200 MB of dd killed a sandbox.
+		{Destination: "/tmp", Type: "bind", Source: tmpDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
 		// The host side of this one is where shard-init writes the exit status the provider watches.
 		{Destination: guestShardDir, Type: "bind", Source: shardDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
 		// Mounted after its parent, and read-only: the guest may run the supervisor and never replace it.
