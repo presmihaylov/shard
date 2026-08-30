@@ -42,6 +42,9 @@ type Bundle struct {
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
 	Work  string
+
+	// Tmp is bind mounted at /tmp, so a guest that fills it fills the host disk and not its own bound.
+	Tmp string
 }
 
 // Service builds bundles. One per shard process, because the supervisor path never changes.
@@ -188,6 +191,7 @@ func newBundle(stateDir string) (Bundle, error) {
 		ReadyFile: filepath.Join(shardDir, readyFileName),
 		Upper:     filepath.Join(stateDir, "overlay", "upper"),
 		Work:      filepath.Join(stateDir, "overlay", "work"),
+		Tmp:       filepath.Join(stateDir, "tmp"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -212,6 +216,7 @@ func layout(b Bundle) error {
 		{b.Upper, 0o755},
 		{b.Work, 0o750},
 		{b.ShardDir, 0o750},
+		{b.Tmp, 0o777 | os.ModeSticky},
 	}
 
 	for _, dir := range dirs {
@@ -258,7 +263,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 				{Type: "RLIMIT_NOFILE", Hard: defaultNoFile, Soft: defaultNoFile},
 			},
 		},
-		Mounts: mounts(b.ShardDir, s.initPath, spec.Resources),
+		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
 		Linux: &specs.Linux{
 			Namespaces:        namespaces(spec.Network.NetnsPath),
 			Resources:         resources(spec.Resources),
