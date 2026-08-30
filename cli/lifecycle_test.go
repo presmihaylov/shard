@@ -155,11 +155,18 @@ type fakeLifecycleProvider struct {
 	// snapshot is the directory the pause was told to write, or the resume or fork was told to read.
 	snapshot string
 	forked   models.SandboxSpec
+	// noPause, noResume and noFork take a verb out of what the provider claims.
+	noPause, noResume, noFork bool
 	// logPath is the file logs reads, which a test writes into.
 	logPath string
 }
 
 func (f *fakeLifecycleProvider) Name() string { return "fake" }
+
+// Capabilities claims every optional verb unless a test takes one away.
+func (f *fakeLifecycleProvider) Capabilities() models.Capabilities {
+	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
+}
 
 func (f *fakeLifecycleProvider) LogPath(string) (string, error) {
 	if err := f.r.record("provider.LogPath"); err != nil {

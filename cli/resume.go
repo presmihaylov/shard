@@ -27,6 +27,10 @@ func (a App) resume(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
+	if err := requireVerb(provider, models.VerbResume); err != nil {
+		return err
+	}
+
 	id, err := repo.Resolve(args[0])
 	if err != nil {
 		return err

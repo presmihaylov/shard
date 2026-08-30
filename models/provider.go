@@ -9,7 +9,7 @@ import (
 
 // Provider runs sandboxes on one substrate. It is v0: SHARD-45 will change it again.
 type Provider interface {
-	// Name is the substrate, "gvisor" or "firecracker". It appears in errors and in shard info.
+	// Name is the substrate, "gvisor" or "firecracker". It appears in errors.
 	Name() string
 	// Capabilities reports the optional verbs this host can run. Probe once in the constructor.
 	Capabilities() Capabilities

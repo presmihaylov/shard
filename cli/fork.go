@@ -42,6 +42,10 @@ func (a App) fork(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
+	if err := requireVerb(provider, models.VerbFork); err != nil {
+		return err
+	}
+
 	net, err := d.net()
 	if err != nil {
 		return err
