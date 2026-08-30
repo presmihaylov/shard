@@ -83,6 +83,15 @@ expect_exec() {
 	expect "${got}" "${want}" "${note}"
 }
 
+# expect_network fails when the guest does not hold its address or cannot reach its gateway.
+expect_network() {
+	local when="$1"
+	expect_exec "${ADDRESS}" "the guest holds its address ${when}" \
+		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${ADDRESS}'"
+	expect_exec "reachable" "the guest reaches its gateway ${when}" \
+		/bin/sh -c 'ping -c 1 -W 2 "$(ip route | awk '"'"'/default/ {print $3}'"'"')" >/dev/null && echo reachable'
+}
+
 # absent fails when the pattern is still on the host, quoting what was found.
 absent() {
 	local what="$1" found="$2"
@@ -261,6 +270,9 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
 
+step "reach the network from the sandbox"
+expect_network "after the create"
+
 step "write a file into the writable layer"
 expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \
 	/bin/sh -c 'echo kept > /root/kept; cat /root/kept'
@@ -340,6 +352,8 @@ say "the entrypoint ran again from the beginning"
 
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 [ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "the started sandbox has no cgroup under the shard parent"
+# gVisor took the address at the first create, so this proves the start built the netns again.
+expect_network "after the start"
 
 step "stop the started sandbox"
 shard stop --time "${GRACE}" "${ID}" >/dev/null
