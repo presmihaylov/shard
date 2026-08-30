@@ -38,6 +38,11 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 		t.Errorf("the network was not built again before the resume: %v", r.calls)
 	}
 
+	// The host rules are the policy of record, and the restored guest holds none of its own.
+	if !d.netSvc.(*fakeLifecycleNet).reapplied || slices.Index(r.calls, "net.Reapply") < slices.Index(r.calls, "provider.Resume") {
+		t.Errorf("the host rules were not applied again after the resume: %v", r.calls)
+	}
+
 	sb := d.repoSvc.(*fakeLifecycleRepo).sb
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -96,6 +101,26 @@ func TestResumeKeepsTheRecordPausedWhenTheProviderFails(t *testing.T) {
 
 	if sb := d.repoSvc.(*fakeLifecycleRepo).sb; sb.State != models.StatePaused || sb.Snapshot == "" {
 		t.Errorf("the record is %s with snapshot %q after a failed resume, want paused with its snapshot", sb.State, sb.Snapshot)
+	}
+}
+
+// The sandbox is up when the rules fail, and only stop ends one, so the record must say running.
+func TestResumeRecordsTheSandboxWhenTheRulesFail(t *testing.T) {
+	r := &recorder{fail: []string{"net.Reapply"}}
+	app, d := newLifecycleApp(t, &bytes.Buffer{}, r, paused())
+	d.providerSvc.(*fakeLifecycleProvider).status = models.Status{}
+
+	err := app.Run(t.Context(), []string{"resume", "sandbox1"})
+	if err == nil || !strings.Contains(err.Error(), "rules were not applied again") {
+		t.Fatalf("resume returned %v, want the failure and that the sandbox runs without its rules", err)
+	}
+
+	sb := d.repoSvc.(*fakeLifecycleRepo).sb
+	if sb.State != models.StateRunning || sb.PID != 7 {
+		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
+	}
+	if sb.ExitStatus == nil || sb.Snapshot == "" {
+		t.Errorf("the record lost its exit or its snapshot: %+v", sb)
 	}
 }
 

@@ -43,6 +43,7 @@ type sandboxRepo interface {
 type sandboxNetwork interface {
 	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
 	Release(ctx context.Context, id string) error
+	Reapply(ctx context.Context, id string) error
 }
 
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox

@@ -228,6 +228,11 @@ func (f fakeNet) Release(ctx context.Context, _ string) error {
 	return f.r.cleanup(ctx, "net.Release")
 }
 
+// Create never reaches Reapply, because Allocate applied the rules over its fresh netns.
+func (f fakeNet) Reapply(context.Context, string) error {
+	return errors.New("create must not reapply the rules")
+}
+
 type fakeProvider struct {
 	r *recorder
 	// spec is what Create was handed, so a test says what reached the substrate.

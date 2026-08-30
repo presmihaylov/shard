@@ -83,6 +83,7 @@ type fakeLifecycleNet struct {
 	r         *recorder
 	allocated bool
 	released  bool
+	reapplied bool
 }
 
 func (f *fakeLifecycleNet) Allocate(context.Context, string) (models.NetworkSpec, error) {
@@ -92,6 +93,15 @@ func (f *fakeLifecycleNet) Allocate(context.Context, string) (models.NetworkSpec
 	f.allocated = true
 
 	return models.NetworkSpec{}, nil
+}
+
+func (f *fakeLifecycleNet) Reapply(context.Context, string) error {
+	if err := f.r.record("net.Reapply"); err != nil {
+		return err
+	}
+	f.reapplied = true
+
+	return nil
 }
 
 func (f *fakeLifecycleNet) Release(context.Context, string) error {

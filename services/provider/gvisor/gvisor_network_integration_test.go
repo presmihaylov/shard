@@ -5,6 +5,8 @@ package gvisor_test
 import (
 	"fmt"
 	"net"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -156,5 +158,61 @@ func acceptForever(listener net.Listener) {
 			return
 		}
 		conn.Close()
+	}
+}
+
+// The host rules are what contain a restored guest, and the table is deleted by hand before the restore
+// so that only Reapply can put them back. Only the input chain exists yet; SHARD-70 adds an egress case.
+func TestTheHostRulesHoldAfterAResume(t *testing.T) {
+	h := newNetworkedHarness(t)
+	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
+	snapshot := filepath.Join(t.TempDir(), "snapshot")
+
+	gateway := h.net.Gateway().String()
+	listener, err := net.Listen("tcp", net.JoinHostPort(gateway, "0"))
+	if err != nil {
+		t.Fatalf("listen on the gateway address: %v", err)
+	}
+	defer listener.Close()
+
+	go acceptForever(listener)
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split %s: %v", listener.Addr(), err)
+	}
+
+	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// The control: the listener is up and reachable from the host it runs on.
+	awaitDial(t, listener.Addr().String())
+
+	// This is what shard resume does, with the table dropped in between so that Allocate's Ensure is not what passes.
+	if _, err := h.net.Allocate(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Allocate after the pause: %v", err)
+	}
+	if out, err := exec.CommandContext(t.Context(), "nft", "delete", "table", "inet", "shard").CombinedOutput(); err != nil {
+		t.Fatalf("delete the shard table by hand: %v: %s", err, out)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snapshot); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if got := execIn(t, h, spec.ID, fmt.Sprintf("nc -w 3 %s %s < /dev/null && echo reached", gateway, port)); !strings.Contains(got, "reached") {
+		t.Fatalf("the sandbox could not reach the host with no table at all, so a drop below would prove nothing: %s", got)
+	}
+
+	if err := h.net.Reapply(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Reapply: %v", err)
+	}
+
+	if got := execIn(t, h, spec.ID, "nc -w 5 1.1.1.1 80 < /dev/null && echo reached"); !strings.Contains(got, "reached") {
+		t.Errorf("the resumed sandbox could not reach 1.1.1.1:80: %s", got)
+	}
+
+	if got := execIn(t, h, spec.ID, fmt.Sprintf("nc -w 3 %s %s < /dev/null || echo dropped", gateway, port)); !strings.Contains(got, "dropped") {
+		t.Errorf("the resumed sandbox reached the host on %s:%s: %s", gateway, port, got)
 	}
 }
