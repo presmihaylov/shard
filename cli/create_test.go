@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -309,6 +310,7 @@ func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, *deps) {
 		repoSvc:     &fakeRepo{r: r, dir: dir},
 		netSvc:      fakeNet{r: r},
 		providerSvc: &fakeProvider{r: r},
+		proxySvc:    fakeProxy{r: r},
 	}
 
 	return App{
@@ -651,5 +653,63 @@ func TestCreateWithoutAPolicyNeverReappliesTheRules(t *testing.T) {
 	}
 	if slices.Contains(r.calls, "net.Reapply") {
 		t.Errorf("a create with no policy reapplied the rules: %v", r.calls)
+	}
+}
+
+// fakeProxy stands in for the launcher: a test never spawns a process, it records that one was asked for.
+type fakeProxy struct {
+	r *recorder
+}
+
+func (f fakeProxy) Ensure(context.Context, netip.Addr) error { return f.r.record("proxy.Ensure") }
+
+func (f fakeProxy) CA() ([]byte, error) {
+	if err := f.r.record("proxy.CA"); err != nil {
+		return nil, err
+	}
+
+	return []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"), nil
+}
+
+// A fronted sandbox gets the CA before the bundle is built and a proxy before the guest runs, and a
+// proxy that does not come up refuses the sandbox: its 80 and 443 lead nowhere else.
+func TestCreateWithAPolicyGivesTheGuestTheCAAndTheHostAProxy(t *testing.T) {
+	r := &recorder{}
+	app, d := newFakeApp(t, &bytes.Buffer{}, r)
+
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "locked"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Run(t.Context(), []string{"create", "--policy", "locked", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	want := []string{"proxy.CA", "provider.Create", "net.Reapply", "proxy.Ensure", "provider.Start"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("the proxy was driven as %v, want %v", got, want)
+	}
+	if got := d.providerSvc.(*fakeProvider).spec.ProxyCA; !bytes.Contains(got, []byte("fake")) {
+		t.Errorf("the spec carries CA %q, want the proxy's", got)
+	}
+
+	r.calls, r.fail = nil, []string{"proxy.Ensure"}
+	err := app.Run(t.Context(), []string{"create", "--policy", "locked", "alpine:3.20"})
+	if err == nil || !strings.Contains(err.Error(), "proxy.Ensure") {
+		t.Fatalf("create with no proxy = %v", err)
+	}
+	if slices.Contains(r.calls, "provider.Start") {
+		t.Errorf("the guest ran with no proxy: %v", r.calls)
+	}
+}
+
+func TestCreateWithoutAPolicyOrASecretNeverAsksForTheProxy(t *testing.T) {
+	r := &recorder{}
+	app, _ := newFakeApp(t, &bytes.Buffer{}, r)
+
+	if err := app.Run(t.Context(), []string{"create", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := keep(r.calls, "proxy.CA", "proxy.Ensure"); len(got) != 0 {
+		t.Errorf("a plain sandbox asked for the proxy: %v", got)
 	}
 }

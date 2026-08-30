@@ -216,29 +216,27 @@ func validDestination(rule models.Rule) error {
 		}
 
 		return nil
-	case models.DestinationDomain:
+	case models.DestinationDomain, models.DestinationDomainSuffix:
 		if _, err := secret.ValidDestination(dest.Value); err != nil {
 			return err
 		}
 		// A name is enforced through the proxy, which speaks HTTP and TLS: on any other port it would be an address guess.
 		if rule.Protocol != "tcp" {
-			return fmt.Errorf("a domain rule is tcp only, got %q", rule.Protocol)
+			return fmt.Errorf("a %s rule is tcp only, got %q", dest.Kind, rule.Protocol)
 		}
 		if len(rule.Ports) == 0 {
-			return errors.New("a domain rule names ports 80 and 443 only, got none: without one it would open every tcp port")
+			return fmt.Errorf("a %s rule names ports 80 and 443 only, got none: without one it would open every tcp port", dest.Kind)
 		}
 		for _, port := range rule.Ports {
 			if !slices.Contains(webPorts, port) {
-				return fmt.Errorf("a domain rule may name ports 80 and 443 only, got %d: use a cidr rule for a raw port", port)
+				return fmt.Errorf("a %s rule may name ports 80 and 443 only, got %d: use a cidr rule for a raw port", dest.Kind, port)
 			}
 		}
 
 		return nil
-	case models.DestinationDomainSuffix:
-		return errors.New("a domain-suffix rule needs the egress proxy, which SHARD-71 ships: name the host with domain: for now")
 	}
 
-	return fmt.Errorf("the destination kind %q is not cidr, domain or group", dest.Kind)
+	return fmt.Errorf("the destination kind %q is not cidr, domain, domain-suffix or group", dest.Kind)
 }
 
 // parseCIDR takes a prefix or a bare address, and refuses IPv6, which the sandbox network does not carry.
@@ -268,7 +266,7 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 
 	kind, value, found := strings.Cut(fields[0], ":")
 	if !found || value == "" {
-		return models.Rule{}, fmt.Errorf("%q is not <kind>:<value>: name cidr, domain or group before the colon", fields[0])
+		return models.Rule{}, fmt.Errorf("%q is not <kind>:<value>: name cidr, domain, domain-suffix or group before the colon", fields[0])
 	}
 
 	rule := models.Rule{Action: action, Destination: models.Destination{Kind: models.DestinationKind(kind), Value: value}}
@@ -285,10 +283,10 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 	}
 
 	// A domain rule with no port is the web, which is all a domain rule may name anyway.
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "" {
+	if namesHost(rule.Destination.Kind) && rule.Protocol == "" {
 		rule.Protocol = "tcp"
 	}
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
+	if namesHost(rule.Destination.Kind) && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
 		rule.Ports = slices.Clone(webPorts)
 	}
 
@@ -333,4 +331,9 @@ func parsePorts(text string) ([]int, error) {
 	slices.Sort(ports)
 
 	return slices.Compact(ports), nil
+}
+
+// namesHost says the rule is matched by name, which only the proxy can do.
+func namesHost(kind models.DestinationKind) bool {
+	return kind == models.DestinationDomain || kind == models.DestinationDomainSuffix
 }

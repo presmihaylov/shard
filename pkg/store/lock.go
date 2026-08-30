@@ -146,3 +146,8 @@ func flock(f *os.File, how int) error {
 		}
 	}
 }
+
+// TryAcquire is Acquire that never waits: a nil lock and a nil error say somebody else holds it.
+func TryAcquire(path string, perm fs.FileMode) (*Lock, error) {
+	return acquire(path, perm, syscall.LOCK_EX|syscall.LOCK_NB)
+}

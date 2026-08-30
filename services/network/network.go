@@ -61,6 +61,8 @@ type Config struct {
 	Nameservers []netip.Addr
 	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
 	Egress EgressSource
+	// Proxy is where the gateway listens for a fronted sandbox's HTTP and HTTPS.
+	Proxy ProxyPorts
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -78,7 +80,7 @@ func New(cfg Config, manager *netns.Manager) (*Service, error) {
 		return nil, errors.New("the network service needs a netns manager")
 	}
 
-	cfg, gateway, err := normalise(cfg)
+	cfg, gateway, err := Layout(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +93,9 @@ func New(cfg Config, manager *netns.Manager) (*Service, error) {
 	return &Service{cfg: cfg, manager: manager, pool: p, gateway: gateway}, nil
 }
 
-// normalise applies the defaults and refuses a subnet no sandbox could be addressed from.
-func normalise(cfg Config) (Config, netip.Addr, error) {
+// Layout applies the defaults and refuses a subnet no sandbox could be addressed from. It is what a
+// process with no netns manager, the proxy, reads the gateway and the ports from.
+func Layout(cfg Config) (Config, netip.Addr, error) {
 	if !filepath.IsAbs(cfg.Root) {
 		return Config{}, netip.Addr{}, fmt.Errorf("the network root must be an absolute path, got %q", cfg.Root)
 	}
@@ -105,6 +108,9 @@ func normalise(cfg Config) (Config, netip.Addr, error) {
 	}
 	if len(cfg.Nameservers) == 0 {
 		cfg.Nameservers = DefaultNameservers
+	}
+	if cfg.Proxy == (ProxyPorts{}) {
+		cfg.Proxy = DefaultProxyPorts
 	}
 
 	// IPv6 is not refused because it is hard; it is refused because nothing here was written for it.
@@ -156,7 +162,7 @@ func (s *Service) Ensure(ctx context.Context) (err error) {
 		return err
 	}
 
-	chains, err := s.chains(ctx)
+	chains, fronted, err := s.egress(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,26 +172,37 @@ func (s *Service) Ensure(ctx context.Context) (err error) {
 		return err
 	}
 
-	return s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases))
+	return s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases, fronted))
 }
 
-func (s *Service) chains(ctx context.Context) ([]Chain, error) {
+func (s *Service) egress(ctx context.Context) ([]Chain, []netip.Addr, error) {
 	if s.cfg.Egress == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	chains, err := s.cfg.Egress.Chains(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("compile the egress policies: %w", err)
+		return nil, nil, fmt.Errorf("compile the egress policies: %w", err)
 	}
 
 	for _, chain := range chains {
 		if !s.cfg.Subnet.Contains(chain.Address) {
-			return nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
+			return nil, nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
 		}
 	}
 
-	return chains, nil
+	fronted, err := s.cfg.Egress.Fronted(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list the sandboxes the proxy fronts: %w", err)
+	}
+
+	for _, address := range fronted {
+		if !s.cfg.Subnet.Contains(address) {
+			return nil, nil, fmt.Errorf("the proxy fronts %s, which is outside the sandbox subnet %s", address, s.cfg.Subnet)
+		}
+	}
+
+	return chains, fronted, nil
 }
 
 // conflict reports the first host route the subnet overlaps. Claiming a range the host already routes

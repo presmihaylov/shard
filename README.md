@@ -25,8 +25,8 @@ always record how the entrypoint ended.
 `SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
 `--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
-host. The egress proxy (SHARD-71) puts it into a request on its way to the granted destination; until
-then the placeholder reaches the wire as it is. See `docs/secrets.md`.
+host, and the egress proxy puts it into a request on its way to the granted destination and nowhere
+else. See `docs/secrets.md`.
 
 `--policy NAME` names the egress policy the host enforces. Without one the sandbox reaches the
 internet and nothing private; see `docs/egress.md`.
@@ -68,7 +68,8 @@ shard secret rm API_TOKEN
 
 A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
 of mode 0600, `secret ls` never prints it, and `secret rm` refuses while a sandbox still holds the
-placeholder. `docs/secrets.md` says what this stops and what it does not.
+placeholder. The egress proxy puts the value into a request on its way to the granted host and
+nowhere else. `docs/secrets.md` says what this stops and what it does not.
 
 ## Egress
 
@@ -77,7 +78,11 @@ shard policy create --allow domain:api.example.com --deny group:any locked
 shard create --policy locked python:3.12 -- python agent.py
 shard policy show locked
 shard policy rm locked
+shard proxy
 ```
+
+A sandbox with a policy or a secret sends its web traffic through the egress proxy, which the first
+verb that needs it starts. `shard proxy` runs one in the foreground instead.
 
 A policy is an ordered list of `allow` and `deny` rules over `cidr`, `domain` and `group`
 destinations, and what matches none of them is dropped. The host enforces it in netfilter, applies

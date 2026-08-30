@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 // resume runs a paused sandbox again from its snapshot. It is the run the pause froze, so the record
@@ -61,8 +62,15 @@ func (a App) resume(ctx context.Context, args []string) (err error) {
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.
-	if _, err := net.Allocate(ctx, id); err != nil {
+	netSpec, err := net.Allocate(ctx, id)
+	if err != nil {
 		return err
+	}
+
+	if egress.IsFronted(sb) {
+		if err := ensureProxy(ctx, d, netSpec.Gateway); err != nil {
+			return err
+		}
 	}
 
 	if err := provider.Resume(ctx, id, sb.Snapshot); err != nil {

@@ -28,8 +28,27 @@ copied bundle already hands the guest the placeholder.
 **The substitution.** The placeholder defaults to `mock-NAME` and `--mock-value` sets another, for
 an SDK that checks the shape of a key before it sends it. On the way out, the egress proxy replaces
 the placeholder with the value, in the URL, the headers and the body, and only when the request is
-bound for a granted destination. That is the substitution SHARD-71 ships; before it, the placeholder
-reaches the wire as it is.
+bound for a granted destination. A request to any other host carries the placeholder as it is.
+
+**The proxy.** A sandbox that holds a secret sends its port 80 and 443 through the egress proxy: the
+host turns those two ports to it, and nothing else on the host answers them, so a sandbox with no
+proxy reaches no web host rather than every one. The proxy terminates TLS with a CA of its own, minted
+once per root under `ca/`, and the guest trusts it: the bundle appends it to the image's certificate
+bundle and sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` unless the image set
+them. The first verb that needs the proxy starts it, detached, and `shard proxy` runs one in the
+foreground for an operator who wants to watch it. Its log is `proxy/log` under the root.
+
+What that means for a client:
+
+- HTTP/1.1 only. A client that insists on HTTP/2 does not connect.
+- A TLS connection must name its host (SNI), and a request whose `Host` names another is refused.
+- A raw TCP or UDP port, 22 or 5432 say, is not the proxy's and is never substituted: it goes by the
+  policy alone, and the placeholder is what reaches it.
+- The body is rewritten up to 8 MiB. A bigger one goes through as it is, with the placeholder.
+- The proxy matches the placeholder as bytes. A client that encodes it, base64 in a basic-auth header
+  say, sends the placeholder.
+- A reflection is not a leak: an allowed host that echoes the request shows the guest the value in the
+  response. Scope the key at the provider.
 
 ## What it stops, and what it does not
 

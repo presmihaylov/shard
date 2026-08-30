@@ -38,6 +38,7 @@ FORK_LINK=""
 CLONE_IDS=""
 CLONE_LINKS=""
 REPORTED=0
+ECHO_PID=""
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
 # once: a failure reaches it through fail and then again through the exit handler.
@@ -222,7 +223,47 @@ teardown() {
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
 
+	# The proxy outlives every verb, so nothing but this ends it; the pid file is its one handle.
+	if [ -f "${SHARD_ROOT}/proxy/pid" ]; then
+		kill "$(cat "${SHARD_ROOT}/proxy/pid")" >/dev/null 2>&1 || true
+	fi
+	[ -z "${ECHO_PID}" ] || kill "${ECHO_PID}" >/dev/null 2>&1 || true
+
 	wipe_root
+}
+
+# start_echo runs a plain HTTP server on the host's public address that answers with the request's
+# Authorization header, so a guest request shows what the proxy put on the wire.
+start_echo() {
+	local script
+	script=$(mktemp)
+	cat >"${script}" <<'PY'
+import http.server, sys
+class Echo(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("auth=" + self.headers.get("Authorization", "") + " path=" + self.path).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+http.server.HTTPServer(("0.0.0.0", int(sys.argv[1])), Echo).serve_forever()
+PY
+	python3 "${script}" 80 >/dev/null 2>&1 &
+	ECHO_PID=$!
+	for _ in $(seq 1 50); do
+		curl -fs "http://${PUBLIC_IP}/" >/dev/null 2>&1 && return 0
+		sleep 0.1
+	done
+	fail "the echo server did not come up on ${PUBLIC_IP}:80"
+}
+
+# fetch runs wget in a guest and prints the body, or the error line, so a refusal is as visible as a page.
+fetch() {
+	local id="$1" url="$2"
+	shift 2
+	shard exec "${id}" -- /bin/sh -c "wget -qO- -T 10 $* '${url}' 2>&1 || true"
 }
 
 # on_exit is the one handler: it names the step that broke and then gives the host back. The step is
@@ -260,6 +301,13 @@ say "runsc, ip, nft and go are on the host"
 check_host_is_free
 say "no other sandbox holds a link on this host"
 
+# The echo server sits on the public address, under two names: one the secret is granted to, one it is not.
+PUBLIC_IP=${PUBLIC_IP:-$(curl -fs -4 https://ifconfig.me)}
+[ -n "${PUBLIC_IP}" ] || fail "cannot learn the public address of this host; set PUBLIC_IP"
+GRANTED_HOST="${PUBLIC_IP}.sslip.io"
+UNGRANTED_HOST="${PUBLIC_IP}.nip.io"
+say "this host is ${PUBLIC_IP}, reachable as ${GRANTED_HOST} and ${UNGRANTED_HOST}"
+
 # The whole run owns one root, and it is never the production one.
 check_root
 say "this run owns the root ${SHARD_ROOT}"
@@ -285,7 +333,7 @@ wipe_root
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to api.example.com E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${GRANTED_HOST}" E2E_TOKEN >/dev/null
 SECRET_LS=$(shard secret ls)
 echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
 echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
@@ -295,21 +343,22 @@ SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 say "the secret file is mode 0600"
 
 step "store an egress policy"
-# The probe address is allowed on every protocol, so the ping the network checks use goes through, and nothing else does.
+# The probe address is allowed on every protocol, so the ping the network checks use goes through. The
+# name rules open the ungranted host and one TLS host at the proxy, and nothing else gets out.
 shard policy create --deny group:any e2e-deny-all >/dev/null
-shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+shard policy create --allow cidr:1.1.1.1 --allow domain-suffix:nip.io --allow domain:example.com --deny group:any e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
 shard policy show e2e-policy | grep -q '"kind": "cidr"' || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
 CODE=0
-REFUSAL=$(shard policy create --allow domain-suffix:example.com e2e-bad 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "policy create accepted a domain-suffix rule"
-echo "${REFUSAL}" | grep -q "SHARD-71" || fail "policy create said '${REFUSAL}', want it to name the proxy ticket"
-CODE=0
 shard policy create --allow 'domain:api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
-say "policy create refuses a domain-suffix rule and a domain rule on a raw port"
+say "policy create refuses a domain rule on a raw port"
+
+step "start the echo server"
+start_echo
+say "the echo server answers on ${PUBLIC_IP}:80"
 
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
@@ -379,6 +428,25 @@ expect_exec "blocked" "the floor holds under the policy: the gateway is dropped"
 shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
 shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
 say "inspect names the policy and what the host enforces"
+
+step "send the web through the proxy"
+PROXY_PID=$(cat "${SHARD_ROOT}/proxy/pid" 2>/dev/null || true)
+[ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null || fail "no proxy runs for ${SHARD_ROOT}"
+say "create started the proxy, pid ${PROXY_PID}"
+nft list table inet shard | grep -q "ip saddr ${ADDRESS%%/*} tcp dport 80 dnat" || fail "the host does not turn ${ADDRESS%%/*}:80 to the proxy"
+say "the host turns the sandbox's 80 and 443 to the proxy"
+# The guest trusts the CA the proxy signs with, and only because the bundle was built with it.
+CA_LINE=$(sed -n 2p "${SHARD_ROOT}/ca/ca.pem")
+expect_exec "trusted" "the guest trusts the proxy CA" \
+	/bin/sh -c "grep -qF '${CA_LINE}' /etc/ssl/certs/ca-certificates.crt && echo trusted"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/v1?key=mock-E2E_TOKEN" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/v1?key=${SECRET_VALUE}" "the granted host got the value in the header and the URL"
+expect "$(fetch "${ID}" "http://${UNGRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer mock-E2E_TOKEN path=/" "a host the policy allows but the grant does not got the placeholder"
+expect "$(fetch "${ID}" "http://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "a host the policy names nowhere is refused by the proxy"
+expect "$(fetch "${ID}" "https://example.com/" | grep -o '<title>Example Domain</title>')" "<title>Example Domain</title>" \
+	"the proxy terminates TLS for an allowed host and carries the page back"
+expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "the proxy refuses a TLS request to a host the policy names nowhere"
 
 # A policy change reaches a live sandbox at once, and never waits for the next start.
 shard policy create --deny group:any e2e-policy >/dev/null
@@ -608,6 +676,9 @@ for _ in $(seq 1 50); do
 done
 [ "$(shard logs "${ID}" | grep -c "shard-e2e-entrypoint")" -ge 2 ] || fail "the entrypoint did not run again from the beginning"
 say "the entrypoint ran again from the beginning"
+expect_blocked "${ID}" "the policy holds after the start"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy still fronts the sandbox after the start"
 
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 [ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "the started sandbox has no cgroup under the shard parent"

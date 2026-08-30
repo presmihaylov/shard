@@ -96,7 +96,7 @@ func TestTheStoreRefusesWhatTheHostCannotEnforce(t *testing.T) {
 		{Name: "Web"},
 		{Name: "../web"},
 		{Name: "web", Rules: []models.Rule{{Action: "permit", Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}}}},
-		{Name: "web", Rules: []models.Rule{{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomainSuffix, Value: "example.com"}, Protocol: "tcp"}}},
+		{Name: "web", Rules: []models.Rule{{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomainSuffix, Value: "example.com"}, Protocol: "udp"}}},
 		{Name: "web", Rules: []models.Rule{{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "udp"}}},
 		{Name: "web", Rules: []models.Rule{{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{22}}}},
 		{Name: "web", Rules: []models.Rule{{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "::/0"}}}},
@@ -155,7 +155,7 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 
 	for _, text := range []string{
 		"", "api.example.com", "domain:", "domain:api.example.com udp", "domain:api.example.com tcp:22",
-		"domain-suffix:example.com", "cidr:10.0.0.0/8 tcp:9-8", "cidr:10.0.0.0/8 tcp:x", "cidr:10.0.0.0/8 tcp:1-2000",
+		"domain-suffix:example.com tcp:22", "cidr:10.0.0.0/8 tcp:9-8", "cidr:10.0.0.0/8 tcp:x", "cidr:10.0.0.0/8 tcp:1-2000",
 		"group:any tcp:80 extra", "cidr:2001:db8::/32", "domain:10.0.0.1", "dns:example.com",
 	} {
 		if _, err := ParseRule(models.ActionAllow, text); err == nil {
@@ -163,8 +163,9 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 		}
 	}
 
-	if _, err := ParseRule(models.ActionAllow, "domain-suffix:example.com"); err == nil || !strings.Contains(err.Error(), "SHARD-71") {
-		t.Errorf("a domain-suffix rule got %v, want a refusal that names the proxy ticket", err)
+	suffix, err := ParseRule(models.ActionAllow, "domain-suffix:example.com")
+	if err != nil || suffix.Protocol != "tcp" || !slices.Equal(suffix.Ports, []int{80, 443}) {
+		t.Errorf("a domain-suffix rule got %+v, %v, want tcp 80,443", suffix, err)
 	}
 }
 

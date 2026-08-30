@@ -88,7 +88,6 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	app, _ := newLifecycleApp(t, &bytes.Buffer{}, &recorder{}, stopped())
 
 	for _, args := range [][]string{
-		{"policy", "create", "--allow", "domain-suffix:example.com", "web"},
 		{"policy", "create", "--allow", "domain:api.example.com tcp:22", "web"},
 		{"policy", "create", "--allow", "group:any", "Web"},
 		{"policy", "create", "web", "--allow", "group:any"},
@@ -99,9 +98,9 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 		}
 	}
 
-	err := app.Run(t.Context(), []string{"policy", "create", "--allow", "domain-suffix:example.com", "web"})
-	if err == nil || !strings.Contains(err.Error(), "SHARD-71") {
-		t.Errorf("a domain-suffix rule got %v, want a refusal that names the proxy ticket", err)
+	// A domain-suffix rule is the proxy's to match, so the host accepts it.
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "domain-suffix:example.com", "web"}); err != nil {
+		t.Errorf("a domain-suffix rule got %v", err)
 	}
 }
 
@@ -128,11 +127,11 @@ func TestPolicyApplyReadsAFile(t *testing.T) {
 		t.Errorf("Get = %+v, %v", got, err)
 	}
 
-	if err := os.WriteFile(file, []byte(`{"name":"web","rules":[{"action":"allow","destination":{"kind":"domain-suffix","value":"example.com"},"protocol":"tcp"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`{"name":"web","rules":[{"action":"allow","destination":{"kind":"domain-suffix","value":"example.com"},"protocol":"tcp","ports":[22]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Run(t.Context(), []string{"policy", "apply", "-f", file}); err == nil {
-		t.Error("a file with a domain-suffix rule was applied")
+		t.Error("a file with a domain-suffix rule to port 22 was applied")
 	}
 	if err := app.Run(t.Context(), []string{"policy", "apply"}); err == nil {
 		t.Error("apply without -f was accepted")

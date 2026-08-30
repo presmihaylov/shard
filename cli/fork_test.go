@@ -180,3 +180,20 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 		t.Errorf("the fork names policy %q, want the source's", got)
 	}
 }
+
+// A grant fronts a sandbox as a policy does, so a fork of a granted source gets a proxy too.
+func TestForkOfAGrantedSourceHasTheProxyBeforeTheRestore(t *testing.T) {
+	r := &recorder{}
+	source := paused()
+	source.Secrets = []string{"TOKEN"}
+	app, _ := newLifecycleApp(t, &bytes.Buffer{}, r, source)
+
+	if err := app.Run(t.Context(), []string{"fork", "sandbox1"}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+
+	want := []string{"net.Reapply", "proxy.Ensure", "provider.Fork", "net.Reapply"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("the proxy was driven as %v, want %v", got, want)
+	}
+}

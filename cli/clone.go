@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -119,9 +120,12 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if sb.Policy != "" {
+	// The chain and the turn to the proxy are keyed by the address, which the record holds only now.
+	if egress.IsFronted(sb) {
 		if err := net.Reapply(ctx, id); err != nil {
+			return err
+		}
+		if err := ensureProxy(ctx, d, netSpec.Gateway); err != nil {
 			return err
 		}
 	}

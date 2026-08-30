@@ -81,6 +81,10 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
+	if err := writeProxyCA(b, spec); err != nil {
+		return Bundle{}, err
+	}
+
 	runtimeSpec, err := s.runtimeSpec(spec, b)
 	if err != nil {
 		return Bundle{}, err
@@ -254,7 +258,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		// No User here: PID 1 stays root to write the exit file, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
-			Env:  environment(spec.Env),
+			Env:  environment(spec.Env, len(spec.ProxyCA) != 0),
 			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
@@ -313,13 +317,23 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 	return append(append(argv, "--"), entrypoint...), nil
 }
 
-// environment adds the one default that is runtime policy rather than image data.
-func environment(env []string) []string {
-	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
-		return env
+// environment adds what is runtime policy rather than image data, and never over what the user set.
+func environment(env []string, trustProxy bool) []string {
+	defaults := []string{defaultPath}
+	if trustProxy {
+		defaults = append(defaults, proxyCAEnv...)
 	}
 
-	return append(slices.Clone(env), defaultPath)
+	env = slices.Clone(env)
+	for _, entry := range defaults {
+		key := entry[:strings.Index(entry, "=")+1]
+		if slices.ContainsFunc(env, func(have string) bool { return strings.HasPrefix(have, key) }) {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	return env
 }
 
 // resourcesOf reads the bound back out of the spec, which is the inverse of resources.

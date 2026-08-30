@@ -126,3 +126,29 @@ func TestStartHoldsTheSandboxBeforeItReadsTheRecord(t *testing.T) {
 		t.Errorf("the record was read before the sandbox was held: %v", r.calls)
 	}
 }
+
+// A stopped sandbox keeps its policy and its address, so a start finds the proxy before the guest runs.
+func TestStartWithAPolicyHasTheProxyBeforeTheRun(t *testing.T) {
+	r := &recorder{}
+	sb := stopped()
+	sb.Policy = "locked"
+	app, _ := newLifecycleApp(t, &bytes.Buffer{}, r, sb)
+
+	if err := app.Run(t.Context(), []string{"start", "sandbox1"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	want := []string{"net.Allocate", "proxy.Ensure", "provider.Start"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("the proxy was driven as %v, want %v", got, want)
+	}
+
+	r.calls = nil
+	app, _ = newLifecycleApp(t, &bytes.Buffer{}, r, stopped())
+	if err := app.Run(t.Context(), []string{"start", "sandbox1"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if slices.Contains(r.calls, "proxy.Ensure") {
+		t.Errorf("a plain start asked for the proxy: %v", r.calls)
+	}
+}

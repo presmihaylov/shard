@@ -91,6 +91,10 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
+
+	// ProxyCA is the certificate the guest must trust for the proxy to speak for every host, PEM
+	// encoded. Empty when the proxy does not front this sandbox.
+	ProxyCA []byte
 }
 
 // ExecSpec is one process in a sandbox that already runs. It is never the entrypoint.

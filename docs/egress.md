@@ -29,18 +29,32 @@ A rule is `<kind>:<value> [tcp|udp[:<ports>]]`:
 
 | kind     | value                          | what it matches                                |
 |----------|--------------------------------|------------------------------------------------|
-| `cidr`   | `10.0.0.0/8`, `1.1.1.1`        | the prefix, or the one address                 |
-| `domain` | `api.example.com`              | the addresses the name resolves to on the host |
-| `group`  | `private`, `any`               | the private ranges above, or everything        |
+| `cidr`          | `10.0.0.0/8`, `1.1.1.1`  | the prefix, or the one address                 |
+| `domain`        | `api.example.com`        | the addresses the name resolves to on the host |
+| `domain-suffix` | `example.com`            | the name and every name under it, at the proxy |
+| `group`         | `private`, `any`         | the private ranges above, or everything        |
 
 Ports are a comma list of numbers and ranges, `tcp:22,8000-8100`. A rule with no protocol matches
 every protocol, ping included.
 
-A `domain` rule is `tcp` to ports 80 and 443 only, and both when no port is named. Until the
-egress proxy lands (SHARD-71) the host enforces the addresses the name resolves to when the table is
-written. A name is then enforced through the proxy, which speaks HTTP and TLS and nothing else; on a raw port it would
-be an address guess, so `policy create` refuses it and says to use a `cidr` rule. `domain-suffix`
-rules wait for the proxy (SHARD-71) and are refused until then.
+A `domain` rule is `tcp` to ports 80 and 443 only, and both when no port is named. A name is
+enforced through the egress proxy, which speaks HTTP and TLS and nothing else; on a raw port it would
+be an address guess, so `policy create` refuses it and says to use a `cidr` rule. A `domain-suffix`
+rule lives at the proxy alone: it compiles to nothing on the host, and matches the name a request
+carries.
+
+## The proxy fronts a sandbox with a policy or a secret
+
+A sandbox that holds a policy or a secret is *fronted*: the host turns its port 80 and 443 to the
+egress proxy on the gateway, and the proxy judges each request by the name it carries, with the same
+rules in the same order the host holds. So a web request meets the policy twice, first by name at
+the proxy and then by address on the host for everything else. What the host cannot see, a name
+behind a shared CDN address say, the proxy can. A fronted sandbox with no proxy reaches no web host:
+the first verb that needs one starts it, and refuses the sandbox if it does not come up.
+
+A rule at the proxy reads as it does on the host, with one addition: a host a grant implies, and a
+sandbox with no policy at all, may not reach a private address by name. Written into the policy by the
+operator, the same `domain` rule may.
 
 `shard policy apply -f FILE` stores the same thing from JSON, in the shape `shard policy show`
 prints. `shard policy ls` lists the names, and `shard policy rm` refuses while a sandbox record names
@@ -69,12 +83,13 @@ nameservers the guest uses, so a guest that answers its own lookups changes noth
   or the policy command that asked for it. The host keeps the rules it had.
 - A name a grant implies is not in the policy, so one that does not resolve closes that host and
   nothing else: the sandbox comes up, and it cannot reach that host until the next apply.
-- A CDN address shared by many hosts is allowed for all of them. The proxy (SHARD-71) closes that
-  by matching the name in the request.
+- A CDN address shared by many hosts is allowed for all of them on a raw port. On 80 and 443 the proxy
+  closes that by matching the name in the request.
 
 ## A policy change is immediate
 
-Storing a policy again enforces it at once on every sandbox that holds it, running or paused. There
-is no restart: the whole table is replaced in one transaction. A connection that is already open
-stays open until it ends, since the host accepts an established flow before it asks the policy; a
-new one is judged by the new rules.
+Storing a policy again enforces it at once on every sandbox that holds it, running, paused or
+stopped. There is no restart: the whole table is replaced in one transaction. A stopped sandbox keeps
+its address, so it keeps its chain: a start finds the rules in place before the guest runs. A
+connection that is already open stays open until it ends, since the host accepts an established flow
+before it asks the policy; a new one is judged by the new rules.

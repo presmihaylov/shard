@@ -9,6 +9,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
@@ -50,10 +51,11 @@ type sandboxNetwork interface {
 	ReapplyAll(ctx context.Context) error
 }
 
-// secretStore is the part of secret.Store the commands drive. No command reads a value: that is the proxy's.
+// secretStore is the part of secret.Store the commands drive. Only the proxy reads a value, per request.
 type secretStore interface {
 	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
+	Value(name string) (string, error)
 	List() ([]secret.Secret, error)
 	Remove(name string) error
 }
@@ -78,6 +80,7 @@ type deps struct {
 	secretSvc    secretStore
 	policySvc    *egress.Store
 	runnerSvc    *runsc.Runner
+	proxySvc     egressProxy
 
 	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
 	inFile  *os.File
@@ -277,4 +280,41 @@ func (d *deps) egress() (*egress.Service, error) {
 	}
 
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
+}
+
+// proxy is what a verb asks for the CA and for a running proxy. It reads the layout the proxy verb
+// reads, so the two agree on the ports.
+func (d *deps) proxy() (egressProxy, error) {
+	if d.proxySvc != nil {
+		return d.proxySvc, nil
+	}
+
+	cfg, _, err := network.Layout(network.Config{Root: d.app.Root})
+	if err != nil {
+		return nil, err
+	}
+	d.proxySvc = launcher{root: d.app.Root, ports: cfg.Proxy}
+
+	return d.proxySvc, nil
+}
+
+// broker is the proxy's director. It reads the same stores the host rules compile from, so a request
+// is judged by what the chain would have judged it by.
+func (d *deps) broker() (*broker.Service, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	policies, err := d.egress()
+	if err != nil {
+		return nil, err
+	}
+
+	secrets, err := d.secrets()
+	if err != nil {
+		return nil, err
+	}
+
+	return broker.New(repo, policies, secrets), nil
 }
