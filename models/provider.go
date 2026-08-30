@@ -62,6 +62,7 @@ type Status struct {
 	PID int
 	// OOMKilled says the host ended this sandbox for holding too much memory. It is only ever set on
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
+	// A stop leaves the same leftovers, so a record that says stopped outranks it: only stop writes that.
 	OOMKilled bool
 }
 
