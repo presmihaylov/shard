@@ -53,8 +53,7 @@ func NewStore(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
-// Set writes the policy, or replaces the one of that name. It is validated first, so the store never
-// holds a policy the host could not enforce.
+// Set writes the policy, validated first, so the store never holds one the host could not enforce.
 func (s *Store) Set(policy models.Policy) error {
 	if err := Validate(policy); err != nil {
 		return err
@@ -93,6 +92,10 @@ func (s *Store) Get(name string) (models.Policy, error) {
 
 	// The file name is the identity, so a file edited by hand cannot answer for another name.
 	policy.Name = name
+	// A file edited by hand would otherwise render a rule nft refuses and break every Ensure.
+	if err := Validate(policy); err != nil {
+		return models.Policy{}, fmt.Errorf("policy %s: %w", name, err)
+	}
 
 	return policy, nil
 }

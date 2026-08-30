@@ -10,14 +10,12 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// EgressSource says which sandboxes carry a policy and what it compiles to. The network service asks
-// it on every Ensure, so the table always says what the records say. A nil source is no policy anywhere.
+// EgressSource says what every sandbox's policy compiles to; nil is no policy anywhere.
 type EgressSource interface {
 	Chains(ctx context.Context) ([]Chain, error)
 }
 
-// Chain is the egress of one sandbox with a policy, keyed by the address the lease gave it. The
-// rules run in order and what matches none of them is dropped.
+// Chain is the egress of one sandbox, keyed by its address; the rules run in order and the rest is dropped.
 type Chain struct {
 	Address netip.Addr
 	Rules   []Compiled
@@ -31,8 +29,7 @@ type Compiled struct {
 	Prefixes []netip.Prefix
 }
 
-// privateRanges is what a sandbox with no policy may still not reach: the host's own networks, and
-// the metadata and loopback ranges a cloud puts one hop away.
+// privateRanges is the floor under every policy: the host's networks and what a cloud puts one hop away.
 var privateRanges = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8", "100.64.0.0/10"}
 
 // Groups is what a group destination names.
@@ -50,11 +47,7 @@ func mustPrefixes(cidrs []string) []netip.Prefix {
 	return prefixes
 }
 
-// ruleset is the whole of shard's host netfilter policy, in two tables replaced in one transaction, so
-// no packet is ever seen by half of it. The inet table masquerades, keeps a sandbox off the host's own
-// services, and runs the egress policy: a sandbox with a policy runs its own chain, and one without
-// reaches anything but private. The bridge table is what the inet hooks cannot see: a frame from one
-// port to another never leaves the bridge, and the port a frame came in on is only known there.
+// ruleset is the whole host policy in two tables replaced in one transaction; docs/egress.md says why two.
 func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	var b strings.Builder
 
@@ -71,7 +64,8 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 
 	// The hook keeps policy accept, so a table the host also filters in is not overridden: every drop is explicit.
 	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname %[1]q ct state established,related accept\n\t\tiifname %[1]q jump egress\n\t}\n\n", s.cfg.Bridge)
+	// Nothing dials into a sandbox: a new flow toward the bridge is dropped before the policy is asked.
+	fmt.Fprintf(&b, "\t\tiifname %[1]q ct state established,related accept\n\t\toifname %[1]q ct state new drop\n\t\tiifname %[1]q jump egress\n\t}\n\n", s.cfg.Bridge)
 
 	// The private floor comes before the chains, so no rule of a policy opens it.
 	fmt.Fprintf(&b, "\tchain egress {\n")

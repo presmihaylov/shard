@@ -35,6 +35,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 	for _, want := range []string{
 		"type filter hook forward priority filter; policy accept;",
 		`iifname "shard0" ct state established,related accept`,
+		`oifname "shard0" ct state new drop`,
 		`iifname "shard0" jump egress`,
 		`oifname "shard0" drop`,
 		"ip saddr 10.87.0.2 jump egress_shardv2",

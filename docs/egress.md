@@ -36,8 +36,9 @@ A rule is `<kind>:<value> [tcp|udp[:<ports>]]`:
 Ports are a comma list of numbers and ranges, `tcp:22,8000-8100`. A rule with no protocol matches
 every protocol, ping included.
 
-A `domain` rule is `tcp` to ports 80 and 443 only, and both when no port is named. A name is
-enforced through the egress proxy, which speaks HTTP and TLS and nothing else; on a raw port it would
+A `domain` rule is `tcp` to ports 80 and 443 only, and both when no port is named. Until the
+egress proxy lands (SHARD-71) the host enforces the addresses the name resolves to when the table is
+written. A name is then enforced through the proxy, which speaks HTTP and TLS and nothing else; on a raw port it would
 be an address guess, so `policy create` refuses it and says to use a `cidr` rule. `domain-suffix`
 rules wait for the proxy (SHARD-71) and are refused until then.
 
@@ -74,4 +75,6 @@ nameservers the guest uses, so a guest that answers its own lookups changes noth
 ## A policy change is immediate
 
 Storing a policy again enforces it at once on every sandbox that holds it, running or paused. There
-is no restart and no window with the old rules: the whole table is replaced in one transaction.
+is no restart: the whole table is replaced in one transaction. A connection that is already open
+stays open until it ends, since the host accepts an established flow before it asks the policy; a
+new one is judged by the new rules.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // The defaults are what a host with no configuration gets.
@@ -43,7 +44,10 @@ const (
 	tableName    = "shard"
 )
 
-const leasesDir = "leases"
+const (
+	leasesDir  = "leases"
+	ensureLock = "ensure.lock"
+)
 
 // Config is the host's network layout. The zero value is not usable; New fills in every default.
 type Config struct {
@@ -126,10 +130,15 @@ func (s *Service) Gateway() netip.Addr { return s.gateway }
 // Bridge is the host interface every sandbox hangs off.
 func (s *Service) Bridge() string { return s.cfg.Bridge }
 
-// Ensure builds the host side: the bridge, forwarding and the nft table, with a chain for every
-// sandbox whose record carries a policy. It is idempotent, so Allocate calls it rather than making a
-// caller remember to, and the ruleset is replaced whole, so a policy change lands on every sandbox at once.
-func (s *Service) Ensure(ctx context.Context) error {
+// Ensure builds the host side and replaces the whole ruleset from the records, so it is idempotent.
+func (s *Service) Ensure(ctx context.Context) (err error) {
+	// Two verbs at once would race read against apply, and the older render could land last.
+	lock, err := store.AcquireContext(ctx, filepath.Join(s.cfg.Root, "network", ensureLock), leaseFilePerm)
+	if err != nil {
+		return fmt.Errorf("lock the host network: %w", err)
+	}
+	defer func() { err = errors.Join(err, lock.Release()) }()
+
 	routes, err := s.manager.Routes(ctx)
 	if err != nil {
 		return err

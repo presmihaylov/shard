@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,8 +41,7 @@ func (a App) policy(ctx context.Context, args []string) error {
 	return fmt.Errorf("unknown policy subcommand %q; run shard help", args[0])
 }
 
-// ruleList collects --allow and --deny into one slice, so the order on the command line is the order
-// the host evaluates them in.
+// ruleList collects --allow and --deny into one slice, in the order the host evaluates them.
 type ruleList struct {
 	action models.Action
 	rules  *[]models.Rule
@@ -119,25 +119,28 @@ func (a App) policyApply(ctx context.Context, args []string) error {
 	}
 
 	var policy models.Policy
-	if err := json.Unmarshal(blob, &policy); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(blob))
+	// A misspelled field would otherwise widen the rule in silence.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&policy); err != nil {
 		return fmt.Errorf("decode the policy in %s: %w", *file, err)
 	}
 
 	return a.storePolicy(ctx, policy)
 }
 
-func readPolicy(d *deps, file string) ([]byte, error) {
+func readPolicy(d *deps, file string) (blob []byte, err error) {
 	var in io.Reader = d.stdin()
 	if file != "-" {
 		f, err := os.Open(file)
 		if err != nil {
 			return nil, fmt.Errorf("read the policy: %w", err)
 		}
-		defer f.Close()
+		defer func() { err = errors.Join(err, f.Close()) }()
 		in = f
 	}
 
-	blob, err := io.ReadAll(io.LimitReader(in, maxPolicyBytes+1))
+	blob, err = io.ReadAll(io.LimitReader(in, maxPolicyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read the policy from %s: %w", file, err)
 	}
@@ -148,8 +151,7 @@ func readPolicy(d *deps, file string) ([]byte, error) {
 	return blob, nil
 }
 
-// storePolicy writes the policy and, when a sandbox holds it, puts the new rules on the host at once:
-// a policy change is never left for the next start.
+// storePolicy writes the policy and puts the new rules on every sandbox that holds it at once.
 func (a App) storePolicy(ctx context.Context, policy models.Policy) error {
 	d := a.deps()
 

@@ -367,6 +367,15 @@ nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host hol
 nft list table bridge shard | grep -q "iifname \"${LINK}\"" || fail "the host does not pin the address of ${LINK}"
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
+# The probe is only proof once the same address answers when a rule allows it.
+shard policy create --allow cidr:1.1.1.1 --allow cidr:8.8.8.8 --deny group:any e2e-policy >/dev/null
+expect_exec "reachable" "the same address answers once a rule allows it" \
+	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
+shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+expect_exec "blocked" "the floor holds under the policy: the metadata address is dropped" \
+	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
+expect_exec "blocked" "the floor holds under the policy: the gateway is dropped" \
+	/bin/sh -c 'ping -c 1 -W 2 10.87.0.1 >/dev/null 2>&1 && echo reachable || echo blocked'
 shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
 shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
 say "inspect names the policy and what the host enforces"
@@ -604,6 +613,7 @@ expect_exec "kept" "the file written before the stop is there after the start" /
 [ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "the started sandbox has no cgroup under the shard parent"
 # gVisor took the address at the first create, so this proves the start built the netns again.
 expect_network "after the start"
+expect_blocked "${ID}" "the policy holds after the start"
 
 step "stop the started sandbox"
 shard stop --time "${GRACE}" "${ID}" >/dev/null

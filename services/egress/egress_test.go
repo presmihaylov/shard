@@ -59,6 +59,17 @@ func TestTheStoreRoundTripsAndListsByName(t *testing.T) {
 		t.Errorf("Get = %+v", got)
 	}
 
+	// A file edited by hand is read through the same gate as Set, so Ensure never renders a rule nft refuses.
+	if err := os.WriteFile(filepath.Join(s.dir, "bad.json"), []byte(`{"name":"bad","rules":[{"action":"allow","destination":{"kind":"cidr","value":"1.1.1.1"},"ports":[22]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("bad"); err == nil {
+		t.Error("Get accepted a hand-edited policy with ports and no protocol")
+	}
+	if err := os.Remove(filepath.Join(s.dir, "bad.json")); err != nil {
+		t.Fatal(err)
+	}
+
 	all, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)

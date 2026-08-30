@@ -137,6 +137,14 @@ func TestPolicyApplyReadsAFile(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"policy", "apply"}); err == nil {
 		t.Error("apply without -f was accepted")
 	}
+
+	// A misspelled field would otherwise widen the rule in silence.
+	if err := os.WriteFile(file, []byte(`{"name":"web","rules":[{"action":"allow","destination":{"kind":"cidr","value":"1.1.1.1"},"protocol":"tcp","port":[443]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Run(t.Context(), []string{"policy", "apply", "-f", file}); err == nil {
+		t.Error("a file with an unknown field was applied")
+	}
 }
 
 func TestPolicyRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {

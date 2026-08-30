@@ -23,8 +23,7 @@ type Grants interface {
 	Get(name string) (secret.Secret, error)
 }
 
-// Resolver turns a name into addresses. The default asks the sandbox nameservers, so the host and the
-// guest agree on what a name is.
+// Resolver turns a name into addresses; the default asks the sandbox nameservers, so host and guest agree.
 type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
@@ -150,8 +149,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
 }
 
-// Chains compiles one chain per sandbox that holds a policy and an address. A stopped sandbox sends
-// nothing, so it gets none.
+// Chains compiles one chain per sandbox that holds a policy and an address; a stopped one gets none.
 func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	sandboxes, err := s.records.List()
 	if err != nil {
@@ -172,8 +170,7 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 		chain := network.Chain{Address: sb.Address.Addr()}
 		for _, rule := range effective.Rules {
 			compiled, err := s.compile(ctx, rule.Rule)
-			// A grant names a host the operator did not write into the policy, so one that does not resolve
-			// closes that host and nothing else, and never blocks the sandbox.
+			// A granted host the operator did not write into the policy closes itself when it does not resolve.
 			if err != nil && rule.Implied != "" {
 				compiled = network.Compiled{Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
 				err = nil
