@@ -349,7 +349,8 @@ step "store an egress policy"
 # The probe address is allowed on every protocol, so the ping the network checks use goes through. The
 # name rules open the ungranted host and one TLS host at the proxy, and nothing else gets out.
 shard policy create --deny group:any e2e-deny-all >/dev/null
-shard policy create --allow cidr:1.1.1.1 --allow domain-suffix:nip.io --allow domain:example.com --deny group:any e2e-policy >/dev/null
+E2E_RULES=(--allow cidr:1.1.1.1 --allow domain-suffix:nip.io --allow domain:example.com --deny group:any)
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | has "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
 shard policy show e2e-policy | has '"kind": "cidr"' || fail "shard policy show does not print the rules"
@@ -420,10 +421,10 @@ nft list table bridge shard | has "iifname \"${LINK}\"" || fail "the host does n
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 # The probe is only proof once the same address answers when a rule allows it.
-shard policy create --allow cidr:1.1.1.1 --allow cidr:8.8.8.8 --deny group:any e2e-policy >/dev/null
+shard policy create --allow cidr:8.8.8.8 "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
 	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
-shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_exec "blocked" "the floor holds under the policy: the metadata address is dropped" \
 	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
 expect_exec "blocked" "the floor holds under the policy: the gateway is dropped" \
@@ -455,7 +456,7 @@ expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 
 shard policy create --deny group:any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
-shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_network "after the policy was put back"
 
 CODE=0
