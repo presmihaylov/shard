@@ -111,3 +111,18 @@ func TestStartNamesTheSandboxWhenTheRecordWriteFails(t *testing.T) {
 		t.Errorf("start returned %v, want the sandbox named as running", err)
 	}
 }
+
+// Two starts of one sandbox must not both build its netns: the second holds the sandbox first and
+// then reads a record the first one has already flipped to running.
+func TestStartHoldsTheSandboxBeforeItReadsTheRecord(t *testing.T) {
+	r := &recorder{live: map[string]bool{}}
+	app, _ := newLifecycleApp(t, &bytes.Buffer{}, r, stopped())
+
+	if err := app.Run(t.Context(), []string{"start", stopped().ID}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if held, read := slices.Index(r.calls, "repo.Hold"), slices.Index(r.calls, "repo.Get"); held < 0 || held > read {
+		t.Errorf("the record was read before the sandbox was held: %v", r.calls)
+	}
+}

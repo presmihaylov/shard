@@ -2,6 +2,7 @@
 package sandboxstate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,8 @@ const (
 	namesDir     = "names"
 	snapshotsDir = "snapshots"
 	locksDir     = "locks"
+	writeLock    = ".lock"
+	verbLock     = ".verb.lock"
 	recordFile   = "sandbox.json"
 
 	dirPerm    = 0o750
@@ -288,7 +291,7 @@ func (r *Repository) Delete(id string) (err error) {
 	// The snapshot goes next: it is the one a half-done delete would leave with no id to reach it.
 	// The lock file goes last, once the record is gone. Removing it while we hold it is fine, because
 	// store.Acquire moves a waiter onto the file that has the name.
-	for _, path := range []string{r.snapshotDir(id), r.dir(id), l.Path()} {
+	for _, path := range []string{r.snapshotDir(id), r.dir(id), l.Path(), filepath.Join(r.root, locksDir, id+verbLock)} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -386,34 +389,60 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 	return sandboxes, unreadable
 }
 
-// writeLock serializes the writers of one sandbox. Two sandboxes never wait on each other.
-func (r *Repository) writeLock(id string) (*store.Lock, error) {
-	path, err := r.lockPath(id)
+// Hold serializes the lifecycle verbs of one sandbox: a start, a stop or an rm waits for the one
+// under way, then reads a record that one has finished with. Take it before any Update or Delete,
+// which lock inside it, and never the other way round.
+func (r *Repository) Hold(ctx context.Context, id string) (func() error, error) {
+	path, err := r.lockPath(id, verbLock)
 	if err != nil {
 		return nil, err
+	}
+
+	l, err := store.AcquireContext(ctx, path, lockPerm)
+	if err != nil {
+		return nil, err
+	}
+
+	// The holder we waited on may have been an rm: then the file we hold is one we made, so take it back.
+	if _, err := os.Stat(r.dir(id)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
+		}
+
+		return nil, errors.Join(err, os.Remove(path), l.Release())
+	}
+
+	return l.Release, nil
+}
+
+// writeLock serializes the writers of one sandbox. Two sandboxes never wait on each other.
+func (r *Repository) writeLock(id string) (*store.Lock, error) {
+	path, err := r.lockPath(id, writeLock)
+	if err != nil {
+		return nil, err
+	}
+
+	return store.Acquire(path, lockPerm)
+}
+
+// The lock files live outside the directory Delete removes: inside it, a delete and a concurrent
+// acquire would end up holding two different inodes and both would think they own the sandbox.
+func (r *Repository) lockPath(id, suffix string) (string, error) {
+	if err := validID(id); err != nil {
+		return "", err
 	}
 
 	// Refuse before Acquire creates the file, or a mistyped id would leave a lock file behind forever.
 	dir := r.dir(id)
 	if _, err := os.Stat(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
+			return "", fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
 		}
 
-		return nil, fmt.Errorf("stat %s: %w", dir, err)
+		return "", fmt.Errorf("stat %s: %w", dir, err)
 	}
 
-	return store.Acquire(path, lockPerm)
-}
-
-// The lock file lives outside the directory Delete removes: inside it, a delete and a concurrent
-// acquire would end up holding two different inodes and both would think they own the sandbox.
-func (r *Repository) lockPath(id string) (string, error) {
-	if err := validID(id); err != nil {
-		return "", err
-	}
-
-	return filepath.Join(r.root, locksDir, id+".lock"), nil
+	return filepath.Join(r.root, locksDir, id+suffix), nil
 }
 
 // unlock joins the release into the caller's error: a lock we cannot drop blocks every later caller.

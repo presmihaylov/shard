@@ -34,6 +34,7 @@ type sandboxRepo interface {
 	List() ([]models.Sandbox, error)
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
+	Hold(ctx context.Context, id string) (func() error, error)
 	Dir(id string) (string, error)
 }
 

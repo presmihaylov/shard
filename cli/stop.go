@@ -20,7 +20,7 @@ type stopOptions struct {
 	grace time.Duration
 }
 
-func (a App) stop(ctx context.Context, args []string) error {
+func (a App) stop(ctx context.Context, args []string) (err error) {
 	opts, err := parseStop(args)
 	if err != nil {
 		return err
@@ -42,6 +42,12 @@ func (a App) stop(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	release, err := repo.Hold(ctx, opts.id)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, release()) }()
 
 	if err := a.stopSandbox(ctx, repo, provider, opts.id, opts.grace); err != nil {
 		return err

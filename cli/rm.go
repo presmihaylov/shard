@@ -20,7 +20,7 @@ type rmOptions struct {
 	grace time.Duration
 }
 
-func (a App) remove(ctx context.Context, args []string) error {
+func (a App) remove(ctx context.Context, args []string) (err error) {
 	opts, err := parseRm(args)
 	if err != nil {
 		return err
@@ -51,8 +51,9 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// The record dies last below, so an id with no record has nothing else left on the host either.
-	_, err = repo.Get(opts.id)
+	// The record dies last below, so an id with no record has nothing else left on the host either,
+	// and an rm that waited on another rm finds the same nothing.
+	release, err := repo.Hold(ctx, opts.id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
 		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", ref))
 
@@ -61,6 +62,7 @@ func (a App) remove(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer func() { err = errors.Join(err, release()) }()
 
 	if err := a.endIfAlive(ctx, repo, provider, opts); err != nil {
 		return err
