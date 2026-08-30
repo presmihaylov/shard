@@ -175,7 +175,7 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	address, held, err := s.pool.allocate(id)
+	address, _, err := s.pool.allocate(id)
 	if err != nil {
 		return models.NetworkSpec{}, err
 	}
@@ -185,12 +185,8 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	// A lease and a namespace together mean an earlier call already built this, which is the sandbox
-	// that stopped and started again. A namespace without a lease belongs to nobody, so it goes.
-	if held && built {
-		return s.spec(id, address), nil
-	}
-
+	// A namespace that is already built goes and comes back: gVisor takes the guest address at create
+	// and never gives it back, so the one a stopped sandbox kept has no address. The lease keeps it.
 	if built {
 		if err := s.manager.DeleteNamespace(ctx, id); err != nil {
 			return models.NetworkSpec{}, err

@@ -59,8 +59,15 @@ func (a App) stopSandbox(ctx context.Context, repo sandboxRepo, provider models.
 	}
 
 	// A second stop changes nothing: the exit status the first one recorded is the one that happened.
+	// Unless a start failed after the substrate came up, which is the one way a stopped record lies.
 	if sb.State == models.StateStopped {
-		return nil
+		status, err := provider.Status(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !status.Alive() {
+			return nil
+		}
 	}
 
 	if err := provider.Stop(ctx, id, grace); err != nil {

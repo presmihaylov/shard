@@ -70,10 +70,18 @@ func (f *fakeLifecycleRepo) Delete(string) error {
 }
 
 type fakeLifecycleNet struct {
-	sandboxNetwork
+	r         *recorder
+	allocated bool
+	released  bool
+}
 
-	r        *recorder
-	released bool
+func (f *fakeLifecycleNet) Allocate(context.Context, string) (models.NetworkSpec, error) {
+	if err := f.r.record("net.Allocate"); err != nil {
+		return models.NetworkSpec{}, err
+	}
+	f.allocated = true
+
+	return models.NetworkSpec{}, nil
 }
 
 func (f *fakeLifecycleNet) Release(context.Context, string) error {

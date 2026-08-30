@@ -32,6 +32,11 @@ func TestStartRunsAStoppedSandboxAgain(t *testing.T) {
 		t.Error("the provider was never asked to start")
 	}
 
+	// gVisor took the guest address at the first create, so the netns is built again before the run.
+	if !d.netSvc.(*fakeLifecycleNet).allocated || slices.Index(r.calls, "net.Allocate") > slices.Index(r.calls, "provider.Start") {
+		t.Errorf("the network was not built again before the start: %v", r.calls)
+	}
+
 	sb := d.repoSvc.(*fakeLifecycleRepo).sb
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -75,5 +80,34 @@ func TestStartKeepsTheRecordStoppedWhenTheProviderFails(t *testing.T) {
 
 	if sb := d.repoSvc.(*fakeLifecycleRepo).sb; sb.State != models.StateStopped || sb.ExitStatus == nil {
 		t.Errorf("the record is %s with exit %v after a failed start, want stopped with its exit kept", sb.State, sb.ExitStatus)
+	}
+}
+
+// A start that failed after the substrate came up leaves a live sandbox, and only stop ends one.
+func TestStartRecordsASandboxThatCameUpUnderAFailedStart(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{fail: []string{"provider.Start"}}
+	app, d := newLifecycleApp(t, &out, r, stopped())
+	d.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
+
+	err := app.Run(t.Context(), []string{"start", "sandbox1"})
+	if err == nil || !strings.Contains(err.Error(), "may be running") {
+		t.Fatalf("start returned %v, want the failure and the warning that the sandbox stays", err)
+	}
+
+	if sb := d.repoSvc.(*fakeLifecycleRepo).sb; sb.State != models.StateRunning || sb.PID != 9 {
+		t.Errorf("the record is %s with pid %d, want running with pid 9", sb.State, sb.PID)
+	}
+}
+
+func TestStartNamesTheSandboxWhenTheRecordWriteFails(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newLifecycleApp(t, &out, &recorder{fail: []string{"repo.Update"}}, stopped())
+
+	err := app.Run(t.Context(), []string{"start", "sandbox1"})
+	if err == nil || !strings.Contains(err.Error(), "is running but its record was not updated") {
+		t.Errorf("start returned %v, want the sandbox named as running", err)
 	}
 }

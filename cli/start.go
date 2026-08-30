@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/presmihaylov/shard/models"
@@ -40,10 +41,46 @@ func (a App) start(ctx context.Context, args []string) error {
 		return fmt.Errorf("sandbox %s is %s: start takes a stopped sandbox", id, sb.State)
 	}
 
-	if err := provider.Start(ctx, id); err != nil {
+	net, err := d.net()
+	if err != nil {
 		return err
 	}
 
+	// The lease survived the stop, so this hands back the same address over a namespace built again.
+	if _, err := net.Allocate(ctx, id); err != nil {
+		return err
+	}
+
+	if err := provider.Start(ctx, id); err != nil {
+		return errors.Join(err, a.reconcile(ctx, repo, provider, id))
+	}
+
+	if err := a.recordRunning(ctx, repo, provider, id); err != nil {
+		return err
+	}
+
+	return a.print(id)
+}
+
+// reconcile is for a start that failed: the substrate may hold a live sandbox anyway, and only stop
+// ends one, so the record must say so rather than call it stopped.
+func (a App) reconcile(ctx context.Context, repo sandboxRepo, provider models.Provider, id string) error {
+	status, err := provider.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !status.Alive() {
+		return nil
+	}
+
+	if err := a.recordRunning(ctx, repo, provider, id); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("sandbox %s may be running and it stays on the host", id)
+}
+
+func (a App) recordRunning(ctx context.Context, repo sandboxRepo, provider models.Provider, id string) error {
 	status, err := provider.Status(ctx, id)
 	if err != nil {
 		return err
@@ -58,8 +95,8 @@ func (a App) start(ctx context.Context, args []string) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
 	}
 
-	return a.print(id)
+	return nil
 }

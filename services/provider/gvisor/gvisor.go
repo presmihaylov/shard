@@ -228,11 +228,25 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	return p.awaitStarted(ctx, id, b)
 }
 
-// awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
-// supervisor that could not run the entrypoint does within milliseconds.
 // recreate is how a stopped sandbox runs again: runsc never starts one, so the container goes and a
 // new one comes up over the same bundle, whose writable layer and config.json the stop kept.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
+	if err := orphaned(b, id, held); err != nil {
+		return err
+	}
+
+	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
+	rt, err := b.Runtime()
+	if err != nil {
+		return err
+	}
+	if rt.RootFS == "" {
+		return fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
+	}
+	if _, err := os.Stat(rt.RootFS); err != nil {
+		return fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	}
+
 	if held {
 		if err := p.runsc.Delete(ctx, id, true); err != nil {
 			return err
@@ -242,14 +256,6 @@ func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle
 	// A cgroup runsc left behind would make the create refuse the bound it could not apply.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
-	}
-
-	rt, err := b.Runtime()
-	if err != nil {
-		return err
-	}
-	if rt.RootFS == "" {
-		return fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
 	}
 
 	if err := b.Mount(rt.RootFS); err != nil {
@@ -264,6 +270,8 @@ func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle
 	return nil
 }
 
+// awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
+// supervisor that could not run the entrypoint does within milliseconds.
 func (p *Provider) awaitStarted(ctx context.Context, id string, b bundle.Bundle) error {
 	deadline := time.Now().Add(startGrace)
 

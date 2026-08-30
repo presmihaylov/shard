@@ -206,3 +206,23 @@ func TestStopReportsAWaitThatFailedForAnotherReason(t *testing.T) {
 		t.Fatal("an unreadable exit status returned no error")
 	}
 }
+
+// A start that failed after the substrate came up leaves a stopped record over a live sandbox.
+func TestStopEndsASandboxWhoseRecordSaysStopped(t *testing.T) {
+	var out bytes.Buffer
+
+	sb := running()
+	sb.State = models.StateStopped
+
+	r := &recorder{}
+	app, d := newLifecycleApp(t, &out, r, sb)
+	d.providerSvc.(*fakeLifecycleProvider).status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
+
+	if err := app.Run(t.Context(), []string{"stop", "sandbox1"}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if !d.providerSvc.(*fakeLifecycleProvider).stopped {
+		t.Errorf("the live sandbox was not stopped: %v", r.calls)
+	}
+}

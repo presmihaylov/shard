@@ -17,8 +17,8 @@ type Provider interface {
 	// Create prepares a sandbox in StateCreated. Nothing in the guest runs yet.
 	Create(ctx context.Context, spec SandboxSpec) error
 	// Start runs the entrypoint. Create prepared the sandbox and nothing in the guest ran before this.
-	// A provider may refuse a start after a stop; the orchestrator then re-creates over the same
-	// writable layer (SHARD-24).
+	// After a stop it runs the entrypoint again over the writable layer the stop kept, with the
+	// address and the netns the orchestrator rebuilt first (SHARD-96).
 	Start(ctx context.Context, id string) error
 	// Stop ends the sandbox, and nothing else does. It signals, waits out grace, then kills.
 	Stop(ctx context.Context, id string, grace time.Duration) error
