@@ -909,3 +909,36 @@ func TestHoldAfterADeleteIsNotFoundAndLeavesNoLockFile(t *testing.T) {
 		t.Errorf("the Hold that lost left a lock file behind: %v", err)
 	}
 }
+
+// Two forks of one snapshot read it side by side, and a pause that would replace it waits for both.
+func TestHoldSharedIsSharedAndAHoldWaitsItOut(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	first, err := r.HoldShared(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("HoldShared: %v", err)
+	}
+	second, err := r.HoldShared(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("a second HoldShared beside the first: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := r.Hold(ctx, sb.ID); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Hold beside a shared hold returned %v, want it to wait out its context", err)
+	}
+
+	if err := errors.Join(first(), second()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	release, err := r.Hold(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("Hold after the releases: %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}

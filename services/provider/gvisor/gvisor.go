@@ -1,5 +1,4 @@
-// Package gvisor runs sandboxes on gVisor by driving bare runsc. Fork lands in SHARD-33; until then
-// this provider refuses it rather than downgrading to a weaker mechanism.
+// Package gvisor runs sandboxes on gVisor by driving bare runsc.
 package gvisor
 
 import (
@@ -62,8 +61,8 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 		return nil, errors.New("the gvisor provider needs a runsc runner, a bundle service and a state directory lookup")
 	}
 
-	// Capabilities is fixed once here, so it needs no context and cannot fail. SHARD-33 flips fork.
-	caps := models.Capabilities{Pause: true, Resume: true}
+	// Capabilities is fixed once here, so it needs no context and cannot fail.
+	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
 
 	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root}, nil
 }
@@ -263,15 +262,9 @@ func (p *Provider) reclaim(ctx context.Context, id, dir string, b bundle.Bundle,
 	}
 
 	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
-	rt, err := b.Runtime()
+	rt, err := imageOf(b, id)
 	if err != nil {
 		return models.SandboxSpec{}, err
-	}
-	if rt.RootFS == "" {
-		return models.SandboxSpec{}, fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
-	}
-	if _, err := os.Stat(rt.RootFS); err != nil {
-		return models.SandboxSpec{}, fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
 	}
 
 	if held {
@@ -755,7 +748,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	if err := p.runsc.Checkpoint(ctx, id, tmp); err != nil {
+	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
+	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(tmp)); err != nil {
 		// Only stop ends a sandbox, so one whose snapshot failed goes on running, even after a Ctrl-C.
 		thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
 		defer cancel()
@@ -826,8 +820,74 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return nil
 }
 
+// Fork restores the snapshot in dir as a new sandbox over its own copy of the layer: two forks share nothing.
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
-	return models.Unsupported(name, models.VerbFork)
+	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
+		return fmt.Errorf("no snapshot to fork in %s: %w", dir, err)
+	}
+
+	status, err := p.Status(ctx, spec.ID)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, name, status.State)
+	}
+
+	existing, err := bundle.Open(spec.StateDir)
+	if err != nil {
+		return err
+	}
+	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
+		return err
+	}
+
+	b, err := p.bundles.Clone(dir, spec)
+	if err != nil {
+		return err
+	}
+
+	rt, err := imageOf(b, spec.ID)
+	if err != nil {
+		return err
+	}
+
+	// A cgroup a removed sandbox of this id left behind would make the restore refuse the bound.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
+	}
+
+	if err := b.Mount(rt.RootFS); err != nil {
+		return err
+	}
+
+	// The sentry's budget is in the memory image, so the fork is bound the way the source was.
+	spec.Resources = rt.Resources
+
+	err = p.bringUp(ctx, spec, func(out *os.File) error {
+		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
+	})
+	if err != nil {
+		return errors.Join(err, b.Unmount())
+	}
+
+	return nil
+}
+
+// imageOf reads back the image a bundle stacks over, and refuses one that is gone before anything runs.
+func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
+	rt, err := b.Runtime()
+	if err != nil {
+		return bundle.Runtime{}, err
+	}
+	if rt.RootFS == "" {
+		return bundle.Runtime{}, fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
+	}
+	if _, err := os.Stat(rt.RootFS); err != nil {
+		return bundle.Runtime{}, fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	}
+
+	return rt, nil
 }
 
 // LogPath is where the guest's stdout and stderr land. SHARD-23 turns it into shard logs.

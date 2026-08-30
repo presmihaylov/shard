@@ -393,12 +393,23 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 // under way, then reads a record that one has finished with. Take it before any Update or Delete,
 // which lock inside it, and never the other way round.
 func (r *Repository) Hold(ctx context.Context, id string) (func() error, error) {
+	return r.hold(ctx, id, store.AcquireContext)
+}
+
+// HoldShared is a Hold many readers of the sandbox share, which a Hold waits out and never interleaves.
+func (r *Repository) HoldShared(ctx context.Context, id string) (func() error, error) {
+	return r.hold(ctx, id, store.AcquireSharedContext)
+}
+
+type acquire func(context.Context, string, fs.FileMode) (*store.Lock, error)
+
+func (r *Repository) hold(ctx context.Context, id string, acquire acquire) (func() error, error) {
 	path, err := r.lockPath(id, verbLock)
 	if err != nil {
 		return nil, err
 	}
 
-	l, err := store.AcquireContext(ctx, path, lockPerm)
+	l, err := acquire(ctx, path, lockPerm)
 	if err != nil {
 		return nil, err
 	}

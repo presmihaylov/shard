@@ -34,6 +34,12 @@ does not promise a restore across machines (gvisor#11486), so shard promises it 
 that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
 snapshot that exists, so it is not a thing to tune.
 
+`shard pause` writes a running sandbox into a snapshot and frees its memory; `shard resume` runs it
+again from there, and `shard fork` starts a new sandbox from the snapshot of another and leaves the
+source as it is. A pause copies the writable layer, so it takes time and disk in proportion to what
+the sandbox has written. The snapshot is the memory image plus a copy of the writable layer as it was at the
+pause, so two forks of one snapshot share nothing and a resume does not consume it.
+
 ## Images
 
 ```
