@@ -134,6 +134,11 @@ func (s *Service) reclaim() error {
 	return nil
 }
 
+// Canonical names the image the way a sandbox record does, so a reference an operator typed compares to it.
+func Canonical(ref string) (string, error) {
+	return registry.Canonical(ref)
+}
+
 // List returns every pulled image, ordered by reference.
 func (s *Service) List() ([]Image, error) {
 	cached, err := s.store.List()
@@ -154,7 +159,7 @@ func (s *Service) List() ([]Image, error) {
 	return images, nil
 }
 
-// Remove deletes the image and its rootfs. SHARD-26 adds the refcount that makes this safe under a sandbox.
+// Remove deletes the image and its rootfs. The caller checks no sandbox references it: the records are not its.
 func (s *Service) Remove(ctx context.Context, ref string) (err error) {
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
 	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)

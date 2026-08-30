@@ -69,6 +69,7 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 		{"start", "one", "two"},
 		{"image"},
 		{"image", "rm"},
+		{"image", "prune", "extra"},
 		{"image", "grow"},
 		{"image", "ls", "extra"},
 	}

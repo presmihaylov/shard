@@ -36,7 +36,9 @@ Usage:
                            print what the entrypoint wrote, and with -f keep printing until it stops
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
-  shard image rm <image>   remove a pulled image
+  shard image rm [--force] <image>
+                           remove a pulled image, and with --force one a sandbox still references
+  shard image prune        remove every pulled image no sandbox references
   shard version            print the version
 
 Create flags, which must precede the image:
