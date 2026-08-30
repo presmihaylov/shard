@@ -403,6 +403,15 @@ func (r *Repository) Hold(ctx context.Context, id string) (func() error, error) 
 		return nil, err
 	}
 
+	// The holder we waited on may have been an rm: then the file we hold is one we made, so take it back.
+	if _, err := os.Stat(r.dir(id)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
+		}
+
+		return nil, errors.Join(err, os.Remove(path), l.Release())
+	}
+
 	return l.Release, nil
 }
 

@@ -868,3 +868,44 @@ func TestDeleteRemovesTheVerbLockFile(t *testing.T) {
 		t.Errorf("the verb lock file is still there after the delete: %v", err)
 	}
 }
+
+// An rm that waited on another rm wins a lock file it made itself, over a sandbox that is gone.
+func TestHoldAfterADeleteIsNotFoundAndLeavesNoLockFile(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	release, err := r.Hold(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+
+	waited := make(chan error, 1)
+	go func() {
+		_, err := r.Hold(t.Context(), sb.ID)
+		waited <- err
+	}()
+
+	// Give the second Hold time to pass its check and sit on the lock.
+	time.Sleep(200 * time.Millisecond)
+
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	select {
+	case err := <-waited:
+		if !errors.Is(err, sandboxstate.ErrNotFound) {
+			t.Fatalf("the Hold that waited out the delete returned %v, want not found", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second Hold never returned")
+	}
+
+	path := filepath.Join(root, "locks", sb.ID+".verb.lock")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the Hold that lost left a lock file behind: %v", err)
+	}
+}
