@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -193,6 +194,10 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 
 	// The id names the netns, the lease holder and the runsc container, so it must exist first.
 	netSpec, err := net.Allocate(ctx, id)
+	// Nothing expires on its own, so the only way an address comes back is an rm the operator types.
+	if errors.Is(err, network.ErrNoFreeAddress) {
+		return fmt.Errorf("%w: every sandbox holds one until it is removed, run shard ls --all and rm the ones you no longer need", err)
+	}
 	if err != nil {
 		return err
 	}
