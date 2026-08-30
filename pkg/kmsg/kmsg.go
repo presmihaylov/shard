@@ -1,5 +1,4 @@
-// Package kmsg reads the kernel log ring. Netfilter log rules write there, and nothing else on the
-// host has to run for a line to land, so a reader can open it after the fact.
+// Package kmsg reads the kernel log ring, where netfilter log rules write with no daemon in between.
 package kmsg
 
 import (
@@ -15,7 +14,7 @@ type Line struct {
 	Message string
 }
 
-// parse reads one /dev/kmsg record: "prio,seq,usec_since_boot,flags;message". boot is when the clock started.
+// parse reads one /dev/kmsg record, "prio,seq,usec_since_boot,flags;message", against the boot time.
 func parse(record string, boot time.Time) (Line, error) {
 	header, message, ok := strings.Cut(record, ";")
 	if !ok {
@@ -32,5 +31,8 @@ func parse(record string, boot time.Time) (Line, error) {
 		return Line{}, fmt.Errorf("kmsg record timestamp: %w", err)
 	}
 
-	return Line{Time: boot.Add(time.Duration(usec) * time.Microsecond), Message: strings.TrimSuffix(message, "\n")}, nil
+	// A record may carry a dictionary after the first line; the message is the first line alone.
+	message, _, _ = strings.Cut(message, "\n")
+
+	return Line{Time: boot.Add(time.Duration(usec) * time.Microsecond), Message: message}, nil
 }

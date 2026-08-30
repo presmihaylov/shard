@@ -19,10 +19,11 @@ import (
 const (
 	eventsFile = "egress.jsonl"
 	eventsPerm = 0o600
+	// maxLine bounds one record; the broker refuses a host longer than a name can be, so a line stays far under it.
+	maxLine = 64 << 10
 )
 
-// Events keeps what the proxy decided, one JSON line per request, in the sandbox directory. What the
-// host decided is in the kernel log, and HostEvents reads it back in the same shape.
+// Events keeps what the proxy decided, one JSON line per request, in the sandbox directory.
 type Events struct {
 	dir func(id string) (string, error)
 }
@@ -74,6 +75,7 @@ func (e *Events) Read(id string) ([]models.EgressEvent, error) {
 
 	var events []models.EgressEvent
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, maxLine), maxLine)
 	for scanner.Scan() {
 		var ev models.EgressEvent
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
@@ -88,13 +90,17 @@ func (e *Events) Read(id string) ([]models.EgressEvent, error) {
 	return events, nil
 }
 
-// HostEvents turns the kernel log lines the sandbox's drops wrote into events. The host logs a deny
-// only: an accept is every packet of a flow, and the proxy already says what the web reached.
+// HostEvents turns the kernel log lines the sandbox's drops wrote into events; the host logs no accept.
 func HostEvents(lines []kmsg.Line, sb models.Sandbox, eff Effective, prefix string) []models.EgressEvent {
 	var events []models.EgressEvent
 	for _, line := range lines {
 		rest, ok := strings.CutPrefix(line.Message, prefix+" rule=")
 		if !ok {
+			continue
+		}
+
+		// The address is reused once the sandbox is gone, so an older line belongs to whoever held it before.
+		if line.Time.Before(sb.CreatedAt) {
 			continue
 		}
 

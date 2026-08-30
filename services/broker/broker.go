@@ -40,6 +40,9 @@ type Events interface {
 	Record(ev models.EgressEvent) error
 }
 
+// maxHost is the longest name DNS allows.
+const maxHost = 253
+
 // Service is the proxy's Director.
 type Service struct {
 	records  Records
@@ -59,6 +62,10 @@ func (s *Service) Route(ctx context.Context, source netip.Addr, host string, por
 	sb, err := s.sandboxAt(source)
 	if err != nil {
 		return proxy.Route{}, err
+	}
+	// Nothing longer is a name, and the log records the host, so the bound keeps a guest from filling the root.
+	if len(host) > maxHost {
+		return proxy.Route{}, &proxy.Denied{Reason: fmt.Sprintf("the host is longer than %d characters", maxHost)}
 	}
 
 	effective, err := s.policies.Effective(sb)

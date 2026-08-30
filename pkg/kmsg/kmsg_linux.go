@@ -15,8 +15,7 @@ import (
 // recordSize is the largest record the kernel hands out; a smaller read fails with EINVAL.
 const recordSize = 8192
 
-// Read is every record the ring holds now, oldest first. It needs root, and a ring the kernel has
-// overrun since the open is read from where it starts again.
+// Read is every record the ring holds now, oldest first; it needs root.
 func Read() ([]Line, error) {
 	boot, err := bootTime()
 	if err != nil {

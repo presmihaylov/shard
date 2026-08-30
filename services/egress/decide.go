@@ -11,8 +11,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 )
 
-// Decision is what the proxy does with one request. Rule is what decided it, and nil when no rule did.
-// ID names it for the event log: the rule's index, or what stood in for one when no rule matched.
+// Decision is what the proxy does with one request; ID is the rule's index, or what stood in when none matched.
 type Decision struct {
 	Allow  bool
 	Rule   *EffectiveRule

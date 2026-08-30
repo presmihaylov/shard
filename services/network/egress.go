@@ -152,10 +152,9 @@ func render(rule Compiled) string {
 // LogPrefix is what a host drop writes to the kernel log, before "rule=<id>" and the packet fields.
 const LogPrefix = "shard-egress"
 
-// logged is a log line for the first packet of a flow, bounded so a guest cannot flood the ring, and
-// a statement of its own so the drop that follows never depends on the limit.
+// logged logs an unanswered packet, bounded per rule so a guest cannot roll the ring shared by every sandbox.
 func logged(rule string) string {
-	return fmt.Sprintf("ct state new limit rate 20/second burst 50 packets log prefix \"%s rule=%s \"", LogPrefix, rule)
+	return fmt.Sprintf("ct state new limit rate 2/second burst 10 packets log prefix \"%s rule=%s \"", LogPrefix, rule)
 }
 
 func match(rule Compiled) string {

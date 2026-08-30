@@ -40,13 +40,14 @@ func TestEventsAreAppendedAndReadBackInOrder(t *testing.T) {
 }
 
 func TestHostEventsReadTheDropsOfOneSandboxAndNameTheRule(t *testing.T) {
-	sb := models.Sandbox{ID: "sb", Address: netip.MustParsePrefix("10.87.0.2/16")}
+	at := time.Unix(100, 0)
+	sb := models.Sandbox{ID: "sb", Address: netip.MustParsePrefix("10.87.0.2/16"), CreatedAt: at.Add(-time.Minute)}
 	eff := Effective{Policy: "locked", Rules: []EffectiveRule{
 		{Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "1.1.1.1"}}},
 		{Rule: models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}, Protocol: "tcp", Ports: []int{22}}},
 	}}
-	at := time.Unix(100, 0)
 	lines := []kmsg.Line{
+		{Time: at.Add(-time.Hour), Message: "shard-egress rule=1 IN=shard0 OUT=eth0 SRC=10.87.0.2 DST=8.8.8.8 PROTO=ICMP TYPE=8"},
 		{Time: at, Message: "shard-egress rule=1 IN=shard0 OUT=eth0 MAC=00:11 SRC=10.87.0.2 DST=8.8.8.8 LEN=60 PROTO=TCP SPT=40000 DPT=22 WINDOW=64240 SYN"},
 		{Time: at, Message: "shard-egress rule=default IN=shard0 OUT=eth0 SRC=10.87.0.3 DST=8.8.8.8 PROTO=ICMP TYPE=8"},
 		{Time: at, Message: "shard-egress rule=private IN=shard0 OUT=eth0 SRC=10.87.0.2 DST=10.0.0.5 PROTO=ICMP TYPE=8"},

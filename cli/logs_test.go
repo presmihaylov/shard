@@ -22,10 +22,11 @@ func TestParseLogsFlags(t *testing.T) {
 	}
 
 	for name, args := range map[string][]string{
-		"no id":           {},
-		"two ids":         {"sandbox1", "sandbox2"},
-		"a flag after id": {"sandbox1", "-f"},
-		"an unknown flag": {"--tail", "sandbox1"},
+		"no id":             {},
+		"two ids":           {"sandbox1", "sandbox2"},
+		"a flag after id":   {"sandbox1", "-f"},
+		"an unknown flag":   {"--tail", "sandbox1"},
+		"follow the egress": {"-f", "--egress", "sandbox1"},
 	} {
 		if _, err := parseLogs(args); err == nil {
 			t.Errorf("parseLogs(%s) returned no error", name)

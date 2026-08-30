@@ -20,6 +20,16 @@ func TestParseTurnsTheBootOffsetIntoWallTime(t *testing.T) {
 	}
 }
 
+func TestParseKeepsTheFirstLineOfARecordWithADictionary(t *testing.T) {
+	line, err := parse("6,2,10,-;shard-egress rule=1 IN=shard0\n SUBSYSTEM=net\n DEVICE=+net:shard0\n", time.Time{})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if line.Message != "shard-egress rule=1 IN=shard0" {
+		t.Errorf("the message is %q", line.Message)
+	}
+}
+
 func TestParseRefusesARecordWithNoMessage(t *testing.T) {
 	if _, err := parse("4,1234,1500000,-", time.Time{}); err == nil {
 		t.Fatal("parse accepted a record with no message")

@@ -101,18 +101,22 @@ first:
 ```
 
 `rule` is the index into the rules `shard inspect` prints under `egress`, and `rule_text` spells that
-rule. When no rule decided, `rule` says what did: `default` (nothing matched, so dropped), `private`
+rule as the policy reads today, so a line older than the last policy change may name a rule that has
+moved. When no rule decided, `rule` says what did: `default` (nothing matched, so dropped), `private`
 (the floor under every policy), `none` (no policy, so allowed), `missing` (the policy is gone) or
 `resolve` (the name did not resolve). Two sources feed it:
 
 - **`proxy`**: every web request the proxy judged, allowed or denied, written to `egress.jsonl` in
   the sandbox directory as it happens.
-- **`host`**: every flow the host dropped, read from the kernel log, where the netfilter rules write
-  the first packet of each flow, at most 20 a second per rule. The host logs no accept: an accept is
-  every packet of a flow, and the web is already in the proxy's lines.
+- **`host`**: every packet the host dropped, read from the kernel log, where the netfilter rules write
+  every unanswered packet (a retried SYN or probe counts again), at most 2 a second per rule. The
+  host logs no accept: an accept is every packet of a flow, and the web is already in the proxy's
+  lines.
 
-The kernel log is a ring, so old host lines fall off it; the proxy file does not rotate yet. The
-daemon (SHARD-51) will keep both.
+The kernel log is one short ring for the whole host, shared by every sandbox, so old host lines fall
+off it, and its clock is the boot time in whole seconds, so a host line can sort up to a second away
+from a proxy line of the same moment. The proxy file does not rotate yet. The daemon (SHARD-51) will
+keep both.
 
 ## A policy change is immediate
 

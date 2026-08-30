@@ -104,8 +104,7 @@ func follow(ctx context.Context, w io.Writer, r io.Reader, provider models.Provi
 	}
 }
 
-// egressLog prints every decision on the sandbox's traffic as JSON lines: the proxy's from its file,
-// the host's from the kernel log, in one order by time.
+// egressLog prints the proxy's decisions and the host's drops as JSON lines, in one order by time.
 func (a App) egressLog(d *deps, sb models.Sandbox) error {
 	repo, err := d.repo()
 	if err != nil {
@@ -162,7 +161,7 @@ func parseLogs(args []string) (logsOptions, error) {
 		return logsOptions{}, fmt.Errorf("parse the logs flags: %w", err)
 	}
 	if opts.follow && opts.egress {
-		return logsOptions{}, errors.New("logs --egress does not follow yet: run it again")
+		return logsOptions{}, errors.New("logs --egress cannot follow")
 	}
 
 	rest := flags.Args()
