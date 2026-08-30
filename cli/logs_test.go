@@ -3,13 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -109,39 +107,52 @@ func TestLogsRefusesAnIDThatNeverExisted(t *testing.T) {
 	}
 }
 
-// A follow drains what arrives after it started, and ends on its own once the sandbox has stopped.
-func TestFollowDrainsThenEndsWhenTheSandboxStops(t *testing.T) {
+// exitingProvider is up on the first Status, then writes its last line and is gone on the second.
+type exitingProvider struct {
+	models.Provider
+
+	t     *testing.T
+	path  string
+	calls int
+}
+
+func (p *exitingProvider) Status(context.Context, string) (models.Status, error) {
+	p.calls++
+	if p.calls == 1 {
+		return models.Status{Exists: true, State: models.StateRunning}, nil
+	}
+
+	f, err := os.OpenFile(p.path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		p.t.Fatalf("open the output file: %v", err)
+	}
+	if _, err := f.WriteString("second\n"); err != nil {
+		p.t.Fatalf("append: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		p.t.Fatalf("close: %v", err)
+	}
+
+	return models.Status{}, nil
+}
+
+// A follow drains what arrives after it started, and ends on its own once the sandbox is gone.
+func TestFollowDrainsThenEndsWhenTheSandboxIsGone(t *testing.T) {
 	var out bytes.Buffer
 
-	app, deps, path := newLogsApp(t, &out, running(), "first\n")
-	repo := deps.repoSvc.(*fakeLifecycleRepo)
+	_, _, path := newLogsApp(t, &out, running(), "first\n")
 
-	done := make(chan error, 1)
-	go func() { done <- app.Run(t.Context(), []string{"logs", "-f", "sandbox1"}) }()
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open the output file: %v", err)
 	}
-	if _, err := f.WriteString("second\n"); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	repo.sb.State = models.StateStopped
+	defer f.Close()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("logs -f: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("logs -f did not end after the sandbox stopped")
+	if err := follow(t.Context(), &out, f, &exitingProvider{t: t, path: path}, "sandbox1"); err != nil {
+		t.Fatalf("follow: %v", err)
 	}
-
 	if out.String() != "first\nsecond\n" {
-		t.Errorf("logs -f printed %q, want both lines", out.String())
+		t.Errorf("follow printed %q, want both lines", out.String())
 	}
 }
 
@@ -152,30 +163,23 @@ func TestFollowLeavesOnAnInterrupt(t *testing.T) {
 	app, _, _ := newLogsApp(t, &out, running(), "up\n")
 
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- app.Run(ctx, []string{"logs", "-f", "sandbox1"}) }()
-
-	time.Sleep(2 * followInterval)
 	cancel()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("logs -f: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("logs -f did not end after the interrupt")
+	if err := app.Run(ctx, []string{"logs", "-f", "sandbox1"}); err != nil {
+		t.Fatalf("logs -f: %v", err)
 	}
-
 	if out.String() != "up\n" {
 		t.Errorf("logs -f printed %q", out.String())
 	}
 }
 
-func TestFollowReportsARecordItCannotRead(t *testing.T) {
-	stopped := func() (bool, error) { return false, errors.New("forced") }
+func TestFollowReportsASubstrateItCannotAsk(t *testing.T) {
+	var out bytes.Buffer
 
-	if err := follow(t.Context(), &bytes.Buffer{}, strings.NewReader(""), stopped); err == nil {
-		t.Fatal("follow returned no error for a record it could not read")
+	app, deps, _ := newLogsApp(t, &out, running(), "")
+	deps.providerSvc.(*fakeLifecycleProvider).r.fail = []string{"provider.Status"}
+
+	if err := app.Run(t.Context(), []string{"logs", "-f", "sandbox1"}); err == nil {
+		t.Fatal("logs -f returned no error for a substrate it could not ask")
 	}
 }

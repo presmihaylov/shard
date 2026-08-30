@@ -21,8 +21,7 @@ type logsOptions struct {
 	follow bool
 }
 
-// logs prints what the entrypoint wrote. The provider appends it to one file from create on, so
-// this is a reader: it opens nothing on the host that closing it would not give back.
+// logs is a reader: the provider appends the output to one file from create on, and this prints it.
 func (a App) logs(ctx context.Context, args []string) (err error) {
 	opts, err := parseLogs(args)
 	if err != nil {
@@ -66,23 +65,14 @@ func (a App) logs(ctx context.Context, args []string) (err error) {
 		return copyOutput(a.Out, f)
 	}
 
-	stopped := func() (bool, error) {
-		sb, err := repo.Get(opts.id)
-		if err != nil {
-			return false, err
-		}
-
-		return sb.State == models.StateStopped, nil
-	}
-
-	return follow(ctx, a.Out, f, stopped)
+	return follow(ctx, a.Out, f, provider, opts.id)
 }
 
-// follow copies until the sandbox has stopped and the file holds nothing more. The state is read
-// before each copy, so the bytes the entrypoint wrote on its way out are drained after it stopped.
-func follow(ctx context.Context, w io.Writer, r io.Reader, stopped func() (bool, error)) error {
+// follow asks the substrate, not the record, because a record saying running outlives an OOM kill.
+func follow(ctx context.Context, w io.Writer, r io.Reader, provider models.Provider, id string) error {
 	for {
-		done, err := stopped()
+		// The status is read before the copy, so what the entrypoint wrote on its way out is drained.
+		status, err := provider.Status(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -91,7 +81,7 @@ func follow(ctx context.Context, w io.Writer, r io.Reader, stopped func() (bool,
 			return err
 		}
 
-		if done {
+		if !status.Alive() {
 			return nil
 		}
 
