@@ -110,6 +110,14 @@ expect_network() {
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 }
 
+# expect_blocked fails when the guest can reach an address its policy denies. A drop answers nothing,
+# so the probe waits two seconds and the check is that it gave up.
+expect_blocked() {
+	local id="$1" note="$2" got
+	got=$(shard exec "${id}" -- /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 && echo reachable || echo blocked')
+	expect "${got}" "blocked" "${note}"
+}
+
 # timed runs a command and prints how long it took, so the transcript carries the numbers SHARD-32 asks for.
 # Never redirect a timed call: the redirect would swallow this line, so the wrappers below do it inside.
 timed() {
@@ -286,9 +294,26 @@ SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 [ "${SECRET_MODE}" = "600" ] || fail "the secret file is mode ${SECRET_MODE}, want 600"
 say "the secret file is mode 0600"
 
+step "store an egress policy"
+# The probe address is allowed on every protocol, so the ping the network checks use goes through, and nothing else does.
+shard policy create --deny group:any e2e-deny-all >/dev/null
+shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+POLICY_LS=$(shard policy ls)
+echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
+shard policy show e2e-policy | grep -q '"kind": "cidr"' || fail "shard policy show does not print the rules"
+say "policy ls lists the policies and policy show prints the rules"
+CODE=0
+REFUSAL=$(shard policy create --allow domain-suffix:example.com e2e-bad 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted a domain-suffix rule"
+echo "${REFUSAL}" | grep -q "SHARD-71" || fail "policy create said '${REFUSAL}', want it to name the proxy ticket"
+CODE=0
+shard policy create --allow 'domain:api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
+say "policy create refuses a domain-suffix rule and a domain rule on a raw port"
+
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create --secret E2E_TOKEN "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+ID=$(shard create --secret E2E_TOKEN --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -336,6 +361,28 @@ say "secret rm refuses while the sandbox holds the secret"
 
 step "reach the network from the sandbox"
 expect_network "after the create"
+
+step "enforce the egress policy"
+nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK}"
+nft list table bridge shard | grep -q "iifname \"${LINK}\"" || fail "the host does not pin the address of ${LINK}"
+say "the host holds a chain for the sandbox and pins its address"
+expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
+shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
+shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
+say "inspect names the policy and what the host enforces"
+
+# A policy change reaches a live sandbox at once, and never waits for the next start.
+shard policy create --deny group:any e2e-policy >/dev/null
+BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
+expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
+shard policy create --allow cidr:1.1.1.1 --deny group:any e2e-policy >/dev/null
+expect_network "after the policy was put back"
+
+CODE=0
+REFUSAL=$(shard policy rm e2e-policy 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy rm removed a policy a sandbox holds"
+echo "${REFUSAL}" | grep -q "${ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
+say "policy rm refused it and named the sandbox"
 
 step "write a file into the writable layer"
 expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \
@@ -392,6 +439,7 @@ expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE}" "the entrypoint is the sa
 expect_exec "before-the-pause" "the file written before the pause is there after the resume" /bin/cat /root/at-pause
 # The restore rebuilt the guest over a new namespace, and the host rules were applied again over it.
 expect_network "after the resume"
+expect_blocked "${ID}" "the policy holds after the resume"
 
 step "fork the paused snapshot into a second sandbox"
 # A fork reads the snapshot, so the source may run on: the fork is the sandbox as it was at the pause.
@@ -408,6 +456,8 @@ say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_L
 say "ls shows the source and the fork running side by side"
 
 shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
+shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
+expect_blocked "${FORK_ID}" "the policy holds on the fork"
 expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
 expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
@@ -501,6 +551,7 @@ for CLONE_ID in "$@"; do
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
 	expect_exec_in "${CLONE_ID}" "mock-E2E_TOKEN" "clone ${CLONE_ID} holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+	expect_blocked "${CLONE_ID}" "the policy holds on clone ${CLONE_ID}"
 	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
 done
 say "both clones run the entrypoint again over the source's files, each on its own address"
@@ -567,6 +618,12 @@ step "remove the secret nothing holds any more"
 shard secret rm E2E_TOKEN >/dev/null
 absent "the secret file" "$([ -e "${SHARD_ROOT}/secrets/E2E_TOKEN" ] && echo "${SHARD_ROOT}/secrets/E2E_TOKEN" || true)"
 say "secret rm removed the secret"
+
+step "remove the policies nothing holds any more"
+shard policy rm e2e-policy >/dev/null
+shard policy rm e2e-deny-all >/dev/null
+absent "the policy file" "$([ -e "${SHARD_ROOT}/policies/e2e-policy.json" ] && echo "${SHARD_ROOT}/policies/e2e-policy.json" || true)"
+say "policy rm removed the policies"
 
 step "prove the host holds nothing the sandbox left"
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"

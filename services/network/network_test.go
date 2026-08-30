@@ -108,7 +108,7 @@ func TestAllocateRefusesAnIdThatIsNotOnePathComponent(t *testing.T) {
 // The masquerade is what lets a private address reach the internet, and the input drop is what stops
 // a sandbox reaching the host's own services one hop away over the bridge.
 func TestTheRulesetMasqueradesAndKeepsTheHostToItself(t *testing.T) {
-	got := ruleset("shard0", netip.MustParsePrefix("10.87.0.0/16"))
+	got := newService(t, Config{}).ruleset(nil)
 
 	for _, want := range []string{
 		"delete table inet shard",
@@ -124,7 +124,7 @@ func TestTheRulesetMasqueradesAndKeepsTheHostToItself(t *testing.T) {
 
 // The delete must come after the create, or nft refuses a ruleset the host has never seen.
 func TestTheRulesetCreatesTheTableBeforeItDeletesIt(t *testing.T) {
-	got := ruleset("shard0", netip.MustParsePrefix("10.87.0.0/16"))
+	got := newService(t, Config{}).ruleset(nil)
 
 	create := strings.Index(got, "table inet shard\n")
 	remove := strings.Index(got, "delete table inet shard")

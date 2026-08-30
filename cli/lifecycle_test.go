@@ -130,6 +130,15 @@ func (f *fakeLifecycleNet) Reapply(context.Context, string) error {
 	return nil
 }
 
+func (f *fakeLifecycleNet) ReapplyAll(context.Context) error {
+	if err := f.r.record("net.ReapplyAll"); err != nil {
+		return err
+	}
+	f.reapplied = true
+
+	return nil
+}
+
 func (f *fakeLifecycleNet) Release(context.Context, string) error {
 	if err := f.r.record("net.Release"); err != nil {
 		return err
@@ -292,8 +301,10 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 	t.Helper()
 
 	r.live = map[string]bool{}
+	root := t.TempDir()
 
 	d := &deps{
+		app:          App{Root: root},
 		repoSvc:      &fakeLifecycleRepo{r: r, sb: sb},
 		netSvc:       &fakeLifecycleNet{r: r},
 		providerSvc:  &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
@@ -302,7 +313,7 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 
 	return App{
 		Version: "test",
-		Root:    t.TempDir(),
+		Root:    root,
 		Out:     out,
 		Err:     out,
 		Timeout: time.Minute,

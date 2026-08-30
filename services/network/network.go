@@ -36,10 +36,11 @@ const guestInterface = "eth0"
 // follows it keeps every name unique and short enough for any IPv4 subnet.
 const hostInterfacePrefix = "shardv"
 
-// The nft table shard owns. Chunk 4 adds the egress policy to it; nothing else may write to it.
+// The nft table shard owns. Nothing else may write to it.
 const (
-	tableFamily = "inet"
-	tableName   = "shard"
+	tableFamily  = "inet"
+	bridgeFamily = "bridge"
+	tableName    = "shard"
 )
 
 const leasesDir = "leases"
@@ -54,6 +55,8 @@ type Config struct {
 	Subnet netip.Prefix
 	// Nameservers is written into every sandbox's resolv.conf.
 	Nameservers []netip.Addr
+	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
+	Egress EgressSource
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -123,9 +126,9 @@ func (s *Service) Gateway() netip.Addr { return s.gateway }
 // Bridge is the host interface every sandbox hangs off.
 func (s *Service) Bridge() string { return s.cfg.Bridge }
 
-// Ensure builds the host side: the bridge, forwarding and the nft table. It is idempotent and cheap,
-// so Allocate calls it rather than making a caller remember to. The ruleset is replaced whole, which
-// SHARD-70 must revisit once the table carries a rule per sandbox rather than one policy for all.
+// Ensure builds the host side: the bridge, forwarding and the nft table, with a chain for every
+// sandbox whose record carries a policy. It is idempotent, so Allocate calls it rather than making a
+// caller remember to, and the ruleset is replaced whole, so a policy change lands on every sandbox at once.
 func (s *Service) Ensure(ctx context.Context) error {
 	routes, err := s.manager.Routes(ctx)
 	if err != nil {
@@ -144,7 +147,31 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	return s.manager.ApplyRuleset(ctx, ruleset(s.cfg.Bridge, s.cfg.Subnet))
+	chains, err := s.chains(ctx)
+	if err != nil {
+		return err
+	}
+
+	return s.manager.ApplyRuleset(ctx, s.ruleset(chains))
+}
+
+func (s *Service) chains(ctx context.Context) ([]Chain, error) {
+	if s.cfg.Egress == nil {
+		return nil, nil
+	}
+
+	chains, err := s.cfg.Egress.Chains(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("compile the egress policies: %w", err)
+	}
+
+	for _, chain := range chains {
+		if !s.cfg.Subnet.Contains(chain.Address) {
+			return nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
+		}
+	}
+
+	return chains, nil
 }
 
 // conflict reports the first host route the subnet overlaps. Claiming a range the host already routes
@@ -262,8 +289,8 @@ func (s *Service) configureGuest(ctx context.Context, id string, address netip.A
 	return s.manager.AddDefaultRouteIn(ctx, id, guestInterface, s.gateway)
 }
 
-// Reapply is the seam SHARD-70 fills: every restore calls it, and the id is unused until then.
-// SHARD-70 must put the host half of the per-sandbox rules on before the restore, not after it.
+// Reapply puts the host rules on again for one sandbox, which rebuilds the whole table from the
+// records. It runs once the record holds the address and the policy, and before the guest sends a packet.
 func (s *Service) Reapply(ctx context.Context, id string) error {
 	if err := validName(id); err != nil {
 		return err
@@ -271,6 +298,9 @@ func (s *Service) Reapply(ctx context.Context, id string) error {
 
 	return s.Ensure(ctx)
 }
+
+// ReapplyAll is Reapply for a change that names no sandbox, which is what a policy edit is.
+func (s *Service) ReapplyAll(ctx context.Context) error { return s.Ensure(ctx) }
 
 // Release drops the namespace, the link and the lease. It is idempotent, and delete is what calls it:
 // the lease must outlive a stop, because a stopped sandbox that starts again keeps its address.
@@ -311,32 +341,6 @@ func toUint32(address netip.Addr) uint32 {
 	v4 := address.As4()
 
 	return binary.BigEndian.Uint32(v4[:])
-}
-
-// ruleset is the whole of shard's host netfilter policy today. The table is replaced in one
-// transaction, so no packet is ever seen by half of it.
-//
-// It has two jobs. Masquerade lets a private address reach the internet. The input chain stops a
-// sandbox reaching the host's own services, which the bridge would otherwise put one hop away.
-// SHARD-70 adds the forward chain that turns egress default-deny, and SHARD-71 opens the input chain
-// for its proxy.
-func ruleset(bridge string, subnet netip.Prefix) string {
-	return fmt.Sprintf(`table %[1]s %[2]s
-delete table %[1]s %[2]s
-
-table %[1]s %[2]s {
-	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
-		ip saddr %[3]s oifname != "%[4]s" masquerade
-	}
-
-	chain input {
-		type filter hook input priority filter; policy accept;
-		iifname "%[4]s" ct state established,related accept
-		iifname "%[4]s" drop
-	}
-}
-`, tableFamily, tableName, subnet, bridge)
 }
 
 // validName refuses anything that is not one plain path component, because the id becomes the name

@@ -85,6 +85,7 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		State:     models.StateCreated,
 		Resources: sb.Resources,
 		Secrets:   slices.Clone(sb.Secrets),
+		Policy:    sb.Policy,
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
@@ -116,6 +117,13 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 	})
 	if err != nil {
 		return err
+	}
+
+	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if sb.Policy != "" {
+		if err := net.Reapply(ctx, id); err != nil {
+			return err
+		}
 	}
 
 	td.push(func(ctx context.Context) error { return provider.Remove(ctx, id) })

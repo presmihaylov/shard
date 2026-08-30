@@ -207,6 +207,8 @@ func (f *fakeRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 
 func (f *fakeRepo) Delete(string) error { return f.r.record("repo.Delete") }
 
+func (f *fakeRepo) List() ([]models.Sandbox, error) { return nil, nil }
+
 type fakeNet struct {
 	r *recorder
 	// allocateErr is what Allocate answers with, so a test can hand create the pool's own refusal.
@@ -228,9 +230,13 @@ func (f fakeNet) Release(ctx context.Context, _ string) error {
 	return f.r.cleanup(ctx, "net.Release")
 }
 
-// Create never reaches Reapply, because Allocate applied the rules over its fresh netns.
+// Reapply is reached by a create with a policy only: without one Allocate applied the rules over the fresh netns.
 func (f fakeNet) Reapply(context.Context, string) error {
-	return errors.New("create must not reapply the rules")
+	return f.r.record("net.Reapply")
+}
+
+func (f fakeNet) ReapplyAll(context.Context) error {
+	return f.r.record("net.ReapplyAll")
 }
 
 type fakeProvider struct {
@@ -593,5 +599,57 @@ func TestParseCreateRefusesABadOrDoubledSecret(t *testing.T) {
 		if _, err := parseCreate(args); err == nil {
 			t.Errorf("parseCreate(%v) accepted", args)
 		}
+	}
+}
+
+func TestCreateWithAPolicyTellsTheHostBeforeTheStart(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	app, d := newFakeApp(t, &out, r)
+
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "locked"}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+
+	if err := app.Run(t.Context(), []string{"create", "--policy", "locked", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	want := []string{"net.Allocate", "provider.Create", "net.Reapply", "provider.Start"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("the network was driven as %v, want %v", got, want)
+	}
+	if got := d.repoSvc.(*fakeRepo).created.Policy; got != "locked" {
+		t.Errorf("the record names policy %q, want locked", got)
+	}
+}
+
+func TestCreateRefusesAPolicyTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
+	r := &recorder{}
+	app, _ := newFakeApp(t, &bytes.Buffer{}, r)
+
+	err := app.Run(t.Context(), []string{"create", "--policy", "ghost", "alpine:3.20"})
+	if err == nil || !strings.Contains(err.Error(), "policy not found") {
+		t.Fatalf("create = %v", err)
+	}
+	if slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a missing policy still cost a pull: %v", r.calls)
+	}
+	if _, err := parseCreate([]string{"--policy", "Bad Name", "alpine"}); err == nil {
+		t.Error("parseCreate accepted a bad policy name")
+	}
+}
+
+func TestCreateWithoutAPolicyNeverReappliesTheRules(t *testing.T) {
+	r := &recorder{}
+	app, _ := newFakeApp(t, &bytes.Buffer{}, r)
+
+	if err := app.Run(t.Context(), []string{"create", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if slices.Contains(r.calls, "net.Reapply") {
+		t.Errorf("a create with no policy reapplied the rules: %v", r.calls)
 	}
 }

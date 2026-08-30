@@ -50,12 +50,25 @@ Usage:
   shard secret ls          list the secrets by name and destination, never by value
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds
+  shard policy create [--allow <rule>]... [--deny <rule>]... <name>
+                           store an egress policy, rules first match first, and drop what none match
+  shard policy apply -f <file>
+                           store the policy the JSON file holds, and enforce it on every sandbox that holds it
+  shard policy show <name> print a policy as JSON
+  shard policy ls          list the policies
+  shard policy rm [--force] <name>
+                           remove a policy, and with --force one a sandbox still holds
   shard version            print the version
+
+A rule is <kind>:<value> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges:
+  cidr:10.0.0.0/8 tcp:22   domain:api.example.com   group:private   group:any udp:53
+A domain rule is tcp to ports 80 and 443 only, and both when no port is named.
 
 Create flags, which must precede the image:
   --name <name>            a handle every verb takes in place of the id
   --env KEY=VALUE          set an environment variable, repeatable
   --secret <NAME>          hand the guest a placeholder for a stored secret as $NAME, repeatable
+  --policy <name>          the egress policy the host enforces; without one the sandbox reaches the internet and nothing private
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
@@ -154,6 +167,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.image(ctx, args[1:])
 	case "secret":
 		return a.secret(ctx, args[1:])
+	case "policy":
+		return a.policy(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}

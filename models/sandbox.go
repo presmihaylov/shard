@@ -37,5 +37,9 @@ type Sandbox struct {
 	// reach a request only at the proxy, so this list is a grant and never a value.
 	Secrets []string `json:"secrets,omitempty"`
 
+	// Policy names the egress policy the host enforces for this sandbox, empty for none: then it may reach
+	// the internet and nothing private.
+	Policy string `json:"policy,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 }
