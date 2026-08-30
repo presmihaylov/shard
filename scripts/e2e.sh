@@ -237,6 +237,13 @@ ip netns list | grep -q "^${ID}" || fail "there is no namespace named ${ID}"
 ip link show "${LINK}" >/dev/null || fail "there is no link named ${LINK}"
 say "the namespace and the link are up"
 
+step "list the sandbox"
+LISTED=$(shard ls | grep "^${ID}" || true)
+[ -n "${LISTED}" ] || fail "shard ls does not list ${ID}"
+echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
+echo "${LISTED}" | grep -q "running" || fail "shard ls listed '${LISTED}', want it running"
+say "ls shows the sandbox running on its address"
+
 step "exec a command in the sandbox"
 expect_exec "shard-e2e" "the command ran and wrote a file" \
 	/bin/sh -c 'echo shard-e2e > /tmp/marker; cat /tmp/marker'
@@ -271,6 +278,10 @@ LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
 grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record, the address, the lease, the namespace and the link all survived the stop"
 
+shard ls | grep -q "^${ID}" && fail "shard ls still lists the stopped sandbox"
+shard ls --all | grep "^${ID}" | grep -q "stopped" || fail "shard ls --all does not list the sandbox as stopped"
+say "ls hides the stopped sandbox and ls --all shows it stopped"
+
 step "stop the sandbox a second time"
 shard stop "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the second stop changed the state"
@@ -288,6 +299,7 @@ absent "the link" "$(ip link show "${LINK}" 2>/dev/null || true)"
 absent "the address" "$(ip -o addr | grep "${ADDRESS%%/*}" || true)"
 absent "the rootfs mount" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "the runsc container" "$(ls "${SHARD_ROOT}/runsc" 2>/dev/null | grep "^${ID}" || true)"
+absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
 
 step "remove the sandbox a second time"
 shard rm "${ID}" >/dev/null 2>&1

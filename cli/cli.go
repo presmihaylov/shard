@@ -29,6 +29,7 @@ Usage:
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
                            free what a stopped sandbox still holds
+  shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm <image>   remove a pulled image
@@ -109,6 +110,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.create(ctx, args[1:])
 	case "exec":
 		return a.exec(ctx, args[1:])
+	case "ls":
+		return a.ls(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":

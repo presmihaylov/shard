@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 func TestParseCreateTheGoalCommand(t *testing.T) {
@@ -197,11 +199,18 @@ func (f *fakeRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 
 func (f *fakeRepo) Delete(string) error { return f.r.record("repo.Delete") }
 
-type fakeNet struct{ r *recorder }
+type fakeNet struct {
+	r *recorder
+	// allocateErr is what Allocate answers with, so a test can hand create the pool's own refusal.
+	allocateErr error
+}
 
 func (f fakeNet) Allocate(context.Context, string) (models.NetworkSpec, error) {
 	if err := f.r.record("net.Allocate"); err != nil {
 		return models.NetworkSpec{}, err
+	}
+	if f.allocateErr != nil {
+		return models.NetworkSpec{}, f.allocateErr
 	}
 
 	return models.NetworkSpec{HostInterface: "shardv2"}, nil
@@ -492,5 +501,19 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 	}
 	if repo.last.HostInterface != "shardv2" {
 		t.Errorf("the record holds host interface %q, want shardv2", repo.last.HostInterface)
+	}
+}
+
+// The pool is the one thing nothing frees on a timer, so its refusal names the verbs that do.
+func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	app, deps := newFakeApp(t, &out, r)
+	deps.netSvc = fakeNet{r: r, allocateErr: network.ErrNoFreeAddress}
+
+	err := app.Run(t.Context(), []string{"create", "alpine:3.20", "--", "echo", "1"})
+	if !errors.Is(err, network.ErrNoFreeAddress) || !strings.Contains(err.Error(), "shard ls --all") {
+		t.Errorf("create failed with %v, want the pool's refusal naming shard ls --all", err)
 	}
 }

@@ -17,6 +17,9 @@ const (
 	leaseFilePerm = 0o640
 )
 
+// ErrNoFreeAddress is what Allocate returns when every address of the subnet is leased. Match it with errors.Is.
+var ErrNoFreeAddress = errors.New("no free address left")
+
 // pool hands out one address per sandbox. It takes no lock: the file that holds a lease is created
 // with O_EXCL, so the kernel decides who wins, the same way sandboxstate lets mkdir claim an id.
 type pool struct {
@@ -58,7 +61,7 @@ func (p *pool) allocate(id string) (address netip.Addr, held bool, err error) {
 		}
 	}
 
-	return netip.Addr{}, false, fmt.Errorf("no free address left in %s", p.subnet)
+	return netip.Addr{}, false, fmt.Errorf("%w in %s", ErrNoFreeAddress, p.subnet)
 }
 
 // claim reports whether it took the address. A taken one is not a failure, it is the next candidate.

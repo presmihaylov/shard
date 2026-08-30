@@ -17,10 +17,12 @@ type fakeLifecycleRepo struct {
 
 	r  *recorder
 	sb models.Sandbox
-	// left is what List answers with, which is what says whether an rm removed the last sandbox.
-	left    []models.Sandbox
-	missing bool
-	deleted bool
+	// left is what List answers with.
+	left []models.Sandbox
+	// unreadable is the error List answers beside the sandboxes it could read.
+	unreadable error
+	missing    bool
+	deleted    bool
 }
 
 func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
@@ -47,7 +49,7 @@ func (f *fakeLifecycleRepo) List() ([]models.Sandbox, error) {
 		return nil, err
 	}
 
-	return f.left, nil
+	return f.left, f.unreadable
 }
 
 func (f *fakeLifecycleRepo) Update(_ string, mutate func(*models.Sandbox) error) error {

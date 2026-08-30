@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -192,7 +193,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 	td.push(func(ctx context.Context) error { return net.Release(ctx, id) })
 
 	// The id names the netns, the lease holder and the runsc container, so it must exist first.
-	netSpec, err := net.Allocate(ctx, id)
+	netSpec, err := allocateNetwork(ctx, net, id)
 	if err != nil {
 		return err
 	}
@@ -252,6 +253,16 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 	}
 
 	return nil
+}
+
+// allocateNetwork names the way out, because nothing expires on its own: only an rm frees an address.
+func allocateNetwork(ctx context.Context, net sandboxNetwork, id string) (models.NetworkSpec, error) {
+	spec, err := net.Allocate(ctx, id)
+	if errors.Is(err, network.ErrNoFreeAddress) {
+		return models.NetworkSpec{}, fmt.Errorf("%w: every sandbox holds one until it is removed, run shard ls --all and rm the ones you no longer need", err)
+	}
+
+	return spec, err
 }
 
 func (a App) pullImage(ctx context.Context, images imageService, ref string) (image.Image, error) {
