@@ -142,6 +142,14 @@ type fakeImages struct {
 	r *recorder
 }
 
+func (f fakeImages) Hold(context.Context) (func() error, error) {
+	if err := f.r.record("images.Hold"); err != nil {
+		return nil, err
+	}
+
+	return func() error { return f.r.record("images.Release") }, nil
+}
+
 func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
 	if err := f.r.record("images.Pull"); err != nil {
 		return image.Image{}, err
@@ -342,6 +350,7 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 		failAt  string
 		cleanup []string
 	}{
+		{"images.Hold", nil},
 		{"images.Pull", nil},
 		{"repo.Create", nil},
 		{"repo.Dir", []string{"repo.Delete"}},

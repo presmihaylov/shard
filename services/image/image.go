@@ -31,6 +31,9 @@ const stagingPrefix = ".unpack-"
 // so without it one pull's rollback deletes the blobs another pull has written but not yet indexed.
 const lockFile = ".pull.lock"
 
+// useLock is held shared from the cache read to the record claim, and exclusively by a removal.
+const useLock = ".use.lock"
+
 const lockPerm = 0o600
 
 // Service owns the image tree: the layout under blobs, and one unpacked rootfs per image.
@@ -160,13 +163,40 @@ func (s *Service) List() ([]Image, error) {
 }
 
 // Remove deletes the image and its rootfs. The caller checks no sandbox references it: the records are not its.
-func (s *Service) Remove(ctx context.Context, ref string) (err error) {
+// Hold keeps every removal out until the release, and holds never wait on one another.
+func (s *Service) Hold(ctx context.Context) (func() error, error) {
+	l, err := store.AcquireSharedContext(ctx, filepath.Join(s.root, useLock), lockPerm)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.Release, nil
+}
+
+// Orphaned names the digests whose rootfs a Remove of ref would delete.
+func (s *Service) Orphaned(ref string) ([]string, error) {
+	return s.store.Orphaned(ref)
+}
+
+// Remove deletes ref and the rootfs nothing else in the index names, once free says no sandbox needs it.
+func (s *Service) Remove(ctx context.Context, ref string, free func() error) (err error) {
+	// The use lock comes before the pull lock everywhere, because a hold takes the pull lock inside it.
+	use, err := store.AcquireContext(ctx, filepath.Join(s.root, useLock), lockPerm)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, use.Release()) }()
+
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
 	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, l.Release()) }()
+
+	if err := free(); err != nil {
+		return err
+	}
 
 	// A host whose images are all cached never reaches the sweep in Pull, so the reclaim verb runs it.
 	if err := s.sweepStaging(); err != nil {
@@ -180,9 +210,14 @@ func (s *Service) Remove(ctx context.Context, ref string) (err error) {
 	}
 
 	// The rootfs goes first: index.json is the record of what the store holds, so it changes last.
+	// A staging name first, so a removal that dies half way leaves no rootfs that looks unpacked.
 	for _, digest := range orphaned {
 		dir := s.rootfsDir(digest)
-		if err := os.RemoveAll(dir); err != nil {
+		staged := filepath.Join(filepath.Dir(dir), stagingPrefix+"rm-"+filepath.Base(dir))
+		if err := os.Rename(dir, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stage %s for removal: %w", dir, err)
+		}
+		if err := os.RemoveAll(staged); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)
 		}
 	}

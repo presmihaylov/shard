@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -107,21 +108,19 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 	}
 
 	// A sandbox runs on the rootfs the image unpacked to, so removing it under one pulls the floor away.
-	if !opts.force {
-		if err := a.unreferenced(d, opts.ref); err != nil {
-			return err
-		}
+	free := func() error { return unreferenced(d, svc, opts.ref) }
+	if opts.force {
+		free = func() error { return nil }
 	}
 
-	if err := a.removeImage(ctx, svc, opts.ref); err != nil {
+	if err := a.removeImage(ctx, svc, opts.ref, free); err != nil {
 		return err
 	}
 
 	return a.print(opts.ref)
 }
 
-// imagePrune removes every image no sandbox references, stopped ones included: a stopped sandbox
-// starts again on the same rootfs.
+// imagePrune removes every image no sandbox references, a stopped sandbox being a reference too.
 func (a App) imagePrune(ctx context.Context, args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("image prune takes no arguments, got %d", len(args))
@@ -134,22 +133,25 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 		return err
 	}
 
-	held, err := a.heldImages(d)
-	if err != nil {
-		return err
-	}
-
 	images, err := svc.List()
 	if err != nil {
 		return err
 	}
 
 	for _, img := range images {
-		if len(held[img.Reference]) != 0 {
+		// An index entry with no reference is nothing a record could name and nothing Remove could parse.
+		if img.Reference == "" {
+			a.warn(fmt.Sprintf("image %s has no reference in the index and was left alone", img.Digest))
+
 			continue
 		}
 
-		if err := a.removeImage(ctx, svc, img.Reference); err != nil {
+		// The check runs under the lock, so a sandbox created since the List keeps its image.
+		err := a.removeImage(ctx, svc, img.Reference, func() error { return unreferenced(d, svc, img.Reference) })
+		if errors.As(err, &referenced{}) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
 
@@ -161,8 +163,8 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (a App) removeImage(ctx context.Context, svc imageService, ref string) error {
-	err := svc.Remove(ctx, ref)
+func (a App) removeImage(ctx context.Context, svc imageService, ref string, free func() error) error {
+	err := svc.Remove(ctx, ref, free)
 	// The image is gone by this point, so a blob that could not be reclaimed costs disk and not correctness.
 	if errors.Is(err, image.ErrNotReclaimed) {
 		a.warn(err.Error())
@@ -173,9 +175,19 @@ func (a App) removeImage(ctx context.Context, svc imageService, ref string) erro
 	return err
 }
 
-// unreferenced refuses when a sandbox record names the image.
-func (a App) unreferenced(d *deps, ref string) error {
-	held, err := a.heldImages(d)
+// referenced is the refusal a removal gets while a sandbox record still needs the image.
+type referenced struct {
+	ref   string
+	users []string
+}
+
+func (e referenced) Error() string {
+	return fmt.Sprintf("image %s is referenced by sandbox %s: remove the sandbox first, or pass --force", e.ref, strings.Join(e.users, ", "))
+}
+
+// unreferenced refuses when a sandbox record names the image, or one whose rootfs would go with it.
+func unreferenced(d *deps, svc imageService, ref string) error {
+	held, err := heldImages(d)
 	if err != nil {
 		return err
 	}
@@ -185,15 +197,33 @@ func (a App) unreferenced(d *deps, ref string) error {
 		return err
 	}
 
-	if users := held[canonical]; len(users) != 0 {
-		return fmt.Errorf("image %s is referenced by sandbox %s: remove the sandbox first, or pass --force", ref, strings.Join(users, ", "))
+	users := held[canonical]
+
+	orphaned, err := svc.Orphaned(ref)
+	if err != nil {
+		return err
+	}
+
+	images, err := svc.List()
+	if err != nil {
+		return err
+	}
+
+	for _, img := range images {
+		if img.Reference != canonical && slices.Contains(orphaned, img.Digest) {
+			users = append(users, held[img.Reference]...)
+		}
+	}
+
+	if len(users) != 0 {
+		return referenced{ref: ref, users: users}
 	}
 
 	return nil
 }
 
 // heldImages maps each image reference to the sandboxes whose records name it.
-func (a App) heldImages(d *deps) (map[string][]string, error) {
+func heldImages(d *deps) (map[string][]string, error) {
 	repo, err := d.repo()
 	if err != nil {
 		return nil, err
@@ -225,6 +255,10 @@ func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	}
 
 	rest := flags.Args()
+	// flag stops at the first argument, so a flag after the image would count as a second image.
+	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return imageRemoveOptions{}, fmt.Errorf("image rm takes its flags before the image: shard image rm --force <image>")
+	}
 	if len(rest) != 1 {
 		return imageRemoveOptions{}, fmt.Errorf("image rm takes one image reference, got %d", len(rest))
 	}

@@ -29,8 +29,17 @@ func Acquire(path string, perm fs.FileMode) (*Lock, error) {
 // AcquireContext is Acquire that gives up when ctx does. A blocking flock ignores a signal, so a
 // Ctrl-C while another process holds the lock is invisible until that process is done with it.
 func AcquireContext(ctx context.Context, path string, perm fs.FileMode) (*Lock, error) {
+	return acquireContext(ctx, path, perm, syscall.LOCK_EX)
+}
+
+// AcquireSharedContext is AcquireContext for a hold many may share, which an Acquire waits out.
+func AcquireSharedContext(ctx context.Context, path string, perm fs.FileMode) (*Lock, error) {
+	return acquireContext(ctx, path, perm, syscall.LOCK_SH)
+}
+
+func acquireContext(ctx context.Context, path string, perm fs.FileMode, how int) (*Lock, error) {
 	for {
-		l, err := acquire(path, perm, syscall.LOCK_EX|syscall.LOCK_NB)
+		l, err := acquire(path, perm, how|syscall.LOCK_NB)
 		if err != nil {
 			return nil, err
 		}
