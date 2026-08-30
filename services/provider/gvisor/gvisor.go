@@ -195,14 +195,30 @@ func cgroupDir(root, id string) string {
 	return filepath.Join(root, bundle.CgroupsPath(id))
 }
 
-// Start runs the entrypoint. A stopped sandbox never starts again: runsc refuses it, so a second run
-// goes through Remove and Create, which keeps the writable layer the state directory holds.
+// Start runs the entrypoint. runsc never starts a stopped container again, so a stopped sandbox is
+// re-created first over the writable layer its state directory kept.
 // It returns only once the supervisor says the entrypoint forked, because runsc start unblocks the
 // task and reads nothing back: a broken entrypoint would otherwise report as a started sandbox.
 func (p *Provider) Start(ctx context.Context, id string) error {
-	b, err := p.open(id)
+	dir, err := p.dirs(id)
 	if err != nil {
 		return err
+	}
+
+	b, err := bundle.Open(dir)
+	if err != nil {
+		return err
+	}
+
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if !status.Alive() {
+		if err := p.recreate(ctx, id, dir, b, status.Exists); err != nil {
+			return err
+		}
 	}
 
 	if err := p.runsc.Start(ctx, id); err != nil {
@@ -210,6 +226,48 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	}
 
 	return p.awaitStarted(ctx, id, b)
+}
+
+// recreate is how a stopped sandbox runs again: runsc never starts one, so the container goes and a
+// new one comes up over the same bundle, whose writable layer and config.json the stop kept.
+func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
+	if err := orphaned(b, id, held); err != nil {
+		return err
+	}
+
+	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
+	rt, err := b.Runtime()
+	if err != nil {
+		return err
+	}
+	if rt.RootFS == "" {
+		return fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
+	}
+	if _, err := os.Stat(rt.RootFS); err != nil {
+		return fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	}
+
+	if held {
+		if err := p.runsc.Delete(ctx, id, true); err != nil {
+			return err
+		}
+	}
+
+	// A cgroup runsc left behind would make the create refuse the bound it could not apply.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
+	}
+
+	if err := b.Mount(rt.RootFS); err != nil {
+		return err
+	}
+
+	spec := models.SandboxSpec{ID: id, StateDir: dir, Resources: rt.Resources}
+	if err := p.create(ctx, spec, b); err != nil {
+		return errors.Join(err, b.Unmount())
+	}
+
+	return nil
 }
 
 // awaitStarted watches for the handshake and for the sandbox dying under it, which is what a

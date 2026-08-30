@@ -25,11 +25,13 @@ Usage:
                            create a sandbox, start its entrypoint and print its id
   shard exec [flags] <id|name> -- <argv>...
                            run a command in a sandbox that is already running
+  shard start <id|name>    run a stopped sandbox again, over everything it kept
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
                            free what a stopped sandbox still holds
   shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
+  shard inspect <id|name>  print the record of a sandbox as JSON
   shard logs [-f] <id|name>
                            print what the entrypoint wrote, and with -f keep printing until it stops
   shard pull <image>       pull an image and unpack its rootfs
@@ -114,8 +116,12 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.exec(ctx, args[1:])
 	case "ls":
 		return a.ls(ctx, args[1:])
+	case "inspect":
+		return a.inspect(ctx, args[1:])
 	case "logs":
 		return a.logs(ctx, args[1:])
+	case "start":
+		return a.start(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":

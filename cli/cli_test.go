@@ -64,6 +64,9 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 	commands := [][]string{
 		{"pull"},
 		{"pull", "one", "two"},
+		{"inspect"},
+		{"start"},
+		{"start", "one", "two"},
 		{"image"},
 		{"image", "rm"},
 		{"image", "grow"},
