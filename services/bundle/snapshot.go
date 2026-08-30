@@ -38,8 +38,24 @@ func (b Bundle) Export(dir string) error {
 
 // Clone lays out a new bundle from what Export wrote, and keeps everything runsc checks a restore against.
 func (s *Service) Clone(snapshot string, spec models.SandboxSpec) (Bundle, error) {
+	layers := map[string]string{}
+	for name := range (Bundle{}).layers() {
+		layers[name] = filepath.Join(snapshot, layersDir, name)
+	}
+
+	return s.clone(filepath.Join(snapshot, "config.json"), layers, spec)
+}
+
+// CloneBundle lays out a new bundle over a copy of another sandbox's layers, so a clone runs the
+// entrypoint again over the files the source kept. The source must not be mounted while it copies.
+func (s *Service) CloneBundle(source Bundle, spec models.SandboxSpec) (Bundle, error) {
+	return s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), spec)
+}
+
+// clone copies the layers and rewrites config.json under the new identity, and nothing else in it.
+func (s *Service) clone(configPath string, layers map[string]string, spec models.SandboxSpec) (Bundle, error) {
 	if spec.ID == "" || spec.StateDir == "" {
-		return Bundle{}, fmt.Errorf("a fork needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
+		return Bundle{}, fmt.Errorf("a clone needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
 	}
 
 	b, err := newBundle(spec.StateDir)
@@ -52,17 +68,16 @@ func (s *Service) Clone(snapshot string, spec models.SandboxSpec) (Bundle, error
 	}
 
 	for name, layer := range b.layers() {
-		if err := copyTree(filepath.Join(snapshot, layersDir, name), layer); err != nil {
+		if err := copyTree(layers[name], layer); err != nil {
 			return Bundle{}, err
 		}
 	}
 
-	// The fork has its own address and name, and the layer copy still holds the source's.
+	// The clone has its own address and name, and the layer copy still holds the source's.
 	if err := writeNetworkFiles(b, spec); err != nil {
 		return Bundle{}, err
 	}
 
-	configPath := filepath.Join(snapshot, "config.json")
 	blob, err := os.ReadFile(configPath)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("read %s: %w", configPath, err)
@@ -79,7 +94,7 @@ func (s *Service) Clone(snapshot string, spec models.SandboxSpec) (Bundle, error
 	cfg.Hostname = firstNonEmpty(spec.Name, spec.ID)
 	cfg.Linux.CgroupsPath = CgroupsPath(spec.ID)
 	cfg.Linux.Namespaces = namespaces(spec.Network.NetnsPath)
-	// The same mounts by destination, type and options, which the restore checks, over this bundle's sources.
+	// The same mounts by destination, type and options, which a restore checks, over this bundle's sources.
 	cfg.Mounts = mounts(b.ShardDir, b.Tmp, s.initPath, resourcesOf(cfg.Linux))
 
 	encoded, err := json.MarshalIndent(cfg, "", "\t")

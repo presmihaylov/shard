@@ -147,6 +147,27 @@ FORK_ID=""
 FORK_LINK=""
 
 echo
+echo "== teardown removes the clones, then the fork, then the source"
+SHARD_CALLS=$(mktemp)
+IP_CALLS=$(mktemp)
+SHARD_ROOT=$(mktemp -d)
+FORK_ID="e2e-fork-0304"
+FORK_LINK="shardv3"
+CLONE_IDS=" e2e-clone-0506 e2e-clone-0708"
+CLONE_LINKS=" shardv4 shardv5"
+
+teardown
+
+check "the clones first, then the fork, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
+	"rm --force e2e-clone-0506,rm --force e2e-clone-0708,rm --force e2e-fork-0304,rm --force tidy-otter-0102,"
+check "every link" "$(grep -c 'link delete' "${IP_CALLS}")" "4"
+rm -f "${SHARD_CALLS}" "${IP_CALLS}"
+FORK_ID=""
+FORK_LINK=""
+CLONE_IDS=""
+CLONE_LINKS=""
+
+echo
 echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
 check "no line assigns FORK_ID to ID" "$(grep -c '^ID="\${FORK_ID}"' "${HERE}/e2e.sh")" "0"
 

@@ -155,6 +155,9 @@ type fakeLifecycleProvider struct {
 	// snapshot is the directory the pause was told to write, or the resume or fork was told to read.
 	snapshot string
 	forked   models.SandboxSpec
+	// clonedFrom and cloned are the source id and the spec Clone was handed.
+	clonedFrom string
+	cloned     models.SandboxSpec
 	// noPause, noResume and noFork take a verb out of what the provider claims.
 	noPause, noResume, noFork bool
 	// logPath is the file logs reads, which a test writes into.
@@ -223,6 +226,18 @@ func (f *fakeLifecycleProvider) Fork(_ context.Context, dir string, spec models.
 	f.snapshot = dir
 	f.forked = spec
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
+
+	return nil
+}
+
+// Clone records the source and the spec, so a test says what the new sandbox was started over.
+func (f *fakeLifecycleProvider) Clone(_ context.Context, sourceID string, spec models.SandboxSpec) error {
+	if err := f.r.record("provider.Clone"); err != nil {
+		return err
+	}
+	f.clonedFrom = sourceID
+	f.cloned = spec
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 11}
 
 	return nil
 }

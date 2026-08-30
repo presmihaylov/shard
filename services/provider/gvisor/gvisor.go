@@ -874,6 +874,78 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	return nil
 }
 
+// Clone lays out a new sandbox over a copy of the source's layers and runs its entrypoint again: it is a
+// start after a stop, under a new id. Everything of the source is read before anything is written.
+func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
+	source, err := p.open(sourceID)
+	if err != nil {
+		return err
+	}
+
+	// A live source writes its layer under the copy, and its rootfs mount hides the layer's whiteouts.
+	sourceStatus, err := p.Status(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	if sourceStatus.Alive() {
+		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, name)
+	}
+	if err := orphaned(source, sourceID, sourceStatus.Exists); err != nil {
+		return err
+	}
+	if _, err := imageOf(source, sourceID); err != nil {
+		return err
+	}
+
+	status, err := p.Status(ctx, spec.ID)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, name, status.State)
+	}
+
+	existing, err := bundle.Open(spec.StateDir)
+	if err != nil {
+		return err
+	}
+	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
+		return err
+	}
+
+	b, err := p.bundles.CloneBundle(source, spec)
+	if err != nil {
+		return err
+	}
+
+	rt, err := imageOf(b, spec.ID)
+	if err != nil {
+		return err
+	}
+
+	// A cgroup a removed sandbox of this id left behind would make the create refuse the bound.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
+	}
+
+	if err := b.Mount(rt.RootFS); err != nil {
+		return err
+	}
+
+	// config.json carries the source's bound, so the clone is bound the way the source was.
+	spec.Resources = rt.Resources
+
+	if err := p.create(ctx, spec, b); err != nil {
+		return errors.Join(err, b.Unmount())
+	}
+
+	if err := p.runsc.Start(ctx, spec.ID); err != nil {
+		return err
+	}
+
+	return p.awaitStarted(ctx, spec.ID, b)
+}
+
 // imageOf reads back the image a bundle stacks over, and refuses one that is gone before anything runs.
 func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
 	rt, err := b.Runtime()

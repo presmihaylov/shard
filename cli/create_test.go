@@ -286,6 +286,10 @@ func (f *fakeProvider) Fork(context.Context, string, models.SandboxSpec) error {
 	return models.Unsupported("fake", models.VerbFork)
 }
 
+func (f *fakeProvider) Clone(context.Context, string, models.SandboxSpec) error {
+	return errors.New("the create tests never clone")
+}
+
 // newFakeApp wires create onto fakes, so the whole order and the whole teardown are testable off Linux.
 func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, *deps) {
 	t.Helper()
