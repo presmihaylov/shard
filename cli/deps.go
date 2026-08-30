@@ -36,6 +36,7 @@ type sandboxRepo interface {
 	Delete(id string) error
 	Hold(ctx context.Context, id string) (func() error, error)
 	Dir(id string) (string, error)
+	SnapshotDir(id string) (string, error)
 }
 
 // sandboxNetwork is the part of network.Service the commands drive.

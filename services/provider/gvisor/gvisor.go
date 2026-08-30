@@ -1,5 +1,5 @@
-// Package gvisor runs sandboxes on gVisor by driving bare runsc. Pause, resume and fork land in
-// chunk 3; until then this provider refuses them rather than downgrading to a weaker mechanism.
+// Package gvisor runs sandboxes on gVisor by driving bare runsc. Fork lands in SHARD-33; until then
+// this provider refuses it rather than downgrading to a weaker mechanism.
 package gvisor
 
 import (
@@ -38,6 +38,9 @@ const (
 // diagnosticTail bounds what a failed start quotes back from the sandbox's own output.
 const diagnosticTail = 4 << 10
 
+// checkpointFile is the one file every runsc checkpoint writes, so its absence says there is no snapshot.
+const checkpointFile = "checkpoint.img"
+
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes:
 // every verb below takes an id, and shard runs no daemon that could remember the path from Create.
 type StateDirs func(id string) (string, error)
@@ -59,9 +62,10 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 		return nil, errors.New("the gvisor provider needs a runsc runner, a bundle service and a state directory lookup")
 	}
 
-	// Capabilities is fixed once here, so it needs no context and cannot fail. Chunk 3 fills it in:
-	// SHARD-32 flips pause and resume, SHARD-33 flips fork.
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: models.Capabilities{}, cgroupRoot: cgroup.Root}, nil
+	// Capabilities is fixed once here, so it needs no context and cannot fail. SHARD-33 flips fork.
+	caps := models.Capabilities{Pause: true, Resume: true}
+
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root}, nil
 }
 
 func (p *Provider) Name() string { return name }
@@ -112,7 +116,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	return nil
 }
 
-func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
+func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) error {
 	// A create over a state directory that already ran must not let the previous run answer a wait or
 	// a start, so both of the supervisor's files go before anything else runs.
 	for _, stale := range []string{b.ExitFile, b.ReadyFile} {
@@ -121,6 +125,14 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		}
 	}
 
+	return p.bringUp(ctx, spec, func(out *os.File) error {
+		return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
+	})
+}
+
+// bringUp runs the runsc verb that forks the sandbox process, over the log it inherits and inside
+// the cgroup shard owns, and then moves the host bounds where create and restore both need them.
+func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, up func(out *os.File) error) (err error) {
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
 	if err != nil {
 		return err
@@ -133,7 +145,7 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return err
 	}
 
-	if err := p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
+	if err := up(out); err != nil {
 		return err
 	}
 
@@ -231,43 +243,53 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 // recreate is how a stopped sandbox runs again: runsc never starts one, so the container goes and a
 // new one comes up over the same bundle, whose writable layer and config.json the stop kept.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
-	if err := orphaned(b, id, held); err != nil {
-		return err
-	}
-
-	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
-	rt, err := b.Runtime()
+	spec, err := p.reclaim(ctx, id, dir, b, held)
 	if err != nil {
 		return err
 	}
-	if rt.RootFS == "" {
-		return fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
-	}
-	if _, err := os.Stat(rt.RootFS); err != nil {
-		return fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
-	}
 
-	if held {
-		if err := p.runsc.Delete(ctx, id, true); err != nil {
-			return err
-		}
-	}
-
-	// A cgroup runsc left behind would make the create refuse the bound it could not apply.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
-	}
-
-	if err := b.Mount(rt.RootFS); err != nil {
-		return err
-	}
-
-	spec := models.SandboxSpec{ID: id, StateDir: dir, Resources: rt.Resources}
 	if err := p.create(ctx, spec, b); err != nil {
 		return errors.Join(err, b.Unmount())
 	}
 
 	return nil
+}
+
+// reclaim readies a state directory runsc holds nothing live in for a new sandbox process: the old
+// container and its cgroup go, and the writable layer is mounted again over the image it records.
+func (p *Provider) reclaim(ctx context.Context, id, dir string, b bundle.Bundle, held bool) (models.SandboxSpec, error) {
+	if err := orphaned(b, id, held); err != nil {
+		return models.SandboxSpec{}, err
+	}
+
+	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
+	rt, err := b.Runtime()
+	if err != nil {
+		return models.SandboxSpec{}, err
+	}
+	if rt.RootFS == "" {
+		return models.SandboxSpec{}, fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
+	}
+	if _, err := os.Stat(rt.RootFS); err != nil {
+		return models.SandboxSpec{}, fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	}
+
+	if held {
+		if err := p.runsc.Delete(ctx, id, true); err != nil {
+			return models.SandboxSpec{}, err
+		}
+	}
+
+	// A cgroup runsc left behind would make the create refuse the bound it could not apply.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
+		return models.SandboxSpec{}, fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
+	}
+
+	if err := b.Mount(rt.RootFS); err != nil {
+		return models.SandboxSpec{}, err
+	}
+
+	return models.SandboxSpec{ID: id, StateDir: dir, Resources: rt.Resources}, nil
 }
 
 // awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
@@ -385,6 +407,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 
 		return p.unmount(id, status.Exists)
+	}
+
+	// A frozen sentry delivers no signal, and only a pause that broke off leaves one behind.
+	if status.State == models.StatePaused {
+		if err := p.runsc.Resume(ctx, id); err != nil {
+			return err
+		}
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
@@ -693,12 +722,108 @@ func stateOf(status runsc.Status) models.State {
 	}
 }
 
+// Pause writes the sandbox into dir and then deletes it from runsc, because a checkpointed container
+// still holds its whole memory until it is deleted. runsc then holds nothing, as after a stop before
+// the entrypoint ran, and the snapshot plus the state directory is everything a resume needs.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
-	return models.Unsupported(name, models.VerbPause)
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !status.Exists {
+		return fmt.Errorf("sandbox %s does not exist on %s", id, name)
+	}
+	if status.State != models.StateRunning {
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, status.State, name)
+	}
+
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	tmp := dir + ".tmp"
+	if err := os.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+	}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+	}
+
+	if err := p.runsc.Pause(ctx, id); err != nil {
+		return err
+	}
+
+	if err := p.runsc.Checkpoint(ctx, id, tmp); err != nil {
+		// Only stop ends a sandbox, so one whose snapshot failed goes on running, even after a Ctrl-C.
+		thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
+		defer cancel()
+
+		return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
+	}
+
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("clear the snapshot directory %s: %w", dir, err)
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		return fmt.Errorf("move the snapshot into place: %w", err)
+	}
+
+	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.
+	ctx = context.WithoutCancel(ctx)
+
+	if err := p.runsc.Delete(ctx, id, true); err != nil {
+		return err
+	}
+
+	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the resume.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
+	}
+
+	// The layer stays, which is what the resume mounts again, and only the merged view goes.
+	return b.Unmount()
 }
 
+// Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
+// as a new runsc container: the one the pause deleted is gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
-	return models.Unsupported(name, models.VerbResume)
+	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
+		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)
+	}
+
+	stateDir, err := p.dirs(id)
+	if err != nil {
+		return err
+	}
+
+	b, err := bundle.Open(stateDir)
+	if err != nil {
+		return err
+	}
+
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s is %s on %s: resume takes a paused sandbox, which %s holds nothing of", id, status.State, name, name)
+	}
+
+	spec, err := p.reclaim(ctx, id, stateDir, b, status.Exists)
+	if err != nil {
+		return err
+	}
+
+	err = p.bringUp(ctx, spec, func(out *os.File) error {
+		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
+	})
+	if err != nil {
+		return errors.Join(err, b.Unmount())
+	}
+
+	return nil
 }
 
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {

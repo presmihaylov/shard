@@ -21,11 +21,11 @@ stateDiagram-v2
 |---|---|---|---|
 | `created` | `running` | `start` | yes |
 | `created` | `stopped` | `stop` before the entrypoint runs | yes |
-| `running` | `paused` | `pause` | no: no provider reports the capability |
+| `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
-| `paused` | `running` | `resume` | no: no provider reports the capability |
-| `paused` | `stopped` | `stop` | no: nothing reaches `paused` |
-| `stopped` | `running` | `start` | not yet: SHARD-24 |
+| `paused` | `running` | `resume` | yes: gVisor |
+| `paused` | `stopped` | `stop` | yes |
+| `stopped` | `running` | `start` | yes |
 
 ## What the picture does not say
 
@@ -44,7 +44,9 @@ second `Create` over the preserved writable layer.
 **`created --> stopped` leaves nothing at the substrate.** Stopping a sandbox whose entrypoint never
 ran is a delete there, because a runtime refuses to signal a container that never started. The record
 says `stopped` while `Provider.Status` reports `Exists: false`. That is the intended answer: the
-record is what survives, and `Status` is only ever what the substrate says now.
+record is what survives, and `Status` is only ever what the substrate says now. A paused sandbox is
+the second case: the record says `paused` and `Status` reports `Exists: false`, because the pause
+deleted it from the substrate and only the snapshot holds it. A `pause` also kills any `exec` in flight.
 
 **There is no `checkpointed` state.** `pause` writes the snapshot to disk and frees the memory, so a
 paused sandbox holds no RAM. There is no in-memory pause to distinguish it from. `checkpoint` and

@@ -131,8 +131,9 @@ func TestUptime(t *testing.T) {
 		state models.State
 		want  string
 	}{
-		"a running sandbox counts from its creation": {models.StateRunning, "1m30s"},
-		"a stopped sandbox is not up":                {models.StateStopped, "-"},
+		"a running sandbox counts from its creation":     {models.StateRunning, "1m30s"},
+		"a stopped sandbox is not up":                    {models.StateStopped, "-"},
+		"a paused sandbox holds no memory and is not up": {models.StatePaused, "-"},
 	}
 
 	for name, c := range cases {

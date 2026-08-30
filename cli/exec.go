@@ -82,9 +82,14 @@ func (a App) exec(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// Only stop writes stopped, and a stop leaves the cgroup behind with whatever oom count it had.
+	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
 	if sb.State == models.StateStopped {
 		return refuseStopped(opts.id, sb.State)
+	}
+
+	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
+	if sb.State == models.StatePaused {
+		return fmt.Errorf("sandbox %s is paused: resume it with shard resume %s", opts.id, opts.id)
 	}
 
 	if err := refuseUnlessAlive(ctx, provider, opts.id); err != nil {

@@ -23,6 +23,8 @@ type fakeLifecycleRepo struct {
 	unreadable error
 	missing    bool
 	deleted    bool
+	// snapshotDir replaces the fixed path when a test needs the directory to exist on disk.
+	snapshotDir string
 }
 
 func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
@@ -58,6 +60,14 @@ func (f *fakeLifecycleRepo) Update(_ string, mutate func(*models.Sandbox) error)
 	}
 
 	return mutate(&f.sb)
+}
+
+func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
+	if f.snapshotDir != "" {
+		return f.snapshotDir, nil
+	}
+
+	return "/snapshots/" + id, nil
 }
 
 func (f *fakeLifecycleRepo) Delete(string) error {
@@ -106,9 +116,13 @@ type fakeLifecycleProvider struct {
 	started bool
 	stopped bool
 	removed bool
+	// snapshot is the directory the pause was told to write, or the resume was told to read.
+	snapshot string
 	// logPath is the file logs reads, which a test writes into.
 	logPath string
 }
+
+func (f *fakeLifecycleProvider) Name() string { return "fake" }
 
 func (f *fakeLifecycleProvider) LogPath(string) (string, error) {
 	if err := f.r.record("provider.LogPath"); err != nil {
@@ -131,6 +145,27 @@ func (f *fakeLifecycleProvider) Start(context.Context, string) error {
 		return err
 	}
 	f.started = true
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
+}
+
+func (f *fakeLifecycleProvider) Pause(_ context.Context, _ string, dir string) error {
+	if err := f.r.record("provider.Pause"); err != nil {
+		return err
+	}
+	f.snapshot = dir
+	// runsc holds nothing of a paused sandbox, so its status reads as one that never existed.
+	f.status = models.Status{}
+
+	return nil
+}
+
+func (f *fakeLifecycleProvider) Resume(_ context.Context, _ string, dir string) error {
+	if err := f.r.record("provider.Resume"); err != nil {
+		return err
+	}
+	f.snapshot = dir
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
 	return nil

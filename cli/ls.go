@@ -60,9 +60,9 @@ func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	return nil
 }
 
-// uptime is how long the sandbox has been up. A stopped one is not, whatever its record was created.
+// uptime is how long the sandbox has been up. A stopped or paused one is not, whatever its record was created.
 func uptime(sb models.Sandbox, now time.Time) string {
-	if sb.State == models.StateStopped {
+	if sb.State == models.StateStopped || sb.State == models.StatePaused {
 		return "-"
 	}
 
