@@ -114,8 +114,9 @@ moved. When no rule decided, `rule` says what did: `default` (nothing matched, s
   lines.
 
 The kernel log is one short ring for the whole host, shared by every sandbox, so old host lines fall
-off it, and its clock is the boot time in whole seconds, so a host line can sort up to a second away
-from a proxy line of the same moment. The proxy file does not rotate yet. The daemon (SHARD-51) will
+off it. The kernel clock drifts from wall time on a long-up host, so `logs --egress` writes a mark
+into the ring first and dates every host line against it; a host line still sorts some milliseconds
+away from a proxy line of the same moment. The proxy file does not rotate yet. The daemon (SHARD-51) will
 keep both.
 
 ## A policy change is immediate
