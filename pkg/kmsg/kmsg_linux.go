@@ -23,16 +23,17 @@ func Read() ([]Line, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile("/dev/kmsg", os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// Raw syscalls, not os.File: Go would put a non-blocking, pollable fd in its poller and wait for the next record instead of returning EAGAIN.
+	fd, err := syscall.Open("/dev/kmsg", syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open the kernel log: %w", err)
 	}
-	defer f.Close()
+	defer syscall.Close(fd)
 
 	var lines []Line
 	buf := make([]byte, recordSize)
 	for {
-		n, err := f.Read(buf)
+		n, err := syscall.Read(fd, buf)
 		if errors.Is(err, syscall.EAGAIN) {
 			return lines, nil
 		}
@@ -42,6 +43,9 @@ func Read() ([]Line, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read the kernel log: %w", err)
+		}
+		if n == 0 {
+			return lines, nil
 		}
 
 		line, err := parse(string(buf[:n]), boot)

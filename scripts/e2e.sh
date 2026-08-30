@@ -454,7 +454,7 @@ expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 
 
 step "read the egress log"
 EGRESS_LOG=$(shard logs --egress "${ID}")
-echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"deny".*"destination":"example.org:443".*"rule":"default"' || fail "the log lacks the proxy's refusal of example.org"
+echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"deny".*"destination":"example.org:443".*"rule_text":"deny group:any"' || fail "the log lacks the proxy's refusal of example.org"
 echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"allow".*"destination":"example.com:443".*"rule":"[0-9]'  || fail "the log lacks the proxy's allow of example.com"
 echo "${EGRESS_LOG}" | has '"source":"host","verdict":"deny".*"destination":"8.8.8.8".*"rule":"[0-9]'  || fail "the log lacks the host's drop of the probe to 8.8.8.8"
 say "the log names the proxy's allow and deny, and the host's drop, with the rule that decided each"

@@ -100,7 +100,8 @@ func HostEvents(lines []kmsg.Line, sb models.Sandbox, eff Effective, prefix stri
 
 		id, fields, _ := strings.Cut(rest, " ")
 		packet := packetFields(fields)
-		if packet["IN"] != sb.HostInterface {
+		// The forward chain sees the bridge as IN, never the sandbox's veth, so the source address is what names the sandbox.
+		if packet["SRC"] != sb.Address.Addr().String() {
 			continue
 		}
 
