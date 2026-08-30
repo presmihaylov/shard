@@ -28,6 +28,8 @@ Usage:
   shard start <id|name>    run a stopped sandbox again, over everything it kept
   shard pause <id|name>    write a snapshot of a running sandbox and free its memory
   shard resume <id|name>   run a paused sandbox again from its snapshot
+  shard fork [--name <name>] <id|name>
+                           start a new sandbox from the snapshot of another
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
@@ -130,6 +132,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.pause(ctx, args[1:])
 	case "resume":
 		return a.resume(ctx, args[1:])
+	case "fork":
+		return a.fork(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":

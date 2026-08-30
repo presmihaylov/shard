@@ -62,32 +62,33 @@ func TestTheProviderNamesItsSubstrate(t *testing.T) {
 	}
 }
 
-func TestOnlyForkIsNotClaimedYet(t *testing.T) {
-	if got, want := newProvider(t).Capabilities(), (models.Capabilities{Pause: true, Resume: true}); got != want {
+func TestEveryOptionalVerbIsClaimed(t *testing.T) {
+	if got, want := newProvider(t).Capabilities(), (models.Capabilities{Pause: true, Resume: true, Fork: true}); got != want {
 		t.Errorf("got capabilities %+v, want %+v", got, want)
 	}
 }
 
-func TestTheOptionalVerbsRefuseRatherThanDowngrade(t *testing.T) {
-	p := newProvider(t)
+func TestForkTakesOnlyASnapshotAndAFreeId(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	spec := models.SandboxSpec{ID: "amber-otter-1a2b", StateDir: t.TempDir()}
 
-	verbs := map[string]error{
-		models.VerbFork: p.Fork(t.Context(), t.TempDir(), models.SandboxSpec{}),
+	err := p.Fork(t.Context(), t.TempDir(), spec)
+	if err == nil || !strings.Contains(err.Error(), "no snapshot") {
+		t.Errorf("Fork from an empty directory returned %v, want a refusal that says there is no snapshot", err)
 	}
 
-	// The conformance suite asserts the provider and the verb a refusal carries, so assert both here too.
-	for verb, err := range verbs {
-		var refusal *models.UnsupportedError
-		if !errors.As(err, &refusal) {
-			t.Errorf("%s returned %v, want an UnsupportedError", verb, err)
-			continue
-		}
-		if refusal.Provider != "gvisor" {
-			t.Errorf("the %s refusal names provider %q, want gvisor", verb, refusal.Provider)
-		}
-		if refusal.Verb != verb {
-			t.Errorf("the refusal names verb %q, want %q", refusal.Verb, verb)
-		}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live id must not be forked over: the rollback would unmount the rootfs the first one runs on.
+	err = p.Fork(t.Context(), dir, spec)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("Fork over a running id returned %v, want a refusal that says it exists", err)
+	}
+	if entries, _ := os.ReadDir(spec.StateDir); len(entries) != 0 {
+		t.Errorf("Fork over a running id wrote into its state directory: %v", entries)
 	}
 }
 

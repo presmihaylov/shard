@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -13,8 +14,6 @@ import (
 
 // fakeLifecycleRepo answers for one sandbox, so a test says what the record held before the verb ran.
 type fakeLifecycleRepo struct {
-	sandboxRepo
-
 	r  *recorder
 	sb models.Sandbox
 	// left is what List answers with.
@@ -25,6 +24,9 @@ type fakeLifecycleRepo struct {
 	deleted    bool
 	// snapshotDir replaces the fixed path when a test needs the directory to exist on disk.
 	snapshotDir string
+	deletedID   string
+	// created is the record Create was handed, which a fork fills in from the source.
+	created models.Sandbox
 }
 
 func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
@@ -54,12 +56,35 @@ func (f *fakeLifecycleRepo) List() ([]models.Sandbox, error) {
 	return f.left, f.unreadable
 }
 
-func (f *fakeLifecycleRepo) Update(_ string, mutate func(*models.Sandbox) error) error {
+func (f *fakeLifecycleRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 	if err := f.r.record("repo.Update"); err != nil {
 		return err
 	}
+	if id == f.created.ID && id != "" {
+		return mutate(&f.created)
+	}
 
 	return mutate(&f.sb)
+}
+
+// Create hands out the id of the fork, and the record is kept beside the source's for the test to read.
+func (f *fakeLifecycleRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+	if err := f.r.record("repo.Create"); err != nil {
+		return models.Sandbox{}, err
+	}
+
+	sb.ID = "sandbox2"
+	f.created = sb
+
+	return sb, nil
+}
+
+func (f *fakeLifecycleRepo) Dir(id string) (string, error) {
+	if err := f.r.record("repo.Dir"); err != nil {
+		return "", err
+	}
+
+	return "/state/" + id, nil
 }
 
 func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
@@ -70,11 +95,12 @@ func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
 	return "/snapshots/" + id, nil
 }
 
-func (f *fakeLifecycleRepo) Delete(string) error {
+func (f *fakeLifecycleRepo) Delete(id string) error {
 	if err := f.r.record("repo.Delete"); err != nil {
 		return err
 	}
 	f.deleted = true
+	f.deletedID = id
 
 	return nil
 }
@@ -86,13 +112,13 @@ type fakeLifecycleNet struct {
 	reapplied bool
 }
 
-func (f *fakeLifecycleNet) Allocate(context.Context, string) (models.NetworkSpec, error) {
+func (f *fakeLifecycleNet) Allocate(_ context.Context, id string) (models.NetworkSpec, error) {
 	if err := f.r.record("net.Allocate"); err != nil {
 		return models.NetworkSpec{}, err
 	}
 	f.allocated = true
 
-	return models.NetworkSpec{}, nil
+	return models.NetworkSpec{NetnsPath: "/run/netns/" + id, Address: netip.MustParsePrefix("10.0.0.2/24"), HostInterface: "veth-" + id}, nil
 }
 
 func (f *fakeLifecycleNet) Reapply(context.Context, string) error {
@@ -126,8 +152,9 @@ type fakeLifecycleProvider struct {
 	started bool
 	stopped bool
 	removed bool
-	// snapshot is the directory the pause was told to write, or the resume was told to read.
+	// snapshot is the directory the pause was told to write, or the resume or fork was told to read.
 	snapshot string
+	forked   models.SandboxSpec
 	// logPath is the file logs reads, which a test writes into.
 	logPath string
 }
@@ -177,6 +204,18 @@ func (f *fakeLifecycleProvider) Resume(_ context.Context, _ string, dir string) 
 	}
 	f.snapshot = dir
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
+}
+
+// Fork records the spec it was handed, so a test says what identity the new sandbox got.
+func (f *fakeLifecycleProvider) Fork(_ context.Context, dir string, spec models.SandboxSpec) error {
+	if err := f.r.record("provider.Fork"); err != nil {
+		return err
+	}
+	f.snapshot = dir
+	f.forked = spec
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
 
 	return nil
 }
@@ -256,6 +295,18 @@ func running() models.Sandbox {
 
 func (f *fakeLifecycleRepo) Hold(_ context.Context, id string) (func() error, error) {
 	if err := f.r.record("repo.Hold"); err != nil {
+		return nil, err
+	}
+	if f.missing {
+		return nil, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+	}
+
+	return func() error { return nil }, nil
+}
+
+// HoldShared is recorded apart from Hold, so a test says which one a verb took.
+func (f *fakeLifecycleRepo) HoldShared(_ context.Context, id string) (func() error, error) {
+	if err := f.r.record("repo.HoldShared"); err != nil {
 		return nil, err
 	}
 	if f.missing {

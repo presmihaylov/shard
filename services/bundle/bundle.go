@@ -250,7 +250,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			// The overlay upper layer is what makes this writable, and what survives a stop and start.
 			Readonly: false,
 		},
-		Hostname: spec.Name,
+		Hostname: firstNonEmpty(spec.Name, spec.ID),
 		// No User here: PID 1 stays root to write the exit file, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
