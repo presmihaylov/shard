@@ -50,6 +50,11 @@ func SetMemorySwapMax(dir string, bytes int64) error {
 	return write(dir, "memory.swap.max", strconv.FormatInt(bytes, 10))
 }
 
+// SetOOMGroup makes the OOM killer take every process in the cgroup, not the one it would pick.
+func SetOOMGroup(dir string) error {
+	return write(dir, "memory.oom.group", "1")
+}
+
 // Events counts what the kernel did to a cgroup. It survives the death of every process in one, so
 // it is the only record of why a sandbox is gone once its own processes cannot be asked.
 type Events struct {
