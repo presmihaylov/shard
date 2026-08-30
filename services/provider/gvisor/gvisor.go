@@ -177,6 +177,11 @@ func boundMemory(root string, spec models.SandboxSpec) error {
 		return fmt.Errorf("pin the swap of sandbox %s to none: %w", spec.ID, err)
 	}
 
+	// Guest memory sits in systrap stubs, so the kernel alone would take one stub and leave the sentry.
+	if err := cgroup.SetOOMGroup(dir); err != nil {
+		return fmt.Errorf("group the OOM kill of sandbox %s: %w", spec.ID, err)
+	}
+
 	return nil
 }
 

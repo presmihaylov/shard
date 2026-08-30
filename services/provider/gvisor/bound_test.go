@@ -22,7 +22,7 @@ func fakeCgroup(t *testing.T, id, applied string) string {
 		t.Fatalf("make the fake cgroup: %v", err)
 	}
 
-	for file, value := range map[string]string{"memory.max": applied, "memory.high": "max", "memory.swap.max": "max"} {
+	for file, value := range map[string]string{"memory.max": applied, "memory.high": "max", "memory.swap.max": "max", "memory.oom.group": "0"} {
 		if err := os.WriteFile(filepath.Join(dir, file), []byte(value+"\n"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", file, err)
 		}
@@ -120,6 +120,22 @@ func TestTheSwapIsPinnedToNone(t *testing.T) {
 
 	if got := read(t, root, id, "memory.swap.max"); got != "0" {
 		t.Errorf("memory.swap.max = %s, want 0", got)
+	}
+}
+
+// TestTheOOMKillerTakesTheWholeSandbox pins the ceiling to what exec names: guest memory sits in
+// systrap stubs, so without this the kernel takes one stub and leaves a sandbox that is alive and broken.
+func TestTheOOMKillerTakesTheWholeSandbox(t *testing.T) {
+	const id = "amber-otter-9e0f"
+
+	root := fakeCgroup(t, id, "134217728")
+
+	if err := gvisor.BoundMemory(root, models.SandboxSpec{ID: id, Resources: models.Resources{MemoryMiB: 128}}); err != nil {
+		t.Fatalf("BoundMemory: %v", err)
+	}
+
+	if got := read(t, root, id, "memory.oom.group"); got != "1" {
+		t.Errorf("memory.oom.group = %s, want 1", got)
 	}
 }
 
