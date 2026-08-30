@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
@@ -49,6 +50,8 @@ type Provider struct {
 	bundles *bundle.Service
 	dirs    StateDirs
 	caps    models.Capabilities
+	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
+	cgroupRoot string
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -58,7 +61,7 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 
 	// Capabilities is fixed once here, so it needs no context and cannot fail. Chunk 3 fills it in:
 	// SHARD-32 flips pause and resume, SHARD-33 flips fork.
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: models.Capabilities{}}, nil
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: models.Capabilities{}, cgroupRoot: cgroup.Root}, nil
 }
 
 func (p *Provider) Name() string { return name }
@@ -67,6 +70,13 @@ func (p *Provider) Capabilities() models.Capabilities { return p.caps }
 
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
 func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
+	// The sentry boots inside the cgroup runsc builds from this number, so a bound under its own cost
+	// kills the create with nothing shard can read back.
+	if mib := spec.Resources.MemoryMiB; mib > 0 && mib < MinimumMemoryMiB {
+		return fmt.Errorf("sandbox %s asks for %d MiB, and %s needs at least %d MiB: the sentry itself costs about 30 MiB",
+			spec.ID, mib, name, MinimumMemoryMiB)
+	}
+
 	// A live id must not be re-created: the rollback below would unmount the rootfs the first one runs on.
 	status, err := p.Status(ctx, spec.ID)
 	if err != nil {
@@ -118,7 +128,61 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
+	if err := p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
+		return err
+	}
+
+	if err := boundMemory(p.cgroupRoot, spec); err != nil {
+		// The caller drops the rootfs mount, so a sandbox left created would run on a mount that is gone.
+		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
+	}
+
+	return nil
+}
+
+// boundMemory moves the host bounds off the bound the guest sees. runsc has already given the sentry
+// the operator's number as its budget, and the host cgroup must sit above it, because that one cgroup
+// also charges the sentry's own working set.
+func boundMemory(root string, spec models.SandboxSpec) error {
+	bound := bundle.MemoryBound(spec.Resources)
+	if bound == 0 {
+		return nil
+	}
+
+	dir := cgroupDir(root, spec.ID)
+
+	applied, err := cgroup.MemoryMax(dir)
+	if err != nil {
+		return fmt.Errorf("read back the memory bound of sandbox %s: %w", spec.ID, err)
+	}
+
+	// runsc applies nothing at all when the cgroup is already there, and an unbounded sandbox is a
+	// downgrade, so anything but the number the spec asked for ends the create.
+	if applied != bound {
+		return fmt.Errorf("sandbox %s asked runsc for a %d byte memory bound on %s, which holds %d, where -1 is no bound at all",
+			spec.ID, bound, filepath.Join(dir, "memory.max"), applied)
+	}
+
+	if err := cgroup.SetMemoryMax(dir, MemoryCeiling(spec.Resources)); err != nil {
+		return fmt.Errorf("raise the memory ceiling of sandbox %s: %w", spec.ID, err)
+	}
+
+	if err := cgroup.SetMemoryHigh(dir, MemoryThrottle(spec.Resources)); err != nil {
+		return fmt.Errorf("throttle the memory of sandbox %s: %w", spec.ID, err)
+	}
+
+	// Guest memory is sentry shmem, and shmem is swap-backed, so on a host with swap the throttle
+	// reclaims instead of holding and stops being the wall the ceiling above it depends on.
+	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+		return fmt.Errorf("pin the swap of sandbox %s to none: %w", spec.ID, err)
+	}
+
+	return nil
+}
+
+// cgroupDir is where runsc puts a sandbox's cgroup when the OCI spec names no path.
+func cgroupDir(root, id string) string {
+	return filepath.Join(root, id)
 }
 
 // Start runs the entrypoint. A stopped sandbox never starts again: runsc refuses it, so a second run
@@ -482,13 +546,30 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	state, err := p.runsc.State(ctx, id)
 	if errors.Is(err, runsc.ErrNotFound) {
-		return models.Status{}, nil
+		return models.Status{OOMKilled: p.oomKilled(id)}, nil
 	}
 	if err != nil {
 		return models.Status{}, err
 	}
 
-	return models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}, nil
+	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
+	if !status.Alive() {
+		status.OOMKilled = p.oomKilled(id)
+	}
+
+	return status, nil
+}
+
+// oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
+// any of runsc's cleanup, so the cgroup and its counters outlive the sandbox and are the only record.
+// A sandbox that stopped cleanly has no cgroup left, and that reads as false, which is correct.
+func (p *Provider) oomKilled(id string) bool {
+	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
+	if err != nil {
+		return false
+	}
+
+	return events.OOM > 0
 }
 
 // stateOf maps the five runsc statuses onto the four shard states. A container runsc is still

@@ -26,6 +26,9 @@ const InitPathEnv = "SHARD_INIT_PATH"
 // cannot cancel.
 const teardownBudget = 30 * time.Second
 
+// maxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
+const maxMemoryMiB = 1 << 24
+
 // createOptions is one parsed shard create invocation.
 type createOptions struct {
 	ref  string
@@ -77,6 +80,10 @@ func parseCreate(args []string) (createOptions, error) {
 	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
 	if opts.resources.MemoryMiB < 0 {
 		return createOptions{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", opts.resources.MemoryMiB)
+	}
+	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
+	if opts.resources.MemoryMiB > maxMemoryMiB {
+		return createOptions{}, fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", opts.resources.MemoryMiB)
 	}
 	if opts.resources.VCPUs < 0 {
 		return createOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)

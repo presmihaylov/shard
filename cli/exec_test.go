@@ -296,6 +296,8 @@ type fakeExecProvider struct {
 	state models.State
 	// forgotten is a sandbox the substrate does not hold at all, which a stale record still names.
 	forgotten bool
+	// oomKilled is a sandbox the host ended for holding too much memory.
+	oomKilled bool
 
 	calls int
 	id    string
@@ -306,7 +308,7 @@ func (f *fakeExecProvider) Name() string { return "fake" }
 
 func (f *fakeExecProvider) Status(context.Context, string) (models.Status, error) {
 	if f.forgotten {
-		return models.Status{}, nil
+		return models.Status{OOMKilled: f.oomKilled}, nil
 	}
 
 	state := f.state
@@ -314,7 +316,7 @@ func (f *fakeExecProvider) Status(context.Context, string) (models.Status, error
 		state = models.StateRunning
 	}
 
-	return models.Status{Exists: true, State: state}, nil
+	return models.Status{Exists: true, State: state, OOMKilled: f.oomKilled}, nil
 }
 
 func (f *fakeExecProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -339,3 +341,21 @@ func (missingRepo) Get(id string) (models.Sandbox, error) {
 }
 
 func (missingRepo) Resolve(ref string) (string, error) { return ref, nil }
+
+// TestExecNamesTheMemoryTheSandboxRanOutOf keeps the one thing an operator cannot find out any other
+// way: the exit file records a 137 for this, and so does a plain kill -9.
+func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
+	provider := &fakeExecProvider{state: models.StateStopped, oomKilled: true}
+	app := execApp(provider)
+
+	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
+	if err == nil {
+		t.Fatal("exec accepted a sandbox the host ended for its memory")
+	}
+	if !strings.Contains(err.Error(), "memory") {
+		t.Errorf("the refusal is %q, and it never says the sandbox ran out of memory", err)
+	}
+	if provider.calls != 0 {
+		t.Error("exec reached the provider for a sandbox that is gone")
+	}
+}

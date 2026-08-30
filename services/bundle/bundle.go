@@ -258,7 +258,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 				{Type: "RLIMIT_NOFILE", Hard: defaultNoFile, Soft: defaultNoFile},
 			},
 		},
-		Mounts: mounts(b.ShardDir, s.initPath),
+		Mounts: mounts(b.ShardDir, s.initPath, spec.Resources),
 		Linux: &specs.Linux{
 			Namespaces:        namespaces(spec.Network.NetnsPath),
 			Resources:         resources(spec.Resources),
@@ -310,8 +310,9 @@ func environment(env []string) []string {
 func resources(r models.Resources) *specs.LinuxResources {
 	out := &specs.LinuxResources{}
 
-	if r.MemoryMiB > 0 {
-		limit := r.MemoryMiB * 1024 * 1024
+	// The spec carries the bound the operator typed and no headroom, because runsc hands this number to
+	// the sentry as its budget and the guest reads it back as MemTotal.
+	if limit := MemoryBound(r); limit > 0 {
 		out.Memory = &specs.LinuxMemory{Limit: &limit}
 	}
 
