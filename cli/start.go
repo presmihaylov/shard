@@ -10,7 +10,7 @@ import (
 
 // start runs a stopped sandbox again. Its address, its writable layer and its record all survived
 // the stop, so the provider builds the new run over them and the record loses only the old exit.
-func (a App) start(ctx context.Context, args []string) error {
+func (a App) start(ctx context.Context, args []string) (err error) {
 	if len(args) != 1 {
 		return fmt.Errorf("start takes one sandbox id, got %d", len(args))
 	}
@@ -31,6 +31,13 @@ func (a App) start(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Two starts of one sandbox would each build the netns; the second waits and then sees it running.
+	release, err := repo.Hold(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, release()) }()
 
 	sb, err := repo.Get(id)
 	if err != nil {

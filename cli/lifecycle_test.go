@@ -208,3 +208,14 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 }
+
+func (f *fakeLifecycleRepo) Hold(_ context.Context, id string) (func() error, error) {
+	if err := f.r.record("repo.Hold"); err != nil {
+		return nil, err
+	}
+	if f.missing {
+		return nil, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+	}
+
+	return func() error { return nil }, nil
+}
