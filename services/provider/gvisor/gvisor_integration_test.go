@@ -602,7 +602,7 @@ func TestMain(m *testing.M) {
 // on delete, but one left behind silently unbounds the next sandbox that takes the same id, and the
 // ids here repeat on every run.
 func sweepCgroups() {
-	left, err := filepath.Glob(filepath.Join(cgroup.Root, "shard-1?-*"))
+	left, err := filepath.Glob(filepath.Join(cgroup.Root, bundle.CgroupsPath("shard-1?-*")))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "list the cgroups the tests left:", err)
 

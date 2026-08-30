@@ -128,6 +128,11 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
+	// runsc rmdirs every cgroup it made on delete, the parent included, so the parent must be shard's.
+	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+		return err
+	}
+
 	if err := p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
 		return err
 	}
@@ -185,9 +190,9 @@ func boundMemory(root string, spec models.SandboxSpec) error {
 	return nil
 }
 
-// cgroupDir is where runsc puts a sandbox's cgroup when the OCI spec names no path.
+// cgroupDir is the host side of the path the bundle names.
 func cgroupDir(root, id string) string {
-	return filepath.Join(root, id)
+	return filepath.Join(root, bundle.CgroupsPath(id))
 }
 
 // Start runs the entrypoint. A stopped sandbox never starts again: runsc refuses it, so a second run
@@ -371,6 +376,11 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	// --force, because a running sandbox holds the rootfs.
 	if err := p.runsc.Delete(ctx, id, true); err != nil {
 		return err
+	}
+
+	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the next create of the id.
+	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	// The repository removes the directory after this, and it must never remove a live mount.

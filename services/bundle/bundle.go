@@ -265,6 +265,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		},
 		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
 		Linux: &specs.Linux{
+			CgroupsPath:       CgroupsPath(spec.ID),
 			Namespaces:        namespaces(spec.Network.NetnsPath),
 			Resources:         resources(spec.Resources),
 			MaskedPaths:       maskedPaths,

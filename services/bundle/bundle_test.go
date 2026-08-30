@@ -467,3 +467,12 @@ func TestBuildLeavesTheImageResolverConfigAloneWithoutANetwork(t *testing.T) {
 		t.Errorf("got %v, want no resolv.conf in the writable layer", err)
 	}
 }
+
+// TestTheCgroupSitsUnderOneShardParent pins SHARD-98: nothing of shard's lands at the cgroup root.
+func TestTheCgroupSitsUnderOneShardParent(t *testing.T) {
+	_, spec := build(t, models.SandboxSpec{ID: "amber-otter-1a2b", Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
+
+	if got, want := spec.Linux.CgroupsPath, "/shard/amber-otter-1a2b"; got != want {
+		t.Errorf("cgroupsPath is %q, want %q", got, want)
+	}
+}

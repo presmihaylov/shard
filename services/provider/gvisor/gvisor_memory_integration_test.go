@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 )
 
@@ -80,7 +81,7 @@ func TestTheCgroupCarriesTheThrottleAndTheCeiling(t *testing.T) {
 
 	h.startSpec(t, spec)
 
-	dir := filepath.Join(cgroup.Root, spec.ID)
+	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
 
 	throttle, ceiling := gvisor.MemoryThrottle(spec.Resources), gvisor.MemoryCeiling(spec.Resources)
 
@@ -102,8 +103,8 @@ func TestAStaleCgroupThatWouldUnboundTheSandboxIsRefused(t *testing.T) {
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
-	dir := filepath.Join(cgroup.Root, spec.ID)
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("forge a stale cgroup: %v", err)
 	}
 
@@ -256,4 +257,30 @@ func guestTmpfsMiB(t *testing.T, log, mount string) int64 {
 	t.Fatalf("the guest never printed a size for %s, log: %s", mount, log)
 
 	return 0
+}
+
+// TestRemovingOneSandboxLeavesItsSiblingBound pins who owns the parent cgroup: runsc rmdirs every
+// cgroup it made on delete, so a parent it made would make the first rm fail while a sibling lives.
+func TestRemovingOneSandboxLeavesItsSiblingBound(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	first.Resources = models.Resources{MemoryMiB: boundMiB}
+	h.startSpec(t, first)
+
+	second := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	second.Resources = models.Resources{MemoryMiB: boundMiB}
+	h.startSpec(t, second)
+
+	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
+		t.Fatalf("Stop the first: %v", err)
+	}
+	if err := h.provider.Remove(t.Context(), first.ID); err != nil {
+		t.Fatalf("Remove the first while the second lives: %v", err)
+	}
+
+	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(second.ID))
+	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "memory.max"))); got != strconv.FormatInt(gvisor.MemoryCeiling(second.Resources), 10) {
+		t.Errorf("the sibling's memory.max is %s after the first rm", got)
+	}
 }
