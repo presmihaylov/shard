@@ -83,13 +83,14 @@ expect_exec() {
 	expect "${got}" "${want}" "${note}"
 }
 
-# expect_network fails when the guest does not hold its address or cannot reach its gateway.
+# expect_network fails when the guest does not hold its address or cannot get out through the NAT.
+# The gateway itself drops what a guest sends it, so the probe goes past it.
 expect_network() {
 	local when="$1"
 	expect_exec "${ADDRESS}" "the guest holds its address ${when}" \
 		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${ADDRESS}'"
-	expect_exec "reachable" "the guest reaches its gateway ${when}" \
-		/bin/sh -c 'ping -c 1 -W 2 "$(ip route | awk '"'"'/default/ {print $3}'"'"')" >/dev/null && echo reachable'
+	expect_exec "reachable" "the guest gets out through the NAT ${when}" \
+		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 }
 
 # absent fails when the pattern is still on the host, quoting what was found.
