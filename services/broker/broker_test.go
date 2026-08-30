@@ -112,8 +112,8 @@ func TestAGrantedHostGetsTheValueEverywhereThePlaceholderWas(t *testing.T) {
 			t.Errorf("the %s still reads %q", what, got)
 		}
 	}
-	if r.ContentLength != int64(len(body)) || r.Header.Get("Content-Length") != "22" {
-		t.Errorf("the length is %d and the header %q, want %d", r.ContentLength, r.Header.Get("Content-Length"), len(body))
+	if r.ContentLength != int64(len(body)) {
+		t.Errorf("the length is %d, want %d", r.ContentLength, len(body))
 	}
 }
 
@@ -149,15 +149,21 @@ func TestABodyOverTheBoundGoesOutUnchanged(t *testing.T) {
 }
 
 func TestThePolicyIsAskedWithTheResolvedAddress(t *testing.T) {
-	deny := egress.Effective{Policy: "locked", Rules: []egress.EffectiveRule{{Rule: models.Rule{
-		Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}, Protocol: "tcp",
-	}}}}
-	b := newBroker(t, running(), deny)
+	denyCIDR := func(cidr string) egress.Effective {
+		return egress.Effective{Policy: "locked", Rules: []egress.EffectiveRule{
+			{Rule: models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: cidr}, Protocol: "tcp"}},
+			{Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}, Protocol: "tcp"}},
+		}}
+	}
 
-	_, err := b.Route(t.Context(), source, "api.example.com", 443)
+	_, err := newBroker(t, running(), denyCIDR(api.String()+"/32")).Route(t.Context(), source, "api.example.com", 443)
 	var denied *proxy.Denied
 	if !errors.As(err, &denied) || !strings.Contains(denied.Reason, "policy locked denies") {
-		t.Errorf("Route = %v, want a denial by the policy", err)
+		t.Errorf("Route = %v, want a denial by the address the name resolved to", err)
+	}
+
+	if _, err := newBroker(t, running(), denyCIDR("198.51.100.0/24")).Route(t.Context(), source, "api.example.com", 443); err != nil {
+		t.Errorf("Route = %v, want the resolved address to pass a deny of another one", err)
 	}
 }
 
@@ -173,5 +179,33 @@ func TestAnUnknownSourceIsDeniedAndAnUnknownHostIsAnError(t *testing.T) {
 	_, err = b.Route(t.Context(), source, "nowhere.example.com", 443)
 	if err == nil || errors.As(err, &denied) {
 		t.Errorf("a name that does not resolve got %v, want a plain error", err)
+	}
+}
+
+func TestAChunkedBodyIsRewrittenAndGivenALength(t *testing.T) {
+	b := newBroker(t, running("TOKEN"), egress.Effective{})
+
+	route, err := b.Route(t.Context(), source, "api.example.com", 443)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.example.com/v1", io.NopCloser(strings.NewReader(`{"key":"mock-TOKEN"}`)))
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	if r.ContentLength != 0 {
+		t.Fatalf("the request has a known length %d, want an unknown one", r.ContentLength)
+	}
+	if err := route.Rewrite(r); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	body, _ := io.ReadAll(r.Body)
+	if want := `{"key":"real-TOKEN"}`; string(body) != want {
+		t.Errorf("the body reads %q, want %q", body, want)
+	}
+	if r.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength is %d, want %d", r.ContentLength, len(body))
 	}
 }

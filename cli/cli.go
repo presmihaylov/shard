@@ -58,7 +58,7 @@ Usage:
   shard policy ls          list the policies
   shard policy rm [--force] <name>
                            remove a policy, and with --force one a sandbox still holds
-  shard proxy [--listen <addr>] [--http-port <n>] [--https-port <n>]
+  shard proxy
                            run the egress proxy in the foreground; a verb starts one on its own when a sandbox needs it
   shard version            print the version
 

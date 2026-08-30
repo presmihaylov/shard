@@ -50,7 +50,9 @@ egress proxy on the gateway, and the proxy judges each request by the name it ca
 rules in the same order the host holds. So a web request meets the policy twice, first by name at
 the proxy and then by address on the host for everything else. What the host cannot see, a name
 behind a shared CDN address say, the proxy can. A fronted sandbox with no proxy reaches no web host:
-the first verb that needs one starts it, and refuses the sandbox if it does not come up.
+the first verb that needs one starts it, and refuses the sandbox if it does not come up. Nothing
+supervises it yet: if it dies, every fronted sandbox reaches no web host until the next `create`,
+`start`, `resume`, `fork` or `clone` starts another. The daemon (SHARD-51) will own it.
 
 A rule at the proxy reads as it does on the host, with one addition: a host a grant implies, and a
 sandbox with no policy at all, may not reach a private address by name. Written into the policy by the
@@ -67,7 +69,9 @@ not exist drops everything. That is the rule throughout: an error is a closed do
 sandbox, each addition marked `implied`:
 
 - **`secret NAME`**: a secret granted to the sandbox allows `tcp` 80 and 443 to every host it was
-  granted to. The grant is the allow; the policy does not have to repeat it.
+  granted to. The grant is the allow; the policy does not have to repeat it, and it cannot take it
+  back: the implied rules come before the policy's own, so a `deny` of a granted host does not match.
+  Remove the grant to close the host.
 - **`dns`**: a policy that names a domain, or a sandbox that holds a secret, allows `udp` and `tcp`
   53 to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
   `cidr` and `group` rules opens no DNS.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 )
 
@@ -74,10 +73,8 @@ func rewriteBody(r *http.Request, replacer *strings.Replacer) error {
 
 	body := []byte(replacer.Replace(string(head)))
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	// The transport writes ContentLength and drops the header, so the field is the one that counts.
 	r.ContentLength = int64(len(body))
-	if r.Header.Get("Content-Length") != "" {
-		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	}
 
 	return nil
 }

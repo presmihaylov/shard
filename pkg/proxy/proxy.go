@@ -19,7 +19,9 @@ const (
 	PlainPort = 80
 	TLSPort   = 443
 
-	headerTimeout    = 30 * time.Second
+	headerTimeout = 30 * time.Second
+	// A request to a granted host is held in memory while its body arrives, so a slow one cannot hold it for long.
+	requestTimeout   = 5 * time.Minute
 	handshakeTimeout = 10 * time.Second
 )
 
@@ -71,7 +73,7 @@ func New(ca *CA, director Director, opts ...Option) *Server {
 
 // ServePlain carries HTTP that was bound for port 80. It returns when the listener closes.
 func (s *Server) ServePlain(l net.Listener) error {
-	srv := &http.Server{Handler: s.handler(PlainPort, "http"), ReadHeaderTimeout: headerTimeout}
+	srv := &http.Server{Handler: s.handler(PlainPort, "http"), ReadHeaderTimeout: headerTimeout, ReadTimeout: requestTimeout}
 
 	return srv.Serve(l)
 }
@@ -92,7 +94,7 @@ func (s *Server) ServeTLS(l net.Listener) error {
 		},
 	}
 
-	srv := &http.Server{Handler: s.handler(TLSPort, "https"), ReadHeaderTimeout: headerTimeout}
+	srv := &http.Server{Handler: s.handler(TLSPort, "https"), ReadHeaderTimeout: headerTimeout, ReadTimeout: requestTimeout}
 
 	return srv.Serve(tls.NewListener(l, cfg))
 }

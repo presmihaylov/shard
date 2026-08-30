@@ -282,3 +282,29 @@ func TestAHostHeaderThatDisagreesWithTheHandshakeIsRefused(t *testing.T) {
 		t.Errorf("got %q, want a 400", reply[:n])
 	}
 }
+
+// Two first verbs at once must end with one CA, or a guest trusts one the proxy does not hold.
+func TestConcurrentLoadOrCreateMintsOneCA(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ca")
+	pems := make(chan string, 8)
+	for range 8 {
+		go func() {
+			ca, err := LoadOrCreate(dir)
+			if err != nil {
+				pems <- "error: " + err.Error()
+				return
+			}
+			pems <- string(ca.PEM())
+		}()
+	}
+
+	first := <-pems
+	for range 7 {
+		if got := <-pems; got != first {
+			t.Fatalf("two LoadOrCreate calls disagree on the CA:\n%s\n%s", first, got)
+		}
+	}
+	if strings.HasPrefix(first, "error") {
+		t.Fatal(first)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // The guest verifies every host against one file: what the image shipped, then the proxy CA.
@@ -49,5 +50,28 @@ func TestBuildKeepsTheUsersOwnCAVariable(t *testing.T) {
 
 	if !slices.Contains(got.Process.Env, "SSL_CERT_FILE=/mine.pem") || slices.Contains(got.Process.Env, "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt") {
 		t.Errorf("the user's SSL_CERT_FILE was replaced: %v", got.Process.Env)
+	}
+}
+
+// An image can point the bundle path at a host file, and a secret record is one: the read must not follow it out.
+func TestBuildRefusesAnImageRootsLinkOutsideTheRootFS(t *testing.T) {
+	spec := newSpec(t)
+	outside := filepath.Join(t.TempDir(), "secret.json")
+	write(t, outside, `{"value":"sk-real"}`)
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatalf("create the image certs dir: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt")); err != nil {
+		t.Fatalf("link the bundle outside: %v", err)
+	}
+	spec.ProxyCA = []byte("-----PROXY CA-----\n")
+	spec = runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	_, err := newService(t).Build(spec)
+	if err == nil {
+		t.Fatal("Build followed the image bundle link out of the rootfs")
+	}
+	if strings.Contains(err.Error(), "sk-real") {
+		t.Errorf("the error carries the file: %v", err)
 	}
 }

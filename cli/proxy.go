@@ -147,12 +147,9 @@ func (a App) proxy(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// Where it listens is where the host turns a sandbox's ports, so there is no flag to move it.
 	flags := flag.NewFlagSet("shard proxy", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	listen := flags.String("listen", gateway.String(), "the address to listen on")
-	flags.IntVar(&cfg.Proxy.HTTP, "http-port", cfg.Proxy.HTTP, "the port a sandbox's 80 is turned to")
-	flags.IntVar(&cfg.Proxy.HTTPS, "https-port", cfg.Proxy.HTTPS, "the port a sandbox's 443 is turned to")
-
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse the proxy flags: %w", err)
 	}
@@ -160,12 +157,7 @@ func (a App) proxy(ctx context.Context, args []string) error {
 		return fmt.Errorf("proxy takes no arguments, got %v", flags.Args())
 	}
 
-	addr, err := netip.ParseAddr(*listen)
-	if err != nil {
-		return fmt.Errorf("parse --listen: %w", err)
-	}
-
-	return a.serveProxy(ctx, a.deps(), addr, cfg.Proxy)
+	return a.serveProxy(ctx, a.deps(), gateway, cfg.Proxy)
 }
 
 func (a App) serveProxy(ctx context.Context, d *deps, addr netip.Addr, ports network.ProxyPorts) (err error) {
@@ -183,6 +175,8 @@ func (a App) serveProxy(ctx context.Context, d *deps, addr netip.Addr, ports net
 	if err := store.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), proxyFilePerm); err != nil { // #nosec G306
 		return fmt.Errorf("write %s: %w", pidPath, err)
 	}
+	// A crash leaves it behind, and a reader must then check the lock, not the pid.
+	defer func() { err = errors.Join(err, os.Remove(pidPath)) }()
 
 	ca, err := proxy.LoadOrCreate(filepath.Join(a.Root, caDir))
 	if err != nil {

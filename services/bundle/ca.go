@@ -28,7 +28,14 @@ func writeProxyCA(b Bundle, spec models.SandboxSpec) error {
 		return nil
 	}
 
-	roots, err := os.ReadFile(filepath.Join(spec.RootFS, guestCABundle))
+	// An image may link that path at a host file, and a secret is one, so the read cannot leave the rootfs.
+	rootfs, err := os.OpenRoot(spec.RootFS)
+	if err != nil {
+		return fmt.Errorf("open the rootfs: %w", err)
+	}
+	defer rootfs.Close()
+
+	roots, err := fs.ReadFile(rootfs.FS(), guestCABundle)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read the image roots: %w", err)
 	}

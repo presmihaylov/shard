@@ -26,6 +26,8 @@ const (
 	caDirPerm  = 0o700
 	caKeyPerm  = 0o600
 	caCertPerm = 0o644
+	// maxLeaves bounds what a sandbox asking for random names can make the shared proxy hold.
+	maxLeaves = 4096
 	// A leaf lives a day and is minted again: a host's name changes nothing, and a short life bounds a stolen one.
 	leafLife = 24 * time.Hour
 	caLife   = 10 * 365 * 24 * time.Hour
@@ -43,7 +45,7 @@ type CA struct {
 }
 
 // LoadOrCreate reads the CA from dir, or mints one there. The key never leaves the directory.
-func LoadOrCreate(dir string) (*CA, error) {
+func LoadOrCreate(dir string) (ca *CA, err error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("the CA directory must be an absolute path, got %q", dir)
 	}
@@ -52,7 +54,14 @@ func LoadOrCreate(dir string) (*CA, error) {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	ca, err := load(dir)
+	// Two first verbs at once would each mint a CA, and a guest would trust the one the proxy does not hold.
+	lock, err := store.Acquire(filepath.Join(dir, "lock"), caKeyPerm)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, lock.Release()) }()
+
+	ca, err = load(dir)
 	if err == nil {
 		return ca, nil
 	}
@@ -149,20 +158,36 @@ func (ca *CA) PEM() []byte { return ca.pem }
 
 // Leaf is a certificate for host, signed by the CA, minted on the first ask and kept for a day.
 func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
-	ca.mu.Lock()
-	defer ca.mu.Unlock()
-
-	if leaf, ok := ca.leaves[host]; ok && time.Now().Before(leaf.Leaf.NotAfter.Add(-time.Hour)) {
+	if leaf, ok := ca.cached(host); ok {
 		return leaf, nil
 	}
 
+	// Minted outside the lock, so one slow keygen holds up nobody else's handshake.
 	leaf, err := ca.mint(host)
 	if err != nil {
 		return nil, err
 	}
+
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	if len(ca.leaves) >= maxLeaves {
+		clear(ca.leaves)
+	}
 	ca.leaves[host] = leaf
 
 	return leaf, nil
+}
+
+func (ca *CA) cached(host string) (*tls.Certificate, bool) {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+
+	leaf, ok := ca.leaves[host]
+	if !ok || !time.Now().Before(leaf.Leaf.NotAfter.Add(-time.Hour)) {
+		return nil, false
+	}
+
+	return leaf, true
 }
 
 func (ca *CA) mint(host string) (*tls.Certificate, error) {
