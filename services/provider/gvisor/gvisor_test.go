@@ -87,7 +87,7 @@ func TestForkTakesOnlyASnapshotAndAFreeId(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("Fork over a running id returned %v, want a refusal that says it exists", err)
 	}
-	if entries, _ := os.ReadDir(spec.StateDir); len(entries) != 0 {
+	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
 		t.Errorf("Fork over a running id wrote into its state directory: %v", entries)
 	}
 }
@@ -209,4 +209,42 @@ func unitFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+// A clone copies the layer, so a source that still writes it is refused before anything is laid out.
+func TestCloneRefusesASourceThatIsLive(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	spec := models.SandboxSpec{ID: "amber-otter-2c3d", StateDir: t.TempDir()}
+
+	err := p.Clone(t.Context(), "amber-otter-1a2b", spec)
+	if err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Errorf("Clone of a running source returned %v, want a refusal that names the stop", err)
+	}
+	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
+		t.Errorf("Clone of a running source wrote into its state directory: %v", entries)
+	}
+}
+
+// A source runsc never held has no config.json to run again, and the refusal comes before any write.
+func TestCloneRefusesASourceThatWasNeverBuilt(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`)
+	spec := models.SandboxSpec{ID: "amber-otter-2c3d", StateDir: t.TempDir()}
+
+	if err := p.Clone(t.Context(), "amber-otter-1a2b", spec); err == nil {
+		t.Error("Clone of a source with no bundle returned no error")
+	}
+	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
+		t.Errorf("Clone of an empty source wrote into its state directory: %v", entries)
+	}
+}
+
+func readDir(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+
+	return entries
 }

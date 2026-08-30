@@ -5,9 +5,14 @@ code; this page says what the signatures cannot.
 
 ## Required verbs against optional verbs
 
-Nine verbs are required. Every substrate must do all of them, and none of them has a capability
-flag: `Create`, `Start`, `Stop`, `Remove`, `Exec`, `Wait`, `Status`, `LogPath`, and `Capabilities`
-itself.
+Ten verbs are required. Every substrate must do all of them, and none of them has a capability
+flag: `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Wait`, `Status`, `LogPath`, and
+`Capabilities` itself.
+
+`Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
+another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id
+and the new network. It refuses a source that is alive or still mounted, and it reads nothing of the
+source but its status and its state directory. Firecracker will copy a disk where gVisor copies an overlay layer.
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
@@ -81,6 +86,8 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 - `Exec` applies its own env and workdir, and the entrypoint never sees them;
 - `Exec` refuses an id the substrate never held, and a sandbox that is stopped, naming both the
   sandbox and its state;
+- `Clone` runs the source's entrypoint again under a new id and leaves the source down, and it
+  refuses a source that is running, naming both the sandbox and its state;
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
 It does not prove anything about the network: there is one substrate today, so there is nothing to

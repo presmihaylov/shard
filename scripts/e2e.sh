@@ -34,6 +34,9 @@ ID=""
 LINK=""
 FORK_ID=""
 FORK_LINK=""
+# The clones are space separated lists: two come off one stopped source, and both must go on teardown.
+CLONE_IDS=""
+CLONE_LINKS=""
 REPORTED=0
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
@@ -122,6 +125,7 @@ timed() {
 pause_it() { shard pause "${ID}" >/dev/null; }
 resume_it() { shard resume "${ID}" >/dev/null; }
 fork_it() { FORK_ID=$(shard fork --name e2e-fork "${ID}"); }
+clone_it() { CLONE_IDS="${CLONE_IDS} $(shard clone --name "$1" "${ID}")"; }
 
 # rss_kib reads the resident set of a host process, which for a sandbox is the sentry and its guest memory.
 rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' ' || true; }
@@ -198,12 +202,14 @@ wipe_root() {
 # record is the only handle by which its mount and its namespace can be found again.
 teardown() {
 	local id link
-	for id in "${FORK_ID}" "${ID}"; do
+	# shellcheck disable=SC2086 # the clone lists are meant to split
+	for id in ${CLONE_IDS} "${FORK_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
 	done
-	for link in "${FORK_LINK}" "${LINK}"; do
+	# shellcheck disable=SC2086
+	for link in ${CLONE_LINKS} "${FORK_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
@@ -440,6 +446,60 @@ step "inspect the stopped sandbox"
 shard inspect "${ID}" | grep -q '"state": "stopped"' || fail "shard inspect does not say stopped"
 shard inspect "${ID}" | grep -q '"exit_status"' || fail "shard inspect holds no exit status after the stop"
 say "inspect prints the record with its state and its exit status"
+
+step "clone the stopped sandbox twice"
+# A clone copies the files a stop kept and runs the entrypoint again under a new id: no memory, no snapshot.
+timed "clone" clone_it e2e-clone-1
+timed "clone" clone_it e2e-clone-2
+# shellcheck disable=SC2086 # the clone list is meant to split
+set -- ${CLONE_IDS}
+[ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "clone printed '${CLONE_IDS}', want two new ids"
+N=0
+for CLONE_ID in "$@"; do
+	N=$((N + 1))
+	CLONE_RECORD="${SHARD_ROOT}/sandboxes/${CLONE_ID}/sandbox.json"
+	CLONE_ADDRESS=$(grep -o '"address": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)
+	CLONE_LINKS="${CLONE_LINKS} $(grep -o '"host_interface": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)"
+	[ "${CLONE_ADDRESS}" != "${ADDRESS}" ] || fail "clone ${CLONE_ID} got the source's address ${ADDRESS}"
+	[ "$(listed_state "${CLONE_ID}")" = "running" ] || fail "shard ls does not list clone ${CLONE_ID} running"
+	grep -q '"exit_status"' "${CLONE_RECORD}" && fail "clone ${CLONE_ID} carries the source's exit status"
+	grep -q '"snapshot": *"[^"]' "${CLONE_RECORD}" && fail "clone ${CLONE_ID} names a snapshot"
+	# A fresh run prints the banner once in the clone's own log, and never the source's earlier lines.
+	for _ in $(seq 1 50); do
+		[ "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" -ge 1 ] && break
+		sleep 0.2
+	done
+	[ "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" = "1" ] || fail "clone ${CLONE_ID} printed the banner $(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint") times, want once"
+	expect_exec_in "${CLONE_ID}" "kept" "clone ${CLONE_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
+	expect_exec_in "${CLONE_ID}" "${CLONE_ADDRESS}" "clone ${CLONE_ID} holds its own address" \
+		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${CLONE_ADDRESS}'"
+	expect_exec_in "${CLONE_ID}" "reachable" "clone ${CLONE_ID} gets out through the NAT" \
+		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
+	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
+done
+say "both clones run the entrypoint again over the source's files, each on its own address"
+
+shard exec "$1" -- /bin/sh -c 'echo clone-only > /root/clone-only' >/dev/null
+CODE=0
+shard exec "$2" -- /bin/cat /root/clone-only >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "clone $2 sees the file clone $1 wrote"
+[ ! -e "${SHARD_ROOT}/sandboxes/${ID}/overlay/upper/root/clone-only" ] || fail "the source's layer holds what a clone wrote"
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the clones changed the source's state"
+say "the clones share nothing with each other or with the source, which is still stopped"
+
+step "stop and remove the clones"
+for CLONE_ID in "$@"; do
+	shard stop --time "${GRACE}" "${CLONE_ID}" >/dev/null
+	shard rm "${CLONE_ID}" >/dev/null
+	absent "the record of clone ${CLONE_ID}" "$([ -e "${SHARD_ROOT}/sandboxes/${CLONE_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${CLONE_ID}" || true)"
+done
+for CLONE_LINK in ${CLONE_LINKS}; do
+	absent "the link ${CLONE_LINK} of a clone" "$(ip link show "${CLONE_LINK}" 2>/dev/null || true)"
+done
+CLONE_IDS=""
+CLONE_LINKS=""
+set --
 
 step "refuse to remove the image a stopped sandbox references"
 CODE=0

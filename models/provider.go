@@ -24,6 +24,9 @@ type Provider interface {
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	// Remove deletes the substrate's own state, not the shard record and not a snapshot.
 	Remove(ctx context.Context, id string) error
+	// Clone starts a new sandbox over a copy of the files sourceID kept and runs its entrypoint from the
+	// beginning. It refuses a source that is alive, and it writes nothing of the source.
+	Clone(ctx context.Context, sourceID string, spec SandboxSpec) error
 
 	// Exec runs a command in a sandbox that already runs and returns how that command ended. It is
 	// never the entrypoint: it has no supervisor, and its exit ends nothing. ExitStatus.Signal is

@@ -354,6 +354,57 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	t.Run("CloneRunsTheEntrypointAgainOverWhatTheSourceKept", func(t *testing.T) {
+		source := s.running(t)
+		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo kept > /conformance-clone")}); status.Code != 0 {
+			t.Fatalf("the write into the source exited %d", status.Code)
+		}
+		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		clone := s.NewSpec(t)
+		if err := s.Provider.Clone(t.Context(), source, clone); err != nil {
+			t.Fatalf("Clone: %v", err)
+		}
+
+		// A Create under the clone's id would pass everything below but this: the file is the source's.
+		if _, out := s.exec(t, clone.ID, models.ExecSpec{Argv: s.Shell("cat /conformance-clone")}); !strings.Contains(out, "kept") {
+			t.Errorf("the clone reads %q from the file the source wrote, want kept", out)
+		}
+
+		// The entrypoint exits 0 on its own, and only a fresh run of it can say so under the new id.
+		exit, err := s.Provider.Wait(t.Context(), clone.ID)
+		if err != nil {
+			t.Fatalf("Wait on the clone: %v", err)
+		}
+		if exit.Code != 0 {
+			t.Errorf("the clone's entrypoint exited %d, want 0", exit.Code)
+		}
+		if err := s.Provider.Stop(t.Context(), clone.ID, stopGrace); err != nil {
+			t.Fatalf("Stop the clone: %v", err)
+		}
+
+		status, err := s.Provider.Status(t.Context(), source)
+		if err != nil {
+			t.Fatalf("Status of the source: %v", err)
+		}
+		if status.Alive() {
+			t.Error("the clone brought the source back up")
+		}
+	})
+
+	t.Run("CloneRefusesASourceThatIsRunning", func(t *testing.T) {
+		source := s.running(t)
+		err := s.Provider.Clone(t.Context(), source, s.NewSpec(t))
+		if err == nil {
+			t.Fatal("Clone copied a running sandbox")
+		}
+		if !strings.Contains(err.Error(), source) || !strings.Contains(err.Error(), string(models.StateRunning)) {
+			t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
+		}
+	})
+
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
 		err := s.Provider.Pause(t.Context(), id, s.SnapshotDir(t))
