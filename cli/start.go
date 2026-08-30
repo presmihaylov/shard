@@ -59,19 +59,19 @@ func (a App) start(ctx context.Context, args []string) (err error) {
 	}
 
 	if err := provider.Start(ctx, id); err != nil {
-		return errors.Join(err, a.reconcile(ctx, repo, provider, id))
+		return errors.Join(err, a.reconcile(ctx, repo, provider, id, false))
 	}
 
-	if err := a.recordRunning(ctx, repo, provider, id); err != nil {
+	if err := a.recordRunning(ctx, repo, provider, id, false); err != nil {
 		return err
 	}
 
 	return a.print(id)
 }
 
-// reconcile is for a start that failed: the substrate may hold a live sandbox anyway, and only stop
-// ends one, so the record must say so rather than call it stopped.
-func (a App) reconcile(ctx context.Context, repo sandboxRepo, provider models.Provider, id string) error {
+// reconcile is for a start or a resume that failed: the substrate may hold a live sandbox anyway,
+// and only stop ends one, so the record must say so rather than call it stopped or paused.
+func (a App) reconcile(ctx context.Context, repo sandboxRepo, provider models.Provider, id string, keepExit bool) error {
 	status, err := provider.Status(ctx, id)
 	if err != nil {
 		return err
@@ -80,14 +80,16 @@ func (a App) reconcile(ctx context.Context, repo sandboxRepo, provider models.Pr
 		return nil
 	}
 
-	if err := a.recordRunning(ctx, repo, provider, id); err != nil {
+	if err := a.recordRunning(ctx, repo, provider, id, keepExit); err != nil {
 		return err
 	}
 
 	return fmt.Errorf("sandbox %s may be running and it stays on the host", id)
 }
 
-func (a App) recordRunning(ctx context.Context, repo sandboxRepo, provider models.Provider, id string) error {
+// recordRunning writes the substrate's pid into the record. A start begins a new run and drops the
+// old exit; a resume continues the run the pause froze, whose entrypoint may already have exited.
+func (a App) recordRunning(ctx context.Context, repo sandboxRepo, provider models.Provider, id string, keepExit bool) error {
 	status, err := provider.Status(ctx, id)
 	if err != nil {
 		return err
@@ -96,8 +98,10 @@ func (a App) recordRunning(ctx context.Context, repo sandboxRepo, provider model
 	err = repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
 		sb.PID = status.PID
-		// The old exit is what the previous run did, and this run has not ended.
-		sb.ExitStatus = nil
+		if !keepExit {
+			// The old exit is what the previous run did, and this run has not ended.
+			sb.ExitStatus = nil
+		}
 
 		return nil
 	})

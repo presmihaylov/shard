@@ -19,6 +19,10 @@ type Sandbox struct {
 	// ExitStatus is the last entrypoint exit, nil until one happens. A sandbox has none of its own.
 	ExitStatus *ExitStatus `json:"exit_status,omitempty"`
 
+	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
+	// does not consume it, so it stands until the next pause replaces it or rm removes it.
+	Snapshot string `json:"snapshot,omitempty"`
+
 	// PID is the sandbox process on the host, or 0 when it does not run.
 	PID       int          `json:"pid"`
 	NetnsPath string       `json:"netns_path"`

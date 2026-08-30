@@ -338,6 +338,59 @@ func (r *Runner) Start(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "start", id)
 }
 
+// Pause freezes every task in the container. Its memory stays: Checkpoint is what writes it out.
+func (r *Runner) Pause(ctx context.Context, id string) error {
+	return r.run(ctx, io.Discard, "pause", id)
+}
+
+// Resume thaws a paused container. It is the runsc verb, not the shard one, which restores a snapshot.
+func (r *Runner) Resume(ctx context.Context, id string) error {
+	return r.run(ctx, io.Discard, "resume", id)
+}
+
+// Checkpoint writes the container's state into dir and leaves it paused, so only Delete frees its memory.
+func (r *Runner) Checkpoint(ctx context.Context, id, dir string) error {
+	if dir == "" {
+		return errors.New("no image path: runsc checkpoint has nowhere to write")
+	}
+
+	return r.run(ctx, io.Discard, "checkpoint", "--image-path", dir, id)
+}
+
+// RestoreOptions is the bundle the container comes back over and the checkpoint it comes back from.
+type RestoreOptions struct {
+	Bundle string
+	Image  string
+	Stdout *os.File
+	Stderr *os.File
+}
+
+// Restore brings a container up from a checkpoint, running, as a new container over the bundle. It
+// detaches: without that runsc restore blocks for the sandbox's whole life, the way runsc run does.
+func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) error {
+	if opts.Bundle == "" || opts.Image == "" {
+		return errors.New("no bundle or no image path: runsc restore has nothing to bring up")
+	}
+
+	start, err := logEnd(opts.Stderr)
+	if err != nil {
+		return fmt.Errorf("runsc restore %s: %w", id, err)
+	}
+
+	cmd := r.command(ctx, "restore", "--detach", "--bundle", opts.Bundle, "--image-path", opts.Image, id)
+	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("runsc restore %s: %w: %w", id, err, ctx.Err())
+		}
+
+		return fmt.Errorf("runsc restore %s: %w%s", id, err, diagnostics(opts.Stderr, start))
+	}
+
+	return nil
+}
+
 // Kill signals the container. all reaches every process in it; without it only PID 1 is signalled.
 func (r *Runner) Kill(ctx context.Context, id, signal string, all bool) error {
 	args := []string{"kill"}

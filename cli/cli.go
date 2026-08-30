@@ -26,6 +26,8 @@ Usage:
   shard exec [flags] <id|name> -- <argv>...
                            run a command in a sandbox that is already running
   shard start <id|name>    run a stopped sandbox again, over everything it kept
+  shard pause <id|name>    write a snapshot of a running sandbox and free its memory
+  shard resume <id|name>   run a paused sandbox again from its snapshot
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
@@ -124,6 +126,10 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.logs(ctx, args[1:])
 	case "start":
 		return a.start(ctx, args[1:])
+	case "pause":
+		return a.pause(ctx, args[1:])
+	case "resume":
+		return a.resume(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":

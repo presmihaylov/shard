@@ -113,6 +113,53 @@ func TestEveryCommandCarriesTheGlobalFlags(t *testing.T) {
 	}
 }
 
+func TestTheSnapshotVerbsSpellTheirFlags(t *testing.T) {
+	cases := []struct {
+		verb string
+		call func(r *runsc.Runner) error
+		want []string
+	}{
+		{"pause", func(r *runsc.Runner) error { return r.Pause(t.Context(), "amber-otter-1a2b") }, []string{"pause", "amber-otter-1a2b"}},
+		{"resume", func(r *runsc.Runner) error { return r.Resume(t.Context(), "amber-otter-1a2b") }, []string{"resume", "amber-otter-1a2b"}},
+		{"checkpoint", func(r *runsc.Runner) error { return r.Checkpoint(t.Context(), "amber-otter-1a2b", "/snap") },
+			[]string{"checkpoint", "--image-path", "/snap", "amber-otter-1a2b"}},
+		// Without --detach runsc restore blocks for the sandbox's whole life, the way runsc run does.
+		{"restore", func(r *runsc.Runner) error {
+			return r.Restore(t.Context(), "amber-otter-1a2b", runsc.RestoreOptions{Bundle: "/b", Image: "/snap"})
+		}, []string{"restore", "--detach", "--bundle", "/b", "--image-path", "/snap", "amber-otter-1a2b"}},
+	}
+
+	for _, tc := range cases {
+		r, recorded := fake(t, "", "", 0)
+
+		if err := tc.call(r); err != nil {
+			t.Fatalf("%s: %v", tc.verb, err)
+		}
+
+		if got := argv(t, recorded); !strings.HasSuffix(strings.Join(got, " "), strings.Join(tc.want, " ")) {
+			t.Errorf("%s got argv %v, want it to end with %v", tc.verb, got, tc.want)
+		}
+	}
+}
+
+func TestTheSnapshotVerbsRefuseWithNoPath(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+
+	if err := r.Checkpoint(t.Context(), "amber-otter-1a2b", ""); err == nil {
+		t.Error("Checkpoint accepted no image path")
+	}
+	if err := r.Restore(t.Context(), "amber-otter-1a2b", runsc.RestoreOptions{Bundle: "/b"}); err == nil {
+		t.Error("Restore accepted no image path")
+	}
+	if err := r.Restore(t.Context(), "amber-otter-1a2b", runsc.RestoreOptions{Image: "/snap"}); err == nil {
+		t.Error("Restore accepted no bundle")
+	}
+
+	if _, err := os.Stat(recorded); err == nil {
+		t.Error("a refusal still ran runsc")
+	}
+}
+
 func TestKillAllReachesEveryProcess(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,10 +62,9 @@ func TestTheProviderNamesItsSubstrate(t *testing.T) {
 	}
 }
 
-// Chunk 3 flips these. Until then the flags and the verbs must agree, which is what conformance asserts.
-func TestTheOptionalVerbsAreNotClaimedYet(t *testing.T) {
-	if got := newProvider(t).Capabilities(); got != (models.Capabilities{}) {
-		t.Errorf("got capabilities %+v, want none of them", got)
+func TestOnlyForkIsNotClaimedYet(t *testing.T) {
+	if got, want := newProvider(t).Capabilities(), (models.Capabilities{Pause: true, Resume: true}); got != want {
+		t.Errorf("got capabilities %+v, want %+v", got, want)
 	}
 }
 
@@ -72,11 +72,8 @@ func TestTheOptionalVerbsRefuseRatherThanDowngrade(t *testing.T) {
 	p := newProvider(t)
 
 	verbs := map[string]error{
-		models.VerbPause:  p.Pause(t.Context(), "amber-otter-1a2b", t.TempDir()),
-		models.VerbResume: p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir()),
+		models.VerbFork: p.Fork(t.Context(), t.TempDir(), models.SandboxSpec{}),
 	}
-
-	verbs[models.VerbFork] = p.Fork(t.Context(), t.TempDir(), models.SandboxSpec{})
 
 	// The conformance suite asserts the provider and the verb a refusal carries, so assert both here too.
 	for verb, err := range verbs {
@@ -91,6 +88,82 @@ func TestTheOptionalVerbsRefuseRatherThanDowngrade(t *testing.T) {
 		if refusal.Verb != verb {
 			t.Errorf("the refusal names verb %q, want %q", refusal.Verb, verb)
 		}
+	}
+}
+
+// A snapshot that failed must leave the sandbox running and the snapshot it had, even after a Ctrl-C.
+func TestAFailedCheckpointThawsTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *checkpoint*) sleep 5;; esac
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+
+	dir := filepath.Join(t.TempDir(), "snap")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The checkpoint outlives the context, which is what a Ctrl-C in the middle of one looks like.
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	if err := p.Pause(ctx, "amber-otter-1a2b", dir); err == nil {
+		t.Fatal("Pause returned no error for a checkpoint that was cut short")
+	}
+
+	if got := unitFile(t, calls); !strings.Contains(got, "resume amber-otter-1a2b") {
+		t.Errorf("the sandbox was not thawed after the failed checkpoint: %s", got)
+	}
+	if got := unitFile(t, filepath.Join(dir, "checkpoint.img")); got != "old" {
+		t.Errorf("the old snapshot is %q after a failed pause, want it kept", got)
+	}
+	if _, err := os.Stat(dir + ".tmp"); err == nil {
+		t.Error("the failed checkpoint left its temporary directory behind")
+	}
+}
+
+// Pause is the one verb that deletes a sandbox from runsc, so it must never take one it did not see running.
+func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
+	cases := map[string]string{
+		"stopped": `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`,
+		"created": `echo '{"id":"amber-otter-1a2b","status":"created","pid":42}'`,
+		"gone":    "echo 'FetchSpec failed: loading container: file does not exist' >&2; exit 1",
+	}
+
+	for state, script := range cases {
+		p := newProviderOver(t, script)
+		dir := filepath.Join(t.TempDir(), "snap")
+
+		err := p.Pause(t.Context(), "amber-otter-1a2b", dir)
+		if err == nil || !strings.Contains(err.Error(), "amber-otter-1a2b") {
+			t.Errorf("Pause of a %s sandbox returned %v, want a refusal that names it", state, err)
+		}
+		if _, err := os.Stat(dir); err == nil {
+			t.Errorf("Pause of a %s sandbox made the snapshot directory", state)
+		}
+	}
+}
+
+func TestResumeTakesOnlyASnapshotOfAPausedSandbox(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+
+	err := p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "no snapshot") {
+		t.Errorf("Resume from an empty directory returned %v, want a refusal that says there is no snapshot", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A running sandbox is one the pause never deleted, and a restore over it would fail late inside runsc.
+	err = p.Resume(t.Context(), "amber-otter-1a2b", dir)
+	if err == nil || !strings.Contains(err.Error(), "running") {
+		t.Errorf("Resume of a running sandbox returned %v, want a refusal that names the state", err)
 	}
 }
 
@@ -124,4 +197,15 @@ func TestWaitGivesUpWithItsContext(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Wait returned %v, want the context deadline", err)
 	}
+}
+
+func unitFile(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	return string(data)
 }

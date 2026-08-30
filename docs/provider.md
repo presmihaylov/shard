@@ -33,7 +33,7 @@ record never answers for it. The two disagree on purpose:
 - a sandbox stopped before its entrypoint ran leaves nothing at the substrate, so the record says
   `stopped` and `Status` reports `Exists: false`.
 
-`Status.Alive()` is `Exists && State != stopped`. Only `Stop` takes a sandbox out of it. The
+`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. The
 entrypoint exiting is not a transition, and `Wait` returning does not end anything.
 
 ## What `Exec` means

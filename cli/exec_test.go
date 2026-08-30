@@ -221,6 +221,23 @@ func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
 	}
 }
 
+// The provider holds nothing of a paused sandbox, so the refusal must point at resume and not at gone.
+func TestExecRefusesAPausedSandboxWithTheResumeHint(t *testing.T) {
+	provider := &fakeExecProvider{forgotten: true}
+	app := execApp(provider)
+	app.newDeps = func(App) *deps {
+		return &deps{repoSvc: pausedRepo{}, providerSvc: provider}
+	}
+
+	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
+	if err == nil || !strings.Contains(err.Error(), "shard resume one-two-0000") {
+		t.Fatalf("exec of a paused sandbox returned %v, want a refusal that names the resume", err)
+	}
+	if provider.calls != 0 {
+		t.Error("exec reached the provider for a paused sandbox")
+	}
+}
+
 // A record outlives a shard restart, so the substrate is the one that answers for the state.
 func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
 	provider := &fakeExecProvider{forgotten: true}
@@ -333,6 +350,12 @@ func (presentRepo) Get(id string) (models.Sandbox, error) {
 }
 
 func (presentRepo) Resolve(ref string) (string, error) { return ref, nil }
+
+type pausedRepo struct{ presentRepo }
+
+func (pausedRepo) Get(id string) (models.Sandbox, error) {
+	return models.Sandbox{ID: id, State: models.StatePaused, Snapshot: "/snapshots/" + id}, nil
+}
 
 // stoppedRepo holds a record that stop wrote, which only stop ever does.
 type stoppedRepo struct{ presentRepo }
