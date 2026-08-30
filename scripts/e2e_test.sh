@@ -129,6 +129,33 @@ check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo go
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 
 echo
+echo "== teardown removes the fork before its source, and both links"
+SHARD_CALLS=$(mktemp)
+IP_CALLS=$(mktemp)
+SHARD_ROOT=$(mktemp -d)
+FORK_ID="e2e-fork-0304"
+FORK_LINK="shardv3"
+
+teardown
+
+check "the fork first, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
+	"rm --force e2e-fork-0304,rm --force tidy-otter-0102,"
+check "both namespaces and both links" "$(tr '\n' ',' <"${IP_CALLS}")" \
+	"netns delete e2e-fork-0304,netns delete tidy-otter-0102,link delete shardv3,link delete shardv2,"
+rm -f "${SHARD_CALLS}" "${IP_CALLS}"
+FORK_ID=""
+FORK_LINK=""
+
+echo
+echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
+check "no line assigns FORK_ID to ID" "$(grep -c '^ID="\${FORK_ID}"' "${HERE}/e2e.sh")" "0"
+
+echo
+echo "== timed prints its line, and no call redirects it away"
+check "the line timed prints" "$(timed "probe" true | grep -c 'probe took')" "1"
+check "no timed call under a redirect" "$(grep -c 'timed .*>/dev/null' "${HERE}/e2e.sh")" "0"
+
+echo
 echo "== a step that fails names the step and still gives the host back"
 SHARD_CALLS=$(mktemp)
 IP_CALLS=$(mktemp)
@@ -179,4 +206,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the host guard, the unmount, the teardown, the failure report and the exec status"
+echo "e2e self-test PASSED: the root guard, the host guard, the unmount, the teardown, the timer, the failure report and the exec status"

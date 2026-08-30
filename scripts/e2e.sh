@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SHARD-17: the whole sandbox lifecycle on a no-KVM Linux box, from an install to a clean host.
 # It installs the two binaries, creates a sandbox, execs into it twice over the same filesystem,
-# stops it, removes it, and then proves the host holds nothing the sandbox left behind.
+# pauses, resumes and forks it (SHARD-36), stops it, removes it, and then proves the host holds
+# nothing the sandbox left behind.
 #
 #   sudo ./scripts/e2e.sh
 #
@@ -31,6 +32,8 @@ HOST_LINK_PREFIX="shardv"
 STEP="startup"
 ID=""
 LINK=""
+FORK_ID=""
+FORK_LINK=""
 REPORTED=0
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
@@ -71,16 +74,27 @@ expect() {
 
 # expect_exec runs a command in the sandbox and compares what it wrote. The status is checked on its
 # own, because a command substitution used as an argument throws the status of the call away.
-expect_exec() {
-	local want="$1" note="$2"
-	shift 2
+expect_exec() { expect_exec_in "${ID}" "$@"; }
+
+# expect_exec_in is expect_exec against a named sandbox, so a fork is checked without swapping ID.
+expect_exec_in() {
+	local id="$1" want="$2" note="$3"
+	shift 3
 
 	local got
-	if ! got=$(shard exec "${ID}" -- "$@"); then
+	if ! got=$(shard exec "${id}" -- "$@"); then
 		fail "shard exec $* wrote the right bytes and then exited non-zero"
 	fi
 
 	expect "${got}" "${want}" "${note}"
+}
+
+# listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
+listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
+
+# entrypoint_clock reads the guest pid and start time of the entrypoint, which only a restore keeps.
+entrypoint_clock() {
+	shard exec "$1" -- /bin/sh -c 'p=$(pgrep -x sleep); echo "$p $(cut -d" " -f22 /proc/$p/stat)"'
 }
 
 # expect_network fails when the guest does not hold its address or cannot get out through the NAT.
@@ -92,6 +106,25 @@ expect_network() {
 	expect_exec "reachable" "the guest gets out through the NAT ${when}" \
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 }
+
+# timed runs a command and prints how long it took, so the transcript carries the numbers SHARD-32 asks for.
+# Never redirect a timed call: the redirect would swallow this line, so the wrappers below do it inside.
+timed() {
+	local note="$1" started ended
+	shift
+
+	started=$(date +%s.%N)
+	"$@"
+	ended=$(date +%s.%N)
+	say "${note} took $(awk -v a="${started}" -v b="${ended}" 'BEGIN { printf "%.3f s", b - a }')"
+}
+
+pause_it() { shard pause "${ID}" >/dev/null; }
+resume_it() { shard resume "${ID}" >/dev/null; }
+fork_it() { FORK_ID=$(shard fork --name e2e-fork "${ID}"); }
+
+# rss_kib reads the resident set of a host process, which for a sandbox is the sentry and its guest memory.
+rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' ' || true; }
 
 # absent fails when the pattern is still on the host, quoting what was found.
 absent() {
@@ -164,13 +197,16 @@ wipe_root() {
 # teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
 # record is the only handle by which its mount and its namespace can be found again.
 teardown() {
-	if [ -n "${ID}" ]; then
-		shard rm --force "${ID}" >/dev/null 2>&1 || true
-		ip netns delete "${ID}" >/dev/null 2>&1 || true
-	fi
-	if [ -n "${LINK}" ]; then
-		ip link delete "${LINK}" >/dev/null 2>&1 || true
-	fi
+	local id link
+	for id in "${FORK_ID}" "${ID}"; do
+		[ -n "${id}" ] || continue
+		shard rm --force "${id}" >/dev/null 2>&1 || true
+		ip netns delete "${id}" >/dev/null 2>&1 || true
+	done
+	for link in "${FORK_LINK}" "${LINK}"; do
+		[ -n "${link}" ] || continue
+		ip link delete "${link}" >/dev/null 2>&1 || true
+	done
 
 	wipe_root
 }
@@ -252,7 +288,7 @@ step "list the sandbox"
 LISTED=$(shard ls | grep "^${ID}" || true)
 [ -n "${LISTED}" ] || fail "shard ls does not list ${ID}"
 echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
-echo "${LISTED}" | grep -q "running" || fail "shard ls listed '${LISTED}', want it running"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
 
 step "read the output of the entrypoint"
@@ -288,6 +324,83 @@ step "propagate the exit code of a command that failed"
 CODE=0
 shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
+
+step "pause the sandbox"
+# A restore keeps the guest's processes; a restart makes new ones. The entrypoint's pid and start
+# time tell the two apart from outside, and the file proves the layer went with the memory.
+shard exec "${ID}" -- /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
+CLOCK_BEFORE=$(entrypoint_clock "${ID}")
+[ -n "${CLOCK_BEFORE}" ] || fail "the guest has no entrypoint to read a clock from"
+say "the entrypoint is guest pid and start time ${CLOCK_BEFORE} before the pause"
+PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
+RSS_BEFORE=$(rss_kib "${PID}")
+[ -n "${RSS_BEFORE}" ] || fail "the sandbox process ${PID} has no resident set to read"
+say "the sandbox process ${PID} holds ${RSS_BEFORE} KiB on the host before the pause"
+
+timed "pause" pause_it
+grep -q '"state": *"paused"' "${RECORD}" || fail "the record does not say paused"
+SNAPSHOT=$(grep -o '"snapshot": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
+[ -f "${SNAPSHOT}/checkpoint.img" ] || fail "there is no checkpoint at ${SNAPSHOT}/checkpoint.img"
+say "the record says paused and the snapshot is at ${SNAPSHOT}"
+
+# The whole point of a pause: the memory goes back to the host. runsc holds nothing, so the process is gone.
+absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
+absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
+absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/sandboxes/${ID}" || true)"
+[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
+
+CODE=0
+REFUSAL=$(shard exec "${ID}" -- /bin/true 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
+echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
+say "exec refused the paused sandbox and named the resume"
+
+step "resume the sandbox"
+timed "resume" resume_it
+grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the resume"
+grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the resume changed the address"
+say "the record says running on the same address"
+
+expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE}" "the entrypoint is the same process with the same start time, so the resume was a restore"
+expect_exec "before-the-pause" "the file written before the pause is there after the resume" /bin/cat /root/at-pause
+# The restore rebuilt the guest over a new namespace, and the host rules were applied again over it.
+expect_network "after the resume"
+
+step "fork the paused snapshot into a second sandbox"
+# A fork reads the snapshot, so the source may run on: the fork is the sandbox as it was at the pause.
+timed "fork" fork_it
+[ -n "${FORK_ID}" ] && [ "${FORK_ID}" != "${ID}" ] || fail "fork printed '${FORK_ID}', want a new id"
+FORK_RECORD="${SHARD_ROOT}/sandboxes/${FORK_ID}/sandbox.json"
+FORK_ADDRESS=$(grep -o '"address": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+FORK_LINK=$(grep -o '"host_interface": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
+say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
+
+[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
+say "ls shows the source and the fork running side by side"
+
+expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
+expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
+	/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${FORK_ADDRESS}'"
+expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
+	/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
+shard exec "${FORK_ID}" -- /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
+
+CODE=0
+shard exec "${ID}" -- /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "the source sees the file the fork wrote"
+say "the source does not see what the fork wrote"
+
+step "stop and remove the fork"
+shard stop --time "${GRACE}" "${FORK_ID}" >/dev/null
+shard rm "${FORK_ID}" >/dev/null
+absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${FORK_ID}" || true)"
+absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
+FORK_ID=""
+FORK_LINK=""
+expect_exec "before-the-pause" "the source runs on after the fork is gone" /bin/cat /root/at-pause
 
 step "refuse to remove a sandbox that is still up"
 CODE=0
@@ -392,4 +505,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, create, exec, exec again, stop, inspect, start, rm, prune, and a clean host"
+echo "e2e PASSED: install, create, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, and a clean host"
