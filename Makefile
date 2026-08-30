@@ -68,7 +68,7 @@ e2e-test:
 	./scripts/e2e_test.sh
 
 # The same script on the box, over a fresh copy of this tree.
-devbox-e2e:
+devbox-e2e: devbox-sync
 	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
 
 # Records the SHARD-36 demo on the box, over the binaries devbox-sync just installed, into docs/demo.cast.
