@@ -538,6 +538,16 @@ func (s *Store) image(desc v1.Descriptor) (Image, error) {
 	}, nil
 }
 
+// Canonical is the reference as the store names it, so alpine:3.20 compares equal to what a pull recorded.
+func Canonical(ref string) (string, error) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return parsed.Name(), nil
+}
+
 // parseRef also rejects what ParseReference accepts and a later path join would not: a . or .. segment.
 func parseRef(ref string) (name.Reference, error) {
 	parsed, err := name.ParseReference(ref)

@@ -21,3 +21,8 @@ func (p *Provider) SetCgroupRoot(root string) {
 func RemoveCgroup(root, id string) error {
 	return cgroup.Remove(cgroupDir(root, id))
 }
+
+// ZombieStat is the /proc stat parse Status runs on a live answer, reachable with a fixture line.
+func ZombieStat(stat string) bool {
+	return zombieStat(stat)
+}

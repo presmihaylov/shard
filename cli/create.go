@@ -176,14 +176,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		}
 	}()
 
-	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
-	// claims nothing this command has to give back.
-	img, err := a.pullImage(ctx, images, opts.ref)
-	if err != nil {
-		return err
-	}
-
-	id, dir, err := claimRecord(repo, provider, &td, img, opts)
+	img, id, dir, err := a.claim(ctx, images, repo, provider, &td, opts)
 	if err != nil {
 		return err
 	}
@@ -263,6 +256,30 @@ func allocateNetwork(ctx context.Context, net sandboxNetwork, id string) (models
 	}
 
 	return spec, err
+}
+
+// claim pulls the image and writes the record under one hold, so an image rm either sees the record
+// or waits for it: between the two nothing says the rootfs is in use.
+func (a App) claim(ctx context.Context, images imageService, repo sandboxRepo, provider models.Provider, td *teardown, opts createOptions) (img image.Image, id, dir string, err error) {
+	release, err := images.Hold(ctx)
+	if err != nil {
+		return image.Image{}, "", "", err
+	}
+	defer func() { err = errors.Join(err, release()) }()
+
+	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
+	// claims nothing this command has to give back.
+	img, err = a.pullImage(ctx, images, opts.ref)
+	if err != nil {
+		return image.Image{}, "", "", err
+	}
+
+	id, dir, err = claimRecord(repo, provider, td, img, opts)
+	if err != nil {
+		return image.Image{}, "", "", err
+	}
+
+	return img, id, dir, nil
 }
 
 func (a App) pullImage(ctx context.Context, images imageService, ref string) (image.Image, error) {

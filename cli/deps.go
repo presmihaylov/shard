@@ -21,7 +21,9 @@ import (
 type imageService interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
 	List() ([]image.Image, error)
-	Remove(ctx context.Context, ref string) error
+	Hold(ctx context.Context) (func() error, error)
+	Orphaned(ref string) ([]string, error)
+	Remove(ctx context.Context, ref string, free func() error) error
 }
 
 // sandboxRepo is the part of sandboxstate.Repository the commands drive.

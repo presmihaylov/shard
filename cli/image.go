@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -35,7 +38,7 @@ func (a App) pull(ctx context.Context, args []string) error {
 
 func (a App) image(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("image takes a subcommand: ls or rm")
+		return fmt.Errorf("image takes a subcommand: ls, rm or prune")
 	}
 
 	switch args[0] {
@@ -43,9 +46,11 @@ func (a App) image(ctx context.Context, args []string) error {
 		return a.imageList(args[1:])
 	case "rm", "remove":
 		return a.imageRemove(ctx, args[1:])
+	case "prune":
+		return a.imagePrune(ctx, args[1:])
 	}
 
-	return fmt.Errorf("unknown image subcommand %q; want ls or rm", args[0])
+	return fmt.Errorf("unknown image subcommand %q; want ls, rm or prune", args[0])
 }
 
 func (a App) imageList(args []string) error {
@@ -83,27 +88,184 @@ func (a App) imageList(args []string) error {
 	return nil
 }
 
-func (a App) imageRemove(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("image rm takes one image reference, got %d", len(args))
-	}
+// imageRemoveOptions is one parsed shard image rm invocation.
+type imageRemoveOptions struct {
+	ref   string
+	force bool
+}
 
-	svc, err := a.deps().images()
+func (a App) imageRemove(ctx context.Context, args []string) error {
+	opts, err := parseImageRemove(args)
 	if err != nil {
 		return err
 	}
 
-	err = svc.Remove(ctx, args[0])
+	d := a.deps()
+
+	svc, err := d.images()
+	if err != nil {
+		return err
+	}
+
+	// A sandbox runs on the rootfs the image unpacked to, so removing it under one pulls the floor away.
+	free := func() error { return unreferenced(d, svc, opts.ref) }
+	if opts.force {
+		free = func() error { return nil }
+	}
+
+	if err := a.removeImage(ctx, svc, opts.ref, free); err != nil {
+		return err
+	}
+
+	return a.print(opts.ref)
+}
+
+// imagePrune removes every image no sandbox references, a stopped sandbox being a reference too.
+func (a App) imagePrune(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("image prune takes no arguments, got %d", len(args))
+	}
+
+	d := a.deps()
+
+	svc, err := d.images()
+	if err != nil {
+		return err
+	}
+
+	images, err := svc.List()
+	if err != nil {
+		return err
+	}
+
+	for _, img := range images {
+		// An index entry with no reference is nothing a record could name and nothing Remove could parse.
+		if img.Reference == "" {
+			a.warn(fmt.Sprintf("image %s has no reference in the index and was left alone", img.Digest))
+
+			continue
+		}
+
+		// The check runs under the lock, so a sandbox created since the List keeps its image.
+		err := a.removeImage(ctx, svc, img.Reference, func() error { return unreferenced(d, svc, img.Reference) })
+		if errors.As(err, &referenced{}) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if err := a.print(img.Reference); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (a App) removeImage(ctx context.Context, svc imageService, ref string, free func() error) error {
+	err := svc.Remove(ctx, ref, free)
 	// The image is gone by this point, so a blob that could not be reclaimed costs disk and not correctness.
 	if errors.Is(err, image.ErrNotReclaimed) {
 		a.warn(err.Error())
-		err = nil
+
+		return nil
 	}
+
+	return err
+}
+
+// referenced is the refusal a removal gets while a sandbox record still needs the image.
+type referenced struct {
+	ref   string
+	users []string
+}
+
+func (e referenced) Error() string {
+	return fmt.Sprintf("image %s is referenced by sandbox %s: remove the sandbox first, or pass --force", e.ref, strings.Join(e.users, ", "))
+}
+
+// unreferenced refuses when a sandbox record names the image, or one whose rootfs would go with it.
+func unreferenced(d *deps, svc imageService, ref string) error {
+	held, err := heldImages(d)
 	if err != nil {
 		return err
 	}
 
-	return a.print(args[0])
+	canonical, err := image.Canonical(ref)
+	if err != nil {
+		return err
+	}
+
+	users := held[canonical]
+
+	orphaned, err := svc.Orphaned(ref)
+	if err != nil {
+		return err
+	}
+
+	images, err := svc.List()
+	if err != nil {
+		return err
+	}
+
+	for _, img := range images {
+		if img.Reference != canonical && slices.Contains(orphaned, img.Digest) {
+			users = append(users, held[img.Reference]...)
+		}
+	}
+
+	if len(users) != 0 {
+		return referenced{ref: ref, users: users}
+	}
+
+	return nil
+}
+
+// heldImages maps each image reference to the sandboxes whose records name it.
+func heldImages(d *deps) (map[string][]string, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	sandboxes, unreadable := repo.List()
+	// A record that does not read back may name the image, so nothing can say it is free.
+	if unreadable != nil {
+		return nil, fmt.Errorf("cannot tell which images the sandboxes reference: %w", unreadable)
+	}
+
+	held := map[string][]string{}
+	for _, sb := range sandboxes {
+		held[sb.Image] = append(held[sb.Image], sb.ID)
+	}
+
+	return held, nil
+}
+
+func parseImageRemove(args []string) (imageRemoveOptions, error) {
+	var opts imageRemoveOptions
+
+	flags := flag.NewFlagSet("shard image rm", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.BoolVar(&opts.force, "force", false, "remove the image even when a sandbox references it")
+
+	if err := flags.Parse(args); err != nil {
+		return imageRemoveOptions{}, fmt.Errorf("parse the image rm flags: %w", err)
+	}
+
+	rest := flags.Args()
+	// flag stops at the first argument, so a flag after the image would count as a second image.
+	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return imageRemoveOptions{}, fmt.Errorf("image rm takes its flags before the image: shard image rm --force <image>")
+	}
+	if len(rest) != 1 {
+		return imageRemoveOptions{}, fmt.Errorf("image rm takes one image reference, got %d", len(rest))
+	}
+
+	opts.ref = rest[0]
+
+	return opts, nil
 }
 
 func shortDigest(digest string) string {

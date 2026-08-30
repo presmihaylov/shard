@@ -139,7 +139,7 @@ func TestListAndRemove(t *testing.T) {
 		t.Fatalf("got %+v, want the one image we pulled", images)
 	}
 
-	if err := svc.Remove(t.Context(), ref); err != nil {
+	if err := svc.Remove(t.Context(), ref, nothing); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestRemoveKeepsARootFSASecondTagStillNeeds(t *testing.T) {
 		t.Fatalf("Pull %s: %v", second, err)
 	}
 
-	if err := svc.Remove(t.Context(), first); err != nil {
+	if err := svc.Remove(t.Context(), first, nothing); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestRemoveKeepsARootFSASecondTagStillNeeds(t *testing.T) {
 func TestRemoveMissingImage(t *testing.T) {
 	svc := newServiceAt(t, t.TempDir(), nil)
 
-	if err := svc.Remove(t.Context(), "app:1.0"); !errors.Is(err, image.ErrNotFound) {
+	if err := svc.Remove(t.Context(), "app:1.0", nothing); !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
@@ -344,7 +344,7 @@ func TestRemoveSweepsAStaleStagingTree(t *testing.T) {
 		t.Fatalf("a cached pull took the lock and swept: %v", err)
 	}
 
-	if err := svc.Remove(t.Context(), ref); err != nil {
+	if err := svc.Remove(t.Context(), ref, nothing); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -474,4 +474,56 @@ func pushCorruptImage(t *testing.T, server *httptest.Server, tag string) string 
 	}
 
 	return ref.Name()
+}
+
+// nothing is the free check of a removal no sandbox could reference.
+func nothing() error { return nil }
+
+func TestRemoveRunsTheCheckBeforeAnythingGoes(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	img, err := svc.Pull(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	refused := errors.New("a sandbox references it")
+	if err := svc.Remove(t.Context(), ref, func() error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("Remove returned %v, want the refusal", err)
+	}
+
+	if _, err := os.Stat(img.RootFS); err != nil {
+		t.Errorf("the rootfs went under a refused removal: %v", err)
+	}
+}
+
+// A create holds the store shared while it claims its record, and a removal waits that hold out.
+func TestRemoveWaitsForAHold(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	release, err := svc.Hold(t.Context())
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+
+	if err := svc.Remove(ctx, ref, nothing); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Remove under a hold returned %v, want it to wait until the context gave up", err)
+	}
+
+	if err := release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	if err := svc.Remove(t.Context(), ref, nothing); err != nil {
+		t.Fatalf("Remove after the release: %v", err)
+	}
 }
