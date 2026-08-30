@@ -262,6 +262,16 @@ func (s *Service) configureGuest(ctx context.Context, id string, address netip.A
 	return s.manager.AddDefaultRouteIn(ctx, id, guestInterface, s.gateway)
 }
 
+// Reapply is the seam SHARD-70 fills: every restore calls it, and the id is unused until then.
+// SHARD-70 must put the host half of the per-sandbox rules on before the restore, not after it.
+func (s *Service) Reapply(ctx context.Context, id string) error {
+	if err := validName(id); err != nil {
+		return err
+	}
+
+	return s.Ensure(ctx)
+}
+
 // Release drops the namespace, the link and the lease. It is idempotent, and delete is what calls it:
 // the lease must outlive a stop, because a stopped sandbox that starts again keeps its address.
 func (s *Service) Release(ctx context.Context, id string) error {
