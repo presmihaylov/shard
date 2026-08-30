@@ -81,7 +81,19 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 		return Secret{}, fmt.Errorf("secret %s has an empty value", name)
 	}
 	if strings.ContainsRune(value, 0) {
-		return Secret{}, fmt.Errorf("secret %s holds a NUL byte, which no environment carries", name)
+		return Secret{}, fmt.Errorf("secret %s holds a NUL byte, which no request header carries", name)
+	}
+
+	// A rotation names the value and nothing else: the grant and the placeholder it had stay.
+	existing, err := s.read(name)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return Secret{}, err
+	}
+	if len(destinations) == 0 {
+		destinations = existing.Destinations
+	}
+	if mock == "" {
+		mock = existing.MockValue
 	}
 
 	if len(destinations) == 0 {
@@ -99,10 +111,12 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 		}
 	}
 
-	if mock == "" {
+	// The default is exempt from the length rule, so a short name still gets a placeholder.
+	chosen := mock != ""
+	if !chosen {
 		mock = MockValue(name)
 	}
-	if err := validMock(name, mock, value); err != nil {
+	if err := validMock(name, mock, value, chosen); err != nil {
 		return Secret{}, err
 	}
 
@@ -147,6 +161,7 @@ func (s *Store) List() ([]Secret, error) {
 		return nil, fmt.Errorf("read %s: %w", s.dir, err)
 	}
 
+	var errs error
 	secrets := make([]Secret, 0, len(entries))
 	for _, entry := range entries {
 		// The atomic write leaves a temp file behind on a crash, and a name it could not have is not a secret.
@@ -156,13 +171,16 @@ func (s *Store) List() ([]Secret, error) {
 
 		rec, err := s.read(entry.Name())
 		if err != nil {
-			return nil, err
+			// One broken file must not hide the rest, so the readable ones come back with the error.
+			errs = errors.Join(errs, err)
+
+			continue
 		}
 
 		secrets = append(secrets, rec.public(entry.Name()))
 	}
 
-	return secrets, nil
+	return secrets, errs
 }
 
 // Remove deletes the secret. It is idempotent: the store holding no such secret is the outcome asked for.
@@ -191,9 +209,10 @@ func (s *Store) read(name string) (record, error) {
 		return record{}, fmt.Errorf("read secret %s: %w", name, err)
 	}
 
+	// The decoder's error quotes a byte of the file, which may be a byte of the value, so it stays out.
 	var rec record
 	if err := json.Unmarshal(blob, &rec); err != nil {
-		return record{}, fmt.Errorf("decode secret %s: %w", name, err)
+		return record{}, fmt.Errorf("decode secret %s: the file is not valid JSON", name)
 	}
 
 	return rec, nil
@@ -262,13 +281,13 @@ func ValidDestination(dest string) (string, error) {
 
 // validMock refuses a placeholder that is the value, which the guest would then hold, and one too
 // short to be found in a request without also matching something else.
-func validMock(name, mock, value string) error {
+func validMock(name, mock, value string, chosen bool) error {
 	const minChars = 8
 
-	if mock == value || strings.Contains(value, mock) || strings.Contains(mock, value) {
-		return fmt.Errorf("the placeholder of secret %s overlaps its value, and the guest must never hold the value", name)
+	if strings.Contains(value, mock) {
+		return fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
 	}
-	if len(mock) < minChars {
+	if chosen && len(mock) < minChars {
 		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minChars)
 	}
 	if strings.ContainsAny(mock, " \t\r\n\x00") {

@@ -23,7 +23,7 @@ one: uppercase letters, digits and `_`.
 hosts the value may go to, and a request to any other host never carries it. `shard create --secret
 NAME` hands the guest the placeholder as `$NAME` and records the grant in the sandbox record, which
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
-copied filesystem already holds the placeholder.
+copied bundle already hands the guest the placeholder.
 
 **The substitution.** The placeholder defaults to `mock-NAME` and `--mock-value` sets another, for
 an SDK that checks the shape of a key before it sends it. On the way out, the egress proxy replaces
@@ -41,6 +41,8 @@ key at the provider; shard only keeps it from leaving.
 
 ## Rotation
 
-`shard secret set` again with the same name replaces the value. Nothing caches it: the proxy reads
-the store per request, so a live sandbox uses the new value on its next request and never learns
-that anything changed.
+`shard secret set` again with the same name replaces the value, and keeps the grant and the
+placeholder unless `--to` or `--mock-value` say otherwise. A new placeholder is refused while a
+sandbox holds the old one, because that sandbox would never be matched again. Nothing caches the
+value: the proxy reads the store per request, so a live sandbox uses the new value on its next
+request and never learns that anything changed.

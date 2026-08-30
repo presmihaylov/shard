@@ -45,8 +45,8 @@ Usage:
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
-  shard secret set [--to <host>]... [--mock-value <v>] <NAME>
-                           store a secret read from stdin, granted to those hosts and to nothing else
+  shard secret set --to <host>... [--mock-value <v>] <NAME>
+                           store a secret read from stdin, granted to those hosts; set again to rotate the value
   shard secret ls          list the secrets by name and destination, never by value
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds

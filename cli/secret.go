@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -49,6 +50,10 @@ func (a App) secretSet(_ context.Context, args []string) error {
 
 	d := a.deps()
 
+	if pty.IsTerminal(d.stdin()) {
+		return errors.New("secret set reads the value from stdin: pipe it in, as in printf '%s' \"$TOKEN\" | shard secret set --to <host> NAME")
+	}
+
 	value, err := readSecretValue(d.stdin())
 	if err != nil {
 		return err
@@ -59,12 +64,31 @@ func (a App) secretSet(_ context.Context, args []string) error {
 		return err
 	}
 
+	// A sandbox holds the placeholder it was created with, so a new one would never be matched for it.
+	if opts.mock != "" {
+		if err := placeholderFree(d, store, opts.name, opts.mock); err != nil {
+			return err
+		}
+	}
+
 	sec, err := store.Set(opts.name, value, opts.destinations, opts.mock)
 	if err != nil {
 		return err
 	}
 
 	return a.print(sec.Name)
+}
+
+func placeholderFree(d *deps, store secretStore, name, mock string) error {
+	existing, err := store.Get(name)
+	if errors.Is(err, secret.ErrNotFound) || (err == nil && existing.MockValue == mock) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return ungranted(d, name)
 }
 
 // readSecretValue takes the whole of stdin less one trailing newline, which is what echo and a
@@ -107,9 +131,6 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 
 	opts.name = rest[0]
-	if len(opts.destinations) == 0 {
-		return secretSetOptions{}, errors.New("secret set needs at least one --to <host>: a secret is granted to a destination, never to a sandbox alone")
-	}
 
 	return opts, nil
 }
@@ -124,10 +145,8 @@ func (a App) secretList(args []string) error {
 		return err
 	}
 
-	secrets, err := store.List()
-	if err != nil {
-		return err
-	}
+	// The readable secrets are listed before the error, so one broken file does not hide the rest.
+	secrets, listErr := store.List()
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
@@ -140,7 +159,7 @@ func (a App) secretList(args []string) error {
 		return fmt.Errorf("write the output: %w", err)
 	}
 
-	return nil
+	return listErr
 }
 
 // secretRemoveOptions is one parsed shard secret rm invocation.
@@ -169,7 +188,8 @@ func (a App) secretRemove(_ context.Context, args []string) error {
 		}
 	}
 
-	if _, err := store.Get(opts.name); err != nil {
+	// A file that does not decode is still one to remove, so only a missing one stops here.
+	if _, err := store.Get(opts.name); errors.Is(err, secret.ErrNotFound) {
 		return err
 	}
 

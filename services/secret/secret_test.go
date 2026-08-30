@@ -142,6 +142,67 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "placeholder-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("TOKEN", "second-value-2", nil, ""); err != nil {
+		t.Fatalf("a rotation with no grant: %v", err)
+	}
+
+	sec, err := s.Get("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sec.Destinations, ",") != "a.example.com" || sec.MockValue != "placeholder-token" {
+		t.Errorf("the rotation changed the grant or the placeholder: %+v", sec)
+	}
+
+	value, err := s.Value("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "second-value-2" {
+		t.Errorf("Value after the rotation %q", value)
+	}
+}
+
+func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
+	s, _ := newStore(t)
+
+	sec, err := s.Set("K", "some-value-123", []string{"example.com"}, "")
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if sec.MockValue != "mock-K" {
+		t.Errorf("MockValue = %q, want mock-K", sec.MockValue)
+	}
+}
+
+func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
+	s, dir := newStore(t)
+
+	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := s.List()
+	if err == nil || !strings.Contains(err.Error(), "BROKEN") {
+		t.Errorf("List with a broken file = %v, want an error naming BROKEN", err)
+	}
+	if len(list) != 1 || list[0].Name != "TOKEN" {
+		t.Errorf("List = %+v, want TOKEN", list)
+	}
+	if err := s.Remove("BROKEN"); err != nil {
+		t.Errorf("Remove of the broken file: %v", err)
+	}
+}
+
 func TestListSkipsWhatIsNotASecret(t *testing.T) {
 	s, dir := newStore(t)
 
@@ -184,8 +245,8 @@ func TestSetRefusals(t *testing.T) {
 		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "", "is an address"},
 		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
-		{"mock is the value", "KEY", "v-1234567", []string{"example.com"}, "v-1234567", "overlaps its value"},
-		{"mock inside the value", "KEY", "abc-v-1234567", []string{"example.com"}, "v-1234567", "overlaps its value"},
+		{"mock is the value", "KEY", "v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
+		{"mock inside the value", "KEY", "abc-v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
 		{"short mock", "KEY", "v-1234567", []string{"example.com"}, "abc", "shorter than"},
 		{"mock with space", "KEY", "v-1234567", []string{"example.com"}, "mock value", "whitespace"},
 	}

@@ -24,9 +24,9 @@ always record how the entrypoint ended.
 
 `SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
-`--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the host and
-is put into a request only on its way to the destination the secret was granted to; see
-`docs/secrets.md`.
+`--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
+host. The egress proxy (SHARD-71) puts it into a request on its way to the granted destination; until
+then the placeholder reaches the wire as it is. See `docs/secrets.md`.
 
 ## Snapshots
 

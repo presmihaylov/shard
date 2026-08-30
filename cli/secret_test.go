@@ -111,13 +111,56 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	app, _ = newSecretApp(t, &out, "value-123456\n", nil)
 
 	err = app.Run(t.Context(), []string{"secret", "set", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "--to") {
+	if err == nil || !strings.Contains(err.Error(), "no destination") {
 		t.Errorf("set with no --to = %v", err)
 	}
 
 	err = app.Run(t.Context(), []string{"secret", "set", "KEY", "--to", "api.example.com"})
 	if err == nil || !strings.Contains(err.Error(), "before the name") {
 		t.Errorf("set with the flag after the name = %v", err)
+	}
+}
+
+func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
+	var out bytes.Buffer
+
+	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
+	app, root := newSecretApp(t, &out, "value-123456\n", repo)
+
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+		t.Fatal(err)
+	}
+
+	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
+	app.Root = root
+	err := app.Run(t.Context(), []string{"secret", "set", "--mock-value", "another-placeholder", "KEY"})
+	if err == nil || !strings.Contains(err.Error(), "sb1") {
+		t.Errorf("set with a new placeholder while held = %v", err)
+	}
+}
+
+func TestSecretLsListsTheReadableOnesAndFails(t *testing.T) {
+	var out bytes.Buffer
+
+	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secrets", "BROKEN"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.Run(t.Context(), []string{"secret", "ls"})
+	if err == nil || !strings.Contains(err.Error(), "BROKEN") {
+		t.Errorf("ls with a broken file = %v", err)
+	}
+	if !strings.Contains(out.String(), "KEY") {
+		t.Errorf("ls did not list the readable secret:\n%s", out.String())
+	}
+
+	if err := app.Run(t.Context(), []string{"secret", "rm", "BROKEN"}); err != nil {
+		t.Errorf("rm of the broken file = %v", err)
 	}
 }
 
