@@ -295,3 +295,19 @@ func TestChainsCloseAGrantedHostThatDoesNotResolve(t *testing.T) {
 		t.Errorf("Chains = %+v, want the grant compiled to no address", chains)
 	}
 }
+
+func TestValidateWildcardDomainRules(t *testing.T) {
+	good := []string{"domain:*", "domain:*.example.com", "domain:www.*.com"}
+	for _, text := range good {
+		if _, err := ParseRule(models.ActionAllow, text); err != nil {
+			t.Errorf("ParseRule refused %q: %v", text, err)
+		}
+	}
+
+	bad := []string{"domain:api*.example.com", "domain-suffix:*.example.com", "domain-suffix:*"}
+	for _, text := range bad {
+		if _, err := ParseRule(models.ActionAllow, text); err == nil {
+			t.Errorf("ParseRule accepted %q", text)
+		}
+	}
+}

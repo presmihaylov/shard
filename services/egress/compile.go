@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/network"
@@ -199,6 +200,10 @@ func (s *Service) compile(ctx context.Context, rule models.Rule) (network.Compil
 	case models.DestinationGroup:
 		compiled.Prefixes = slices.Clone(network.Groups[rule.Destination.Value])
 	case models.DestinationDomain:
+		// A wildcard is a shape, not a name: only the proxy can match it, like a suffix.
+		if strings.Contains(rule.Destination.Value, "*") {
+			break
+		}
 		prefixes, err := s.resolvePrefixes(ctx, rule.Destination.Value)
 		if err != nil {
 			return network.Compiled{}, err

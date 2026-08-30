@@ -271,6 +271,13 @@ func ValidDestination(dest string) (string, error) {
 		return "", fmt.Errorf("the destination %q has no dot: name the host the way a request does", dest)
 	}
 	for _, label := range labels {
+		// A whole label may be a wildcard; api* would be an unmatchable shape.
+		if label == "*" {
+			continue
+		}
+		if strings.Contains(label, "*") {
+			return "", fmt.Errorf("the destination %q puts * inside a label: a wildcard replaces a whole label", dest)
+		}
 		if !labelShape.MatchString(label) {
 			return "", fmt.Errorf("the destination %q is not a host name", dest)
 		}

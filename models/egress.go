@@ -16,7 +16,7 @@ type DestinationKind string
 const (
 	// DestinationCIDR is an address or a prefix, as 1.2.3.4 or 10.0.0.0/8.
 	DestinationCIDR DestinationKind = "cidr"
-	// DestinationDomain is one host name, resolved when the policy is applied.
+	// DestinationDomain is a host name, resolved when the policy is applied; a wildcard label (*.example.com, www.*.com, or * alone) is matched by the proxy only.
 	DestinationDomain DestinationKind = "domain"
 	// DestinationDomainSuffix is a host name and everything under it. Only the proxy can match it.
 	DestinationDomainSuffix DestinationKind = "domain-suffix"

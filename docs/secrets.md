@@ -65,3 +65,9 @@ placeholder unless `--to` or `--mock-value` say otherwise. A new placeholder is 
 sandbox holds the old one, because that sandbox would never be matched again. Nothing caches the
 value: the proxy reads the store per request, so a live sandbox uses the new value on its next
 request and never learns that anything changed.
+
+## A grant may name a wildcard
+
+`secret set --to '*.github.com' NAME` grants the value to every host under the apex. A wildcard
+label follows the same shape as a policy `domain` rule, and a grant of `*` alone is refused: the
+value must be bound to a name.

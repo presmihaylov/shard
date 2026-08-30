@@ -127,3 +127,42 @@ func TestFrontedListsTheSandboxesWithAGrantOrAPolicy(t *testing.T) {
 		t.Errorf("Fronted = %v, want %v", got, want)
 	}
 }
+
+func TestMatchHostFollowsTheWildcardTable(t *testing.T) {
+	cases := []struct {
+		pattern, host string
+		want          bool
+	}{
+		{"example.com", "example.com", true},
+		{"example.com", "www.example.com", false},
+		{"*.example.com", "www.example.com", true},
+		{"*.example.com", "www.api.example.com", true},
+		{"*.example.com", "example.com", false},
+		{"www.*.com", "www.example.com", true},
+		{"www.*.com", "example.com", false},
+		{"www.*.com", "www.api.example.com", false},
+		{"*", "anything.at.all", true},
+		{"*.example.com", "wwwexample.com", false},
+	}
+	for _, c := range cases {
+		if got := MatchHost(c.pattern, c.host); got != c.want {
+			t.Errorf("MatchHost(%q, %q) = %v, want %v", c.pattern, c.host, got, c.want)
+		}
+	}
+}
+
+func TestDecideMatchesAWildcardDomainRule(t *testing.T) {
+	eff := Effective{Policy: "p", Rules: []EffectiveRule{
+		{Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "*.example.com"}, Protocol: "tcp", Ports: []int{80, 443}}},
+		{Rule: models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}}},
+	}}
+
+	decision := Decide(eff, "www.example.com", 443, netip.MustParseAddr("93.184.216.34"))
+	if !decision.Allow || decision.ID != "0" {
+		t.Errorf("the wildcard did not allow www.example.com: %+v", decision)
+	}
+	decision = Decide(eff, "example.com", 443, netip.MustParseAddr("93.184.216.34"))
+	if decision.Allow {
+		t.Errorf("the wildcard allowed the apex: %+v", decision)
+	}
+}

@@ -81,7 +81,7 @@ func matches(rule models.Rule, host string, port int, addr netip.Addr) bool {
 	case models.DestinationGroup:
 		return within(network.Groups[rule.Destination.Value], addr)
 	case models.DestinationDomain:
-		return host == rule.Destination.Value
+		return MatchHost(rule.Destination.Value, host)
 	case models.DestinationDomainSuffix:
 		return host == rule.Destination.Value || strings.HasSuffix(host, "."+rule.Destination.Value)
 	}
@@ -108,4 +108,28 @@ func within(prefixes []netip.Prefix, addr netip.Addr) bool {
 	}
 
 	return false
+}
+
+// MatchHost says whether host is what pattern names. A leading "*." matches any depth under the
+// rest, any other "*" stands for exactly one label, and "*" alone is every host.
+func MatchHost(pattern, host string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(pattern, "*."); ok && !strings.Contains(rest, "*") {
+		return len(host) > len(rest)+1 && strings.EqualFold(host[len(host)-len(rest)-1:], "."+rest)
+	}
+
+	patternLabels := strings.Split(pattern, ".")
+	hostLabels := strings.Split(host, ".")
+	if len(patternLabels) != len(hostLabels) {
+		return false
+	}
+	for i, label := range patternLabels {
+		if label != "*" && !strings.EqualFold(label, hostLabels[i]) {
+			return false
+		}
+	}
+
+	return true
 }

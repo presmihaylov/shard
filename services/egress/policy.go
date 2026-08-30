@@ -217,7 +217,7 @@ func validDestination(rule models.Rule) error {
 
 		return nil
 	case models.DestinationDomain, models.DestinationDomainSuffix:
-		if _, err := secret.ValidDestination(dest.Value); err != nil {
+		if err := validHostValue(dest); err != nil {
 			return err
 		}
 		// A name is enforced through the proxy, which speaks HTTP and TLS: on any other port it would be an address guess.
@@ -331,6 +331,25 @@ func parsePorts(text string) ([]int, error) {
 	slices.Sort(ports)
 
 	return slices.Compact(ports), nil
+}
+
+// validHostValue checks the name a rule carries; only a domain rule may carry a wildcard.
+func validHostValue(dest models.Destination) error {
+	if !strings.Contains(dest.Value, "*") {
+		_, err := secret.ValidDestination(dest.Value)
+
+		return err
+	}
+	if dest.Kind == models.DestinationDomainSuffix {
+		return fmt.Errorf("a domain-suffix rule takes no wildcard: %q already names every name under it", dest.Value)
+	}
+	if dest.Value == "*" {
+		return nil
+	}
+
+	_, err := secret.ValidDestination(dest.Value)
+
+	return err
 }
 
 // namesHost says the rule is matched by name, which only the proxy can do.

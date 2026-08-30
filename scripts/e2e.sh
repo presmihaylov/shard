@@ -349,7 +349,7 @@ step "store an egress policy"
 # The probe address is allowed on every protocol, so the ping the network checks use goes through. The
 # name rules open the ungranted host and one TLS host at the proxy, and nothing else gets out.
 shard policy create --deny group:any e2e-deny-all >/dev/null
-E2E_RULES=(--allow cidr:1.1.1.1 --allow domain-suffix:nip.io --allow domain:example.com --deny group:any)
+E2E_RULES=(--allow cidr:1.1.1.1 --allow 'domain:*.nip.io' --allow domain:example.com --deny group:any)
 shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | has "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
@@ -358,7 +358,10 @@ say "policy ls lists the policies and policy show prints the rules"
 CODE=0
 shard policy create --allow 'domain:api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
-say "policy create refuses a domain rule on a raw port"
+CODE=0
+shard policy create --allow 'domain:api*.example.com' e2e-bad >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted a wildcard inside a label"
+say "policy create refuses a domain rule on a raw port, and a wildcard inside a label"
 
 step "start the echo server"
 start_echo

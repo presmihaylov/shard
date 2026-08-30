@@ -168,5 +168,5 @@ func (s *Service) substitutions(sb models.Sandbox, host string) ([]substitution,
 }
 
 func granted(sec secret.Secret, host string) bool {
-	return slices.Contains(sec.Destinations, host)
+	return slices.ContainsFunc(sec.Destinations, func(dest string) bool { return egress.MatchHost(dest, host) })
 }

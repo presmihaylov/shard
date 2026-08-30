@@ -34,6 +34,10 @@ A rule is `<kind>:<value> [tcp|udp[:<ports>]]`:
 | `domain-suffix` | `example.com`            | the name and every name under it, at the proxy |
 | `group`         | `private`, `any`         | the private ranges above, or everything        |
 
+A `domain` value may carry wildcard labels, matched by the proxy only: `*.example.com` is every name
+under the apex and not the apex itself, `www.*.com` swaps exactly one label, and `*` alone is every
+host. A wildcard inside a label, as `api*.example.com`, is refused.
+
 Ports are a comma list of numbers and ranges, `tcp:22,8000-8100`. A rule with no protocol matches
 every protocol, ping included.
 
