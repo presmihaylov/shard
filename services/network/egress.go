@@ -55,7 +55,7 @@ func mustPrefixes(cidrs []string) []netip.Prefix {
 // services, and runs the egress policy: a sandbox with a policy runs its own chain, and one without
 // reaches anything but private. The bridge table is what the inet hooks cannot see: a frame from one
 // port to another never leaves the bridge, and the port a frame came in on is only known there.
-func (s *Service) ruleset(chains []Chain) string {
+func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "table %[1]s %[2]s\ndelete table %[1]s %[2]s\n", tableFamily, tableName)
@@ -73,13 +73,15 @@ func (s *Service) ruleset(chains []Chain) string {
 	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tiifname %[1]q ct state established,related accept\n\t\tiifname %[1]q jump egress\n\t}\n\n", s.cfg.Bridge)
 
-	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
+	// The private floor comes before the chains, so no rule of a policy opens it.
 	fmt.Fprintf(&b, "\tchain egress {\n")
 	fmt.Fprintf(&b, "\t\toifname %q drop\n", s.cfg.Bridge)
+	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
+	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\t\tip saddr %s jump %s\n", chain.Address, chainName(s.hostInterface(chain.Address)))
 	}
-	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n\t}\n", strings.Join(privateRanges, ", "))
+	b.WriteString("\t}\n")
 
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
@@ -94,12 +96,13 @@ func (s *Service) ruleset(chains []Chain) string {
 	fmt.Fprintf(&b, "table %s %s {\n", bridgeFamily, tableName)
 
 	// One sandbox never reaches another, whatever its policy says, and ARP is what would find it.
-	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tdrop\n\t}\n\n")
+	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tmeta ibrname %q drop\n\t}\n\n", s.cfg.Bridge)
 
-	// The port cannot be spoofed, and the address the lease gave is the only one a policy may be picked by.
+	// Every leased port is pinned to its address, in IP and in ARP, so no sandbox can send as another.
 	fmt.Fprintf(&b, "\tchain prerouting {\n\t\ttype filter hook prerouting priority filter; policy accept;\n")
-	for _, chain := range chains {
-		fmt.Fprintf(&b, "\t\tiifname %q ether type ip ip saddr != %s drop\n", s.hostInterface(chain.Address), chain.Address)
+	for _, address := range leases {
+		fmt.Fprintf(&b, "\t\tiifname %[1]q ether type ip ip saddr != %[2]s drop\n", s.hostInterface(address), address)
+		fmt.Fprintf(&b, "\t\tiifname %[1]q arp saddr ip != %[2]s drop\n", s.hostInterface(address), address)
 	}
 	b.WriteString("\t}\n}\n")
 

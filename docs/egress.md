@@ -22,7 +22,8 @@ shard create --policy locked python:3.12 -- python agent.py
 
 A policy is a name and an ordered list of rules. The first rule that matches a packet decides, and a
 packet that matches none is dropped. A sandbox with a policy runs its own chain on the host, keyed by
-the address its lease gave it, and it may send from that address only.
+the address its lease gave it. Every sandbox, with a policy or without, may send from its own address
+only: the host pins the port to the address, in IP and in ARP, for as long as the lease lasts.
 
 A rule is `<kind>:<value> [tcp|udp[:<ports>]]`:
 

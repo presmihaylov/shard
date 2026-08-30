@@ -30,7 +30,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 			{Action: models.ActionDeny, Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
 			{Action: models.ActionAllow, Protocol: "udp", Ports: []int{53}},
 		},
-	}})
+	}}, []netip.Addr{netip.MustParseAddr("10.87.0.2"), netip.MustParseAddr("10.87.0.3")})
 
 	for _, want := range []string{
 		"type filter hook forward priority filter; policy accept;",
@@ -39,9 +39,10 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		`oifname "shard0" drop`,
 		"ip saddr 10.87.0.2 jump egress_shardv2",
 		"table bridge shard\ndelete table bridge shard",
-		"table bridge shard {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tdrop\n\t}",
-		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop",
-		"ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } drop",
+		"table bridge shard {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tmeta ibrname \"shard0\" drop\n\t}",
+		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop\n\t\tiifname \"shardv2\" arp saddr ip != 10.87.0.2 drop",
+		"iifname \"shardv3\" ether type ip ip saddr != 10.87.0.3 drop",
+		"oifname \"shard0\" drop\n\t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } drop\n\t\tip saddr 10.87.0.2 jump egress_shardv2",
 		"chain egress_shardv2 {\n\t\tip daddr { 93.184.216.34/32 } meta l4proto tcp tcp dport { 80, 443 } accept\n\t\tip daddr { 0.0.0.0/0 } drop\n\t\t# no address\n\t\tdrop\n\t}",
 	} {
 		if !strings.Contains(got, want) {

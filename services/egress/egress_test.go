@@ -103,6 +103,19 @@ func TestTheStoreRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	}
 }
 
+func TestValidateRefusesADomainRuleWithNoPort(t *testing.T) {
+	policy := models.Policy{Name: "web", Rules: []models.Rule{{
+		Action:      models.ActionAllow,
+		Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"},
+		Protocol:    "tcp",
+	}}}
+
+	err := Validate(policy)
+	if err == nil || !strings.Contains(err.Error(), "every tcp port") {
+		t.Errorf("Validate of a domain rule with no port = %v", err)
+	}
+}
+
 func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	for _, tc := range []struct {
 		text  string
@@ -112,6 +125,7 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	}{
 		{"domain:api.example.com", "tcp", []int{80, 443}, "api.example.com"},
 		{"domain:API.example.com. tcp:443", "tcp", []int{443}, "API.example.com."},
+		{"domain:api.example.com tcp", "tcp", []int{80, 443}, "api.example.com"},
 		{"cidr:10.0.0.0/8 tcp:22,8000-8002", "tcp", []int{22, 8000, 8001, 8002}, "10.0.0.0/8"},
 		{"cidr:1.1.1.1 udp:53", "udp", []int{53}, "1.1.1.1"},
 		{"group:any udp", "udp", nil, "any"},

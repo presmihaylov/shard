@@ -221,6 +221,9 @@ func validDestination(rule models.Rule) error {
 		if rule.Protocol != "tcp" {
 			return fmt.Errorf("a domain rule is tcp only, got %q", rule.Protocol)
 		}
+		if len(rule.Ports) == 0 {
+			return errors.New("a domain rule names ports 80 and 443 only, got none: without one it would open every tcp port")
+		}
 		for _, port := range rule.Ports {
 			if !slices.Contains(webPorts, port) {
 				return fmt.Errorf("a domain rule may name ports 80 and 443 only, got %d: use a cidr rule for a raw port", port)
@@ -278,9 +281,11 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 		rule.Ports = parsed
 	}
 
-	// A domain rule with no protocol is the web, which is all a domain rule may name anyway.
+	// A domain rule with no port is the web, which is all a domain rule may name anyway.
 	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "" {
 		rule.Protocol = "tcp"
+	}
+	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
 		rule.Ports = slices.Clone(webPorts)
 	}
 

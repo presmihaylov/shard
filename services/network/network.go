@@ -152,7 +152,12 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	return s.manager.ApplyRuleset(ctx, s.ruleset(chains))
+	leases, err := s.pool.held()
+	if err != nil {
+		return err
+	}
+
+	return s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases))
 }
 
 func (s *Service) chains(ctx context.Context) ([]Chain, error) {
