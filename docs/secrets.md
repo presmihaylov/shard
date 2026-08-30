@@ -71,3 +71,22 @@ request and never learns that anything changed.
 `secret set --to '*.github.com' NAME` grants the value to every host under the apex. A wildcard
 label follows the same shape as a policy `domain` rule, and a grant of `*` alone is refused: the
 value must be bound to a name.
+
+## The proxy can set a header itself
+
+`--header 'Authorization: Bearer {value}'` has the proxy set that header on every request to a
+granted destination, over anything the guest sent, with `{value}` replaced by the value. The guest
+then needs no placeholder at all: code that knows nothing of the secret still authenticates, and a
+guest that sends a wrong header cannot keep the right one out. Repeat the flag for more headers.
+
+`--match` limits which requests get the headers, and gates nothing else: the placeholder is
+substituted either way. Repeat the flag per condition; a request must meet all of them at once.
+
+| condition | meaning |
+| --- | --- |
+| `path=/v1/x` | the path, exactly; a trailing `*` makes it a prefix, and `re:` an RE2 expression |
+| `method=GET,POST` | any of the named methods |
+| `query=key=value` | the query carries that pair |
+| `header=Name: value` | the request carries that header; the name compares without case, the value with it |
+
+`secret set` keeps the headers and the match across a rotation, like the grant and the placeholder.

@@ -270,3 +270,124 @@ func TestAnEventThatCannotBeWrittenClosesTheDoor(t *testing.T) {
 		t.Errorf("Route = %v, want the write error", err)
 	}
 }
+
+func headerBroker(t *testing.T, sec secret.Secret) *Service {
+	t.Helper()
+
+	return New(
+		fakeRecords{running("TOKEN")},
+		fakePolicies{effective: map[string]egress.Effective{"sb": {}}, addrs: map[string][]netip.Addr{"api.example.com": {api}}},
+		fakeSecrets{"TOKEN": sec},
+		&fakeEvents{},
+	)
+}
+
+func TestAnInjectedHeaderOverwritesWhatTheGuestSent(t *testing.T) {
+	b := headerBroker(t, secret.Secret{
+		Name:         "TOKEN",
+		Destinations: []string{"api.example.com"},
+		MockValue:    "mock-TOKEN",
+		Headers:      []secret.Header{{Name: "Authorization", Value: "Bearer {value}"}},
+	})
+
+	route, err := b.Route(t.Context(), source, "api.example.com", 443)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	r := request(t, route, "")
+	if got := r.Header.Get("Authorization"); got != "Bearer real-TOKEN" {
+		t.Errorf("Authorization is %q, want the injected value over what the guest sent", got)
+	}
+}
+
+func TestAMatchGatesTheHeadersAndNotTheSubstitution(t *testing.T) {
+	b := headerBroker(t, secret.Secret{
+		Name:         "TOKEN",
+		Destinations: []string{"api.example.com"},
+		MockValue:    "mock-TOKEN",
+		Headers:      []secret.Header{{Name: "X-Api-Key", Value: "{value}"}},
+		Match:        &secret.Match{Path: "/hook*"},
+	})
+
+	route, err := b.Route(t.Context(), source, "api.example.com", 443)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	hooked, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example.com/hook/a?k=mock-TOKEN", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := route.Rewrite(hooked); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if hooked.Header.Get("X-Api-Key") != "real-TOKEN" {
+		t.Error("a matched path did not get the header")
+	}
+
+	other, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example.com/other?k=mock-TOKEN", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := route.Rewrite(other); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if other.Header.Get("X-Api-Key") != "" {
+		t.Error("an unmatched path got the header")
+	}
+	if other.URL.RawQuery != "k=real-TOKEN" {
+		t.Errorf("an unmatched path lost the substitution: %q", other.URL.RawQuery)
+	}
+}
+
+func TestAMatchThatDoesNotCompileFailsTheRoute(t *testing.T) {
+	b := headerBroker(t, secret.Secret{
+		Name:         "TOKEN",
+		Destinations: []string{"api.example.com"},
+		MockValue:    "mock-TOKEN",
+		Match:        &secret.Match{Path: "re:["},
+	})
+
+	if _, err := b.Route(t.Context(), source, "api.example.com", 443); err == nil || !strings.Contains(err.Error(), "secret TOKEN match") {
+		t.Errorf("Route = %v, want the compile error", err)
+	}
+}
+
+func TestMatcherDimensionsAllHoldAtOnce(t *testing.T) {
+	m, err := newMatcher(&secret.Match{
+		Path:    "re:^/v[0-9]+/",
+		Methods: []string{"GET", "POST"},
+		Query:   []secret.Pair{{Name: "k", Value: "v"}},
+		Headers: []secret.Pair{{Name: "X-Want", Value: "yes"}},
+	})
+	if err != nil {
+		t.Fatalf("newMatcher: %v", err)
+	}
+
+	build := func(method, url string, header bool) *http.Request {
+		r, err := http.NewRequestWithContext(t.Context(), method, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header {
+			r.Header.Set("x-want", "yes")
+		}
+
+		return r
+	}
+
+	if !m.matches(build("post", "https://h/v1/x?k=v", true)) {
+		t.Error("a request that meets every dimension did not match")
+	}
+	for name, r := range map[string]*http.Request{
+		"the path":   build("GET", "https://h/other?k=v", true),
+		"the method": build("PUT", "https://h/v1/x?k=v", true),
+		"the query":  build("GET", "https://h/v1/x?k=w", true),
+		"the header": build("GET", "https://h/v1/x?k=v", false),
+	} {
+		if m.matches(r) {
+			t.Errorf("a request that misses %s matched", name)
+		}
+	}
+}

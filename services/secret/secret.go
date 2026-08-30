@@ -36,6 +36,39 @@ type Secret struct {
 	// MockValue is what the guest sees in its environment. Its shape can matter to an SDK.
 	MockValue string    `json:"mock_value"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Headers is what the proxy sets on a granted request, over anything the guest sent.
+	Headers []Header `json:"headers,omitempty"`
+	// Match limits which granted requests get the headers; nil is every one.
+	Match *Match `json:"match,omitempty"`
+}
+
+// Header is one header the proxy sets; {value} in the template becomes the secret value.
+type Header struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Pair is one name and value a match compares against.
+type Pair struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Match is what a request must meet, every set dimension at once. A path is exact, a trailing *
+// makes it a prefix, and re: makes it an RE2 expression. Methods is any-of; Query and Headers all-of.
+type Match struct {
+	Path    string   `json:"path,omitempty"`
+	Methods []string `json:"methods,omitempty"`
+	Query   []Pair   `json:"query,omitempty"`
+	Headers []Pair   `json:"headers,omitempty"`
+}
+
+// Update is what one secret set names. An empty field keeps what the store holds.
+type Update struct {
+	Destinations []string
+	Mock         string
+	Headers      []Header
+	Match        *Match
 }
 
 // record is the file on disk. It is the only place the value is written.
@@ -44,6 +77,8 @@ type record struct {
 	Destinations []string  `json:"destinations"`
 	MockValue    string    `json:"mock_value"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	Headers      []Header  `json:"headers,omitempty"`
+	Match        *Match    `json:"match,omitempty"`
 }
 
 // Store is the secret repository. One file per secret, mode 0600, under a directory nobody else
@@ -72,7 +107,9 @@ func New(dir string) (*Store, error) {
 
 // Set writes the secret, or replaces the one of that name. A replace is the rotation: nothing
 // caches a value, so a live sandbox uses the new one on its next request.
-func (s *Store) Set(name, value string, destinations []string, mock string) (Secret, error) {
+func (s *Store) Set(name, value string, up Update) (Secret, error) {
+	destinations, mock := up.Destinations, up.Mock
+
 	if err := ValidName(name); err != nil {
 		return Secret{}, err
 	}
@@ -94,6 +131,20 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 	}
 	if mock == "" {
 		mock = existing.MockValue
+	}
+	headers := up.Headers
+	if headers == nil {
+		headers = existing.Headers
+	}
+	match := up.Match
+	if match == nil {
+		match = existing.Match
+	}
+	if err := validHeaders(name, headers); err != nil {
+		return Secret{}, err
+	}
+	if err := validMatch(name, match); err != nil {
+		return Secret{}, err
 	}
 
 	if len(destinations) == 0 {
@@ -120,7 +171,7 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 		return Secret{}, err
 	}
 
-	rec := record{Value: value, Destinations: bound, MockValue: mock, UpdatedAt: time.Now().UTC()}
+	rec := record{Value: value, Destinations: bound, MockValue: mock, UpdatedAt: time.Now().UTC(), Headers: headers, Match: match}
 
 	blob, err := json.Marshal(rec)
 	if err != nil {
@@ -221,7 +272,7 @@ func (s *Store) read(name string) (record, error) {
 func (s *Store) path(name string) string { return filepath.Join(s.dir, name) }
 
 func (r record) public(name string) Secret {
-	return Secret{Name: name, Destinations: slices.Clone(r.Destinations), MockValue: r.MockValue, UpdatedAt: r.UpdatedAt}
+	return Secret{Name: name, Destinations: slices.Clone(r.Destinations), MockValue: r.MockValue, UpdatedAt: r.UpdatedAt, Headers: slices.Clone(r.Headers), Match: r.Match}
 }
 
 // MockValue is the placeholder the guest sees for a secret that set no other.
@@ -299,6 +350,48 @@ func validMock(name, mock, value string, chosen bool) error {
 	}
 	if strings.ContainsAny(mock, " \t\r\n\x00") {
 		return fmt.Errorf("the placeholder of secret %s holds whitespace, which a request would split", name)
+	}
+
+	return nil
+}
+
+// headerName is a field name as HTTP spells one.
+var headerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+func validHeaders(name string, headers []Header) error {
+	seen := make([]string, 0, len(headers))
+	for _, h := range headers {
+		lower := strings.ToLower(h.Name)
+		if !headerName.MatchString(h.Name) {
+			return fmt.Errorf("secret %s header %q is not a header name", name, h.Name)
+		}
+		if slices.Contains(seen, lower) {
+			return fmt.Errorf("secret %s names the header %s twice", name, h.Name)
+		}
+		seen = append(seen, lower)
+		if strings.ContainsAny(h.Value, "\r\n\x00") {
+			return fmt.Errorf("secret %s header %s holds a control character", name, h.Name)
+		}
+	}
+
+	return nil
+}
+
+func validMatch(name string, match *Match) error {
+	if match == nil {
+		return nil
+	}
+	if expr, ok := strings.CutPrefix(match.Path, "re:"); ok {
+		if _, err := regexp.Compile(expr); err != nil {
+			return fmt.Errorf("secret %s match path: %w", name, err)
+		}
+	}
+	if slices.Contains(match.Methods, "") {
+		return fmt.Errorf("secret %s match names an empty method", name)
+	}
+	unnamed := func(pair Pair) bool { return pair.Name == "" }
+	if slices.ContainsFunc(slices.Concat(match.Query, match.Headers), unnamed) {
+		return fmt.Errorf("secret %s match holds a condition with no name", name)
 	}
 
 	return nil

@@ -157,11 +157,16 @@ func (s *Service) substitutions(sb models.Sandbox, host string) ([]substitution,
 			continue
 		}
 
+		m, err := newMatcher(sec.Match)
+		if err != nil {
+			return nil, fmt.Errorf("secret %s match: %w", name, err)
+		}
+
 		value, err := s.secrets.Value(name)
 		if err != nil {
 			return nil, err
 		}
-		subs = append(subs, substitution{mock: sec.MockValue, value: value})
+		subs = append(subs, substitution{mock: sec.MockValue, value: value, headers: sec.Headers, match: m})
 	}
 
 	return subs, nil

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // maxBody bounds what is read into memory to find a placeholder. A larger body goes out as it is,
@@ -13,8 +15,10 @@ import (
 const maxBody = 8 << 20
 
 type substitution struct {
-	mock  string
-	value string
+	mock    string
+	value   string
+	headers []secret.Header
+	match   *matcher
 }
 
 // rewrite puts every value in place of its placeholder, in the path, the query, the headers and a
@@ -27,6 +31,15 @@ func rewrite(subs []substitution) func(*http.Request) error {
 	replacer := newReplacer(subs)
 
 	return func(r *http.Request) error {
+		for _, sub := range subs {
+			if !sub.match.matches(r) {
+				continue
+			}
+			for _, h := range sub.headers {
+				r.Header.Set(h.Name, strings.ReplaceAll(h.Value, "{value}", sub.value))
+			}
+		}
+
 		r.URL.Path = replacer.Replace(r.URL.Path)
 		r.URL.RawPath = replacer.Replace(r.URL.RawPath)
 		r.URL.RawQuery = replacer.Replace(r.URL.RawQuery)

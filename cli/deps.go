@@ -53,7 +53,7 @@ type sandboxNetwork interface {
 
 // secretStore is the part of secret.Store the commands drive. Only the proxy reads a value, per request.
 type secretStore interface {
-	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
+	Set(name, value string, up secret.Update) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
 	Value(name string) (string, error)
 	List() ([]secret.Secret, error)

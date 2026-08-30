@@ -39,6 +39,8 @@ type secretSetOptions struct {
 	name         string
 	destinations []string
 	mock         string
+	headers      []secret.Header
+	match        *secret.Match
 }
 
 // secretSet reads the value from stdin, so it lands in no shell history and no process listing.
@@ -71,7 +73,7 @@ func (a App) secretSet(_ context.Context, args []string) error {
 		}
 	}
 
-	sec, err := store.Set(opts.name, value, opts.destinations, opts.mock)
+	sec, err := store.Set(opts.name, value, secret.Update{Destinations: opts.destinations, Mock: opts.mock, Headers: opts.headers, Match: opts.match})
 	if err != nil {
 		return err
 	}
@@ -117,6 +119,8 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
 	flags.StringVar(&opts.mock, "mock-value", "", "the placeholder the guest sees in place of the value")
+	flags.Var((*headerList)(&opts.headers), "header", "a header the proxy sets on a matched request, as 'Name: template' with {value}, repeatable")
+	flags.Var(matchFlag{match: &opts.match}, "match", "a condition a request must meet to get the headers: path=, method=, query= or header=, repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
@@ -259,4 +263,65 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 	opts.name = rest[0]
 
 	return opts, secret.ValidName(opts.name)
+}
+
+// headerList collects repeated --header flags, each spelled 'Name: template'.
+type headerList []secret.Header
+
+func (h *headerList) String() string { return "" }
+
+func (h *headerList) Set(raw string) error {
+	name, value, ok := strings.Cut(raw, ":")
+	name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+	if !ok || name == "" || value == "" {
+		return fmt.Errorf("a header is 'Name: template', with {value} for the secret value, not %q", raw)
+	}
+	*h = append(*h, secret.Header{Name: name, Value: value})
+
+	return nil
+}
+
+// matchFlag folds repeated --match conditions into one Match. Every condition must hold at once.
+type matchFlag struct{ match **secret.Match }
+
+func (f matchFlag) String() string { return "" }
+
+func (f matchFlag) Set(raw string) error {
+	dim, rest, found := strings.Cut(raw, "=")
+	if !found || rest == "" {
+		return fmt.Errorf("a match is '<dimension>=<condition>', not %q", raw)
+	}
+	if *f.match == nil {
+		*f.match = &secret.Match{}
+	}
+	m := *f.match
+
+	switch dim {
+	case "path":
+		if m.Path != "" {
+			return errors.New("a set takes one path match")
+		}
+		m.Path = rest
+	case "method":
+		for method := range strings.SplitSeq(rest, ",") {
+			m.Methods = append(m.Methods, strings.ToUpper(strings.TrimSpace(method)))
+		}
+	case "query":
+		name, value, ok := strings.Cut(rest, "=")
+		if !ok || name == "" {
+			return fmt.Errorf("a query match is 'query=<name>=<value>', not %q", raw)
+		}
+		m.Query = append(m.Query, secret.Pair{Name: name, Value: value})
+	case "header":
+		name, value, ok := strings.Cut(rest, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return fmt.Errorf("a header match is 'header=<Name>: <value>', not %q", raw)
+		}
+		m.Headers = append(m.Headers, secret.Pair{Name: name, Value: strings.TrimSpace(value)})
+	default:
+		return fmt.Errorf("unknown match dimension %q; want path, method, query or header", dim)
+	}
+
+	return nil
 }

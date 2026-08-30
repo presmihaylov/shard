@@ -24,7 +24,7 @@ func newStore(t *testing.T) (*Store, string) {
 func TestSetWritesOneFileNobodyElseCanRead(t *testing.T) {
 	s, dir := newStore(t)
 
-	sec, err := s.Set("API_KEY", "sk-live-1234567890", []string{"API.Example.com.", "api.example.com"}, "")
+	sec, err := s.Set("API_KEY", "sk-live-1234567890", Update{Destinations: []string{"API.Example.com.", "api.example.com"}, Mock: ""})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 	s, _ := newStore(t)
 
 	const value = "hunter2-hunter2-hunter2"
-	if _, err := s.Set("TOKEN", value, []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", value, Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -108,10 +108,10 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}, Mock: ""}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", []string{"b.example.com"}, "placeholder-token"); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: []string{"b.example.com"}, Mock: "placeholder-token"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,10 +145,10 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "placeholder-token"); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}, Mock: "placeholder-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", nil, ""); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: nil, Mock: ""}); err != nil {
 		t.Fatalf("a rotation with no grant: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
 	s, _ := newStore(t)
 
-	sec, err := s.Set("K", "some-value-123", []string{"example.com"}, "")
+	sec, err := s.Set("K", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
 func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
@@ -206,7 +206,7 @@ func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 func TestListSkipsWhatIsNotASecret(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
 		t.Fatal(err)
 	}
 	// What an interrupted atomic write leaves behind, and a stray file an operator dropped in.
@@ -253,7 +253,7 @@ func TestSetRefusals(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.Set(tc.key, tc.value, tc.to, tc.mock)
+			_, err := s.Set(tc.key, tc.value, Update{Destinations: tc.to, Mock: tc.mock})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("Set = %v, want an error mentioning %q", err, tc.want)
 			}
@@ -278,6 +278,56 @@ func TestReadRefusesANameThatEscapesTheStore(t *testing.T) {
 		}
 		if err := s.Remove(name); err == nil {
 			t.Errorf("Remove(%q) succeeded", name)
+		}
+	}
+}
+
+func TestHeadersAndAMatchSurviveARotation(t *testing.T) {
+	s, _ := newStore(t)
+
+	up := Update{
+		Destinations: []string{"api.example.com"},
+		Headers:      []Header{{Name: "Authorization", Value: "Bearer {value}"}},
+		Match:        &Match{Path: "/v1/*", Methods: []string{"POST"}},
+	}
+	if _, err := s.Set("TOKEN", "first-value-1", up); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if _, err := s.Set("TOKEN", "second-value-2", Update{}); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	sec, err := s.Get("TOKEN")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(sec.Headers) != 1 || sec.Headers[0].Value != "Bearer {value}" {
+		t.Errorf("the rotation lost the headers: %+v", sec.Headers)
+	}
+	if sec.Match == nil || sec.Match.Path != "/v1/*" || len(sec.Match.Methods) != 1 {
+		t.Errorf("the rotation lost the match: %+v", sec.Match)
+	}
+	value, err := s.Value("TOKEN")
+	if err != nil || value != "second-value-2" {
+		t.Errorf("Value = %q, %v", value, err)
+	}
+}
+
+func TestSetRefusesABadHeaderOrMatch(t *testing.T) {
+	s, _ := newStore(t)
+
+	for name, up := range map[string]Update{
+		"a header name with a space":   {Headers: []Header{{Name: "Bad Header", Value: "x"}}},
+		"the same header named twice":  {Headers: []Header{{Name: "X-A", Value: "1"}, {Name: "x-a", Value: "2"}}},
+		"a control character":          {Headers: []Header{{Name: "X-A", Value: "a\r\nb"}}},
+		"a match path that is not RE2": {Match: &Match{Path: "re:["}},
+		"an empty method":              {Match: &Match{Methods: []string{""}}},
+		"a pair with no name":          {Match: &Match{Query: []Pair{{Value: "v"}}}},
+	} {
+		up.Destinations = []string{"example.com"}
+		if _, err := s.Set("TOKEN", "some-value-123", up); err == nil {
+			t.Errorf("Set took %s", name)
 		}
 	}
 }

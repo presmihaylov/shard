@@ -450,6 +450,21 @@ expect "$(fetch "${ID}" "http://${GRANTED_HOST}/v1?key=mock-E2E_TOKEN" --header 
 	"auth=Bearer ${SECRET_VALUE} path=/v1?key=${SECRET_VALUE}" "the granted host got the value in the header and the URL"
 expect "$(fetch "${ID}" "http://${UNGRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
 	"auth=Bearer mock-E2E_TOKEN path=/" "a host the policy allows but the grant does not got the placeholder"
+# The proxy sets a header itself, over anything the guest sent, so code with no placeholder works.
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --header 'Authorization: Bearer {value}' E2E_TOKEN >/dev/null
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy set the header the guest never sent"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/" --header "'Authorization: Bearer wrong'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy set the header over what the guest sent"
+# A match gates the headers only; the placeholder is substituted either way.
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --match 'path=/hook*' E2E_TOKEN >/dev/null
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/hook")" \
+	"auth=Bearer ${SECRET_VALUE} path=/hook" "a matched path got the header"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/")" \
+	"auth= path=/" "an unmatched path got no header"
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --header 'Bad Header: x' E2E_TOKEN >/dev/null 2>&1 \
+	&& fail "secret set took a header name with a space"
+say "secret set refuses a bad header name"
 expect "$(fetch "${ID}" "http://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "a host the policy names nowhere is refused by the proxy"
 expect "$(fetch "${ID}" "https://example.com/" | grep -o '<title>Example Domain</title>')" "<title>Example Domain</title>" \
 	"the proxy terminates TLS for an allowed host and carries the page back"

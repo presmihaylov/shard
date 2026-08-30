@@ -15,6 +15,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 func TestParseCreateTheGoalCommand(t *testing.T) {
@@ -555,7 +556,7 @@ func TestCreateHandsTheGuestThePlaceholderAndRecordsTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, ""); err != nil {
+	if _, err := store.Set("API_KEY", "sk-live-1234567890", secret.Update{Destinations: []string{"api.example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 
