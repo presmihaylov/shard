@@ -23,6 +23,7 @@ make test-integration        integration tests, on this host; Linux box only, ne
 make itest                   integration tests for ITEST_PKG, on the devbox
 make e2e                     the whole lifecycle on this host, as root (SHARD-17)
 make devbox-e2e              the same script, on the devbox
+make devbox-demo             record scripts/demo.sh on the devbox into docs/demo.cast (SHARD-36)
 make lint                    golangci-lint (v2: brew install golangci-lint)
 make lint-fix                apply the fixes golangci-lint can make
 make fmt                     apply formatting
