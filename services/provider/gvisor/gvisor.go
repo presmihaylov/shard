@@ -562,7 +562,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 
 // oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
 // any of runsc's cleanup, so the cgroup and its counters outlive the sandbox and are the only record.
-// A sandbox that stopped cleanly has no cgroup left, and that reads as false, which is correct.
+// A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
 func (p *Provider) oomKilled(id string) bool {
 	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
 	if err != nil {

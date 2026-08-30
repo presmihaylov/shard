@@ -145,7 +145,7 @@ func TestASandboxTheHostKilledForItsMemorySaysSo(t *testing.T) {
 }
 
 // TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory pins the other side. A cgroup that never
-// hit its ceiling counts zero, and runsc removes the cgroup of a sandbox that was stopped by hand.
+// hit its ceiling counts zero, and a stop leaves that cgroup behind until rm deletes the sandbox.
 func TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory(t *testing.T) {
 	const id = "amber-otter-7a8b"
 

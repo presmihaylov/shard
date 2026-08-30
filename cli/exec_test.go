@@ -334,6 +334,13 @@ func (presentRepo) Get(id string) (models.Sandbox, error) {
 
 func (presentRepo) Resolve(ref string) (string, error) { return ref, nil }
 
+// stoppedRepo holds a record that stop wrote, which only stop ever does.
+type stoppedRepo struct{ presentRepo }
+
+func (stoppedRepo) Get(id string) (models.Sandbox, error) {
+	return models.Sandbox{ID: id, State: models.StateStopped}, nil
+}
+
 type missingRepo struct{ sandboxRepo }
 
 func (missingRepo) Get(id string) (models.Sandbox, error) {
@@ -341,6 +348,27 @@ func (missingRepo) Get(id string) (models.Sandbox, error) {
 }
 
 func (missingRepo) Resolve(ref string) (string, error) { return ref, nil }
+
+// TestExecRefusesAStoppedSandboxAsStoppedWhateverItsCgroupCounted pins the record over the cgroup: a
+// stop leaves the cgroup and its oom count behind, and that count says nothing about who ended it.
+func TestExecRefusesAStoppedSandboxAsStoppedWhateverItsCgroupCounted(t *testing.T) {
+	provider := &fakeExecProvider{state: models.StateStopped, oomKilled: true}
+	app := execApp(provider)
+	app.newDeps = func(App) *deps {
+		return &deps{repoSvc: stoppedRepo{}, providerSvc: provider}
+	}
+
+	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
+	if err == nil {
+		t.Fatal("exec accepted a stopped sandbox")
+	}
+	if !strings.Contains(err.Error(), "stopped") || strings.Contains(err.Error(), "memory") {
+		t.Errorf("the refusal is %q, and the user stopped this sandbox", err)
+	}
+	if provider.calls != 0 {
+		t.Error("exec reached the provider for a stopped sandbox")
+	}
+}
 
 // TestExecNamesTheMemoryTheSandboxRanOutOf keeps the one thing an operator cannot find out any other
 // way: the exit file records a 137 for this, and so does a plain kill -9.

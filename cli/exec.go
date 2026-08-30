@@ -77,8 +77,14 @@ func (a App) exec(ctx context.Context, args []string) error {
 	}
 
 	// The record answers for an id nobody ever created; the provider answers for its state.
-	if _, err := repo.Get(opts.id); err != nil {
+	sb, err := repo.Get(opts.id)
+	if err != nil {
 		return err
+	}
+
+	// Only stop writes stopped, and a stop leaves the cgroup behind with whatever oom count it had.
+	if sb.State == models.StateStopped {
+		return refuseStopped(opts.id, sb.State)
 	}
 
 	if err := refuseUnlessAlive(ctx, provider, opts.id); err != nil {
@@ -127,7 +133,11 @@ func refuseUnlessAlive(ctx context.Context, provider models.Provider, id string)
 		return fmt.Errorf("sandbox %s is gone from %s: remove it with shard rm %s and create another", id, provider.Name(), id)
 	}
 
-	return fmt.Errorf("sandbox %s is %s: a stopped sandbox never runs again, so remove it with shard rm %s and create another", id, status.State, id)
+	return refuseStopped(id, status.State)
+}
+
+func refuseStopped(id string, state models.State) error {
+	return fmt.Errorf("sandbox %s is %s: a stopped sandbox never runs again, so remove it with shard rm %s and create another", id, state, id)
 }
 
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one
