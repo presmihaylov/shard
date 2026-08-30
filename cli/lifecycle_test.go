@@ -17,7 +17,7 @@ type fakeLifecycleRepo struct {
 
 	r  *recorder
 	sb models.Sandbox
-	// left is what List answers with, which is what says whether an rm removed the last sandbox.
+	// left is what List answers with.
 	left []models.Sandbox
 	// unreadable is the error List answers beside the sandboxes it could read.
 	unreadable error

@@ -1,6 +1,7 @@
 package network
 
 import (
+	"errors"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -102,8 +103,8 @@ func TestThePoolRefusesToHandOutTheBroadcastAddress(t *testing.T) {
 		}
 	}
 
-	if _, _, err := p.allocate("one-too-many"); err == nil {
-		t.Fatal("the pool handed out an address it does not have")
+	if _, _, err := p.allocate("one-too-many"); !errors.Is(err, ErrNoFreeAddress) {
+		t.Fatalf("a full pool answered %v, want ErrNoFreeAddress", err)
 	}
 }
 

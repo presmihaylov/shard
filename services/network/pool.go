@@ -17,7 +17,7 @@ const (
 	leaseFilePerm = 0o640
 )
 
-// ErrNoFreeAddress is what allocate returns when every address of the subnet is leased. Match it with errors.Is.
+// ErrNoFreeAddress is what Allocate returns when every address of the subnet is leased. Match it with errors.Is.
 var ErrNoFreeAddress = errors.New("no free address left")
 
 // pool hands out one address per sandbox. It takes no lock: the file that holds a lease is created

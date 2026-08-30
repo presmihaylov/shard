@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
+	"slices"
 	"text/tabwriter"
 	"time"
 
@@ -32,24 +32,24 @@ func (a App) ls(_ context.Context, args []string) error {
 	// List answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
 	sandboxes, unreadable := repo.List()
 
-	if err := writeTable(a.Out, sandboxes, opts.all, time.Now()); err != nil {
+	// A stopped sandbox holds no process, so it is shown on --all only.
+	if !opts.all {
+		sandboxes = slices.DeleteFunc(sandboxes, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })
+	}
+
+	if err := writeTable(a.Out, sandboxes, time.Now()); err != nil {
 		return err
 	}
 
 	return unreadable
 }
 
-// writeTable prints one line per sandbox. A stopped one holds no process, so it is shown on --all only.
-func writeTable(w io.Writer, sandboxes []models.Sandbox, all bool, now time.Time) error {
+func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
 	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP")
 
 	for _, sb := range sandboxes {
-		if !all && sb.State == models.StateStopped {
-			continue
-		}
-
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, sb.State, uptime(sb, now), address(sb))
 	}
 
@@ -97,7 +97,7 @@ func parseLs(args []string) (lsOptions, error) {
 	}
 
 	if rest := flags.Args(); len(rest) != 0 {
-		return lsOptions{}, fmt.Errorf("ls takes no argument, got %q", strings.Join(rest, " "))
+		return lsOptions{}, fmt.Errorf("ls takes no argument, got %d", len(rest))
 	}
 
 	return opts, nil
