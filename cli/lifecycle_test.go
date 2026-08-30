@@ -95,6 +95,7 @@ type fakeLifecycleProvider struct {
 	waitErr error
 
 	grace   time.Duration
+	started bool
 	stopped bool
 	removed bool
 	// logPath is the file logs reads, which a test writes into.
@@ -115,6 +116,16 @@ func (f *fakeLifecycleProvider) Status(context.Context, string) (models.Status, 
 	}
 
 	return f.status, nil
+}
+
+func (f *fakeLifecycleProvider) Start(context.Context, string) error {
+	if err := f.r.record("provider.Start"); err != nil {
+		return err
+	}
+	f.started = true
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
 }
 
 func (f *fakeLifecycleProvider) Stop(_ context.Context, _ string, grace time.Duration) error {

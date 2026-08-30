@@ -113,9 +113,9 @@ func TestTheGuestOutputStreams(t *testing.T) {
 
 // A stop is final. Only Remove and a second Create re-run an entrypoint, which is what keeps the
 // writable layer: runsc refuses to start a container it has already stopped.
-func TestStartRefusesASandboxThatWasStopped(t *testing.T) {
+func TestAStoppedSandboxStartsAgainOverWhatItKept(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/true")
+	spec := h.start(t, "/bin/sh", "-c", "test -f /root/marker && echo seen-by-the-second-run; touch /root/marker")
 
 	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
 		t.Fatalf("Wait: %v", err)
@@ -124,8 +124,23 @@ func TestStartRefusesASandboxThatWasStopped(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if err := h.provider.Start(t.Context(), spec.ID); err == nil {
-		t.Fatal("Start accepted a stopped sandbox, and runsc cannot run one")
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("the second Start: %v", err)
+	}
+	exit, err := h.provider.Wait(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatalf("the second Wait: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Errorf("the second run exited %d, want 0", exit.Code)
+	}
+
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+	if got := readFile(t, path); !strings.Contains(got, "seen-by-the-second-run") {
+		t.Errorf("the second run read back %q, want the file the first run wrote", got)
 	}
 }
 

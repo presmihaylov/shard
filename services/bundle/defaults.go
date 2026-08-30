@@ -14,6 +14,9 @@ const defaultPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbi
 // defaultNoFile is the runc default. A sandbox that needs more says so, once a ticket owns rlimits.
 const defaultNoFile = 1024
 
+// rootfsAnnotation is where config.json keeps the image tree the overlay stacks over.
+const rootfsAnnotation = "dev.shard.rootfs"
+
 // CgroupParent is the one cgroup every sandbox sits under, so nothing of shard's lands at the root.
 const CgroupParent = "shard"
 

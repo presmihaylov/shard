@@ -476,3 +476,24 @@ func TestTheCgroupSitsUnderOneShardParent(t *testing.T) {
 		t.Errorf("cgroupsPath is %q, want %q", got, want)
 	}
 }
+
+// TestRuntimeReadsTheRestartSpecBack pins what a start after a stop needs from config.json alone.
+func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{
+		RootFS:     "/var/lib/shard/rootfs/sha256-abc",
+		Entrypoint: []string{"/bin/sh"},
+		Resources:  models.Resources{MemoryMiB: 256, VCPUs: 2},
+	}, models.ImageConfig{})
+
+	rt, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+
+	if rt.RootFS != "/var/lib/shard/rootfs/sha256-abc" {
+		t.Errorf("RootFS is %q", rt.RootFS)
+	}
+	if want := (models.Resources{MemoryMiB: 256, VCPUs: 2}); rt.Resources != want {
+		t.Errorf("Resources are %+v, want %+v", rt.Resources, want)
+	}
+}

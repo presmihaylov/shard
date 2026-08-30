@@ -137,7 +137,7 @@ func refuseUnlessAlive(ctx context.Context, provider models.Provider, id string)
 }
 
 func refuseStopped(id string, state models.State) error {
-	return fmt.Errorf("sandbox %s is %s: a stopped sandbox never runs again, so remove it with shard rm %s and create another", id, state, id)
+	return fmt.Errorf("sandbox %s is %s: start it again with shard start %s", id, state, id)
 }
 
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one

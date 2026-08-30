@@ -102,8 +102,11 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 // Runtime is what the entrypoint runs with. Nothing records it but config.json, so an exec into a
 // live sandbox reads it back from there.
 type Runtime struct {
-	Env     []string
-	WorkDir string
+	// RootFS is the image tree the writable layer stacks over, so a start after a stop mounts it again.
+	RootFS    string
+	Resources models.Resources
+	Env       []string
+	WorkDir   string
 	// User is the uid:gid the supervisor drops the entrypoint to, and empty when nobody named one.
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
@@ -134,10 +137,12 @@ func (b Bundle) Runtime() (Runtime, error) {
 	}
 
 	return Runtime{
-		Env:     spec.Process.Env,
-		WorkDir: spec.Process.Cwd,
-		User:    supervisorFlag(spec.Process.Args, "-user"),
-		Groups:  groups,
+		RootFS:    spec.Annotations[rootfsAnnotation],
+		Resources: resourcesOf(spec.Linux),
+		Env:       spec.Process.Env,
+		WorkDir:   spec.Process.Cwd,
+		User:      supervisorFlag(spec.Process.Args, "-user"),
+		Groups:    groups,
 	}, nil
 }
 
@@ -264,6 +269,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			},
 		},
 		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
+		// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
+		Annotations: map[string]string{rootfsAnnotation: spec.RootFS},
 		Linux: &specs.Linux{
 			CgroupsPath:       CgroupsPath(spec.ID),
 			Namespaces:        namespaces(spec.Network.NetnsPath),
@@ -310,6 +317,24 @@ func environment(env []string) []string {
 	}
 
 	return append(slices.Clone(env), defaultPath)
+}
+
+// resourcesOf reads the bound back out of the spec, which is the inverse of resources.
+func resourcesOf(l *specs.Linux) models.Resources {
+	var r models.Resources
+	if l == nil || l.Resources == nil {
+		return r
+	}
+
+	if m := l.Resources.Memory; m != nil && m.Limit != nil {
+		r.MemoryMiB = *m.Limit / bytesPerMiB
+	}
+	if c := l.Resources.CPU; c != nil && c.Quota != nil && c.Period != nil && *c.Period > 0 && *c.Quota > 0 {
+		// The quota is vcpus times the period, so the vcpu count can never overflow an int here.
+		r.VCPUs = int(*c.Quota / int64(*c.Period)) //nolint:gosec
+	}
+
+	return r
 }
 
 // resources bind on gVisor, as a host cgroup and again in the sentry's argv, and Firecracker needs them to boot.
