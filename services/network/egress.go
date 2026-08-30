@@ -95,6 +95,7 @@ func (s *Service) ruleset(chains []Chain, leases, fronted []netip.Addr) string {
 	// The private floor comes before the chains, so no rule of a policy opens it.
 	fmt.Fprintf(&b, "\tchain egress {\n")
 	fmt.Fprintf(&b, "\t\toifname %q drop\n", s.cfg.Bridge)
+	fmt.Fprintf(&b, "\t\tip daddr { %s } %s\n", strings.Join(privateRanges, ", "), logged("private"))
 	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
 	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
 	for _, chain := range chains {
@@ -104,10 +105,13 @@ func (s *Service) ruleset(chains []Chain, leases, fronted []netip.Addr) string {
 
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
-		for _, rule := range chain.Rules {
+		for i, rule := range chain.Rules {
+			if rule.Action != models.ActionAllow && len(rule.Prefixes) != 0 {
+				fmt.Fprintf(&b, "\t\t%s %s\n", match(rule), logged(strconv.Itoa(i)))
+			}
 			fmt.Fprintf(&b, "\t\t%s\n", render(rule))
 		}
-		fmt.Fprintf(&b, "\t\tdrop\n\t}\n")
+		fmt.Fprintf(&b, "\t\t%s\n\t\tdrop\n\t}\n", logged("default"))
 	}
 
 	b.WriteString("}\n\n")
@@ -137,6 +141,24 @@ func render(rule Compiled) string {
 		return "# no address"
 	}
 
+	verdict := "drop"
+	if rule.Action == models.ActionAllow {
+		verdict = "accept"
+	}
+
+	return match(rule) + " " + verdict
+}
+
+// LogPrefix is what a host drop writes to the kernel log, before "rule=<id>" and the packet fields.
+const LogPrefix = "shard-egress"
+
+// logged is a log line for the first packet of a flow, bounded so a guest cannot flood the ring, and
+// a statement of its own so the drop that follows never depends on the limit.
+func logged(rule string) string {
+	return fmt.Sprintf("ct state new limit rate 20/second burst 50 packets log prefix \"%s rule=%s \"", LogPrefix, rule)
+}
+
+func match(rule Compiled) string {
 	var parts []string
 
 	cidrs := make([]string, 0, len(rule.Prefixes))
@@ -156,10 +178,5 @@ func render(rule Compiled) string {
 		parts = append(parts, fmt.Sprintf("%s dport { %s }", rule.Protocol, strings.Join(ports, ", ")))
 	}
 
-	verdict := "drop"
-	if rule.Action == models.ActionAllow {
-		verdict = "accept"
-	}
-
-	return strings.Join(append(parts, verdict), " ")
+	return strings.Join(parts, " ")
 }

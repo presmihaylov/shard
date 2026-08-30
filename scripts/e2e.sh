@@ -452,6 +452,13 @@ expect "$(fetch "${ID}" "https://example.com/" | grep -o '<title>Example Domain<
 	"the proxy terminates TLS for an allowed host and carries the page back"
 expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "the proxy refuses a TLS request to a host the policy names nowhere"
 
+step "read the egress log"
+EGRESS_LOG=$(shard logs --egress "${ID}")
+echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"deny".*"destination":"example.org:443".*"rule":"default"' || fail "the log lacks the proxy's refusal of example.org"
+echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"allow".*"destination":"example.com:443".*"rule":"[0-9]'  || fail "the log lacks the proxy's allow of example.com"
+echo "${EGRESS_LOG}" | has '"source":"host","verdict":"deny".*"destination":"8.8.8.8".*"rule":"[0-9]'  || fail "the log lacks the host's drop of the probe to 8.8.8.8"
+say "the log names the proxy's allow and deny, and the host's drop, with the rule that decided each"
+
 # A policy change reaches a live sandbox at once, and never waits for the next start.
 shard policy create --deny group:any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
@@ -11,25 +12,36 @@ import (
 )
 
 // Decision is what the proxy does with one request. Rule is what decided it, and nil when no rule did.
+// ID names it for the event log: the rule's index, or what stood in for one when no rule matched.
 type Decision struct {
 	Allow  bool
 	Rule   *EffectiveRule
+	ID     string
 	Reason string
 }
+
+// What stands in for a rule index when no rule decided.
+const (
+	RuleNone    = "none"
+	RulePrivate = "private"
+	RuleMissing = "missing"
+	RuleDefault = "default"
+	RuleResolve = "resolve"
+)
 
 // Decide runs one TCP request through what the host enforces, by the name it carries and the address
 // that name resolved to. It is the proxy's side of the policy, so it and the host's chain agree.
 func Decide(eff Effective, host string, port int, addr netip.Addr) Decision {
 	if eff.Policy == "" {
 		if isPrivate(addr) {
-			return Decision{Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}
+			return Decision{ID: RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}
 		}
 
-		return Decision{Allow: true, Reason: "no policy"}
+		return Decision{Allow: true, ID: RuleNone, Reason: "no policy"}
 	}
 
 	if eff.Missing {
-		return Decision{Reason: fmt.Sprintf("policy %s no longer exists, so the sandbox reaches nothing", eff.Policy)}
+		return Decision{ID: RuleMissing, Reason: fmt.Sprintf("policy %s no longer exists, so the sandbox reaches nothing", eff.Policy)}
 	}
 
 	for i := range eff.Rules {
@@ -38,19 +50,20 @@ func Decide(eff Effective, host string, port int, addr netip.Addr) Decision {
 			continue
 		}
 
+		id := strconv.Itoa(i)
 		if rule.Action != models.ActionAllow {
-			return Decision{Rule: rule, Reason: fmt.Sprintf("policy %s denies %s", eff.Policy, describe(rule))}
+			return Decision{Rule: rule, ID: id, Reason: fmt.Sprintf("policy %s denies %s", eff.Policy, describe(rule))}
 		}
 
 		// A grant names a host the operator never wrote into the policy, so it is no leave to reach the host's own networks.
 		if rule.Implied != "" && isPrivate(addr) {
-			return Decision{Rule: rule, Reason: fmt.Sprintf("%s resolves to %s, which is private, and only the policy may open that", host, addr)}
+			return Decision{Rule: rule, ID: RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private, and only the policy may open that", host, addr)}
 		}
 
-		return Decision{Allow: true, Rule: rule, Reason: fmt.Sprintf("policy %s allows %s", eff.Policy, describe(rule))}
+		return Decision{Allow: true, Rule: rule, ID: id, Reason: fmt.Sprintf("policy %s allows %s", eff.Policy, describe(rule))}
 	}
 
-	return Decision{Reason: fmt.Sprintf("policy %s has no rule for %s:%d", eff.Policy, host, port)}
+	return Decision{ID: RuleDefault, Reason: fmt.Sprintf("policy %s has no rule for %s:%d", eff.Policy, host, port)}
 }
 
 func matches(rule models.Rule, host string, port int, addr netip.Addr) bool {

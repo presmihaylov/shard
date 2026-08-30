@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // Action is what a rule does with what it matches.
 type Action string
 
@@ -40,4 +42,25 @@ type Rule struct {
 type Policy struct {
 	Name  string `json:"name"`
 	Rules []Rule `json:"rules"`
+}
+
+// Where an egress decision was made.
+const (
+	EgressSourceProxy = "proxy"
+	EgressSourceHost  = "host"
+)
+
+// EgressEvent is one decision on one request or flow. Rule is the index into the sandbox's effective
+// rules, as shard inspect prints them, or what stood in for one: none, private, missing, default, resolve.
+type EgressEvent struct {
+	Time        time.Time `json:"time"`
+	Sandbox     string    `json:"sandbox"`
+	Source      string    `json:"source"`
+	Verdict     Action    `json:"verdict"`
+	Protocol    string    `json:"protocol,omitempty"`
+	Destination string    `json:"destination"`
+	Address     string    `json:"address,omitempty"`
+	Rule        string    `json:"rule"`
+	RuleText    string    `json:"rule_text,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
 }

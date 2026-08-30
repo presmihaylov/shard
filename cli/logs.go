@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/kmsg"
+	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 // followInterval is how long a follow waits at the end of the file before it reads again.
@@ -19,6 +23,7 @@ const followInterval = 200 * time.Millisecond
 type logsOptions struct {
 	id     string
 	follow bool
+	egress bool
 }
 
 // logs is a reader: the provider appends the output to one file from create on, and this prints it.
@@ -46,8 +51,13 @@ func (a App) logs(ctx context.Context, args []string) (err error) {
 	}
 
 	// The record answers for an id nobody ever created before the provider is asked for a path.
-	if _, err := repo.Get(opts.id); err != nil {
+	sb, err := repo.Get(opts.id)
+	if err != nil {
 		return err
+	}
+
+	if opts.egress {
+		return a.egressLog(d, sb)
 	}
 
 	path, err := provider.LogPath(opts.id)
@@ -94,6 +104,44 @@ func follow(ctx context.Context, w io.Writer, r io.Reader, provider models.Provi
 	}
 }
 
+// egressLog prints every decision on the sandbox's traffic as JSON lines: the proxy's from its file,
+// the host's from the kernel log, in one order by time.
+func (a App) egressLog(d *deps, sb models.Sandbox) error {
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	policies, err := d.egress()
+	if err != nil {
+		return err
+	}
+
+	proxied, err := egress.NewEvents(repo.Dir).Read(sb.ID)
+	if err != nil {
+		return err
+	}
+
+	effective, err := policies.Effective(sb)
+	if err != nil {
+		return err
+	}
+
+	lines, err := kmsg.Read()
+	if err != nil {
+		return err
+	}
+
+	encoder := json.NewEncoder(a.Out)
+	for _, ev := range egress.Merge(proxied, egress.HostEvents(lines, sb, effective, network.LogPrefix)) {
+		if err := encoder.Encode(ev); err != nil {
+			return fmt.Errorf("write the egress log: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func copyOutput(w io.Writer, r io.Reader) error {
 	if _, err := io.Copy(w, r); err != nil {
 		return fmt.Errorf("write the output: %w", err)
@@ -108,9 +156,13 @@ func parseLogs(args []string) (logsOptions, error) {
 	flags := flag.NewFlagSet("shard logs", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&opts.follow, "f", false, "keep printing until the sandbox stops")
+	flags.BoolVar(&opts.egress, "egress", false, "print every egress decision instead of the output")
 
 	if err := flags.Parse(args); err != nil {
 		return logsOptions{}, fmt.Errorf("parse the logs flags: %w", err)
+	}
+	if opts.follow && opts.egress {
+		return logsOptions{}, errors.New("logs --egress does not follow yet: run it again")
 	}
 
 	rest := flags.Args()

@@ -55,13 +55,28 @@ var (
 	api    = netip.MustParseAddr("93.184.216.34")
 )
 
+type fakeEvents struct{ recorded []models.EgressEvent }
+
+func (f *fakeEvents) Record(ev models.EgressEvent) error {
+	f.recorded = append(f.recorded, ev)
+
+	return nil
+}
+
 func newBroker(t *testing.T, sb models.Sandbox, eff egress.Effective) *Service {
+	t.Helper()
+
+	return newBrokerWithEvents(t, sb, eff, &fakeEvents{})
+}
+
+func newBrokerWithEvents(t *testing.T, sb models.Sandbox, eff egress.Effective, events Events) *Service {
 	t.Helper()
 
 	return New(
 		fakeRecords{sb},
 		fakePolicies{effective: map[string]egress.Effective{sb.ID: eff}, addrs: map[string][]netip.Addr{"api.example.com": {api}, "other.example.com": {api}}},
 		fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}, MockValue: "mock-TOKEN"}},
+		events,
 	)
 }
 
@@ -207,5 +222,51 @@ func TestAChunkedBodyIsRewrittenAndGivenALength(t *testing.T) {
 	}
 	if r.ContentLength != int64(len(body)) {
 		t.Errorf("ContentLength is %d, want %d", r.ContentLength, len(body))
+	}
+}
+
+func TestEveryDecisionIsRecordedWithTheRuleThatMadeIt(t *testing.T) {
+	events := &fakeEvents{}
+	policy := egress.Effective{Policy: "locked", Rules: []egress.EffectiveRule{
+		{Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}}},
+	}}
+	b := newBrokerWithEvents(t, running(), policy, events)
+
+	if _, err := b.Route(t.Context(), source, "api.example.com", 443); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if _, err := b.Route(t.Context(), source, "other.example.com", 443); err == nil {
+		t.Fatal("Route allowed a host the policy names nowhere")
+	}
+	if _, err := b.Route(t.Context(), source, "nowhere.example.com", 443); err == nil {
+		t.Fatal("Route allowed a host that does not resolve")
+	}
+
+	if len(events.recorded) != 3 {
+		t.Fatalf("%d events were recorded, want 3", len(events.recorded))
+	}
+
+	allowed := events.recorded[0]
+	if allowed.Verdict != models.ActionAllow || allowed.Rule != "0" || allowed.RuleText != "allow domain:api.example.com tcp:80,443" || allowed.Destination != "api.example.com:443" || allowed.Address != api.String() {
+		t.Errorf("the allow reads %+v", allowed)
+	}
+	if denied := events.recorded[1]; denied.Verdict != models.ActionDeny || denied.Rule != egress.RuleDefault || denied.Sandbox != "sb" || denied.Source != models.EgressSourceProxy {
+		t.Errorf("the deny reads %+v", denied)
+	}
+	if unresolved := events.recorded[2]; unresolved.Verdict != models.ActionDeny || unresolved.Rule != egress.RuleResolve || unresolved.Address != "" {
+		t.Errorf("the failed resolve reads %+v", unresolved)
+	}
+}
+
+type failingEvents struct{}
+
+func (failingEvents) Record(models.EgressEvent) error { return errors.New("disk full") }
+
+func TestAnEventThatCannotBeWrittenClosesTheDoor(t *testing.T) {
+	b := newBrokerWithEvents(t, running(), egress.Effective{}, failingEvents{})
+
+	_, err := b.Route(t.Context(), source, "api.example.com", 443)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Errorf("Route = %v, want the write error", err)
 	}
 }
