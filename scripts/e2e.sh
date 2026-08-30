@@ -261,6 +261,15 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
 
+step "write a file into the writable layer"
+expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \
+	/bin/sh -c 'echo kept > /root/kept; cat /root/kept'
+
+step "prove the cgroup sits under the shard parent"
+[ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "there is no cgroup at /sys/fs/cgroup/shard/${ID}"
+[ ! -e "/sys/fs/cgroup/${ID}" ] || fail "a cgroup landed at the root, /sys/fs/cgroup/${ID}"
+say "the cgroup is /sys/fs/cgroup/shard/${ID} and nothing is at the root"
+
 step "propagate the exit code of a command that failed"
 # The || keeps the failure a condition rather than an error, which the exit handler would report.
 CODE=0
@@ -301,6 +310,42 @@ shard stop "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the second stop changed the state"
 say "a second stop is idempotent"
 
+step "inspect the stopped sandbox"
+shard inspect "${ID}" | grep -q '"state": "stopped"' || fail "shard inspect does not say stopped"
+shard inspect "${ID}" | grep -q '"exit_status"' || fail "shard inspect holds no exit status after the stop"
+say "inspect prints the record with its state and its exit status"
+
+step "refuse to remove the image a stopped sandbox references"
+CODE=0
+REFUSAL=$(shard image rm "${IMAGE}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "image rm removed the image under a stopped sandbox"
+echo "${REFUSAL}" | grep -q "${ID}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
+shard image ls | grep -q "${IMAGE%%:*}" || fail "image ls no longer lists the image"
+say "image rm refused it and named the sandbox"
+
+step "start the sandbox again"
+shard start "${ID}" >/dev/null
+grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the start"
+grep -q '"exit_status"' "${RECORD}" && fail "the record still holds the old exit status after the start"
+grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the start changed the address"
+say "the record says running, without the old exit, on the same address"
+
+# The entrypoint runs from the beginning, so its line lands a second time.
+for _ in $(seq 1 50); do
+	[ "$(shard logs "${ID}" | grep -c "shard-e2e-entrypoint")" -ge 2 ] && break
+	sleep 0.2
+done
+[ "$(shard logs "${ID}" | grep -c "shard-e2e-entrypoint")" -ge 2 ] || fail "the entrypoint did not run again from the beginning"
+say "the entrypoint ran again from the beginning"
+
+expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
+[ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "the started sandbox has no cgroup under the shard parent"
+
+step "stop the started sandbox"
+shard stop --time "${GRACE}" "${ID}" >/dev/null
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"
+say "the record says stopped"
+
 step "remove the sandbox"
 shard rm "${ID}" >/dev/null
 say "rm returned"
@@ -314,6 +359,12 @@ absent "the address" "$(ip -o addr | grep "${ADDRESS%%/*}" || true)"
 absent "the rootfs mount" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "the runsc container" "$(ls "${SHARD_ROOT}/runsc" 2>/dev/null | grep "^${ID}" || true)"
 absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
+absent "the cgroup" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
+
+step "prune the image nothing references any more"
+shard image prune | grep -q "${IMAGE%%:*}" || fail "image prune did not remove the image"
+shard image ls | grep -q "${IMAGE%%:*}" && fail "image ls still lists the pruned image"
+say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
 shard rm "${ID}" >/dev/null 2>&1
@@ -326,4 +377,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, create, exec, exec again, stop, rm, and a clean host"
+echo "e2e PASSED: install, create, exec, exec again, stop, inspect, start, rm, prune, and a clean host"
