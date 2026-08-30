@@ -15,7 +15,8 @@ verb, and it is the only place a substrate is allowed to be unequal to another.
 ## Refuse, never downgrade
 
 A provider that cannot do an optional verb returns `models.Unsupported(provider, verb)`. That error
-names both, and it unwraps to `models.ErrUnsupported`. It never falls back to a weaker mechanism, and
+names both, and it unwraps to `models.ErrUnsupported`. The CLI asks `Capabilities` first and refuses
+before it holds or claims anything, so the provider's own refusal is the last line of defence. It never falls back to a weaker mechanism, and
 it never returns a nil error having done something else.
 
 The sentinel is reserved for that one meaning. A missing kernel feature on a developer Mac is not a
