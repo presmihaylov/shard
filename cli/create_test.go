@@ -298,6 +298,7 @@ func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, *deps) {
 	dir := t.TempDir()
 
 	d := &deps{
+		app:         App{Root: dir},
 		imageSvc:    fakeImages{r: r},
 		repoSvc:     &fakeRepo{r: r, dir: dir},
 		netSvc:      fakeNet{r: r},
@@ -533,5 +534,64 @@ func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 	err := app.Run(t.Context(), []string{"create", "alpine:3.20", "--", "echo", "1"})
 	if !errors.Is(err, network.ErrNoFreeAddress) || !strings.Contains(err.Error(), "shard ls --all") {
 		t.Errorf("create failed with %v, want the pool's refusal naming shard ls --all", err)
+	}
+}
+
+func TestCreateHandsTheGuestThePlaceholderAndRecordsTheGrant(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	app, d := newFakeApp(t, &out, r)
+
+	store, err := d.secrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Run(t.Context(), []string{"create", "--secret", "API_KEY", "--env", "OTHER=1", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	spec := d.providerSvc.(*fakeProvider).spec
+	if !slices.Contains(spec.Env, "API_KEY=mock-API_KEY") {
+		t.Errorf("the guest env %v holds no placeholder", spec.Env)
+	}
+	if slices.ContainsFunc(spec.Env, func(e string) bool { return strings.Contains(e, "sk-live") }) {
+		t.Fatalf("the guest env %v holds the value", spec.Env)
+	}
+
+	created := d.repoSvc.(*fakeRepo).created
+	if strings.Join(created.Secrets, ",") != "API_KEY" {
+		t.Errorf("the record grants %v, want API_KEY", created.Secrets)
+	}
+}
+
+func TestCreateRefusesASecretTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	app, _ := newFakeApp(t, &out, r)
+
+	err := app.Run(t.Context(), []string{"create", "--secret", "NOPE", "alpine:3.20"})
+	if err == nil || !strings.Contains(err.Error(), "secret NOPE does not exist") {
+		t.Fatalf("create = %v", err)
+	}
+	if slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a missing secret still cost a pull: %v", r.calls)
+	}
+}
+
+func TestParseCreateRefusesABadOrDoubledSecret(t *testing.T) {
+	for _, args := range [][]string{
+		{"--secret", "api_key", "alpine"},
+		{"--secret", "KEY", "--secret", "KEY", "alpine"},
+		{"--secret", "KEY", "--env", "KEY=1", "alpine"},
+	} {
+		if _, err := parseCreate(args); err == nil {
+			t.Errorf("parseCreate(%v) accepted", args)
+		}
 	}
 }

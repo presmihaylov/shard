@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -83,6 +84,7 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		Provider:  provider.Name(),
 		State:     models.StateCreated,
 		Resources: sb.Resources,
+		Secrets:   slices.Clone(sb.Secrets),
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {

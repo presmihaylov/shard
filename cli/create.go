@@ -15,6 +15,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
@@ -39,6 +40,8 @@ type createOptions struct {
 	env     []string
 	workDir string
 	user    string
+	// secrets is what --secret named, and what the guest gets a placeholder for under that name.
+	secrets []string
 
 	resources models.Resources
 }
@@ -62,6 +65,7 @@ func parseCreate(args []string) (createOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.name, "name", "", "a handle every verb takes in place of the id")
 	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
+	flags.Var((*secretList)(&opts.secrets), "secret", "a stored secret the guest gets a placeholder for, repeatable")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
@@ -88,6 +92,14 @@ func parseCreate(args []string) (createOptions, error) {
 	}
 	if opts.resources.VCPUs < 0 {
 		return createOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)
+	}
+
+	// An --env of the same name would either hide the placeholder or be hidden by it, and either is a surprise.
+	for _, entry := range opts.env {
+		key, _, _ := strings.Cut(entry, "=")
+		if slices.Contains(opts.secrets, key) {
+			return createOptions{}, fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
+		}
 	}
 
 	rest := flags.Args()
@@ -144,6 +156,42 @@ func (e *envList) Set(value string) error {
 	return nil
 }
 
+// secretList refuses a name the store could not hold, so a typo is caught before anything is pulled.
+type secretList []string
+
+func (s *secretList) String() string { return strings.Join(*s, ",") }
+
+func (s *secretList) Set(value string) error {
+	if err := secret.ValidName(value); err != nil {
+		return err
+	}
+	if slices.Contains(*s, value) {
+		return fmt.Errorf("--secret %s was given twice", value)
+	}
+
+	*s = append(*s, value)
+
+	return nil
+}
+
+// grantSecrets checks every --secret against the store and hands the guest the placeholder of each
+// as an environment variable. The value never comes near this: the proxy substitutes it on the way out.
+func grantSecrets(store secretStore, opts *createOptions) error {
+	for _, name := range opts.secrets {
+		sec, err := store.Get(name)
+		if errors.Is(err, secret.ErrNotFound) {
+			return fmt.Errorf("secret %s does not exist: run shard secret set --to <host> %s first", name, name)
+		}
+		if err != nil {
+			return err
+		}
+
+		opts.env = append(opts.env, name+"="+sec.MockValue)
+	}
+
+	return nil
+}
+
 // launch claims the image, the record, the network and the sandbox, then starts the entrypoint and
 // prints the id. Every claim before the commit point is pushed onto the teardown stack, because
 // half-built state is a bug. Nothing is torn down after it: the sandbox outlives this command.
@@ -166,6 +214,17 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 	provider, err := d.provider()
 	if err != nil {
 		return err
+	}
+
+	// Before the pull: a secret that does not exist should cost no download.
+	if len(opts.secrets) != 0 {
+		store, err := d.secrets()
+		if err != nil {
+			return err
+		}
+		if err := grantSecrets(store, &opts); err != nil {
+			return err
+		}
 	}
 
 	var td teardown
@@ -298,6 +357,7 @@ func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img i
 		Provider:  provider.Name(),
 		State:     models.StateCreated,
 		Resources: opts.resources,
+		Secrets:   opts.secrets,
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
