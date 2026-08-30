@@ -31,6 +31,7 @@ Usage:
   shard rm [flags] <id|name>
                            free what a stopped sandbox still holds
   shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
+  shard inspect <id|name>  print the record of a sandbox as JSON
   shard logs [-f] <id|name>
                            print what the entrypoint wrote, and with -f keep printing until it stops
   shard pull <image>       pull an image and unpack its rootfs
@@ -115,6 +116,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.exec(ctx, args[1:])
 	case "ls":
 		return a.ls(ctx, args[1:])
+	case "inspect":
+		return a.inspect(ctx, args[1:])
 	case "logs":
 		return a.logs(ctx, args[1:])
 	case "start":
