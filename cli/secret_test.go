@@ -122,24 +122,6 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	}
 }
 
-func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
-	var out bytes.Buffer
-
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
-	app, root := newSecretApp(t, &out, "value-123456\n", repo)
-
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
-		t.Fatal(err)
-	}
-
-	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
-	app.Root = root
-	err := app.Run(t.Context(), []string{"secret", "set", "--mock-value", "another-placeholder", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "sb1") {
-		t.Errorf("set with a new placeholder while held = %v", err)
-	}
-}
-
 func TestSecretLsListsTheReadableOnesAndFails(t *testing.T) {
 	var out bytes.Buffer
 

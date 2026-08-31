@@ -66,7 +66,6 @@ type Match struct {
 // Update is what one secret set names. An empty field keeps what the store holds.
 type Update struct {
 	Destinations []string
-	Mock         string
 	Headers      []Header
 	Match        *Match
 }
@@ -108,7 +107,7 @@ func New(dir string) (*Store, error) {
 // Set writes the secret, or replaces the one of that name. A replace is the rotation: nothing
 // caches a value, so a live sandbox uses the new one on its next request.
 func (s *Store) Set(name, value string, up Update) (Secret, error) {
-	destinations, mock := up.Destinations, up.Mock
+	destinations := up.Destinations
 
 	if err := ValidName(name); err != nil {
 		return Secret{}, err
@@ -121,16 +120,13 @@ func (s *Store) Set(name, value string, up Update) (Secret, error) {
 		return Secret{}, fmt.Errorf("secret %s holds a NUL byte, which no request header carries", name)
 	}
 
-	// A rotation names the value and nothing else: the grant and the placeholder it had stay.
+	// A rotation names the value and nothing else: the grant, the headers and the match it had stay.
 	existing, err := s.read(name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Secret{}, err
 	}
 	if len(destinations) == 0 {
 		destinations = existing.Destinations
-	}
-	if mock == "" {
-		mock = existing.MockValue
 	}
 	headers := up.Headers
 	if headers == nil {
@@ -162,13 +158,9 @@ func (s *Store) Set(name, value string, up Update) (Secret, error) {
 		}
 	}
 
-	// The default is exempt from the length rule, so a short name still gets a placeholder.
-	chosen := mock != ""
-	if !chosen {
-		mock = MockValue(name)
-	}
-	if err := validMock(name, mock, value, chosen); err != nil {
-		return Secret{}, err
+	mock := MockValue(name)
+	if strings.Contains(value, mock) {
+		return Secret{}, fmt.Errorf("the value of secret %s holds its placeholder, and the guest must never hold the value", name)
 	}
 
 	rec := record{Value: value, Destinations: bound, MockValue: mock, UpdatedAt: time.Now().UTC(), Headers: headers, Match: match}
@@ -275,7 +267,7 @@ func (r record) public(name string) Secret {
 	return Secret{Name: name, Destinations: slices.Clone(r.Destinations), MockValue: r.MockValue, UpdatedAt: r.UpdatedAt, Headers: slices.Clone(r.Headers), Match: r.Match}
 }
 
-// MockValue is the placeholder the guest sees for a secret that set no other.
+// MockValue is the placeholder the guest sees in place of the value.
 func MockValue(name string) string { return "mock-" + name }
 
 // A secret name is the environment variable the guest reads, so it is shaped like one.
@@ -335,24 +327,6 @@ func ValidDestination(dest string) (string, error) {
 	}
 
 	return canonical, nil
-}
-
-// validMock refuses a placeholder that is the value, which the guest would then hold, and one too
-// short to be found in a request without also matching something else.
-func validMock(name, mock, value string, chosen bool) error {
-	const minChars = 8
-
-	if strings.Contains(value, mock) {
-		return fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
-	}
-	if chosen && len(mock) < minChars {
-		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minChars)
-	}
-	if strings.ContainsAny(mock, " \t\r\n\x00") {
-		return fmt.Errorf("the placeholder of secret %s holds whitespace, which a request would split", name)
-	}
-
-	return nil
 }
 
 // headerName is a field name as HTTP spells one.

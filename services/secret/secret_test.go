@@ -24,7 +24,7 @@ func newStore(t *testing.T) (*Store, string) {
 func TestSetWritesOneFileNobodyElseCanRead(t *testing.T) {
 	s, dir := newStore(t)
 
-	sec, err := s.Set("API_KEY", "sk-live-1234567890", Update{Destinations: []string{"API.Example.com.", "api.example.com"}, Mock: ""})
+	sec, err := s.Set("API_KEY", "sk-live-1234567890", Update{Destinations: []string{"API.Example.com.", "api.example.com"}})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 	s, _ := newStore(t)
 
 	const value = "hunter2-hunter2-hunter2"
-	if _, err := s.Set("TOKEN", value, Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
+	if _, err := s.Set("TOKEN", value, Update{Destinations: []string{"example.com"}}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -108,10 +108,10 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}, Mock: ""}); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: []string{"b.example.com"}, Mock: "placeholder-token"}); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: []string{"b.example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "b.example.com" || sec.MockValue != "placeholder-token" {
+	if strings.Join(sec.Destinations, ",") != "b.example.com" || sec.MockValue != "mock-TOKEN" {
 		t.Errorf("the second set did not replace the first: %+v", sec)
 	}
 
@@ -145,10 +145,10 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}, Mock: "placeholder-token"}); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", Update{Destinations: []string{"a.example.com"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: nil, Mock: ""}); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", Update{Destinations: nil}); err != nil {
 		t.Fatalf("a rotation with no grant: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "a.example.com" || sec.MockValue != "placeholder-token" {
+	if strings.Join(sec.Destinations, ",") != "a.example.com" || sec.MockValue != "mock-TOKEN" {
 		t.Errorf("the rotation changed the grant or the placeholder: %+v", sec)
 	}
 
@@ -172,7 +172,7 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
 	s, _ := newStore(t)
 
-	sec, err := s.Set("K", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""})
+	sec, err := s.Set("K", "some-value-123", Update{Destinations: []string{"example.com"}})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
 func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
@@ -206,7 +206,7 @@ func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 func TestListSkipsWhatIsNotASecret(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}, Mock: ""}); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", Update{Destinations: []string{"example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 	// What an interrupted atomic write leaves behind, and a stray file an operator dropped in.
@@ -233,27 +233,23 @@ func TestSetRefusals(t *testing.T) {
 		key   string
 		value string
 		to    []string
-		mock  string
 		want  string
 	}{
-		{"lowercase name", "api_key", "v-1234567", []string{"example.com"}, "", "environment variable name"},
-		{"digit first", "1KEY", "v-1234567", []string{"example.com"}, "", "environment variable name"},
-		{"empty value", "KEY", "", []string{"example.com"}, "", "empty value"},
-		{"no destination", "KEY", "v-1234567", nil, "", "no destination"},
-		{"scheme in destination", "KEY", "v-1234567", []string{"https://example.com"}, "", "no scheme"},
-		{"port in destination", "KEY", "v-1234567", []string{"example.com:443"}, "", "no scheme"},
-		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "", "is an address"},
-		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
-		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
-		{"mock is the value", "KEY", "v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"mock inside the value", "KEY", "abc-v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"short mock", "KEY", "v-1234567", []string{"example.com"}, "abc", "shorter than"},
-		{"mock with space", "KEY", "v-1234567", []string{"example.com"}, "mock value", "whitespace"},
+		{"lowercase name", "api_key", "v-1234567", []string{"example.com"}, "environment variable name"},
+		{"digit first", "1KEY", "v-1234567", []string{"example.com"}, "environment variable name"},
+		{"empty value", "KEY", "", []string{"example.com"}, "empty value"},
+		{"no destination", "KEY", "v-1234567", nil, "no destination"},
+		{"scheme in destination", "KEY", "v-1234567", []string{"https://example.com"}, "no scheme"},
+		{"port in destination", "KEY", "v-1234567", []string{"example.com:443"}, "no scheme"},
+		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "is an address"},
+		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "has no dot"},
+		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "not a host name"},
+		{"value holds the placeholder", "KEY", "x-mock-KEY-1", []string{"example.com"}, "holds its placeholder"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.Set(tc.key, tc.value, Update{Destinations: tc.to, Mock: tc.mock})
+			_, err := s.Set(tc.key, tc.value, Update{Destinations: tc.to})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("Set = %v, want an error mentioning %q", err, tc.want)
 			}

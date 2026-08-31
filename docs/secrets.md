@@ -25,8 +25,8 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
 
-**The substitution.** The placeholder defaults to `mock-NAME` and `--mock-value` sets another, for
-an SDK that checks the shape of a key before it sends it. On the way out, the egress proxy replaces
+**The substitution.** The placeholder is `mock-NAME`, always: nothing sets another, so a sandbox
+and the proxy can never disagree on it. On the way out, the egress proxy replaces
 the placeholder with the value, in the URL, the headers and the body, and only when the request is
 bound for a granted destination. A request to any other host carries the placeholder as it is.
 
@@ -60,9 +60,8 @@ key at the provider; shard only keeps it from leaving.
 
 ## Rotation
 
-`shard secret set` again with the same name replaces the value, and keeps the grant and the
-placeholder unless `--to` or `--mock-value` say otherwise. A new placeholder is refused while a
-sandbox holds the old one, because that sandbox would never be matched again. Nothing caches the
+`shard secret set` again with the same name replaces the value, and keeps the grant unless `--to`
+says otherwise. Nothing caches the
 value: the proxy reads the store per request, so a live sandbox uses the new value on its next
 request and never learns that anything changed.
 

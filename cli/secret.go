@@ -38,7 +38,6 @@ func (a App) secret(ctx context.Context, args []string) error {
 type secretSetOptions struct {
 	name         string
 	destinations []string
-	mock         string
 	headers      []secret.Header
 	match        *secret.Match
 }
@@ -66,31 +65,12 @@ func (a App) secretSet(_ context.Context, args []string) error {
 		return err
 	}
 
-	// A sandbox holds the placeholder it was created with, so a new one would never be matched for it.
-	if opts.mock != "" {
-		if err := placeholderFree(d, store, opts.name, opts.mock); err != nil {
-			return err
-		}
-	}
-
-	sec, err := store.Set(opts.name, value, secret.Update{Destinations: opts.destinations, Mock: opts.mock, Headers: opts.headers, Match: opts.match})
+	sec, err := store.Set(opts.name, value, secret.Update{Destinations: opts.destinations, Headers: opts.headers, Match: opts.match})
 	if err != nil {
 		return err
 	}
 
 	return a.print(sec.Name)
-}
-
-func placeholderFree(d *deps, store secretStore, name, mock string) error {
-	existing, err := store.Get(name)
-	if errors.Is(err, secret.ErrNotFound) || (err == nil && existing.MockValue == mock) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	return ungranted(d, name)
 }
 
 // readSecretValue takes the whole of stdin less one trailing newline, which is what echo and a
@@ -118,7 +98,6 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.mock, "mock-value", "", "the placeholder the guest sees in place of the value")
 	flags.Var((*headerList)(&opts.headers), "header", "a header the proxy sets on a matched request, as 'Name: template' with {value}, repeatable")
 	flags.Var(matchFlag{match: &opts.match}, "match", "a condition a request must meet to get the headers: path=, method=, query= or header=, repeatable")
 
