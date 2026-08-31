@@ -24,7 +24,9 @@ type fakeLifecycleRepo struct {
 	deleted    bool
 	// snapshotDir replaces the fixed path when a test needs the directory to exist on disk.
 	snapshotDir string
-	deletedID   string
+	// dir replaces the fixed path when a test needs the directory to exist on disk.
+	dir       string
+	deletedID string
 	// created is the record Create was handed, which a fork fills in from the source.
 	created models.Sandbox
 }
@@ -82,6 +84,9 @@ func (f *fakeLifecycleRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
 func (f *fakeLifecycleRepo) Dir(id string) (string, error) {
 	if err := f.r.record("repo.Dir"); err != nil {
 		return "", err
+	}
+	if f.dir != "" {
+		return f.dir, nil
 	}
 
 	return "/state/" + id, nil

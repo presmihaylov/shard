@@ -69,7 +69,9 @@ shard secret rm API_TOKEN
 A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
 of mode 0600, `secret ls` never prints it, and `secret rm` refuses while a sandbox still holds the
 placeholder. The egress proxy puts the value into a request on its way to the granted host and
-nowhere else. `docs/secrets.md` says what this stops and what it does not.
+nowhere else. `shard secret grant` and `shard secret ungrant` hand the placeholder to a created or
+stopped sandbox after the fact, and take it back. `docs/secrets.md` says what this stops and what it
+does not.
 
 ## Egress
 

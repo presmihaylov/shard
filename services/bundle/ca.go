@@ -24,12 +24,16 @@ var proxyCAEnv = []string{
 
 // writeProxyCA puts the proxy CA into the writable layer, appended to the roots the image ships.
 func writeProxyCA(b Bundle, spec models.SandboxSpec) error {
-	if len(spec.ProxyCA) == 0 {
+	return plantProxyCA(b, spec.RootFS, spec.ProxyCA)
+}
+
+func plantProxyCA(b Bundle, rootFS string, ca []byte) error {
+	if len(ca) == 0 {
 		return nil
 	}
 
 	// An image may link that path at a host file, and a secret is one, so the read cannot leave the rootfs.
-	rootfs, err := os.OpenRoot(spec.RootFS)
+	rootfs, err := os.OpenRoot(rootFS)
 	if err != nil {
 		return fmt.Errorf("open the rootfs: %w", err)
 	}
@@ -48,7 +52,7 @@ func writeProxyCA(b Bundle, spec models.SandboxSpec) error {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
 
-	if err := store.WriteFile(path, append(roots, spec.ProxyCA...), etcFilePerm); err != nil { // #nosec G306
+	if err := store.WriteFile(path, append(roots, ca...), etcFilePerm); err != nil { // #nosec G306
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 

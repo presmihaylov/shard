@@ -25,6 +25,13 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
 
+`shard secret grant <id> NAME` does the same to a sandbox that already exists, and `shard secret
+ungrant` takes it back. Both take a created or stopped sandbox only: a running guest holds its
+environment live, and a paused one keeps it in the snapshot, so the edit would reach neither. Stop
+the sandbox, grant, and start it again. A grant also hands the bundle the proxy CA when the create
+did not, so the next start fronts the sandbox; an ungrant leaves the CA in place, which is harmless
+once nothing fronts it.
+
 **The substitution.** The placeholder is `mock-NAME`, always: nothing sets another, so a sandbox
 and the proxy can never disagree on it. On the way out, the egress proxy replaces
 the placeholder with the value, in the URL, the headers and the body, and only when the request is

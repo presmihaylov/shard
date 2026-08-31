@@ -721,6 +721,33 @@ expect_exec "kept" "the file written before the stop is there after the start" /
 expect_network "after the start"
 expect_blocked "${ID}" "the policy holds after the start"
 
+step "grant a secret after the create"
+# The sandbox is created with no policy and no secret, so nothing fronted it and no CA was planted.
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${GRANTED_HOST}" E2E_TOKEN >/dev/null
+GID=$(shard create "${IMAGE}" -- /bin/sleep 600)
+CODE=0
+shard secret grant "${GID}" E2E_TOKEN >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "secret grant took a running sandbox"
+say "secret grant refuses a running sandbox"
+shard stop --time "${GRACE}" "${GID}" >/dev/null
+shard secret grant "${GID}" E2E_TOKEN >/dev/null
+shard inspect "${GID}" | has '"E2E_TOKEN"' || fail "inspect does not name the late grant"
+shard start "${GID}" >/dev/null
+expect_exec_in "${GID}" "mock-E2E_TOKEN" "the granted guest sees the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+expect_exec_in "${GID}" "trusted" "the late grant planted the proxy CA" \
+	/bin/sh -c "grep -qF '${CA_LINE}' /etc/ssl/certs/ca-certificates.crt && echo trusted"
+expect "$(fetch "${GID}" "http://${GRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy fronts the sandbox the grant made fronted"
+
+step "ungrant the secret again"
+shard stop --time "${GRACE}" "${GID}" >/dev/null
+shard secret ungrant "${GID}" E2E_TOKEN >/dev/null
+shard start "${GID}" >/dev/null
+expect_exec_in "${GID}" "unset" "the ungranted guest holds no placeholder" /bin/sh -c 'echo "${E2E_TOKEN:-unset}"'
+shard stop --time "${GRACE}" "${GID}" >/dev/null
+shard rm "${GID}" >/dev/null
+say "the grant came and went after the create"
+
 step "stop the started sandbox"
 shard stop --time "${GRACE}" "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"

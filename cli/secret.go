@@ -10,7 +10,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -19,7 +21,7 @@ const maxSecretBytes = 64 << 10
 
 func (a App) secret(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("secret takes a subcommand: set, ls or rm")
+		return errors.New("secret takes a subcommand: set, ls, rm, grant or ungrant")
 	}
 
 	switch args[0] {
@@ -29,9 +31,13 @@ func (a App) secret(ctx context.Context, args []string) error {
 		return a.secretList(args[1:])
 	case "rm", "remove":
 		return a.secretRemove(ctx, args[1:])
+	case "grant":
+		return a.secretGrant(ctx, args[1:], true)
+	case "ungrant":
+		return a.secretGrant(ctx, args[1:], false)
 	}
 
-	return fmt.Errorf("unknown secret subcommand %q; want set, ls or rm", args[0])
+	return fmt.Errorf("unknown secret subcommand %q; want set, ls, rm, grant or ungrant", args[0])
 }
 
 // secretSetOptions is one parsed shard secret set invocation.
@@ -143,6 +149,128 @@ func (a App) secretList(args []string) error {
 	}
 
 	return listErr
+}
+
+// secretGrant hands a sandbox the placeholder of a stored secret after the create, or takes it
+// back. Only the bundle and the record change, so the next start picks both up.
+func (a App) secretGrant(ctx context.Context, args []string, attach bool) (err error) {
+	verb := "grant"
+	if !attach {
+		verb = "ungrant"
+	}
+
+	if len(args) != 2 {
+		return fmt.Errorf("secret %s takes a sandbox id and a secret name, got %d arguments", verb, len(args))
+	}
+
+	d := a.deps()
+
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	id, err := repo.Resolve(args[0])
+	if err != nil {
+		return err
+	}
+
+	release, err := repo.Hold(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, release()) }()
+
+	sb, err := repo.Get(id)
+	if err != nil {
+		return err
+	}
+
+	// A running guest holds its environment live, and a snapshot holds the paused one past this edit.
+	if sb.State != models.StateCreated && sb.State != models.StateStopped {
+		return fmt.Errorf("sandbox %s is %s: secret %s takes a created or stopped sandbox, stop it first", id, sb.State, verb)
+	}
+
+	dir, err := repo.Dir(id)
+	if err != nil {
+		return err
+	}
+
+	bnd, err := bundle.Open(dir)
+	if err != nil {
+		return err
+	}
+
+	if attach {
+		if err := grantSecretTo(d, repo, bnd, sb, args[1]); err != nil {
+			return err
+		}
+	}
+	if !attach {
+		if err := ungrantSecretFrom(repo, bnd, sb, args[1]); err != nil {
+			return err
+		}
+	}
+
+	return a.print(id)
+}
+
+// grantSecretTo is what create --secret does, done late: the placeholder into the bundle env, the
+// proxy CA into the writable layer, and the grant into the record.
+func grantSecretTo(d *deps, repo sandboxRepo, bnd bundle.Bundle, sb models.Sandbox, name string) error {
+	if slices.Contains(sb.Secrets, name) {
+		return fmt.Errorf("sandbox %s already holds secret %s", sb.ID, name)
+	}
+
+	store, err := d.secrets()
+	if err != nil {
+		return err
+	}
+
+	sec, err := store.Get(name)
+	if err != nil {
+		return err
+	}
+
+	// A sandbox created unfronted never trusted the proxy CA, and its next start is fronted.
+	px, err := d.proxy()
+	if err != nil {
+		return err
+	}
+	ca, err := px.CA()
+	if err != nil {
+		return err
+	}
+	if err := bnd.TrustProxy(ca); err != nil {
+		return err
+	}
+
+	if err := bnd.SetEnv(name, sec.MockValue); err != nil {
+		return err
+	}
+
+	return repo.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.Secrets = append(sb.Secrets, name)
+
+		return nil
+	})
+}
+
+// ungrantSecretFrom leaves the proxy CA in place: trusting it is harmless once nothing fronts the sandbox.
+func ungrantSecretFrom(repo sandboxRepo, bnd bundle.Bundle, sb models.Sandbox, name string) error {
+	if !slices.Contains(sb.Secrets, name) {
+		return fmt.Errorf("sandbox %s does not hold secret %s", sb.ID, name)
+	}
+
+	if err := bnd.RemoveEnv(name); err != nil {
+		return err
+	}
+
+	return repo.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.Secrets = slices.DeleteFunc(sb.Secrets, func(n string) bool { return n == name })
+
+		return nil
+	})
 }
 
 // secretRemoveOptions is one parsed shard secret rm invocation.

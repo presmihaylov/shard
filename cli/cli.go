@@ -48,6 +48,10 @@ Usage:
   shard secret set --to <host>... <NAME>
                            store a secret read from stdin, granted to those hosts; set again to rotate the value
   shard secret ls          list the secrets by name and destination, never by value
+  shard secret grant <id|name> <NAME>
+                           hand a created or stopped sandbox the placeholder, as create --secret does
+  shard secret ungrant <id|name> <NAME>
+                           take the placeholder back from a created or stopped sandbox
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>

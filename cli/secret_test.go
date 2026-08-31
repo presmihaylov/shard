@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,5 +244,143 @@ func TestParseSecretSetRefusesABadHeaderOrMatch(t *testing.T) {
 		if _, err := parseSecretSet(append(args, "TOKEN")); err == nil {
 			t.Errorf("parseSecretSet took %s", name)
 		}
+	}
+}
+
+// newGrantApp is newSecretApp with a proxy fake wired in, since a grant fetches the proxy CA.
+func newGrantApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRepo, r *recorder) App {
+	t.Helper()
+
+	app, _ := newSecretApp(t, out, stdin, repo)
+	base := app.newDeps
+	app.newDeps = func(a App) *deps {
+		d := base(a)
+		d.proxySvc = fakeProxy{r: r}
+
+		return d
+	}
+
+	return app
+}
+
+// newGrantStateDir lays a bundle on disk the way create leaves one for an unfronted sandbox.
+func newGrantStateDir(t *testing.T, env []string) string {
+	t.Helper()
+
+	stateDir := t.TempDir()
+	rootFS := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "bundle"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	config := `{"process":{"args":["/init"],"cwd":"/","env":["` + strings.Join(env, `","`) + `"]},` +
+		`"annotations":{"dev.shard.rootfs":"` + rootFS + `"}}`
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return stateDir
+}
+
+func grantConfig(t *testing.T, stateDir string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join(stateDir, "bundle", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(raw)
+}
+
+func TestSecretGrantAndUngrantRoundTrip(t *testing.T) {
+	var out bytes.Buffer
+	ctx := context.Background()
+
+	r := &recorder{}
+	stateDir := newGrantStateDir(t, []string{"PATH=/usr/bin"})
+	repo := &fakeLifecycleRepo{r: r, sb: models.Sandbox{ID: "sandbox1", State: models.StateStopped}, dir: stateDir}
+	app := newGrantApp(t, &out, "value-123456\n", repo, r)
+
+	if err := app.Run(ctx, []string{"secret", "set", "--to", "api.example.com", "API_KEY"}); err != nil {
+		t.Fatalf("secret set: %v", err)
+	}
+
+	if err := app.Run(ctx, []string{"secret", "grant", "sandbox1", "API_KEY"}); err != nil {
+		t.Fatalf("secret grant: %v", err)
+	}
+	if !strings.Contains(out.String(), "sandbox1") {
+		t.Errorf("output %q lacks the id", out.String())
+	}
+	if len(repo.sb.Secrets) != 1 || repo.sb.Secrets[0] != "API_KEY" {
+		t.Errorf("record secrets = %v", repo.sb.Secrets)
+	}
+	config := grantConfig(t, stateDir)
+	if !strings.Contains(config, "API_KEY=mock-API_KEY") {
+		t.Errorf("config %s lacks the placeholder", config)
+	}
+	if !strings.Contains(config, "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt") {
+		t.Errorf("config %s lacks the proxy CA environment", config)
+	}
+
+	err := app.Run(ctx, []string{"secret", "grant", "sandbox1", "API_KEY"})
+	if err == nil || !strings.Contains(err.Error(), "already holds secret API_KEY") {
+		t.Errorf("a second grant = %v", err)
+	}
+
+	if err := app.Run(ctx, []string{"secret", "ungrant", "sandbox1", "API_KEY"}); err != nil {
+		t.Fatalf("secret ungrant: %v", err)
+	}
+	if len(repo.sb.Secrets) != 0 {
+		t.Errorf("record secrets after the ungrant = %v", repo.sb.Secrets)
+	}
+	if strings.Contains(grantConfig(t, stateDir), "API_KEY=") {
+		t.Error("the placeholder outlived the ungrant")
+	}
+
+	err = app.Run(ctx, []string{"secret", "ungrant", "sandbox1", "API_KEY"})
+	if err == nil || !strings.Contains(err.Error(), "does not hold secret API_KEY") {
+		t.Errorf("a second ungrant = %v", err)
+	}
+}
+
+func TestSecretGrantRefusesALiveSandbox(t *testing.T) {
+	for _, state := range []models.State{models.StateRunning, models.StatePaused} {
+		var out bytes.Buffer
+
+		r := &recorder{}
+		repo := &fakeLifecycleRepo{r: r, sb: models.Sandbox{ID: "sandbox1", State: state}}
+		app := newGrantApp(t, &out, "value-123456\n", repo, r)
+
+		err := app.Run(context.Background(), []string{"secret", "grant", "sandbox1", "API_KEY"})
+		if err == nil || !strings.Contains(err.Error(), "stop it first") {
+			t.Errorf("grant on a %s sandbox = %v", state, err)
+		}
+	}
+}
+
+func TestSecretGrantRefusesWhatWouldCollideOrIsMissing(t *testing.T) {
+	var out bytes.Buffer
+	ctx := context.Background()
+
+	r := &recorder{}
+	stateDir := newGrantStateDir(t, []string{"API_KEY=user-set"})
+	repo := &fakeLifecycleRepo{r: r, sb: models.Sandbox{ID: "sandbox1", State: models.StateCreated}, dir: stateDir}
+	app := newGrantApp(t, &out, "value-123456\n", repo, r)
+
+	err := app.Run(ctx, []string{"secret", "grant", "sandbox1", "NO_SUCH"})
+	if err == nil || !strings.Contains(err.Error(), "NO_SUCH") {
+		t.Errorf("grant of a missing secret = %v", err)
+	}
+
+	if err := app.Run(ctx, []string{"secret", "set", "--to", "api.example.com", "API_KEY"}); err != nil {
+		t.Fatalf("secret set: %v", err)
+	}
+	err = app.Run(ctx, []string{"secret", "grant", "sandbox1", "API_KEY"})
+	if err == nil || !strings.Contains(err.Error(), "already holds API_KEY") {
+		t.Errorf("grant over a held name = %v", err)
+	}
+	if len(repo.sb.Secrets) != 0 {
+		t.Errorf("record secrets after a refused grant = %v", repo.sb.Secrets)
 	}
 }
