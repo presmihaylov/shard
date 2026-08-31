@@ -98,7 +98,7 @@ func describe(rule *EffectiveRule) string {
 	return text
 }
 
-func isPrivate(addr netip.Addr) bool { return within(network.Groups["private"], addr) }
+func isPrivate(addr netip.Addr) bool { return within(network.Private, addr) }
 
 func within(prefixes []netip.Prefix, addr netip.Addr) bool {
 	for _, prefix := range prefixes {

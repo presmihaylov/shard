@@ -247,7 +247,7 @@ func TestEveryDecisionIsRecordedWithTheRuleThatMadeIt(t *testing.T) {
 	}
 
 	allowed := events.recorded[0]
-	if allowed.Verdict != models.ActionAllow || allowed.Rule != "0" || allowed.RuleText != "allow domain:api.example.com tcp:80,443" || allowed.Destination != "api.example.com:443" || allowed.Address != api.String() {
+	if allowed.Verdict != models.ActionAllow || allowed.Rule != "0" || allowed.RuleText != "allow api.example.com tcp:80,443" || allowed.Destination != "api.example.com:443" || allowed.Address != api.String() {
 		t.Errorf("the allow reads %+v", allowed)
 	}
 	if denied := events.recorded[1]; denied.Verdict != models.ActionDeny || denied.Rule != egress.RuleDefault || denied.Sandbox != "sb" || denied.Source != models.EgressSourceProxy {

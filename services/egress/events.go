@@ -157,7 +157,7 @@ func ruleText(eff Effective, id string) string {
 
 // Text is the rule in the spelling policy create takes, with what implied it when the policy did not write it.
 func (r EffectiveRule) Text() string {
-	text := fmt.Sprintf("%s %s:%s", r.Action, r.Destination.Kind, r.Destination.Value)
+	text := fmt.Sprintf("%s %s", r.Action, destinationText(r.Destination))
 	if r.Protocol != "" {
 		text += " " + r.Protocol
 	}
@@ -173,6 +173,15 @@ func (r EffectiveRule) Text() string {
 	}
 
 	return text
+}
+
+// destinationText is the destination as policy create takes it: bare, with only a suffix prefixed.
+func destinationText(dest models.Destination) string {
+	if dest.Kind == models.DestinationDomainSuffix {
+		return "suffix:" + dest.Value
+	}
+
+	return dest.Value
 }
 
 // Merge is both sources in one list, oldest first, for one sandbox.

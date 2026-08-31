@@ -39,7 +39,7 @@ func mustRule(t *testing.T, action models.Action, text string) models.Rule {
 func TestTheStoreRoundTripsAndListsByName(t *testing.T) {
 	s := newStore(t)
 
-	web := models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "domain:api.example.com")}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}}
 	if err := s.Set(web); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -127,6 +127,24 @@ func TestValidateRefusesADomainRuleWithNoPort(t *testing.T) {
 	}
 }
 
+func TestParseDestinationReadsTheKindFromTheShape(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		kind models.DestinationKind
+	}{
+		{"any", models.DestinationGroup},
+		{"1.1.1.1", models.DestinationCIDR},
+		{"10.0.0.0/8", models.DestinationCIDR},
+		{"suffix:example.com", models.DestinationDomainSuffix},
+		{"api.example.com", models.DestinationDomain},
+	} {
+		dest, err := parseDestination(tc.text)
+		if err != nil || dest.Kind != tc.kind {
+			t.Errorf("parseDestination(%q) = %+v, %v, want kind %s", tc.text, dest, err, tc.kind)
+		}
+	}
+}
+
 func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	for _, tc := range []struct {
 		text  string
@@ -134,13 +152,12 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 		ports []int
 		value string
 	}{
-		{"domain:api.example.com", "tcp", []int{80, 443}, "api.example.com"},
-		{"domain:API.example.com. tcp:443", "tcp", []int{443}, "API.example.com."},
-		{"domain:api.example.com tcp", "tcp", []int{80, 443}, "api.example.com"},
-		{"cidr:10.0.0.0/8 tcp:22,8000-8002", "tcp", []int{22, 8000, 8001, 8002}, "10.0.0.0/8"},
-		{"cidr:1.1.1.1 udp:53", "udp", []int{53}, "1.1.1.1"},
-		{"group:any udp", "udp", nil, "any"},
-		{"group:private", "", nil, "private"},
+		{"api.example.com", "tcp", []int{80, 443}, "api.example.com"},
+		{"API.example.com. tcp:443", "tcp", []int{443}, "API.example.com."},
+		{"api.example.com tcp", "tcp", []int{80, 443}, "api.example.com"},
+		{"10.0.0.0/8 tcp:22,8000-8002", "tcp", []int{22, 8000, 8001, 8002}, "10.0.0.0/8"},
+		{"1.1.1.1 udp:53", "udp", []int{53}, "1.1.1.1"},
+		{"any udp", "udp", nil, "any"},
 	} {
 		rule, err := ParseRule(models.ActionDeny, tc.text)
 		if err != nil {
@@ -154,16 +171,18 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	}
 
 	for _, text := range []string{
-		"", "api.example.com", "domain:", "domain:api.example.com udp", "domain:api.example.com tcp:22",
-		"domain-suffix:example.com tcp:22", "cidr:10.0.0.0/8 tcp:9-8", "cidr:10.0.0.0/8 tcp:x", "cidr:10.0.0.0/8 tcp:1-2000",
-		"group:any tcp:80 extra", "cidr:2001:db8::/32", "domain:10.0.0.1", "dns:example.com",
+		"", "api.example.com udp", "api.example.com tcp:22",
+		"suffix:example.com tcp:22", "10.0.0.0/8 tcp:9-8", "10.0.0.0/8 tcp:x", "10.0.0.0/8 tcp:1-2000",
+		"any tcp:80 extra", "2001:db8::/32", "dns:example.com",
+		"private", "group:private",
+		"domain:api.example.com", "cidr:1.1.1.1", "group:any", "domain-suffix:example.com",
 	} {
 		if _, err := ParseRule(models.ActionAllow, text); err == nil {
 			t.Errorf("ParseRule(%q) accepted", text)
 		}
 	}
 
-	suffix, err := ParseRule(models.ActionAllow, "domain-suffix:example.com")
+	suffix, err := ParseRule(models.ActionAllow, "suffix:example.com")
 	if err != nil || suffix.Protocol != "tcp" || !slices.Equal(suffix.Ports, []int{80, 443}) {
 		t.Errorf("a domain-suffix rule got %+v, %v, want tcp 80,443", suffix, err)
 	}
@@ -199,7 +218,7 @@ var nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
 
 func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
 	s := newStore(t)
-	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "group:any")}}); err != nil {
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -234,7 +253,7 @@ func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
 
 func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	s := newStore(t)
-	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "domain:api.example.com tcp:443")}}); err != nil {
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:443")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,7 +286,7 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 
 func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
 	s := newStore(t)
-	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "domain:api.example.com")}}); err != nil {
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +300,7 @@ func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
 
 func TestChainsCloseAGrantedHostThatDoesNotResolve(t *testing.T) {
 	s := newStore(t)
-	if err := s.Set(models.Policy{Name: "locked", Rules: []models.Rule{mustRule(t, models.ActionDeny, "group:any")}}); err != nil {
+	if err := s.Set(models.Policy{Name: "locked", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -297,14 +316,14 @@ func TestChainsCloseAGrantedHostThatDoesNotResolve(t *testing.T) {
 }
 
 func TestValidateWildcardDomainRules(t *testing.T) {
-	good := []string{"domain:*", "domain:*.example.com", "domain:www.*.com"}
+	good := []string{"*", "*.example.com", "www.*.com"}
 	for _, text := range good {
 		if _, err := ParseRule(models.ActionAllow, text); err != nil {
 			t.Errorf("ParseRule refused %q: %v", text, err)
 		}
 	}
 
-	bad := []string{"domain:api*.example.com", "domain-suffix:*.example.com", "domain-suffix:*"}
+	bad := []string{"api*.example.com", "suffix:*.example.com", "suffix:*"}
 	for _, text := range bad {
 		if _, err := ParseRule(models.ActionAllow, text); err == nil {
 			t.Errorf("ParseRule accepted %q", text)

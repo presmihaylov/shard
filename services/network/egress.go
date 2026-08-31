@@ -44,11 +44,13 @@ type Compiled struct {
 // privateRanges is the floor under every policy: the host's networks and what a cloud puts one hop away.
 var privateRanges = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8", "100.64.0.0/10"}
 
-// Groups is what a group destination names.
+// Groups is what a group destination names. The private ranges are the floor, not a group.
 var Groups = map[string][]netip.Prefix{
-	"private": mustPrefixes(privateRanges),
-	"any":     {netip.MustParsePrefix("0.0.0.0/0")},
+	"any": {netip.MustParsePrefix("0.0.0.0/0")},
 }
+
+// Private is the floor's ranges, for the proxy's own check of a resolved address.
+var Private = mustPrefixes(privateRanges)
 
 func mustPrefixes(cidrs []string) []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0, len(cidrs))

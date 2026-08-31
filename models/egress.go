@@ -20,7 +20,7 @@ const (
 	DestinationDomain DestinationKind = "domain"
 	// DestinationDomainSuffix is a host name and everything under it. Only the proxy can match it.
 	DestinationDomainSuffix DestinationKind = "domain-suffix"
-	// DestinationGroup is a named set of prefixes: private or any.
+	// DestinationGroup is a named set of prefixes; any is the only one.
 	DestinationGroup DestinationKind = "group"
 )
 

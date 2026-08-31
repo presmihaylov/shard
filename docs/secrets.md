@@ -69,7 +69,7 @@ request and never learns that anything changed.
 ## A grant may name a wildcard
 
 `secret set --to '*.github.com' NAME` grants the value to every host under the apex. A wildcard
-label follows the same shape as a policy `domain` rule, and a grant of `*` alone is refused: the
+label follows the same shape as a policy name rule, and a grant of `*` alone is refused: the
 value must be bound to a name.
 
 ## The proxy can set a header itself

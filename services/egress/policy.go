@@ -212,7 +212,7 @@ func validDestination(rule models.Rule) error {
 		return err
 	case models.DestinationGroup:
 		if _, known := network.Groups[dest.Value]; !known {
-			return fmt.Errorf("the group %q is not private or any", dest.Value)
+			return fmt.Errorf("the group %q is not any", dest.Value)
 		}
 
 		return nil
@@ -229,7 +229,7 @@ func validDestination(rule models.Rule) error {
 		}
 		for _, port := range rule.Ports {
 			if !slices.Contains(webPorts, port) {
-				return fmt.Errorf("a %s rule may name ports 80 and 443 only, got %d: use a cidr rule for a raw port", dest.Kind, port)
+				return fmt.Errorf("a %s rule may name ports 80 and 443 only, got %d: a raw port takes an address or a prefix", dest.Kind, port)
 			}
 		}
 
@@ -256,20 +256,20 @@ func parseCIDR(value string) (netip.Prefix, error) {
 	return prefix.Masked(), nil
 }
 
-// ParseRule reads one rule as the CLI spells it: <kind>:<value> [tcp|udp[:<ports>]], with ports as
-// a comma list of numbers and ranges, so "domain:api.example.com" or "cidr:10.0.0.0/8 tcp:22,8000-8100".
+// ParseRule reads one rule as the CLI spells it: <destination> [tcp|udp[:<ports>]], with ports as
+// a comma list of numbers and ranges, so "api.example.com", "10.0.0.0/8 tcp:22,8000-8100" or "any".
 func ParseRule(action models.Action, text string) (models.Rule, error) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 || len(fields) > 2 {
-		return models.Rule{}, fmt.Errorf("%q is not <kind>:<value> [tcp|udp[:<ports>]]", text)
+		return models.Rule{}, fmt.Errorf("%q is not <destination> [tcp|udp[:<ports>]]", text)
 	}
 
-	kind, value, found := strings.Cut(fields[0], ":")
-	if !found || value == "" {
-		return models.Rule{}, fmt.Errorf("%q is not <kind>:<value>: name cidr, domain, domain-suffix or group before the colon", fields[0])
+	dest, err := parseDestination(fields[0])
+	if err != nil {
+		return models.Rule{}, err
 	}
 
-	rule := models.Rule{Action: action, Destination: models.Destination{Kind: models.DestinationKind(kind), Value: value}}
+	rule := models.Rule{Action: action, Destination: dest}
 
 	if len(fields) == 2 {
 		proto, ports, _ := strings.Cut(fields[1], ":")
@@ -295,6 +295,31 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 	}
 
 	return rule, nil
+}
+
+// parseDestination reads the kind from the shape: an address or a prefix is a cidr, any is the
+// group, suffix: names a suffix, and everything else is a domain.
+func parseDestination(text string) (models.Destination, error) {
+	if text == "any" {
+		return models.Destination{Kind: models.DestinationGroup, Value: "any"}, nil
+	}
+	if text == "private" || text == "group:private" {
+		return models.Destination{}, errors.New("the private ranges are always blocked, and no rule changes that")
+	}
+	if _, err := netip.ParseAddr(text); err == nil {
+		return models.Destination{Kind: models.DestinationCIDR, Value: text}, nil
+	}
+	if _, err := netip.ParsePrefix(text); err == nil {
+		return models.Destination{Kind: models.DestinationCIDR, Value: text}, nil
+	}
+	if value, ok := strings.CutPrefix(text, "suffix:"); ok {
+		return models.Destination{Kind: models.DestinationDomainSuffix, Value: value}, nil
+	}
+	if kind, _, found := strings.Cut(text, ":"); found && slices.Contains([]string{"cidr", "domain", "domain-suffix", "group"}, kind) {
+		return models.Destination{}, fmt.Errorf("%q spells the old syntax: write the destination bare, as <host>, <cidr>, suffix:<name> or any", text)
+	}
+
+	return models.Destination{Kind: models.DestinationDomain, Value: text}, nil
 }
 
 func parsePorts(text string) ([]int, error) {
@@ -341,7 +366,7 @@ func validHostValue(dest models.Destination) error {
 		return err
 	}
 	if dest.Kind == models.DestinationDomainSuffix {
-		return fmt.Errorf("a domain-suffix rule takes no wildcard: %q already names every name under it", dest.Value)
+		return fmt.Errorf("a suffix rule takes no wildcard: %q already names every name under it", dest.Value)
 	}
 	if dest.Value == "*" {
 		return nil

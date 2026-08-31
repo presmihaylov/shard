@@ -58,7 +58,7 @@ func TestHostEventsReadTheDropsOfOneSandboxAndNameTheRule(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("HostEvents = %+v, want the two drops of shardv2", got)
 	}
-	want := models.EgressEvent{Time: at, Sandbox: "sb", Source: models.EgressSourceHost, Verdict: models.ActionDeny, Protocol: "tcp", Destination: "8.8.8.8:22", Address: "8.8.8.8", Rule: "1", RuleText: "deny group:any tcp:22"}
+	want := models.EgressEvent{Time: at, Sandbox: "sb", Source: models.EgressSourceHost, Verdict: models.ActionDeny, Protocol: "tcp", Destination: "8.8.8.8:22", Address: "8.8.8.8", Rule: "1", RuleText: "deny any tcp:22"}
 	if got[0] != want {
 		t.Errorf("the ssh drop reads %+v, want %+v", got[0], want)
 	}
@@ -79,7 +79,7 @@ func TestMergeOrdersBothSourcesByTime(t *testing.T) {
 
 func TestTextSpellsARuleAsPolicyCreateTakesIt(t *testing.T) {
 	rule := EffectiveRule{Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}}, Implied: "secret TOKEN"}
-	if got := rule.Text(); got != "allow domain:api.example.com tcp:80,443 (secret TOKEN)" {
+	if got := rule.Text(); got != "allow api.example.com tcp:80,443 (secret TOKEN)" {
 		t.Errorf("Text = %q", got)
 	}
 }

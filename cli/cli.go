@@ -62,9 +62,10 @@ Usage:
                            run the egress proxy in the foreground; a verb starts one on its own when a sandbox needs it
   shard version            print the version
 
-A rule is <kind>:<value> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges:
-  cidr:10.0.0.0/8 tcp:22   domain:api.example.com   group:private   group:any udp:53
-A domain rule is tcp to ports 80 and 443 only, and both when no port is named. A domain-suffix rule
+A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
+The destination is a host, an address or a prefix, suffix:<name>, or any:
+  10.0.0.0/8 tcp:22   api.example.com   suffix:example.com   any udp:53
+A name rule is tcp to ports 80 and 443 only, and both when no port is named. A suffix rule
 matches a name and every name under it, at the proxy: a sandbox with a policy or a secret sends its
 80 and 443 through the proxy, which judges each request by the name it carries.
 

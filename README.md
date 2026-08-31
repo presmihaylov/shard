@@ -74,7 +74,7 @@ nowhere else. `docs/secrets.md` says what this stops and what it does not.
 ## Egress
 
 ```
-shard policy create --allow domain:api.example.com --deny group:any locked
+shard policy create --allow api.example.com --deny any locked
 shard create --policy locked python:3.12 -- python agent.py
 shard policy show locked
 shard policy rm locked
@@ -85,8 +85,8 @@ shard proxy
 A sandbox with a policy or a secret sends its web traffic through the egress proxy, which the first
 verb that needs it starts. `shard proxy` runs one in the foreground instead.
 
-A policy is an ordered list of `allow` and `deny` rules over `cidr`, `domain` and `group`
-destinations, and what matches none of them is dropped. The host enforces it in netfilter, applies
+A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes, names and
+name suffixes, and what matches none of them is dropped. The host enforces it in netfilter, applies
 it again after every restore, and applies a change to every live sandbox at once. `shard logs
 --egress` prints every allow and deny with the rule that decided it. `docs/egress.md` has the rule
 syntax and what a policy implies.

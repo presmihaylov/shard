@@ -611,7 +611,7 @@ func TestCreateWithAPolicyTellsTheHostBeforeTheStart(t *testing.T) {
 	r := &recorder{}
 	app, d := newFakeApp(t, &out, r)
 
-	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "locked"}); err != nil {
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "locked"}); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
@@ -678,7 +678,7 @@ func TestCreateWithAPolicyGivesTheGuestTheCAAndTheHostAProxy(t *testing.T) {
 	r := &recorder{}
 	app, d := newFakeApp(t, &bytes.Buffer{}, r)
 
-	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "locked"}); err != nil {
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "locked"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Run(t.Context(), []string{"create", "--policy", "locked", "alpine:3.20"}); err != nil {

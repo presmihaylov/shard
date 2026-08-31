@@ -18,7 +18,7 @@ func TestPolicyCreateStoresTheRulesInOrder(t *testing.T) {
 	r := &recorder{}
 	app, d := newLifecycleApp(t, &out, r, stopped())
 
-	err := app.Run(t.Context(), []string{"policy", "create", "--deny", "cidr:10.0.0.0/8", "--allow", "domain:api.example.com", "--deny", "group:any", "web"})
+	err := app.Run(t.Context(), []string{"policy", "create", "--deny", "10.0.0.0/8", "--allow", "api.example.com", "--deny", "any", "web"})
 	if err != nil {
 		t.Fatalf("policy create: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestPolicyCreateEnforcesAtOnceOnTheSandboxesThatHoldIt(t *testing.T) {
 	app, d := newLifecycleApp(t, &bytes.Buffer{}, r, stopped())
 	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox1", Policy: "web"}}
 
-	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "group:any", "web"}); err != nil {
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "any", "web"}); err != nil {
 		t.Fatalf("policy create: %v", err)
 	}
 	if !slices.Contains(r.calls, "net.ReapplyAll") {
@@ -78,7 +78,7 @@ func TestPolicyCreateEnforcesAtOnceOnTheSandboxesThatHoldIt(t *testing.T) {
 
 	// The store holds the policy, but the host still enforces the old rules: the operator must know.
 	r.fail = []string{"net.ReapplyAll"}
-	err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "web"})
+	err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "web"})
 	if err == nil || !strings.Contains(err.Error(), "still enforces") {
 		t.Errorf("policy create = %v, want a warning that the host is behind", err)
 	}
@@ -88,9 +88,9 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	app, _ := newLifecycleApp(t, &bytes.Buffer{}, &recorder{}, stopped())
 
 	for _, args := range [][]string{
-		{"policy", "create", "--allow", "domain:api.example.com tcp:22", "web"},
-		{"policy", "create", "--allow", "group:any", "Web"},
-		{"policy", "create", "web", "--allow", "group:any"},
+		{"policy", "create", "--allow", "api.example.com tcp:22", "web"},
+		{"policy", "create", "--allow", "any", "Web"},
+		{"policy", "create", "web", "--allow", "any"},
 		{"policy", "create"},
 	} {
 		if err := app.Run(t.Context(), args); err == nil {
@@ -98,9 +98,9 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 		}
 	}
 
-	// A domain-suffix rule is the proxy's to match, so the host accepts it.
-	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "domain-suffix:example.com", "web"}); err != nil {
-		t.Errorf("a domain-suffix rule got %v", err)
+	// A suffix rule is the proxy's to match, so the host accepts it.
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "suffix:example.com", "web"}); err != nil {
+		t.Errorf("a suffix rule got %v", err)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestPolicyRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	app, d := newLifecycleApp(t, &out, r, stopped())
 	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox1", Policy: "web"}, {ID: "sandbox2"}}
 
-	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "group:any", "web"}); err != nil {
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "any", "web"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +185,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 	sb.Policy = "web"
 	app, _ := newLifecycleApp(t, &out, &recorder{}, sb)
 
-	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "group:any", "web"}); err != nil {
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "web"}); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()

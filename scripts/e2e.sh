@@ -348,20 +348,26 @@ say "the secret file is mode 0600"
 step "store an egress policy"
 # The probe address is allowed on every protocol, so the ping the network checks use goes through. The
 # name rules open the ungranted host and one TLS host at the proxy, and nothing else gets out.
-shard policy create --deny group:any e2e-deny-all >/dev/null
-E2E_RULES=(--allow cidr:1.1.1.1 --allow 'domain:*.nip.io' --allow domain:example.com --deny group:any)
+shard policy create --deny any e2e-deny-all >/dev/null
+E2E_RULES=(--allow 1.1.1.1 --allow '*.nip.io' --allow example.com --deny any)
 shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | has "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
 shard policy show e2e-policy | has '"kind": "cidr"' || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
 CODE=0
-shard policy create --allow 'domain:api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
+shard policy create --allow 'api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
 CODE=0
-shard policy create --allow 'domain:api*.example.com' e2e-bad >/dev/null 2>&1 || CODE=$?
+shard policy create --allow 'api*.example.com' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a wildcard inside a label"
-say "policy create refuses a domain rule on a raw port, and a wildcard inside a label"
+CODE=0
+shard policy create --allow 'domain:api.example.com' e2e-bad >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted the old kind:value spelling"
+CODE=0
+shard policy create --allow private e2e-bad >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted a rule naming the private ranges"
+say "policy create refuses a raw-port name rule, an in-label wildcard, the old spelling and private"
 
 step "start the echo server"
 start_echo
@@ -424,7 +430,7 @@ nft list table bridge shard | has "iifname \"${LINK}\"" || fail "the host does n
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 # The probe is only proof once the same address answers when a rule allows it.
-shard policy create --allow cidr:8.8.8.8 "${E2E_RULES[@]}" e2e-policy >/dev/null
+shard policy create --allow 8.8.8.8 "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
 	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
 shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
@@ -472,13 +478,13 @@ expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 
 
 step "read the egress log"
 EGRESS_LOG=$(shard logs --egress "${ID}")
-echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"deny".*"destination":"example.org:443".*"rule_text":"deny group:any"' || fail "the log lacks the proxy's refusal of example.org"
+echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"deny".*"destination":"example.org:443".*"rule_text":"deny any"' || fail "the log lacks the proxy's refusal of example.org"
 echo "${EGRESS_LOG}" | has '"source":"proxy","verdict":"allow".*"destination":"example.com:443".*"rule":"[0-9]'  || fail "the log lacks the proxy's allow of example.com"
 echo "${EGRESS_LOG}" | has '"source":"host","verdict":"deny".*"destination":"8.8.8.8".*"rule":"[0-9]'  || fail "the log lacks the host's drop of the probe to 8.8.8.8"
 say "the log names the proxy's allow and deny, and the host's drop, with the rule that decided each"
 
 # A policy change reaches a live sandbox at once, and never waits for the next start.
-shard policy create --deny group:any e2e-policy >/dev/null
+shard policy create --deny any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
 shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
