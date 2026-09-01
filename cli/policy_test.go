@@ -119,15 +119,17 @@ func TestPolicyRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 		t.Errorf("policy rm = %v, want a refusal that names sandbox1 only", err)
 	}
 
-	out.Reset()
-	if err := app.Run(t.Context(), []string{"policy", "rm", "--force", "web"}); err != nil {
-		t.Fatalf("policy rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"policy", "rm", "--force", "web"}); err == nil {
+		t.Error("policy rm --force accepted, want a refusal: the flag is gone")
 	}
-	if !strings.Contains(out.String(), "warning") || !strings.Contains(out.String(), "sandbox1") {
-		t.Errorf("rm --force printed %q, want a warning that names the sandbox left with nothing", out.String())
+
+	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox2"}}
+	r.calls = nil
+	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err != nil {
+		t.Fatalf("policy rm with no holder: %v", err)
 	}
-	if !slices.Contains(r.calls, "net.ReapplyAll") {
-		t.Errorf("the host was not told the policy is gone: %v", r.calls)
+	if slices.Contains(r.calls, "net.ReapplyAll") {
+		t.Errorf("rm of an unheld policy touched the host: %v", r.calls)
 	}
 
 	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err == nil || !strings.Contains(err.Error(), "not found") {

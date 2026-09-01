@@ -48,8 +48,8 @@ be an address guess, so `policy create` refuses it and says to use an address. `
 rules wait for the proxy (SHARD-71) and are refused until then.
 
 `shard policy ls` lists the names, and `shard policy rm` refuses while a sandbox record names
-the policy: `--force` overrides that, and the sandbox then reaches nothing, because a policy that does
-not exist drops everything. That is the rule throughout: an error is a closed door, never an open one.
+the policy: remove the sandbox first. A policy that does not exist drops everything, so no flag
+overrides the refusal. That is the rule throughout: an error is a closed door, never an open one.
 
 ## What a policy implies
 

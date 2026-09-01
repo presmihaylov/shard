@@ -54,8 +54,7 @@ Usage:
                            store an egress policy, rules first match first, and drop what none match
   shard policy show <name> print a policy as JSON
   shard policy ls          list the policies
-  shard policy rm [--force] <name>
-                           remove a policy, and with --force one a sandbox still holds
+  shard policy rm <name>   remove a policy no sandbox holds
   shard version            print the version
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.

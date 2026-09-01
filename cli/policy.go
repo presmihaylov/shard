@@ -28,7 +28,7 @@ func (a App) policy(ctx context.Context, args []string) error {
 	case "ls", "list":
 		return a.policyList(args[1:])
 	case "rm", "remove":
-		return a.policyRemove(ctx, args[1:])
+		return a.policyRemove(args[1:])
 	}
 
 	return fmt.Errorf("unknown policy subcommand %q; run shard help", args[0])
@@ -198,13 +198,8 @@ func (a App) policyList(args []string) error {
 	return nil
 }
 
-type policyRemoveOptions struct {
-	name  string
-	force bool
-}
-
-func (a App) policyRemove(ctx context.Context, args []string) error {
-	opts, err := parsePolicyRemove(args)
+func (a App) policyRemove(args []string) error {
+	name, err := parsePolicyRemove(args)
 	if err != nil {
 		return err
 	}
@@ -216,53 +211,32 @@ func (a App) policyRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if _, err := policies.Get(opts.name); err != nil {
+	if _, err := policies.Get(name); err != nil {
 		return err
 	}
 
-	users, err := policyUsers(d, opts.name)
+	users, err := policyUsers(d, name)
 	if err != nil {
 		return err
 	}
-	if len(users) != 0 && !opts.force {
-		return fmt.Errorf("policy %s is held by sandbox %s: remove the sandbox first, or pass --force", opts.name, strings.Join(users, ", "))
+	if len(users) != 0 {
+		return fmt.Errorf("policy %s is held by sandbox %s: remove the sandbox first", name, strings.Join(users, ", "))
 	}
 
-	if err := policies.Remove(opts.name); err != nil {
+	if err := policies.Remove(name); err != nil {
 		return err
 	}
 
-	// The record still names the policy, and a policy that does not exist drops everything: fail closed.
-	if len(users) != 0 {
-		a.warn(fmt.Sprintf("sandbox %s still names policy %s and now reaches nothing", strings.Join(users, ", "), opts.name))
-		if err := reapplyAll(ctx, d); err != nil {
-			return fmt.Errorf("policy %s is removed, but the host still enforces the rules it had: %w", opts.name, err)
-		}
-	}
-
-	return a.print(opts.name)
+	return a.print(name)
 }
 
-func parsePolicyRemove(args []string) (policyRemoveOptions, error) {
-	var opts policyRemoveOptions
-
-	flags := flag.NewFlagSet("shard policy rm", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "remove the policy even when a sandbox holds it")
-
-	if err := flags.Parse(args); err != nil {
-		return policyRemoveOptions{}, fmt.Errorf("parse the policy rm flags: %w", err)
+func parsePolicyRemove(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("policy rm takes one name, got %d", len(args))
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "", errors.New("policy rm takes no flags: shard policy rm <name>")
 	}
 
-	rest := flags.Args()
-	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return policyRemoveOptions{}, errors.New("policy rm takes its flags before the name: shard policy rm --force <name>")
-	}
-	if len(rest) != 1 {
-		return policyRemoveOptions{}, fmt.Errorf("policy rm takes one name, got %d", len(rest))
-	}
-
-	opts.name = rest[0]
-
-	return opts, egress.ValidName(opts.name)
+	return args[0], egress.ValidName(args[0])
 }
