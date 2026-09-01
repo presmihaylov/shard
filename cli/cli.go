@@ -38,7 +38,7 @@ Usage:
                            free what a stopped sandbox still holds
   shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
   shard inspect <id|name>  print the record of a sandbox as JSON
-  shard logs [-f] <id|name>
+  shard logs [-f | --egress] <id|name>
                            print what the entrypoint wrote, and with -f keep printing until it stops
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images

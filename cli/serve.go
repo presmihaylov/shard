@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/presmihaylov/shard/services/daemon"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
 )
 
@@ -21,7 +23,12 @@ func (a App) serve(ctx context.Context, args []string) error {
 		return err
 	}
 
-	return daemon.New(a.Root, a.Out, proxyTask{app: a, gateway: gateway, ports: cfg.Proxy}).Run(ctx)
+	tasks := []daemon.Task{
+		proxyTask{app: a, gateway: gateway, ports: cfg.Proxy},
+		rotateTask{app: a},
+	}
+
+	return daemon.New(a.Root, a.Out, tasks...).Run(ctx)
 }
 
 // proxyTask keeps a proxy serving the root. While a one-shot proxy holds the lock each run reports
@@ -38,4 +45,50 @@ func (t proxyTask) Name() string { return "proxy" }
 func (t proxyTask) Run(ctx context.Context) error {
 	// Fresh deps each run, so a restart never serves over state a crash left behind.
 	return t.app.serveProxy(ctx, t.app.deps(), t.gateway, t.ports)
+}
+
+// rotateEvery paces the rotation scan. A stat per sandbox is cheap, and the size bound is generous.
+const rotateEvery = time.Minute
+
+// rotateTask keeps every sandbox's egress log bounded while the daemon runs.
+type rotateTask struct {
+	app App
+}
+
+func (t rotateTask) Name() string { return "egress-log-rotation" }
+
+func (t rotateTask) Run(ctx context.Context) error {
+	repo, err := t.app.deps().repo()
+	if err != nil {
+		return err
+	}
+	events := egress.NewEvents(repo.Dir)
+
+	ticker := time.NewTicker(rotateEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := rotateAll(repo, events); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func rotateAll(repo sandboxRepo, events *egress.Events) error {
+	sandboxes, err := repo.List()
+	if err != nil {
+		return err
+	}
+
+	for _, sb := range sandboxes {
+		if err := events.Rotate(sb.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

@@ -95,6 +95,36 @@ nameservers the guest uses, so a guest that answers its own lookups changes noth
 - A CDN address shared by many hosts is allowed for all of them on a raw port. On 80 and 443 the proxy
   closes that by matching the name in the request.
 
+## Every decision is logged
+
+`shard logs --egress ID` prints every decision on the sandbox's traffic, one JSON line each, oldest
+first:
+
+```
+{"time":"...","sandbox":"...","source":"proxy","verdict":"deny","protocol":"tcp","destination":"example.org:443","address":"93.184.216.34","rule":"default","reason":"policy locked has no rule for example.org:443"}
+{"time":"...","sandbox":"...","source":"host","verdict":"deny","protocol":"icmp","destination":"8.8.8.8","address":"8.8.8.8","rule":"1","rule_text":"deny any"}
+```
+
+`rule` is the index into the rules `shard inspect` prints under `egress`, and `rule_text` spells that
+rule as the policy reads today, so a line older than the last policy change may name a rule that has
+moved. When no rule decided, `rule` says what did: `default` (nothing matched, so dropped), `private`
+(the floor under every policy), `none` (no policy, so allowed), `missing` (the policy is gone) or
+`resolve` (the name did not resolve). Two sources feed it:
+
+- **`proxy`**: every web request the proxy judged, allowed or denied, written to `egress.jsonl` in
+  the sandbox directory as it happens.
+- **`host`**: every packet the host dropped, read from the kernel log, where the netfilter rules write
+  every unanswered packet (a retried SYN or probe counts again), at most 2 a second per rule. The
+  host logs no accept: an accept is every packet of a flow, and the web is already in the proxy's
+  lines.
+
+The kernel log is one short ring for the whole host, shared by every sandbox, so old host lines fall
+off it. The kernel clock drifts from wall time on a long-up host, so `logs --egress` writes a mark
+into the ring first and dates every host line against it; a host line still sorts some milliseconds
+away from a proxy line of the same moment. While `shard serve` runs it rotates an oversized proxy
+file and keeps one old generation, which `logs --egress` still reads; without the daemon the file
+grows unbounded.
+
 ## A policy change is immediate
 
 Storing a policy again enforces it at once on every sandbox that holds it, running, paused or

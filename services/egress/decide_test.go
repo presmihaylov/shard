@@ -158,7 +158,7 @@ func TestDecideMatchesAWildcardDomainRule(t *testing.T) {
 	}}
 
 	decision := Decide(eff, "www.example.com", 443, netip.MustParseAddr("93.184.216.34"))
-	if !decision.Allow || decision.Rule == nil {
+	if !decision.Allow || decision.ID != "0" {
 		t.Errorf("the wildcard did not allow www.example.com: %+v", decision)
 	}
 	decision = Decide(eff, "example.com", 443, netip.MustParseAddr("93.184.216.34"))

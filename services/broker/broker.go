@@ -6,8 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
+	"strconv"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/proxy"
@@ -32,16 +35,25 @@ type Secrets interface {
 	Value(name string) (string, error)
 }
 
+// Events is where every decision is written, so an operator can see what was refused and why.
+type Events interface {
+	Record(ev models.EgressEvent) error
+}
+
+// maxHost is the longest name DNS allows.
+const maxHost = 253
+
 // Service is the proxy's Director.
 type Service struct {
 	records  Records
 	policies Policies
 	secrets  Secrets
+	events   Events
 }
 
 // New wires a broker over the stores.
-func New(records Records, policies Policies, secrets Secrets) *Service {
-	return &Service{records: records, policies: policies, secrets: secrets}
+func New(records Records, policies Policies, secrets Secrets, events Events) *Service {
+	return &Service{records: records, policies: policies, secrets: secrets, events: events}
 }
 
 // Route answers the proxy. The policy is read on every request, so a change lands at once, and the
@@ -51,6 +63,10 @@ func (s *Service) Route(ctx context.Context, source netip.Addr, host string, por
 	if err != nil {
 		return proxy.Route{}, err
 	}
+	// Nothing longer is a name, and the log records the host, so the bound keeps a guest from filling the root.
+	if len(host) > maxHost {
+		return proxy.Route{}, &proxy.Denied{Reason: fmt.Sprintf("the host is longer than %d characters", maxHost)}
+	}
 
 	effective, err := s.policies.Effective(sb)
 	if err != nil {
@@ -59,10 +75,14 @@ func (s *Service) Route(ctx context.Context, source netip.Addr, host string, por
 
 	addrs, err := s.policies.Resolve(ctx, host)
 	if err != nil {
-		return proxy.Route{}, err
+		// A name that does not resolve is a closed door, and the log says which one.
+		return proxy.Route{}, errors.Join(err, s.record(sb, host, port, egress.Decision{ID: egress.RuleResolve, Reason: err.Error()}, netip.Addr{}))
 	}
 
 	decision := egress.Decide(effective, host, port, addrs[0])
+	if err := s.record(sb, host, port, decision, addrs[0]); err != nil {
+		return proxy.Route{}, err
+	}
 	if !decision.Allow {
 		return proxy.Route{}, &proxy.Denied{Reason: decision.Reason}
 	}
@@ -73,6 +93,34 @@ func (s *Service) Route(ctx context.Context, source netip.Addr, host string, por
 	}
 
 	return proxy.Route{Target: netip.AddrPortFrom(addrs[0], uint16(port)), Rewrite: rewrite(subs)}, nil //nolint:gosec
+}
+
+func (s *Service) record(sb models.Sandbox, host string, port int, decision egress.Decision, addr netip.Addr) error {
+	ev := models.EgressEvent{
+		Time:        time.Now(),
+		Sandbox:     sb.ID,
+		Source:      models.EgressSourceProxy,
+		Verdict:     models.ActionDeny,
+		Protocol:    "tcp",
+		Destination: net.JoinHostPort(host, strconv.Itoa(port)),
+		Rule:        decision.ID,
+		Reason:      decision.Reason,
+	}
+	if decision.Allow {
+		ev.Verdict = models.ActionAllow
+	}
+	if addr.IsValid() {
+		ev.Address = addr.String()
+	}
+	if decision.Rule != nil {
+		ev.RuleText = decision.Rule.Text()
+	}
+
+	if err := s.events.Record(ev); err != nil {
+		return fmt.Errorf("sandbox %s: %w", sb.ID, err)
+	}
+
+	return nil
 }
 
 // sandboxAt is the sandbox the lease gave the address to. The bridge table pins a port to its

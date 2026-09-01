@@ -78,6 +78,7 @@ shard policy create --allow api.example.com --deny any locked
 shard create --policy locked python:3.12 -- python agent.py
 shard policy show locked
 shard policy rm locked
+shard logs --egress <id>
 shard proxy
 ```
 
@@ -86,8 +87,9 @@ verb that needs it starts. `shard proxy` runs one in the foreground instead.
 
 A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes, names and
 name suffixes, and what matches none of them is dropped. The host enforces it in netfilter, applies
-it again after every restore, and applies a change to every live sandbox at once. `docs/egress.md`
-has the rule syntax and what a policy implies.
+it again after every restore, and applies a change to every live sandbox at once. `shard logs
+--egress` prints every allow and deny with the rule that decided it. `docs/egress.md` has the rule
+syntax and what a policy implies.
 
 ## Images
 

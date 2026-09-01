@@ -316,5 +316,5 @@ func (d *deps) broker() (*broker.Service, error) {
 		return nil, err
 	}
 
-	return broker.New(repo, policies, secrets), nil
+	return broker.New(repo, policies, secrets, egress.NewEvents(repo.Dir)), nil
 }
