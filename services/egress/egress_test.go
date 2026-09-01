@@ -283,6 +283,24 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	}
 }
 
+// A stopped sandbox keeps its lease, so it keeps its chain: a rewrite while it is down must not drop it (SHARD-118).
+func TestChainsKeepAStoppedSandboxesChain(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	records := fakeRecords{{ID: "sandbox1", Policy: "web", State: models.StateStopped, Address: netip.MustParsePrefix("10.87.0.2/16")}}
+
+	chains, err := New(s, records, fakeGrants{}, nameservers, fakeResolver{}).Chains(t.Context())
+	if err != nil {
+		t.Fatalf("Chains: %v", err)
+	}
+	if len(chains) != 1 || chains[0].Address != netip.MustParseAddr("10.87.0.2") {
+		t.Fatalf("Chains = %+v, want one for the stopped sandbox1", chains)
+	}
+}
+
 func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
 	s := newStore(t)
 	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}}); err != nil {
