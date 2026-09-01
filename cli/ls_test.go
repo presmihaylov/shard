@@ -43,7 +43,7 @@ func newLsApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadable
 
 func listed() []models.Sandbox {
 	return []models.Sandbox{
-		{ID: "up-1", Name: "web", Image: "alpine:3.20", State: models.StateRunning, CreatedAt: time.Now(), Address: netip.MustParsePrefix("10.44.0.2/24")},
+		{ID: "up-1", Name: "web", Image: "alpine:3.20", State: models.StateRunning, CreatedAt: time.Now(), Address: netip.MustParsePrefix("10.44.0.2/24"), Policy: "locked"},
 		{ID: "down-2", Image: "alpine:3.20", State: models.StateStopped, CreatedAt: time.Now(), Address: netip.MustParsePrefix("10.44.0.3/24")},
 	}
 }
@@ -61,10 +61,10 @@ func TestLsShowsWhatIsUp(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("ls printed %d lines, want the header and the one sandbox that is up:\n%s", len(lines), out.String())
 	}
-	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "UPTIME") || !strings.Contains(lines[0], "IP") {
+	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "UPTIME") || !strings.Contains(lines[0], "IP") || !strings.Contains(lines[0], "POLICY") {
 		t.Errorf("the header is %q", lines[0])
 	}
-	for _, want := range []string{"up-1", "web", "alpine:3.20", "running", "10.44.0.2"} {
+	for _, want := range []string{"up-1", "web", "alpine:3.20", "running", "10.44.0.2", "locked"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("the line %q lacks %q", lines[1], want)
 		}
@@ -91,6 +91,9 @@ func TestLsAllShowsTheStoppedOnesToo(t *testing.T) {
 		if !strings.Contains(lines[2], want) {
 			t.Errorf("the line %q lacks %q", lines[2], want)
 		}
+	}
+	if strings.Contains(lines[2], "locked") {
+		t.Errorf("the line %q names a policy the sandbox does not hold", lines[2])
 	}
 }
 

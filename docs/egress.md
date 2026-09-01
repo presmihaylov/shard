@@ -64,7 +64,9 @@ A rule at the proxy reads as it does on the host, with one addition: a host a gr
 sandbox with no policy at all, may not reach a private address by name. Written into the policy by the
 operator, the same name rule may.
 
-`shard policy ls` lists the names, and `shard policy rm` refuses while a sandbox record names
+`shard policy ls` lists the names, `shard ls` shows the policy each sandbox holds in its `POLICY`
+column, and `shard policy show` prints `holders`, the sandboxes whose record names the policy.
+`shard policy rm` refuses while a sandbox record names
 the policy: remove the sandbox first. A policy that does not exist drops everything, so no flag
 overrides the refusal. That is the rule throughout: an error is a closed door, never an open one.
 

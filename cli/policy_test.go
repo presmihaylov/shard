@@ -52,6 +52,21 @@ func TestPolicyCreateStoresTheRulesInOrder(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &shown); err != nil || shown.Name != "web" || len(shown.Rules) != 3 {
 		t.Errorf("policy show printed %s (%v)", out.String(), err)
 	}
+	if strings.Contains(out.String(), "holders") {
+		t.Errorf("policy show printed holders for a policy no sandbox holds:\n%s", out.String())
+	}
+
+	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox1", Policy: "web"}, {ID: "sandbox2"}}
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"policy", "show", "web"}); err != nil {
+		t.Fatalf("policy show: %v", err)
+	}
+	var withHolders struct {
+		Holders []string `json:"holders"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &withHolders); err != nil || !slices.Equal(withHolders.Holders, []string{"sandbox1"}) {
+		t.Errorf("policy show printed %s (%v), want holders [sandbox1]", out.String(), err)
+	}
 
 	out.Reset()
 	if err := app.Run(t.Context(), []string{"policy", "ls"}); err != nil {

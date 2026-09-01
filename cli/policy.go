@@ -151,7 +151,8 @@ func (a App) policyShow(args []string) error {
 		return fmt.Errorf("policy show takes one name, got %d", len(args))
 	}
 
-	policies, err := a.deps().policies()
+	d := a.deps()
+	policies, err := d.policies()
 	if err != nil {
 		return err
 	}
@@ -161,7 +162,17 @@ func (a App) policyShow(args []string) error {
 		return err
 	}
 
-	blob, err := json.MarshalIndent(policy, "", "  ")
+	holders, err := policyUsers(d, policy.Name)
+	if err != nil {
+		return err
+	}
+
+	shown := struct {
+		models.Policy
+		Holders []string `json:"holders,omitempty"`
+	}{policy, holders}
+
+	blob, err := json.MarshalIndent(shown, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode policy %s: %w", policy.Name, err)
 	}

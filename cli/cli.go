@@ -56,7 +56,7 @@ Usage:
                            remove a secret, and with --force one a sandbox still holds
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>
                            store an egress policy, rules first match first, and drop what none match
-  shard policy show <name> print a policy as JSON
+  shard policy show <name> print a policy as JSON, with the sandboxes that hold it
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
   shard serve              run the daemon that owns the background work; systemd starts it, no other verb needs it
