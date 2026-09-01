@@ -26,7 +26,8 @@ daemon or no daemon.
 ## One daemon per root, and liveness
 
 `serve` takes an exclusive flock on `daemon.lock` under the root and refuses to start while another
-holds it. The same lock is the liveness signal: it dies with the process, so there is no socket and
+holds it. An `Alive` probe holds that lock for a moment itself, so a starting serve outwaits a
+contended lock briefly before it calls the holder a daemon. The same lock is the liveness signal: it dies with the process, so there is no socket and
 no stale pid file. That signal is advisory. `Alive` true means a daemon holds the lock right now,
 and the caller must still tolerate it dying a moment later; anything that needs the daemon checks
 outcomes, not liveness.

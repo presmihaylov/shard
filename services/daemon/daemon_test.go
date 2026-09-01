@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // fakeTask counts its runs and answers each one from a script; past the script it blocks until ctx ends.
@@ -168,6 +170,32 @@ func waitAlive(t *testing.T, root string) {
 			t.Fatal("the daemon never took the lock")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// An Alive probe holds the lock for a moment; a starting daemon outwaits it instead of dying on it.
+func TestRunOutlivesALivenessProbe(t *testing.T) {
+	root := t.TempDir()
+
+	shared, err := store.TryAcquireShared(filepath.Join(root, LockFile), 0o600)
+	if err != nil || shared == nil {
+		t.Fatalf("hold the probe's shared lock first: %v, %v", shared, err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- fast(New(root, io.Discard)).Run(ctx) }()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := shared.Release(); err != nil {
+		t.Fatalf("release the probe's lock: %v", err)
+	}
+
+	waitAlive(t, root)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the daemon died on the probe: %v", err)
 	}
 }
 

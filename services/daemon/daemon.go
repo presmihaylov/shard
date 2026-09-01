@@ -48,16 +48,20 @@ func New(root string, out io.Writer, tasks ...Task) *Daemon {
 	}
 }
 
+const (
+	// startupLockWait is how long Run keeps trying a contended lock before it calls the holder a
+	// daemon: an Alive probe holds it for microseconds, another serve holds it forever.
+	startupLockWait = 250 * time.Millisecond
+	startupLockPoll = 10 * time.Millisecond
+)
+
 // Run holds the singleton and supervises every task until ctx ends. A second daemon on the root is refused.
 func (d *Daemon) Run(ctx context.Context) (err error) {
 	path := filepath.Join(d.root, LockFile)
 
-	lock, err := store.TryAcquire(path, 0o600)
+	lock, err := takeLock(path)
 	if err != nil {
 		return err
-	}
-	if lock == nil {
-		return fmt.Errorf("another shard serve already holds %s", path)
 	}
 	defer func() { err = errors.Join(err, lock.Release()) }()
 
@@ -71,6 +75,23 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	<-ctx.Done()
 
 	return nil
+}
+
+func takeLock(path string) (*store.Lock, error) {
+	deadline := time.Now().Add(startupLockWait)
+	for {
+		lock, err := store.TryAcquire(path, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if lock != nil {
+			return lock, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("another shard serve already holds %s", path)
+		}
+		time.Sleep(startupLockPoll)
+	}
 }
 
 // Alive reports whether a daemon holds root right now. It is advisory: the holder may die a moment
