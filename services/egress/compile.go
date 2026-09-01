@@ -150,7 +150,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
 }
 
-// Chains compiles one chain per sandbox that holds a policy and an address; a stopped one gets none.
+// Chains compiles one chain per sandbox with a policy and an address; a lease outlives a stop, so the chain does too.
 func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	sandboxes, err := s.records.List()
 	if err != nil {
@@ -159,7 +159,7 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 
 	var chains []network.Chain
 	for _, sb := range sandboxes {
-		if sb.Policy == "" || sb.State == models.StateStopped || !sb.Address.IsValid() {
+		if sb.Policy == "" || !sb.Address.IsValid() {
 			continue
 		}
 
