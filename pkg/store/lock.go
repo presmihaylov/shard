@@ -32,6 +32,16 @@ func AcquireContext(ctx context.Context, path string, perm fs.FileMode) (*Lock, 
 	return acquireContext(ctx, path, perm, syscall.LOCK_EX)
 }
 
+// TryAcquire takes path exclusively without waiting. A nil lock and a nil error mean somebody holds it.
+func TryAcquire(path string, perm fs.FileMode) (*Lock, error) {
+	return acquire(path, perm, syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+// TryAcquireShared is TryAcquire for a hold many may share, which an exclusive holder blocks.
+func TryAcquireShared(path string, perm fs.FileMode) (*Lock, error) {
+	return acquire(path, perm, syscall.LOCK_SH|syscall.LOCK_NB)
+}
+
 // AcquireSharedContext is AcquireContext for a hold many may share, which an Acquire waits out.
 func AcquireSharedContext(ctx context.Context, path string, perm fs.FileMode) (*Lock, error) {
 	return acquireContext(ctx, path, perm, syscall.LOCK_SH)

@@ -62,10 +62,12 @@ services/bundle/           build the OCI bundle from an image config
 services/sandboxstate/     the sandbox record repository
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
+services/daemon/           shard serve, the supervision framework for the background work
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite both substrates must pass
 
+packaging/systemd/         the unit that installs shard serve as a resident process
 docs/
 ```
 
