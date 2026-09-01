@@ -4,7 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
+
+// inspected is the record plus what the host enforces for it, which the record only names.
+type inspected struct {
+	models.Sandbox
+	Egress *egress.Effective `json:"egress,omitempty"`
+}
 
 // inspect prints the record shard decoded, so a script reads one field with jq.
 func (a App) inspect(_ context.Context, args []string) error {
@@ -12,7 +21,9 @@ func (a App) inspect(_ context.Context, args []string) error {
 		return fmt.Errorf("inspect takes one sandbox id, got %d", len(args))
 	}
 
-	repo, err := a.deps().repo()
+	d := a.deps()
+
+	repo, err := d.repo()
 	if err != nil {
 		return err
 	}
@@ -27,7 +38,21 @@ func (a App) inspect(_ context.Context, args []string) error {
 		return err
 	}
 
-	blob, err := json.MarshalIndent(sb, "", "  ")
+	out := inspected{Sandbox: sb}
+	if sb.Policy != "" {
+		source, err := d.egress()
+		if err != nil {
+			return err
+		}
+
+		effective, err := source.Effective(sb)
+		if err != nil {
+			return err
+		}
+		out.Egress = &effective
+	}
+
+	blob, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode the record of sandbox %s: %w", id, err)
 	}

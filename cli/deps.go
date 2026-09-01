@@ -10,6 +10,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
@@ -46,6 +47,7 @@ type sandboxNetwork interface {
 	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
 	Release(ctx context.Context, id string) error
 	Reapply(ctx context.Context, id string) error
+	ReapplyAll(ctx context.Context) error
 }
 
 // secretStore is the part of secret.Store the commands drive. No command reads a value: that is the proxy's.
@@ -74,6 +76,7 @@ type deps struct {
 	providerSvc  models.Provider
 	substrateSvc substrate
 	secretSvc    secretStore
+	policySvc    *egress.Store
 	runnerSvc    *runsc.Runner
 
 	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
@@ -129,7 +132,12 @@ func (d *deps) net() (sandboxNetwork, error) {
 		return nil, err
 	}
 
-	svc, err := network.New(network.Config{Root: d.app.Root}, manager)
+	source, err := d.egress()
+	if err != nil {
+		return nil, err
+	}
+
+	svc, err := network.New(network.Config{Root: d.app.Root, Egress: source}, manager)
 	if err != nil {
 		return nil, err
 	}
@@ -234,4 +242,39 @@ func (d *deps) stderr() *os.File {
 	}
 
 	return d.errFile
+}
+
+func (d *deps) policies() (*egress.Store, error) {
+	if d.policySvc != nil {
+		return d.policySvc, nil
+	}
+
+	svc, err := egress.NewStore(filepath.Join(d.app.Root, "policies"))
+	if err != nil {
+		return nil, err
+	}
+	d.policySvc = svc
+
+	return d.policySvc, nil
+}
+
+// egress is what the network service compiles the host rules from. It reads the records, the policies
+// and the grants, so it needs the stores and never the substrate.
+func (d *deps) egress() (*egress.Service, error) {
+	policies, err := d.policies()
+	if err != nil {
+		return nil, err
+	}
+
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	secrets, err := d.secrets()
+	if err != nil {
+		return nil, err
+	}
+
+	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
 }

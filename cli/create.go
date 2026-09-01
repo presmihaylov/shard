@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/runspec"
@@ -42,6 +43,8 @@ type createOptions struct {
 	user    string
 	// secrets is what --secret named, and what the guest gets a placeholder for under that name.
 	secrets []string
+	// policy is what --policy named, and what the host enforces for the sandbox.
+	policy string
 
 	resources models.Resources
 }
@@ -66,6 +69,7 @@ func parseCreate(args []string) (createOptions, error) {
 	flags.StringVar(&opts.name, "name", "", "a handle every verb takes in place of the id")
 	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
 	flags.Var((*secretList)(&opts.secrets), "secret", "a stored secret the guest gets a placeholder for, repeatable")
+	flags.StringVar(&opts.policy, "policy", "", "the egress policy the host enforces")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
@@ -92,6 +96,12 @@ func parseCreate(args []string) (createOptions, error) {
 	}
 	if opts.resources.VCPUs < 0 {
 		return createOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)
+	}
+
+	if opts.policy != "" {
+		if err := egress.ValidName(opts.policy); err != nil {
+			return createOptions{}, err
+		}
 	}
 
 	// An --env of the same name would either hide the placeholder or be hidden by it, and either is a surprise.
@@ -227,6 +237,17 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		}
 	}
 
+	// Before the pull too: a policy that does not exist would drop everything, and should cost no download.
+	if opts.policy != "" {
+		policies, err := d.policies()
+		if err != nil {
+			return err
+		}
+		if _, err := policies.Get(opts.policy); err != nil {
+			return err
+		}
+	}
+
 	var td teardown
 
 	defer func() {
@@ -273,6 +294,13 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 
 	if err := recordCreated(ctx, repo, provider, spec); err != nil {
 		return err
+	}
+
+	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if opts.policy != "" {
+		if err := net.Reapply(ctx, id); err != nil {
+			return err
+		}
 	}
 
 	if err := provider.Start(ctx, id); err != nil {
@@ -358,6 +386,7 @@ func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img i
 		State:     models.StateCreated,
 		Resources: opts.resources,
 		Secrets:   opts.secrets,
+		Policy:    opts.policy,
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {

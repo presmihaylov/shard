@@ -158,3 +158,22 @@ func TestCloneKeepsTheSandboxWhenTheRecordWriteFails(t *testing.T) {
 		t.Errorf("the clone's record holds the network %+v, want the one it was allocated", got)
 	}
 }
+
+func TestCloneCarriesThePolicyAndTellsTheHostBeforeTheStart(t *testing.T) {
+	r := &recorder{}
+	source := stopped()
+	source.Policy = "locked"
+	app, d := newLifecycleApp(t, &bytes.Buffer{}, r, source)
+
+	if err := app.Run(t.Context(), []string{"clone", "sandbox1"}); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	want := []string{"net.Allocate", "net.Reapply", "provider.Clone"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("the network was driven as %v, want %v", got, want)
+	}
+	if got := d.repoSvc.(*fakeLifecycleRepo).created.Policy; got != "locked" {
+		t.Errorf("the clone names policy %q, want the source's", got)
+	}
+}

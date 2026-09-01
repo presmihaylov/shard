@@ -161,3 +161,22 @@ func keep(calls []string, names ...string) []string {
 
 	return got
 }
+
+func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
+	r := &recorder{}
+	source := paused()
+	source.Policy = "locked"
+	app, d := newLifecycleApp(t, &bytes.Buffer{}, r, source)
+
+	if err := app.Run(t.Context(), []string{"fork", "sandbox1"}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+
+	want := []string{"net.Allocate", "net.Reapply", "provider.Fork", "net.Reapply"}
+	if got := keep(r.calls, "net.Allocate", "net.Reapply", "provider.Fork"); !slices.Equal(got, want) {
+		t.Errorf("the network was driven as %v, want %v", got, want)
+	}
+	if got := d.repoSvc.(*fakeLifecycleRepo).created.Policy; got != "locked" {
+		t.Errorf("the fork names policy %q, want the source's", got)
+	}
+}

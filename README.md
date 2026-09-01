@@ -28,6 +28,9 @@ always record how the entrypoint ended.
 host. The egress proxy (SHARD-71) puts it into a request on its way to the granted destination; until
 then the placeholder reaches the wire as it is. See `docs/secrets.md`.
 
+`--policy NAME` names the egress policy the host enforces. Without one the sandbox reaches the
+internet and nothing private; see `docs/egress.md`.
+
 ## Snapshots
 
 Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`: what
@@ -66,6 +69,20 @@ shard secret rm API_TOKEN
 A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
 of mode 0600, `secret ls` never prints it, and `secret rm` refuses while a sandbox still holds the
 placeholder. `docs/secrets.md` says what this stops and what it does not.
+
+## Egress
+
+```
+shard policy create --allow api.example.com --deny any locked
+shard create --policy locked python:3.12 -- python agent.py
+shard policy show locked
+shard policy rm locked
+```
+
+A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names, and
+what matches none of them is dropped. The host enforces it in netfilter, applies it again after
+every restore, and applies a change to every live sandbox at once. `docs/egress.md` has the rule
+syntax and what a policy implies.
 
 ## Images
 
