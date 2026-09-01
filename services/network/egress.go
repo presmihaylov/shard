@@ -13,7 +13,19 @@ import (
 // EgressSource says what every sandbox's policy compiles to; nil is no policy anywhere.
 type EgressSource interface {
 	Chains(ctx context.Context) ([]Chain, error)
+	// Fronted is every live sandbox whose HTTP and HTTPS go through the proxy instead of straight out.
+	Fronted(ctx context.Context) ([]netip.Addr, error)
 }
+
+// ProxyPorts is where the proxy listens on the gateway. A fronted sandbox's port 80 is sent to HTTP
+// and its 443 to HTTPS, so the proxy knows which it was without asking the kernel.
+type ProxyPorts struct {
+	HTTP  int
+	HTTPS int
+}
+
+// DefaultProxyPorts is what a host with no configuration uses.
+var DefaultProxyPorts = ProxyPorts{HTTP: 18080, HTTPS: 18443}
 
 // Chain is the egress of one sandbox, keyed by its address; the rules run in order and the rest is dropped.
 type Chain struct {
@@ -50,7 +62,7 @@ func mustPrefixes(cidrs []string) []netip.Prefix {
 }
 
 // ruleset is the whole host policy in two tables replaced in one transaction; docs/egress.md says why two.
-func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
+func (s *Service) ruleset(chains []Chain, leases, fronted []netip.Addr) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "table %[1]s %[2]s\ndelete table %[1]s %[2]s\n", tableFamily, tableName)
@@ -58,11 +70,24 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 
 	fmt.Fprintf(&b, "table %s %s {\n", tableFamily, tableName)
 
+	// A fronted sandbox's web traffic is turned to the proxy before routing, so the forward hook never sees it.
+	fmt.Fprintf(&b, "\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+	for _, address := range fronted {
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 80 dnat to %s:%d\n", s.cfg.Bridge, address, s.gateway, s.cfg.Proxy.HTTP)
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 443 dnat to %s:%d\n", s.cfg.Bridge, address, s.gateway, s.cfg.Proxy.HTTPS)
+	}
+	b.WriteString("\t}\n\n")
+
 	fmt.Fprintf(&b, "\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tip saddr %s oifname != %q masquerade\n\t}\n\n", s.cfg.Subnet, s.cfg.Bridge)
 
+	// Only the proxy's ports, and only from a sandbox the proxy fronts: the host stays out of reach. No proxy, refused.
 	fmt.Fprintf(&b, "\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname %[1]q ct state established,related accept\n\t\tiifname %[1]q drop\n\t}\n\n", s.cfg.Bridge)
+	fmt.Fprintf(&b, "\t\tiifname %q ct state established,related accept\n", s.cfg.Bridge)
+	for _, address := range fronted {
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, address, s.gateway, s.cfg.Proxy.HTTP, s.cfg.Proxy.HTTPS)
+	}
+	fmt.Fprintf(&b, "\t\tiifname %q drop\n\t}\n\n", s.cfg.Bridge)
 
 	// The hook keeps policy accept, so a table the host also filters in is not overridden: every drop is explicit.
 	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")

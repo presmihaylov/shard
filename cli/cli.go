@@ -45,7 +45,7 @@ Usage:
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
-  shard secret set --to <host>... [--mock-value <v>] <NAME>
+  shard secret set --to <host>... <NAME>
                            store a secret read from stdin, granted to those hosts; set again to rotate the value
   shard secret ls          list the secrets by name and destination, never by value
   shard secret rm [--force] <NAME>
@@ -56,12 +56,16 @@ Usage:
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
   shard serve              run the daemon that owns the background work; systemd starts it, no other verb needs it
+  shard proxy
+                           run the egress proxy in the foreground; a verb starts one on its own when a sandbox needs it
   shard version            print the version
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
-The destination is a host, an address or a prefix, or any:
-  10.0.0.0/8 tcp:22   api.example.com   any udp:53
-A name rule is tcp to ports 80 and 443 only, and both when no port is named.
+The destination is a host, an address or a prefix, suffix:<name>, or any:
+  10.0.0.0/8 tcp:22   api.example.com   suffix:example.com   any udp:53
+A name rule is tcp to ports 80 and 443 only, and both when no port is named. A suffix rule
+matches a name and every name under it, at the proxy: a sandbox with a policy or a secret sends its
+80 and 443 through the proxy, which judges each request by the name it carries.
 
 Create flags, which must precede the image:
   --name <name>            a handle every verb takes in place of the id
@@ -170,6 +174,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.policy(ctx, args[1:])
 	case "serve":
 		return a.serve(ctx, args[1:])
+	case "proxy":
+		return a.proxy(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}

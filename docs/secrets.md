@@ -25,11 +25,30 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
 
-**The substitution.** The placeholder defaults to `mock-NAME` and `--mock-value` sets another, for
-an SDK that checks the shape of a key before it sends it. On the way out, the egress proxy replaces
+**The substitution.** The placeholder is `mock-NAME`, always: nothing sets another, so a sandbox
+and the proxy can never disagree on it. On the way out, the egress proxy replaces
 the placeholder with the value, in the URL, the headers and the body, and only when the request is
-bound for a granted destination. That is the substitution SHARD-71 ships; before it, the placeholder
-reaches the wire as it is.
+bound for a granted destination. A request to any other host carries the placeholder as it is.
+
+**The proxy.** A sandbox that holds a secret sends its port 80 and 443 through the egress proxy: the
+host turns those two ports to it, and nothing else on the host answers them, so a sandbox with no
+proxy reaches no web host rather than every one. The proxy terminates TLS with a CA of its own, minted
+once per root under `ca/`, and the guest trusts it: the bundle appends it to the image's certificate
+bundle and sets `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` unless the image set
+them. The first verb that needs the proxy starts it, detached, and `shard proxy` runs one in the
+foreground for an operator who wants to watch it. Its log is `proxy/log` under the root.
+
+What that means for a client:
+
+- HTTP/1.1 only. A client that insists on HTTP/2 does not connect.
+- A TLS connection must name its host (SNI), and a request whose `Host` names another is refused.
+- A raw TCP or UDP port, 22 or 5432 say, is not the proxy's and is never substituted: it goes by the
+  policy alone, and the placeholder is what reaches it.
+- The body is rewritten up to 8 MiB. A bigger one goes through as it is, with the placeholder.
+- The proxy matches the placeholder as bytes. A client that encodes it, base64 in a basic-auth header
+  say, sends the placeholder.
+- A reflection is not a leak: an allowed host that echoes the request shows the guest the value in the
+  response. Scope the key at the provider.
 
 ## What it stops, and what it does not
 
@@ -41,9 +60,8 @@ key at the provider; shard only keeps it from leaving.
 
 ## Rotation
 
-`shard secret set` again with the same name replaces the value, and keeps the grant and the
-placeholder unless `--to` or `--mock-value` say otherwise. A new placeholder is refused while a
-sandbox holds the old one, because that sandbox would never be matched again. Nothing caches the
+`shard secret set` again with the same name replaces the value, and keeps the grant unless `--to`
+says otherwise. Nothing caches the
 value: the proxy reads the store per request, so a live sandbox uses the new value on its next
 request and never learns that anything changed.
 
@@ -52,3 +70,22 @@ request and never learns that anything changed.
 `secret set --to '*.github.com' NAME` grants the value to every host under the apex. A wildcard
 label follows the same shape as a policy name rule, and a grant of `*` alone is refused: the
 value must be bound to a name.
+
+## The proxy can set a header itself
+
+`--header 'Authorization: Bearer {value}'` has the proxy set that header on every request to a
+granted destination, over anything the guest sent, with `{value}` replaced by the value. The guest
+then needs no placeholder at all: code that knows nothing of the secret still authenticates, and a
+guest that sends a wrong header cannot keep the right one out. Repeat the flag for more headers.
+
+`--match` limits which requests get the headers, and gates nothing else: the placeholder is
+substituted either way. Repeat the flag per condition; a request must meet all of them at once.
+
+| condition | meaning |
+| --- | --- |
+| `path=/v1/x` | the path, exactly; a trailing `*` makes it a prefix, and `re:` an RE2 expression |
+| `method=GET,POST` | any of the named methods |
+| `query=key=value` | the query carries that pair |
+| `header=Name: value` | the request carries that header; the name compares without case, the value with it |
+
+`secret set` keeps the headers and the match across a rotation, like the grant and the placeholder.

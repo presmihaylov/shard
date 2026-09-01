@@ -23,6 +23,15 @@ Only the work that has to outlive a one-shot command:
 It never owns the sandbox lifecycle: create, stop and every other verb act on the stores directly,
 daemon or no daemon.
 
+## The proxy under serve
+
+The daemon serves the egress proxy in-process, as a supervised task, under the same `proxy/lock`
+every proxy takes. While a one-shot proxy from a verb holds that lock the task fails on it, and the
+backoff retry is the takeover: the run after that proxy dies wins the lock. A crash of the daemon's
+own proxy ends the run and the restart is the recovery, on the same gateway and ports, so the host
+rules that turn a fronted sandbox's 80 and 443 need no re-apply. The one-shot start stays, a verb
+still refuses a fronted sandbox when no proxy comes up, and a dead proxy still fails closed.
+
 ## One daemon per root, and liveness
 
 `serve` takes an exclusive flock on `daemon.lock` under the root and refuses to start while another

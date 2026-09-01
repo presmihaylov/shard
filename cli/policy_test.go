@@ -86,7 +86,6 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	app, _ := newLifecycleApp(t, &bytes.Buffer{}, &recorder{}, stopped())
 
 	for _, args := range [][]string{
-		{"policy", "create", "--allow", "suffix:example.com", "web"},
 		{"policy", "create", "--allow", "api.example.com tcp:22", "web"},
 		{"policy", "create", "--allow", "any", "Web"},
 		{"policy", "create", "web", "--allow", "any"},
@@ -97,9 +96,9 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 		}
 	}
 
-	err := app.Run(t.Context(), []string{"policy", "create", "--allow", "suffix:example.com", "web"})
-	if err == nil || !strings.Contains(err.Error(), "SHARD-71") {
-		t.Errorf("a suffix rule got %v, want a refusal that names the proxy ticket", err)
+	// A suffix rule is the proxy's to match, so the host accepts it.
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "suffix:example.com", "web"}); err != nil {
+		t.Errorf("a suffix rule got %v", err)
 	}
 }
 

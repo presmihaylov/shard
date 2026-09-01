@@ -38,6 +38,7 @@ FORK_LINK=""
 CLONE_IDS=""
 CLONE_LINKS=""
 REPORTED=0
+ECHO_PID=""
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
 # once: a failure reaches it through fail and then again through the exit handler.
@@ -51,6 +52,9 @@ report() {
 		echo "  ${1}" >&2
 	fi
 }
+
+# grep -q leaves the pipe on the first match, and pipefail then reports the writer's SIGPIPE as a failure.
+has() { grep -c -- "$@" >/dev/null; }
 
 fail() {
 	report "${1:-}"
@@ -222,7 +226,47 @@ teardown() {
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
 
+	# The proxy outlives every verb, so nothing but this ends it; the pid file is its one handle.
+	if [ -f "${SHARD_ROOT}/proxy/pid" ]; then
+		kill "$(cat "${SHARD_ROOT}/proxy/pid")" >/dev/null 2>&1 || true
+	fi
+	[ -z "${ECHO_PID}" ] || kill "${ECHO_PID}" >/dev/null 2>&1 || true
+
 	wipe_root
+}
+
+# start_echo runs a plain HTTP server on the host's public address that answers with the request's
+# Authorization header, so a guest request shows what the proxy put on the wire.
+start_echo() {
+	local script
+	script=$(mktemp)
+	cat >"${script}" <<'PY'
+import http.server, sys
+class Echo(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("auth=" + self.headers.get("Authorization", "") + " path=" + self.path).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+http.server.HTTPServer(("0.0.0.0", int(sys.argv[1])), Echo).serve_forever()
+PY
+	python3 "${script}" 80 >/dev/null 2>&1 &
+	ECHO_PID=$!
+	for _ in $(seq 1 50); do
+		curl -fs "http://${PUBLIC_IP}/" >/dev/null 2>&1 && return 0
+		sleep 0.1
+	done
+	fail "the echo server did not come up on ${PUBLIC_IP}:80"
+}
+
+# fetch runs wget in a guest and prints the body, or the error line, so a refusal is as visible as a page.
+fetch() {
+	local id="$1" url="$2"
+	shift 2
+	shard exec "${id}" -- /bin/sh -c "wget -qO- -T 10 $* '${url}' 2>&1 || true"
 }
 
 # on_exit is the one handler: it names the step that broke and then gives the host back. The step is
@@ -260,6 +304,13 @@ say "runsc, ip, nft and go are on the host"
 check_host_is_free
 say "no other sandbox holds a link on this host"
 
+# The echo server sits on the public address, under two names: one the secret is granted to, one it is not.
+PUBLIC_IP=${PUBLIC_IP:-$(curl -fs -4 https://ifconfig.me)}
+[ -n "${PUBLIC_IP}" ] || fail "cannot learn the public address of this host; set PUBLIC_IP"
+GRANTED_HOST="${PUBLIC_IP}.sslip.io"
+UNGRANTED_HOST="${PUBLIC_IP}.nip.io"
+say "this host is ${PUBLIC_IP}, reachable as ${GRANTED_HOST} and ${UNGRANTED_HOST}"
+
 # The whole run owns one root, and it is never the production one.
 check_root
 say "this run owns the root ${SHARD_ROOT}"
@@ -285,27 +336,25 @@ wipe_root
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to api.example.com E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${GRANTED_HOST}" E2E_TOKEN >/dev/null
 SECRET_LS=$(shard secret ls)
-echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
-echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
+echo "${SECRET_LS}" | has "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
+echo "${SECRET_LS}" | has "${SECRET_VALUE}" && fail "shard secret ls printed the value"
 say "secret ls lists the name and the destination, and not the value"
 SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 [ "${SECRET_MODE}" = "600" ] || fail "the secret file is mode ${SECRET_MODE}, want 600"
 say "the secret file is mode 0600"
 
 step "store an egress policy"
-# The probe address is allowed on every protocol, so the ping the network checks use goes through, and nothing else does.
+# The probe address is allowed on every protocol, so the ping the network checks use goes through. The
+# name rules open the ungranted host and one TLS host at the proxy, and nothing else gets out.
 shard policy create --deny any e2e-deny-all >/dev/null
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+E2E_RULES=(--allow 1.1.1.1 --allow '*.nip.io' --allow example.com --deny any)
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
-echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
-shard policy show e2e-policy | grep -q '"kind": "cidr"' || fail "shard policy show does not print the rules"
+echo "${POLICY_LS}" | has "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
+shard policy show e2e-policy | has '"kind": "cidr"' || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
-CODE=0
-REFUSAL=$(shard policy create --allow suffix:example.com e2e-bad 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "policy create accepted a suffix rule"
-echo "${REFUSAL}" | grep -q "SHARD-71" || fail "policy create said '${REFUSAL}', want it to name the proxy ticket"
 CODE=0
 shard policy create --allow 'api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
@@ -318,7 +367,11 @@ shard policy create --allow 'domain:api.example.com' e2e-bad >/dev/null 2>&1 || 
 CODE=0
 shard policy create --allow private e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a rule naming the private ranges"
-say "policy create refuses a suffix rule, a raw-port name rule, an in-label wildcard, the old spelling and private"
+say "policy create refuses a raw-port name rule, an in-label wildcard, the old spelling and private"
+
+step "start the echo server"
+start_echo
+say "the echo server answers on ${PUBLIC_IP}:80"
 
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
@@ -332,24 +385,24 @@ ADDRESS=$(grep -o '"address": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
 LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
 say "the record holds the address ${ADDRESS} on the link ${LINK}"
 
-ip netns list | grep -q "^${ID}" || fail "there is no namespace named ${ID}"
+ip netns list | has "^${ID}" || fail "there is no namespace named ${ID}"
 ip link show "${LINK}" >/dev/null || fail "there is no link named ${LINK}"
 say "the namespace and the link are up"
 
 step "list the sandbox"
 LISTED=$(shard ls | grep "^${ID}" || true)
 [ -n "${LISTED}" ] || fail "shard ls does not list ${ID}"
-echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
+echo "${LISTED}" | has "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
 
 step "read the output of the entrypoint"
 # The line lands when the guest gets to it, which is after create returned.
 for _ in $(seq 1 50); do
-	shard logs "${ID}" | grep -q "shard-e2e-entrypoint" && break
+	shard logs "${ID}" | has "shard-e2e-entrypoint" && break
 	sleep 0.2
 done
-shard logs "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs does not show what the entrypoint wrote"
+shard logs "${ID}" | has "shard-e2e-entrypoint" || fail "shard logs does not show what the entrypoint wrote"
 say "logs shows what the entrypoint wrote"
 
 step "exec a command in the sandbox"
@@ -363,7 +416,7 @@ step "hold the placeholder and never the value"
 expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bin/sh -c 'echo "$E2E_TOKEN"'
 # The store file is the one place the value is written; nothing under the sandbox tree or anywhere else holds it.
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
-shard inspect "${ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
+shard inspect "${ID}" | has '"E2E_TOKEN"' || fail "inspect does not name the grant"
 say "inspect names the secret and holds no value"
 shard secret rm E2E_TOKEN >/dev/null 2>&1 && fail "secret rm removed a secret a sandbox holds"
 say "secret rm refuses while the sandbox holds the secret"
@@ -372,34 +425,68 @@ step "reach the network from the sandbox"
 expect_network "after the create"
 
 step "enforce the egress policy"
-nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK}"
-nft list table bridge shard | grep -q "iifname \"${LINK}\"" || fail "the host does not pin the address of ${LINK}"
+nft list table inet shard | has "chain egress_${LINK}" || fail "the host holds no chain for ${LINK}"
+nft list table bridge shard | has "iifname \"${LINK}\"" || fail "the host does not pin the address of ${LINK}"
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 # The probe is only proof once the same address answers when a rule allows it.
-shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --deny any e2e-policy >/dev/null
+shard policy create --allow 8.8.8.8 "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
 	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_exec "blocked" "the floor holds under the policy: the metadata address is dropped" \
 	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
 expect_exec "blocked" "the floor holds under the policy: the gateway is dropped" \
 	/bin/sh -c 'ping -c 1 -W 2 10.87.0.1 >/dev/null 2>&1 && echo reachable || echo blocked'
-shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
-shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
+shard inspect "${ID}" | has '"policy": "e2e-policy"' || fail "inspect does not name the policy"
+shard inspect "${ID}" | has '"egress"' || fail "inspect does not print what the host enforces"
 say "inspect names the policy and what the host enforces"
+
+step "send the web through the proxy"
+PROXY_PID=$(cat "${SHARD_ROOT}/proxy/pid" 2>/dev/null || true)
+[ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null || fail "no proxy runs for ${SHARD_ROOT}"
+say "create started the proxy, pid ${PROXY_PID}"
+nft list table inet shard | has "ip saddr ${ADDRESS%%/*} tcp dport 80 dnat" || fail "the host does not turn ${ADDRESS%%/*}:80 to the proxy"
+say "the host turns the sandbox's 80 and 443 to the proxy"
+# The guest trusts the CA the proxy signs with, and only because the bundle was built with it.
+CA_LINE=$(sed -n 2p "${SHARD_ROOT}/ca/ca.pem")
+expect_exec "trusted" "the guest trusts the proxy CA" \
+	/bin/sh -c "grep -qF '${CA_LINE}' /etc/ssl/certs/ca-certificates.crt && echo trusted"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/v1?key=mock-E2E_TOKEN" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/v1?key=${SECRET_VALUE}" "the granted host got the value in the header and the URL"
+expect "$(fetch "${ID}" "http://${UNGRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer mock-E2E_TOKEN path=/" "a host the policy allows but the grant does not got the placeholder"
+# The proxy sets a header itself, over anything the guest sent, so code with no placeholder works.
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --header 'Authorization: Bearer {value}' E2E_TOKEN >/dev/null
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy set the header the guest never sent"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/" --header "'Authorization: Bearer wrong'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy set the header over what the guest sent"
+# A match gates the headers only; the placeholder is substituted either way.
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --match 'path=/hook*' E2E_TOKEN >/dev/null
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/hook")" \
+	"auth=Bearer ${SECRET_VALUE} path=/hook" "a matched path got the header"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/")" \
+	"auth= path=/" "an unmatched path got no header"
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --header 'Bad Header: x' E2E_TOKEN >/dev/null 2>&1 \
+	&& fail "secret set took a header name with a space"
+say "secret set refuses a bad header name"
+expect "$(fetch "${ID}" "http://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "a host the policy names nowhere is refused by the proxy"
+expect "$(fetch "${ID}" "https://example.com/" | grep -o '<title>Example Domain</title>')" "<title>Example Domain</title>" \
+	"the proxy terminates TLS for an allowed host and carries the page back"
+expect "$(fetch "${ID}" "https://example.org/" | grep -o '403 Forbidden')" "403 Forbidden" "the proxy refuses a TLS request to a host the policy names nowhere"
 
 # A policy change reaches a live sandbox at once, and never waits for the next start.
 shard policy create --deny any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+shard policy create "${E2E_RULES[@]}" e2e-policy >/dev/null
 expect_network "after the policy was put back"
 
 CODE=0
 REFUSAL=$(shard policy rm e2e-policy 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy rm removed a policy a sandbox holds"
-echo "${REFUSAL}" | grep -q "${ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
+echo "${REFUSAL}" | has "${ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
 say "policy rm refused it and named the sandbox"
 
 step "write a file into the writable layer"
@@ -444,7 +531,7 @@ absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/s
 CODE=0
 REFUSAL=$(shard exec "${ID}" -- /bin/true 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
-echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
+echo "${REFUSAL}" | has "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
 say "exec refused the paused sandbox and named the resume"
 
 step "resume the sandbox"
@@ -473,8 +560,8 @@ say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_L
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
 say "ls shows the source and the fork running side by side"
 
-shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
-shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
+shard inspect "${FORK_ID}" | has '"E2E_TOKEN"' || fail "the fork did not carry the grant"
+shard inspect "${FORK_ID}" | has '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
 expect_blocked "${FORK_ID}" "the policy holds on the fork"
 expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
@@ -504,7 +591,7 @@ step "refuse to remove a sandbox that is still up"
 CODE=0
 REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "rm removed a running sandbox"
-echo "${REFUSAL}" | grep -q "shard stop ${ID}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
+echo "${REFUSAL}" | has "shard stop ${ID}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
 say "rm refused it and named the stop"
 
 step "stop the sandbox"
@@ -514,19 +601,19 @@ say "the record says stopped"
 
 # This is the boundary the ticket names: a stop keeps everything a later start needs.
 grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the stop dropped the address"
-ip netns list | grep -q "^${ID}" || fail "the stop dropped the namespace"
+ip netns list | has "^${ID}" || fail "the stop dropped the namespace"
 ip link show "${LINK}" >/dev/null || fail "the stop dropped the link"
 # The lease is a file named by the address, and it holds the id of the sandbox that took it.
 LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
 grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record, the address, the lease, the namespace and the link all survived the stop"
 
-shard ls | grep -q "^${ID}" && fail "shard ls still lists the stopped sandbox"
-shard ls --all | grep "^${ID}" | grep -q "stopped" || fail "shard ls --all does not list the sandbox as stopped"
+shard ls | has "^${ID}" && fail "shard ls still lists the stopped sandbox"
+shard ls --all | grep "^${ID}" | has "stopped" || fail "shard ls --all does not list the sandbox as stopped"
 say "ls hides the stopped sandbox and ls --all shows it stopped"
 
 # -f ends on its own once the sandbox is stopped, so a hang here is a failure, not a wait.
-timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs -f on a stopped sandbox did not print its output and end"
+timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" | has "shard-e2e-entrypoint" || fail "shard logs -f on a stopped sandbox did not print its output and end"
 say "logs still reads a stopped sandbox, and -f ends on its own"
 
 step "stop the sandbox a second time"
@@ -535,8 +622,8 @@ grep -q '"state": *"stopped"' "${RECORD}" || fail "the second stop changed the s
 say "a second stop is idempotent"
 
 step "inspect the stopped sandbox"
-shard inspect "${ID}" | grep -q '"state": "stopped"' || fail "shard inspect does not say stopped"
-shard inspect "${ID}" | grep -q '"exit_status"' || fail "shard inspect holds no exit status after the stop"
+shard inspect "${ID}" | has '"state": "stopped"' || fail "shard inspect does not say stopped"
+shard inspect "${ID}" | has '"exit_status"' || fail "shard inspect holds no exit status after the stop"
 say "inspect prints the record with its state and its exit status"
 
 step "clone the stopped sandbox twice"
@@ -599,8 +686,8 @@ step "refuse to remove the image a stopped sandbox references"
 CODE=0
 REFUSAL=$(shard image rm "${IMAGE}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "image rm removed the image under a stopped sandbox"
-echo "${REFUSAL}" | grep -q "${ID}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
-shard image ls | grep -q "${IMAGE%%:*}" || fail "image ls no longer lists the image"
+echo "${REFUSAL}" | has "${ID}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
+shard image ls | has "${IMAGE%%:*}" || fail "image ls no longer lists the image"
 say "image rm refused it and named the sandbox"
 
 step "start the sandbox again"
@@ -617,6 +704,9 @@ for _ in $(seq 1 50); do
 done
 [ "$(shard logs "${ID}" | grep -c "shard-e2e-entrypoint")" -ge 2 ] || fail "the entrypoint did not run again from the beginning"
 say "the entrypoint ran again from the beginning"
+expect_blocked "${ID}" "the policy holds after the start"
+expect "$(fetch "${ID}" "http://${GRANTED_HOST}/" --header "'Authorization: Bearer mock-E2E_TOKEN'")" \
+	"auth=Bearer ${SECRET_VALUE} path=/" "the proxy still fronts the sandbox after the start"
 
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 [ -d "/sys/fs/cgroup/shard/${ID}" ] || fail "the started sandbox has no cgroup under the shard parent"
@@ -656,8 +746,8 @@ absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
 absent "the cgroup" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
 
 step "prune the image nothing references any more"
-shard image prune | grep -q "${IMAGE%%:*}" || fail "image prune did not remove the image"
-shard image ls | grep -q "${IMAGE%%:*}" && fail "image ls still lists the pruned image"
+shard image prune | has "${IMAGE%%:*}" || fail "image prune did not remove the image"
+shard image ls | has "${IMAGE%%:*}" && fail "image ls still lists the pruned image"
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"

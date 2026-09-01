@@ -122,7 +122,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	for _, rule := range policy.Rules {
-		if rule.Destination.Kind == models.DestinationDomain {
+		if namesHost(rule.Destination.Kind) {
 			needsDNS = true
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
@@ -204,11 +204,14 @@ func (s *Service) compile(ctx context.Context, rule models.Rule) (network.Compil
 		if strings.Contains(rule.Destination.Value, "*") {
 			break
 		}
-		prefixes, err := s.resolve(ctx, rule.Destination.Value)
+		prefixes, err := s.resolvePrefixes(ctx, rule.Destination.Value)
 		if err != nil {
 			return network.Compiled{}, err
 		}
 		compiled.Prefixes = prefixes
+	case models.DestinationDomainSuffix:
+		// Only the proxy can match a suffix, and it stands in front of every port a suffix rule may name.
+		compiled.Prefixes = nil
 	default:
 		return network.Compiled{}, fmt.Errorf("the host cannot enforce a %s rule", rule.Destination.Kind)
 	}
@@ -216,26 +219,63 @@ func (s *Service) compile(ctx context.Context, rule models.Rule) (network.Compil
 	return compiled, nil
 }
 
-// resolve is done on the host, at apply time, so a guest that answers its own lookups changes nothing.
-func (s *Service) resolve(ctx context.Context, host string) ([]netip.Prefix, error) {
-	addrs, err := s.resolver.LookupNetIP(ctx, "ip4", host)
+// Fronted lists the address of every sandbox the proxy stands in front of: one that holds a grant,
+// because the value goes in at the proxy, or a policy, because a name is matched there.
+func (s *Service) Fronted(_ context.Context) ([]netip.Addr, error) {
+	sandboxes, err := s.records.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var fronted []netip.Addr
+	for _, sb := range sandboxes {
+		if !IsFronted(sb) || !sb.Address.IsValid() {
+			continue
+		}
+		fronted = append(fronted, sb.Address.Addr())
+	}
+
+	return fronted, nil
+}
+
+// IsFronted says the proxy stands in front of the sandbox's HTTP and HTTPS.
+func IsFronted(sb models.Sandbox) bool { return sb.Policy != "" || len(sb.Secrets) != 0 }
+
+// Resolve is done on the host, through the sandbox nameservers, so a guest that answers its own
+// lookups changes nothing. The answer is IPv4 only, sorted, so two calls agree on the first address.
+func (s *Service) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	found, err := s.resolver.LookupNetIP(ctx, "ip4", host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s through the sandbox nameservers: %w", host, err)
 	}
 
-	prefixes := make([]netip.Prefix, 0, len(addrs))
-	for _, addr := range addrs {
+	addrs := make([]netip.Addr, 0, len(found))
+	for _, addr := range found {
 		addr = addr.Unmap()
 		if !addr.Is4() {
 			continue
 		}
-		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+		addrs = append(addrs, addr)
 	}
-	if len(prefixes) == 0 {
+	if len(addrs) == 0 {
 		return nil, fmt.Errorf("resolve %s: no IPv4 address", host)
 	}
 
-	slices.SortFunc(prefixes, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+	slices.SortFunc(addrs, netip.Addr.Compare)
 
-	return slices.Compact(prefixes), nil
+	return slices.Compact(addrs), nil
+}
+
+func (s *Service) resolvePrefixes(ctx context.Context, host string) ([]netip.Prefix, error) {
+	addrs, err := s.Resolve(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(addrs))
+	for _, addr := range addrs {
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+
+	return prefixes, nil
 }

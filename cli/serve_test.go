@@ -3,11 +3,16 @@ package cli
 import (
 	"context"
 	"io"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/daemon"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 func TestServeTakesNoArguments(t *testing.T) {
@@ -43,5 +48,52 @@ func TestServeHoldsTheRootUntilTheContextEnds(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("serve ended with %v", err)
+	}
+}
+
+// While a one-shot proxy holds the lock the task reports it, and the daemon's retry is the takeover.
+func TestProxyTaskReportsAForeignHolder(t *testing.T) {
+	root := t.TempDir()
+
+	lock, err := store.TryAcquire(filepath.Join(root, proxyDir, "lock"), proxyLockPerm)
+	if err != nil || lock == nil {
+		t.Fatalf("hold the proxy lock first: %v, %v", lock, err)
+	}
+	defer lock.Release() //nolint:errcheck
+
+	task := proxyTask{app: App{Root: root, Out: io.Discard}, gateway: netip.MustParseAddr("127.0.0.1")}
+	err = task.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "a proxy already runs") {
+		t.Errorf("the task got %v, want the foreign-holder refusal", err)
+	}
+}
+
+// With the lock free the task is the proxy: it serves until the context ends and that is not a failure.
+func TestProxyTaskServesUntilTheContextEnds(t *testing.T) {
+	root := t.TempDir()
+	task := proxyTask{
+		app:     App{Root: root, Out: io.Discard},
+		gateway: netip.MustParseAddr("127.0.0.1"),
+		ports:   network.ProxyPorts{HTTP: 0, HTTPS: 0},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- task.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, proxyDir, "pid")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the task never became the proxy")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the task ended with %v", err)
 	}
 }

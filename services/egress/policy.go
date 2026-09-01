@@ -216,16 +216,16 @@ func validDestination(rule models.Rule) error {
 		}
 
 		return nil
-	case models.DestinationDomain:
+	case models.DestinationDomain, models.DestinationDomainSuffix:
 		if err := validHostValue(dest); err != nil {
 			return err
 		}
 		// A name is enforced through the proxy, which speaks HTTP and TLS: on any other port it would be an address guess.
 		if rule.Protocol != "tcp" {
-			return fmt.Errorf("a domain rule is tcp only, got %q", rule.Protocol)
+			return fmt.Errorf("a %s rule is tcp only, got %q", dest.Kind, rule.Protocol)
 		}
 		if len(rule.Ports) == 0 {
-			return errors.New("a domain rule names ports 80 and 443 only, got none: without one it would open every tcp port")
+			return fmt.Errorf("a %s rule names ports 80 and 443 only, got none: without one it would open every tcp port", dest.Kind)
 		}
 		for _, port := range rule.Ports {
 			if !slices.Contains(webPorts, port) {
@@ -234,11 +234,9 @@ func validDestination(rule models.Rule) error {
 		}
 
 		return nil
-	case models.DestinationDomainSuffix:
-		return errors.New("a suffix rule needs the egress proxy, which SHARD-71 ships: name the bare host for now")
 	}
 
-	return fmt.Errorf("the destination kind %q is not cidr, domain or group", dest.Kind)
+	return fmt.Errorf("the destination kind %q is not cidr, domain, domain-suffix or group", dest.Kind)
 }
 
 // parseCIDR takes a prefix or a bare address, and refuses IPv6, which the sandbox network does not carry.
@@ -285,10 +283,10 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 	}
 
 	// A domain rule with no port is the web, which is all a domain rule may name anyway.
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "" {
+	if namesHost(rule.Destination.Kind) && rule.Protocol == "" {
 		rule.Protocol = "tcp"
 	}
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
+	if namesHost(rule.Destination.Kind) && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
 		rule.Ports = slices.Clone(webPorts)
 	}
 
@@ -377,4 +375,9 @@ func validHostValue(dest models.Destination) error {
 	_, err := secret.ValidDestination(dest.Value)
 
 	return err
+}
+
+// namesHost says the rule is matched by name, which only the proxy can do.
+func namesHost(kind models.DestinationKind) bool {
+	return kind == models.DestinationDomain || kind == models.DestinationDomainSuffix
 }

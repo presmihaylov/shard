@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -271,6 +272,19 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		return err
 	}
 
+	fronted := opts.policy != "" || len(opts.secrets) != 0
+
+	var ca []byte
+	if fronted {
+		px, err := d.proxy()
+		if err != nil {
+			return err
+		}
+		if ca, err = px.CA(); err != nil {
+			return err
+		}
+	}
+
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:         id,
 		Name:       opts.name,
@@ -282,6 +296,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		User:       opts.user,
 		Network:    netSpec,
 		Resources:  opts.resources,
+		ProxyCA:    ca,
 	}, img.Config)
 
 	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
@@ -296,9 +311,12 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		return err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if opts.policy != "" {
+	// The chain and the turn to the proxy are keyed by the address, which the record holds only now.
+	if fronted {
 		if err := net.Reapply(ctx, id); err != nil {
+			return err
+		}
+		if err := ensureProxy(ctx, d, netSpec.Gateway); err != nil {
 			return err
 		}
 	}
@@ -333,6 +351,17 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 	}
 
 	return nil
+}
+
+// ensureProxy refuses a fronted sandbox that would have no proxy: its 80 and 443 are turned to the
+// gateway, and nothing there is a sandbox that reaches no host, not one that reaches every host.
+func ensureProxy(ctx context.Context, d *deps, gateway netip.Addr) error {
+	px, err := d.proxy()
+	if err != nil {
+		return err
+	}
+
+	return px.Ensure(ctx, gateway)
 }
 
 // allocateNetwork names the way out, because nothing expires on its own: only an rm frees an address.

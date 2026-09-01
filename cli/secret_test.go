@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // newSecretApp drives the real store under a temporary root, with stdin replaced by what the test pipes in.
@@ -121,24 +122,6 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	}
 }
 
-func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
-	var out bytes.Buffer
-
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
-	app, root := newSecretApp(t, &out, "value-123456\n", repo)
-
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
-		t.Fatal(err)
-	}
-
-	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
-	app.Root = root
-	err := app.Run(t.Context(), []string{"secret", "set", "--mock-value", "another-placeholder", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "sb1") {
-		t.Errorf("set with a new placeholder while held = %v", err)
-	}
-}
-
 func TestSecretLsListsTheReadableOnesAndFails(t *testing.T) {
 	var out bytes.Buffer
 
@@ -217,5 +200,48 @@ func TestSecretRmOfAMissingSecretFails(t *testing.T) {
 	err := app.Run(t.Context(), []string{"secret", "rm", "NOPE"})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("rm of a missing secret = %v", err)
+	}
+}
+
+func TestParseSecretSetTakesHeadersAndAMatch(t *testing.T) {
+	opts, err := parseSecretSet([]string{
+		"--to", "api.example.com",
+		"--header", "Authorization: Bearer {value}",
+		"--match", "path=/v1/*",
+		"--match", "method=get,post",
+		"--match", "query=k=v",
+		"--match", "header=X-Want: yes",
+		"TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("parseSecretSet: %v", err)
+	}
+	if len(opts.headers) != 1 || opts.headers[0].Name != "Authorization" || opts.headers[0].Value != "Bearer {value}" {
+		t.Errorf("the headers read %+v", opts.headers)
+	}
+	m := opts.match
+	if m == nil || m.Path != "/v1/*" || len(m.Methods) != 2 || m.Methods[0] != "GET" {
+		t.Fatalf("the match reads %+v", m)
+	}
+	if len(m.Query) != 1 || m.Query[0] != (secret.Pair{Name: "k", Value: "v"}) {
+		t.Errorf("the query match reads %+v", m.Query)
+	}
+	if len(m.Headers) != 1 || m.Headers[0] != (secret.Pair{Name: "X-Want", Value: "yes"}) {
+		t.Errorf("the header match reads %+v", m.Headers)
+	}
+}
+
+func TestParseSecretSetRefusesABadHeaderOrMatch(t *testing.T) {
+	for name, args := range map[string][]string{
+		"a header with no colon":    {"--header", "Authorization"},
+		"a header with no name":     {"--header", ": x"},
+		"a second path match":       {"--match", "path=/a", "--match", "path=/b"},
+		"an unknown dimension":      {"--match", "host=x"},
+		"a query with no value":     {"--match", "query=k"},
+		"a match with no condition": {"--match", "path="},
+	} {
+		if _, err := parseSecretSet(append(args, "TOKEN")); err == nil {
+			t.Errorf("parseSecretSet took %s", name)
+		}
 	}
 }

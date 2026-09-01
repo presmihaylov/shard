@@ -137,6 +137,24 @@ integration` does not exist to the compiler without `-tags integration`, so plai
 suffix is for humans; keep both. Every such test also guards itself at runtime
 (`euid == 0`, the binary is on PATH) and skips rather than fails.
 
+### Running e2e on the devbox safely
+
+- **`make devbox-e2e` syncs the binaries first.** Never run `scripts/e2e.sh` on
+  the box by hand after a code change; a stale `/usr/local/bin/shard` fails in
+  ways that look like races.
+- **Never `cmd | grep -q PATTERN` in a script under `set -o pipefail`.** `grep -q`
+  leaves the pipe on the first match, the writer dies of SIGPIPE while it still
+  writes, and pipefail reports that as a failure. It is a timing race: it passes
+  when the output is short and fails when it is long. Use `has PATTERN` from
+  `scripts/e2e.sh`, which reads to the end.
+- **One shard at a time per host.** Every root writes the same `inet shard` and
+  `bridge shard` tables from its own records, so a `shard` command under another
+  root, or an integration test running at the same time, wipes the e2e run's
+  chains and pins. Before an e2e run, check `pgrep -af runsc` and `ip netns list`
+  are empty; kill what an interrupted `make itest` left behind.
+- A flaky e2e is a bug in the script or the host state, never something to
+  retry until green. Find the writer before you rerun.
+
 ## Rules that outrank convenience
 
 - **Refuse, never downgrade.** An unsupported verb fails fast with an error that

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 // start runs a stopped sandbox again. Its address, its writable layer and its record all survived
@@ -54,8 +55,15 @@ func (a App) start(ctx context.Context, args []string) (err error) {
 	}
 
 	// The lease survived the stop, so this hands back the same address over a namespace built again.
-	if _, err := net.Allocate(ctx, id); err != nil {
+	netSpec, err := net.Allocate(ctx, id)
+	if err != nil {
 		return err
+	}
+
+	if egress.IsFronted(sb) {
+		if err := ensureProxy(ctx, d, netSpec.Gateway); err != nil {
+			return err
+		}
 	}
 
 	if err := provider.Start(ctx, id); err != nil {
