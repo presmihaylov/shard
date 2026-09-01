@@ -24,7 +24,10 @@ shard create --policy locked python:3.12 -- python agent.py
 A policy is a name and an ordered list of rules. The first rule that matches a packet decides, and a
 packet that matches none is dropped. A sandbox with a policy runs its own chain on the host, keyed by
 the address its lease gave it. Every sandbox, with a policy or without, may send from its own address
-only: the host pins the port to the address, in IP and in ARP, for as long as the lease lasts.
+only: the host pins the port to the address, in IP and in ARP, for as long as the lease lasts. That
+takes two tables: `inet shard` filters what is routed, and `bridge shard` pins the ARP and keeps one
+sandbox from another, because bridged frames and ARP never reach the `inet` hooks. Both are replaced
+together in one transaction.
 
 A rule is `<destination> [tcp|udp[:<ports>]]`, and the destination's shape says what it is:
 
@@ -76,9 +79,9 @@ overrides the refusal. That is the rule throughout: an error is a closed door, n
 sandbox, each addition marked `implied`:
 
 - **`secret NAME`**: a secret granted to the sandbox allows `tcp` 80 and 443 to every host it was
-  granted to. The grant is the allow; the policy does not have to repeat it, and it cannot take it
-  back: the implied rules come before the policy's own, so a `deny` of a granted host does not match.
-  Remove the grant to close the host.
+  granted to. The grant is the allow while the policy is silent about the host: the implied rules
+  come after the policy's own, so the policy does not have to repeat the allow, and an explicit
+  `deny` of a granted host drops. Remove the grant, or deny the host, to close it.
 - **`dns`**: a policy that names a domain, or a sandbox that holds a secret, allows `udp` and `tcp`
   53 to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
   address and `any` rules opens no DNS.

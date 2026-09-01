@@ -216,7 +216,7 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 
 var nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
 
-func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
+func TestEffectivePutsThePolicyBeforeWhatTheGrantsImply(t *testing.T) {
 	s := newStore(t)
 	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
 		t.Fatal(err)
@@ -236,11 +236,16 @@ func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
 	want := []string{
 		"allow cidr:1.1.1.1 udp dns",
 		"allow cidr:1.1.1.1 tcp dns",
-		"allow domain:api.example.com tcp secret TOKEN",
 		"deny group:any  ",
+		"allow domain:api.example.com tcp secret TOKEN",
 	}
 	if !slices.Equal(shape, want) {
 		t.Errorf("Effective = %v, want %v", shape, want)
+	}
+
+	// SHARD-117 replayed: an explicit deny of the granted host must drop at the proxy despite the grant.
+	if got := Decide(got, "api.example.com", 443, netip.MustParseAddr("93.184.216.34")); got.Allow {
+		t.Errorf("the deny-any policy did not outrank the grant: %+v", got)
 	}
 
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
@@ -328,7 +333,7 @@ func TestChainsCloseAGrantedHostThatDoesNotResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chains: %v", err)
 	}
-	if len(chains) != 1 || len(chains[0].Rules) != 4 || chains[0].Rules[2].Prefixes != nil {
+	if len(chains) != 1 || len(chains[0].Rules) != 4 || chains[0].Rules[3].Prefixes != nil {
 		t.Errorf("Chains = %+v, want the grant compiled to no address", chains)
 	}
 }

@@ -94,7 +94,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		return Effective{}, err
 	}
 
-	var rules []EffectiveRule
+	var granted []EffectiveRule
 
 	needsDNS := false
 	for _, name := range sb.Secrets {
@@ -109,7 +109,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 
 		needsDNS = true
 		for _, dest := range grant.Destinations {
-			rules = append(rules, EffectiveRule{
+			granted = append(granted, EffectiveRule{
 				Rule: models.Rule{
 					Action:      models.ActionAllow,
 					Destination: models.Destination{Kind: models.DestinationDomain, Value: dest},
@@ -121,12 +121,16 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		}
 	}
 
+	var rules []EffectiveRule
 	for _, rule := range policy.Rules {
 		if namesHost(rule.Destination.Kind) {
 			needsDNS = true
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
+
+	// A grant opens its hosts only where the policy is silent: an explicit rule outranks it (SHARD-117).
+	rules = append(rules, granted...)
 
 	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to the nameservers.
 	if needsDNS {

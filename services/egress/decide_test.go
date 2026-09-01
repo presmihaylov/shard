@@ -88,6 +88,21 @@ func TestDecideWithoutAPolicyKeepsTheHostToItself(t *testing.T) {
 	}
 }
 
+// The policy's own rules come first, so an explicit deny of a granted host drops (SHARD-117).
+func TestDecideLetsAnExplicitDenyOutrankTheGrant(t *testing.T) {
+	deny := explicit(models.ActionDeny, models.DestinationDomain, "api.example.com")
+	granted := explicit(models.ActionAllow, models.DestinationDomain, "api.example.com")
+	granted.Implied = "secret TOKEN"
+
+	if got := Decide(effective(deny, granted), "api.example.com", 443, public); got.Allow || got.Rule == nil || got.Rule.Implied != "" {
+		t.Errorf("the explicit deny did not outrank the grant: %+v", got)
+	}
+	// The grant still opens its host when the policy is silent about it.
+	if got := Decide(effective(explicit(models.ActionDeny, models.DestinationDomain, "other.example.com"), granted), "api.example.com", 443, public); !got.Allow {
+		t.Errorf("a policy silent about the host closed the grant: %+v", got)
+	}
+}
+
 // A grant opens its host, and a host that resolves inward is not that host.
 func TestDecideRefusesAGrantedHostThatResolvesToAPrivateAddress(t *testing.T) {
 	granted := explicit(models.ActionAllow, models.DestinationDomain, "api.example.com")
