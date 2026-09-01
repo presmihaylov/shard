@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -167,5 +168,17 @@ func waitAlive(t *testing.T, root string) {
 			t.Fatal("the daemon never took the lock")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// A fresh host has no root yet; the lock's acquire creates it, so serve needs no verb to run first.
+func TestRunCreatesAFreshRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "does", "not", "exist")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := New(root, io.Discard).Run(ctx); err != nil {
+		t.Fatalf("serve on a fresh root: %v", err)
 	}
 }
