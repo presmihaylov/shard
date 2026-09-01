@@ -248,8 +248,10 @@ func newService(t *testing.T) (*network.Service, *netns.Manager) {
 		if err := m.DeleteLink(ctx, testBridge); err != nil {
 			t.Logf("remove the test bridge: %v", err)
 		}
-		if err := m.DeleteTable(ctx, "inet", "shard"); err != nil {
-			t.Logf("remove the test table: %v", err)
+		for _, family := range []string{"inet", "bridge"} {
+			if err := m.DeleteTable(ctx, family, "shard"); err != nil {
+				t.Logf("remove the test %s table: %v", family, err)
+			}
 		}
 	})
 

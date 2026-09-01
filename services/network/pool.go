@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/store"
@@ -144,6 +145,26 @@ func (p *pool) find(id string) (netip.Addr, bool, error) {
 	}
 
 	return netip.Addr{}, false, nil
+}
+
+// held lists every leased address, sorted, so the ruleset pins the same ports in the same order each time.
+func (p *pool) held() ([]netip.Addr, error) {
+	entries, err := os.ReadDir(p.dir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", p.dir, err)
+	}
+
+	var addresses []netip.Addr
+	for _, entry := range entries {
+		address, err := netip.ParseAddr(entry.Name())
+		if err != nil || !p.subnet.Contains(address) {
+			continue
+		}
+		addresses = append(addresses, address)
+	}
+	slices.SortFunc(addresses, netip.Addr.Compare)
+
+	return addresses, nil
 }
 
 // holder is the sandbox a lease belongs to, or the empty string once the lease is gone.
