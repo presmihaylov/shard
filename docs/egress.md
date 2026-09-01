@@ -79,9 +79,9 @@ overrides the refusal. That is the rule throughout: an error is a closed door, n
 sandbox, each addition marked `implied`:
 
 - **`secret NAME`**: a secret granted to the sandbox allows `tcp` 80 and 443 to every host it was
-  granted to. The grant is the allow while the policy is silent about the host: the implied rules
-  come after the policy's own, so the policy does not have to repeat the allow, and an explicit
-  `deny` of a granted host drops. Remove the grant, or deny the host, to close it.
+  granted to. The grant is the allow unless the policy names the host: the implied rules slot in
+  before the policy's first `any` rule, so a `deny any` floor keeps granted hosts open, while an
+  explicit `deny` of a granted host drops. Remove the grant, or deny the host by name, to close it.
 - **`dns`**: a policy that names a domain, or a sandbox that holds a secret, allows `udp` and `tcp`
   53 to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
   address and `any` rules opens no DNS.

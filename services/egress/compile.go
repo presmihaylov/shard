@@ -129,8 +129,14 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
 
-	// A grant opens its hosts only where the policy is silent: an explicit rule outranks it (SHARD-117).
-	rules = append(rules, granted...)
+	// A grant loses only to a rule that names its host: it goes before the first catch-all, or last (SHARD-120).
+	at := slices.IndexFunc(rules, func(r EffectiveRule) bool {
+		return r.Destination.Kind == models.DestinationGroup && r.Destination.Value == "any"
+	})
+	if at < 0 {
+		at = len(rules)
+	}
+	rules = slices.Insert(rules, at, granted...)
 
 	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to the nameservers.
 	if needsDNS {

@@ -216,7 +216,7 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 
 var nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
 
-func TestEffectivePutsThePolicyBeforeWhatTheGrantsImply(t *testing.T) {
+func TestEffectiveSlotsTheGrantsBeforeTheCatchAll(t *testing.T) {
 	s := newStore(t)
 	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
 		t.Fatal(err)
@@ -236,16 +236,16 @@ func TestEffectivePutsThePolicyBeforeWhatTheGrantsImply(t *testing.T) {
 	want := []string{
 		"allow cidr:1.1.1.1 udp dns",
 		"allow cidr:1.1.1.1 tcp dns",
-		"deny group:any  ",
 		"allow domain:api.example.com tcp secret TOKEN",
+		"deny group:any  ",
 	}
 	if !slices.Equal(shape, want) {
 		t.Errorf("Effective = %v, want %v", shape, want)
 	}
 
-	// SHARD-117 replayed: an explicit deny of the granted host must drop at the proxy despite the grant.
-	if got := Decide(got, "api.example.com", 443, netip.MustParseAddr("93.184.216.34")); got.Allow {
-		t.Errorf("the deny-any policy did not outrank the grant: %+v", got)
+	// SHARD-120: a deny-any floor is not a rule about the host, so the grant survives it at the proxy.
+	if got := Decide(got, "api.example.com", 443, netip.MustParseAddr("93.184.216.34")); !got.Allow {
+		t.Errorf("the deny-any floor killed the grant: %+v", got)
 	}
 
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
@@ -253,6 +253,29 @@ func TestEffectivePutsThePolicyBeforeWhatTheGrantsImply(t *testing.T) {
 	}
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox3", Policy: "gone"}); err != nil || !got.Missing {
 		t.Errorf("a sandbox whose policy is gone got %+v, %v", got, err)
+	}
+}
+
+// SHARD-117 kept: a rule that names the granted host still outranks the grant; only a catch-all yields to it.
+func TestANamedDenyStillOutranksTheGrant(t *testing.T) {
+	s := newStore(t)
+	rules := []models.Rule{mustRule(t, models.ActionDeny, "api.example.com tcp:443"), mustRule(t, models.ActionDeny, "any")}
+	if err := s.Set(models.Policy{Name: "web", Rules: rules}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(s, nil, fakeGrants{"TOKEN": {"api.example.com"}}, nameservers, fakeResolver{})
+
+	got, err := svc.Effective(models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN"}})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+
+	if d := Decide(got, "api.example.com", 443, netip.MustParseAddr("93.184.216.34")); d.Allow {
+		t.Errorf("the named deny lost to the grant: %+v", d)
+	}
+	if d := Decide(got, "api.example.com", 80, netip.MustParseAddr("93.184.216.34")); !d.Allow {
+		t.Errorf("the named deny reaches past its own ports: %+v", d)
 	}
 }
 
@@ -333,7 +356,7 @@ func TestChainsCloseAGrantedHostThatDoesNotResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chains: %v", err)
 	}
-	if len(chains) != 1 || len(chains[0].Rules) != 4 || chains[0].Rules[3].Prefixes != nil {
+	if len(chains) != 1 || len(chains[0].Rules) != 4 || chains[0].Rules[2].Prefixes != nil {
 		t.Errorf("Chains = %+v, want the grant compiled to no address", chains)
 	}
 }
