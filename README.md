@@ -24,6 +24,10 @@ always record how the entrypoint ended.
 
 `SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
+`--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
+host. The egress proxy (SHARD-71) puts it into a request on its way to the granted destination; until
+then the placeholder reaches the wire as it is. See `docs/secrets.md`.
+
 ## Snapshots
 
 Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`: what
@@ -50,6 +54,18 @@ of about 40 MiB resident: pause 0.19 to 0.24 s, resume 0.46 to 0.48 s, fork 0.43
 about 4 s per GiB to pause and about 1 s to resume, and those numbers carry a cloud round trip that
 these do not, so they compare the mechanism and not the product. `docs/demo.cast` is the whole run
 on that box, recorded with `make devbox-demo`; play it with `asciinema play docs/demo.cast`.
+
+## Secrets
+
+```
+printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN
+shard secret ls
+shard secret rm API_TOKEN
+```
+
+A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
+of mode 0600, `secret ls` never prints it, and `secret rm` refuses while a sandbox still holds the
+placeholder. `docs/secrets.md` says what this stops and what it does not.
 
 ## Images
 

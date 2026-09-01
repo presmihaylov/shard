@@ -14,6 +14,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // imageService is the part of image.Service the commands drive. The service is a struct, so this is
@@ -47,6 +48,14 @@ type sandboxNetwork interface {
 	Reapply(ctx context.Context, id string) error
 }
 
+// secretStore is the part of secret.Store the commands drive. No command reads a value: that is the proxy's.
+type secretStore interface {
+	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
+	Get(name string) (secret.Secret, error)
+	List() ([]secret.Secret, error)
+	Remove(name string) error
+}
+
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
 // teardown gives it back.
 type substrate interface {
@@ -64,6 +73,7 @@ type deps struct {
 	netSvc       sandboxNetwork
 	providerSvc  models.Provider
 	substrateSvc substrate
+	secretSvc    secretStore
 	runnerSvc    *runsc.Runner
 
 	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
@@ -171,6 +181,21 @@ func (d *deps) runner() (*runsc.Runner, error) {
 	d.runnerSvc = runner
 
 	return d.runnerSvc, nil
+}
+
+// secrets is a plain file store, so a test drives the real one under a temporary root.
+func (d *deps) secrets() (secretStore, error) {
+	if d.secretSvc != nil {
+		return d.secretSvc, nil
+	}
+
+	store, err := secret.New(filepath.Join(d.app.Root, "secrets"))
+	if err != nil {
+		return nil, err
+	}
+	d.secretSvc = store
+
+	return d.secretSvc, nil
 }
 
 func (d *deps) substrate() (substrate, error) {

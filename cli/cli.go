@@ -45,11 +45,17 @@ Usage:
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
+  shard secret set --to <host>... [--mock-value <v>] <NAME>
+                           store a secret read from stdin, granted to those hosts; set again to rotate the value
+  shard secret ls          list the secrets by name and destination, never by value
+  shard secret rm [--force] <NAME>
+                           remove a secret, and with --force one a sandbox still holds
   shard version            print the version
 
 Create flags, which must precede the image:
   --name <name>            a handle every verb takes in place of the id
   --env KEY=VALUE          set an environment variable, repeatable
+  --secret <NAME>          hand the guest a placeholder for a stored secret as $NAME, repeatable
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
@@ -146,6 +152,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.pull(ctx, args[1:])
 	case "image":
 		return a.image(ctx, args[1:])
+	case "secret":
+		return a.secret(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}

@@ -274,9 +274,21 @@ fi
 
 wipe_root
 
+step "store a secret"
+# The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
+SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to api.example.com E2E_TOKEN >/dev/null
+SECRET_LS=$(shard secret ls)
+echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
+echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
+say "secret ls lists the name and the destination, and not the value"
+SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
+[ "${SECRET_MODE}" = "600" ] || fail "the secret file is mode ${SECRET_MODE}, want 600"
+say "the secret file is mode 0600"
+
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+ID=$(shard create --secret E2E_TOKEN "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -312,6 +324,15 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+
+step "hold the placeholder and never the value"
+expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bin/sh -c 'echo "$E2E_TOKEN"'
+# The store file is the one place the value is written; nothing under the sandbox tree or anywhere else holds it.
+absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
+shard inspect "${ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
+say "inspect names the secret and holds no value"
+shard secret rm E2E_TOKEN >/dev/null 2>&1 && fail "secret rm removed a secret a sandbox holds"
+say "secret rm refuses while the sandbox holds the secret"
 
 step "reach the network from the sandbox"
 expect_network "after the create"
@@ -385,6 +406,9 @@ say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_L
 [ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
 say "ls shows the source and the fork running side by side"
+
+shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
+expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
 expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
 expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
@@ -476,6 +500,7 @@ for CLONE_ID in "$@"; do
 	expect_exec_in "${CLONE_ID}" "reachable" "clone ${CLONE_ID} gets out through the NAT" \
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
+	expect_exec_in "${CLONE_ID}" "mock-E2E_TOKEN" "clone ${CLONE_ID} holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
 done
 say "both clones run the entrypoint again over the source's files, each on its own address"
@@ -537,6 +562,11 @@ say "the record says stopped"
 step "remove the sandbox"
 shard rm "${ID}" >/dev/null
 say "rm returned"
+
+step "remove the secret nothing holds any more"
+shard secret rm E2E_TOKEN >/dev/null
+absent "the secret file" "$([ -e "${SHARD_ROOT}/secrets/E2E_TOKEN" ] && echo "${SHARD_ROOT}/secrets/E2E_TOKEN" || true)"
+say "secret rm removed the secret"
 
 step "prove the host holds nothing the sandbox left"
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"

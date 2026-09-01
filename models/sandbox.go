@@ -33,5 +33,9 @@ type Sandbox struct {
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.
 	Resources Resources `json:"resources"`
 
+	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
+	// reach a request only at the proxy, so this list is a grant and never a value.
+	Secrets []string `json:"secrets,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 }
