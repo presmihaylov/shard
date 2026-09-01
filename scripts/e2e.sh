@@ -238,6 +238,10 @@ teardown() {
 # start_echo runs a plain HTTP server on the host's public address that answers with the request's
 # Authorization header, so a guest request shows what the proxy put on the wire.
 start_echo() {
+	# An orphan already on the port would answer the probe below and mask this echo's death (SHARD-116).
+	if ss -ltn 2>/dev/null | grep -E ':80 ' >/dev/null; then
+		fail "something already listens on :80: kill it first"
+	fi
 	local script
 	script=$(mktemp)
 	cat >"${script}" <<'PY'
