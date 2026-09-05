@@ -23,6 +23,9 @@ type Lifecycle interface {
 	Start(ctx context.Context, ref string) (models.Sandbox, error)
 	Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error)
 	Remove(ctx context.Context, ref string, force bool, grace time.Duration) error
+	Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error)
+	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
+	Logs(ctx context.Context, ref string, follow bool, w io.Writer) error
 }
 
 // Handler answers the routes over one repository, the rules the host enforces, and the one orchestrator.
@@ -46,6 +49,9 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 	mux.HandleFunc("POST /v0/sandboxes/{id}/start", h.startSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/stop", h.stopSandbox)
 	mux.HandleFunc("DELETE /v0/sandboxes/{id}", h.removeSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.execSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
+	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path))
@@ -191,13 +197,14 @@ func status(err error) int {
 	var invalid *sandboxstate.ValidationError
 	var request *sandbox.RequestError
 	var state *sandbox.StateError
+	var unavailable *sandbox.UnavailableError
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request):
 		return http.StatusBadRequest
 	case errors.Is(err, sandboxstate.ErrNotFound):
 		return http.StatusNotFound
-	case errors.As(err, &state):
+	case errors.As(err, &state), errors.As(err, &unavailable):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

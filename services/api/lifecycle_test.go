@@ -26,6 +26,24 @@ type fakeLifecycle struct {
 	ref     string
 	grace   time.Duration
 	force   bool
+
+	// exec is the request the client sent, and input what it typed at the command.
+	exec   sandbox.ExecRequest
+	input  string
+	execID string
+	// out and errOut are what the command writes on each stream, and exit how it ended.
+	out    string
+	errOut string
+	exit   models.ExitStatus
+	// execErr is how the command failed, apart from err, which is a refusal before the 101.
+	execErr     error
+	resizedExec string
+	size        sandbox.TerminalSize
+
+	// lines is what the output holds, and stops is what ends a follow.
+	lines    []string
+	followed bool
+	stops    chan struct{}
 }
 
 func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
@@ -50,6 +68,77 @@ func (f *fakeLifecycle) Remove(_ context.Context, ref string, force bool, grace 
 	f.ref, f.force, f.grace = ref, force, grace
 
 	return f.err
+}
+
+// Exec answers the client the way the orchestrator does: it names the exec, writes, and then exits.
+func (f *fakeLifecycle) Exec(_ context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error) {
+	f.ref, f.exec = ref, req
+
+	if f.err != nil {
+		return models.ExitStatus{}, f.err
+	}
+
+	if streams.Started != nil {
+		if err := streams.Started(f.execID); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+
+	// A command that never ran reads nothing, the way the substrate answers one it could not start.
+	if f.execErr != nil {
+		return models.ExitStatus{}, f.execErr
+	}
+
+	if f.out != "" {
+		if _, err := streams.Stdout.Write([]byte(f.out)); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+	if f.errOut != "" {
+		if _, err := streams.Stderr.Write([]byte(f.errOut)); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+
+	if streams.Stdin != nil {
+		read, err := io.ReadAll(streams.Stdin)
+		if err != nil {
+			return models.ExitStatus{}, err
+		}
+		f.input = string(read)
+	}
+
+	return f.exit, nil
+}
+
+func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size sandbox.TerminalSize) error {
+	f.ref, f.resizedExec, f.size = ref, execID, size
+
+	return f.err
+}
+
+func (f *fakeLifecycle) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
+	f.ref, f.followed = ref, follow
+
+	if f.err != nil {
+		return f.err
+	}
+
+	for _, line := range f.lines {
+		if _, err := io.WriteString(w, line); err != nil {
+			return err
+		}
+	}
+
+	// A follow ends when the sandbox stops; this one ends when the test says the sandbox has.
+	if follow && f.stops != nil {
+		select {
+		case <-f.stops:
+		case <-ctx.Done():
+		}
+	}
+
+	return nil
 }
 
 // send answers with the status and the decoded body, or a nil body on a 204.

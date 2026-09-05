@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -65,52 +64,19 @@ func TestParseCreateRefusesANameNoVerbCouldTakeBack(t *testing.T) {
 	}
 }
 
-// strictRepo answers for one id and refuses every other, so an unresolved name reaches nothing.
-type strictRepo struct {
-	sandboxRepo
-
-	id   string
-	name string
-}
-
-func (s strictRepo) Resolve(ref string) (string, error) {
-	if ref == s.name {
-		return s.id, nil
-	}
-
-	return ref, nil
-}
-
-func (s strictRepo) Get(id string) (models.Sandbox, error) {
-	if id != s.id {
-		return models.Sandbox{}, fmt.Errorf("sandbox %s: sandbox not found", id)
-	}
-
-	return models.Sandbox{ID: id, Name: s.name, State: models.StateRunning}, nil
-}
-
 func TestExecTakesAName(t *testing.T) {
 	var out bytes.Buffer
 
-	provider := &fakeExecProvider{state: models.StateRunning}
+	sb := running()
+	sb.Name = "builder"
 
-	app := App{
-		Version: "test",
-		Out:     &out,
-		Err:     &out,
-		newDeps: func(App) *deps {
-			return &deps{
-				repoSvc:     strictRepo{id: "sandbox1", name: "builder"},
-				providerSvc: provider,
-			}
-		},
-	}
+	app, d := newClientApp(t, &out, sb)
 
 	if err := app.Run(context.Background(), []string{"exec", "builder", "--", "/bin/true"}); err != nil {
 		t.Fatalf("exec by name: %v", err)
 	}
 
-	if provider.id != "sandbox1" {
-		t.Fatalf("the provider was given %q, want the resolved id sandbox1", provider.id)
+	if got := d.providerSvc.(*fakeLifecycleProvider).execID; got != sb.ID {
+		t.Fatalf("the provider was given %q, want the resolved id %q", got, sb.ID)
 	}
 }

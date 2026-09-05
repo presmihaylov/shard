@@ -33,8 +33,8 @@ func TestParseLogsFlags(t *testing.T) {
 	}
 }
 
-// newLogsApp wires logs onto fakes with an output file that already holds what the entrypoint wrote.
-func newLogsApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox, written string) (App, *deps, string) {
+// newLogsApp wires logs onto a daemon whose output file already holds what the entrypoint wrote.
+func newLogsApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox, written string) (App, *deps) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "output.log")
@@ -42,16 +42,16 @@ func newLogsApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox, written stri
 		t.Fatalf("write the output file: %v", err)
 	}
 
-	app, deps := newLifecycleApp(t, out, &recorder{}, sb)
-	deps.providerSvc.(*fakeLifecycleProvider).logPath = path
+	app, d := newClientApp(t, out, sb)
+	d.providerSvc.(*fakeLifecycleProvider).logPath = path
 
-	return app, deps, path
+	return app, d
 }
 
 func TestLogsPrintsWhatTheEntrypointWrote(t *testing.T) {
 	var out bytes.Buffer
 
-	app, _, _ := newLogsApp(t, &out, running(), "hello\nworld\n")
+	app, _ := newLogsApp(t, &out, running(), "hello\nworld\n")
 
 	if err := app.Run(t.Context(), []string{"logs", "sandbox1"}); err != nil {
 		t.Fatalf("logs: %v", err)
@@ -67,7 +67,7 @@ func TestLogsReadsAStoppedSandbox(t *testing.T) {
 
 	sb := running()
 	sb.State = models.StateStopped
-	app, _, _ := newLogsApp(t, &out, sb, "done\n")
+	app, _ := newLogsApp(t, &out, sb, "done\n")
 
 	if err := app.Run(t.Context(), []string{"logs", "sandbox1"}); err != nil {
 		t.Fatalf("logs: %v", err)
@@ -82,7 +82,7 @@ func TestLogsTakesAName(t *testing.T) {
 
 	sb := running()
 	sb.Name = "web"
-	app, deps, _ := newLogsApp(t, &out, sb, "named\n")
+	app, d := newLogsApp(t, &out, sb, "named\n")
 
 	if err := app.Run(t.Context(), []string{"logs", "web"}); err != nil {
 		t.Fatalf("logs web: %v", err)
@@ -90,7 +90,7 @@ func TestLogsTakesAName(t *testing.T) {
 	if out.String() != "named\n" {
 		t.Errorf("logs printed %q", out.String())
 	}
-	if calls := deps.providerSvc.(*fakeLifecycleProvider).r.calls; !slices.Contains(calls, "provider.LogPath") {
+	if calls := d.providerSvc.(*fakeLifecycleProvider).r.calls; !slices.Contains(calls, "provider.LogPath") {
 		t.Errorf("logs never asked the provider for the path: %v", calls)
 	}
 }
@@ -98,8 +98,8 @@ func TestLogsTakesAName(t *testing.T) {
 func TestLogsRefusesAnIDThatNeverExisted(t *testing.T) {
 	var out bytes.Buffer
 
-	app, deps, _ := newLogsApp(t, &out, running(), "")
-	deps.repoSvc.(*fakeLifecycleRepo).missing = true
+	app, d := newLogsApp(t, &out, running(), "")
+	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
 	err := app.Run(t.Context(), []string{"logs", "sandbox1"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
@@ -107,60 +107,11 @@ func TestLogsRefusesAnIDThatNeverExisted(t *testing.T) {
 	}
 }
 
-// exitingProvider is up on the first Status, then writes its last line and is gone on the second.
-type exitingProvider struct {
-	models.Provider
-
-	t     *testing.T
-	path  string
-	calls int
-}
-
-func (p *exitingProvider) Status(context.Context, string) (models.Status, error) {
-	p.calls++
-	if p.calls == 1 {
-		return models.Status{Exists: true, State: models.StateRunning}, nil
-	}
-
-	f, err := os.OpenFile(p.path, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		p.t.Fatalf("open the output file: %v", err)
-	}
-	if _, err := f.WriteString("second\n"); err != nil {
-		p.t.Fatalf("append: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		p.t.Fatalf("close: %v", err)
-	}
-
-	return models.Status{}, nil
-}
-
-// A follow drains what arrives after it started, and ends on its own once the sandbox is gone.
-func TestFollowDrainsThenEndsWhenTheSandboxIsGone(t *testing.T) {
-	var out bytes.Buffer
-
-	_, _, path := newLogsApp(t, &out, running(), "first\n")
-
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open the output file: %v", err)
-	}
-	defer f.Close()
-
-	if err := follow(t.Context(), &out, f, &exitingProvider{t: t, path: path}, "sandbox1"); err != nil {
-		t.Fatalf("follow: %v", err)
-	}
-	if out.String() != "first\nsecond\n" {
-		t.Errorf("follow printed %q, want both lines", out.String())
-	}
-}
-
 // An interrupt is how an operator leaves a follow on a sandbox that is still up, and it is no error.
-func TestFollowLeavesOnAnInterrupt(t *testing.T) {
+func TestLogsFollowLeavesOnAnInterrupt(t *testing.T) {
 	var out bytes.Buffer
 
-	app, _, _ := newLogsApp(t, &out, running(), "up\n")
+	app, _ := newLogsApp(t, &out, running(), "up\n")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -168,18 +119,16 @@ func TestFollowLeavesOnAnInterrupt(t *testing.T) {
 	if err := app.Run(ctx, []string{"logs", "-f", "sandbox1"}); err != nil {
 		t.Fatalf("logs -f: %v", err)
 	}
-	if out.String() != "up\n" {
-		t.Errorf("logs -f printed %q", out.String())
-	}
 }
 
-func TestFollowReportsASubstrateItCannotAsk(t *testing.T) {
+// A daemon nothing answers on is the one failure every verb prints the same way.
+func TestLogsReportsADaemonThatIsNotThere(t *testing.T) {
 	var out bytes.Buffer
 
-	app, deps, _ := newLogsApp(t, &out, running(), "")
-	deps.providerSvc.(*fakeLifecycleProvider).r.fail = []string{"provider.Status"}
+	app := App{Version: "test", Root: shortRoot(t), Out: &out}
 
-	if err := app.Run(t.Context(), []string{"logs", "-f", "sandbox1"}); err == nil {
-		t.Fatal("logs -f returned no error for a substrate it could not ask")
+	err := app.Run(t.Context(), []string{"logs", "sandbox1"})
+	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
+		t.Fatalf("logs with no daemon returned %v", err)
 	}
 }

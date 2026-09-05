@@ -1,12 +1,15 @@
 package cli
 
 import (
-	"context"
+	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -105,10 +108,12 @@ func TestParseExecRefusals(t *testing.T) {
 
 // The exit code is the whole reason exec is useful, so it must reach the process that ran shard.
 func TestExecReportsTheCommandExitCodeAsAnExitError(t *testing.T) {
-	provider := &fakeExecProvider{status: models.ExitStatus{Code: 7}}
-	app := execApp(provider)
+	var out bytes.Buffer
 
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "sh", "-c", "exit 7"})
+	app, d := newClientApp(t, &out, running())
+	d.providerSvc.(*fakeLifecycleProvider).execExit = models.ExitStatus{Code: 7}
+
+	err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "sh", "-c", "exit 7"})
 
 	var exit *ExitError
 	if !errors.As(err, &exit) {
@@ -120,153 +125,89 @@ func TestExecReportsTheCommandExitCodeAsAnExitError(t *testing.T) {
 }
 
 func TestExecReportsNothingForACommandThatSucceeded(t *testing.T) {
-	provider := &fakeExecProvider{}
-	app := execApp(provider)
+	var out bytes.Buffer
 
-	if err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"}); err != nil {
+	app, d := newClientApp(t, &out, running())
+	d.providerSvc.(*fakeLifecycleProvider).execOut = "hello\n"
+
+	if err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "echo", "hello"}); err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if out.String() != "hello\n" {
+		t.Errorf("exec printed %q, want what the command wrote", out.String())
 	}
 }
 
 // The flags belong to the exec'd process alone, and nothing else in the sandbox sees them.
-func TestExecPassesItsFlagsToTheProvider(t *testing.T) {
-	provider := &fakeExecProvider{}
-	app := execApp(provider)
+func TestExecPassesItsFlagsToTheDaemon(t *testing.T) {
+	var out bytes.Buffer
 
-	args := []string{"exec", "-i", "--env", "A=1", "--workdir", "/srv", "--user", "app", "one-two-0000", "--", "env"}
-	if err := app.Run(context.Background(), args); err != nil {
+	app, d := newClientApp(t, &out, running())
+	provider := d.providerSvc.(*fakeLifecycleProvider)
+
+	args := []string{"exec", "--env", "A=1", "--workdir", "/srv", "--user", "app", "sandbox1", "--", "env"}
+	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if provider.id != "one-two-0000" {
-		t.Errorf("the provider was given id %q, want one-two-0000", provider.id)
+	if want := []string{"env"}; !slices.Equal(provider.execSpec.Argv, want) {
+		t.Errorf("argv = %v, want %v", provider.execSpec.Argv, want)
 	}
-	if want := []string{"env"}; !slices.Equal(provider.spec.Argv, want) {
-		t.Errorf("argv = %v, want %v", provider.spec.Argv, want)
+	if want := []string{"A=1"}; !slices.Equal(provider.execSpec.Env, want) {
+		t.Errorf("env = %v, want %v", provider.execSpec.Env, want)
 	}
-	if want := []string{"A=1"}; !slices.Equal(provider.spec.Env, want) {
-		t.Errorf("env = %v, want %v", provider.spec.Env, want)
+	if provider.execSpec.WorkDir != "/srv" || provider.execSpec.User != "app" {
+		t.Errorf("workDir = %q, user = %q, want /srv and app", provider.execSpec.WorkDir, provider.execSpec.User)
 	}
-	if provider.spec.WorkDir != "/srv" || provider.spec.User != "app" {
-		t.Errorf("workDir = %q, user = %q, want /srv and app", provider.spec.WorkDir, provider.spec.User)
-	}
-	if provider.spec.TTY {
+	if provider.execSpec.TTY {
 		t.Error("the exec asked for a terminal, and nobody asked for one")
-	}
-	if provider.spec.Stdin == nil {
-		t.Error("-i gave the command no stdin")
 	}
 }
 
-// Without -i the command reads nothing, so it must not be handed this process's keyboard.
+// Without -i the command reads nothing, so the daemon must give it no stdin at all.
 func TestExecWithoutInteractiveGivesTheCommandNoStdin(t *testing.T) {
-	provider := &fakeExecProvider{}
-	app := execApp(provider)
+	var out bytes.Buffer
 
-	if err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"}); err != nil {
+	app, d := newClientApp(t, &out, running())
+
+	if err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "true"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if provider.spec.Stdin != nil {
+	if d.providerSvc.(*fakeLifecycleProvider).execSpec.Stdin != nil {
 		t.Error("the command was given stdin without -i")
 	}
 }
 
-func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
-	provider := &fakeExecProvider{}
-	app := execApp(provider)
-	app.newDeps = func(App) *deps {
-		return &deps{repoSvc: missingRepo{}, providerSvc: provider}
-	}
+func TestExecRefusesASandboxTheDaemonDoesNotHold(t *testing.T) {
+	var out bytes.Buffer
 
-	err := app.Run(context.Background(), []string{"exec", "gone-away-0000", "--", "true"})
-	if err == nil {
-		t.Fatal("exec accepted an id shard does not hold")
+	app, d := newClientApp(t, &out, running())
+	d.repoSvc.(*fakeLifecycleRepo).missing = true
+
+	err := app.Run(t.Context(), []string{"exec", "gone-away-0000", "--", "true"})
+	if err == nil || !strings.Contains(err.Error(), "gone-away-0000") {
+		t.Fatalf("exec returned %v, want the id named", err)
 	}
-	if !strings.Contains(err.Error(), "gone-away-0000") {
-		t.Errorf("the refusal is %q, and it must name the sandbox", err)
-	}
-	if provider.calls != 0 {
+	if slices.Contains(d.providerSvc.(*fakeLifecycleProvider).r.calls, "provider.Exec") {
 		t.Error("exec reached the provider for a sandbox shard does not hold")
-	}
-}
-
-// The keep-alive rule: the entrypoint exits, the sandbox stays running, and exec still works on it.
-func TestExecRunsInASandboxWhoseEntrypointHasExited(t *testing.T) {
-	provider := &fakeExecProvider{state: models.StateRunning}
-	app := execApp(provider)
-
-	if err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	if provider.calls != 1 {
-		t.Errorf("the provider ran %d commands, want 1", provider.calls)
-	}
-}
-
-func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
-	provider := &fakeExecProvider{state: models.StateStopped}
-	app := execApp(provider)
-
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
-	if err == nil {
-		t.Fatal("exec accepted a stopped sandbox")
-	}
-	if !strings.Contains(err.Error(), "one-two-0000") || !strings.Contains(err.Error(), "stopped") {
-		t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
-	}
-	if provider.calls != 0 {
-		t.Error("exec reached the provider for a stopped sandbox")
-	}
-}
-
-// The provider holds nothing of a paused sandbox, so the refusal must point at resume and not at gone.
-func TestExecRefusesAPausedSandboxWithTheResumeHint(t *testing.T) {
-	provider := &fakeExecProvider{forgotten: true}
-	app := execApp(provider)
-	app.newDeps = func(App) *deps {
-		return &deps{repoSvc: pausedRepo{}, providerSvc: provider}
-	}
-
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
-	if err == nil || !strings.Contains(err.Error(), "shard resume one-two-0000") {
-		t.Fatalf("exec of a paused sandbox returned %v, want a refusal that names the resume", err)
-	}
-	if provider.calls != 0 {
-		t.Error("exec reached the provider for a paused sandbox")
-	}
-}
-
-// A record outlives a shard restart, so the substrate is the one that answers for the state.
-func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
-	provider := &fakeExecProvider{forgotten: true}
-	app := execApp(provider)
-
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
-	if err == nil {
-		t.Fatal("exec accepted a sandbox the provider has forgotten")
-	}
-	if !strings.Contains(err.Error(), "one-two-0000") {
-		t.Errorf("the refusal is %q, and it must name the sandbox", err)
-	}
-	if provider.calls != 0 {
-		t.Error("exec reached the provider for a sandbox it does not hold")
 	}
 }
 
 // runsc says 128 for a command that never ran, and a shell says 127 for one it cannot find.
 func TestExecTurnsARefusedCommandIntoAShellExitCode(t *testing.T) {
 	cases := map[int]*models.CommandNotStartedError{
-		127: {Sandbox: "one-two-0000", Reason: "failed to load /bin/nope: no such file or directory", Code: 127},
-		126: {Sandbox: "one-two-0000", Reason: "failed to load /tmp/data: permission denied", Code: 126},
+		127: {Sandbox: "sandbox1", Reason: "failed to load /bin/nope: no such file or directory", Code: 127},
+		126: {Sandbox: "sandbox1", Reason: "failed to load /tmp/data: permission denied", Code: 126},
 	}
 
 	for want, refusal := range cases {
-		provider := &fakeExecProvider{err: refusal}
-		app := execApp(provider)
+		var out bytes.Buffer
 
-		err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "/bin/nope"})
+		app, d := newClientApp(t, &out, running())
+		d.providerSvc.(*fakeLifecycleProvider).execErr = refusal
+
+		err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "/bin/nope"})
 
 		var exit *ExitError
 		if !errors.As(err, &exit) {
@@ -283,9 +224,11 @@ func TestExecTurnsARefusedCommandIntoAShellExitCode(t *testing.T) {
 
 // A terminal cannot be faked with a pipe, so -t must refuse rather than hang on one.
 func TestExecRefusesATerminalWhenStdinIsNotOne(t *testing.T) {
-	app := execApp(&fakeExecProvider{})
+	var out bytes.Buffer
 
-	err := app.Run(context.Background(), []string{"exec", "-it", "one-two-0000", "--", "sh"})
+	app, _ := newClientApp(t, &out, running())
+
+	err := app.Run(t.Context(), []string{"exec", "-it", "sandbox1", "--", "sh"})
 	if err == nil {
 		t.Fatal("-t was accepted on stdin that is not a terminal")
 	}
@@ -294,119 +237,44 @@ func TestExecRefusesATerminalWhenStdinIsNotOne(t *testing.T) {
 	}
 }
 
-// execApp wires exec onto fakes and onto a stdin that is a pipe, which is what a test process holds.
-func execApp(provider *fakeExecProvider) App {
-	app := App{Version: "test", Out: os.Stdout}
-	app.newDeps = func(App) *deps {
-		return &deps{repoSvc: presentRepo{}, providerSvc: provider}
-	}
+// A daemon nothing answers on is the one failure every verb prints the same way.
+func TestExecReportsADaemonThatIsNotThere(t *testing.T) {
+	var out bytes.Buffer
 
-	return app
-}
+	app := App{Version: "test", Root: shortRoot(t), Out: &out}
 
-type fakeExecProvider struct {
-	models.Provider
-
-	status models.ExitStatus
-	err    error
-	// state is what the substrate says the sandbox is doing, and the empty one is running.
-	state models.State
-	// forgotten is a sandbox the substrate does not hold at all, which a stale record still names.
-	forgotten bool
-	// oomKilled is a sandbox the host ended for holding too much memory.
-	oomKilled bool
-
-	calls int
-	id    string
-	spec  models.ExecSpec
-}
-
-func (f *fakeExecProvider) Name() string { return "fake" }
-
-func (f *fakeExecProvider) Status(context.Context, string) (models.Status, error) {
-	if f.forgotten {
-		return models.Status{OOMKilled: f.oomKilled}, nil
-	}
-
-	state := f.state
-	if state == "" {
-		state = models.StateRunning
-	}
-
-	return models.Status{Exists: true, State: state, OOMKilled: f.oomKilled}, nil
-}
-
-func (f *fakeExecProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
-	f.calls++
-	f.id, f.spec = id, spec
-
-	return f.status, f.err
-}
-
-type presentRepo struct{ sandboxRepo }
-
-func (presentRepo) Get(id string) (models.Sandbox, error) {
-	return models.Sandbox{ID: id, State: models.StateRunning}, nil
-}
-
-func (presentRepo) Resolve(ref string) (string, error) { return ref, nil }
-
-type pausedRepo struct{ presentRepo }
-
-func (pausedRepo) Get(id string) (models.Sandbox, error) {
-	return models.Sandbox{ID: id, State: models.StatePaused, Snapshot: "/snapshots/" + id}, nil
-}
-
-// stoppedRepo holds a record that stop wrote, which only stop ever does.
-type stoppedRepo struct{ presentRepo }
-
-func (stoppedRepo) Get(id string) (models.Sandbox, error) {
-	return models.Sandbox{ID: id, State: models.StateStopped}, nil
-}
-
-type missingRepo struct{ sandboxRepo }
-
-func (missingRepo) Get(id string) (models.Sandbox, error) {
-	return models.Sandbox{}, errors.New("sandbox " + id + ": sandbox not found")
-}
-
-func (missingRepo) Resolve(ref string) (string, error) { return ref, nil }
-
-// TestExecRefusesAStoppedSandboxAsStoppedWhateverItsCgroupCounted pins the record over the cgroup: a
-// stop leaves the cgroup and its oom count behind, and that count says nothing about who ended it.
-func TestExecRefusesAStoppedSandboxAsStoppedWhateverItsCgroupCounted(t *testing.T) {
-	provider := &fakeExecProvider{state: models.StateStopped, oomKilled: true}
-	app := execApp(provider)
-	app.newDeps = func(App) *deps {
-		return &deps{repoSvc: stoppedRepo{}, providerSvc: provider}
-	}
-
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
-	if err == nil {
-		t.Fatal("exec accepted a stopped sandbox")
-	}
-	if !strings.Contains(err.Error(), "stopped") || strings.Contains(err.Error(), "memory") {
-		t.Errorf("the refusal is %q, and the user stopped this sandbox", err)
-	}
-	if provider.calls != 0 {
-		t.Error("exec reached the provider for a stopped sandbox")
+	err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "true"})
+	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
+		t.Fatalf("exec with no daemon returned %v", err)
 	}
 }
 
-// TestExecNamesTheMemoryTheSandboxRanOutOf keeps the one thing an operator cannot find out any other
-// way: the exit file records a 137 for this, and so does a plain kill -9.
-func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
-	provider := &fakeExecProvider{state: models.StateStopped, oomKilled: true}
-	app := execApp(provider)
+// A window that changes reaches the forwarder, and its stop waits for the goroutine that carries it.
+func TestTheResizeForwarderEndsWithItsStop(t *testing.T) {
+	warnings := &syncBuffer{}
+	app := App{Version: "test", Root: shortRoot(t), Out: warnings, Err: warnings}
 
-	err := app.Run(context.Background(), []string{"exec", "one-two-0000", "--", "true"})
-	if err == nil {
-		t.Fatal("exec accepted a sandbox the host ended for its memory")
+	// A plain file is no terminal, so the forwarder warns instead of resizing anything.
+	plain, err := os.Create(filepath.Join(t.TempDir(), "not-a-terminal"))
+	if err != nil {
+		t.Fatalf("create the file: %v", err)
 	}
-	if !strings.Contains(err.Error(), "memory") {
-		t.Errorf("the refusal is %q, and it never says the sandbox ran out of memory", err)
+	defer plain.Close()
+
+	forwarder := forwardResize(t.Context(), app, "sandbox1", plain)
+	forwarder.named("1a2b3c4d5e6f7a8b")
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {
+		t.Fatalf("raise SIGWINCH: %v", err)
 	}
-	if provider.calls != 0 {
-		t.Error("exec reached the provider for a sandbox that is gone")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(warnings.String(), "terminal") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the forwarder said %q about a window it cannot read", warnings.String())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+
+	forwarder.stop()
 }

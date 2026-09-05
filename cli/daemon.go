@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"path/filepath"
 	"sync"
@@ -116,4 +117,31 @@ func (l *lifecycle) Remove(ctx context.Context, ref string, force bool, grace ti
 	}
 
 	return svc.Remove(ctx, ref, force, grace)
+}
+
+func (l *lifecycle) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	return svc.Exec(ctx, ref, req, streams)
+}
+
+func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.ResizeExec(ctx, ref, execID, size)
+}
+
+func (l *lifecycle) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.Logs(ctx, ref, follow, w)
 }

@@ -8,9 +8,9 @@ without a daemon, with one line:
 shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
 ```
 
-So far `version`, `ls`, `inspect`, `create`, `start`, `stop` and `rm` speak the socket. Every other
-verb still works on the on-disk stores directly, under the same lockfiles the daemon takes, whether
-the daemon is up or not. No verb starts the daemon: a resident root process is installed on purpose, through the systemd unit in
+So far `version`, `ls`, `inspect`, `create`, `start`, `stop`, `rm`, `exec` and `logs` speak the
+socket. Every other verb still works on the on-disk stores directly, under the same lockfiles the
+daemon takes, whether the daemon is up or not. No verb starts the daemon: a resident root process is installed on purpose, through the systemd unit in
 `packaging/systemd/shard.service`:
 
 ```
@@ -27,14 +27,17 @@ systemctl enable --now shard
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
   bring it back.
 
-- **The sandbox lifecycle**: `create`, `start`, `stop` and `rm` run inside the daemon, in
-  `services/sandbox`. The image pull of a create happens there too, and the client waits for it with
+- **The sandbox lifecycle**: `create`, `start`, `stop`, `rm`, `exec` and `logs` run inside the
+  daemon, in `services/sandbox`. The image pull of a create happens there too, and the client waits for it with
   no deadline; the pull's progress is not streamed back to the client yet. The daemon serializes the
   verbs on one sandbox with an in-process mutex per id, so a stop and an rm on the same sandbox run
   one after the other and two on different sandboxes run side by side.
 
-`pause`, `resume`, `fork`, `clone`, `exec` and `logs` still act on the stores directly, daemon or no
-daemon, under the per-sandbox lockfiles.
+The daemon holds the guest side of an exec: its pipes, and the pseudo terminal of a `-t` exec. The
+CLI keeps the local terminal alone, which is raw mode and the `SIGWINCH` it forwards.
+
+`pause`, `resume`, `fork` and `clone` still act on the stores directly, daemon or no daemon, under
+the per-sandbox lockfiles.
 
 A sandbox outlives the daemon. runsc runs in its own session, so a daemon that stops or restarts
 leaves every sandbox up, and the next daemon lists and serves them from the same root. The unit
@@ -66,6 +69,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"image":"alpine:3.20",
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/start
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"grace":10}' http://localhost/v0/sandboxes/<id or name>/stop
 curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>?force=true&grace=10'
+curl --unix-socket /var/lib/shard/shard.sock -N 'http://localhost/v0/sandboxes/<id or name>/logs?follow=true'
 ```
 
 - `GET /v0/version` answers `{"version": "..."}`, which `shard version` prints as its `daemon` line
@@ -94,12 +98,33 @@ curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sand
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. 404; 409 when the sandbox is still up,
   unless `?force=true`, which stops it first with `grace=<seconds>` from the query.
 
+- `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
+  "size": {"rows", "cols"}}` with `Connection: Upgrade` and `Upgrade: tcp`, and answers 101 with
+  `X-Shard-Exec-Id: <exec id>`. Everything after the 101 is frames, both ways. 400 for a body that
+  does not decode or a request that names no command; 404; 409 when no command can run in the
+  sandbox. Every refusal comes before the 101, so it is a status and a JSON body like any other.
+- `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
+  that exec has ended or belongs to another sandbox. Only a `tty` exec has a terminal to resize.
+- `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
+  entrypoint wrote. With `?follow=true` it streams and flushes every write, and ends when the
+  sandbox stops or the client goes away. 404; 400 for a `follow` that is not a boolean.
+
+A frame is an 8-byte header and its payload: one byte of stream, three zero bytes, then the payload
+length as a 4-byte big-endian number. A payload is at most 1 MiB, and a longer write goes as several
+frames. The client sends stream 0 (stdin) and 4 (stdin closed); the daemon sends 1 (stdout), 2
+(stderr), 5 (a failure of the daemon's own) and 3 (exit), whose payload is the exit code in decimal.
+The exit frame ends the session, with a terminal or without one. A `tty` exec carries the guest's
+terminal on stream 1 alone, because a terminal has no second stream to keep apart.
+
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`.
 
 Every error body is `{"error": "<message>"}`.
 
 The typed side of these routes is `services/client`: `Version`, `ListSandboxes`, `GetSandbox`,
-`CreateSandbox`, `StartSandbox`, `StopSandbox` and `RemoveSandbox`, hand-written over the socket.
+`CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`, `Exec`, `ResizeExec` and `Logs`,
+hand-written over the socket. `Exec` dials the socket, writes the request itself and reads the 101,
+because `net/http` gives no connection back; `Logs` holds its stream open for as long as the follow
+lasts. Neither takes the 30 s deadline the answered-in-full calls take.
 The CLI verbs call it and nothing else. Each call that answers in full gets 30 s, per request and
 not on the `http.Client`; a daemon that accepts and never answers fails as `GET <route> on <socket>:
 no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside it has none the

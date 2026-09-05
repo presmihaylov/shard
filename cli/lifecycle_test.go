@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/netip"
 	"slices"
 	"testing"
@@ -216,6 +217,42 @@ type fakeLifecycleProvider struct {
 	noPause, noResume, noFork bool
 	// logPath is the file logs reads, which a test writes into.
 	logPath string
+
+	// execOut is what the command writes, and execInput what it read; execExit is how it ended.
+	execOut   string
+	execInput string
+	execExit  models.ExitStatus
+	execErr   error
+	execSpec  models.ExecSpec
+	// execID is the sandbox the exec ran in, so a test says which id a name resolved to.
+	execID string
+}
+
+func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
+	if err := f.r.record("provider.Exec"); err != nil {
+		return models.ExitStatus{}, err
+	}
+	f.execID, f.execSpec = id, spec
+
+	if f.execErr != nil {
+		return models.ExitStatus{}, f.execErr
+	}
+
+	if f.execOut != "" {
+		if _, err := spec.Stdout.WriteString(f.execOut); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+
+	if spec.Stdin != nil {
+		read, err := io.ReadAll(spec.Stdin)
+		if err != nil {
+			return models.ExitStatus{}, err
+		}
+		f.execInput = string(read)
+	}
+
+	return f.execExit, nil
 }
 
 func (f *fakeLifecycleProvider) Name() string { return "fake" }

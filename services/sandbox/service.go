@@ -79,10 +79,14 @@ type Service struct {
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
+
+	// execs holds the exec sessions that run on a terminal, so a resize finds the pty of one by id.
+	execMu sync.Mutex
+	execs  map[string]*execSession
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sync.Mutex{}}
+	return &Service{cfg: cfg, locks: map[string]*sync.Mutex{}, execs: map[string]*execSession{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
