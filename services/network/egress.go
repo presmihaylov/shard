@@ -8,16 +8,19 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
-// EgressSource says what every sandbox's policy compiles to; nil is no policy anywhere.
+// EgressSource says what every fronted sandbox compiles to; nil is no policy and no secret anywhere.
 type EgressSource interface {
 	Chains(ctx context.Context) ([]Chain, error)
 }
 
-// Chain is the egress of one sandbox, keyed by its address; the rules run in order and the rest is dropped.
+// Chain is the egress of one fronted sandbox, keyed by its address: its web ports go to the proxy, and when
+// Policy is set the rules run in order over the rest and what none matches is dropped.
 type Chain struct {
 	Address netip.Addr
+	Policy  bool
 	Rules   []Compiled
 }
 
@@ -61,8 +64,20 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	fmt.Fprintf(&b, "\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tip saddr %s oifname != %q masquerade\n\t}\n\n", s.cfg.Subnet, s.cfg.Bridge)
 
+	// A fronted sandbox's web ports land on the proxy, which is the one thing on the host a sandbox may reach.
+	fmt.Fprintf(&b, "\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+	for _, chain := range chains {
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 80 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort)
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 443 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.TLSPort)
+	}
+	b.WriteString("\t}\n\n")
+
 	fmt.Fprintf(&b, "\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname %[1]q ct state established,related accept\n\t\tiifname %[1]q drop\n\t}\n\n", s.cfg.Bridge)
+	fmt.Fprintf(&b, "\t\tiifname %q ct state established,related accept\n", s.cfg.Bridge)
+	for _, chain := range chains {
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
+	}
+	fmt.Fprintf(&b, "\t\tiifname %q drop\n\t}\n\n", s.cfg.Bridge)
 
 	// The hook keeps policy accept, so a table the host also filters in is not overridden: every drop is explicit.
 	fmt.Fprintf(&b, "\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")
@@ -75,11 +90,17 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
 	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
 	for _, chain := range chains {
+		if !chain.Policy {
+			continue
+		}
 		fmt.Fprintf(&b, "\t\tip saddr %s jump %s\n", chain.Address, chainName(s.hostInterface(chain.Address)))
 	}
 	b.WriteString("\t}\n")
 
 	for _, chain := range chains {
+		if !chain.Policy {
+			continue
+		}
 		fmt.Fprintf(&b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
 		for _, rule := range chain.Rules {
 			fmt.Fprintf(&b, "\t\t%s\n", render(rule))

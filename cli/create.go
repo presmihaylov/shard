@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
@@ -48,6 +49,9 @@ type createOptions struct {
 
 	resources models.Resources
 }
+
+// fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
+func (o createOptions) fronted() bool { return o.policy != "" || len(o.secrets) != 0 }
 
 func (a App) create(ctx context.Context, args []string) error {
 	opts, err := parseCreate(args)
@@ -109,6 +113,12 @@ func parseCreate(args []string) (createOptions, error) {
 		key, _, _ := strings.Cut(entry, "=")
 		if slices.Contains(opts.secrets, key) {
 			return createOptions{}, fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
+		}
+	}
+
+	if opts.fronted() {
+		if err := bundle.TrustsUser(opts.env); err != nil {
+			return createOptions{}, err
 		}
 	}
 
@@ -196,7 +206,7 @@ func grantSecrets(store secretStore, opts *createOptions) error {
 			return err
 		}
 
-		opts.env = append(opts.env, name+"="+sec.MockValue)
+		opts.env = append(opts.env, name+"="+secret.MockValue(sec.Name))
 	}
 
 	return nil
@@ -224,6 +234,17 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 	provider, err := d.provider()
 	if err != nil {
 		return err
+	}
+
+	// Before the pull too: a fronted sandbox is never created without the proxy, so the daemon is checked first.
+	var proxyCA []byte
+	if opts.fronted() {
+		if err := d.requireDaemon(); err != nil {
+			return err
+		}
+		if proxyCA, err = d.proxyCA(); err != nil {
+			return err
+		}
 	}
 
 	// Before the pull: a secret that does not exist should cost no download.
@@ -282,6 +303,7 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		User:       opts.user,
 		Network:    netSpec,
 		Resources:  opts.resources,
+		ProxyCA:    proxyCA,
 	}, img.Config)
 
 	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
@@ -296,8 +318,8 @@ func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error
 		return err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if opts.policy != "" {
+	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if opts.fronted() {
 		if err := net.Reapply(ctx, id); err != nil {
 			return err
 		}

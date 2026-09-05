@@ -121,21 +121,68 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	}
 }
 
-func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
+// A record written before the placeholder was fixed at mock-NAME may hold another, and a sandbox created then holds that one.
+func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
 	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
-	app, root := newSecretApp(t, &out, "value-123456\n", repo)
+	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"name":"KEY","value":"value-123456","destinations":["api.example.com"],"mock_value":"placeholder-key","updated_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(root, "secrets", "KEY"), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"})
+	if err == nil || !strings.Contains(err.Error(), "sb1") || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("set over a moved placeholder while held = %v", err)
+	}
+
+	repo.unreadable = os.ErrPermission
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
-	err := app.Run(t.Context(), []string{"secret", "set", "--mock-value", "another-placeholder", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "sb1") {
-		t.Errorf("set with a new placeholder while held = %v", err)
+	err = app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"})
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Errorf("set over a moved placeholder with an unreadable record = %v", err)
+	}
+}
+
+func TestSecretSetStoresTheHeadersAndTheMatch(t *testing.T) {
+	var out bytes.Buffer
+
+	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	args := []string{"secret", "set", "--to", "api.example.com", "--header", "Authorization: Bearer {value}", "--match", "path=/v1/", "--match", "method=post", "KEY"}
+	if err := app.Run(t.Context(), args); err != nil {
+		t.Fatalf("secret set: %v", err)
+	}
+
+	blob, err := os.ReadFile(filepath.Join(root, "secrets", "KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"Authorization"`, `"Bearer {value}"`, `"/v1/"`, `"POST"`} {
+		if !strings.Contains(string(blob), want) {
+			t.Errorf("the record lacks %s:\n%s", want, blob)
+		}
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Authorization") || strings.Contains(out.String(), "value-123456") {
+		t.Errorf("ls printed:\n%s", out.String())
+	}
+
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--header", "no colon", "KEY"}); err == nil {
+		t.Error("set accepted a header with no colon")
+	}
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--match", "verb=GET", "KEY"}); err == nil {
+		t.Error("set accepted a match key it does not know")
 	}
 }
 

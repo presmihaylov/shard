@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -48,6 +49,32 @@ func TestStartRunsAStoppedSandboxAgain(t *testing.T) {
 	// The record says running only once the sandbox is, so a failed start leaves it stopped.
 	if slices.Index(r.calls, "provider.Start") > slices.Index(r.calls, "repo.Update") {
 		t.Errorf("the record was updated before the start: %v", r.calls)
+	}
+}
+
+func TestStartRefusesAFrontedSandboxWhileTheDaemonIsDown(t *testing.T) {
+	for _, sb := range []models.Sandbox{
+		{ID: "sandbox1", State: models.StateStopped, Policy: "locked"},
+		{ID: "sandbox1", State: models.StateStopped, Secrets: []string{"KEY"}},
+	} {
+		r := &recorder{}
+		app, d := newLifecycleApp(t, &bytes.Buffer{}, r, sb)
+		d.aliveFn = daemonDown
+
+		err := app.Run(t.Context(), []string{"start", "sandbox1"})
+		if !errors.Is(err, errDaemonDown) {
+			t.Errorf("start of %+v = %v, want the daemon refusal", sb, err)
+		}
+		if slices.Contains(r.calls, "net.Allocate") || slices.Contains(r.calls, "provider.Start") {
+			t.Errorf("a refused start still drove the host: %v", r.calls)
+		}
+	}
+
+	// A sandbox nothing fronts needs no daemon.
+	app, d := newLifecycleApp(t, &bytes.Buffer{}, &recorder{}, stopped())
+	d.aliveFn = daemonDown
+	if err := app.Run(t.Context(), []string{"start", "sandbox1"}); err != nil {
+		t.Errorf("an unfronted start needed the daemon: %v", err)
 	}
 }
 

@@ -38,7 +38,8 @@ func (a App) secret(ctx context.Context, args []string) error {
 type secretSetOptions struct {
 	name         string
 	destinations []string
-	mock         string
+	headers      []secret.Header
+	match        secret.Match
 }
 
 // secretSet reads the value from stdin, so it lands in no shell history and no process listing.
@@ -64,31 +65,12 @@ func (a App) secretSet(_ context.Context, args []string) error {
 		return err
 	}
 
-	// A sandbox holds the placeholder it was created with, so a new one would never be matched for it.
-	if opts.mock != "" {
-		if err := placeholderFree(d, store, opts.name, opts.mock); err != nil {
-			return err
-		}
-	}
-
-	sec, err := store.Set(opts.name, value, opts.destinations, opts.mock)
+	sec, err := store.Set(opts.name, value, opts.destinations, opts.headers, opts.match)
 	if err != nil {
 		return err
 	}
 
 	return a.print(sec.Name)
-}
-
-func placeholderFree(d *deps, store secretStore, name, mock string) error {
-	existing, err := store.Get(name)
-	if errors.Is(err, secret.ErrNotFound) || (err == nil && existing.MockValue == mock) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	return ungranted(d, name)
 }
 
 // readSecretValue takes the whole of stdin less one trailing newline, which is what echo and a
@@ -112,15 +94,31 @@ func readSecretValue(in io.Reader) (string, error) {
 
 func parseSecretSet(args []string) (secretSetOptions, error) {
 	var opts secretSetOptions
+	var headers, match []string
 
 	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.mock, "mock-value", "", "the placeholder the guest sees in place of the value")
+	flags.Var((*stringList)(&headers), "header", "a header the proxy sets on a granted request, as 'Name: value {value}', repeatable")
+	flags.Var((*stringList)(&match), "match", "a condition every --header needs, as path=, method=, query=k=v or header=Name=v, repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
 	}
+
+	for _, spelling := range headers {
+		header, err := secret.ParseHeader(spelling)
+		if err != nil {
+			return secretSetOptions{}, err
+		}
+		opts.headers = append(opts.headers, header)
+	}
+
+	parsed, err := secret.ParseMatch(match)
+	if err != nil {
+		return secretSetOptions{}, err
+	}
+	opts.match = parsed
 
 	rest := flags.Args()
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
@@ -133,6 +131,17 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	opts.name = rest[0]
 
 	return opts, nil
+}
+
+// stringList collects a repeatable flag as it was spelled; the store parses each entry.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+
+	return nil
 }
 
 func (a App) secretList(args []string) error {
@@ -149,10 +158,14 @@ func (a App) secretList(args []string) error {
 	secrets, listErr := store.List()
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
+	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tHEADERS\tUPDATED")
 
 	for _, sec := range secrets {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.MockValue, humanAge(sec.UpdatedAt))
+		names := make([]string, 0, len(sec.Headers))
+		for _, header := range sec.Headers {
+			names = append(names, header.Name)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), secret.MockValue(sec.Name), strings.Join(names, ","), humanAge(sec.UpdatedAt))
 	}
 
 	if err := w.Flush(); err != nil {

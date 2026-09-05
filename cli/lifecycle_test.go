@@ -309,6 +309,7 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 		netSvc:       &fakeLifecycleNet{r: r},
 		providerSvc:  &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
 		substrateSvc: &fakeLifecycleSubstrate{r: r},
+		aliveFn:      daemonUp,
 	}
 
 	return App{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 // start runs a stopped sandbox again. Its address, its writable layer and its record all survived
@@ -46,6 +47,13 @@ func (a App) start(ctx context.Context, args []string) (err error) {
 
 	if sb.State != models.StateStopped {
 		return fmt.Errorf("sandbox %s is %s: start takes a stopped sandbox", id, sb.State)
+	}
+
+	// A fronted sandbox's rules come back with its netns, and they lead to the proxy, so the daemon must be up.
+	if egress.Fronted(sb) {
+		if err := d.requireDaemon(); err != nil {
+			return err
+		}
 	}
 
 	net, err := d.net()

@@ -182,8 +182,84 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 		}
 	}
 
-	if _, err := ParseRule(models.ActionAllow, "suffix:example.com"); err == nil || !strings.Contains(err.Error(), "SHARD-71") {
-		t.Errorf("a suffix rule got %v, want a refusal that names the proxy ticket", err)
+	rule, err := ParseRule(models.ActionAllow, "suffix:example.com")
+	if err != nil || rule.Protocol != "tcp" || !slices.Equal(rule.Ports, []int{80, 443}) {
+		t.Errorf("a suffix rule = %+v, %v, want the web ports by default", rule, err)
+	}
+}
+
+func TestMatchHostReadsTheWildcardShape(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, host string
+		want          bool
+	}{
+		{"*", "anything.example.com", true},
+		{"api.example.com", "api.example.com", true},
+		{"api.example.com", "www.example.com", false},
+		{"*.example.com", "api.example.com", true},
+		{"*.example.com", "deep.api.example.com", true},
+		{"*.example.com", "example.com", false},
+		{"*.example.com", "example.org", false},
+		{"www.*.com", "www.example.com", true},
+		{"www.*.com", "www.deep.example.com", false},
+		{"*.*.example.com", "a.b.example.com", true},
+		{"*.*.example.com", "b.example.com", false},
+	} {
+		if got := MatchHost(tc.pattern, tc.host); got != tc.want {
+			t.Errorf("MatchHost(%q, %q) = %v, want %v", tc.pattern, tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestDecideWalksTheEffectiveRulesByName(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{
+		mustRule(t, models.ActionDeny, "bad.example.com"),
+		mustRule(t, models.ActionAllow, "suffix:example.com"),
+		mustRule(t, models.ActionAllow, "*.example.org tcp:443"),
+		mustRule(t, models.ActionAllow, "93.184.216.0/24 tcp:80"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(s, nil, fakeGrants{"TOKEN": {"bad.example.com"}}, nameservers, fakeResolver{})
+	sb := models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN"}}
+	public := netip.MustParseAddr("93.184.216.34")
+
+	for _, tc := range []struct {
+		host string
+		port int
+		addr netip.Addr
+		want models.Action
+		rule string
+	}{
+		{"bad.example.com", 443, public, models.ActionAllow, "allow bad.example.com tcp:80,443"},
+		{"api.example.com", 80, public, models.ActionAllow, "allow suffix:example.com tcp:80,443"},
+		{"example.com", 80, public, models.ActionAllow, "allow suffix:example.com tcp:80,443"},
+		{"notexample.com", 443, public, models.ActionDeny, ""},
+		{"a.example.org", 443, public, models.ActionAllow, "allow *.example.org tcp:443"},
+		{"a.example.org", 80, netip.MustParseAddr("93.184.216.9"), models.ActionAllow, "allow 93.184.216.0/24 tcp:80"},
+		{"a.example.org", 80, netip.MustParseAddr("1.2.3.4"), models.ActionDeny, ""},
+		{"api.example.com", 443, netip.MustParseAddr("10.0.0.5"), models.ActionDeny, ""},
+	} {
+		got, err := svc.Decide(sb, tc.host, tc.port, tc.addr)
+		if err != nil {
+			t.Fatalf("Decide(%s:%d): %v", tc.host, tc.port, err)
+		}
+		rule := ""
+		if got.Rule.Destination.Kind != "" {
+			rule = FormatRule(got.Rule.Rule)
+		}
+		if got.Action != tc.want || rule != tc.rule {
+			t.Errorf("Decide(%s:%d at %s) = %s by %q (%s), want %s by %q", tc.host, tc.port, tc.addr, got.Action, rule, got.Reason, tc.want, tc.rule)
+		}
+	}
+
+	if got, err := svc.Decide(models.Sandbox{ID: "free"}, "any.example.net", 80, public); err != nil || got.Action != models.ActionAllow {
+		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
+	}
+	if got, err := svc.Decide(models.Sandbox{ID: "lost", Policy: "gone"}, "any.example.net", 80, public); err != nil || got.Action != models.ActionDeny {
+		t.Errorf("a sandbox whose policy is gone got %+v, %v", got, err)
 	}
 }
 
@@ -260,6 +336,7 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 		{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")},
 		{ID: "sandbox2", Policy: "web"},
 		{ID: "sandbox3", Address: netip.MustParsePrefix("10.87.0.3/16")},
+		{ID: "sandbox4", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.4/16")},
 	}
 	resolver := fakeResolver{"api.example.com": {netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("::1"), netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("23.1.1.1")}}
 
@@ -267,8 +344,12 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chains: %v", err)
 	}
-	if len(chains) != 1 || chains[0].Address != netip.MustParseAddr("10.87.0.2") {
-		t.Fatalf("Chains = %+v, want one for sandbox1", chains)
+	if len(chains) != 2 || chains[0].Address != netip.MustParseAddr("10.87.0.2") || !chains[0].Policy {
+		t.Fatalf("Chains = %+v, want one for sandbox1 and one for sandbox4", chains)
+	}
+	// A secret alone fronts the sandbox, so it gets the proxy and no rules of its own.
+	if chains[1].Address != netip.MustParseAddr("10.87.0.4") || chains[1].Policy || chains[1].Rules != nil {
+		t.Errorf("the secret-only sandbox compiled to %+v", chains[1])
 	}
 
 	rules := chains[0].Rules

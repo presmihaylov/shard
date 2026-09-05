@@ -91,6 +91,9 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
+
+	// ProxyCA is the PEM certificate a fronted sandbox must trust, so the proxy can terminate its TLS; nil fronts nothing.
+	ProxyCA []byte
 }
 
 // ExecSpec is one process in a sandbox that already runs. It is never the entrypoint.

@@ -2,14 +2,19 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
@@ -52,11 +57,14 @@ type sandboxNetwork interface {
 
 // secretStore is the part of secret.Store the commands drive. No command reads a value: that is the proxy's.
 type secretStore interface {
-	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
+	Set(name, value string, destinations []string, headers []secret.Header, match secret.Match) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
 	List() ([]secret.Secret, error)
 	Remove(name string) error
 }
+
+// errDaemonDown is the refusal every fronting verb gives: without the proxy a fronted sandbox has no way out.
+var errDaemonDown = errors.New("shard daemon is not running; start it (systemctl start shard) before fronting a sandbox")
 
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
 // teardown gives it back.
@@ -78,6 +86,9 @@ type deps struct {
 	secretSvc    secretStore
 	policySvc    *egress.Store
 	runnerSvc    *runsc.Runner
+
+	// aliveFn answers whether the daemon holds the root. A test that fronts a sandbox replaces it.
+	aliveFn func(root string) (bool, error)
 
 	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
 	inFile  *os.File
@@ -197,13 +208,63 @@ func (d *deps) secrets() (secretStore, error) {
 		return d.secretSvc, nil
 	}
 
-	store, err := secret.New(filepath.Join(d.app.Root, "secrets"))
+	store, err := secret.New(filepath.Join(d.app.Root, "secrets"), d.holders)
 	if err != nil {
 		return nil, err
 	}
 	d.secretSvc = store
 
 	return d.secretSvc, nil
+}
+
+// holders names the sandboxes whose record grants the secret, so the store can refuse to move a placeholder under them.
+func (d *deps) holders(name string) ([]string, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	sandboxes, err := repo.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var users []string
+	for _, sb := range sandboxes {
+		if slices.Contains(sb.Secrets, name) {
+			users = append(users, sb.ID)
+		}
+	}
+
+	return users, nil
+}
+
+// requireDaemon refuses to front a sandbox while no daemon runs the proxy, because the DNAT would lead nowhere.
+func (d *deps) requireDaemon() error {
+	alive := d.aliveFn
+	if alive == nil {
+		alive = daemon.Alive
+	}
+
+	up, err := alive(d.app.Root)
+	if err != nil {
+		return fmt.Errorf("check for a running daemon: %w", err)
+	}
+	if !up {
+		return errDaemonDown
+	}
+
+	return nil
+}
+
+// proxyCA is what a fronted sandbox is built to trust. The daemon mints it on its first run, and a create before that mints it under the same lock.
+func (d *deps) proxyCA() ([]byte, error) {
+	ca, err := proxy.LoadCA(filepath.Join(d.app.Root, "proxy"))
+	if err != nil {
+		return nil, err
+	}
+
+	return ca.CertPEM(), nil
 }
 
 func (d *deps) substrate() (substrate, error) {
