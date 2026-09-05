@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"path/filepath"
@@ -29,12 +30,46 @@ type Config struct {
 
 // Run supervises the daemon's tasks over one root until ctx ends.
 func Run(ctx context.Context, cfg Config) error {
-	return New(cfg.Root, cfg.Out, apiTask{deps: &deps{cfg: cfg}}).Run(ctx)
+	d := &deps{cfg: cfg}
+	life := &lifecycle{deps: d}
+
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+}
+
+// reconciler checks the records against the substrate at start. An empty root needs no provider, so a
+// host without runsc still gets a daemon that answers the reads and the store verbs.
+type reconciler struct {
+	deps      *deps
+	lifecycle *lifecycle
+}
+
+func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
+	repo, err := r.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	sandboxes, unreadable := repo.List()
+	if unreadable != nil {
+		// A record shard cannot read is one it cannot correct either, and refusing to start would fix none.
+		report(fmt.Sprintf("some records cannot be read, so they are not checked: %v", unreadable))
+	}
+	if len(sandboxes) == 0 {
+		return nil
+	}
+
+	svc, err := r.lifecycle.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.ReconcileAll(ctx, sandboxes, report)
 }
 
 // apiTask serves the REST API on the socket under the root. The daemon restarts it when the listener dies.
 type apiTask struct {
-	deps *deps
+	deps      *deps
+	lifecycle *lifecycle
 }
 
 func (apiTask) Name() string { return "api" }
@@ -68,7 +103,7 @@ func (t apiTask) Run(ctx context.Context) error {
 	}
 	log.New(cfg.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	handler := api.NewHandler(cfg.Version, repo, enforcer, &lifecycle{deps: t.deps}, stores, cfg.Out)
+	handler := api.NewHandler(cfg.Version, repo, enforcer, t.lifecycle, stores, cfg.Out)
 
 	return api.Serve(ctx, listener, handler)
 }

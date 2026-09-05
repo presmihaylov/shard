@@ -43,6 +43,36 @@ A sandbox outlives the daemon. runsc runs in its own session, so a daemon that s
 leaves every sandbox up, and the next daemon lists and serves them from the same root. The unit
 sets `KillMode=process` for the same reason: systemd ends the daemon alone, never its sandboxes.
 
+An exec outlives the daemon too, on the guest side alone. `shard-init` holds the guest process, and
+the daemon holds only the host end of the stream, so a restart cuts the client off and the command
+keeps running inside the sandbox. The client sees its stream end and its exit code is lost; it
+cannot attach to that exec again, because reattaching by exec id is not built. A new `shard exec`
+answers as soon as the daemon is back.
+
+## Reconcile at start
+
+The daemon checks every record against the substrate after it takes the lock and before it listens,
+so no verb ever reads a record the substrate disagrees with. It corrects a record and never deletes
+one:
+
+- A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
+  `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
+  `shard inspect` carries it in the record. A `start` clears it.
+- A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
+  checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
+  A paused record whose snapshot is gone becomes `stopped` with the same reason.
+- A record that says `stopped` while the substrate holds a live process becomes `running`, with the
+  pid the substrate reports, and the exit status of the run that ended is dropped.
+- A record that says `created` is left alone: it never ran.
+- Host netfilter is the policy of record and nothing re-applied it while the daemon was down, so
+  the whole table goes back on once when any sandbox runs.
+
+Each corrected record is one line in the journal. A daemon that cannot check the records refuses to
+start rather than serve verbs over state it has not seen; systemd restarts it. A record the daemon
+cannot read is named in the log and left as it is, because a record shard cannot read is one it
+cannot correct either. A root with no records needs no substrate, so a host without `runsc` still
+gets a daemon that answers the reads and the store verbs.
+
 ## The API socket
 
 The daemon listens on `${root}/shard.sock`, so `/var/lib/shard/shard.sock` by default. It never
