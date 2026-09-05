@@ -41,6 +41,21 @@ func (f fakeSecrets) Value(name string) (string, error) {
 	return "real-" + name, nil
 }
 
+// fixedSecrets answers Value from its own map, for a case where "real-" + name would hide a wrong substitution.
+type fixedSecrets struct {
+	fakeSecrets
+	values map[string]string
+}
+
+func (f fixedSecrets) Value(name string) (string, error) {
+	value, ok := f.values[name]
+	if !ok {
+		return "", secret.ErrNotFound
+	}
+
+	return value, nil
+}
+
 type fakeResolver map[string][]netip.Addr
 
 func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
@@ -57,7 +72,7 @@ var (
 	upstream = netip.MustParseAddr("93.184.216.34")
 )
 
-func newBroker(t *testing.T, records Records, secrets fakeSecrets, policies ...models.Policy) *Broker {
+func newBroker(t *testing.T, records Records, secrets Secrets, policies ...models.Policy) *Broker {
 	t.Helper()
 
 	store, err := egress.NewStore(filepath.Join(t.TempDir(), "policies"))
@@ -166,6 +181,32 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	// A body too long to hold comes in as nil and goes out as nil: the proxy streams it unchanged.
 	if body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, request(t, http.MethodPut, "https://api.example.com/"), nil); err != nil || body != nil {
 		t.Errorf("a streamed body got %q, %v", body, err)
+	}
+}
+
+func TestRewriteReplacesTheLongestPlaceholderFirst(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "TOKEN_B"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fixedSecrets{
+		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Destinations: []string{"api.example.com"}}},
+		values:      map[string]string{"TOKEN": "aaaa", "TOKEN_B": "bbbb"},
+	}
+	b := newBroker(t, records, secrets)
+
+	out := request(t, http.MethodPost, "https://api.example.com/mock-TOKEN_B/mock-TOKEN?b=mock-TOKEN_B")
+	out.Header.Set("Authorization", "Bearer mock-TOKEN_B")
+
+	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`))
+	if err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if out.URL.Path != "/bbbb/aaaa" || out.URL.RawQuery != "b=bbbb" {
+		t.Errorf("the url became %s", out.URL)
+	}
+	if out.Header.Get("Authorization") != "Bearer bbbb" {
+		t.Errorf("the headers became %v", out.Header)
+	}
+	if string(body) != `{"a":"aaaa","b":"bbbb"}` {
+		t.Errorf("the body became %s", body)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
@@ -77,7 +78,11 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 		return nil, err
 	}
 
-	for _, name := range sb.Secrets {
+	// mock-TOKEN sits inside mock-TOKEN_B, so the longest placeholder goes first or a shorter name eats it.
+	names := slices.Clone(sb.Secrets)
+	slices.SortStableFunc(names, func(a, b string) int { return len(b) - len(a) })
+
+	for _, name := range names {
 		sec, err := b.secrets.Get(name)
 		if errors.Is(err, secret.ErrNotFound) {
 			// A secret removed with --force leaves a placeholder no request can redeem, and it goes out as it is.
