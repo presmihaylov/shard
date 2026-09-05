@@ -7,15 +7,18 @@ and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host wi
 gVisor. A resident `shard daemon` owns the state and serves it over a REST API on a unix socket; the
 CLI is a thin client of that socket, one verb at a time.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet. `shard version`,
-`shard ls`, `shard inspect`, `shard create`, `shard start`, `shard stop` and `shard rm` speak to the
-daemon, and need it up. Every other verb still works on the stores directly. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet. Every verb speaks
+to the daemon and needs it up. See `docs/daemon.md`.
 
 ## Sandboxes
 
 ```
+shard daemon
 shard create python:3.12 -- python -c 'print(1)'
 ```
+
+`shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
+It owns the state; every other verb is a client of its socket and fails fast without it.
 
 It pulls the image, claims the record, allocates the network, creates the sandbox and starts the
 entrypoint. Then it prints the id and returns. It never attaches: the entrypoint runs as the child

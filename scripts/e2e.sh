@@ -229,12 +229,20 @@ start_daemon() {
 	return 1
 }
 
-# stop_daemon ends the daemon this run started and waits for it, so its socket is gone when this returns.
+# stop_daemon ends the daemon this run started, by its own pid, and answers only once the socket it
+# served is gone. It never touches another daemon: the pid is the one start_daemon kept.
 stop_daemon() {
 	[ -n "${DAEMON_PID}" ] || return 0
 	kill "${DAEMON_PID}" >/dev/null 2>&1 || true
 	wait "${DAEMON_PID}" >/dev/null 2>&1 || true
 	DAEMON_PID=""
+
+	for _ in $(seq 1 50); do
+		[ -e "${SHARD_ROOT}/shard.sock" ] || return 0
+		sleep 0.1
+	done
+
+	return 1
 }
 
 # teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
@@ -257,7 +265,7 @@ teardown() {
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
 
-	stop_daemon
+	stop_daemon || echo "teardown: the socket ${SHARD_ROOT}/shard.sock outlived the daemon" >&2
 	wipe_root
 	rm -f "${DAEMON_LOG:-/nonexistent}"
 }
@@ -426,8 +434,7 @@ for _ in $(seq 1 50); do
 done
 nap_alive || fail "the background exec never started in the guest"
 say "an exec runs /bin/sleep 313 in the guest"
-stop_daemon
-[ ! -e "${SOCKET}" ] || fail "the socket ${SOCKET} outlived the daemon"
+stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 kill -0 "${SANDBOX_PID}" 2>/dev/null || fail "the sandbox process ${SANDBOX_PID} died with the daemon"
 say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
@@ -448,7 +455,7 @@ RECONCILE_RECORD="${SHARD_ROOT}/sandboxes/${RECONCILE_ID}/sandbox.json"
 RECONCILE_LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECONCILE_RECORD}" | cut -d'"' -f4)
 RECONCILE_PID=$(grep -o '"pid": *[0-9]*' "${RECONCILE_RECORD}" | grep -o '[0-9]*$')
 [ -n "${RECONCILE_PID}" ] || fail "the record of ${RECONCILE_ID} holds no pid"
-stop_daemon
+stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 kill -9 "${RECONCILE_PID}" 2>/dev/null || true
 for _ in $(seq 1 50); do
 	kill -0 "${RECONCILE_PID}" 2>/dev/null || break
@@ -798,8 +805,7 @@ shard rm "${ID}" >/dev/null 2>&1
 say "a second rm is idempotent"
 
 step "stop the daemon and prove the socket is gone"
-stop_daemon
-[ ! -e "${SOCKET}" ] || fail "the socket ${SOCKET} outlived the daemon"
+stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 say "the socket is gone"
 CODE=0
 REFUSAL=$(shard ls 2>&1) || CODE=$?

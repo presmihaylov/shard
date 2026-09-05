@@ -18,9 +18,6 @@ import (
 // terminalReadBudget bounds the wait for what a command wrote to a terminal this test holds open.
 const terminalReadBudget = 5 * time.Second
 
-// entrypointBudget bounds the wait for an entrypoint that exits at once, so an exec runs after it.
-const entrypointBudget = 30 * time.Second
-
 // TestExecReturnsTheCommandExitCode is the SHARD-22 acceptance criterion: a command that exits 7
 // makes shard exec exit 7. Create prints an id and exits 0; exec is the opposite.
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
@@ -134,9 +131,8 @@ func TestExecRefusesAnIdShardDoesNotHold(t *testing.T) {
 func TestExecRefusesASandboxThatIsStopped(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	deps := createApp(t, app)
-	if err := deps.provider.Stop(t.Context(), id, stopGrace); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
+		t.Fatalf("stop: %v", err)
 	}
 
 	_, err := runExec(t, app, "exec", id, "--", "/bin/true")
@@ -276,8 +272,7 @@ func runningSandbox(t *testing.T) (App, string) {
 func sandboxAs(t *testing.T, user string) (App, string) {
 	t.Helper()
 
-	app, _ := newCreateApp(t)
-	deps := createApp(t, app)
+	app, out := newCreateApp(t)
 
 	args := []string{"create"}
 	if user != "" {
@@ -287,14 +282,11 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 		t.Fatalf("create: %v", err)
 	}
 
-	id := onlySandbox(t, app.Root)
-	t.Cleanup(func() { cleanUp(t, deps, id) })
+	id := strings.TrimSpace(out.String())
+	out.Reset()
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	ctx, cancel := context.WithTimeout(t.Context(), entrypointBudget)
-	defer cancel()
-	if _, err := deps.provider.Wait(ctx, id); err != nil {
-		t.Fatalf("wait for the entrypoint to exit: %v", err)
-	}
+	awaitEntrypoint(t, app, id)
 
 	return app, id
 }

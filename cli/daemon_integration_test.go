@@ -17,10 +17,9 @@ import (
 // The daemon and the CLI share the root, so what one wrote the other serves.
 func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	app, out := newCreateApp(t)
-	deps := createApp(t, app)
 
 	id := create(t, app, out, "/bin/sleep", "600")
-	t.Cleanup(func() { cleanUp(t, deps, id) })
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	path := filepath.Join(app.Root, api.SocketFile)
 	info, err := os.Lstat(path)
