@@ -1,11 +1,9 @@
-// Package api answers the REST API the daemon serves on its socket. A handler calls services/ and
-// holds no verb logic of its own, so the CLI and the API cannot drift apart.
+// Package api answers the REST API on the daemon's socket. A handler calls services/ and holds no verb logic.
 package api
 
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 
@@ -130,11 +128,11 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, Error{Error: err.Error()})
 }
 
-// writeJSON encodes first, so a value that will not encode turns into a 500 and never a torn 200.
+// writeJSON encodes before it writes a status, so a value that will not encode is a 500 and never a torn 200.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":%q}`, "encode the answer: "+err.Error()), http.StatusInternalServerError)
+		http.Error(w, "encode the answer: "+err.Error(), http.StatusInternalServerError)
 
 		return
 	}

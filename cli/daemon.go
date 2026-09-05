@@ -14,7 +14,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 )
 
-// daemon runs the resident process: a resident peer over the same stores and locks as every other verb. It owns
+// daemon runs the resident process: a peer over the same stores and locks as every other verb. It owns
 // only background work, never the sandbox lifecycle, and systemd starts it, never another verb.
 func (a App) daemon(ctx context.Context, args []string) error {
 	if len(args) != 0 {
@@ -51,8 +51,7 @@ func (t proxyTask) Run(ctx context.Context) error {
 	return t.app.serveProxy(ctx, t.app.deps(), t.gateway, t.ports)
 }
 
-// socketTask answers the API on the socket under the root. The handlers read the same stores every
-// verb reads, so the daemon needs no provider and no network to answer.
+// socketTask answers the API on the socket under the root, over the stores alone: no provider, no network.
 type socketTask struct {
 	app App
 }

@@ -19,8 +19,7 @@ import (
 	"github.com/presmihaylov/shard/services/secret"
 )
 
-// seed wires the service over a repository on disk under a temporary root, with one running sandbox
-// named web that holds the policy locked, and one stopped sandbox.
+// seed wires the service over stores on disk: a running sandbox named web with the policy locked, and a stopped one.
 func seed(t *testing.T) (*Service, models.Sandbox, models.Sandbox) {
 	t.Helper()
 
@@ -184,8 +183,7 @@ func TestUnknownRouteIs404(t *testing.T) {
 	}
 }
 
-// The socket carries the same handler; the group branch needs a host with the group, so this
-// covers the root-only fallback and the stale-file removal.
+// The group branch needs a host with the group, so this covers the fallback and the stale-file removal.
 func TestListenServesOverTheSocket(t *testing.T) {
 	svc, up, _ := seed(t)
 
