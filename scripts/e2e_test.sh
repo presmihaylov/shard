@@ -168,6 +168,24 @@ CLONE_IDS=""
 CLONE_LINKS=""
 
 echo
+echo "== teardown stops the daemon it started, after the sandboxes and before the root goes"
+SHARD_CALLS=$(mktemp)
+IP_CALLS=$(mktemp)
+SHARD_ROOT=$(mktemp -d)
+DAEMON_LOG=$(mktemp)
+sleep 600 &
+DAEMON_PID=$!
+
+teardown
+
+check "the daemon process" "$(kill -0 "${DAEMON_PID}" 2>/dev/null && echo alive || echo gone)" "gone"
+check "the pid it kept" "${DAEMON_PID}" ""
+check "the daemon log" "$([ -e "${DAEMON_LOG}" ] && echo present || echo gone)" "gone"
+check "the sandbox it removed first" "$(cat "${SHARD_CALLS}")" "rm --force tidy-otter-0102"
+rm -f "${SHARD_CALLS}" "${IP_CALLS}"
+DAEMON_LOG=""
+
+echo
 echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
 check "no line assigns FORK_ID to ID" "$(grep -c '^ID="\${FORK_ID}"' "${HERE}/e2e.sh")" "0"
 
