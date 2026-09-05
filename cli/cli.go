@@ -55,6 +55,7 @@ Usage:
   shard policy show <name> print a policy as JSON
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
+  shard serve              run the daemon that owns the background work; systemd starts it, no other verb needs it
   shard version            print the version
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -167,6 +168,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.secret(ctx, args[1:])
 	case "policy":
 		return a.policy(ctx, args[1:])
+	case "serve":
+		return a.serve(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}
