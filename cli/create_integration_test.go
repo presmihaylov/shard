@@ -162,10 +162,8 @@ func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 // TestCreateLeaksNothingWhenItFails is the other half: half-built state is a bug, so a failure at
 // any claim gives back the record, the lease, the namespace, the link and the mount.
 func TestCreateLeaksNothingWhenItFails(t *testing.T) {
-	app, _ := newCreateApp(t)
-
 	// A supervisor that is not there fails the bind mount, which is the last claim before the start.
-	app.InitPath = filepath.Join(t.TempDir(), "absent")
+	app, _ := newCreateAppWithInit(t, filepath.Join(t.TempDir(), "absent"))
 
 	args := []string{"create", testImage, "--", "/bin/true"}
 	if err := app.Run(t.Context(), args); err == nil {
@@ -246,8 +244,8 @@ func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
 	}
 }
 
-// TestCreateLeaksNothingWhenItIsInterrupted: Ctrl-C cancels the command's own context, so the
-// give-back has to run on one the interrupt cannot have cancelled.
+// TestCreateLeaksNothingWhenItIsInterrupted: Ctrl-C ends the client's request, which cancels the
+// daemon's, so the give-back has to run on a context the client cannot have cancelled.
 func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {
 	app, _ := newCreateApp(t)
 
@@ -256,30 +254,47 @@ func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {
 		t.Fatalf("pull: %v", err)
 	}
 
+	// The interrupt lands once the lease is claimed: the create is then inside the substrate.
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	go func() {
+		for ctx.Err() == nil {
+			if held, err := os.ReadDir(filepath.Join(app.Root, "network", "leases")); err == nil && len(held) != 0 {
+				cancel()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
 
-	if err := app.Run(ctx, []string{"create", testImage, "--", "/bin/true"}); err == nil {
+	if err := app.Run(ctx, []string{"create", testImage, "--", "/bin/sleep", "600"}); err == nil {
 		t.Fatal("an interrupted create returned no error")
 	}
 
-	left, err := records(t, app.Root).List()
-	if err != nil {
-		t.Fatalf("list the records: %v", err)
-	}
-	if len(left) != 0 {
-		t.Errorf("the interrupted create left the records %+v", left)
-	}
-
-	if held := leases(t, app.Root); len(held) != 0 {
-		t.Errorf("the interrupted create left the leases %v", held)
-	}
-	if held := containers(t, app.Root); len(held) != 0 {
-		t.Errorf("the interrupted create left the runsc containers %v", held)
+	// The daemon gives everything back after the client is gone, so the check waits for it.
+	deadline := time.Now().Add(waitBudget)
+	for {
+		left, err := records(t, app.Root).List()
+		if err != nil {
+			t.Fatalf("list the records: %v", err)
+		}
+		held := append(leases(t, app.Root), containers(t, app.Root)...)
+		if len(left) == 0 && len(held) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the interrupted create left the records %+v and the holdings %v", left, held)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
+	t.Helper()
+
+	return newCreateAppWithInit(t, hostInitPath)
+}
+
+// newCreateAppWithInit starts a daemon on a fresh root and answers the client app that speaks to it.
+func newCreateAppWithInit(t *testing.T, initPath string) (App, *bytes.Buffer) {
 	t.Helper()
 
 	if os.Geteuid() != 0 {
@@ -307,8 +322,16 @@ func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
 		}
 	})
 
-	// No factory override: these tests drive the real wiring, which is the whole point of them.
-	app := App{Version: "test", Root: root, Out: out, Err: out, Timeout: 5 * time.Minute, InitPath: hostInitPath}
+	// No factory override: the daemon drives the real wiring, which is the whole point of these tests.
+	app := App{Version: "test", Root: root, Out: out, Err: out, Timeout: 5 * time.Minute, InitPath: initPath}
+
+	cancel, done := startDaemon(t, app, &syncBuffer{})
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("the daemon ended with %v", err)
+		}
+	})
 
 	return app, out
 }

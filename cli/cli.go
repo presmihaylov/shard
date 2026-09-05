@@ -17,8 +17,14 @@ import (
 // DefaultRoot is where shard keeps everything on the box.
 const DefaultRoot = "/var/lib/shard"
 
-// DefaultTimeout bounds one pull. Without it a registry that accepts and stalls pins a root process.
+// DefaultTimeout bounds one pull inside the daemon. Without it a registry that accepts and stalls pins it.
 const DefaultTimeout = 30 * time.Minute
+
+// DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
+const DefaultInitPath = "/usr/local/bin/shard-init"
+
+// InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no create flag.
+const InitPathEnv = "SHARD_INIT_PATH"
 
 const usage = `shard - a single-node sandbox manager (pre-alpha)
 
@@ -57,7 +63,7 @@ Usage:
   shard policy show <name> print a policy as JSON
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
-  shard daemon             run the resident process that owns the background work and the API socket; systemd starts it
+  shard daemon             run the resident process that owns the sandbox lifecycle, the background work and the API socket; systemd starts it
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -91,7 +97,7 @@ Rm flags, which must precede the id or name:
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
-  --timeout <duration>     how long a pull may take (default 30m)
+  --timeout <duration>     how long a pull may take, read by the daemon (default 30m)
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable`
 

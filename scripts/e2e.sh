@@ -210,15 +210,17 @@ wipe_root() {
 }
 
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
+# It returns non-zero rather than failing, so a teardown can bring one back without ending the script.
 start_daemon() {
-	DAEMON_LOG=$(mktemp)
+	[ -n "${DAEMON_LOG}" ] || DAEMON_LOG=$(mktemp)
 	"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	for _ in $(seq 1 50); do
-		grep -q "api listening on" "${DAEMON_LOG}" && break
+		grep -q "api listening on" "${DAEMON_LOG}" && return 0
 		sleep 0.1
 	done
-	grep -q "api listening on" "${DAEMON_LOG}" || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+
+	return 1
 }
 
 # stop_daemon ends the daemon this run started and waits for it, so its socket is gone when this returns.
@@ -233,6 +235,10 @@ stop_daemon() {
 # record is the only handle by which its mount and its namespace can be found again.
 teardown() {
 	local id link
+	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}" ]; then
+		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
+	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
 	for id in ${CLONE_IDS} "${FORK_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
@@ -317,7 +323,7 @@ REFUSAL=$(shard ls 2>&1) || CODE=$?
 expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls names the socket and the daemon, and nothing else"
 
 step "start the daemon in the background"
-start_daemon
+start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
 LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
 say "the daemon logged: ${LISTEN_LINE#* api }"
@@ -401,6 +407,17 @@ LISTED=$(shard ls | grep "^${ID}" || true)
 echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
+
+step "restart the daemon and prove the sandbox outlives it"
+SANDBOX_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
+[ -n "${SANDBOX_PID}" ] || fail "the record holds no pid"
+stop_daemon
+[ ! -e "${SOCKET}" ] || fail "the socket ${SOCKET} outlived the daemon"
+kill -0 "${SANDBOX_PID}" 2>/dev/null || fail "the sandbox process ${SANDBOX_PID} died with the daemon"
+say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
+start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
+expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
 
 step "read the output of the entrypoint"
 # The line lands when the guest gets to it, which is after create returned.
@@ -743,4 +760,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, daemon restart, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"

@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -85,7 +87,7 @@ func New(root string) *Client {
 
 func (c *Client) Version(ctx context.Context) (Version, error) {
 	var out Version
-	if err := c.get(ctx, "/v0/version", &out); err != nil {
+	if err := c.call(ctx, http.MethodGet, "/v0/version", nil, &out, c.Timeout); err != nil {
 		return Version{}, err
 	}
 
@@ -99,7 +101,7 @@ func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error
 	}
 
 	var out ListResult
-	if err := c.get(ctx, path, &out); err != nil {
+	if err := c.call(ctx, http.MethodGet, path, nil, &out, c.Timeout); err != nil {
 		return ListResult{}, err
 	}
 
@@ -109,32 +111,103 @@ func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error
 // GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy.
 func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
 	var out sandbox.Inspection
-
-	err := c.get(ctx, "/v0/sandboxes/"+url.PathEscape(ref), &out)
-
-	var missing *apiError
-	if errors.As(err, &missing) && missing.Status == http.StatusNotFound {
-		return sandbox.Inspection{}, &NotFoundError{Ref: ref}
-	}
-	if err != nil {
-		return sandbox.Inspection{}, err
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
+		return sandbox.Inspection{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
-// get reads one route into out; the host in the URL is a placeholder, the dialer ignores it.
-func (c *Client) get(ctx context.Context, path string, out any) error {
+// CreateSandbox pulls the image inside the daemon, so the call has no bound of its own: only the caller's context ends it.
+func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes", req, &out, 0); err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return out, nil
+}
+
+func (c *Client) StartSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/start", nil, &out, c.Timeout); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
+// StopSandbox waits the grace on top of the usual bound, because the daemon does before it answers.
+func (c *Client) StopSandbox(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
+	body := struct {
+		Grace float64 `json:"grace"`
+	}{Grace: grace.Seconds()}
+
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/stop", body, &out, c.plus(grace)); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
+// RemoveSandbox frees a stopped sandbox; force stops a live one first, with grace as that stop's.
+func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool, grace time.Duration) error {
+	path := "/v0/sandboxes/" + url.PathEscape(ref)
+	if force {
+		path += "?force=true&grace=" + strconv.FormatFloat(grace.Seconds(), 'f', -1, 64)
+	}
+
+	if err := c.call(ctx, http.MethodDelete, path, nil, nil, c.plus(grace)); err != nil {
+		return missing(ref, err)
+	}
+
+	return nil
+}
+
+// plus stretches the bound by what the daemon itself waits for; no bound stays no bound.
+func (c *Client) plus(grace time.Duration) time.Duration {
+	if c.Timeout == 0 {
+		return 0
+	}
+
+	return c.Timeout + grace
+}
+
+// missing turns the daemon's 404 into the one error a verb prints as its own line.
+func missing(ref string, err error) error {
+	var answer *apiError
+	if errors.As(err, &answer) && answer.Status == http.StatusNotFound {
+		return &NotFoundError{Ref: ref}
+	}
+
+	return err
+}
+
+// call sends in as JSON and decodes out, each when set, under bound; zero is no deadline.
+func (c *Client) call(ctx context.Context, method, path string, in, out any, bound time.Duration) error {
 	call := ctx
-	if c.Timeout != 0 {
+	if bound != 0 {
 		var cancel context.CancelFunc
-		call, cancel = context.WithTimeout(ctx, c.Timeout)
+		call, cancel = context.WithTimeout(ctx, bound)
 		defer cancel()
 	}
 
-	req, err := http.NewRequestWithContext(call, http.MethodGet, "http://shard"+path, nil)
+	var payload io.Reader
+	if in != nil {
+		encoded, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("encode the request for %s %s: %w", method, path, err)
+		}
+		payload = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(call, method, "http://shard"+path, payload)
 	if err != nil {
-		return fmt.Errorf("build the request for %s: %w", path, err)
+		return fmt.Errorf("build the request for %s %s: %w", method, path, err)
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.http.Do(req) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
@@ -144,33 +217,37 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return connect
 	}
 	if err != nil {
-		return c.wrap(ctx, path, err)
+		return c.wrap(ctx, method, path, bound, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return c.wrap(ctx, path, fmt.Errorf("read the answer: %w", err))
+		return c.wrap(ctx, method, path, bound, fmt.Errorf("read the answer: %w", err))
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode >= http.StatusBadRequest {
 		return decodeError(resp.StatusCode, body)
 	}
 
+	if out == nil {
+		return nil
+	}
+
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode the answer to GET %s: %w", path, err)
+		return fmt.Errorf("decode the answer to %s %s: %w", method, path, err)
 	}
 
 	return nil
 }
 
 // wrap names the route and the socket, and says so when the client's own deadline, not the caller's, cut the call.
-func (c *Client) wrap(caller context.Context, path string, err error) error {
+func (c *Client) wrap(caller context.Context, method, path string, bound time.Duration, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil {
-		return fmt.Errorf("GET %s on %s: no answer within %s", path, c.path, c.Timeout)
+		return fmt.Errorf("%s %s on %s: no answer within %s", method, path, c.path, bound)
 	}
 
-	return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
+	return fmt.Errorf("%s %s on %s: %w", method, path, c.path, err)
 }
 
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came.

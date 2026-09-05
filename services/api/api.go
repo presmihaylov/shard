@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,28 +10,42 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// Handler answers the routes over one repository and the egress rules the host enforces over it.
+// Lifecycle is the part of sandbox.Service the routes that change a sandbox call.
+type Lifecycle interface {
+	Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error)
+	Start(ctx context.Context, ref string) (models.Sandbox, error)
+	Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error)
+	Remove(ctx context.Context, ref string, force bool, grace time.Duration) error
+}
+
+// Handler answers the routes over one repository, the rules the host enforces, and the one orchestrator.
 type Handler struct {
-	version  string
-	repo     sandbox.Reader
-	enforcer sandbox.Enforcer
-	log      *log.Logger
+	version   string
+	repo      sandbox.Reader
+	enforcer  sandbox.Enforcer
+	lifecycle Lifecycle
+	log       *log.Logger
 }
 
 // NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, out io.Writer) http.Handler {
-	h := &Handler{version: version, repo: repo, enforcer: enforcer, log: log.New(out, "", log.LstdFlags)}
+func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, out io.Writer) http.Handler {
+	h := &Handler{version: version, repo: repo, enforcer: enforcer, lifecycle: lifecycle, log: log.New(out, "", log.LstdFlags)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v0/version", h.getVersion)
 	mux.HandleFunc("GET /v0/sandboxes", h.listSandboxes)
 	mux.HandleFunc("GET /v0/sandboxes/{id}", h.getSandbox)
+	mux.HandleFunc("POST /v0/sandboxes", h.createSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/start", h.startSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/stop", h.stopSandbox)
+	mux.HandleFunc("DELETE /v0/sandboxes/{id}", h.removeSandbox)
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path))
@@ -79,19 +94,156 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := sandbox.Inspect(h.repo, h.enforcer, r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
 
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
+	var req sandbox.CreateRequest
+	if err := decode(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	sb, err := h.lifecycle.Create(r.Context(), req)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusCreated, sb)
+}
+
+func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
+	sb, err := h.lifecycle.Start(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+// stopRequest is the body of a stop. Grace is in seconds; absent, the entrypoint gets the default.
+type stopRequest struct {
+	Grace *float64 `json:"grace,omitempty"`
+}
+
+func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
+	var req stopRequest
+	if err := decode(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	grace, err := graceOf(req.Grace)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"), grace)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
+	force, err := boolQuery(r, "force")
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	grace, err := graceQuery(r)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force, grace); err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// status maps what the orchestrator refused to the one code that says so; anything else broke.
+func status(err error) int {
 	var invalid *sandboxstate.ValidationError
+	var request *sandbox.RequestError
+	var state *sandbox.StateError
 
 	switch {
-	case err == nil:
-		h.writeJSON(w, http.StatusOK, sb)
-	case errors.As(err, &invalid):
-		h.writeError(w, http.StatusBadRequest, err.Error())
+	case errors.As(err, &invalid), errors.As(err, &request):
+		return http.StatusBadRequest
 	case errors.Is(err, sandboxstate.ErrNotFound):
-		h.writeError(w, http.StatusNotFound, err.Error())
+		return http.StatusNotFound
+	case errors.As(err, &state):
+		return http.StatusConflict
 	default:
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return http.StatusInternalServerError
 	}
+}
+
+// decode reads a JSON body into out. An empty body is the zero value; a field no route knows is refused.
+func decode(r *http.Request, out any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	err := dec.Decode(out)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("decode the request body: %w", err)
+	}
+
+	return nil
+}
+
+// graceQuery reads ?grace= in seconds, for the stop an rm --force does; absent is the default.
+func graceQuery(r *http.Request) (time.Duration, error) {
+	raw := r.URL.Query().Get("grace")
+	if raw == "" {
+		return sandbox.DefaultStopGrace, nil
+	}
+
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("the query grace=%q is not a number of seconds", raw)
+	}
+
+	return graceOf(&seconds)
+}
+
+func graceOf(seconds *float64) (time.Duration, error) {
+	if seconds == nil {
+		return sandbox.DefaultStopGrace, nil
+	}
+	if *seconds < 0 {
+		return 0, fmt.Errorf("the grace is how long the entrypoint gets and cannot be negative, got %v", *seconds)
+	}
+
+	return time.Duration(*seconds * float64(time.Second)), nil
 }
 
 // boolQuery reads a flag like ?all=true. An absent flag is false; a value that is not a bool is refused.

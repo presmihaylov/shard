@@ -5,12 +5,53 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
+
+// recorder is the shared log of what the fakes were asked to do and in which order.
+type recorder struct {
+	fail  []string
+	calls []string
+	live  map[string]bool
+}
+
+func (r *recorder) record(name string) error {
+	r.calls = append(r.calls, name)
+
+	if slices.Contains(r.fail, name) {
+		return fmt.Errorf("forced failure at %s", name)
+	}
+
+	return nil
+}
+
+// fakeImages hands a create through the daemon a rootfs without a registry.
+type fakeImages struct {
+	imageService
+	r *recorder
+}
+
+func (f fakeImages) Hold(context.Context) (func() error, error) {
+	if err := f.r.record("images.Hold"); err != nil {
+		return nil, err
+	}
+
+	return func() error { return f.r.record("images.Release") }, nil
+}
+
+func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
+	if err := f.r.record("images.Pull"); err != nil {
+		return image.Image{}, err
+	}
+
+	return image.Image{Reference: "alpine:3.20", RootFS: "/images/alpine"}, nil
+}
 
 // fakeLifecycleRepo answers for one sandbox, so a test says what the record held before the verb ran.
 type fakeLifecycleRepo struct {
@@ -35,6 +76,9 @@ func (f *fakeLifecycleRepo) Get(id string) (models.Sandbox, error) {
 	}
 	if f.missing {
 		return models.Sandbox{}, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+	}
+	if id == f.created.ID && id != "" {
+		return f.created, nil
 	}
 
 	return f.sb, nil
@@ -164,6 +208,7 @@ type fakeLifecycleProvider struct {
 	// snapshot is the directory the pause was told to write, or the resume or fork was told to read.
 	snapshot string
 	forked   models.SandboxSpec
+	created  models.SandboxSpec
 	// clonedFrom and cloned are the source id and the spec Clone was handed.
 	clonedFrom string
 	cloned     models.SandboxSpec
@@ -194,6 +239,13 @@ func (f *fakeLifecycleProvider) Status(context.Context, string) (models.Status, 
 	}
 
 	return f.status, nil
+}
+
+// Create records the spec, so a test says what a create through the daemon handed the substrate.
+func (f *fakeLifecycleProvider) Create(_ context.Context, spec models.SandboxSpec) error {
+	f.created = spec
+
+	return f.r.record("provider.Create")
 }
 
 func (f *fakeLifecycleProvider) Start(context.Context, string) error {
@@ -325,6 +377,10 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
 func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+}
+
+func stopped() models.Sandbox {
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
 func (f *fakeLifecycleRepo) Hold(_ context.Context, id string) (func() error, error) {

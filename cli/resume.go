@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // resume runs a paused sandbox again from its snapshot. It is the run the pause froze, so the record
@@ -66,17 +67,17 @@ func (a App) resume(ctx context.Context, args []string) (err error) {
 	}
 
 	if err := provider.Resume(ctx, id, sb.Snapshot); err != nil {
-		return errors.Join(err, a.reconcile(ctx, repo, provider, id, true))
+		return errors.Join(err, sandbox.Reconcile(ctx, repo, provider, id, true))
 	}
 
 	// The restore brought the guest up over rules it has no memory of, so the host's go on again now.
 	if err := net.Reapply(ctx, id); err != nil {
 		err = fmt.Errorf("sandbox %s is running and its network rules were not applied again, so stop it or resume it again: %w", id, err)
 
-		return errors.Join(err, a.reconcile(ctx, repo, provider, id, true))
+		return errors.Join(err, sandbox.Reconcile(ctx, repo, provider, id, true))
 	}
 
-	if err := a.recordRunning(ctx, repo, provider, id, true); err != nil {
+	if err := sandbox.RecordRunning(ctx, repo, provider, id, true); err != nil {
 		return err
 	}
 

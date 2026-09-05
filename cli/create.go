@@ -8,130 +8,97 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"time"
 
-	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/egress"
-	"github.com/presmihaylov/shard/services/image"
-	"github.com/presmihaylov/shard/services/network"
-	"github.com/presmihaylov/shard/services/runspec"
-	"github.com/presmihaylov/shard/services/sandboxstate"
-	"github.com/presmihaylov/shard/services/secret"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
-const DefaultInitPath = "/usr/local/bin/shard-init"
-
-// InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no create flag.
-const InitPathEnv = "SHARD_INIT_PATH"
-
-// teardownBudget bounds the whole give-back after a failed create, on a context the command's own
-// cannot cancel.
-const teardownBudget = 30 * time.Second
-
-// maxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
-const maxMemoryMiB = 1 << 24
-
-// createOptions is one parsed shard create invocation.
-type createOptions struct {
-	ref  string
-	argv []string
-
-	name    string
-	env     []string
-	workDir string
-	user    string
-	// secrets is what --secret named, and what the guest gets a placeholder for under that name.
-	secrets []string
-	// policy is what --policy named, and what the host enforces for the sandbox.
-	policy string
-
-	resources models.Resources
-}
-
+// create asks the daemon for a sandbox and prints the id; the pull happens there, so the call has no bound.
 func (a App) create(ctx context.Context, args []string) error {
-	opts, err := parseCreate(args)
+	req, err := parseCreate(args)
 	if err != nil {
 		return err
 	}
 
-	return a.launch(ctx, a.deps(), opts)
+	sb, err := a.client().CreateSandbox(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	return a.print(sb.ID)
 }
 
-// parseCreate splits the flags, the image and the argv. Go's flag stops at the first non-flag
-// argument, so the flags must precede the image and what is left is the image plus a literal --
-// plus the argv.
-func parseCreate(args []string) (createOptions, error) {
-	var opts createOptions
+// parseCreate splits the flags, the image and the argv, and refuses a typo before the daemon is asked.
+func parseCreate(args []string) (sandbox.CreateRequest, error) {
+	var req sandbox.CreateRequest
 
 	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&opts.name, "name", "", "a handle every verb takes in place of the id")
-	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
-	flags.Var((*secretList)(&opts.secrets), "secret", "a stored secret the guest gets a placeholder for, repeatable")
-	flags.StringVar(&opts.policy, "policy", "", "the egress policy the host enforces")
-	flags.StringVar(&opts.workDir, "workdir", "", "the directory the entrypoint starts in")
-	flags.StringVar(&opts.user, "user", "", "the user the entrypoint runs as")
-	flags.Int64Var(&opts.resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
-	flags.IntVar(&opts.resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
+	flags.StringVar(&req.Name, "name", "", "a handle every verb takes in place of the id")
+	flags.Var((*envList)(&req.Env), "env", "an environment variable as KEY=VALUE, repeatable")
+	flags.Var((*secretList)(&req.Secrets), "secret", "a stored secret the guest gets a placeholder for, repeatable")
+	flags.StringVar(&req.Policy, "policy", "", "the egress policy the host enforces")
+	flags.StringVar(&req.WorkDir, "workdir", "", "the directory the entrypoint starts in")
+	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
+	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
+	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
 
 	if err := flags.Parse(args); err != nil {
-		return createOptions{}, fmt.Errorf("parse the create flags: %w", err)
+		return sandbox.CreateRequest{}, fmt.Errorf("parse the create flags: %w", err)
 	}
 
 	// The spelling is checked here, so a name no verb could take back never costs the operator a pull.
 	if named(flags) {
-		if err := sandboxstate.ValidName(opts.name); err != nil {
-			return createOptions{}, err
+		if err := sandbox.ValidName(req.Name); err != nil {
+			return sandbox.CreateRequest{}, err
 		}
 	}
 
 	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
-	if opts.resources.MemoryMiB < 0 {
-		return createOptions{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", opts.resources.MemoryMiB)
+	if req.Resources.MemoryMiB < 0 {
+		return sandbox.CreateRequest{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", req.Resources.MemoryMiB)
 	}
 	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
-	if opts.resources.MemoryMiB > maxMemoryMiB {
-		return createOptions{}, fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", opts.resources.MemoryMiB)
+	if req.Resources.MemoryMiB > sandbox.MaxMemoryMiB {
+		return sandbox.CreateRequest{}, fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)
 	}
-	if opts.resources.VCPUs < 0 {
-		return createOptions{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", opts.resources.VCPUs)
+	if req.Resources.VCPUs < 0 {
+		return sandbox.CreateRequest{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
 	}
 
-	if opts.policy != "" {
-		if err := egress.ValidName(opts.policy); err != nil {
-			return createOptions{}, err
+	if req.Policy != "" {
+		if err := sandbox.ValidPolicyName(req.Policy); err != nil {
+			return sandbox.CreateRequest{}, err
 		}
 	}
 
 	// An --env of the same name would either hide the placeholder or be hidden by it, and either is a surprise.
-	for _, entry := range opts.env {
+	for _, entry := range req.Env {
 		key, _, _ := strings.Cut(entry, "=")
-		if slices.Contains(opts.secrets, key) {
-			return createOptions{}, fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
+		if slices.Contains(req.Secrets, key) {
+			return sandbox.CreateRequest{}, fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
 		}
 	}
 
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return createOptions{}, errors.New("create takes one image reference, got none")
+		return sandbox.CreateRequest{}, errors.New("create takes one image reference, got none")
 	}
 
-	opts.ref, rest = rest[0], rest[1:]
+	req.Image, rest = rest[0], rest[1:]
 	if len(rest) == 0 {
-		return opts, nil
+		return req, nil
 	}
 
 	if rest[0] != "--" {
-		return createOptions{}, fmt.Errorf("unexpected argument %q: the flags go before the image and the command after --", rest[0])
+		return sandbox.CreateRequest{}, fmt.Errorf("unexpected argument %q: the flags go before the image and the command after --", rest[0])
 	}
 
-	opts.argv = rest[1:]
-	if len(opts.argv) == 0 {
-		return createOptions{}, errors.New("-- takes the command to run, and nothing followed it")
+	req.Command = rest[1:]
+	if len(req.Command) == 0 {
+		return sandbox.CreateRequest{}, errors.New("-- takes the command to run, and nothing followed it")
 	}
 
-	return opts, nil
+	return req, nil
 }
 
 // named says --name was given, so an explicit empty one is refused rather than read as no name.
@@ -172,7 +139,7 @@ type secretList []string
 func (s *secretList) String() string { return strings.Join(*s, ",") }
 
 func (s *secretList) Set(value string) error {
-	if err := secret.ValidName(value); err != nil {
+	if err := sandbox.ValidSecretName(value); err != nil {
 		return err
 	}
 	if slices.Contains(*s, value) {
@@ -180,271 +147,6 @@ func (s *secretList) Set(value string) error {
 	}
 
 	*s = append(*s, value)
-
-	return nil
-}
-
-// grantSecrets checks every --secret against the store and hands the guest the placeholder of each
-// as an environment variable. The value never comes near this: the proxy substitutes it on the way out.
-func grantSecrets(store secretStore, opts *createOptions) error {
-	for _, name := range opts.secrets {
-		sec, err := store.Get(name)
-		if errors.Is(err, secret.ErrNotFound) {
-			return fmt.Errorf("secret %s does not exist: run shard secret set --to <host> %s first", name, name)
-		}
-		if err != nil {
-			return err
-		}
-
-		opts.env = append(opts.env, name+"="+sec.MockValue)
-	}
-
-	return nil
-}
-
-// launch claims the image, the record, the network and the sandbox, then starts the entrypoint and
-// prints the id. Every claim before the commit point is pushed onto the teardown stack, because
-// half-built state is a bug. Nothing is torn down after it: the sandbox outlives this command.
-func (a App) launch(ctx context.Context, d *deps, opts createOptions) (err error) {
-	images, err := d.images()
-	if err != nil {
-		return err
-	}
-
-	repo, err := d.repo()
-	if err != nil {
-		return err
-	}
-
-	net, err := d.net()
-	if err != nil {
-		return err
-	}
-
-	provider, err := d.provider()
-	if err != nil {
-		return err
-	}
-
-	// Before the pull: a secret that does not exist should cost no download.
-	if len(opts.secrets) != 0 {
-		store, err := d.secrets()
-		if err != nil {
-			return err
-		}
-		if err := grantSecrets(store, &opts); err != nil {
-			return err
-		}
-	}
-
-	// Before the pull too: a policy that does not exist would drop everything, and should cost no download.
-	if opts.policy != "" {
-		policies, err := d.policies()
-		if err != nil {
-			return err
-		}
-		if _, err := policies.Get(opts.policy); err != nil {
-			return err
-		}
-	}
-
-	var td teardown
-
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, td.unwind(ctx))
-		}
-	}()
-
-	img, id, dir, err := a.claim(ctx, images, repo, provider, &td, opts)
-	if err != nil {
-		return err
-	}
-
-	// Allocate rolls back its own attach only: a failure between the lease claim and the attach leaks
-	// the lease file, so the push goes above the call. Release tolerates a lease that was never taken.
-	td.push(func(ctx context.Context) error { return net.Release(ctx, id) })
-
-	// The id names the netns, the lease holder and the runsc container, so it must exist first.
-	netSpec, err := allocateNetwork(ctx, net, id)
-	if err != nil {
-		return err
-	}
-
-	spec := runspec.Resolve(models.SandboxSpec{
-		ID:         id,
-		Name:       opts.name,
-		RootFS:     img.RootFS,
-		StateDir:   dir,
-		Entrypoint: opts.argv,
-		Env:        opts.env,
-		WorkDir:    opts.workDir,
-		User:       opts.user,
-		Network:    netSpec,
-		Resources:  opts.resources,
-	}, img.Config)
-
-	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
-	// already forked, so the push goes above the call. Remove tolerates an id runsc never held.
-	td.push(func(ctx context.Context) error { return provider.Remove(ctx, id) })
-
-	if err := provider.Create(ctx, spec); err != nil {
-		return err
-	}
-
-	if err := recordCreated(ctx, repo, provider, spec); err != nil {
-		return err
-	}
-
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if opts.policy != "" {
-		if err := net.Reapply(ctx, id); err != nil {
-			return err
-		}
-	}
-
-	if err := provider.Start(ctx, id); err != nil {
-		// An interrupt kills the start process, not what it may already have started, and the substrate
-		// cannot tell the two apart. Only stop ends a sandbox, so an unknown outcome is kept.
-		if ctx.Err() != nil {
-			td.discard()
-
-			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
-		}
-
-		return err
-	}
-
-	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
-	// stop ends a sandbox.
-	td.discard()
-
-	// The id is printed before the record write, so a sandbox whose record failed is still reachable.
-	if err := a.print(id); err != nil {
-		return err
-	}
-
-	if err := repo.Update(id, func(sb *models.Sandbox) error {
-		sb.State = models.StateRunning
-
-		return nil
-	}); err != nil {
-		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
-	}
-
-	return nil
-}
-
-// allocateNetwork names the way out, because nothing expires on its own: only an rm frees an address.
-func allocateNetwork(ctx context.Context, net sandboxNetwork, id string) (models.NetworkSpec, error) {
-	spec, err := net.Allocate(ctx, id)
-	if errors.Is(err, network.ErrNoFreeAddress) {
-		return models.NetworkSpec{}, fmt.Errorf("%w: every sandbox holds one until it is removed, run shard ls --all and rm the ones you no longer need", err)
-	}
-
-	return spec, err
-}
-
-// claim pulls the image and writes the record under one hold, so an image rm either sees the record
-// or waits for it: between the two nothing says the rootfs is in use.
-func (a App) claim(ctx context.Context, images imageService, repo sandboxRepo, provider models.Provider, td *teardown, opts createOptions) (img image.Image, id, dir string, err error) {
-	release, err := images.Hold(ctx)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-	defer func() { err = errors.Join(err, release()) }()
-
-	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
-	// claims nothing this command has to give back.
-	img, err = a.pullImage(ctx, images, opts.ref)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-
-	id, dir, err = claimRecord(repo, provider, td, img, opts)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-
-	return img, id, dir, nil
-}
-
-func (a App) pullImage(ctx context.Context, images imageService, ref string) (image.Image, error) {
-	// A registry that accepts the connection and then stalls would otherwise pin this process forever.
-	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
-	defer cancel()
-
-	return images.Pull(ctx, ref)
-}
-
-// claimRecord takes the id, which is the only handle every later step is named by.
-func claimRecord(repo sandboxRepo, provider models.Provider, td *teardown, img image.Image, opts createOptions) (string, string, error) {
-	sb, err := repo.Create(models.Sandbox{
-		Name:      opts.name,
-		Image:     img.Reference,
-		Provider:  provider.Name(),
-		State:     models.StateCreated,
-		Resources: opts.resources,
-		Secrets:   opts.secrets,
-		Policy:    opts.policy,
-		CreatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		return "", "", err
-	}
-
-	// Create is atomic, so there is nothing to give back until it returns; a failed Dir still deletes.
-	td.push(func(context.Context) error { return repo.Delete(sb.ID) })
-
-	dir, err := repo.Dir(sb.ID)
-	if err != nil {
-		return "", "", err
-	}
-
-	return sb.ID, dir, nil
-}
-
-// recordCreated copies what the substrate decided into the record, so a later shard process can
-// reach the sandbox without asking the provider again. The state stays created until the start.
-func recordCreated(ctx context.Context, repo sandboxRepo, provider models.Provider, spec models.SandboxSpec) error {
-	status, err := provider.Status(ctx, spec.ID)
-	if err != nil {
-		return err
-	}
-
-	return repo.Update(spec.ID, func(sb *models.Sandbox) error {
-		sb.PID = status.PID
-		sb.NetnsPath = spec.Network.NetnsPath
-		sb.Address = spec.Network.Address
-		sb.HostInterface = spec.Network.HostInterface
-
-		return nil
-	})
-}
-
-// teardown is what a failed create gives back, in the reverse of the order it was claimed.
-type teardown struct {
-	steps []func(context.Context) error
-}
-
-func (t *teardown) push(step func(context.Context) error) { t.steps = append(t.steps, step) }
-
-// discard is the commit point: what is on the stack now belongs to a sandbox that is live.
-func (t *teardown) discard() { t.steps = nil }
-
-// unwind runs the stack on a fresh bounded context, because Ctrl-C cancelled the command's own and
-// every call would then fail at once and give nothing back. It stops at the first failure, because a
-// step that failed still holds what the steps below it name.
-func (t *teardown) unwind(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownBudget)
-	defer cancel()
-
-	for i, step := range slices.Backward(t.steps) {
-		if err := step(ctx); err != nil {
-			return fmt.Errorf("gave back %d of %d claims and stopped, the rest are left on the host: %w",
-				len(t.steps)-1-i, len(t.steps), err)
-		}
-	}
 
 	return nil
 }

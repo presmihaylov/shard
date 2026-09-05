@@ -7,9 +7,9 @@ and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host wi
 gVisor. A resident `shard daemon` owns the state and serves it over a REST API on a unix socket; the
 CLI is a thin client of that socket, one verb at a time.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet, and the REST API is
-read-only: `shard version`, `shard ls` and `shard inspect` speak to the daemon, and need it up. Every
-other verb still works on the stores directly. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet. `shard version`,
+`shard ls`, `shard inspect`, `shard create`, `shard start`, `shard stop` and `shard rm` speak to the
+daemon, and need it up. Every other verb still works on the stores directly. See `docs/daemon.md`.
 
 ## Sandboxes
 
