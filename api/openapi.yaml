@@ -117,19 +117,68 @@ components:
           description: One line per record the daemon could not read. Absent when every record was read.
     Sandbox:
       type: object
-      description: The sandbox record, as `shard inspect` prints it and as it sits on disk.
-      required: [id, image, state, created_at]
+      description: The bare sandbox record as it sits on disk, without the egress block `shard inspect` adds.
+      required: [id, image, provider, state, pid, netns_path, address, host_interface, resources, created_at]
       properties:
         id:
           type: string
+          description: Generated and human readable. Every route takes it, and takes name in its place.
         name:
           type: string
+          description: The handle --name gave it. Absent when none.
         image:
           type: string
+        provider:
+          type: string
+          description: The substrate that runs it, gvisor or firecracker.
         state:
           type: string
           enum: [created, running, paused, stopped]
+        exit_status:
+          $ref: "#/components/schemas/ExitStatus"
+        snapshot:
+          type: string
+          description: The directory the last pause wrote. Absent until one happens.
+        pid:
+          type: integer
+          description: The sandbox process on the host, 0 when it does not run.
+        netns_path:
+          type: string
+        address:
+          type: string
+          description: The guest address as a CIDR prefix, for example 10.87.0.2/16.
+        host_interface:
+          type: string
+          description: The host end of the link, a veth or a tap.
+        resources:
+          $ref: "#/components/schemas/Resources"
+        secrets:
+          type: array
+          items:
+            type: string
+          description: The secret names the guest holds a placeholder for, never a value. Absent when none.
+        policy:
+          type: string
+          description: The egress policy the host enforces for it. Absent when none.
         created_at:
           type: string
           format: date-time
-      additionalProperties: true
+    ExitStatus:
+      type: object
+      description: How the entrypoint last ended. The sandbox outlives it and has no exit status of its own.
+      required: [code, signal]
+      properties:
+        code:
+          type: integer
+        signal:
+          type: integer
+          description: The guest signal number, 0 when it exited on its own.
+    Resources:
+      type: object
+      required: [memory_mib, vcpus]
+      properties:
+        memory_mib:
+          type: integer
+          format: int64
+        vcpus:
+          type: integer
