@@ -111,7 +111,8 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler) err
 	go func() {
 		select {
 		case <-ctx.Done():
-			graceCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+			// ctx is already done here, so the grace period must not inherit its cancellation.
+			graceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 			defer cancel()
 			shutdown <- server.Shutdown(graceCtx)
 		case <-served:
