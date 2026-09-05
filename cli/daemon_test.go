@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/network"
 )
@@ -95,5 +99,47 @@ func TestProxyTaskServesUntilTheContextEnds(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("the task ended with %v", err)
+	}
+}
+
+// The daemon answers on the socket under its root, over the records on disk, with nothing else wired.
+func TestDaemonAnswersOnTheSocket(t *testing.T) {
+	root := t.TempDir()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- App{Version: "v0.test", Out: io.Discard}.Run(ctx, []string{"--root", root, "daemon"}) }()
+
+	path := filepath.Join(root, api.SocketFile)
+	client := http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", path)
+	}}}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var resp *http.Response
+	for {
+		var err error
+		resp, err = client.Get("http://shard/v0/version")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the socket never answered: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	defer resp.Body.Close()
+
+	var got api.VersionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || got.Version != "v0.test" {
+		t.Errorf("the socket answered %d %+v", resp.StatusCode, got)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("daemon ended with %v", err)
 	}
 }

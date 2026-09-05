@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"time"
 
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
@@ -24,6 +27,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	}
 
 	tasks := []daemon.Task{
+		socketTask{app: a},
 		proxyTask{app: a, gateway: gateway, ports: cfg.Proxy},
 		rotateTask{app: a},
 	}
@@ -45,6 +49,42 @@ func (t proxyTask) Name() string { return "proxy" }
 func (t proxyTask) Run(ctx context.Context) error {
 	// Fresh deps each run, so a restart never serves over state a crash left behind.
 	return t.app.serveProxy(ctx, t.app.deps(), t.gateway, t.ports)
+}
+
+// socketTask answers the API on the socket under the root. The handlers read the same stores every
+// verb reads, so the daemon needs no provider and no network to answer.
+type socketTask struct {
+	app App
+}
+
+func (t socketTask) Name() string { return "socket" }
+
+func (t socketTask) Run(ctx context.Context) error {
+	d := t.app.deps()
+
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	source, err := d.egress()
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(t.app.Root, api.SocketFile)
+	l, mode, err := api.Listen(path)
+	if err != nil {
+		return err
+	}
+
+	if err := t.app.print(fmt.Sprintf("api listening on %s, %s", path, mode)); err != nil {
+		return errors.Join(err, l.Close())
+	}
+
+	svc := &api.Service{Binary: t.app.Version, Records: repo, Egress: source}
+
+	return api.Serve(ctx, l, svc.Handler())
 }
 
 // rotateEvery paces the rotation scan. A stat per sandbox is cheap, and the size bound is generous.
