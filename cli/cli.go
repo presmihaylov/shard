@@ -59,7 +59,7 @@ Usage:
   shard policy show <name> print a policy as JSON, with the sandboxes that hold it
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
-  shard serve              run the daemon that owns the background work; systemd starts it, no other verb needs it
+  shard daemon             run the resident process that owns the background work; systemd starts it, no other verb needs it
   shard proxy
                            run the egress proxy in the foreground; a verb starts one on its own when a sandbox needs it
   shard version            print the version
@@ -176,8 +176,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.secret(ctx, args[1:])
 	case "policy":
 		return a.policy(ctx, args[1:])
-	case "serve":
-		return a.serve(ctx, args[1:])
+	case "daemon":
+		return a.daemon(ctx, args[1:])
 	case "proxy":
 		return a.proxy(ctx, args[1:])
 	case "help":

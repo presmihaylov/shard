@@ -199,7 +199,7 @@ func TestRunOutlivesALivenessProbe(t *testing.T) {
 	}
 }
 
-// A fresh host has no root yet; the lock's acquire creates it, so serve needs no verb to run first.
+// A fresh host has no root yet; the lock's acquire creates it, so the daemon needs no verb to run first.
 func TestRunCreatesAFreshRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "does", "not", "exist")
 
@@ -207,6 +207,6 @@ func TestRunCreatesAFreshRoot(t *testing.T) {
 	cancel()
 
 	if err := New(root, io.Discard).Run(ctx); err != nil {
-		t.Fatalf("serve on a fresh root: %v", err)
+		t.Fatalf("the daemon on a fresh root: %v", err)
 	}
 }

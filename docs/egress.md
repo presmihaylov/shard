@@ -59,7 +59,7 @@ rules in the same order the host holds. So a web request meets the policy twice,
 the proxy and then by address on the host for everything else. What the host cannot see, a name
 behind a shared CDN address say, the proxy can. A fronted sandbox with no proxy reaches no web host:
 the first verb that needs one starts it, and refuses the sandbox if it does not come up. When
-`shard serve` runs it owns the proxy: it serves one itself, restarts it when it crashes, and takes
+`shard daemon` runs it owns the proxy: it serves one itself, restarts it when it crashes, and takes
 over from a one-shot proxy when that one dies. Without the daemon a dead proxy stays dead
 until the next `create`, `start`, `resume`, `fork` or `clone` starts another.
 
@@ -126,7 +126,7 @@ moved. When no rule decided, `rule` says what did: `default` (nothing matched, s
 The kernel log is one short ring for the whole host, shared by every sandbox, so old host lines fall
 off it. The kernel clock drifts from wall time on a long-up host, so `logs --egress` writes a mark
 into the ring first and dates every host line against it; a host line still sorts some milliseconds
-away from a proxy line of the same moment. While `shard serve` runs it rotates an oversized proxy
+away from a proxy line of the same moment. While `shard daemon` runs it rotates an oversized proxy
 file and keeps one old generation, which `logs --egress` still reads; without the daemon the file
 grows unbounded.
 

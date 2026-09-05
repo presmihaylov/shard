@@ -15,20 +15,20 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 )
 
-func TestServeTakesNoArguments(t *testing.T) {
-	err := App{Out: io.Discard}.Run(t.Context(), []string{"serve", "extra"})
-	if err == nil || !strings.Contains(err.Error(), "serve takes no arguments") {
-		t.Errorf("serve with an argument got %v", err)
+func TestDaemonTakesNoArguments(t *testing.T) {
+	err := App{Out: io.Discard}.Run(t.Context(), []string{"daemon", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "daemon takes no arguments") {
+		t.Errorf("daemon with an argument got %v", err)
 	}
 }
 
-// serve needs no provider and no repository, so it runs anywhere the stores can live.
-func TestServeHoldsTheRootUntilTheContextEnds(t *testing.T) {
+// daemon needs no provider and no repository, so it runs anywhere the stores can live.
+func TestDaemonHoldsTheRootUntilTheContextEnds(t *testing.T) {
 	root := t.TempDir()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- App{Out: io.Discard}.Run(ctx, []string{"--root", root, "serve"}) }()
+	go func() { done <- App{Out: io.Discard}.Run(ctx, []string{"--root", root, "daemon"}) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -40,14 +40,14 @@ func TestServeHoldsTheRootUntilTheContextEnds(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("serve never took the lock")
+			t.Fatal("daemon never took the lock")
 		}
 		time.Sleep(time.Millisecond)
 	}
 
 	cancel()
 	if err := <-done; err != nil {
-		t.Fatalf("serve ended with %v", err)
+		t.Fatalf("daemon ended with %v", err)
 	}
 }
 

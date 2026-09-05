@@ -11,11 +11,11 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 )
 
-// serve runs the daemon: a resident peer over the same stores and locks as every other verb. It owns
+// daemon runs the resident process: a resident peer over the same stores and locks as every other verb. It owns
 // only background work, never the sandbox lifecycle, and systemd starts it, never another verb.
-func (a App) serve(ctx context.Context, args []string) error {
+func (a App) daemon(ctx context.Context, args []string) error {
 	if len(args) != 0 {
-		return fmt.Errorf("serve takes no arguments, got %d", len(args))
+		return fmt.Errorf("daemon takes no arguments, got %d", len(args))
 	}
 
 	cfg, gateway, err := network.Layout(network.Config{Root: a.Root})

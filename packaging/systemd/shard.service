@@ -1,4 +1,4 @@
-# shard serve is a resident root process, installed on purpose: no one-shot verb ever spawns it.
+# shard daemon is a resident root process, installed on purpose: no one-shot verb ever spawns it.
 [Unit]
 Description=shard daemon, the background work beside the CLI
 After=network-online.target
@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/shard serve
+ExecStart=/usr/local/bin/shard daemon
 Restart=on-failure
 RestartSec=1
 

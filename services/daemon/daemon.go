@@ -50,7 +50,7 @@ func New(root string, out io.Writer, tasks ...Task) *Daemon {
 
 const (
 	// startupLockWait is how long Run keeps trying a contended lock before it calls the holder a
-	// daemon: an Alive probe holds it for microseconds, another serve holds it forever.
+	// daemon: an Alive probe holds it for microseconds, another daemon holds it forever.
 	startupLockWait = 250 * time.Millisecond
 	startupLockPoll = 10 * time.Millisecond
 )
@@ -65,7 +65,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	}
 	defer func() { err = errors.Join(err, lock.Release()) }()
 
-	d.log.Printf("serve holds %s with %d tasks", path, len(d.tasks))
+	d.log.Printf("daemon holds %s with %d tasks", path, len(d.tasks))
 
 	var wg sync.WaitGroup
 	for _, t := range d.tasks {
@@ -88,7 +88,7 @@ func takeLock(path string) (*store.Lock, error) {
 			return lock, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("another shard serve already holds %s", path)
+			return nil, fmt.Errorf("another shard daemon already holds %s", path)
 		}
 		time.Sleep(startupLockPoll)
 	}

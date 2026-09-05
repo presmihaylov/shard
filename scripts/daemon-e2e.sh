@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Daemon e2e: the one-shot proxy dies, shard serve takes over; serve dies, the world keeps working.
+# Daemon e2e: the one-shot proxy dies, shard daemon takes over; the daemon dies, the world keeps working.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 E2E_LIB_ONLY=1 source ./scripts/e2e.sh
@@ -8,7 +8,7 @@ step "host is free"
 pgrep -af "[r]unsc" && fail "runsc still runs" || true
 ip netns list 2>/dev/null | grep . && fail "netns left over" || true
 ss -ltn | grep -E ':80 ' && fail "something on :80" || true
-pgrep -af "[s]hard serve" && fail "a serve already runs" || true
+pgrep -af "[s]hard daemon" && fail "a daemon already runs" || true
 say "clean"
 
 rm -rf "${SHARD_ROOT}"
@@ -19,11 +19,11 @@ say "allowed host ${ALLOWED_HOST}"
 
 start_echo
 
-SERVE_PID=""
+DAEMON_PID=""
 cleanup() {
 	local status=$?
 	set +e
-	[ -n "${SERVE_PID}" ] && kill "${SERVE_PID}" 2>/dev/null
+	[ -n "${DAEMON_PID}" ] && kill "${DAEMON_PID}" 2>/dev/null
 	[ -n "${ID:-}" ] && shard stop "${ID}" >/dev/null 2>&1 && shard rm "${ID}" >/dev/null 2>&1
 	[ -n "${ID2:-}" ] && shard stop "${ID2}" >/dev/null 2>&1 && shard rm "${ID2}" >/dev/null 2>&1
 	P=$(cat "${SHARD_ROOT}/proxy/pid" 2>/dev/null || true)
@@ -54,33 +54,33 @@ ONESHOT_PID=$(proxy_pid)
 [ -n "${ONESHOT_PID}" ] && kill -0 "${ONESHOT_PID}" 2>/dev/null || fail "no proxy after the create"
 expect "$(fetch "${ID}" "http://${ALLOWED_HOST}/")" "auth= path=/" "the web answers through the one-shot proxy"
 
-step "serve waits behind the one-shot proxy"
-"${PREFIX}/shard" --root "${SHARD_ROOT}" serve >"${SHARD_ROOT}/serve.out" 2>&1 &
-SERVE_PID=$!
+step "the daemon waits behind the one-shot proxy"
+"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${SHARD_ROOT}/daemon.out" 2>&1 &
+DAEMON_PID=$!
 sleep 2
-kill -0 "${SERVE_PID}" 2>/dev/null || { cat "${SHARD_ROOT}/serve.out"; fail "serve died instead of waiting"; }
-[ "$(proxy_pid)" = "${ONESHOT_PID}" ] || fail "serve stole the proxy while the one-shot lives"
-say "serve runs (pid ${SERVE_PID}) and the one-shot proxy keeps the lock"
+kill -0 "${DAEMON_PID}" 2>/dev/null || { cat "${SHARD_ROOT}/daemon.out"; fail "the daemon died instead of waiting"; }
+[ "$(proxy_pid)" = "${ONESHOT_PID}" ] || fail "the daemon stole the proxy while the one-shot lives"
+say "the daemon runs (pid ${DAEMON_PID}) and the one-shot proxy keeps the lock"
 
-step "serve takes over when the one-shot proxy dies"
+step "the daemon takes over when the one-shot proxy dies"
 kill -9 "${ONESHOT_PID}"
-wait_proxy_pid_is "${SERVE_PID}" "the takeover"
-say "proxy pid is now serve's own pid ${SERVE_PID}"
+wait_proxy_pid_is "${DAEMON_PID}" "the takeover"
+say "proxy pid is now the daemon's own pid ${DAEMON_PID}"
 expect "$(fetch "${ID}" "http://${ALLOWED_HOST}/")" "auth= path=/" "the web answers through the daemon's proxy"
 
-step "serve restarts its proxy after a crash"
-# There is no separate process to kill: the proxy is a task inside serve. Kill serve and start another.
-kill -9 "${SERVE_PID}"
-SERVE_PID=""
+step "the daemon restarts its proxy after a crash"
+# There is no separate process to kill: the proxy is a task inside the daemon. Kill it and start another.
+kill -9 "${DAEMON_PID}"
+DAEMON_PID=""
 sleep 1
-"${PREFIX}/shard" --root "${SHARD_ROOT}" serve >"${SHARD_ROOT}/serve2.out" 2>&1 &
-SERVE_PID=$!
-wait_proxy_pid_is "${SERVE_PID}" "the restart"
-expect "$(fetch "${ID}" "http://${ALLOWED_HOST}/")" "auth= path=/" "the web answers again after serve came back"
+"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${SHARD_ROOT}/daemon2.out" 2>&1 &
+DAEMON_PID=$!
+wait_proxy_pid_is "${DAEMON_PID}" "the restart"
+expect "$(fetch "${ID}" "http://${ALLOWED_HOST}/")" "auth= path=/" "the web answers again after the daemon came back"
 
-step "verbs work with serve dead, and a create refronts"
-kill -9 "${SERVE_PID}"
-SERVE_PID=""
+step "verbs work with the daemon dead, and a create refronts"
+kill -9 "${DAEMON_PID}"
+DAEMON_PID=""
 sleep 1
 shard ls >/dev/null || fail "ls fails with the daemon dead"
 shard inspect "${ID}" >/dev/null || fail "inspect fails with the daemon dead"
