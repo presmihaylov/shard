@@ -64,7 +64,10 @@ func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, 
 
 // open dials one streaming route. A refusal comes before the 101, as the status and the body any call gets.
 func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, error) {
-	conn, resp, err := websocket.Dial(ctx, "ws://shard"+path, &websocket.DialOptions{HTTPClient: c.http}) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
+	options := &websocket.DialOptions{HTTPClient: c.http, HTTPHeader: http.Header{}}
+	c.authorize(options.HTTPHeader)
+
+	conn, resp, err := websocket.Dial(ctx, "ws://shard"+path, options) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
@@ -82,7 +85,7 @@ func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, 
 		return nil, decodeError(resp.StatusCode, answer)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open %s on %s: %w", what, c.path, err)
+		return nil, fmt.Errorf("open %s on %s: %w", what, c.target, err)
 	}
 
 	conn.SetReadLimit(api.MaxPayload + 1)
@@ -229,6 +232,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 	if err != nil {
 		return fmt.Errorf("build the request for the output of sandbox %s: %w", ref, err)
 	}
+	c.authorize(req.Header)
 
 	resp, err := c.http.Do(req) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 
@@ -237,7 +241,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 		return connect
 	}
 	if err != nil {
-		return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
+		return fmt.Errorf("GET %s on %s: %w", path, c.target, err)
 	}
 	defer resp.Body.Close()
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/serve"
 )
 
 // DefaultRoot is where shard keeps everything on the box.
@@ -25,6 +26,13 @@ const DefaultInitPath = "/usr/local/bin/shard-init"
 
 // InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no create flag.
 const InitPathEnv = "SHARD_INIT_PATH"
+
+// The environment behind the three flags that point a verb at a remote daemon, as docker's DOCKER_HOST does.
+const (
+	HostEnv      = "SHARD_HOST"
+	TokenFileEnv = "SHARD_TOKEN_FILE" //nolint:gosec // G101: this names a file, and holds no token
+	CAFileEnv    = "SHARD_CA_FILE"
+)
 
 const usage = `shard - a single-node sandbox manager (pre-alpha)
 
@@ -77,6 +85,7 @@ Usage:
                            leave the sandbox with no policy, and with its secrets untouched
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
+  shard serve [flags]      accept TLS on a TCP address, check the bearer token and pass the bytes to the daemon socket; its own unit starts it
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -114,12 +123,23 @@ Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
 
+Serve flags:
+  --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)
+  --cert <pem>             the tls certificate to serve; without a pair serve refuses to start
+  --key <pem>              the key of that certificate
+  --token-file <path>      the file holding the bearer token every request carries
+
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
   --timeout <duration>     how long a pull may take, read by the daemon (default 30m)
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
-  --provider <name>        the substrate the daemon runs sandboxes on: gvisor or sysbox (default gvisor)`
+  --provider <name>        the substrate the daemon runs sandboxes on: gvisor or sysbox (default gvisor)
+  --host <url>             speak to a shard serve front, as https://box:2376, instead of the socket
+  --token-file <path>      the bearer token that front checks
+  --ca-file <pem>          the certificate that signed the front's own
+
+--host, --token-file and --ca-file also come from ` + HostEnv + `, ` + TokenFileEnv + ` and ` + CAFileEnv + `.`
 
 // App is the wiring one shard process needs.
 type App struct {
@@ -137,6 +157,14 @@ type App struct {
 	InitPath string
 	// Provider names the substrate the daemon runs sandboxes on. Empty is gVisor.
 	Provider string
+	// Host is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
+	Host string
+	// TokenFile holds the bearer token that front checks, and CAFile the certificate that signed its own.
+	TokenFile string
+	CAFile    string
+
+	// remote is the client of Host, built once the globals are parsed and before any verb runs.
+	remote *client.Client
 
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
 	clientTimeout time.Duration
@@ -212,6 +240,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.policy(ctx, args[1:])
 	case "daemon":
 		return a.daemon(ctx, args[1:])
+	case "serve":
+		return a.serve(ctx, args[1:])
 	case "help":
 		return a.print(usage)
 	}
@@ -230,6 +260,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	if a.InitPath == "" {
 		a.InitPath = initPathFromEnv()
 	}
+	a.fromEnv()
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -237,6 +268,9 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
 	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
 	flags.StringVar(&a.Provider, "provider", a.Provider, "the substrate the daemon runs sandboxes on")
+	flags.StringVar(&a.Host, "host", a.Host, "the shard serve front to speak to, as https://box:2376")
+	flags.StringVar(&a.TokenFile, "token-file", a.TokenFile, "the file holding the bearer token that front checks")
+	flags.StringVar(&a.CAFile, "ca-file", a.CAFile, "the certificate that signed the front's own")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("parse the flags: %w", err)
@@ -247,7 +281,45 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 		return nil, fmt.Errorf("--root must be an absolute path, got %q", a.Root)
 	}
 
+	if a.Host != "" {
+		remote, err := remoteClient(a.Host, a.TokenFile, a.CAFile)
+		if err != nil {
+			return nil, err
+		}
+		a.remote = remote
+	}
+
 	return flags.Args(), nil
+}
+
+// fromEnv fills the three remote flags a shell exports once rather than typing on every verb.
+func (a *App) fromEnv() {
+	for _, pair := range []struct {
+		field *string
+		name  string
+	}{{&a.Host, HostEnv}, {&a.TokenFile, TokenFileEnv}, {&a.CAFile, CAFileEnv}} {
+		if *pair.field == "" {
+			*pair.field = os.Getenv(pair.name)
+		}
+	}
+}
+
+// remoteClient reads the token and the certificate, so a bad one fails before any verb dials.
+func remoteClient(host, tokenFile, caFile string) (*client.Client, error) {
+	token, err := serve.ReadToken(tokenFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var ca []byte
+	if caFile != "" {
+		ca, err = os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read the ca file %s: %w", caFile, err)
+		}
+	}
+
+	return client.NewRemote(host, token, ca)
 }
 
 // initPathFromEnv resolves where the guest supervisor lives on this host.
@@ -270,8 +342,12 @@ func (h *hostList) Set(value string) error {
 	return nil
 }
 
-// client speaks to the daemon on the socket under the root, which is all a thin verb reads.
+// client speaks to the daemon: on the socket under the root, or to the front --host names.
 func (a App) client() *client.Client {
+	if a.remote != nil {
+		return a.remote
+	}
+
 	c := client.New(a.Root)
 	if a.clientTimeout != 0 {
 		c.Timeout = a.clientTimeout
