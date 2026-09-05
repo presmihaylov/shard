@@ -15,22 +15,6 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// Route is one registered path and every status it answers with; a test holds api/openapi.yaml to this set.
-type Route struct {
-	Method   string
-	Path     string
-	Statuses []int
-}
-
-// Routes is the table the server registers, in the form the spec spells: {id} for a path parameter.
-func Routes() []Route {
-	return []Route{
-		{Method: http.MethodGet, Path: "/v0/version", Statuses: []int{http.StatusOK}},
-		{Method: http.MethodGet, Path: "/v0/sandboxes", Statuses: []int{http.StatusOK, http.StatusBadRequest, http.StatusInternalServerError}},
-		{Method: http.MethodGet, Path: "/v0/sandboxes/{id}", Statuses: []int{http.StatusOK, http.StatusBadRequest, http.StatusNotFound, http.StatusInternalServerError}},
-	}
-}
-
 // Handler answers the routes over one repository.
 type Handler struct {
 	version string

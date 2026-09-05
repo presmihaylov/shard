@@ -37,7 +37,7 @@ world-writable between the listen and the chmod. A stale socket file from a daem
 is removed before the listen; the singleton lock is already held by then, so a live daemon's socket
 is never removed. The socket goes away with the daemon.
 
-The routes, this slice read only, with `api/openapi.yaml` as the spec of record:
+The routes, this slice read only:
 
 ```
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version

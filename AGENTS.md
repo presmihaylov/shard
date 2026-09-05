@@ -71,7 +71,6 @@ services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite both substrates must pass
 
 packaging/systemd/         the unit that installs shard daemon as a resident process
-api/                       the OpenAPI spec of the daemon socket
 docs/
 ```
 

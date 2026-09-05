@@ -256,16 +256,3 @@ func TestAnUnknownRouteIsAJSON404(t *testing.T) {
 		t.Errorf("GET /v1/nothing answered %d %v, want a JSON 404", status, body)
 	}
 }
-
-// The routes the handler registers are the routes the table declares, and the table is what the spec is held to.
-func TestEveryRouteInTheTableIsRegistered(t *testing.T) {
-	s := seed(t)
-
-	for _, route := range api.Routes() {
-		path := strings.ReplaceAll(route.Path, "{id}", s.running.ID)
-		status, _ := get(t, s.server, path)
-		if status != http.StatusOK {
-			t.Errorf("%s %s answered %d, want 200", route.Method, path, status)
-		}
-	}
-}
