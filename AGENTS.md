@@ -56,7 +56,7 @@ pkg/netns/                 netns, veth, bridge, NAT rules
 pkg/store/                 atomic file write, lockfile
 pkg/proxy/                 intercepting HTTP and TLS proxy
 
-services/sandbox/          the orchestrator: create, start, stop and rm, which the daemon serves
+services/sandbox/          the orchestrator: the lifecycle verbs the daemon serves
 services/image/            pull, unpack, cache policy
 services/bundle/           build the OCI bundle from an image config
 services/sandboxstate/     the sandbox record repository

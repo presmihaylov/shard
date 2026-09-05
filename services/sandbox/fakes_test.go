@@ -78,11 +78,18 @@ type fakeRepo struct {
 	deleted bool
 	// created is the record as Create was handed it, so a test says what the request put in it.
 	created models.Sandbox
+	// made is the record a fork or a clone created, which lives beside the source the test set up.
+	made *models.Sandbox
+	// snapshotDir replaces the fixed path when a test needs the directory to exist on disk.
+	snapshotDir string
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
 	if err := f.r.record("repo.Get"); err != nil {
 		return models.Sandbox{}, err
+	}
+	if f.made != nil && id == f.made.ID {
+		return *f.made, nil
 	}
 	if f.missing || id != f.sb.ID {
 		return models.Sandbox{}, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
@@ -114,6 +121,14 @@ func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
 
 	sb.ID = "sandbox1"
 	f.created = sb
+
+	// A fork and a clone create beside the source the test set up, so the copy takes the second id.
+	if f.sb.ID != "" {
+		sb.ID = "sandbox2"
+		f.made = &sb
+
+		return sb, nil
+	}
 	f.sb = sb
 
 	return sb, nil
@@ -123,11 +138,26 @@ func (f *fakeRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 	if err := f.r.record("repo.Update"); err != nil {
 		return err
 	}
+	if f.made != nil && id == f.made.ID {
+		return mutate(f.made)
+	}
 	if id != f.sb.ID {
 		return fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
 	}
 
 	return mutate(&f.sb)
+}
+
+// SnapshotDir is where a pause writes and a fork reads. It is not created until one happens.
+func (f *fakeRepo) SnapshotDir(id string) (string, error) {
+	if err := f.r.record("repo.SnapshotDir"); err != nil {
+		return "", err
+	}
+	if f.snapshotDir != "" {
+		return f.snapshotDir, nil
+	}
+
+	return "/snapshots/" + id, nil
 }
 
 func (f *fakeRepo) Dir(id string) (string, error) {
@@ -189,6 +219,8 @@ type fakeProvider struct {
 	exit   models.ExitStatus
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
+	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
+	onRemove func()
 	// gate, when set, holds Start until it is closed, so a test can put a second verb behind it.
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
@@ -200,6 +232,17 @@ type fakeProvider struct {
 	started bool
 	stopped bool
 	removed bool
+
+	// noPause, noResume and noFork withhold one optional verb each, which the fake otherwise claims.
+	noPause  bool
+	noResume bool
+	noFork   bool
+	// snapshotDir is the directory the pause was told to write into, and the one the fork read.
+	snapshotDir string
+	// source is the sandbox the clone was told to copy.
+	source  string
+	paused  bool
+	resumed bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -254,6 +297,50 @@ func (f *fakeProvider) Exec(_ context.Context, id string, spec models.ExecSpec) 
 
 func (f *fakeProvider) Name() string { return "fake" }
 
+func (f *fakeProvider) Capabilities() models.Capabilities {
+	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
+}
+
+func (f *fakeProvider) Pause(_ context.Context, _ string, dir string) error {
+	if err := f.r.record("provider.Pause"); err != nil {
+		return err
+	}
+	f.paused, f.snapshotDir = true, dir
+	f.status = models.Status{Exists: true, State: models.StatePaused}
+
+	return nil
+}
+
+func (f *fakeProvider) Resume(_ context.Context, _ string, dir string) error {
+	if err := f.r.record("provider.Resume"); err != nil {
+		return err
+	}
+	f.resumed, f.snapshotDir = true, dir
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
+}
+
+func (f *fakeProvider) Fork(_ context.Context, dir string, spec models.SandboxSpec) error {
+	if err := f.r.record("provider.Fork"); err != nil {
+		return err
+	}
+	f.spec, f.snapshotDir = spec, dir
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
+}
+
+func (f *fakeProvider) Clone(_ context.Context, source string, spec models.SandboxSpec) error {
+	if err := f.r.record("provider.Clone"); err != nil {
+		return err
+	}
+	f.spec, f.source = spec, source
+	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+
+	return nil
+}
+
 func (f *fakeProvider) Create(_ context.Context, spec models.SandboxSpec) error {
 	f.spec = spec
 
@@ -288,6 +375,9 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 }
 
 func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
+	if f.onRemove != nil {
+		f.onRemove()
+	}
 	if err := f.r.cleanup(ctx, "provider.Remove"); err != nil {
 		return err
 	}
@@ -396,6 +486,12 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service,
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
 func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+}
+
+// pausedSandbox is a sandbox that holds a snapshot, which is what resume, fork and clone are given.
+func pausedSandbox() models.Sandbox {
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1",
+		ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
 func stopped() models.Sandbox {

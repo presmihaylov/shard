@@ -149,6 +149,75 @@ func TestStartRunsAStoppedSandboxThroughTheDaemon(t *testing.T) {
 	}
 }
 
+func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newClientApp(t, &out, running())
+
+	if err := app.Run(t.Context(), []string{"pause", "sandbox1"}); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/snapshots/sandbox1" {
+		t.Errorf("the provider was told to write %q, want the repository's snapshot directory", got)
+	}
+
+	if err := app.Run(t.Context(), []string{"resume", "sandbox1"}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if sb := d.repoSvc.(*fakeLifecycleRepo).sb; sb.State != models.StateRunning {
+		t.Errorf("the record is %s after the resume, want running", sb.State)
+	}
+	if got := strings.TrimSpace(out.String()); got != "sandbox1\nsandbox1" {
+		t.Errorf("the two verbs printed %q, want the bare id each time", out.String())
+	}
+}
+
+func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
+	for _, verb := range []string{"fork", "clone"} {
+		var out bytes.Buffer
+
+		app, d := newClientApp(t, &out, paused())
+
+		if err := app.Run(t.Context(), []string{verb, "--name", "web-2", "web"}); err != nil {
+			t.Fatalf("%s: %v", verb, err)
+		}
+
+		if got := strings.TrimSpace(out.String()); got != "sandbox2" {
+			t.Errorf("%s printed %q, want the new id", verb, got)
+		}
+		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != paused().Image {
+			t.Errorf("%s created %+v, want the source's image under the new name", verb, got)
+		}
+	}
+}
+
+// A refusal for the state is a 409, and the operator reads the state and the fix, not the status.
+func TestPausePrintsTheStateAndTheFix(t *testing.T) {
+	var out bytes.Buffer
+
+	sb := running()
+	sb.State = models.StateStopped
+	app, _ := newClientApp(t, &out, sb)
+
+	err := app.Run(t.Context(), []string{"pause", "sandbox1"})
+	if err == nil || err.Error() != "sandbox sandbox1 is stopped: pause takes a running sandbox" {
+		t.Errorf("pause = %v, want the state and the fix", err)
+	}
+}
+
+// A verb the provider does not claim is refused in the daemon, and the CLI prints that refusal as it came.
+func TestForkPrintsTheDaemonsRefusalOfAnUnclaimedVerb(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newClientApp(t, &out, paused())
+	d.providerSvc.(*fakeLifecycleProvider).noFork = true
+
+	err := app.Run(t.Context(), []string{"fork", "sandbox1"})
+	if err == nil || err.Error() != "provider fake does not support fork on this host" {
+		t.Errorf("fork = %v, want the provider and the verb", err)
+	}
+}
+
 // Once a verb speaks the socket it never falls back to the files: with no daemon it fails on one line.
 func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 	for _, args := range [][]string{
@@ -156,6 +225,10 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"start", "sandbox1"},
 		{"stop", "sandbox1"},
 		{"rm", "sandbox1"},
+		{"pause", "sandbox1"},
+		{"resume", "sandbox1"},
+		{"fork", "sandbox1"},
+		{"clone", "sandbox1"},
 	} {
 		var out bytes.Buffer
 

@@ -128,6 +128,75 @@ func TestRemoveSandboxDeletesWithForceAndGraceOnlyWhenForced(t *testing.T) {
 	}
 }
 
+func TestPauseAndResumePostToTheReference(t *testing.T) {
+	cases := map[string]struct {
+		call  func(*client.Client) (models.Sandbox, error)
+		state models.State
+	}{
+		"pause":  {func(c *client.Client) (models.Sandbox, error) { return c.PauseSandbox(t.Context(), "web") }, models.StatePaused},
+		"resume": {func(c *client.Client) (models.Sandbox, error) { return c.ResumeSandbox(t.Context(), "web") }, models.StateRunning},
+	}
+
+	for verb, c := range cases {
+		var saw seen
+		cl := serve(t, shortRoot(t), echo(http.StatusOK, `{"id":"sandbox1","state":"`+string(c.state)+`"}`, &saw))
+
+		sb, err := c.call(cl)
+		if err != nil || sb.ID != "sandbox1" || sb.State != c.state {
+			t.Fatalf("%s = %+v, %v; want sandbox1 %s", verb, sb, err, c.state)
+		}
+		if saw.method != http.MethodPost || saw.uri != "/v0/sandboxes/web/"+verb || len(saw.body) != 0 {
+			t.Errorf("the request was %s %s with %q, want POST /v0/sandboxes/web/%s with no body", saw.method, saw.uri, saw.body, verb)
+		}
+	}
+}
+
+func TestForkAndClonePostTheNameAndDecodeTheNewRecord(t *testing.T) {
+	calls := map[string]func(*client.Client) (models.Sandbox, error){
+		"fork": func(c *client.Client) (models.Sandbox, error) {
+			return c.ForkSandbox(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+		},
+		"clone": func(c *client.Client) (models.Sandbox, error) {
+			return c.CloneSandbox(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+		},
+	}
+
+	for verb, call := range calls {
+		var saw seen
+		cl := serve(t, shortRoot(t), echo(http.StatusCreated, `{"id":"sandbox2","name":"web-2","state":"running"}`, &saw))
+
+		sb, err := call(cl)
+		if err != nil || sb.ID != "sandbox2" || sb.Name != "web-2" {
+			t.Fatalf("%s = %+v, %v; want sandbox2 named web-2", verb, sb, err)
+		}
+		if saw.uri != "/v0/sandboxes/web/"+verb || string(saw.body) != `{"name":"web-2"}` {
+			t.Errorf("the request was %s with %q, want the %s route with the name", saw.uri, saw.body, verb)
+		}
+	}
+}
+
+// A snapshot takes as long as the memory and the disk it writes, so no per-request deadline bounds it.
+func TestTheSnapshotVerbsOutliveTheClientTimeout(t *testing.T) {
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		answer(http.StatusOK, `{"id":"sandbox1"}`)(w, r)
+	})
+	c.Timeout = 20 * time.Millisecond
+
+	calls := map[string]func() error{
+		"pause":  func() error { _, err := c.PauseSandbox(t.Context(), "sandbox1"); return err },
+		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "sandbox1"); return err },
+		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "sandbox1", sandbox.CopyRequest{}); return err },
+		"clone":  func() error { _, err := c.CloneSandbox(t.Context(), "sandbox1", sandbox.CopyRequest{}); return err },
+	}
+
+	for verb, call := range calls {
+		if err := call(); err != nil {
+			t.Errorf("%s = %v, want the record however long the snapshot took", verb, err)
+		}
+	}
+}
+
 func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
 
@@ -135,6 +204,10 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 		"start":  func() error { _, err := c.StartSandbox(t.Context(), "ghost"); return err },
 		"stop":   func() error { _, err := c.StopSandbox(t.Context(), "ghost", time.Second); return err },
 		"remove": func() error { return c.RemoveSandbox(t.Context(), "ghost", false, time.Second) },
+		"pause":  func() error { _, err := c.PauseSandbox(t.Context(), "ghost"); return err },
+		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "ghost"); return err },
+		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "ghost", sandbox.CopyRequest{}); return err },
+		"clone":  func() error { _, err := c.CloneSandbox(t.Context(), "ghost", sandbox.CopyRequest{}); return err },
 	}
 
 	for verb, call := range calls {
