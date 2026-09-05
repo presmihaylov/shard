@@ -203,6 +203,10 @@ func (f *fakeNet) Reapply(context.Context, string) error {
 	return f.r.record("net.Reapply")
 }
 
+func (f *fakeNet) ReapplyAll(context.Context) error {
+	return f.r.record("net.ReapplyAll")
+}
+
 type fakeProvider struct {
 	models.Provider
 

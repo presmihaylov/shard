@@ -76,6 +76,7 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 	err = repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
 		sb.PID = status.PID
+		sb.StoppedReason = ""
 		if !keepExit {
 			// The old exit is what the previous run did, and this run has not ended.
 			sb.ExitStatus = nil
