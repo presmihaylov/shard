@@ -71,18 +71,24 @@ func (e *apiError) Error() string { return e.Message }
 
 // New dials the socket under root on the first request.
 func New(root string) *Client {
-	path := filepath.Join(root, api.SocketFile)
+	c := &Client{path: filepath.Join(root, api.SocketFile), Timeout: DefaultTimeout}
 
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
-		if err != nil {
-			return nil, &ConnectError{Path: path, Err: err}
-		}
-
-		return conn, nil
+		return c.dial(ctx)
 	}}
+	c.http = &http.Client{Transport: transport}
 
-	return &Client{path: path, http: &http.Client{Transport: transport}, Timeout: DefaultTimeout}
+	return c
+}
+
+// dial opens the socket. An exec dials it itself, because it takes the connection over from HTTP.
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.path)
+	if err != nil {
+		return nil, &ConnectError{Path: c.path, Err: err}
+	}
+
+	return conn, nil
 }
 
 func (c *Client) Version(ctx context.Context) (Version, error) {

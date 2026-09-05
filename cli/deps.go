@@ -80,10 +80,8 @@ type deps struct {
 	policySvc    *egress.Store
 	runnerSvc    *runsc.Runner
 
-	// The terminal this shard process holds. A test replaces the three files: a pipe is not a terminal.
-	inFile  *os.File
-	outFile *os.File
-	errFile *os.File
+	// The terminal this shard process holds. A test replaces it: a pipe is not a terminal.
+	inFile *os.File
 }
 
 // deps builds what the command is about to drive, through the seam a test replaces.
@@ -227,22 +225,6 @@ func (d *deps) stdin() *os.File {
 	}
 
 	return d.inFile
-}
-
-func (d *deps) stdout() *os.File {
-	if d.outFile == nil {
-		d.outFile = os.Stdout
-	}
-
-	return d.outFile
-}
-
-func (d *deps) stderr() *os.File {
-	if d.errFile == nil {
-		d.errFile = os.Stderr
-	}
-
-	return d.errFile
 }
 
 func (d *deps) policies() (*egress.Store, error) {

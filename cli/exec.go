@@ -10,14 +10,12 @@ import (
 	"os/signal"
 	"slices"
 	"syscall"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
-
-// drainBudget is how long the command's last output may take to arrive once the command itself is gone.
-const drainBudget = 2 * time.Second
 
 // ExitError carries an exit code out to the process. A command that ran carries no message with it,
 // because it already wrote whatever it had to write, and main prints nothing for that one.
@@ -48,6 +46,8 @@ type execOptions struct {
 	tty         bool
 }
 
+// exec hands one command to the daemon and wears its exit code. Ctrl-C ends that command and nothing
+// else: the daemon sees the connection go and cancels the exec, and only stop ends a sandbox.
 func (a App) exec(ctx context.Context, args []string) error {
 	opts, err := parseExec(args)
 	if err != nil {
@@ -56,55 +56,24 @@ func (a App) exec(ctx context.Context, args []string) error {
 
 	d := a.deps()
 
-	repo, err := d.repo()
-	if err != nil {
-		return err
-	}
-
-	provider, err := d.provider()
-	if err != nil {
-		return err
-	}
-
 	if opts.tty && !pty.IsTerminal(d.stdin()) {
 		return errors.New("-t needs a terminal on stdin, and this one is not one")
 	}
 
-	// Everything below this line names an id, so a name becomes one here and nowhere else.
-	opts.id, err = repo.Resolve(opts.id)
-	if err != nil {
-		return err
-	}
-
-	// The record answers for an id nobody ever created; the provider answers for its state.
-	sb, err := repo.Get(opts.id)
-	if err != nil {
-		return err
-	}
-
-	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
-	if sb.State == models.StateStopped {
-		return refuseStopped(opts.id, sb.State)
-	}
-
-	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
-	if sb.State == models.StatePaused {
-		return fmt.Errorf("sandbox %s is paused: resume it with shard resume %s", opts.id, opts.id)
-	}
-
-	if err := refuseUnlessAlive(ctx, provider, opts.id); err != nil {
-		return err
-	}
-
-	spec := models.ExecSpec{
-		Argv:    opts.argv,
+	req := sandbox.ExecRequest{
+		Command: opts.argv,
 		Env:     opts.env,
 		WorkDir: opts.workDir,
 		User:    opts.user,
 		TTY:     opts.tty,
 	}
 
-	status, err := a.runExec(ctx, d, provider, opts, spec)
+	streams := client.ExecStreams{Stdout: a.Out, Stderr: a.Err, Warn: a.warn}
+	if opts.interactive {
+		streams.Stdin = d.stdin()
+	}
+
+	status, err := a.runExec(ctx, d, opts, req, streams)
 	if err != nil {
 		return shellCode(err)
 	}
@@ -116,33 +85,115 @@ func (a App) exec(ctx context.Context, args []string) error {
 	return nil
 }
 
-// refuseUnlessAlive asks the substrate, not the record, because a record saying running outlives a
-// shard restart. A sandbox whose entrypoint exited is still alive and still takes an exec; a created
-// one is alive too, and the provider refuses that one by name because only it knows what it holds.
-func refuseUnlessAlive(ctx context.Context, provider models.Provider, id string) error {
-	status, err := provider.Status(ctx, id)
-	if err != nil {
-		return err
-	}
-	if status.Alive() {
-		return nil
+func (a App) runExec(ctx context.Context, d *deps, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (models.ExitStatus, error) {
+	if !opts.tty {
+		return a.client().Exec(ctx, opts.id, req, streams)
 	}
 
-	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
-	// is named here or an operator never learns it.
-	if status.OOMKilled {
-		return fmt.Errorf("sandbox %s ran out of memory and the host ended it: remove it with shard rm %s and create another with a larger --memory", id, id)
-	}
-
-	if !status.Exists {
-		return fmt.Errorf("sandbox %s is gone from %s: remove it with shard rm %s and create another", id, provider.Name(), id)
-	}
-
-	return refuseStopped(id, status.State)
+	return a.execOnTerminal(ctx, d, opts, req, streams)
 }
 
-func refuseStopped(id string, state models.State) error {
-	return fmt.Errorf("sandbox %s is %s: start it again with shard start %s", id, state, id)
+// execOnTerminal puts this terminal into raw mode, so a keystroke reaches the guest untouched. The
+// guest's own terminal is the daemon's. The restore runs on every path out of here, a panic included.
+func (a App) execOnTerminal(ctx context.Context, d *deps, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
+	terminal := d.stdin()
+
+	size, err := pty.SizeOf(terminal)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	req.Size = sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols}
+
+	restore, err := pty.MakeRaw(terminal)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	defer func() { err = errors.Join(err, restore()) }()
+
+	forwarder := forwardResize(ctx, a, opts.id, terminal)
+	defer forwarder.stop()
+	streams.Started = forwarder.named
+
+	return a.client().Exec(ctx, opts.id, req, streams)
+}
+
+// resizes keeps the guest's window the size of this one. A SIGWINCH reaches the exec only once the
+// daemon has named it, so one that arrives before that is applied as soon as the name does.
+type resizes struct {
+	app      App
+	ref      string
+	terminal *os.File
+
+	changed chan os.Signal
+	execIDs chan string
+	done    chan struct{}
+	exited  chan struct{}
+}
+
+func forwardResize(ctx context.Context, app App, ref string, terminal *os.File) *resizes {
+	r := &resizes{
+		app:      app,
+		ref:      ref,
+		terminal: terminal,
+		changed:  make(chan os.Signal, 1),
+		execIDs:  make(chan string, 1),
+		done:     make(chan struct{}),
+		exited:   make(chan struct{}),
+	}
+	signal.Notify(r.changed, syscall.SIGWINCH)
+
+	go r.run(ctx)
+
+	return r
+}
+
+// named is what the client calls with the id the daemon gave this exec.
+func (r *resizes) named(execID string) { r.execIDs <- execID }
+
+func (r *resizes) run(ctx context.Context) {
+	defer close(r.exited)
+
+	var execID string
+	pending := false
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case execID = <-r.execIDs:
+			if pending {
+				r.resize(ctx, execID)
+				pending = false
+			}
+		case <-r.changed:
+			if execID == "" {
+				pending = true
+
+				continue
+			}
+
+			r.resize(ctx, execID)
+		}
+	}
+}
+
+func (r *resizes) resize(ctx context.Context, execID string) {
+	size, err := pty.SizeOf(r.terminal)
+	if err != nil {
+		r.app.warn(fmt.Sprintf("read the terminal size: %v", err))
+
+		return
+	}
+
+	if err := r.app.client().ResizeExec(ctx, r.ref, execID, sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols}); err != nil {
+		r.app.warn(fmt.Sprintf("resize the command's terminal: %v", err))
+	}
+}
+
+func (r *resizes) stop() {
+	signal.Stop(r.changed)
+	close(r.done)
+	<-r.exited
 }
 
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one
@@ -154,131 +205,6 @@ func shellCode(err error) error {
 	}
 
 	return &ExitError{Code: notStarted.Code, Message: notStarted.Error()}
-}
-
-// runExec picks the stdio the guest process gets. Ctrl-C during either path ends that process and
-// nothing else: the cancelled exec signals the one guest pid, and only stop ends a sandbox.
-func (a App) runExec(ctx context.Context, d *deps, provider models.Provider, opts execOptions, spec models.ExecSpec) (models.ExitStatus, error) {
-	if opts.tty {
-		return a.execOnTerminal(ctx, d, provider, opts, spec)
-	}
-
-	if opts.interactive {
-		spec.Stdin = d.stdin()
-	}
-	spec.Stdout, spec.Stderr = d.stdout(), d.stderr()
-
-	return provider.Exec(ctx, opts.id, spec)
-}
-
-// execOnTerminal gives the guest a pty replica and puts this terminal into raw mode, so a keystroke
-// reaches the guest untouched. The restore runs on every path out of here, a panic included.
-func (a App) execOnTerminal(ctx context.Context, d *deps, provider models.Provider, opts execOptions, spec models.ExecSpec) (status models.ExitStatus, err error) {
-	pair, err := pty.Open()
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	defer func() { err = errors.Join(err, pair.Close()) }()
-
-	size, err := pty.SizeOf(d.stdin())
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	if err := pair.Resize(size); err != nil {
-		return models.ExitStatus{}, err
-	}
-
-	restore, err := pty.MakeRaw(d.stdin())
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	defer func() { err = errors.Join(err, restore()) }()
-
-	stop := forwardResize(pair, d.stdin(), a.warn)
-	defer stop()
-
-	// A terminal carries one stream, so all three fds are the same file.
-	spec.Stdin, spec.Stdout, spec.Stderr = pair.Replica, pair.Replica, pair.Replica
-
-	drained := pump(pair, d, a.warn)
-
-	status, err = provider.Exec(ctx, opts.id, spec)
-
-	// Our copy of the replica is what keeps the master readable, so the output drains only after it goes.
-	closeErr := pair.Replica.Close()
-	// The deferred Close takes the master alone now, because a second close of the replica is an error.
-	pair.Replica = nil
-	if closeErr != nil {
-		return status, errors.Join(err, fmt.Errorf("close the pseudo terminal replica: %w", closeErr))
-	}
-
-	// A process the command left behind holds the replica too, and then nothing ever ends the copy.
-	// The status is already in hand, so the wait is bounded: the terminal is raw until this returns.
-	select {
-	case <-drained:
-	case <-time.After(drainBudget):
-	}
-
-	return status, err
-}
-
-// pump moves bytes both ways and reports when the guest side has nothing left to say. The keyboard
-// copier is left running: it blocks on a terminal shard does not own, and the process is about to end.
-func pump(pair *pty.Pty, d *deps, warn func(string)) <-chan struct{} {
-	go func() {
-		if _, err := io.Copy(pair.Master, d.stdin()); err != nil {
-			warn(fmt.Sprintf("the keyboard stopped reaching the command: %v", err))
-		}
-	}()
-
-	drained := make(chan struct{})
-	go func() {
-		defer close(drained)
-
-		// The master reports the replica's last close as an error, and that is the normal end of a session.
-		if _, err := io.Copy(d.stdout(), pair.Master); err != nil && !errors.Is(err, syscall.EIO) {
-			warn(fmt.Sprintf("the command's output stopped reaching the terminal: %v", err))
-		}
-	}()
-
-	return drained
-}
-
-// forwardResize keeps the guest's window the size of this one. Writing the size to the master is
-// what raises SIGWINCH inside the sandbox.
-func forwardResize(pair *pty.Pty, terminal *os.File, warn func(string)) func() {
-	changed := make(chan os.Signal, 1)
-	signal.Notify(changed, syscall.SIGWINCH)
-
-	done := make(chan struct{})
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-changed:
-				size, err := pty.SizeOf(terminal)
-				if err != nil {
-					warn(fmt.Sprintf("read the terminal size: %v", err))
-
-					continue
-				}
-				if err := pair.Resize(size); err != nil {
-					warn(fmt.Sprintf("resize the command's terminal: %v", err))
-				}
-			}
-		}
-	}()
-
-	return func() {
-		signal.Stop(changed)
-		close(done)
-		// The caller closes the master next, and an ioctl on a descriptor that is gone goes to whatever took it.
-		<-exited
-	}
 }
 
 // parseExec splits the flags, the id and the argv. Go's flag stops at the first non-flag argument,

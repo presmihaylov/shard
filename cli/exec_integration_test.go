@@ -6,15 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
 )
 
@@ -242,9 +239,8 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 		}
 	}()
 
-	app.newDeps = func(a App) *deps {
-		return &deps{app: a, inFile: terminal.Replica, outFile: terminal.Replica, errFile: terminal.Replica}
-	}
+	app.Out, app.Err = terminal.Replica, terminal.Replica
+	app.newDeps = func(a App) *deps { return &deps{app: a, inFile: terminal.Replica} }
 
 	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "--", "/bin/sh", "-c", "stty size; exit 7"})
 
@@ -303,8 +299,7 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 	return app, id
 }
 
-// runExec runs one shard exec on the real wiring and returns everything the command wrote. The stdio
-// is a file rather than a pipe, because the guest gets the fds themselves.
+// runExec runs one shard exec on the real wiring and returns everything the command wrote.
 func runExec(t *testing.T, app App, args ...string) (string, error) {
 	t.Helper()
 
@@ -326,128 +321,7 @@ func runExecTo(app App, path string, args ...string) error {
 		return err
 	}
 
-	app.newDeps = func(a App) *deps {
-		return &deps{app: a, outFile: out, errFile: out}
-	}
+	app.Out, app.Err = out, out
 
 	return errors.Join(app.Run(context.Background(), args), out.Close())
-}
-
-// execReturnBudget bounds a shard exec that must come back, so a wait that never ends fails the test.
-const execReturnBudget = 30 * time.Second
-
-// A command can leave a process holding the terminal it was given, and then nothing ever closes the
-// guest side. The exit status is already in hand, so shard must let go: this terminal is raw until it does.
-func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
-	terminal := testTerminal(t)
-	holder := &replicaHolder{t: t}
-
-	app := App{Version: "test", Root: t.TempDir(), Out: io.Discard}
-	app.newDeps = func(App) *deps {
-		return &deps{
-			repoSvc:     presentRepo{},
-			providerSvc: holder,
-			inFile:      terminal.Replica,
-			outFile:     terminal.Replica,
-			errFile:     terminal.Replica,
-		}
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(context.Background(), []string{"exec", "-it", "one-two-0000", "--", "/bin/true"})
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("exec: %v", err)
-		}
-	case <-time.After(execReturnBudget):
-		t.Fatalf("exec did not return within %s, and the command it ran is long gone", execReturnBudget)
-	}
-}
-
-// The resize goroutine holds the master, and the caller closes it the moment the stop returns.
-func TestTheResizeForwarderIsGoneBeforeItsStopReturns(t *testing.T) {
-	pair := testTerminal(t)
-
-	// A plain file is no terminal, so the goroutine takes the branch that warns and this test sees it.
-	plain, err := os.Create(filepath.Join(t.TempDir(), "not-a-terminal"))
-	if err != nil {
-		t.Fatalf("create the file: %v", err)
-	}
-	defer plain.Close()
-
-	warned, release := make(chan struct{}), make(chan struct{})
-	stop := forwardResize(pair, plain, func(string) {
-		close(warned)
-		<-release
-	})
-
-	if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {
-		t.Fatalf("raise SIGWINCH: %v", err)
-	}
-	<-warned
-
-	returned := make(chan struct{})
-	go func() {
-		stop()
-		close(returned)
-	}()
-
-	select {
-	case <-returned:
-		t.Fatal("the stop returned while the forwarder still holds the terminal")
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	close(release)
-	select {
-	case <-returned:
-	case <-time.After(execReturnBudget):
-		t.Fatal("the stop never returned")
-	}
-}
-
-// testTerminal is a pty pair the test owns, which is the only stdin a -t exec accepts.
-func testTerminal(t *testing.T) *pty.Pty {
-	t.Helper()
-
-	pair, err := pty.Open()
-	if err != nil {
-		t.Fatalf("open a terminal for the test: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := pair.Close(); err != nil {
-			t.Logf("close the test terminal: %v", err)
-		}
-	})
-
-	return pair
-}
-
-// replicaHolder is a command that left something behind: it keeps the terminal it was given open.
-type replicaHolder struct {
-	models.Provider
-
-	t *testing.T
-}
-
-func (h *replicaHolder) Status(context.Context, string) (models.Status, error) {
-	return models.Status{Exists: true, State: models.StateRunning}, nil
-}
-
-func (h *replicaHolder) Exec(_ context.Context, _ string, spec models.ExecSpec) (models.ExitStatus, error) {
-	kept, err := syscall.Dup(int(spec.Stdin.Fd()))
-	if err != nil {
-		return models.ExitStatus{}, fmt.Errorf("keep a copy of the replica: %w", err)
-	}
-	h.t.Cleanup(func() {
-		if err := syscall.Close(kept); err != nil {
-			h.t.Logf("drop the kept replica: %v", err)
-		}
-	})
-
-	return models.ExitStatus{}, nil
 }

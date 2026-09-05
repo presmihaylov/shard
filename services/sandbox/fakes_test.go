@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/netip"
 	"path/filepath"
 	"slices"
@@ -199,6 +200,56 @@ type fakeProvider struct {
 	started bool
 	stopped bool
 	removed bool
+
+	// logPath is the file the output is read from, which a test writes into.
+	logPath string
+	// exits runs on the second Status, and the sandbox is gone from that call on.
+	exits       func()
+	statusCalls int
+	// execOut and execErrOut are what the command writes on each stream, and execInput what it read.
+	execOut    string
+	execErrOut string
+	execInput  string
+	execExit   models.ExitStatus
+	execErr    error
+	execID     string
+	execSpec   models.ExecSpec
+}
+
+func (f *fakeProvider) LogPath(string) (string, error) {
+	if err := f.r.record("provider.LogPath"); err != nil {
+		return "", err
+	}
+
+	return f.logPath, nil
+}
+
+func (f *fakeProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
+	if err := f.r.record("provider.Exec"); err != nil {
+		return models.ExitStatus{}, err
+	}
+	f.execID, f.execSpec = id, spec
+
+	if spec.Stdin != nil {
+		read, err := io.ReadAll(spec.Stdin)
+		if err != nil {
+			return models.ExitStatus{}, err
+		}
+		f.execInput = string(read)
+	}
+
+	if f.execOut != "" {
+		if _, err := spec.Stdout.WriteString(f.execOut); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+	if f.execErrOut != "" {
+		if _, err := spec.Stderr.WriteString(f.execErrOut); err != nil {
+			return models.ExitStatus{}, err
+		}
+	}
+
+	return f.execExit, f.execErr
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
@@ -248,6 +299,13 @@ func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
 func (f *fakeProvider) Status(context.Context, string) (models.Status, error) {
 	if err := f.r.record("provider.Status"); err != nil {
 		return models.Status{}, err
+	}
+
+	// exits is the sandbox writing its last line and going, which happens while a follow is up.
+	f.statusCalls++
+	if f.exits != nil && f.statusCalls == 2 {
+		f.exits()
+		f.status = models.Status{}
 	}
 
 	return f.status, nil
