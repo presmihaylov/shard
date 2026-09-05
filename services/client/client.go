@@ -11,16 +11,22 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
+// DefaultTimeout bounds one call that answers in full. A call that streams passes zero.
+const DefaultTimeout = 30 * time.Second
+
 // Client talks to one daemon. It is safe for concurrent use.
 type Client struct {
 	path string
 	http *http.Client
+	// Timeout bounds one call. It is not http.Client.Timeout, which would cut a stream; zero is no bound.
+	Timeout time.Duration
 }
 
 // Version is what the daemon reports for itself.
@@ -74,7 +80,7 @@ func New(root string) *Client {
 		return conn, nil
 	}}
 
-	return &Client{path: path, http: &http.Client{Transport: transport}}
+	return &Client{path: path, http: &http.Client{Transport: transport}, Timeout: DefaultTimeout}
 }
 
 func (c *Client) Version(ctx context.Context) (Version, error) {
@@ -119,7 +125,14 @@ func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection
 
 // get reads one route into out; the host in the URL is a placeholder, the dialer ignores it.
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shard"+path, nil)
+	call := ctx
+	if c.Timeout != 0 {
+		var cancel context.CancelFunc
+		call, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(call, http.MethodGet, "http://shard"+path, nil)
 	if err != nil {
 		return fmt.Errorf("build the request for %s: %w", path, err)
 	}
@@ -131,13 +144,13 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return connect
 	}
 	if err != nil {
-		return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
+		return c.wrap(ctx, path, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read the answer to GET %s: %w", path, err)
+		return c.wrap(ctx, path, fmt.Errorf("read the answer: %w", err))
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -149,6 +162,15 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	}
 
 	return nil
+}
+
+// wrap names the route and the socket, and says so when the client's own deadline, not the caller's, cut the call.
+func (c *Client) wrap(caller context.Context, path string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil {
+		return fmt.Errorf("GET %s on %s: no answer within %s", path, c.path, c.Timeout)
+	}
+
+	return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
 }
 
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came.

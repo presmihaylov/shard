@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
@@ -51,18 +53,54 @@ func newClientApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox) (App, *dep
 }
 
 func TestVersionPrintsBothLines(t *testing.T) {
-	for _, arg := range []string{"version", "--version"} {
-		var out bytes.Buffer
+	var out bytes.Buffer
 
-		app, _ := newClientApp(t, &out, models.Sandbox{})
+	app, _ := newClientApp(t, &out, models.Sandbox{})
 
-		if err := app.Run(t.Context(), []string{arg}); err != nil {
-			t.Fatalf("Run(%q): %v", arg, err)
-		}
+	if err := app.Run(t.Context(), []string{"version"}); err != nil {
+		t.Fatalf("version: %v", err)
+	}
 
-		if got := strings.TrimSpace(out.String()); got != "client test\ndaemon v-daemon" {
-			t.Errorf("Run(%q) printed %q, want the client line and the daemon line", arg, got)
-		}
+	if got := strings.TrimSpace(out.String()); got != "client test\ndaemon v-daemon" {
+		t.Errorf("version printed %q, want the client line and the daemon line", got)
+	}
+}
+
+func TestVersionFlagPrintsTheClientLineWithNoDaemon(t *testing.T) {
+	var out bytes.Buffer
+
+	app := App{Version: "test", Root: shortRoot(t), Out: &out}
+
+	if err := app.Run(t.Context(), []string{"--version"}); err != nil {
+		t.Fatalf("--version with no daemon failed: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "client test" {
+		t.Errorf("--version printed %q, want the client line alone", got)
+	}
+}
+
+func TestLsFailsWhenTheDaemonNeverAnswers(t *testing.T) {
+	var out bytes.Buffer
+
+	root := shortRoot(t)
+	app := App{Version: "test", Root: root, Out: &out, clientTimeout: 100 * time.Millisecond}
+
+	listener, err := net.Listen("unix", filepath.Join(root, api.SocketFile))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	start := time.Now()
+	err = app.Run(t.Context(), []string{"ls"})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("ls took %s to give up, want the 100ms deadline", took)
+	}
+	if want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"; err == nil || err.Error() != want {
+		t.Errorf("ls returned %v, want %q", err, want)
 	}
 }
 

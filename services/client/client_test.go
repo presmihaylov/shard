@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
@@ -156,5 +158,29 @@ func TestNoDaemonIsOneConnectLine(t *testing.T) {
 	want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? systemctl status shard"
 	if err.Error() != want {
 		t.Errorf("the error reads %q, want %q", err.Error(), want)
+	}
+}
+
+func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
+	root := shortRoot(t)
+	c := serve(t, root, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	c.Timeout = 100 * time.Millisecond
+
+	start := time.Now()
+	_, err := c.ListSandboxes(t.Context(), false)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("ListSandboxes took %s to give up, want the deadline", took)
+	}
+	want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
+	if err == nil || err.Error() != want {
+		t.Errorf("ListSandboxes = %v, want %q", err, want)
+	}
+
+	// The caller's own deadline is reported as what it is, not as the client's.
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	c.Timeout = time.Minute
+	if _, err := c.ListSandboxes(ctx, false); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("ListSandboxes under the caller's deadline = %v, want context.DeadlineExceeded", err)
 	}
 }

@@ -55,7 +55,8 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id o
 ```
 
 - `GET /v0/version` answers `{"version": "..."}`, which `shard version` prints as its `daemon` line
-  under the `client` line of the binary that asked.
+  under the `client` line of the binary that asked. `shard --version` prints the `client` line alone,
+  touches no socket, and never fails, as `docker --version` does.
 - `GET /v0/sandboxes` answers `{"sandboxes": [...]}` as `shard ls` lists them: stopped sandboxes
   hidden unless `all=true`. When some records are unreadable it still answers 200 with the readable
   sandboxes and a `warnings` array, one string per unreadable record; `ls` prints the table and then
@@ -69,7 +70,9 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id o
 Every error body is `{"error": "<message>"}`.
 
 The typed side of these routes is `services/client`: `Version`, `ListSandboxes` and `GetSandbox`,
-hand-written over the socket. The CLI verbs call it and nothing else.
+hand-written over the socket. The CLI verbs call it and nothing else. Each call that answers in
+full gets 30 s, per request and not on the `http.Client`, so a verb that streams can pass zero; a
+daemon that accepts and never answers fails as `GET <route> on <socket>: no answer within 30s`.
 
 ## One daemon per root, and liveness
 
