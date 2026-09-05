@@ -68,6 +68,18 @@ type Update struct {
 	Destinations []string
 	Headers      []Header
 	Match        *Match
+	// Holders names the sandboxes granted the secret. Set asks only when the stored placeholder differs from the one it writes.
+	Holders func() ([]string, error)
+}
+
+// HeldPlaceholder is the refusal a rotation gets while a sandbox holds a placeholder the new record would not carry.
+type HeldPlaceholder struct {
+	Name    string
+	Holders []string
+}
+
+func (e HeldPlaceholder) Error() string {
+	return fmt.Sprintf("secret %s keeps the placeholder sandbox %s was created with, and a rotation would move it: ungrant the sandbox first", e.Name, strings.Join(e.Holders, ", "))
 }
 
 // record is the file on disk. It is the only place the value is written.
@@ -163,6 +175,13 @@ func (s *Store) Set(name, value string, up Update) (Secret, error) {
 		return Secret{}, fmt.Errorf("the value of secret %s holds its placeholder, and the guest must never hold the value", name)
 	}
 
+	// A guest sends the placeholder it was created with, so a record that moves it leaves that guest unmatched.
+	if err == nil && existing.MockValue != mock {
+		if err := placeholderFree(name, up.Holders); err != nil {
+			return Secret{}, err
+		}
+	}
+
 	rec := record{Value: value, Destinations: bound, MockValue: mock, UpdatedAt: time.Now().UTC(), Headers: headers, Match: match}
 
 	blob, err := json.Marshal(rec)
@@ -175,6 +194,22 @@ func (s *Store) Set(name, value string, up Update) (Secret, error) {
 	}
 
 	return rec.public(name), nil
+}
+
+func placeholderFree(name string, holders func() ([]string, error)) error {
+	if holders == nil {
+		return fmt.Errorf("secret %s keeps an older placeholder, and nothing says which sandboxes hold it", name)
+	}
+
+	held, err := holders()
+	if err != nil {
+		return fmt.Errorf("cannot tell which sandboxes hold secret %s: %w", name, err)
+	}
+	if len(held) != 0 {
+		return HeldPlaceholder{Name: name, Holders: held}
+	}
+
+	return nil
 }
 
 // Get reads what the store says about a secret, and never the value.

@@ -327,3 +327,59 @@ func TestSetRefusesABadHeaderOrMatch(t *testing.T) {
 		}
 	}
 }
+
+// legacyRecord writes what a secret set with --mock-value left behind before the placeholder became fixed.
+func legacyRecord(t *testing.T, dir, name, mock string) {
+	t.Helper()
+
+	blob := `{"value":"first-value-1","destinations":["api.example.com"],"mock_value":"` + mock + `"}`
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
+	s, dir := newStore(t)
+	legacyRecord(t, dir, "TOKEN", "sk-live-XXXX")
+
+	held := func() ([]string, error) { return []string{"sandbox1"}, nil }
+	_, err := s.Set("TOKEN", "second-value-2", Update{Holders: held})
+
+	var refusal HeldPlaceholder
+	if !errors.As(err, &refusal) || refusal.Name != "TOKEN" || len(refusal.Holders) != 1 || refusal.Holders[0] != "sandbox1" {
+		t.Fatalf("Set = %v, want a HeldPlaceholder naming sandbox1", err)
+	}
+
+	sec, err := s.Get("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sec.MockValue != "sk-live-XXXX" {
+		t.Errorf("a refused rotation moved the placeholder to %q", sec.MockValue)
+	}
+	if value, err := s.Value("TOKEN"); err != nil || value != "first-value-1" {
+		t.Errorf("a refused rotation replaced the value: %v", err)
+	}
+
+	_, err = s.Set("TOKEN", "second-value-2", Update{Holders: func() ([]string, error) { return nil, os.ErrPermission }})
+	if err == nil || !strings.Contains(err.Error(), "cannot tell") {
+		t.Errorf("Set with an unreadable record = %v", err)
+	}
+}
+
+func TestSetMovesAPlaceholderNobodyHolds(t *testing.T) {
+	s, dir := newStore(t)
+	legacyRecord(t, dir, "TOKEN", "sk-live-XXXX")
+
+	free := func() ([]string, error) { return nil, nil }
+	sec, err := s.Set("TOKEN", "second-value-2", Update{Holders: free})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if sec.MockValue != MockValue("TOKEN") {
+		t.Errorf("placeholder = %q, want %q", sec.MockValue, MockValue("TOKEN"))
+	}
+	if value, err := s.Value("TOKEN"); err != nil || value != "second-value-2" {
+		t.Errorf("the rotation kept the old value: %v", err)
+	}
+}

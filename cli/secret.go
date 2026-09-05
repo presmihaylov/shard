@@ -71,7 +71,9 @@ func (a App) secretSet(_ context.Context, args []string) error {
 		return err
 	}
 
-	sec, err := store.Set(opts.name, value, secret.Update{Destinations: opts.destinations, Headers: opts.headers, Match: opts.match})
+	up := secret.Update{Destinations: opts.destinations, Headers: opts.headers, Match: opts.match, Holders: func() ([]string, error) { return holders(d, opts.name) }}
+
+	sec, err := store.Set(opts.name, value, up)
 	if err != nil {
 		return err
 	}
@@ -323,15 +325,29 @@ func (e granted) Error() string {
 
 // ungranted refuses when a sandbox record names the secret. A stopped one counts: start hands it the placeholder again.
 func ungranted(d *deps, name string) error {
+	users, err := holders(d, name)
+	if err != nil {
+		return fmt.Errorf("cannot tell which sandboxes hold the secret: %w", err)
+	}
+
+	if len(users) != 0 {
+		return granted{name: name, users: users}
+	}
+
+	return nil
+}
+
+// holders names the sandboxes whose record grants the secret.
+func holders(d *deps, name string) ([]string, error) {
 	repo, err := d.repo()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	sandboxes, unreadable := repo.List()
 	// A record that does not read back may name the secret, so nothing can say it is free.
 	if unreadable != nil {
-		return fmt.Errorf("cannot tell which sandboxes hold the secret: %w", unreadable)
+		return nil, unreadable
 	}
 
 	var users []string
@@ -341,11 +357,7 @@ func ungranted(d *deps, name string) error {
 		}
 	}
 
-	if len(users) != 0 {
-		return granted{name: name, users: users}
-	}
-
-	return nil
+	return users, nil
 }
 
 func parseSecretRemove(args []string) (secretRemoveOptions, error) {
