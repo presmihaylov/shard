@@ -1,9 +1,12 @@
-// Package client is the typed side of the daemon's REST API, over the unix socket, for the CLI.
+// Package client is the typed side of the daemon's REST API, for the CLI. It speaks the unix
+// socket, or the same routes over tls to a shard serve front.
 package client
 
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +26,18 @@ import (
 // DefaultTimeout bounds one call that answers in full. A call that streams passes zero.
 const DefaultTimeout = 30 * time.Second
 
+// remotePort is the port a --host with none named is dialed on, which is what shard serve binds.
+const remotePort = "2376"
+
 // Client talks to one daemon. It is safe for concurrent use.
 type Client struct {
-	path string
-	http *http.Client
+	// target is the socket path or the host url, which is what an error names.
+	target string
+	// dialer is the whole of the transport switch: the unix socket, or tls to a shard serve front.
+	dialer func(ctx context.Context) (net.Conn, error)
+	// token is the bearer token a front checks. The socket takes none: its mode is the check.
+	token string
+	http  *http.Client
 	// Timeout bounds one call. It is not http.Client.Timeout, which would cut a stream; zero is no bound.
 	Timeout time.Duration
 }
@@ -71,24 +82,84 @@ func (e *apiError) Error() string { return e.Message }
 
 // New dials the socket under root on the first request.
 func New(root string) *Client {
-	c := &Client{path: filepath.Join(root, api.SocketFile), Timeout: DefaultTimeout}
+	socket := filepath.Join(root, api.SocketFile)
 
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return c.dial(ctx)
-	}}
-	c.http = &http.Client{Transport: transport}
+	c := &Client{target: socket, Timeout: DefaultTimeout}
+	c.dialer = func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}
+	c.transport()
 
 	return c
 }
 
-// dial opens the socket. An exec dials it itself, because it takes the connection over from HTTP.
-func (c *Client) dial(ctx context.Context) (net.Conn, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.path)
+// NewRemote dials a shard serve front over TLS instead, with the token every request to it carries.
+// The routes and the framing are the same: the front is a byte proxy onto that same socket.
+func NewRemote(host, token string, ca []byte) (*Client, error) {
+	parsed, err := url.Parse(host)
 	if err != nil {
-		return nil, &ConnectError{Path: c.path, Err: err}
+		return nil, fmt.Errorf("parse the host %q: %w", host, err)
+	}
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, fmt.Errorf("--host must be an https url, as https://box.example.com:2376, got %q", host)
+	}
+	if token == "" {
+		return nil, errors.New("--host needs a token: a shard serve front answers 401 without one")
+	}
+
+	address := parsed.Host
+	if parsed.Port() == "" {
+		address = net.JoinHostPort(parsed.Hostname(), remotePort)
+	}
+
+	settings := &tls.Config{ServerName: parsed.Hostname(), MinVersion: tls.VersionTLS12}
+	if len(ca) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(ca) {
+			return nil, errors.New("the ca file holds no certificate")
+		}
+		settings.RootCAs = pool
+	}
+
+	c := &Client{target: host, token: token, Timeout: DefaultTimeout}
+	c.dialer = func(ctx context.Context) (net.Conn, error) {
+		return (&tls.Dialer{Config: settings}).DialContext(ctx, "tcp", address)
+	}
+	c.transport()
+
+	return c, nil
+}
+
+// transport sends every request that net/http builds over this client's own dialer.
+func (c *Client) transport() {
+	c.http = &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return c.dial(ctx)
+	}}}
+}
+
+// dial opens the connection. An exec dials it itself, because it takes the connection over from HTTP.
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	conn, err := c.dialer(ctx)
+
+	// A certificate the client does not trust is its own error: nothing about the daemon is wrong.
+	var untrusted *tls.CertificateVerificationError
+	if errors.As(err, &untrusted) {
+		return nil, fmt.Errorf("the tls certificate of %s is not trusted: %w", c.target, err)
+	}
+	if err != nil {
+		return nil, &ConnectError{Path: c.target, Err: err}
 	}
 
 	return conn, nil
+}
+
+// authorize carries the bearer token of a front. The socket takes none: its mode is the check.
+func (c *Client) authorize(req *http.Request) {
+	if c.token == "" {
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
 }
 
 func (c *Client) Version(ctx context.Context) (Version, error) {
@@ -254,6 +325,7 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any, bou
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.authorize(req)
 
 	resp, err := c.http.Do(req) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 
@@ -289,10 +361,10 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any, bou
 // wrap names the route and the socket, and says so when the client's own deadline, not the caller's, cut the call.
 func (c *Client) wrap(caller context.Context, method, path string, bound time.Duration, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil {
-		return fmt.Errorf("%s %s on %s: no answer within %s", method, path, c.path, bound)
+		return fmt.Errorf("%s %s on %s: no answer within %s", method, path, c.target, bound)
 	}
 
-	return fmt.Errorf("%s %s on %s: %w", method, path, c.path, err)
+	return fmt.Errorf("%s %s on %s: %w", method, path, c.target, err)
 }
 
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came.

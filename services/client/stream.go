@@ -81,16 +81,17 @@ func (c *Client) upgrade(ctx context.Context, conn net.Conn, ref string, req san
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "tcp")
+	c.authorize(request)
 
 	if err := request.Write(conn); err != nil {
-		return nil, "", fmt.Errorf("ask for the exec of sandbox %s on %s: %w", ref, c.path, err)
+		return nil, "", fmt.Errorf("ask for the exec of sandbox %s on %s: %w", ref, c.target, err)
 	}
 
 	reader := bufio.NewReader(conn)
 
 	resp, err := http.ReadResponse(reader, request)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the answer to the exec of sandbox %s on %s: %w", ref, c.path, err)
+		return nil, "", fmt.Errorf("read the answer to the exec of sandbox %s on %s: %w", ref, c.target, err)
 	}
 	defer resp.Body.Close()
 
@@ -214,6 +215,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 	if err != nil {
 		return fmt.Errorf("build the request for the output of sandbox %s: %w", ref, err)
 	}
+	c.authorize(req)
 
 	resp, err := c.http.Do(req) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 
@@ -226,7 +228,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
+		return fmt.Errorf("GET %s on %s: %w", path, c.target, err)
 	}
 	defer resp.Body.Close()
 

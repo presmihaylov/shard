@@ -65,11 +65,12 @@ services/secret/           grants and destination binding
 services/daemon/           shard daemon: the wiring of every layer, and the background work
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
+services/serve/            the TCP front: tls, a bearer token, and the bytes onto that socket
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite both substrates must pass
 
-packaging/systemd/         the unit that installs shard daemon as a resident process
+packaging/systemd/         the unit for the daemon, and the one for the TCP front
 docs/
 ```
 
@@ -80,8 +81,9 @@ docs/
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
 - **`cli/` imports `services/client`, `pkg/pty`, `models`, the request types in
-  `services/sandbox`, and `services/daemon` for the one verb that is the daemon.
-  Nothing else.** A verb holds no store and no provider: it asks the socket.
+  `services/sandbox`, and `services/daemon` and `services/serve` for the two
+  verbs that are a process rather than a client. Nothing else.** A verb holds no
+  store and no provider: it asks the socket.
   `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports
   nothing else in the module. Splitting it per concern creates import cycles.
@@ -165,6 +167,9 @@ or a sandbox.
   thing that ends one. There is no policy, no idle timer and no on-exit setting
   to change any of this. This is why `shard-init` is PID 1 in every sandbox and
   the image entrypoint is its child.
+- **The daemon never binds TCP.** A network address is `shard serve`, a separate
+  and unprivileged process that checks a bearer token and then passes the bytes
+  to the daemon's socket. It is a byte proxy, never a second API.
 - **The daemon is the single writer of the state.** Every verb goes over the
   socket, so nothing else opens the stores and nothing needs a lock between
   processes. The one lock left is `daemon.lock`, which keeps a second daemon off

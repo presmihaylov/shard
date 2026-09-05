@@ -20,6 +20,10 @@ shard create python:3.12 -- python -c 'print(1)'
 `shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
 It owns the state; every other verb is a client of its socket and fails fast without it.
 
+The daemon never binds TCP. A client on another host reaches it through `shard serve`, an
+unprivileged process that terminates TLS, checks a bearer token and passes the bytes to the socket;
+the CLI then takes `--host https://box:2376 --token-file <path>`. See `docs/daemon.md`.
+
 It pulls the image, claims the record, allocates the network, creates the sandbox and starts the
 entrypoint. Then it prints the id and returns. It never attaches: the entrypoint runs as the child
 of `shard-init`, and the sandbox outlives it. `--env`, `--workdir`, `--user`, `--memory` and
