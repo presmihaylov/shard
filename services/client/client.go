@@ -171,6 +171,45 @@ func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool, grac
 	return nil
 }
 
+// PauseSandbox has no bound of its own: a checkpoint takes as long as the memory and the disk it writes.
+func (c *Client) PauseSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/pause", nil, &out, 0); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
+// ResumeSandbox reads back what the pause wrote, so it takes no bound either.
+func (c *Client) ResumeSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/resume", nil, &out, 0); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
+// ForkSandbox starts a second sandbox from the source's snapshot.
+func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	return c.copy(ctx, ref, "/fork", req)
+}
+
+// CloneSandbox copies a stopped or paused sandbox's disk into a new one.
+func (c *Client) CloneSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	return c.copy(ctx, ref, "/clone", req)
+}
+
+func (c *Client) copy(ctx context.Context, ref, verb string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	var out models.Sandbox
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+verb, req, &out, 0); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
 // plus stretches the bound by what the daemon itself waits for; no bound stays no bound.
 func (c *Client) plus(grace time.Duration) time.Duration {
 	if c.Timeout == 0 {

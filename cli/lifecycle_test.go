@@ -420,25 +420,19 @@ func stopped() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
-func (f *fakeLifecycleRepo) Hold(_ context.Context, id string) (func() error, error) {
-	if err := f.r.record("repo.Hold"); err != nil {
-		return nil, err
-	}
-	if f.missing {
-		return nil, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
-	}
-
-	return func() error { return nil }, nil
+// paused is the record of a sandbox that holds a snapshot, which is what resume and fork are given.
+func paused() models.Sandbox {
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1"}
 }
 
-// HoldShared is recorded apart from Hold, so a test says which one a verb took.
-func (f *fakeLifecycleRepo) HoldShared(_ context.Context, id string) (func() error, error) {
-	if err := f.r.record("repo.HoldShared"); err != nil {
-		return nil, err
-	}
-	if f.missing {
-		return nil, fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+// keep filters the calls down to the named ones, in the order they happened.
+func keep(calls []string, names ...string) []string {
+	var got []string
+	for _, call := range calls {
+		if slices.Contains(names, call) {
+			got = append(got, call)
+		}
 	}
 
-	return func() error { return nil }, nil
+	return got
 }

@@ -119,6 +119,42 @@ func (l *lifecycle) Remove(ctx context.Context, ref string, force bool, grace ti
 	return svc.Remove(ctx, ref, force, grace)
 }
 
+func (l *lifecycle) Pause(ctx context.Context, ref string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.Pause(ctx, ref)
+}
+
+func (l *lifecycle) Resume(ctx context.Context, ref string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.Resume(ctx, ref)
+}
+
+func (l *lifecycle) Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.Fork(ctx, ref, req)
+}
+
+func (l *lifecycle) Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.Clone(ctx, ref, req)
+}
+
 func (l *lifecycle) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error) {
 	svc, err := l.service()
 	if err != nil {

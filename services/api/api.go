@@ -23,6 +23,10 @@ type Lifecycle interface {
 	Start(ctx context.Context, ref string) (models.Sandbox, error)
 	Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error)
 	Remove(ctx context.Context, ref string, force bool, grace time.Duration) error
+	Pause(ctx context.Context, ref string) (models.Sandbox, error)
+	Resume(ctx context.Context, ref string) (models.Sandbox, error)
+	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
+	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error)
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
 	Logs(ctx context.Context, ref string, follow bool, w io.Writer) error
@@ -49,6 +53,10 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 	mux.HandleFunc("POST /v0/sandboxes/{id}/start", h.startSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/stop", h.stopSandbox)
 	mux.HandleFunc("DELETE /v0/sandboxes/{id}", h.removeSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/pause", h.pauseSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/resume", h.resumeSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/fork", h.forkSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/clone", h.cloneSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.execSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
@@ -192,6 +200,55 @@ func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
+	sb, err := h.lifecycle.Pause(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
+	sb, err := h.lifecycle.Resume(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
+	h.copySandbox(w, r, h.lifecycle.Fork)
+}
+
+func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
+	h.copySandbox(w, r, h.lifecycle.Clone)
+}
+
+// copySandbox is the body a fork and a clone share: both name the new sandbox and answer its record.
+func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
+	var req sandbox.CopyRequest
+	if err := decode(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	sb, err := verb(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusCreated, sb)
+}
+
 // status maps what the orchestrator refused to the one code that says so; anything else broke.
 func status(err error) int {
 	var invalid *sandboxstate.ValidationError
@@ -204,7 +261,7 @@ func status(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, sandboxstate.ErrNotFound):
 		return http.StatusNotFound
-	case errors.As(err, &state), errors.As(err, &unavailable):
+	case errors.As(err, &state), errors.As(err, &unavailable), errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

@@ -23,9 +23,11 @@ type fakeLifecycle struct {
 	err error
 
 	created sandbox.CreateRequest
-	ref     string
-	grace   time.Duration
-	force   bool
+	// copied is the body a fork or a clone sent.
+	copied sandbox.CopyRequest
+	ref    string
+	grace  time.Duration
+	force  bool
 
 	// exec is the request the client sent, and input what it typed at the command.
 	exec   sandbox.ExecRequest
@@ -68,6 +70,30 @@ func (f *fakeLifecycle) Remove(_ context.Context, ref string, force bool, grace 
 	f.ref, f.force, f.grace = ref, force, grace
 
 	return f.err
+}
+
+func (f *fakeLifecycle) Pause(_ context.Context, ref string) (models.Sandbox, error) {
+	f.ref = ref
+
+	return models.Sandbox{ID: ref, State: models.StatePaused}, f.err
+}
+
+func (f *fakeLifecycle) Resume(_ context.Context, ref string) (models.Sandbox, error) {
+	f.ref = ref
+
+	return models.Sandbox{ID: ref, State: models.StateRunning}, f.err
+}
+
+func (f *fakeLifecycle) Fork(_ context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	f.ref, f.copied = ref, req
+
+	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
+}
+
+func (f *fakeLifecycle) Clone(_ context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
+	f.ref, f.copied = ref, req
+
+	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
 }
 
 // Exec answers the client the way the orchestrator does: it names the exec, writes, and then exits.
@@ -231,6 +257,7 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "slash"},
 		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "ghost"},
 		{"a state error", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force"}, http.StatusConflict, "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
+		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "provider gvisor does not support fork on this host"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "boom"},
 	}
 
@@ -244,6 +271,10 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/start", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/stop", ""},
 				{http.MethodDelete, "/v0/sandboxes/sandbox1", ""},
+				{http.MethodPost, "/v0/sandboxes/sandbox1/pause", ""},
+				{http.MethodPost, "/v0/sandboxes/sandbox1/resume", ""},
+				{http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`},
+				{http.MethodPost, "/v0/sandboxes/sandbox1/clone", `{"name":"web-2"}`},
 			} {
 				status, got := send(t, s.server, route.method, route.path, route.body)
 				if status != c.status || !strings.Contains(got["error"].(string), c.text) {
@@ -263,6 +294,57 @@ func TestStartAnswersTheRecord(t *testing.T) {
 	}
 	if s.verbs.ref != "web" {
 		t.Errorf("the orchestrator got the reference %q, want web", s.verbs.ref)
+	}
+}
+
+// A pause and a resume act on the sandbox that is there, so each answers 200 with its record.
+func TestPauseAndResumeAnswerTheRecord(t *testing.T) {
+	cases := map[string]string{"pause": "paused", "resume": "running"}
+
+	for verb, state := range cases {
+		s := seed(t)
+
+		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/web/"+verb, "")
+		if status != http.StatusOK || got["id"] != "web" || got["state"] != state {
+			t.Errorf("POST /v0/sandboxes/web/%s answered %d %v, want 200 with the record", verb, status, got)
+		}
+		if s.verbs.ref != "web" {
+			t.Errorf("the orchestrator got the reference %q, want web", s.verbs.ref)
+		}
+	}
+}
+
+// A fork and a clone make a sandbox, so each answers 201 with the new record and never the source's.
+func TestForkAndCloneAnswer201WithTheNewRecord(t *testing.T) {
+	for _, verb := range []string{"fork", "clone"} {
+		s := seed(t)
+
+		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, `{"name":"web-2"}`)
+		if status != http.StatusCreated || got["id"] != "sandbox2" || got["name"] != "web-2" {
+			t.Errorf("POST %s answered %d %v, want 201 with the new record", verb, status, got)
+		}
+		if s.verbs.ref != "sandbox1" || s.verbs.copied.Name != "web-2" {
+			t.Errorf("the orchestrator got ref=%q name=%q, want sandbox1 and web-2", s.verbs.ref, s.verbs.copied.Name)
+		}
+
+		// A copy with no name is the common one, and an empty body is how the CLI sends it.
+		if _, _ = send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, ""); s.verbs.copied.Name != "" {
+			t.Errorf("an empty body gave the name %q, want none", s.verbs.copied.Name)
+		}
+	}
+}
+
+func TestForkAndCloneAre400ForABodyTheyCannotDecode(t *testing.T) {
+	for _, verb := range []string{"fork", "clone"} {
+		s := seed(t)
+
+		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, `{"named":"web-2"}`)
+		if status != http.StatusBadRequest || got["error"] == nil {
+			t.Errorf("POST %s with an unknown field answered %d %v, want 400", verb, status, got)
+		}
+		if s.verbs.ref != "" {
+			t.Errorf("a body that did not decode still reached the orchestrator for %s", verb)
+		}
 	}
 }
 
