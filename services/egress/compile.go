@@ -130,9 +130,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	// A grant loses only to a rule that names its host: it goes before the first catch-all, or last (SHARD-120).
-	at := slices.IndexFunc(rules, func(r EffectiveRule) bool {
-		return r.Destination.Kind == models.DestinationGroup && r.Destination.Value == "any"
-	})
+	at := slices.IndexFunc(rules, func(r EffectiveRule) bool { return coversAll(r.Destination) })
 	if at < 0 {
 		at = len(rules)
 	}
@@ -158,6 +156,19 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
+}
+
+// coversAll says the destination is a catch-all by coverage, not spelling: any, or a prefix of length 0 (SHARD-133).
+func coversAll(dest models.Destination) bool {
+	if dest.Kind == models.DestinationGroup {
+		return dest.Value == "any"
+	}
+	if dest.Kind != models.DestinationCIDR {
+		return false
+	}
+	prefix, err := parseCIDR(dest.Value)
+
+	return err == nil && prefix.Bits() == 0
 }
 
 // Chains compiles one chain per sandbox with a policy and an address; a lease outlives a stop, so the chain does too.

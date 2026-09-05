@@ -256,6 +256,31 @@ func TestEffectiveSlotsTheGrantsBeforeTheCatchAll(t *testing.T) {
 	}
 }
 
+// SHARD-133: a catch-all written as a prefix is found by coverage, so it yields to the grant like any does.
+func TestAPrefixCatchAllYieldsToTheGrantLikeAny(t *testing.T) {
+	for _, catchAll := range []string{"any", "0.0.0.0/0", "0.0.0.0/0 tcp"} {
+		s := newStore(t)
+		rules := []models.Rule{mustRule(t, models.ActionAllow, "api.example.com"), mustRule(t, models.ActionDeny, catchAll)}
+		if err := s.Set(models.Policy{Name: "locked", Rules: rules}); err != nil {
+			t.Fatal(err)
+		}
+
+		svc := New(s, nil, fakeGrants{"TOKEN": {"tokens.example.com"}}, nameservers, fakeResolver{})
+
+		got, err := svc.Effective(models.Sandbox{ID: "sandbox1", Policy: "locked", Secrets: []string{"TOKEN"}})
+		if err != nil {
+			t.Fatalf("Effective: %v", err)
+		}
+
+		if last := got.Rules[len(got.Rules)-1]; last.Action != models.ActionDeny || last.Implied != "" {
+			t.Errorf("--deny %s: the grant went after the catch-all: %+v", catchAll, got.Rules)
+		}
+		if d := Decide(got, "tokens.example.com", 443, netip.MustParseAddr("93.184.216.34")); !d.Allow {
+			t.Errorf("--deny %s closed the granted host: %+v", catchAll, d)
+		}
+	}
+}
+
 // SHARD-117 kept: a rule that names the granted host still outranks the grant; only a catch-all yields to it.
 func TestANamedDenyStillOutranksTheGrant(t *testing.T) {
 	s := newStore(t)
