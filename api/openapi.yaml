@@ -1,0 +1,200 @@
+openapi: 3.0.3
+info:
+  title: shard
+  description: The API shard daemon answers on its unix socket, ${root}/shard.sock.
+  version: 0.1.0
+servers:
+  - url: http://shard
+    description: The host name is a placeholder, the socket is the address. curl --unix-socket /var/lib/shard/shard.sock http://shard/v0/version
+paths:
+  /v0/version:
+    get:
+      operationId: getVersion
+      summary: The version of the daemon and of this API.
+      responses:
+        "200":
+          description: The versions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+  /v0/sandboxes:
+    get:
+      operationId: listSandboxes
+      summary: The sandboxes that are up, what shard ls shows.
+      parameters:
+        - name: all
+          in: query
+          description: Include the stopped sandboxes too, as shard ls --all does.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: The sandboxes, ordered by id.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Sandbox"
+        "500":
+          description: A record could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v0/sandboxes/{id}:
+    get:
+      operationId: getSandbox
+      summary: One sandbox, what shard inspect prints.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The id, or the name --name gave it.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The record, with the egress rules the host enforces when it holds a policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "404":
+          description: No sandbox has that id or name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    Version:
+      type: object
+      required: [version, api_version]
+      properties:
+        version:
+          type: string
+          description: The build version of the daemon binary.
+          example: v0.3.0-12-gabc1234
+        api_version:
+          type: string
+          example: 0.1.0
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Sandbox:
+      type: object
+      required: [id, image, provider, state, pid, netns_path, address, host_interface, resources, created_at]
+      properties:
+        id:
+          type: string
+          example: quiet-otter-3f2a
+        name:
+          type: string
+          description: The handle --name gave it, absent when none.
+        image:
+          type: string
+          example: alpine:3.20
+        provider:
+          type: string
+          example: gvisor
+        state:
+          type: string
+          enum: [created, running, paused, stopped]
+        exit_status:
+          $ref: "#/components/schemas/ExitStatus"
+        snapshot:
+          type: string
+          description: The directory the last pause wrote, absent until one happens.
+        pid:
+          type: integer
+          description: The sandbox process on the host, 0 when it does not run.
+        netns_path:
+          type: string
+        address:
+          type: string
+          description: The address of the sandbox, with its prefix length.
+          example: 10.44.0.2/24
+        host_interface:
+          type: string
+          description: The host end of the link, a veth or a tap.
+        resources:
+          $ref: "#/components/schemas/Resources"
+        secrets:
+          type: array
+          description: The names the guest holds a placeholder for, never a value.
+          items:
+            type: string
+        policy:
+          type: string
+          description: The egress policy the host enforces, absent for none.
+        created_at:
+          type: string
+          format: date-time
+        egress:
+          $ref: "#/components/schemas/Egress"
+    ExitStatus:
+      type: object
+      description: How the entrypoint ended, absent until it has.
+      required: [code, signal]
+      properties:
+        code:
+          type: integer
+        signal:
+          type: integer
+          description: The guest signal number that ended it, 0 when it exited on its own.
+    Resources:
+      type: object
+      required: [memory_mib, vcpus]
+      properties:
+        memory_mib:
+          type: integer
+          description: The memory bound, 0 for unbounded.
+        vcpus:
+          type: integer
+          description: The vcpu bound, 0 for unbounded.
+    Egress:
+      type: object
+      description: What the host enforces, present only when the sandbox holds a policy.
+      required: [policy, rules]
+      properties:
+        policy:
+          type: string
+        missing:
+          type: boolean
+          description: The record names a policy the store no longer holds, so everything is dropped.
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/EffectiveRule"
+    EffectiveRule:
+      type: object
+      required: [action, destination]
+      properties:
+        action:
+          type: string
+          enum: [allow, deny]
+        destination:
+          type: object
+          required: [kind, value]
+          properties:
+            kind:
+              type: string
+              enum: [cidr, domain, domain-suffix, group]
+            value:
+              type: string
+        protocol:
+          type: string
+          description: tcp or udp, absent for every protocol.
+        ports:
+          type: array
+          items:
+            type: integer
+        implied:
+          type: string
+          description: What wrote the rule when the policy did not, a grant say.
