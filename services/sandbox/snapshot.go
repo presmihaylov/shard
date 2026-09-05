@@ -176,12 +176,6 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	var td Teardown
 
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, td.Unwind(ctx))
-		}
-	}()
-
 	// The memory image holds the source's run, so an entrypoint that had exited before the pause has too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		Image:      src.Image,
@@ -191,6 +185,13 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		ExitStatus: src.ExitStatus,
 	})
 	defer claim.unlock()
+
+	// After the unlock defer, so the unwind runs first and no verb sees the half-built copy.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, td.Unwind(ctx))
+		}
+	}()
 
 	if err != nil {
 		return models.Sandbox{}, err
@@ -230,6 +231,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 // Clone starts a new sandbox over a copy of the files another one kept, and runs its entrypoint from
 // the beginning. It takes no memory: that is fork, which reads a snapshot.
 func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb models.Sandbox, err error) {
+	// No capability gate: every provider copies files and starts a sandbox, so clone is mandatory.
 	source, src, unlock, err := s.readSource(ctx, ref, req)
 	if err != nil {
 		return models.Sandbox{}, err
@@ -242,12 +244,6 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 
 	var td Teardown
 
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, td.Unwind(ctx))
-		}
-	}()
-
 	// The entrypoint runs from the beginning, so the source's exit is not the clone's.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		Image:     src.Image,
@@ -256,6 +252,13 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 		Policy:    src.Policy,
 	})
 	defer claim.unlock()
+
+	// After the unlock defer, so the unwind runs first and no verb sees the half-built copy.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, td.Unwind(ctx))
+		}
+	}()
 
 	if err != nil {
 		return models.Sandbox{}, err

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -319,6 +320,37 @@ func TestForkGivesBackWhatItClaimedWhenTheRestoreFails(t *testing.T) {
 	}
 	if l.repo.sb.State != models.StatePaused {
 		t.Errorf("the source's record changed to %s", l.repo.sb.State)
+	}
+}
+
+// The copy is half-built while it is given back, so the teardown runs under its lock and no verb sees it.
+func TestAFailedForkUnwindsBeforeItLetsTheCopyGo(t *testing.T) {
+	r := &recorder{fail: []string{"provider.Fork"}}
+	svc, l := newService(t, r, pausedSandbox())
+
+	reached := make(chan struct{})
+	l.provider.onRemove = func() {
+		go func() {
+			_, _ = svc.Pause(t.Context(), "sandbox2")
+			close(reached)
+		}()
+
+		select {
+		case <-reached:
+			t.Error("a verb reached the copy while the fork was still giving it back")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{}); err == nil {
+		t.Fatal("fork reported success when the restore failed")
+	}
+
+	// The same lock must be free once the fork is done, or every later verb on the copy hangs.
+	select {
+	case <-reached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the copy's lock was never released")
 	}
 }
 

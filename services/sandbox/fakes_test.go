@@ -219,6 +219,8 @@ type fakeProvider struct {
 	exit   models.ExitStatus
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
+	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
+	onRemove func()
 	// gate, when set, holds Start until it is closed, so a test can put a second verb behind it.
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
@@ -373,6 +375,9 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 }
 
 func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
+	if f.onRemove != nil {
+		f.onRemove()
+	}
 	if err := f.r.cleanup(ctx, "provider.Remove"); err != nil {
 		return err
 	}
