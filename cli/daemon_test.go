@@ -71,12 +71,13 @@ func shortRoot(t *testing.T) string {
 }
 
 // startDaemon waits for the log line, not the file: the socket exists a moment before its mode is set.
-func startDaemon(t *testing.T, root string, out *syncBuffer) (context.CancelFunc, <-chan error) {
+func startDaemon(t *testing.T, app App, out *syncBuffer) (context.CancelFunc, <-chan error) {
 	t.Helper()
 
+	app.Out = out
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- App{Version: "v-test", Out: out}.Run(ctx, []string{"--root", root, "daemon"}) }()
+	go func() { done <- app.Run(ctx, []string{"--root", app.Root, "daemon"}) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), "api listening on") {
@@ -101,7 +102,7 @@ func TestDaemonAnswersOnTheSocketUntilTheContextEnds(t *testing.T) {
 	root := shortRoot(t)
 	out := &syncBuffer{}
 
-	cancel, done := startDaemon(t, root, out)
+	cancel, done := startDaemon(t, App{Version: "v-test", Root: root}, out)
 
 	resp, err := socketClient(root).Get("http://shard/v0/version")
 	if err != nil {

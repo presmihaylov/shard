@@ -14,6 +14,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
 )
@@ -277,4 +278,53 @@ func (d *deps) egress() (*egress.Service, error) {
 	}
 
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
+}
+
+// lifecycle wires the orchestrator over every layer the four verbs drive, once per daemon.
+func (d *deps) lifecycle() (*sandbox.Service, error) {
+	images, err := d.images()
+	if err != nil {
+		return nil, err
+	}
+
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	net, err := d.net()
+	if err != nil {
+		return nil, err
+	}
+
+	provider, err := d.provider()
+	if err != nil {
+		return nil, err
+	}
+
+	secrets, err := d.secrets()
+	if err != nil {
+		return nil, err
+	}
+
+	policies, err := d.policies()
+	if err != nil {
+		return nil, err
+	}
+
+	sub, err := d.substrate()
+	if err != nil {
+		return nil, err
+	}
+
+	return sandbox.New(sandbox.Config{
+		Repo:        repo,
+		Images:      images,
+		Network:     net,
+		Provider:    provider,
+		Secrets:     secrets,
+		Policies:    policies,
+		Substrate:   sub,
+		PullTimeout: d.app.Timeout,
+	}), nil
 }

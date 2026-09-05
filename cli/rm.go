@@ -6,11 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
-	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // rmOptions is one parsed shard rm invocation.
@@ -20,140 +19,40 @@ type rmOptions struct {
 	grace time.Duration
 }
 
-func (a App) remove(ctx context.Context, args []string) (err error) {
+// remove reads the record before the delete, because a delete answers no record and the id printed is the resolved one.
+func (a App) remove(ctx context.Context, args []string) error {
 	opts, err := parseRm(args)
 	if err != nil {
 		return err
 	}
 
-	d := a.deps()
+	c := a.client()
 
-	repo, err := d.repo()
-	if err != nil {
-		return err
-	}
+	sb, err := c.GetSandbox(ctx, opts.id)
 
-	net, err := d.net()
-	if err != nil {
-		return err
-	}
-
-	provider, err := d.provider()
-	if err != nil {
-		return err
-	}
-
-	// The warning below names what the operator typed, which is a name that resolved to nothing.
-	ref := opts.id
-
-	opts.id, err = repo.Resolve(ref)
-	if err != nil {
-		return err
-	}
-
-	// The record dies last below, so an id with no record has nothing else left on the host either,
-	// and an rm that waited on another rm finds the same nothing.
-	release, err := repo.Hold(ctx, opts.id)
-	if errors.Is(err, sandboxstate.ErrNotFound) {
-		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", ref))
+	var missing *client.NotFoundError
+	if errors.As(err, &missing) {
+		// The warning names what the operator typed, which is a name that resolved to nothing.
+		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
 
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, release()) }()
 
-	if err := a.endIfAlive(ctx, repo, provider, opts); err != nil {
-		return err
-	}
+	// An rm that waited on another rm finds the same nothing, and that is still nothing to report.
+	err = c.RemoveSandbox(ctx, sb.ID, opts.force, opts.grace)
+	if errors.As(err, &missing) {
+		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
 
-	if err := free(ctx, repo, net, provider, opts.id); err != nil {
-		return err
-	}
-
-	if err := dropSubstrateRoot(d); err != nil {
-		return fmt.Errorf("sandbox %s is removed, but %w", opts.id, err)
-	}
-
-	return a.print(opts.id)
-}
-
-// endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps.
-// --force is the shorthand for the stop the operator would otherwise type first.
-func (a App) endIfAlive(ctx context.Context, repo sandboxRepo, provider models.Provider, opts rmOptions) error {
-	status, err := provider.Status(ctx, opts.id)
-	if err != nil {
-		return err
-	}
-	if !status.Alive() {
 		return nil
 	}
-
-	if !opts.force {
-		return fmt.Errorf("sandbox %s is %s: stop it first with shard stop %s, or pass --force", opts.id, status.State, opts.id)
-	}
-
-	return a.stopSandbox(ctx, repo, provider, opts.id, opts.grace)
-}
-
-// holding is one of the things a stopped sandbox still holds on the host.
-type holding struct {
-	what string
-	free func() error
-}
-
-// free gives back everything a stop kept, and stops at the first failure: a step that failed still
-// holds what the steps below it name. The record goes last, because it is the only handle by which
-// the mount and the namespace can be found again.
-func free(ctx context.Context, repo sandboxRepo, net sandboxNetwork, provider models.Provider, id string) error {
-	held := []holding{
-		{"runsc state and rootfs mount", func() error { return provider.Remove(ctx, id) }},
-		{"netns, veth and address lease", func() error { return net.Release(ctx, id) }},
-		{"record and state directory", func() error { return repo.Delete(id) }},
-	}
-
-	for i, h := range held {
-		err := h.free()
-		if err == nil {
-			continue
-		}
-
-		left := make([]string, 0, len(held)-i)
-		for _, rest := range held[i:] {
-			left = append(left, rest.what)
-		}
-
-		return fmt.Errorf("remove sandbox %s: %w: its %s are left on the host", id, err, strings.Join(left, ", its "))
-	}
-
-	return nil
-}
-
-// dropSubstrateRoot gives back what the substrate keeps for itself once no sandbox is left to use
-// it. An operator otherwise meets it as an rm -rf of the root that fails with EBUSY.
-// A create that runs beside this one is no reason to keep it: runsc binds the mount again on its
-// next create, and a live sandbox does not need this mount to stay up.
-func dropSubstrateRoot(d *deps) error {
-	repo, err := d.repo()
 	if err != nil {
 		return err
 	}
 
-	left, err := repo.List()
-	if err != nil {
-		return err
-	}
-	if len(left) > 0 {
-		return nil
-	}
-
-	sub, err := d.substrate()
-	if err != nil {
-		return err
-	}
-
-	return sub.DropNullNetns()
+	return a.print(sb.ID)
 }
 
 func parseRm(args []string) (rmOptions, error) {
@@ -162,7 +61,7 @@ func parseRm(args []string) (rmOptions, error) {
 	flags := flag.NewFlagSet("shard rm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up")
-	flags.DurationVar(&opts.grace, "time", DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
+	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
 
 	if err := flags.Parse(args); err != nil {
 		return rmOptions{}, fmt.Errorf("parse the rm flags: %w", err)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -72,11 +73,11 @@ func (a App) fork(ctx context.Context, args []string) (err error) {
 		return fmt.Errorf("sandbox %s has no snapshot: pause it first, fork reads what the pause wrote", source)
 	}
 
-	var td teardown
+	var td sandbox.Teardown
 
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, td.unwind(ctx))
+			err = errors.Join(err, td.Unwind(ctx))
 		}
 	}()
 
@@ -97,16 +98,16 @@ func (a App) fork(ctx context.Context, args []string) (err error) {
 	}
 	id := forked.ID
 
-	td.push(func(context.Context) error { return repo.Delete(id) })
+	td.Push(func(context.Context) error { return repo.Delete(id) })
 
 	dir, err := repo.Dir(id)
 	if err != nil {
 		return err
 	}
 
-	td.push(func(ctx context.Context) error { return net.Release(ctx, id) })
+	td.Push(func(ctx context.Context) error { return net.Release(ctx, id) })
 
-	netSpec, err := allocateNetwork(ctx, net, id)
+	netSpec, err := sandbox.AllocateNetwork(ctx, net, id)
 	if err != nil {
 		return err
 	}
@@ -130,14 +131,14 @@ func (a App) fork(ctx context.Context, args []string) (err error) {
 		}
 	}
 
-	td.push(func(ctx context.Context) error { return provider.Remove(ctx, id) })
+	td.Push(func(ctx context.Context) error { return provider.Remove(ctx, id) })
 
 	spec := models.SandboxSpec{ID: id, Name: *forkName, StateDir: dir, Network: netSpec, Resources: sb.Resources}
 	if err := provider.Fork(ctx, sb.Snapshot, spec); err != nil {
 		// An interrupt kills the restore process, not what it may already have restored, and only stop
 		// ends a sandbox, so an unknown outcome is kept.
 		if ctx.Err() != nil {
-			td.discard()
+			td.Discard()
 
 			return fmt.Errorf("the fork into sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
@@ -146,11 +147,11 @@ func (a App) fork(ctx context.Context, args []string) (err error) {
 	}
 
 	// The commit point: the fork is live, so nothing below gives anything back.
-	td.discard()
+	td.Discard()
 
 	// The restored guest holds no rules of its own, so the host's go on again now.
 	if err := net.Reapply(ctx, id); err != nil {
-		return errors.Join(err, a.reconcile(ctx, repo, provider, id, true))
+		return errors.Join(err, sandbox.Reconcile(ctx, repo, provider, id, true))
 	}
 
 	// The id is printed before the record write, so a fork whose record failed is still reachable.

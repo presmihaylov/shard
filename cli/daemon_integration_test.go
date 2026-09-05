@@ -22,15 +22,6 @@ func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	id := create(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, deps, id) })
 
-	log := &syncBuffer{}
-	cancel, done := startDaemon(t, app.Root, log)
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("daemon ended with %v", err)
-		}
-	}()
-
 	path := filepath.Join(app.Root, api.SocketFile)
 	info, err := os.Lstat(path)
 	if err != nil {

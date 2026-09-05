@@ -18,7 +18,7 @@ func TestStopTakesAName(t *testing.T) {
 	sb := running()
 	sb.Name = "builder"
 
-	app, _ := newLifecycleApp(t, &out, &recorder{}, sb)
+	app, _ := newClientApp(t, &out, sb)
 
 	if err := app.Run(context.Background(), []string{"stop", "builder"}); err != nil {
 		t.Fatalf("stop by name: %v", err)
@@ -36,8 +36,7 @@ func TestRmTakesAName(t *testing.T) {
 	sb.Name = "builder"
 	sb.State = models.StateStopped
 
-	app, d := newLifecycleApp(t, &out, &recorder{}, sb)
-	d.providerSvc.(*fakeLifecycleProvider).status.State = sb.State
+	app, _ := newClientApp(t, &out, sb)
 
 	if err := app.Run(context.Background(), []string{"rm", "builder"}); err != nil {
 		t.Fatalf("rm by name: %v", err)
@@ -53,8 +52,8 @@ func TestParseCreateTakesAName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
-	if opts.name != "builder" {
-		t.Fatalf("name = %q, want builder", opts.name)
+	if opts.Name != "builder" {
+		t.Fatalf("name = %q, want builder", opts.Name)
 	}
 }
 
@@ -63,44 +62,6 @@ func TestParseCreateRefusesANameNoVerbCouldTakeBack(t *testing.T) {
 		if _, err := parseCreate([]string{"--name", name, "alpine:3.20"}); err == nil {
 			t.Fatalf("parseCreate took the name %q", name)
 		}
-	}
-}
-
-// TestCreateGivesTheNameToTheRecordAndToTheGuest proves both halves: the record carries the name so
-// a later verb resolves it, and the spec carries it so the guest hostname is what the operator chose.
-func TestCreateGivesTheNameToTheRecordAndToTheGuest(t *testing.T) {
-	var out bytes.Buffer
-
-	app, d := newFakeApp(t, &out, &recorder{})
-
-	if err := app.Run(context.Background(), []string{"create", "--name", "builder", "alpine:3.20"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	if got := d.repoSvc.(*fakeRepo).created.Name; got != "builder" {
-		t.Fatalf("the record carries the name %q, want builder", got)
-	}
-	if got := d.providerSvc.(*fakeProvider).spec.Name; got != "builder" {
-		t.Fatalf("the spec carries the name %q, want builder", got)
-	}
-}
-
-func TestCreateWithoutANameGivesTheGuestTheID(t *testing.T) {
-	var out bytes.Buffer
-
-	app, d := newFakeApp(t, &out, &recorder{})
-
-	if err := app.Run(context.Background(), []string{"create", "alpine:3.20"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	if got := d.repoSvc.(*fakeRepo).created.Name; got != "" {
-		t.Fatalf("an unnamed create put %q in the record", got)
-	}
-
-	spec := d.providerSvc.(*fakeProvider).spec
-	if spec.Name != spec.ID {
-		t.Fatalf("the guest hostname is %q, want the id %q", spec.Name, spec.ID)
 	}
 }
 

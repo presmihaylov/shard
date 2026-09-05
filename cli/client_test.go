@@ -36,7 +36,7 @@ func serveDaemon(t *testing.T, d *deps) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	server := httptest.NewUnstartedServer(api.NewHandler("v-daemon", repo, enforcer, io.Discard))
+	server := httptest.NewUnstartedServer(api.NewHandler("v-daemon", repo, enforcer, &lifecycle{deps: d}, io.Discard))
 	server.Listener = listener
 	server.Start()
 	t.Cleanup(server.Close)
