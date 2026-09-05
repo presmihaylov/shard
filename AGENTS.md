@@ -143,6 +143,18 @@ integration` does not exist to the compiler without `-tags integration`, so plai
 suffix is for humans; keep both. Every such test also guards itself at runtime
 (`euid == 0`, the binary is on PATH) and skips rather than fails.
 
+**A test that drives a verb brings its own daemon.** Every verb speaks to a socket,
+so the integration tests in `cli/` start one `shard daemon` in `TestMain`, over a
+temp root of their own, and drive the verbs against it through `services/client`.
+The teardown ends that daemon by its pid and proves its socket is gone. `make e2e`
+does the same in the shell. No run ever speaks to the daemon of the systemd unit,
+and none of them uses the default root, so a box can run both at once.
+
+**Unit tests keep the daemon out of it.** A `services/` test calls `services/`, and
+an `api` handler test serves `httptest`, over a unix socket in a temp dir where the
+listener itself is what is under test. Nothing under `make check` starts a daemon
+or a sandbox.
+
 ## Rules that outrank convenience
 
 - **Refuse, never downgrade.** An unsupported verb fails fast with an error that
