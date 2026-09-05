@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -376,11 +377,19 @@ func TestSecretGrantRefusesWhatWouldCollideOrIsMissing(t *testing.T) {
 	if err := app.Run(ctx, []string{"secret", "set", "--to", "api.example.com", "API_KEY"}); err != nil {
 		t.Fatalf("secret set: %v", err)
 	}
+	before := grantConfig(t, stateDir)
 	err = app.Run(ctx, []string{"secret", "grant", "sandbox1", "API_KEY"})
 	if err == nil || !strings.Contains(err.Error(), "already holds API_KEY") {
 		t.Errorf("grant over a held name = %v", err)
 	}
 	if len(repo.sb.Secrets) != 0 {
 		t.Errorf("record secrets after a refused grant = %v", repo.sb.Secrets)
+	}
+	// A refused grant plants no CA: the bundle and the writable layer are as create left them.
+	if after := grantConfig(t, stateDir); after != before {
+		t.Errorf("config.json after a refused grant = %s", after)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "overlay", "upper")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the writable layer after a refused grant: stat = %v, want absent", err)
 	}
 }

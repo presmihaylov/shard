@@ -21,12 +21,33 @@ func (b Bundle) SetEnv(name, value string) error {
 		if slices.Contains(env, entry) {
 			return env, nil
 		}
-		if slices.ContainsFunc(env, func(e string) bool { return envKey(e) == name }) {
-			return nil, fmt.Errorf("the guest environment already holds %s: the placeholder would hide it or be hidden by it", name)
+		if err := envFree(env, name); err != nil {
+			return nil, err
 		}
 
 		return append(env, entry), nil
 	})
+}
+
+// CanSetEnv is SetEnv's refusal without its write, so a caller checks before it edits anything else.
+func (b Bundle) CanSetEnv(name, value string) error {
+	rt, err := b.Runtime()
+	if err != nil {
+		return err
+	}
+	if slices.Contains(rt.Env, name+"="+value) {
+		return nil
+	}
+
+	return envFree(rt.Env, name)
+}
+
+func envFree(env []string, name string) error {
+	if slices.ContainsFunc(env, func(e string) bool { return envKey(e) == name }) {
+		return fmt.Errorf("the guest environment already holds %s: the placeholder would hide it or be hidden by it", name)
+	}
+
+	return nil
 }
 
 // RemoveEnv takes one variable out of config.json. A name it does not hold is already the outcome.

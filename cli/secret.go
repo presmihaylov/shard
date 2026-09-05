@@ -232,6 +232,11 @@ func grantSecretTo(d *deps, repo sandboxRepo, bnd bundle.Bundle, sb models.Sandb
 		return err
 	}
 
+	// A collision refuses before the CA lands, so a refused grant leaves the bundle as it found it.
+	if err := bnd.CanSetEnv(name, sec.MockValue); err != nil {
+		return err
+	}
+
 	// A sandbox created unfronted never trusted the proxy CA, and its next start is fronted.
 	px, err := d.proxy()
 	if err != nil {
