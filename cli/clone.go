@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -69,6 +70,13 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		return fmt.Errorf("sandbox %s is %s: stop it first, clone copies what a stop kept", source, sb.State)
 	}
 
+	// The clone holds the source's grants and policy, so it is fronted the same way and needs the proxy.
+	if egress.Fronted(sb) {
+		if err := d.requireDaemon(); err != nil {
+			return err
+		}
+	}
+
 	var td teardown
 
 	defer func() {
@@ -119,8 +127,8 @@ func (a App) clone(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if sb.Policy != "" {
+	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if egress.Fronted(sb) {
 		if err := net.Reapply(ctx, id); err != nil {
 			return err
 		}

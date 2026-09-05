@@ -25,8 +25,8 @@ always record how the entrypoint ended.
 `SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
 
 `--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
-host. The egress proxy (SHARD-71) puts it into a request on its way to the granted destination; until
-then the placeholder reaches the wire as it is. See `docs/secrets.md`.
+host, and the egress proxy puts it into a request on its way to the granted destination. A sandbox
+with a secret or a policy needs `shard daemon` up. See `docs/secrets.md`.
 
 `--policy NAME` names the egress policy the host enforces. Without one the sandbox reaches the
 internet and nothing private; see `docs/egress.md`.

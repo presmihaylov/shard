@@ -14,7 +14,13 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/secret"
 )
+
+// daemonUp stands in for daemon.Alive: most tests front a sandbox with the daemon taken as running.
+func daemonUp(string) (bool, error) { return true, nil }
+
+func daemonDown(string) (bool, error) { return false, nil }
 
 func TestParseCreateTheGoalCommand(t *testing.T) {
 	opts, err := parseCreate([]string{"python:3.12", "--", "python", "-c", "print(1)"})
@@ -309,6 +315,7 @@ func newFakeApp(t *testing.T, out *bytes.Buffer, r *recorder) (App, *deps) {
 		repoSvc:     &fakeRepo{r: r, dir: dir},
 		netSvc:      fakeNet{r: r},
 		providerSvc: &fakeProvider{r: r},
+		aliveFn:     daemonUp,
 	}
 
 	return App{
@@ -553,7 +560,7 @@ func TestCreateHandsTheGuestThePlaceholderAndRecordsTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, ""); err != nil {
+	if _, err := store.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, nil, secret.Match{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -644,12 +651,73 @@ func TestCreateRefusesAPolicyTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 
 func TestCreateWithoutAPolicyNeverReappliesTheRules(t *testing.T) {
 	r := &recorder{}
-	app, _ := newFakeApp(t, &bytes.Buffer{}, r)
+	app, d := newFakeApp(t, &bytes.Buffer{}, r)
+	d.aliveFn = daemonDown
 
 	if err := app.Run(t.Context(), []string{"create", "alpine:3.20"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if slices.Contains(r.calls, "net.Reapply") {
 		t.Errorf("a create with no policy reapplied the rules: %v", r.calls)
+	}
+	if spec := d.providerSvc.(*fakeProvider).spec; spec.ProxyCA != nil {
+		t.Error("an unfronted sandbox was handed the proxy CA")
+	}
+}
+
+// A fronted sandbox has its web traffic turned to the proxy, so without the daemon it is never created at all.
+func TestCreateRefusesToFrontASandboxWhileTheDaemonIsDown(t *testing.T) {
+	for _, args := range [][]string{
+		{"create", "--policy", "locked", "alpine:3.20"},
+		{"create", "--secret", "API_KEY", "alpine:3.20"},
+	} {
+		r := &recorder{}
+		app, d := newFakeApp(t, &bytes.Buffer{}, r)
+		d.aliveFn = daemonDown
+
+		err := app.Run(t.Context(), args)
+		if !errors.Is(err, errDaemonDown) || !strings.Contains(err.Error(), "systemctl start shard") {
+			t.Errorf("%v = %v, want the daemon refusal", args, err)
+		}
+		if slices.Contains(r.calls, "images.Pull") || slices.Contains(r.calls, "repo.Create") {
+			t.Errorf("%v still claimed something: %v", args, r.calls)
+		}
+	}
+}
+
+// The guest trusts the proxy through the CA planted in its bundle, so a fronted spec carries it and a grant reapplies the rules.
+func TestCreateWithASecretHandsTheProviderTheProxyCA(t *testing.T) {
+	r := &recorder{}
+	app, d := newFakeApp(t, &bytes.Buffer{}, r)
+
+	store, err := d.secrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, nil, secret.Match{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Run(t.Context(), []string{"create", "--secret", "API_KEY", "alpine:3.20"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	spec := d.providerSvc.(*fakeProvider).spec
+	if !strings.HasPrefix(string(spec.ProxyCA), "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("the spec carries %q as the proxy CA", spec.ProxyCA)
+	}
+	if !slices.Contains(r.calls, "net.Reapply") {
+		t.Errorf("a create with a secret never told the host: %v", r.calls)
+	}
+}
+
+func TestParseCreateRefusesATrustVariableOnAFrontedSandbox(t *testing.T) {
+	if _, err := parseCreate([]string{"--env", "SSL_CERT_FILE=/mine.pem", "alpine"}); err != nil {
+		t.Errorf("an unfronted create refused SSL_CERT_FILE: %v", err)
+	}
+
+	_, err := parseCreate([]string{"--secret", "KEY", "--env", "SSL_CERT_FILE=/mine.pem", "alpine"})
+	if err == nil || !strings.Contains(err.Error(), "SSL_CERT_FILE") {
+		t.Errorf("a fronted create with SSL_CERT_FILE = %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -175,5 +176,20 @@ func TestCloneCarriesThePolicyAndTellsTheHostBeforeTheStart(t *testing.T) {
 	}
 	if got := d.repoSvc.(*fakeLifecycleRepo).created.Policy; got != "locked" {
 		t.Errorf("the clone names policy %q, want the source's", got)
+	}
+}
+
+func TestCloneOfAFrontedSandboxNeedsTheDaemon(t *testing.T) {
+	r := &recorder{}
+	source := stopped()
+	source.Secrets = []string{"KEY"}
+	app, d := newLifecycleApp(t, &bytes.Buffer{}, r, source)
+	d.aliveFn = daemonDown
+
+	if err := app.Run(t.Context(), []string{"clone", "sandbox1"}); !errors.Is(err, errDaemonDown) {
+		t.Errorf("clone = %v, want the daemon refusal", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") {
+		t.Errorf("a refused clone still claimed a record: %v", r.calls)
 	}
 }

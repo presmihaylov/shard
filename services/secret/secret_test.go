@@ -1,9 +1,11 @@
 package secret
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,7 +15,7 @@ func newStore(t *testing.T) (*Store, string) {
 
 	dir := filepath.Join(t.TempDir(), "secrets")
 
-	s, err := New(dir)
+	s, err := New(dir, func(string) ([]string, error) { return nil, nil })
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -24,7 +26,7 @@ func newStore(t *testing.T) (*Store, string) {
 func TestSetWritesOneFileNobodyElseCanRead(t *testing.T) {
 	s, dir := newStore(t)
 
-	sec, err := s.Set("API_KEY", "sk-live-1234567890", []string{"API.Example.com.", "api.example.com"}, "")
+	sec, err := s.Set("API_KEY", "sk-live-1234567890", []string{"API.Example.com.", "api.example.com"}, nil, Match{})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -32,8 +34,8 @@ func TestSetWritesOneFileNobodyElseCanRead(t *testing.T) {
 	if got, want := sec.Destinations, []string{"api.example.com"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("destinations %v, want the one canonical host %v", got, want)
 	}
-	if sec.MockValue != "mock-API_KEY" {
-		t.Errorf("placeholder %q, want mock-API_KEY", sec.MockValue)
+	if MockValue("API_KEY") != "mock-API_KEY" {
+		t.Errorf("placeholder %q, want mock-API_KEY", MockValue("API_KEY"))
 	}
 
 	info, err := os.Stat(dir)
@@ -67,7 +69,7 @@ func TestNewTightensAnExistingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := New(dir); err != nil {
+	if _, err := New(dir, nil); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -84,7 +86,7 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 	s, _ := newStore(t)
 
 	const value = "hunter2-hunter2-hunter2"
-	if _, err := s.Set("TOKEN", value, []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", value, []string{"example.com"}, nil, Match{}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -92,7 +94,7 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if strings.Contains(sec.Name+sec.MockValue+strings.Join(sec.Destinations, ""), value) {
+	if strings.Contains(sec.Name+strings.Join(sec.Destinations, ""), value) {
 		t.Errorf("Get carried the value: %+v", sec)
 	}
 
@@ -108,10 +110,11 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, nil, Match{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", []string{"b.example.com"}, "placeholder-token"); err != nil {
+	headers := []Header{{Name: "Authorization", Value: "Bearer {value}"}}
+	if _, err := s.Set("TOKEN", "second-value-2", []string{"b.example.com"}, headers, Match{Path: "/v1/"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +122,7 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "b.example.com" || sec.MockValue != "placeholder-token" {
+	if strings.Join(sec.Destinations, ",") != "b.example.com" || !slices.Equal(sec.Headers, headers) || sec.Match.Path != "/v1/" {
 		t.Errorf("the second set did not replace the first: %+v", sec)
 	}
 
@@ -145,10 +148,11 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "placeholder-token"); err != nil {
+	headers := []Header{{Name: "X-Api-Key", Value: "{value}"}}
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, headers, Match{Method: "POST"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", nil, ""); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", nil, nil, Match{}); err != nil {
 		t.Fatalf("a rotation with no grant: %v", err)
 	}
 
@@ -156,8 +160,8 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "a.example.com" || sec.MockValue != "placeholder-token" {
-		t.Errorf("the rotation changed the grant or the placeholder: %+v", sec)
+	if strings.Join(sec.Destinations, ",") != "a.example.com" || !slices.Equal(sec.Headers, headers) || sec.Match.Method != "POST" {
+		t.Errorf("the rotation changed the grant or the headers: %+v", sec)
 	}
 
 	value, err := s.Value("TOKEN")
@@ -169,22 +173,84 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	}
 }
 
-func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
-	s, _ := newStore(t)
+// writeOldRecord plants a record a release before this one wrote, with a placeholder of its own.
+func writeOldRecord(t *testing.T, dir, name string) {
+	t.Helper()
 
-	sec, err := s.Set("K", "some-value-123", []string{"example.com"}, "")
+	blob, err := json.Marshal(record{Value: "old-value-1", Destinations: []string{"a.example.com"}, MockValue: "placeholder-token"})
 	if err != nil {
-		t.Fatalf("Set: %v", err)
+		t.Fatal(err)
 	}
-	if sec.MockValue != "mock-K" {
-		t.Errorf("MockValue = %q, want mock-K", sec.MockValue)
+	if err := os.WriteFile(filepath.Join(dir, name), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	s, err := New(dir, func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOldRecord(t, dir, "TOKEN")
+
+	_, err = s.Set("TOKEN", "new-value-2", nil, nil, Match{})
+	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("a rotation over a held placeholder = %v, want a refusal naming sandbox1", err)
+	}
+
+	value, err := s.Value("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "old-value-1" {
+		t.Errorf("the refused rotation wrote the value")
+	}
+
+	// With the holders gone the rotation lands, and the record moves to the one placeholder.
+	s, err = New(dir, func(string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("TOKEN", "new-value-2", nil, nil, Match{}); err != nil {
+		t.Fatalf("a rotation once ungranted: %v", err)
+	}
+	rec, err := s.read("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.MockValue != "mock-TOKEN" {
+		t.Errorf("the placeholder after the rotation is %q", rec.MockValue)
+	}
+}
+
+func TestSetRefusesToMoveAPlaceholderItCannotAccountFor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	s, err := New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOldRecord(t, dir, "TOKEN")
+
+	if _, err := s.Set("TOKEN", "new-value-2", nil, nil, Match{}); err == nil || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("a rotation with no holders callback = %v, want a refusal", err)
+	}
+
+	s, err = New(dir, func(string) ([]string, error) { return nil, os.ErrPermission })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("TOKEN", "new-value-2", nil, nil, Match{}); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("a rotation with unreadable holders = %v, want the read error", err)
 	}
 }
 
 func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, nil, Match{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
@@ -206,7 +272,7 @@ func TestListReturnsTheReadableSecretsWithTheError(t *testing.T) {
 func TestListSkipsWhatIsNotASecret(t *testing.T) {
 	s, dir := newStore(t)
 
-	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, ""); err != nil {
+	if _, err := s.Set("TOKEN", "some-value-123", []string{"example.com"}, nil, Match{}); err != nil {
 		t.Fatal(err)
 	}
 	// What an interrupted atomic write leaves behind, and a stray file an operator dropped in.
@@ -229,31 +295,35 @@ func TestSetRefusals(t *testing.T) {
 	s, _ := newStore(t)
 
 	cases := []struct {
-		name  string
-		key   string
-		value string
-		to    []string
-		mock  string
-		want  string
+		name    string
+		key     string
+		value   string
+		to      []string
+		headers []Header
+		match   Match
+		want    string
 	}{
-		{"lowercase name", "api_key", "v-1234567", []string{"example.com"}, "", "environment variable name"},
-		{"digit first", "1KEY", "v-1234567", []string{"example.com"}, "", "environment variable name"},
-		{"empty value", "KEY", "", []string{"example.com"}, "", "empty value"},
-		{"no destination", "KEY", "v-1234567", nil, "", "no destination"},
-		{"scheme in destination", "KEY", "v-1234567", []string{"https://example.com"}, "", "no scheme"},
-		{"port in destination", "KEY", "v-1234567", []string{"example.com:443"}, "", "no scheme"},
-		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "", "is an address"},
-		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
-		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
-		{"mock is the value", "KEY", "v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"mock inside the value", "KEY", "abc-v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"short mock", "KEY", "v-1234567", []string{"example.com"}, "abc", "shorter than"},
-		{"mock with space", "KEY", "v-1234567", []string{"example.com"}, "mock value", "whitespace"},
+		{"lowercase name", "api_key", "v-1234567", []string{"example.com"}, nil, Match{}, "environment variable name"},
+		{"digit first", "1KEY", "v-1234567", []string{"example.com"}, nil, Match{}, "environment variable name"},
+		{"empty value", "KEY", "", []string{"example.com"}, nil, Match{}, "empty value"},
+		{"no destination", "KEY", "v-1234567", nil, nil, Match{}, "no destination"},
+		{"scheme in destination", "KEY", "v-1234567", []string{"https://example.com"}, nil, Match{}, "no scheme"},
+		{"port in destination", "KEY", "v-1234567", []string{"example.com:443"}, nil, Match{}, "no scheme"},
+		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, nil, Match{}, "is an address"},
+		{"bare label", "KEY", "v-1234567", []string{"localhost"}, nil, Match{}, "has no dot"},
+		{"bare wildcard", "KEY", "v-1234567", []string{"*"}, nil, Match{}, "has no dot"},
+		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, nil, Match{}, "not a host name"},
+		{"placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, nil, Match{}, "inside its value"},
+		{"bad header name", "KEY", "v-1234567", []string{"example.com"}, []Header{{Name: "X Key", Value: "{value}"}}, Match{}, "not a header name"},
+		{"empty header value", "KEY", "v-1234567", []string{"example.com"}, []Header{{Name: "X-Key"}}, Match{}, "no value"},
+		{"line break in header", "KEY", "v-1234567", []string{"example.com"}, []Header{{Name: "X-Key", Value: "a\r\nb"}}, Match{}, "line break"},
+		{"relative match path", "KEY", "v-1234567", []string{"example.com"}, nil, Match{Path: "v1"}, "start with /"},
+		{"bare match query", "KEY", "v-1234567", []string{"example.com"}, nil, Match{Query: []string{"team"}}, "key=value"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.Set(tc.key, tc.value, tc.to, tc.mock)
+			_, err := s.Set(tc.key, tc.value, tc.to, tc.headers, tc.match)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("Set = %v, want an error mentioning %q", err, tc.want)
 			}
@@ -266,6 +336,26 @@ func TestSetRefusals(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("a refused Set still wrote: %+v", list)
+	}
+}
+
+func TestParseHeaderAndMatchReadTheFlagSpellings(t *testing.T) {
+	header, err := ParseHeader("Authorization: Bearer {value}")
+	if err != nil || header.Name != "Authorization" || header.Value != "Bearer {value}" {
+		t.Errorf("ParseHeader = %+v, %v", header, err)
+	}
+	if _, err := ParseHeader("no-colon"); err == nil {
+		t.Error("ParseHeader accepted a header with no colon")
+	}
+
+	match, err := ParseMatch([]string{"path=/v1/", "method=post", "query=team=blue", "header=X-Env=prod"})
+	if err != nil || match.Path != "/v1/" || match.Method != "POST" || !slices.Equal(match.Query, []string{"team=blue"}) || !slices.Equal(match.Headers, []string{"X-Env=prod"}) {
+		t.Errorf("ParseMatch = %+v, %v", match, err)
+	}
+	for _, bad := range []string{"host=example.com", "path", "query=team"} {
+		if _, err := ParseMatch([]string{bad}); err == nil {
+			t.Errorf("ParseMatch accepted %q", bad)
+		}
 	}
 }
 

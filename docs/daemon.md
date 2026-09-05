@@ -2,8 +2,9 @@
 
 `shard daemon` is the resident process beside the CLI. Both work directly on the same on-disk
 stores under the same lockfiles, so every CLI verb keeps working, unchanged, whether the daemon is up
-or not. No verb requires it, and no verb starts it: a resident root process is installed on purpose,
-through the systemd unit in `packaging/systemd/shard.service`:
+or not. The one exception is a verb that fronts a sandbox, which needs the proxy the daemon runs and
+refuses without it; see `docs/egress.md`. No verb starts it: a resident root process is installed on
+purpose, through the systemd unit in `packaging/systemd/shard.service`:
 
 ```
 cp packaging/systemd/shard.service /etc/systemd/system/
@@ -13,8 +14,8 @@ systemctl enable --now shard
 ## What the daemon owns
 
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.
-- **Proxy supervision**: start the egress proxy, health-check it, restart it after a crash, and
-  re-front every sandbox that depends on it.
+- **The egress proxy**: the `proxy` task listens on the bridge gateway, ports 30080 and 30443, and
+  every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
 - **Egress log rotation**: the per-sandbox `egress.jsonl` files grow without it.
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
   bring it back.
@@ -71,5 +72,6 @@ moment later; anything that needs the daemon checks outcomes, not liveness.
 Each piece of background work is a task. A task that returns an error is restarted with exponential
 backoff and jitter, capped at a minute; a run that stays up long enough earns a fresh backoff, so a
 crash loop backs off and a one-off crash restarts fast. A panic in a task is contained and counts as
-a failure. A task that returns nil is done and stays done until the daemon restarts. The `api` task
-returns an error when its listener dies, so it is restarted, and nil only when the daemon is ending.
+a failure. A task that returns nil is done and stays done until the daemon restarts. The `api` and
+`proxy` tasks return an error when a listener dies, so they are restarted, and nil only when the
+daemon is ending.

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -86,7 +87,7 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	app, _ := newLifecycleApp(t, &bytes.Buffer{}, &recorder{}, stopped())
 
 	for _, args := range [][]string{
-		{"policy", "create", "--allow", "suffix:example.com", "web"},
+		{"policy", "create", "--allow", "suffix:example.com tcp:22", "web"},
 		{"policy", "create", "--allow", "api.example.com tcp:22", "web"},
 		{"policy", "create", "--allow", "any", "Web"},
 		{"policy", "create", "web", "--allow", "any"},
@@ -97,9 +98,11 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 		}
 	}
 
-	err := app.Run(t.Context(), []string{"policy", "create", "--allow", "suffix:example.com", "web"})
-	if err == nil || !strings.Contains(err.Error(), "SHARD-71") {
-		t.Errorf("a suffix rule got %v, want a refusal that names the proxy ticket", err)
+	// A suffix and a wildcard are matched by name in the proxy, which is where every web request goes.
+	for i, rule := range []string{"suffix:example.com", "*.example.com", "api.*.example.com tcp:443"} {
+		if err := app.Run(t.Context(), []string{"policy", "create", "--allow", rule, fmt.Sprintf("web%d", i)}); err != nil {
+			t.Errorf("a %s rule got %v, want the proxy to take it", rule, err)
+		}
 	}
 }
 
