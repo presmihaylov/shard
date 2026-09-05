@@ -26,13 +26,6 @@ func TestDaemonTakesNoArguments(t *testing.T) {
 	}
 }
 
-func TestServeIsNoLongerAVerb(t *testing.T) {
-	err := App{Out: io.Discard}.Run(t.Context(), []string{"serve"})
-	if err == nil || !strings.Contains(err.Error(), "unknown command") {
-		t.Errorf("serve got %v, want an unknown command", err)
-	}
-}
-
 // syncBuffer is a bytes.Buffer the daemon writes to while the test reads it.
 type syncBuffer struct {
 	mu  sync.Mutex

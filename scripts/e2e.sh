@@ -24,6 +24,9 @@ PREFIX=${PREFIX:-/usr/local/bin}
 SHARD_ROOT=${SHARD_ROOT:-/var/lib/shard-e2e}
 IMAGE=${IMAGE:-alpine:3.20}
 GRACE=${GRACE:-5s}
+# The two loopback ports the TCP front binds in this run: one over the daemon, one over nothing.
+SERVE_PORT=${SERVE_PORT:-12376}
+LONE_PORT=${LONE_PORT:-12377}
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
@@ -43,6 +46,14 @@ CLONE_LINKS=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
+# The TCP fronts this run started, by pid, and the directory holding their certificate and token.
+SERVE_PIDS=""
+SERVE_DIR=""
+SERVE_TOKEN=""
+SERVE_LOG=""
+# The second front sits over a root no daemon owns, which is how a refusal is proved to dial nothing.
+LONE_ROOT=""
+LONE_LOG=""
 REPORTED=0
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
@@ -245,6 +256,58 @@ stop_daemon() {
 	return 1
 }
 
+# start_serve runs a TCP front over one root on one port, waits for its listen line, and writes its pid.
+start_serve() {
+	local root="$1" port="$2" log="$3" pid
+
+	"${PREFIX}/shard" --root "${root}" serve --listen "127.0.0.1:${port}" \
+		--cert "${SERVE_DIR}/serve.crt" --key "${SERVE_DIR}/serve.key" \
+		--token-file "${SERVE_TOKEN}" >"${log}" 2>&1 &
+	pid=$!
+
+	for _ in $(seq 1 50); do
+		if grep -q "serve listening on" "${log}"; then
+			echo "${pid}"
+
+			return 0
+		fi
+		sleep 0.1
+	done
+
+	kill "${pid}" >/dev/null 2>&1 || true
+
+	return 1
+}
+
+# stop_serve ends every front this run started, by pid. It never touches another one.
+stop_serve() {
+	local pid
+	# shellcheck disable=SC2086 # the pid list is meant to split
+	for pid in ${SERVE_PIDS}; do
+		kill "${pid}" >/dev/null 2>&1 || true
+		wait "${pid}" >/dev/null 2>&1 || true
+	done
+	SERVE_PIDS=""
+}
+
+# front_curl asks one front over TCP, with the token when one is given and none when it is empty.
+front_curl() {
+	local port="$1" token="$2" path="$3"
+	shift 3
+
+	if [ -n "${token}" ]; then
+		set -- -H "Authorization: Bearer ${token}" "$@"
+	fi
+
+	curl -sS --cacert "${SERVE_DIR}/serve.crt" "$@" "https://127.0.0.1:${port}${path}"
+}
+
+# shard_front drives a verb over the front rather than over the socket, which is what --host is for.
+shard_front() {
+	"${PREFIX}/shard" --host "https://127.0.0.1:${SERVE_PORT}" --token-file "${SERVE_TOKEN}" \
+		--ca-file "${SERVE_DIR}/serve.crt" "$@"
+}
+
 # teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
 # record is the only handle by which its mount and its namespace can be found again.
 teardown() {
@@ -265,9 +328,11 @@ teardown() {
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
 
+	stop_serve
 	stop_daemon || echo "teardown: the socket ${SHARD_ROOT}/shard.sock outlived the daemon" >&2
 	wipe_root
-	rm -f "${DAEMON_LOG:-/nonexistent}"
+	rm -rf "${SERVE_DIR:-/nonexistent}" "${LONE_ROOT:-/nonexistent}"
+	rm -f "${DAEMON_LOG:-/nonexistent}" "${SERVE_LOG:-/nonexistent}" "${LONE_LOG:-/nonexistent}"
 }
 
 # on_exit is the one handler: it names the step that broke and then gives the host back. The step is
@@ -295,13 +360,13 @@ trap on_exit EXIT
 
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives netns, nft and runsc, so this needs root"
-for binary in runsc ip nft go; do
+for binary in runsc ip nft go curl openssl; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
 if [ ! -e /dev/kvm ]; then
 	say "no /dev/kvm, which is the box this ticket targets"
 fi
-say "runsc, ip, nft and go are on the host"
+say "runsc, ip, nft, go, curl and openssl are on the host"
 
 check_host_is_free
 say "no other sandbox holds a link on this host"
@@ -491,6 +556,61 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+
+step "reach the daemon through the tcp front"
+SERVE_DIR=$(mktemp -d /tmp/shard-e2e-serve.XXXXXX)
+SERVE_TOKEN="${SERVE_DIR}/serve.token"
+SERVE_LOG="${SERVE_DIR}/serve.log"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+	-subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
+	-keyout "${SERVE_DIR}/serve.key" -out "${SERVE_DIR}/serve.crt" >/dev/null 2>&1 ||
+	fail "openssl did not make a self-signed pair"
+openssl rand -hex 32 >"${SERVE_TOKEN}"
+chmod 0600 "${SERVE_TOKEN}"
+say "the run made its own certificate and token"
+
+SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SERVE_LOG}")" ||
+	fail "the front did not come up: $(cat "${SERVE_LOG}")"
+say "shard serve is listening on 127.0.0.1:${SERVE_PORT}"
+
+TOKEN=$(cat "${SERVE_TOKEN}")
+OVER_TCP=$(front_curl "${SERVE_PORT}" "${TOKEN}" /v0/sandboxes)
+OVER_SOCKET=$(curl -sS --unix-socket "${SHARD_ROOT}/shard.sock" http://shard/v0/sandboxes)
+expect "${OVER_TCP}" "${OVER_SOCKET}" "the front answers a request byte for byte as the socket does"
+
+CODE=$(front_curl "${SERVE_PORT}" "wrong-${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "a wrong token is refused"
+CODE=$(front_curl "${SERVE_PORT}" "" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "no token at all is refused"
+
+# A front over a root no daemon owns cannot answer anything but the refusal, so a 401 here proves
+# the check runs before the dial: only the request that carried the token reached a socket at all.
+LONE_ROOT=$(mktemp -d /tmp/shard-e2e-lone.XXXXXX)
+LONE_LOG="${SERVE_DIR}/lone.log"
+SERVE_PIDS="${SERVE_PIDS} $(start_serve "${LONE_ROOT}" "${LONE_PORT}" "${LONE_LOG}")" ||
+	fail "the second front did not come up: $(cat "${LONE_LOG}")"
+CODE=$(front_curl "${LONE_PORT}" "wrong-${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "a wrong token is refused by a front that fronts nothing"
+CODE=$(front_curl "${LONE_PORT}" "${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "502" "the same front cannot reach a daemon that is not there"
+expect "$(grep -c 'dial the daemon socket' "${LONE_LOG}")" "1" \
+	"only the authorized request was dialed, and the refused ones were not"
+
+grep -q "${TOKEN}" "${SERVE_LOG}" "${LONE_LOG}" "${DAEMON_LOG}" && fail "a log holds the token value"
+say "no log holds the token value"
+
+step "drive a verb and an exec through the front"
+shard_front ls --all | grep -q "${ID}" || fail "ls over the front does not list the sandbox"
+say "ls over the front lists the sandbox"
+shard_front version | grep -q "daemon" || fail "version over the front does not name the daemon"
+say "version over the front reaches the daemon"
+GOT=$(shard_front exec "${ID}" -- /bin/cat /tmp/marker) || fail "exec over the front failed"
+expect "${GOT}" "shard-e2e" "exec over the front read what the first exec wrote"
+
+stop_serve
+rm -rf "${LONE_ROOT}"
+LONE_ROOT=""
+say "both fronts are down"
 
 step "hold the placeholder and never the value"
 expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bin/sh -c 'echo "$E2E_TOKEN"'
@@ -819,4 +939,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, daemon restart, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, daemon restart, exec, exec again, the tcp front, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"
