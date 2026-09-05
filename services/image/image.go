@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/containerd/containerd/v2/pkg/archive"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/registry"
-	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
@@ -27,33 +27,28 @@ var ErrNotReclaimed = registry.ErrNotReclaimed
 // stagingPrefix names the tree an unpack builds before it renames it into place under the digest.
 const stagingPrefix = ".unpack-"
 
-// lockFile serializes the writers of one image tree. reclaim sweeps the whole store by reachability,
-// so without it one pull's rollback deletes the blobs another pull has written but not yet indexed.
-const lockFile = ".pull.lock"
-
-// useLock is held shared from the cache read to the record claim, and exclusively by a removal.
-const useLock = ".use.lock"
-
-const lockPerm = 0o600
-
 // Service owns the image tree: the layout under blobs, and one unpacked rootfs per image.
 type Service struct {
 	root  string
 	store *registry.Store
+
+	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
+	// pull's rollback deletes the blobs another pull has written but not yet indexed.
+	write sync.Mutex
 }
 
-// Image is one pulled image, unpacked and ready for a bundle.
+// Image is one pulled image, unpacked and ready for a bundle. It crosses the daemon socket as JSON.
 type Image struct {
-	Reference string
-	Digest    string
+	Reference string `json:"reference"`
+	Digest    string `json:"digest"`
 	// RootFS is shared and read-only. Every sandbox gets its own writable layer over it.
-	RootFS string
+	RootFS string `json:"rootfs"`
 	// Size is the download size, not the size on disk after the unpack.
-	Size    int64
-	Created time.Time
-	Config  models.ImageConfig
-	// Broken is set when the index still names the image but its blobs do not read back.
-	Broken error
+	Size    int64              `json:"size"`
+	Created time.Time          `json:"created"`
+	Config  models.ImageConfig `json:"config"`
+	// Broken says why the blobs of an image the index still names do not read back.
+	Broken string `json:"broken,omitempty"`
 }
 
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
@@ -79,11 +74,8 @@ func (s *Service) Pull(ctx context.Context, ref string) (_ Image, err error) {
 		return img, err
 	}
 
-	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)
-	if err != nil {
-		return Image{}, err
-	}
-	defer func() { err = errors.Join(err, l.Release()) }()
+	s.write.Lock()
+	defer s.write.Unlock()
 
 	// Whoever held the lock may have been pulling this very reference.
 	img, found, err = s.cached(ref)
@@ -162,37 +154,16 @@ func (s *Service) List() ([]Image, error) {
 	return images, nil
 }
 
-// Remove deletes the image and its rootfs. The caller checks no sandbox references it: the records are not its.
-// Hold keeps every removal out until the release, and holds never wait on one another.
-func (s *Service) Hold(ctx context.Context) (func() error, error) {
-	l, err := store.AcquireSharedContext(ctx, filepath.Join(s.root, useLock), lockPerm)
-	if err != nil {
-		return nil, err
-	}
-
-	return l.Release, nil
-}
-
 // Orphaned names the digests whose rootfs a Remove of ref would delete.
 func (s *Service) Orphaned(ref string) ([]string, error) {
 	return s.store.Orphaned(ref)
 }
 
 // Remove deletes ref and the rootfs nothing else in the index names, once free says no sandbox needs it.
-func (s *Service) Remove(ctx context.Context, ref string, free func() error) (err error) {
-	// The use lock comes before the pull lock everywhere, because a hold takes the pull lock inside it.
-	use, err := store.AcquireContext(ctx, filepath.Join(s.root, useLock), lockPerm)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, use.Release()) }()
-
+func (s *Service) Remove(_ context.Context, ref string, free func() error) error {
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
-	l, err := store.AcquireContext(ctx, filepath.Join(s.root, lockFile), lockPerm)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, l.Release()) }()
+	s.write.Lock()
+	defer s.write.Unlock()
 
 	if err := free(); err != nil {
 		return err
@@ -232,9 +203,10 @@ func (s *Service) describe(img registry.Image) (Image, error) {
 		RootFS:    s.rootfsDir(img.Digest),
 		Size:      img.Size,
 		Created:   img.Created,
-		Broken:    img.Broken,
 	}
 	if img.Broken != nil {
+		described.Broken = img.Broken.Error()
+
 		return described, nil
 	}
 

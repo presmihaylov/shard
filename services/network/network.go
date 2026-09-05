@@ -11,10 +11,10 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
-	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // The defaults are what a host with no configuration gets.
@@ -44,10 +44,7 @@ const (
 	tableName    = "shard"
 )
 
-const (
-	leasesDir  = "leases"
-	ensureLock = "ensure.lock"
-)
+const leasesDir = "leases"
 
 // Config is the host's network layout. The zero value is not usable; New fills in every default.
 type Config struct {
@@ -70,6 +67,9 @@ type Service struct {
 	manager *netns.Manager
 	pool    *pool
 	gateway netip.Addr
+
+	// ensure serializes the whole-host render: the daemon owns the ruleset, so one process is all of it.
+	ensure sync.Mutex
 }
 
 // New validates the layout and finds the host's network binaries.
@@ -131,13 +131,10 @@ func (s *Service) Gateway() netip.Addr { return s.gateway }
 func (s *Service) Bridge() string { return s.cfg.Bridge }
 
 // Ensure builds the host side and replaces the whole ruleset from the records, so it is idempotent.
-func (s *Service) Ensure(ctx context.Context) (err error) {
+func (s *Service) Ensure(ctx context.Context) error {
 	// Two verbs at once would race read against apply, and the older render could land last.
-	lock, err := store.AcquireContext(ctx, filepath.Join(s.cfg.Root, "network", ensureLock), leaseFilePerm)
-	if err != nil {
-		return fmt.Errorf("lock the host network: %w", err)
-	}
-	defer func() { err = errors.Join(err, lock.Release()) }()
+	s.ensure.Lock()
+	defer s.ensure.Unlock()
 
 	routes, err := s.manager.Routes(ctx)
 	if err != nil {

@@ -36,7 +36,6 @@ type Repository interface {
 // Images is the part of image.Service a create drives.
 type Images interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
-	Hold(ctx context.Context) (func() error, error)
 }
 
 // Network is the part of network.Service the lifecycle verbs drive.
@@ -325,23 +324,16 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// claim pulls the image and writes the record under one hold, so an image rm either sees the record
-// or waits for it: between the two nothing says the rootfs is in use.
-func (s *Service) claim(ctx context.Context, td *Teardown, req CreateRequest) (img image.Image, id, dir string, err error) {
-	release, err := s.cfg.Images.Hold(ctx)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-	defer func() { err = errors.Join(err, release()) }()
-
+// claim pulls the image and writes the record that says the rootfs is in use.
+func (s *Service) claim(ctx context.Context, td *Teardown, req CreateRequest) (image.Image, string, string, error) {
 	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
 	// claims nothing this verb has to give back.
-	img, err = s.pull(ctx, req.Image)
+	img, err := s.pull(ctx, req.Image)
 	if err != nil {
 		return image.Image{}, "", "", err
 	}
 
-	id, dir, err = s.claimRecord(td, img, req)
+	id, dir, err := s.claimRecord(td, img, req)
 	if err != nil {
 		return image.Image{}, "", "", err
 	}

@@ -1,16 +1,15 @@
 # The daemon
 
-`shard daemon` is the resident process that owns the state. The CLI is becoming a thin client of
-it, one verb at a time: a verb that speaks the socket never falls back to the files, and fails fast
+`shard daemon` is the resident process that owns the state. The CLI is a thin client of it: every
+verb goes over the socket, none of them reads or writes the state itself, and each fails fast
 without a daemon, with one line:
 
 ```
 shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
 ```
 
-So far `version`, `ls`, `inspect`, `create`, `start`, `stop`, `rm`, `exec`, `logs`, `pause`,
-`resume`, `fork` and `clone` speak the socket. Every other verb still works on the on-disk stores
-directly, under the same lockfiles the daemon takes, whether the daemon is up or not. No verb starts the daemon: a resident root process is installed on purpose, through the systemd unit in
+`shard daemon` itself is the one exception: it is the process, not a client of one. No verb starts
+the daemon: a resident root process is installed on purpose, through the systemd unit in
 `packaging/systemd/shard.service`:
 
 ```
@@ -27,6 +26,10 @@ systemctl enable --now shard
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
   bring it back.
 
+- **The stores**: the images under `${root}/images`, the policies, the secrets and the sandbox
+  records. One writer owns them, so they need no lock between processes: the daemon serializes its
+  own writes in memory and every client asks it. The value of a secret crosses the socket once, on
+  the `PUT`, and is never written anywhere but the secret store, never logged and never listed back.
 - **The sandbox lifecycle**: `create`, `start`, `stop`, `rm`, `exec`, `logs`, `pause`, `resume`,
   `fork` and `clone` run inside the daemon, in `services/sandbox`. The image pull of a create happens there too, and the client waits for it with
   no deadline; the pull's progress is not streamed back to the client yet. The daemon serializes the
@@ -70,6 +73,17 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandbox
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/resume
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web-2"}' http://localhost/v0/sandboxes/<id or name>/fork
 curl --unix-socket /var/lib/shard/shard.sock -N 'http://localhost/v0/sandboxes/<id or name>/logs?follow=true'
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
+curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE http://localhost/v0/policies/web
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/secrets
+curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"value":"<value>","destinations":["api.example.com"]}' http://localhost/v0/secrets/API_KEY
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/secrets/API_KEY?force=true'
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/images
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"ref":"alpine:3.20"}' http://localhost/v0/images/pull
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/images/alpine:3.20?force=true'
+curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/prune
 ```
 
 - `GET /v0/version` answers `{"version": "..."}`, which `shard version` prints as its `daemon` line
@@ -118,6 +132,34 @@ curl --unix-socket /var/lib/shard/shard.sock -N 'http://localhost/v0/sandboxes/<
   entrypoint wrote. With `?follow=true` it streams and flushes every write, and ends when the
   sandbox stops or the client goes away. 404; 400 for a `follow` that is not a boolean.
 
+- `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy, as
+  `shard policy ls` and `shard policy show` print them. 404 when the host holds no such policy.
+- `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
+  in the order they were given, compiles them, stores the policy and re-applies it at once to every
+  sandbox that names it. It answers 200 with the policy. The CLI never parses a rule: the daemon owns
+  the grammar. 400 for a name or a rule the host cannot enforce; 500 when the store holds the new
+  rules and the host still enforces the old ones, which the message says.
+- `DELETE /v0/policies/{name}` answers 204. 404; 409 naming every sandbox that holds it, and there is
+  no force: a sandbox with no policy would have no egress rules at all.
+- `GET /v0/secrets` answers `{"secrets": [...]}` with the name, the destinations, the placeholder and
+  the times, and never a value. Unreadable files come back in `warnings` beside the readable ones,
+  which `secret ls` prints on stderr before it exits non-zero.
+- `PUT /v0/secrets/{name}` takes `{"value", "destinations", "mock"}` and answers 200 with the record,
+  which carries the placeholder and no value. 400 for a name, a destination or an empty value the
+  host refuses; 409 when a sandbox holds the placeholder that a new `mock` would change.
+- `DELETE /v0/secrets/{name}` answers 204. 404; 409 naming every sandbox that was granted it, unless
+  `?force=true`.
+- `GET /v0/images` answers `{"images": [...]}` as `shard image ls` prints them; an entry the daemon
+  could not read carries its reason in `broken`.
+- `POST /v0/images/pull` takes `{"ref"}`, pulls it and answers 200 with the image. 400 for a
+  reference that does not parse; 500 when the registry or the unpack failed.
+- `DELETE /v0/images/{ref}` takes the whole reference, slashes and all, and answers 200 with a
+  `warnings` array of what it could not delete under the store. 404; 409 naming every sandbox that
+  references it, unless `?force=true`.
+- `POST /v0/images/prune` removes every image no sandbox references and answers
+  `{"removed": [...], "warnings": [...]}`. It refuses with 500 rather than guess when a record is
+  unreadable, because an image a sandbox needs would be gone.
+
 A frame is an 8-byte header and its payload: one byte of stream, three zero bytes, then the payload
 length as a 4-byte big-endian number. A payload is at most 1 MiB, and a longer write goes as several
 frames. The client sends stream 0 (stdin) and 4 (stdin closed); the daemon sends 1 (stdout), 2
@@ -132,8 +174,9 @@ Every error body is `{"error": "<message>"}`.
 
 The typed side of these routes is `services/client`: `Version`, `ListSandboxes`, `GetSandbox`,
 `CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`, `PauseSandbox`, `ResumeSandbox`,
-`ForkSandbox`, `CloneSandbox`, `Exec`, `ResizeExec` and `Logs`,
-hand-written over the socket. `Exec` dials the socket, writes the request itself and reads the 101,
+`ForkSandbox`, `CloneSandbox`, `Exec`, `ResizeExec`, `Logs`, `ListPolicies`, `GetPolicy`,
+`SetPolicy`, `RemovePolicy`, `ListSecrets`, `SetSecret`, `RemoveSecret`, `ListImages`, `PullImage`,
+`RemoveImage` and `PruneImages`, hand-written over the socket. `Exec` dials the socket, writes the request itself and reads the 101,
 because `net/http` gives no connection back; `Logs` holds its stream open for as long as the follow
 lasts. Neither takes the 30 s deadline the answered-in-full calls take.
 The CLI verbs call it and nothing else. Each call that answers in full gets 30 s, per request and
@@ -142,14 +185,13 @@ no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside
 client could know, and neither do the four snapshot verbs, because a checkpoint takes as long as
 the memory and the disk it writes; `StopSandbox` and `RemoveSandbox` add the grace to theirs.
 
-## One daemon per root, and liveness
+## One daemon per root
 
 The daemon takes an exclusive flock on `daemon.lock` under the root and refuses to start while
-another holds it. An `Alive` probe holds that lock for a moment itself, so a starting daemon
-outwaits a contended lock briefly before it calls the holder a daemon. The same lock is the
-liveness signal: it dies with the process, so there is no stale pid file. That signal is advisory.
-`Alive` true means a daemon holds the lock right now, and the caller must still tolerate it dying a
-moment later; anything that needs the daemon checks outcomes, not liveness.
+another holds it. It is the only lock shard keeps: the daemon is the single writer of the state, so
+nothing else is contended between processes. The lock dies with the process, so there is no stale
+pid file to clean up. Nothing probes it to decide whether a daemon is up: a client that needs one
+asks the socket and reads the outcome.
 
 ## Supervision
 

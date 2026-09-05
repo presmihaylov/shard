@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // Lifecycle is the part of sandbox.Service the routes that change a sandbox call.
@@ -38,12 +41,20 @@ type Handler struct {
 	repo      sandbox.Reader
 	enforcer  sandbox.Enforcer
 	lifecycle Lifecycle
+	stores    Stores
 	log       *log.Logger
 }
 
 // NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, out io.Writer) http.Handler {
-	h := &Handler{version: version, repo: repo, enforcer: enforcer, lifecycle: lifecycle, log: log.New(out, "", log.LstdFlags)}
+func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, out io.Writer) http.Handler {
+	h := &Handler{
+		version:   version,
+		repo:      repo,
+		enforcer:  enforcer,
+		lifecycle: lifecycle,
+		stores:    stores,
+		log:       log.New(out, "", log.LstdFlags),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v0/version", h.getVersion)
@@ -60,6 +71,18 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.execSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
+	mux.HandleFunc("GET /v0/policies", h.listPolicies)
+	mux.HandleFunc("GET /v0/policies/{name}", h.getPolicy)
+	mux.HandleFunc("PUT /v0/policies/{name}", h.putPolicy)
+	mux.HandleFunc("DELETE /v0/policies/{name}", h.removePolicy)
+	mux.HandleFunc("GET /v0/secrets", h.listSecrets)
+	mux.HandleFunc("PUT /v0/secrets/{name}", h.putSecret)
+	mux.HandleFunc("DELETE /v0/secrets/{name}", h.removeSecret)
+	mux.HandleFunc("GET /v0/images", h.listImages)
+	mux.HandleFunc("POST /v0/images/pull", h.pullImage)
+	mux.HandleFunc("POST /v0/images/prune", h.pruneImages)
+	// An image reference carries slashes, so it is the rest of the path and not one segment of it.
+	mux.HandleFunc("DELETE /v0/images/{ref...}", h.removeImage)
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path))
@@ -255,13 +278,16 @@ func status(err error) int {
 	var request *sandbox.RequestError
 	var state *sandbox.StateError
 	var unavailable *sandbox.UnavailableError
+	var held *sandbox.HeldError
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request):
 		return http.StatusBadRequest
-	case errors.Is(err, sandboxstate.ErrNotFound):
+	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
 		return http.StatusNotFound
-	case errors.As(err, &state), errors.As(err, &unavailable), errors.Is(err, models.ErrUnsupported):
+	case errors.As(err, &state), errors.As(err, &unavailable), errors.As(err, &held),
+		errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

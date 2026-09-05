@@ -2,7 +2,6 @@
 package sandboxstate
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
@@ -25,27 +25,25 @@ const (
 	sandboxesDir = "sandboxes"
 	namesDir     = "names"
 	snapshotsDir = "snapshots"
-	locksDir     = "locks"
-	writeLock    = ".lock"
-	verbLock     = ".verb.lock"
 	recordFile   = "sandbox.json"
 
 	dirPerm    = 0o750
 	filePerm   = 0o640
-	lockPerm   = 0o600
 	maxChars   = 64
 	idAttempts = 10
 )
 
-// Repository is the sandbox record repository. It locks one sandbox at a time, never the whole tree,
-// so no method ever holds two locks and there is no lock order to get wrong.
+// Repository is the sandbox record repository. The daemon is the one process that writes it, so a
+// read and the write that follows it are held together by a mutex and not by a file lock.
 type Repository struct {
 	root string
+
+	mu sync.Mutex
 }
 
 // New prepares the state tree under root, which is /var/lib/shard on the box.
 func New(root string) (*Repository, error) {
-	for _, dir := range []string{sandboxesDir, namesDir, snapshotsDir, locksDir} {
+	for _, dir := range []string{sandboxesDir, namesDir, snapshotsDir} {
 		path := filepath.Join(root, dir)
 		if err := os.MkdirAll(path, dirPerm); err != nil {
 			return nil, fmt.Errorf("create %s: %w", path, err)
@@ -237,12 +235,9 @@ func (r *Repository) claimID() (string, error) {
 // Update applies mutate to the record and writes the result back. The lock spans the read and the
 // write, so two callers never lose each other's field. mutate holds the lock: it must not call the
 // repository again, and it must not do slow work.
-func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) (err error) {
-	l, err := r.writeLock(id)
-	if err != nil {
-		return err
-	}
-	defer unlock(l, &err)
+func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	sb, err := r.Get(id)
 	if err != nil {
@@ -272,12 +267,9 @@ func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) (err 
 }
 
 // Delete removes the record, the provider's directory and any snapshot the sandbox left behind.
-func (r *Repository) Delete(id string) (err error) {
-	l, err := r.writeLock(id)
-	if err != nil {
-		return err
-	}
-	defer unlock(l, &err)
+func (r *Repository) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	sb, err := r.Get(id)
 	if err != nil {
@@ -290,16 +282,14 @@ func (r *Repository) Delete(id string) (err error) {
 	}
 
 	// The snapshot goes next: it is the one a half-done delete would leave with no id to reach it.
-	// The lock file goes last, once the record is gone. Removing it while we hold it is fine, because
-	// store.Acquire moves a waiter onto the file that has the name.
-	for _, path := range []string{r.snapshotDir(id), r.dir(id), l.Path(), filepath.Join(r.root, locksDir, id+verbLock)} {
+	for _, path := range []string{r.snapshotDir(id), r.dir(id)} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	}
 
 	// Without this a power loss can bring the sandbox back, and claimID syncs the create side already.
-	for _, dir := range []string{namesDir, snapshotsDir, sandboxesDir, locksDir} {
+	for _, dir := range []string{namesDir, snapshotsDir, sandboxesDir} {
 		if err := store.SyncDir(filepath.Join(r.root, dir)); err != nil {
 			return err
 		}
@@ -388,78 +378,6 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 	slices.SortFunc(sandboxes, func(a, b models.Sandbox) int { return strings.Compare(a.ID, b.ID) })
 
 	return sandboxes, unreadable
-}
-
-// Hold serializes the lifecycle verbs of one sandbox: a start, a stop or an rm waits for the one
-// under way, then reads a record that one has finished with. Take it before any Update or Delete,
-// which lock inside it, and never the other way round.
-func (r *Repository) Hold(ctx context.Context, id string) (func() error, error) {
-	return r.hold(ctx, id, store.AcquireContext)
-}
-
-// HoldShared is a Hold many readers of the sandbox share, which a Hold waits out and never interleaves.
-func (r *Repository) HoldShared(ctx context.Context, id string) (func() error, error) {
-	return r.hold(ctx, id, store.AcquireSharedContext)
-}
-
-type acquire func(context.Context, string, fs.FileMode) (*store.Lock, error)
-
-func (r *Repository) hold(ctx context.Context, id string, acquire acquire) (func() error, error) {
-	path, err := r.lockPath(id, verbLock)
-	if err != nil {
-		return nil, err
-	}
-
-	l, err := acquire(ctx, path, lockPerm)
-	if err != nil {
-		return nil, err
-	}
-
-	// The holder we waited on may have been an rm: then the file we hold is one we made, so take it back.
-	if _, err := os.Stat(r.dir(id)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			err = fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
-		}
-
-		return nil, errors.Join(err, os.Remove(path), l.Release())
-	}
-
-	return l.Release, nil
-}
-
-// writeLock serializes the writers of one sandbox. Two sandboxes never wait on each other.
-func (r *Repository) writeLock(id string) (*store.Lock, error) {
-	path, err := r.lockPath(id, writeLock)
-	if err != nil {
-		return nil, err
-	}
-
-	return store.Acquire(path, lockPerm)
-}
-
-// The lock files live outside the directory Delete removes: inside it, a delete and a concurrent
-// acquire would end up holding two different inodes and both would think they own the sandbox.
-func (r *Repository) lockPath(id, suffix string) (string, error) {
-	if err := validID(id); err != nil {
-		return "", err
-	}
-
-	// Refuse before Acquire creates the file, or a mistyped id would leave a lock file behind forever.
-	dir := r.dir(id)
-	if _, err := os.Stat(dir); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
-		}
-
-		return "", fmt.Errorf("stat %s: %w", dir, err)
-	}
-
-	return filepath.Join(r.root, locksDir, id+suffix), nil
-}
-
-// unlock joins the release into the caller's error: a lock we cannot drop blocks every later caller.
-func unlock(l *store.Lock, err *error) {
-	*err = errors.Join(*err, l.Release())
 }
 
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is

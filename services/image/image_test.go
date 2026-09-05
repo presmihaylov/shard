@@ -3,7 +3,6 @@ package image_test
 import (
 	"archive/tar"
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -363,14 +362,13 @@ func TestPullWaitsForThePullInFlight(t *testing.T) {
 	t.Cleanup(gate.release)
 
 	ref := pushImage(t, server, "app:1.0", map[string]string{"etc/hostname": "box"})
-	root := t.TempDir()
-	first, second := newServiceAt(t, root, server), newServiceAt(t, root, server)
+	svc := newServiceAt(t, t.TempDir(), server)
 
 	gate.arm()
 
 	pulled := make(chan error, 1)
 	go func() {
-		_, err := first.Pull(t.Context(), ref)
+		_, err := svc.Pull(t.Context(), ref)
 		pulled <- err
 	}()
 
@@ -380,20 +378,25 @@ func TestPullWaitsForThePullInFlight(t *testing.T) {
 		t.Fatalf("the first Pull ended before it fetched a blob: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
+	second := make(chan error, 1)
+	go func() {
+		_, err := svc.Pull(t.Context(), ref)
+		second <- err
+	}()
 
-	// The message matters as much as the deadline: a second pull that reached the registry at all
-	// has already written blobs the first one's rollback would collect.
-	_, err := second.Pull(ctx, ref)
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the lock") {
-		t.Fatalf("the second Pull returned %v, want it to wait for the first one's lock", err)
+	select {
+	case err := <-second:
+		t.Fatalf("the second Pull ran beside the first and returned %v", err)
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	gate.release()
 
 	if err := <-pulled; err != nil {
 		t.Fatalf("the first Pull: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("the second Pull: %v", err)
 	}
 }
 
@@ -495,35 +498,5 @@ func TestRemoveRunsTheCheckBeforeAnythingGoes(t *testing.T) {
 
 	if _, err := os.Stat(img.RootFS); err != nil {
 		t.Errorf("the rootfs went under a refused removal: %v", err)
-	}
-}
-
-// A create holds the store shared while it claims its record, and a removal waits that hold out.
-func TestRemoveWaitsForAHold(t *testing.T) {
-	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
-	svc := newService(t, server)
-
-	if _, err := svc.Pull(t.Context(), ref); err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
-
-	release, err := svc.Hold(t.Context())
-	if err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-
-	if err := svc.Remove(ctx, ref, nothing); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Remove under a hold returned %v, want it to wait until the context gave up", err)
-	}
-
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	if err := svc.Remove(t.Context(), ref, nothing); err != nil {
-		t.Fatalf("Remove after the release: %v", err)
 	}
 }

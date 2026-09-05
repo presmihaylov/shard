@@ -48,7 +48,7 @@ func TestRunRefusesASecondDaemon(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- first.Run(ctx) }()
 
-	waitAlive(t, root)
+	waitHeld(t, root)
 
 	if err := New(root, io.Discard).Run(t.Context()); err == nil || !strings.Contains(err.Error(), "already holds") {
 		t.Errorf("a second daemon got %v, want a refusal", err)
@@ -57,31 +57,6 @@ func TestRunRefusesASecondDaemon(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("the first daemon ended with %v", err)
-	}
-}
-
-func TestAliveSeesTheHolderAndItsAbsence(t *testing.T) {
-	root := t.TempDir()
-
-	alive, err := Alive(root)
-	if err != nil || alive {
-		t.Fatalf("Alive on an idle root = %v, %v", alive, err)
-	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- fast(New(root, io.Discard)).Run(ctx) }()
-
-	waitAlive(t, root)
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("the daemon ended with %v", err)
-	}
-
-	alive, err = Alive(root)
-	if err != nil || alive {
-		t.Errorf("Alive after the daemon ended = %v, %v", alive, err)
 	}
 }
 
@@ -155,47 +130,25 @@ func TestRunEndsCleanlyWithZeroTasks(t *testing.T) {
 	}
 }
 
-func waitAlive(t *testing.T, root string) {
+// waitHeld waits until the daemon under root holds the singleton lock.
+func waitHeld(t *testing.T, root string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		alive, err := Alive(root)
+		lock, err := store.TryAcquire(filepath.Join(root, LockFile), 0o600)
 		if err != nil {
-			t.Fatalf("Alive: %v", err)
+			t.Fatalf("TryAcquire: %v", err)
 		}
-		if alive {
+		if lock == nil {
 			return
+		}
+		if err := lock.Release(); err != nil {
+			t.Fatalf("Release: %v", err)
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the daemon never took the lock")
 		}
 		time.Sleep(time.Millisecond)
-	}
-}
-
-// An Alive probe holds the lock for a moment; a starting daemon outwaits it instead of dying on it.
-func TestRunOutlivesALivenessProbe(t *testing.T) {
-	root := t.TempDir()
-
-	shared, err := store.TryAcquireShared(filepath.Join(root, LockFile), 0o600)
-	if err != nil || shared == nil {
-		t.Fatalf("hold the probe's shared lock first: %v, %v", shared, err)
-	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- fast(New(root, io.Discard)).Run(ctx) }()
-
-	time.Sleep(20 * time.Millisecond)
-	if err := shared.Release(); err != nil {
-		t.Fatalf("release the probe's lock: %v", err)
-	}
-
-	waitAlive(t, root)
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("the daemon died on the probe: %v", err)
 	}
 }
 

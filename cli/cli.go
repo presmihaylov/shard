@@ -119,8 +119,17 @@ type App struct {
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
 	clientTimeout time.Duration
 
-	// newDeps builds the layers the commands drive. A test replaces it: the real parts need Linux and root.
-	newDeps func(a App) *deps
+	// in is the terminal this shard process holds. A test replaces it: a pipe is not a terminal.
+	in *os.File
+}
+
+// stdin is what exec hands the guest and what secret set reads the value from.
+func (a App) stdin() *os.File {
+	if a.in == nil {
+		return os.Stdin
+	}
+
+	return a.in
 }
 
 // Run dispatches one command. A nil error means the command printed what it had to print.

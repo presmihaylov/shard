@@ -28,6 +28,7 @@ type seeded struct {
 	running  models.Sandbox
 	stopped  models.Sandbox
 	verbs    *fakeLifecycle
+	stores   *fakeStores
 	server   *httptest.Server
 }
 
@@ -56,12 +57,12 @@ func seed(t *testing.T) seeded {
 
 	enforcer := egress.New(policies, repo, secrets, network.DefaultNameservers, nil)
 
-	verbs := &fakeLifecycle{}
+	verbs, stores := &fakeLifecycle{}, &fakeStores{}
 
-	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, verbs, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, verbs, stores, io.Discard))
 	t.Cleanup(server.Close)
 
-	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, server: server}
+	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, server: server}
 }
 
 func create(t *testing.T, repo *sandboxstate.Repository, name string, state models.State) models.Sandbox {

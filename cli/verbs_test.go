@@ -13,13 +13,12 @@ import (
 )
 
 // newDaemonCreateApp is newClientApp with an image service that pulls nothing, so a create round trip needs no registry.
-func newDaemonCreateApp(t *testing.T, out *bytes.Buffer) (App, *deps, *recorder) {
+func newDaemonCreateApp(t *testing.T, out *bytes.Buffer) (App, *fakeDaemon, *recorder) {
 	t.Helper()
 
 	r := &recorder{}
 	app, d := newLifecycleApp(t, out, r, models.Sandbox{})
 	d.imageSvc = fakeImages{r: r}
-	serveDaemon(t, d)
 
 	return app, d, r
 }

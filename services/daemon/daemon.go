@@ -1,5 +1,5 @@
-// Package daemon runs the background work beside the CLI: the same stores and the same locks,
-// never the sandbox lifecycle. No CLI verb requires it, and no CLI verb starts it.
+// Package daemon is the resident process: it owns the state under one root, wires every layer the
+// verbs drive, and serves them over the API socket. Every CLI verb goes through it.
 package daemon
 
 import (
@@ -15,7 +15,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
-// LockFile is the singleton flock under the root: one daemon per root, and its liveness signal.
+// LockFile is the singleton flock under the root: one daemon per root, and the only lock shard keeps.
 const LockFile = "daemon.lock"
 
 const (
@@ -48,13 +48,6 @@ func New(root string, out io.Writer, tasks ...Task) *Daemon {
 	}
 }
 
-const (
-	// startupLockWait is how long Run keeps trying a contended lock before it calls the holder a
-	// daemon: an Alive probe holds it for microseconds, another daemon holds it forever.
-	startupLockWait = 250 * time.Millisecond
-	startupLockPoll = 10 * time.Millisecond
-)
-
 // Run holds the singleton and supervises every task until ctx ends. A second daemon on the root is refused.
 func (d *Daemon) Run(ctx context.Context) (err error) {
 	path := filepath.Join(d.root, LockFile)
@@ -77,33 +70,15 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	return nil
 }
 
+// takeLock is the one lock left in shard: it keeps a second daemon off a root the first one owns.
 func takeLock(path string) (*store.Lock, error) {
-	deadline := time.Now().Add(startupLockWait)
-	for {
-		lock, err := store.TryAcquire(path, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		if lock != nil {
-			return lock, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("another shard daemon already holds %s", path)
-		}
-		time.Sleep(startupLockPoll)
-	}
-}
-
-// Alive reports whether a daemon holds root right now. It is advisory: the holder may die a moment
-// later, so a caller must still tolerate its absence.
-func Alive(root string) (bool, error) {
-	lock, err := store.TryAcquireShared(filepath.Join(root, LockFile), 0o600)
+	lock, err := store.TryAcquire(path, 0o600)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if lock == nil {
-		return true, nil
+		return nil, fmt.Errorf("another shard daemon already holds %s", path)
 	}
 
-	return false, lock.Release()
+	return lock, nil
 }

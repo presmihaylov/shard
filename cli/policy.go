@@ -12,7 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 func (a App) policy(ctx context.Context, args []string) error {
@@ -24,11 +24,11 @@ func (a App) policy(ctx context.Context, args []string) error {
 	case "create":
 		return a.policyCreate(ctx, args[1:])
 	case "show":
-		return a.policyShow(args[1:])
+		return a.policyShow(ctx, args[1:])
 	case "ls", "list":
-		return a.policyList(args[1:])
+		return a.policyList(ctx, args[1:])
 	case "rm", "remove":
-		return a.policyRemove(args[1:])
+		return a.policyRemove(ctx, args[1:])
 	}
 
 	return fmt.Errorf("unknown policy subcommand %q; run shard help", args[0])
@@ -37,126 +37,61 @@ func (a App) policy(ctx context.Context, args []string) error {
 // ruleList collects --allow and --deny into one slice, in the order the host evaluates them.
 type ruleList struct {
 	action models.Action
-	rules  *[]models.Rule
+	rules  *[]client.RuleText
 }
 
 func (l ruleList) String() string { return "" }
 
+// Set keeps the rule as it was typed: the daemon owns the grammar, so the CLI never parses one.
 func (l ruleList) Set(text string) error {
-	rule, err := egress.ParseRule(l.action, text)
-	if err != nil {
-		return err
-	}
-	*l.rules = append(*l.rules, rule)
+	*l.rules = append(*l.rules, client.RuleText{Action: l.action, Rule: text})
 
 	return nil
 }
 
 func (a App) policyCreate(ctx context.Context, args []string) error {
-	policy, err := parsePolicyCreate(args)
+	name, rules, err := parsePolicyCreate(args)
 	if err != nil {
 		return err
 	}
 
-	return a.storePolicy(ctx, policy)
-}
-
-func parsePolicyCreate(args []string) (models.Policy, error) {
-	var policy models.Policy
-
-	flags := flag.NewFlagSet("shard policy create", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.Var(ruleList{action: models.ActionAllow, rules: &policy.Rules}, "allow", "a rule to allow, repeatable")
-	flags.Var(ruleList{action: models.ActionDeny, rules: &policy.Rules}, "deny", "a rule to deny, repeatable")
-
-	if err := flags.Parse(args); err != nil {
-		return models.Policy{}, fmt.Errorf("parse the policy create flags: %w", err)
-	}
-
-	rest := flags.Args()
-	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return models.Policy{}, errors.New("policy create takes its flags before the name: shard policy create --allow <rule> <name>")
-	}
-	if len(rest) != 1 {
-		return models.Policy{}, fmt.Errorf("policy create takes one name, got %d", len(rest))
-	}
-
-	policy.Name = rest[0]
-	if err := egress.Validate(policy); err != nil {
-		return models.Policy{}, err
-	}
-
-	return policy, nil
-}
-
-// storePolicy writes the policy and puts the new rules on every sandbox that holds it at once.
-func (a App) storePolicy(ctx context.Context, policy models.Policy) error {
-	d := a.deps()
-
-	policies, err := d.policies()
+	policy, err := a.client().SetPolicy(ctx, name, rules)
 	if err != nil {
 		return err
-	}
-
-	if err := policies.Set(policy); err != nil {
-		return err
-	}
-
-	users, err := policyUsers(d, policy.Name)
-	if err != nil {
-		return err
-	}
-	if len(users) != 0 {
-		if err := reapplyAll(ctx, d); err != nil {
-			return fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", policy.Name, err)
-		}
 	}
 
 	return a.print(policy.Name)
 }
 
-func reapplyAll(ctx context.Context, d *deps) error {
-	net, err := d.net()
-	if err != nil {
-		return err
+func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
+	var rules []client.RuleText
+
+	flags := flag.NewFlagSet("shard policy create", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Var(ruleList{action: models.ActionAllow, rules: &rules}, "allow", "a rule to allow, repeatable")
+	flags.Var(ruleList{action: models.ActionDeny, rules: &rules}, "deny", "a rule to deny, repeatable")
+
+	if err := flags.Parse(args); err != nil {
+		return "", nil, fmt.Errorf("parse the policy create flags: %w", err)
 	}
 
-	return net.ReapplyAll(ctx)
+	rest := flags.Args()
+	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return "", nil, errors.New("policy create takes its flags before the name: shard policy create --allow <rule> <name>")
+	}
+	if len(rest) != 1 {
+		return "", nil, fmt.Errorf("policy create takes one name, got %d", len(rest))
+	}
+
+	return rest[0], rules, nil
 }
 
-// policyUsers names the sandboxes whose record holds the policy. A stopped one counts: start enforces it again.
-func policyUsers(d *deps, name string) ([]string, error) {
-	repo, err := d.repo()
-	if err != nil {
-		return nil, err
-	}
-
-	sandboxes, unreadable := repo.List()
-	if unreadable != nil {
-		return nil, fmt.Errorf("cannot tell which sandboxes hold the policy: %w", unreadable)
-	}
-
-	var users []string
-	for _, sb := range sandboxes {
-		if sb.Policy == name {
-			users = append(users, sb.ID)
-		}
-	}
-
-	return users, nil
-}
-
-func (a App) policyShow(args []string) error {
+func (a App) policyShow(ctx context.Context, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("policy show takes one name, got %d", len(args))
 	}
 
-	policies, err := a.deps().policies()
-	if err != nil {
-		return err
-	}
-
-	policy, err := policies.Get(args[0])
+	policy, err := a.client().GetPolicy(ctx, args[0])
 	if err != nil {
 		return err
 	}
@@ -169,17 +104,12 @@ func (a App) policyShow(args []string) error {
 	return a.print(string(blob))
 }
 
-func (a App) policyList(args []string) error {
+func (a App) policyList(ctx context.Context, args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("policy ls takes no arguments, got %d", len(args))
 	}
 
-	policies, err := a.deps().policies()
-	if err != nil {
-		return err
-	}
-
-	all, err := policies.List()
+	all, err := a.client().ListPolicies(ctx)
 	if err != nil {
 		return err
 	}
@@ -198,32 +128,13 @@ func (a App) policyList(args []string) error {
 	return nil
 }
 
-func (a App) policyRemove(args []string) error {
+func (a App) policyRemove(ctx context.Context, args []string) error {
 	name, err := parsePolicyRemove(args)
 	if err != nil {
 		return err
 	}
 
-	d := a.deps()
-
-	policies, err := d.policies()
-	if err != nil {
-		return err
-	}
-
-	if _, err := policies.Get(name); err != nil {
-		return err
-	}
-
-	users, err := policyUsers(d, name)
-	if err != nil {
-		return err
-	}
-	if len(users) != 0 {
-		return fmt.Errorf("policy %s is held by sandbox %s: remove the sandbox first", name, strings.Join(users, ", "))
-	}
-
-	if err := policies.Remove(name); err != nil {
+	if err := a.client().RemovePolicy(ctx, name); err != nil {
 		return err
 	}
 
@@ -238,5 +149,5 @@ func parsePolicyRemove(args []string) (string, error) {
 		return "", errors.New("policy rm takes no flags: shard policy rm <name>")
 	}
 
-	return args[0], egress.ValidName(args[0])
+	return args[0], nil
 }
