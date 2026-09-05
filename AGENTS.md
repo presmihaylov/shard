@@ -53,7 +53,7 @@ pkg/runsc/                 the runsc binary
 pkg/firecracker/           the firecracker binary and its API socket
 pkg/registry/              OCI registry transport
 pkg/netns/                 netns, veth, bridge, NAT rules
-pkg/store/                 atomic file write, lockfile
+pkg/store/                 atomic file write, the daemon singleton lock
 pkg/proxy/                 intercepting HTTP and TLS proxy
 
 services/sandbox/          the orchestrator: the lifecycle verbs the daemon serves
@@ -62,7 +62,7 @@ services/bundle/           build the OCI bundle from an image config
 services/sandboxstate/     the sandbox record repository
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
-services/daemon/           shard daemon, the supervision framework for the background work
+services/daemon/           shard daemon: the wiring of every layer, and the background work
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
 services/provider/gvisor/       implements models.Provider on gVisor
@@ -79,6 +79,10 @@ docs/
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
+- **`cli/` imports `services/client`, `pkg/pty`, `models`, the request types in
+  `services/sandbox`, and `services/daemon` for the one verb that is the daemon.
+  Nothing else.** A verb holds no store and no provider: it asks the socket.
+  `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports
   nothing else in the module. Splitting it per concern creates import cycles.
 - **The `Provider` interface lives in `models/`.** Both provider implementations
@@ -149,6 +153,10 @@ suffix is for humans; keep both. Every such test also guards itself at runtime
   thing that ends one. There is no policy, no idle timer and no on-exit setting
   to change any of this. This is why `shard-init` is PID 1 in every sandbox and
   the image entrypoint is its child.
+- **The daemon is the single writer of the state.** Every verb goes over the
+  socket, so nothing else opens the stores and nothing needs a lock between
+  processes. The one lock left is `daemon.lock`, which keeps a second daemon off
+  a root the first one owns.
 - **Never log a secret value, and never write one into a state file.** A sandbox
   references a secret by name and never holds a value. A secret is granted to a
   destination, never to a sandbox alone.

@@ -58,7 +58,6 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 		failAt  string
 		cleanup []string
 	}{
-		{"images.Hold", nil},
 		{"images.Pull", nil},
 		{"repo.Create", nil},
 		{"repo.Dir", []string{"repo.Delete"}},

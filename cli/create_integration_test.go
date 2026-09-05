@@ -16,7 +16,13 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -343,22 +349,48 @@ type layers struct {
 	provider models.Provider
 }
 
+// createApp builds the same layers the daemon holds, over the same root, so the test can reach them.
 func createApp(t *testing.T, app App) layers {
 	t.Helper()
 
-	d := app.deps()
-
-	repo, err := d.repo()
+	repo, err := sandboxstate.New(app.Root)
 	if err != nil {
 		t.Fatalf("build the repository: %v", err)
 	}
 
-	net, err := d.net()
+	policies, err := egress.NewStore(filepath.Join(app.Root, "policies"))
+	if err != nil {
+		t.Fatalf("build the policy store: %v", err)
+	}
+
+	secrets, err := secret.New(filepath.Join(app.Root, "secrets"))
+	if err != nil {
+		t.Fatalf("build the secret store: %v", err)
+	}
+
+	manager, err := netns.New()
+	if err != nil {
+		t.Fatalf("build the netns manager: %v", err)
+	}
+
+	source := egress.New(policies, repo, secrets, network.DefaultNameservers, nil)
+
+	net, err := network.New(network.Config{Root: app.Root, Egress: source}, manager)
 	if err != nil {
 		t.Fatalf("build the network service: %v", err)
 	}
 
-	provider, err := d.provider()
+	runner, err := runsc.New(filepath.Join(app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	if err != nil {
+		t.Fatalf("build the runsc runner: %v", err)
+	}
+
+	bundles, err := bundle.New(app.InitPath)
+	if err != nil {
+		t.Fatalf("build the bundle service: %v", err)
+	}
+
+	provider, err := gvisor.New(runner, bundles, repo.Dir)
 	if err != nil {
 		t.Fatalf("build the provider: %v", err)
 	}

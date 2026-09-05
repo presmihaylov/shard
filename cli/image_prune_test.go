@@ -65,26 +65,26 @@ const alpine = "index.docker.io/library/alpine:3.20"
 const alpineDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 // newImageApp wires image rm and prune onto two pulled images and the sandboxes in left.
-func newImageApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox) (App, *fakeImageStore) {
+func newImageApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox) (App, *fakeImageStore, *fakeDaemon) {
 	t.Helper()
 
-	app, d := newLifecycleApp(t, out, &recorder{}, models.Sandbox{})
-	d.repoSvc.(*fakeLifecycleRepo).left = left
+	app, f := newLifecycleApp(t, out, &recorder{}, models.Sandbox{})
+	f.repoSvc.(*fakeLifecycleRepo).left = left
 
 	store := &fakeImageStore{images: []image.Image{
 		{Reference: alpine, Digest: alpineDigest},
 		{Reference: "index.docker.io/library/python:3.12-alpine", Digest: "sha256:bbb"},
 	}}
-	d.imageSvc = store
+	f.imageSvc = store
 
-	return app, store
+	return app, store, f
 }
 
 func TestImageRmRefusesAnImageASandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "down-2", Image: alpine, State: models.StateStopped}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 
 	err := app.Run(t.Context(), []string{"image", "rm", "alpine:3.20"})
 	if err == nil || !strings.Contains(err.Error(), "down-2") || !strings.Contains(err.Error(), "--force") {
@@ -99,7 +99,7 @@ func TestImageRmForceRemovesAnImageASandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: alpine, State: models.StateRunning}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 
 	if err := app.Run(t.Context(), []string{"image", "rm", "--force", "alpine:3.20"}); err != nil {
 		t.Fatalf("image rm --force: %v", err)
@@ -113,7 +113,7 @@ func TestImageRmRemovesAnImageNoSandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: "index.docker.io/library/python:3.12-alpine", State: models.StateRunning}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 
 	if err := app.Run(t.Context(), []string{"image", "rm", "alpine:3.20"}); err != nil {
 		t.Fatalf("image rm: %v", err)
@@ -127,7 +127,7 @@ func TestImagePruneKeepsWhatAStoppedSandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "down-2", Image: alpine, State: models.StateStopped}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 
 	if err := app.Run(t.Context(), []string{"image", "prune"}); err != nil {
 		t.Fatalf("image prune: %v", err)
@@ -143,8 +143,8 @@ func TestImagePruneKeepsWhatAStoppedSandboxReferences(t *testing.T) {
 func TestImagePruneRefusesToGuessOverAnUnreadableRecord(t *testing.T) {
 	var out bytes.Buffer
 
-	app, store := newImageApp(t, &out, nil)
-	app.newDeps(app).repoSvc.(*fakeLifecycleRepo).unreadable = errors.New("decode sandbox.json of bad-3: unexpected end of JSON input")
+	app, store, f := newImageApp(t, &out, nil)
+	f.repoSvc.(*fakeLifecycleRepo).unreadable = errors.New("decode sandbox.json of bad-3: unexpected end of JSON input")
 
 	if err := app.Run(t.Context(), []string{"image", "prune"}); err == nil {
 		t.Error("image prune returned no error over a record it could not read")
@@ -159,7 +159,7 @@ func TestImageRmRefusesADigestASandboxHoldsByTag(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: alpine, State: models.StateRunning}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 
 	err := app.Run(t.Context(), []string{"image", "rm", "alpine@" + alpineDigest})
 	if err == nil || !strings.Contains(err.Error(), "up-1") {
@@ -174,7 +174,7 @@ func TestImagePruneKeepsADigestEntryATagStillHolds(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: alpine, State: models.StateRunning}}
-	app, store := newImageApp(t, &out, held)
+	app, store, _ := newImageApp(t, &out, held)
 	store.images = append(store.images, image.Image{Reference: "index.docker.io/library/alpine@" + alpineDigest, Digest: alpineDigest})
 
 	if err := app.Run(t.Context(), []string{"image", "prune"}); err != nil {

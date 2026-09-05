@@ -1,7 +1,6 @@
 package sandboxstate_test
 
 import (
-	"context"
 	"errors"
 	"net/netip"
 	"os"
@@ -81,7 +80,7 @@ func snapshotDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 func TestNewCreatesTheLayout(t *testing.T) {
 	_, root := repo(t)
 
-	for _, dir := range []string{"sandboxes", "snapshots", "locks"} {
+	for _, dir := range []string{"sandboxes", "snapshots"} {
 		info, err := os.Stat(filepath.Join(root, dir))
 		if err != nil {
 			t.Fatalf("stat %s: %v", dir, err)
@@ -630,76 +629,8 @@ func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	}
 }
 
-func TestTwoSandboxesDoNotWaitOnEachOther(t *testing.T) {
+func TestAWriteOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
-	first, second := create(t, r), create(t, r)
-
-	held, release := make(chan struct{}), make(chan struct{})
-	locked := make(chan error, 1)
-
-	go func() {
-		locked <- r.Update(first.ID, func(*models.Sandbox) error {
-			close(held)
-			<-release
-
-			return nil
-		})
-	}()
-
-	<-held
-
-	defer func() {
-		close(release)
-
-		if err := <-locked; err != nil {
-			t.Errorf("the update that held the lock: %v", err)
-		}
-	}()
-
-	other := make(chan error, 1)
-
-	go func() {
-		other <- r.Update(second.ID, func(sb *models.Sandbox) error {
-			sb.PID = 7
-
-			return nil
-		})
-	}()
-
-	select {
-	case err := <-other:
-		if err != nil {
-			t.Fatalf("Update of the second sandbox: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second sandbox waited on the first, so the lock is not per sandbox")
-	}
-}
-
-func TestDeleteRemovesTheLockFile(t *testing.T) {
-	r, root := repo(t)
-	sb := create(t, r)
-
-	if err := r.Update(sb.ID, func(*models.Sandbox) error { return nil }); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	path := filepath.Join(root, "locks", sb.ID+".lock")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("stat the lock file after an update: %v", err)
-	}
-
-	if err := r.Delete(sb.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the lock file is still there after the delete: %v", err)
-	}
-}
-
-func TestAWriteOfAMissingSandboxLeavesNoLockFile(t *testing.T) {
-	r, root := repo(t)
 
 	for _, call := range []struct {
 		name string
@@ -711,11 +642,6 @@ func TestAWriteOfAMissingSandboxLeavesNoLockFile(t *testing.T) {
 		t.Run(call.name, func(t *testing.T) {
 			if err := call.run(); !errors.Is(err, sandboxstate.ErrNotFound) {
 				t.Fatalf("%s of a missing sandbox: %v", call.name, err)
-			}
-
-			path := filepath.Join(root, "locks", "quiet-heron-3f0a.lock")
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("%s left a lock file behind: %v", call.name, err)
 			}
 		})
 	}
@@ -788,175 +714,5 @@ func TestARefusedReferenceIsAValidationError(t *testing.T) {
 	}
 	if _, err := r.Get(""); !errors.As(err, &invalid) {
 		t.Errorf("Get of an empty id got %T %v, want a ValidationError", err, err)
-	}
-}
-
-func TestHoldWaitsForTheHolder(t *testing.T) {
-	r, _ := repo(t)
-	sb := create(t, r)
-
-	release, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := r.Hold(ctx, sb.ID); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a second Hold returned %v, want it to wait out its context", err)
-	}
-
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	again, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold after the release: %v", err)
-	}
-	if err := again(); err != nil {
-		t.Fatalf("release again: %v", err)
-	}
-}
-
-// An Update inside a Hold must not wait on it, or every verb that writes the record would hang.
-func TestAnUpdateInsideAHoldDoesNotWait(t *testing.T) {
-	r, _ := repo(t)
-	sb := create(t, r)
-
-	release, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-	defer func() {
-		if err := release(); err != nil {
-			t.Errorf("release: %v", err)
-		}
-	}()
-
-	done := make(chan error, 1)
-	go func() { done <- r.Update(sb.ID, func(*models.Sandbox) error { return nil }) }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Update: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the Update waited on the Hold")
-	}
-}
-
-func TestHoldOfAMissingSandboxIsNotFoundAndLeavesNoLockFile(t *testing.T) {
-	r, root := repo(t)
-
-	if _, err := r.Hold(t.Context(), "quiet-heron-3f0a"); !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Fatalf("Hold of a missing sandbox: %v", err)
-	}
-
-	path := filepath.Join(root, "locks", "quiet-heron-3f0a.verb.lock")
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("Hold left a lock file behind: %v", err)
-	}
-}
-
-func TestDeleteRemovesTheVerbLockFile(t *testing.T) {
-	r, root := repo(t)
-	sb := create(t, r)
-
-	release, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-
-	path := filepath.Join(root, "locks", sb.ID+".verb.lock")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("stat the lock file under a hold: %v", err)
-	}
-
-	// rm deletes under its own hold, so the file goes while it is held.
-	if err := r.Delete(sb.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the verb lock file is still there after the delete: %v", err)
-	}
-}
-
-// An rm that waited on another rm wins a lock file it made itself, over a sandbox that is gone.
-func TestHoldAfterADeleteIsNotFoundAndLeavesNoLockFile(t *testing.T) {
-	r, root := repo(t)
-	sb := create(t, r)
-
-	release, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold: %v", err)
-	}
-
-	waited := make(chan error, 1)
-	go func() {
-		_, err := r.Hold(t.Context(), sb.ID)
-		waited <- err
-	}()
-
-	// Give the second Hold time to pass its check and sit on the lock.
-	time.Sleep(200 * time.Millisecond)
-
-	if err := r.Delete(sb.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	select {
-	case err := <-waited:
-		if !errors.Is(err, sandboxstate.ErrNotFound) {
-			t.Fatalf("the Hold that waited out the delete returned %v, want not found", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second Hold never returned")
-	}
-
-	path := filepath.Join(root, "locks", sb.ID+".verb.lock")
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the Hold that lost left a lock file behind: %v", err)
-	}
-}
-
-// Two forks of one snapshot read it side by side, and a pause that would replace it waits for both.
-func TestHoldSharedIsSharedAndAHoldWaitsItOut(t *testing.T) {
-	r, _ := repo(t)
-	sb := create(t, r)
-
-	first, err := r.HoldShared(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("HoldShared: %v", err)
-	}
-	second, err := r.HoldShared(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("a second HoldShared beside the first: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := r.Hold(ctx, sb.ID); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Hold beside a shared hold returned %v, want it to wait out its context", err)
-	}
-
-	if err := errors.Join(first(), second()); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	release, err := r.Hold(t.Context(), sb.ID)
-	if err != nil {
-		t.Fatalf("Hold after the releases: %v", err)
-	}
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
 	}
 }

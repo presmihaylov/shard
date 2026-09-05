@@ -39,6 +39,19 @@ linters:
               desc: "pkg/ must not import models/. If it needs a domain type, it belongs in services/."
             - pkg: github.com/presmihaylov/shard/services
               desc: "pkg/ must not import services/. Dependencies point services -> pkg, never back."
+        # cli/ is a thin client of the daemon: it holds no layer and reaches every
+        # verb over the socket. The allow list is the whole of what a verb may name.
+        cli-speaks-only-to-the-daemon:
+          files:
+            - "**/cli/*.go"
+            - "!**/cli/*_test.go"
+          allow:
+            - $gostd
+            - github.com/presmihaylov/shard/models
+            - github.com/presmihaylov/shard/pkg/pty
+            - github.com/presmihaylov/shard/services/client
+            - github.com/presmihaylov/shard/services/sandbox
+            - github.com/presmihaylov/shard/services/daemon
         # models/ is a leaf so that it never participates in an import cycle.
         models-is-a-leaf:
           files:

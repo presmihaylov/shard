@@ -54,9 +54,7 @@ func (a App) exec(ctx context.Context, args []string) error {
 		return err
 	}
 
-	d := a.deps()
-
-	if opts.tty && !pty.IsTerminal(d.stdin()) {
+	if opts.tty && !pty.IsTerminal(a.stdin()) {
 		return errors.New("-t needs a terminal on stdin, and this one is not one")
 	}
 
@@ -70,10 +68,10 @@ func (a App) exec(ctx context.Context, args []string) error {
 
 	streams := client.ExecStreams{Stdout: a.Out, Stderr: a.Err, Warn: a.warn}
 	if opts.interactive {
-		streams.Stdin = d.stdin()
+		streams.Stdin = a.stdin()
 	}
 
-	status, err := a.runExec(ctx, d, opts, req, streams)
+	status, err := a.runExec(ctx, opts, req, streams)
 	if err != nil {
 		return shellCode(err)
 	}
@@ -85,18 +83,18 @@ func (a App) exec(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (a App) runExec(ctx context.Context, d *deps, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (models.ExitStatus, error) {
+func (a App) runExec(ctx context.Context, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (models.ExitStatus, error) {
 	if !opts.tty {
 		return a.client().Exec(ctx, opts.id, req, streams)
 	}
 
-	return a.execOnTerminal(ctx, d, opts, req, streams)
+	return a.execOnTerminal(ctx, opts, req, streams)
 }
 
 // execOnTerminal puts this terminal into raw mode, so a keystroke reaches the guest untouched. The
 // guest's own terminal is the daemon's. The restore runs on every path out of here, a panic included.
-func (a App) execOnTerminal(ctx context.Context, d *deps, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
-	terminal := d.stdin()
+func (a App) execOnTerminal(ctx context.Context, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
+	terminal := a.stdin()
 
 	size, err := pty.SizeOf(terminal)
 	if err != nil {

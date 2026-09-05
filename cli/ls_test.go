@@ -38,7 +38,6 @@ func newLsApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadable
 	app, deps := newLifecycleApp(t, out, &recorder{}, models.Sandbox{})
 	repo := deps.repoSvc.(*fakeLifecycleRepo)
 	repo.left, repo.unreadable = left, unreadable
-	serveDaemon(t, deps)
 
 	return app
 }

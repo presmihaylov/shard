@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // recorder is the shared log of what the fakes were asked to do and in which order.
@@ -36,14 +39,6 @@ func (r *recorder) record(name string) error {
 type fakeImages struct {
 	imageService
 	r *recorder
-}
-
-func (f fakeImages) Hold(context.Context) (func() error, error) {
-	if err := f.r.record("images.Hold"); err != nil {
-		return nil, err
-	}
-
-	return func() error { return f.r.record("images.Release") }, nil
 }
 
 func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
@@ -385,21 +380,34 @@ func (f *fakeLifecycleSubstrate) DropNullNetns() error {
 	return nil
 }
 
-// newLifecycleApp wires stop and rm onto fakes, so the order and the refusals are testable off Linux.
-func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.Sandbox) (App, *deps) {
+// newLifecycleApp puts a daemon on fakes up on the app's root, so every verb is testable off Linux.
+func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.Sandbox) (App, *fakeDaemon) {
 	t.Helper()
 
 	r.live = map[string]bool{}
-	// A short root, so the verbs that speak to a daemon can put a socket under it.
+	// A short root, so the socket path fits what a unix socket takes.
 	root := shortRoot(t)
 
-	d := &deps{
+	policies, err := egress.NewStore(filepath.Join(root, "policies"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	if err != nil {
+		t.Fatalf("secret.New: %v", err)
+	}
+
+	f := &fakeDaemon{
 		app:          App{Root: root},
 		repoSvc:      &fakeLifecycleRepo{r: r, sb: sb},
 		netSvc:       &fakeLifecycleNet{r: r},
 		providerSvc:  &fakeLifecycleProvider{r: r, status: models.Status{Exists: true, State: sb.State}},
 		substrateSvc: &fakeLifecycleSubstrate{r: r},
+		secretSvc:    secrets,
+		policySvc:    policies,
 	}
+	serveDaemon(t, f)
 
 	return App{
 		Version: "test",
@@ -407,8 +415,7 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 		Out:     out,
 		Err:     out,
 		Timeout: time.Minute,
-		newDeps: func(App) *deps { return d },
-	}, d
+	}, f
 }
 
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
