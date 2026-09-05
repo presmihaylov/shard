@@ -3,12 +3,10 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,58 +14,31 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
-	"github.com/presmihaylov/shard/pkg/runsc"
-	"github.com/presmihaylov/shard/services/bundle"
-	"github.com/presmihaylov/shard/services/egress"
-	"github.com/presmihaylov/shard/services/network"
-	"github.com/presmihaylov/shard/services/provider/gvisor"
-	"github.com/presmihaylov/shard/services/sandboxstate"
-	"github.com/presmihaylov/shard/services/secret"
 )
-
-// hostInitPath is where make devbox-sync installs the supervisor.
-const hostInitPath = "/usr/local/bin/shard-init"
-
-const testImage = "alpine:3.20"
-
-// stopGrace is generous: the entrypoint is already gone by the time the cleanup stops the sandbox.
-const stopGrace = 10 * time.Second
-
-// waitBudget bounds the wait for an entrypoint that has already exited. The --user bug spent it all.
-const waitBudget = 30 * time.Second
 
 // TestCreateLeavesTheSandboxRunning is the SHARD-16 acceptance criterion, in process. The command
 // prints an id and returns, and the sandbox it built outlives it.
 func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 	app, out := newCreateApp(t)
-	deps := createApp(t, app)
 
 	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/sleep", "600"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	id := onlySandbox(t, app.Root)
-	t.Cleanup(func() { cleanUp(t, deps, id) })
+	id := strings.TrimSpace(out.String())
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	if got := strings.TrimSpace(out.String()); got != id {
-		t.Errorf("create printed %q, want the bare id %q", out.String(), id)
+	if strings.ContainsAny(id, " \t") {
+		t.Errorf("create printed %q, want the bare id and nothing else", id)
 	}
 
-	sb, err := records(t, app.Root).Get(id)
-	if err != nil {
-		t.Fatalf("read the record: %v", err)
-	}
-
+	sb := record(t, app, id)
 	if sb.State != models.StateRunning {
 		t.Errorf("the record says %q, want running: a sandbox outlives its entrypoint", sb.State)
 	}
 
-	status, err := deps.provider.Status(t.Context(), id)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if !status.Alive() {
-		t.Errorf("the substrate says %+v, want a live sandbox", status)
+	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
+		t.Errorf("an exec in the new sandbox wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 
 	if exists, err := netns.NamespaceExists(id); err != nil || !exists {
@@ -76,65 +47,49 @@ func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 	if !hasLink(t, sb.HostInterface) {
 		t.Errorf("the host interface %s is gone", sb.HostInterface)
 	}
-	if len(leases(t, app.Root)) != 1 {
-		t.Errorf("the leases are %v, want exactly the one this sandbox holds", leases(t, app.Root))
+	if held := leases(t, app.Root); !slices.Contains(held, id) {
+		t.Errorf("the leases are %v, want the one this sandbox holds", held)
 	}
 }
 
 // TestCreateOutlivesAnEntrypointThatExits: the keep-alive rule, at the substrate. The entrypoint is
 // gone and the sandbox is still there, which is what makes exec worth having.
 func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
-	app, _ := newCreateApp(t)
-	deps := createApp(t, app)
+	app, out := newCreateApp(t)
 
-	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/true"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	id := create(t, app, out, "/bin/true")
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	id := onlySandbox(t, app.Root)
-	t.Cleanup(func() { cleanUp(t, deps, id) })
-
-	if status := awaitEntrypoint(t, deps, id); status.Code != 0 {
+	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
 		t.Errorf("the entrypoint ended %+v, want a clean exit", status)
 	}
 
-	status, err := deps.provider.Status(t.Context(), id)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
+	if sb := record(t, app, id); sb.State != models.StateRunning {
+		t.Errorf("the record says %q after the entrypoint exited, want running", sb.State)
 	}
-	if !status.Alive() {
-		t.Errorf("the substrate says %+v after the entrypoint exited, want a live sandbox", status)
+	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
+		t.Errorf("an exec after the entrypoint exited wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 }
 
 // TestCreateRunsTheEntrypointAsANonRootUser is the bug this ticket fixes. The user went onto the OCI
 // process, which is shard-init, so PID 1 lost the right to write exit.json and Wait polled forever.
 func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
-	app, _ := newCreateApp(t)
-	deps := createApp(t, app)
+	app, out := newCreateApp(t)
 
-	args := []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "id -u"}
-	if err := app.Run(t.Context(), args); err != nil {
+	if err := app.Run(t.Context(), []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "id -u"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	id := onlySandbox(t, app.Root)
-	t.Cleanup(func() { cleanUp(t, deps, id) })
+	id := strings.TrimSpace(out.String())
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The exit status is the assertion: a supervisor that dropped too could never write it.
-	if status := awaitEntrypoint(t, deps, id); status.Code != 0 {
+	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
 		t.Errorf("the entrypoint ended %+v, want a clean exit", status)
 	}
 
-	status, err := deps.provider.Status(t.Context(), id)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if !status.Alive() {
-		t.Errorf("the substrate says %+v, want a live sandbox", status)
-	}
-
-	if got := guestOutput(t, deps, id); !strings.Contains(got, "65534") {
+	if got := guestOutput(t, app, id); !strings.Contains(got, "65534") {
 		t.Errorf("the entrypoint reported uid %q, want 65534", strings.TrimSpace(got))
 	}
 }
@@ -143,22 +98,21 @@ func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 // a uid change away from root clears the permitted and the effective set unless they are raised into
 // the ambient one, so without that the entrypoint got nothing and bind(80) returned EACCES.
 func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
-	app, _ := newCreateApp(t)
-	deps := createApp(t, app)
+	app, out := newCreateApp(t)
 
 	args := []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "grep CapEff /proc/self/status"}
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	id := onlySandbox(t, app.Root)
-	t.Cleanup(func() { cleanUp(t, deps, id) })
+	id := strings.TrimSpace(out.String())
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	if status := awaitEntrypoint(t, deps, id); status.Code != 0 {
+	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
 		t.Fatalf("the entrypoint ended %+v, want a clean exit", status)
 	}
 
-	mask := effectiveCapabilities(t, guestOutput(t, deps, id))
+	mask := effectiveCapabilities(t, guestOutput(t, app, id))
 	// CAP_NET_BIND_SERVICE is bit 10. It is in the set the spec grants, so the entrypoint must hold it.
 	if mask&(1<<10) == 0 {
 		t.Errorf("the entrypoint holds the effective set %#x, want CAP_NET_BIND_SERVICE in it", mask)
@@ -169,40 +123,16 @@ func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 // any claim gives back the record, the lease, the namespace, the link and the mount.
 func TestCreateLeaksNothingWhenItFails(t *testing.T) {
 	// A supervisor that is not there fails the bind mount, which is the last claim before the start.
-	app, _ := newCreateAppWithInit(t, filepath.Join(t.TempDir(), "absent"))
+	app, _ := ownDaemon(t, InitPathEnv+"="+filepath.Join(t.TempDir(), "absent"))
 
-	args := []string{"create", testImage, "--", "/bin/true"}
-	if err := app.Run(t.Context(), args); err == nil {
+	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/true"}); err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}
 
-	left, err := records(t, app.Root).List()
-	if err != nil {
-		t.Fatalf("list the records: %v", err)
+	if held := holdings(t, app); len(held) != 0 {
+		t.Errorf("the failed create left %v", held)
 	}
-	if len(left) != 0 {
-		t.Errorf("the failed create left the records %+v", left)
-	}
-
-	if held := leases(t, app.Root); len(held) != 0 {
-		t.Errorf("the failed create left the leases %v", held)
-	}
-
-	// The substrate claim is given back too: an interrupted create can leave a sandbox process that
-	// only runsc can reach, and the record the teardown deletes is the only handle to it.
-	if held := containers(t, app.Root); len(held) != 0 {
-		t.Errorf("the failed create left the runsc containers %v", held)
-	}
-
-	// Only the sandbox tree: runsc bind mounts a null-netns into its own root on the first create,
-	// and that one belongs to the runsc root rather than to any sandbox.
-	mounts, err := os.ReadFile("/proc/self/mounts")
-	if err != nil {
-		t.Fatalf("read the mount table: %v", err)
-	}
-	if sandboxes := filepath.Join(app.Root, "sandboxes"); strings.Contains(string(mounts), sandboxes) {
-		t.Errorf("the failed create left a mount under %s", sandboxes)
-	}
+	assertNoSandboxMounts(t, app.Root)
 }
 
 // TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart is the whole point of the handshake.
@@ -212,8 +142,9 @@ func TestCreateLeaksNothingWhenItFails(t *testing.T) {
 func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	args := []string{"create", testImage, "--", "/no/such/entrypoint"}
-	err := app.Run(t.Context(), args)
+	before := holdings(t, app)
+
+	err := app.Run(t.Context(), []string{"create", testImage, "--", "/no/such/entrypoint"})
 	if err == nil {
 		t.Fatal("create reported success for an entrypoint the image does not hold")
 	}
@@ -226,28 +157,10 @@ func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
 		t.Errorf("the failed create printed %q, want nothing", got)
 	}
 
-	left, err := records(t, app.Root).List()
-	if err != nil {
-		t.Fatalf("list the records: %v", err)
+	if after := holdings(t, app); !slices.Equal(after, before) {
+		t.Errorf("the failed create left %v, want the %v the host held before it", after, before)
 	}
-	if len(left) != 0 {
-		t.Errorf("the failed create left the records %+v", left)
-	}
-
-	if held := leases(t, app.Root); len(held) != 0 {
-		t.Errorf("the failed create left the leases %v", held)
-	}
-	if held := containers(t, app.Root); len(held) != 0 {
-		t.Errorf("the failed create left the runsc containers %v", held)
-	}
-
-	mounts, err := os.ReadFile("/proc/self/mounts")
-	if err != nil {
-		t.Fatalf("read the mount table: %v", err)
-	}
-	if sandboxes := filepath.Join(app.Root, "sandboxes"); strings.Contains(string(mounts), sandboxes) {
-		t.Errorf("the failed create left a mount under %s", sandboxes)
-	}
+	assertNoSandboxMounts(t, app.Root)
 }
 
 // TestCreateLeaksNothingWhenItIsInterrupted: Ctrl-C ends the client's request, which cancels the
@@ -260,11 +173,13 @@ func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {
 		t.Fatalf("pull: %v", err)
 	}
 
+	before := holdings(t, app)
+
 	// The interrupt lands once the lease is claimed: the create is then inside the substrate.
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
 		for ctx.Err() == nil {
-			if held, err := os.ReadDir(filepath.Join(app.Root, "network", "leases")); err == nil && len(held) != 0 {
+			if len(leases(t, app.Root)) > len(before) {
 				cancel()
 			}
 			time.Sleep(time.Millisecond)
@@ -278,156 +193,30 @@ func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {
 	// The daemon gives everything back after the client is gone, so the check waits for it.
 	deadline := time.Now().Add(waitBudget)
 	for {
-		left, err := records(t, app.Root).List()
-		if err != nil {
-			t.Fatalf("list the records: %v", err)
-		}
-		held := append(leases(t, app.Root), containers(t, app.Root)...)
-		if len(left) == 0 && len(held) == 0 {
+		after := holdings(t, app)
+		if slices.Equal(after, before) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the interrupted create left the records %+v and the holdings %v", left, held)
+			t.Fatalf("the interrupted create left %v, want the %v the host held before it", after, before)
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
+// assertNoSandboxMounts checks the sandbox tree only: runsc bind mounts a null-netns into its own
+// root on the first create, and that one belongs to the runsc root rather than to any sandbox.
+func assertNoSandboxMounts(t *testing.T, root string) {
 	t.Helper()
 
-	return newCreateAppWithInit(t, hostInitPath)
-}
-
-// newCreateAppWithInit starts a daemon on a fresh root and answers the client app that speaks to it.
-func newCreateAppWithInit(t *testing.T, initPath string) (App, *bytes.Buffer) {
-	t.Helper()
-
-	if os.Geteuid() != 0 {
-		t.Skip("shard create needs root")
-	}
-
-	for _, binary := range []string{"runsc", "ip", "nft"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Skipf("no %s on this host", binary)
-		}
-	}
-
-	if _, err := os.Stat(hostInitPath); err != nil {
-		t.Skipf("no supervisor at %s: run make devbox-sync first", hostInitPath)
-	}
-
-	out := &bytes.Buffer{}
-	root := t.TempDir()
-
-	// shard rm gives the null-netns back, but a test whose create failed never reaches one and the
-	// TempDir removal then trips over it. Cleanup is LIFO, so this runs before that removal.
-	t.Cleanup(func() {
-		if err := exec.Command("umount", "-l", filepath.Join(root, "runsc", "null-netns")).Run(); err != nil {
-			t.Logf("unmount the runsc null-netns: %v", err)
-		}
-	})
-
-	// No factory override: the daemon drives the real wiring, which is the whole point of these tests.
-	app := App{Version: "test", Root: root, Out: out, Err: out, Timeout: 5 * time.Minute, InitPath: initPath}
-
-	cancel, done := startDaemon(t, app, &syncBuffer{})
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("the daemon ended with %v", err)
-		}
-	})
-
-	return app, out
-}
-
-// layers is a second view of what a command builds, so the test can stop what create left running.
-type layers struct {
-	repo     sandboxRepo
-	net      sandboxNetwork
-	provider models.Provider
-}
-
-// createApp builds the same layers the daemon holds, over the same root, so the test can reach them.
-func createApp(t *testing.T, app App) layers {
-	t.Helper()
-
-	repo, err := sandboxstate.New(app.Root)
+	mounts, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
-		t.Fatalf("build the repository: %v", err)
+		t.Fatalf("read the mount table: %v", err)
 	}
-
-	policies, err := egress.NewStore(filepath.Join(app.Root, "policies"))
-	if err != nil {
-		t.Fatalf("build the policy store: %v", err)
+	if sandboxes := filepath.Join(root, "sandboxes"); strings.Contains(string(mounts), sandboxes) {
+		t.Errorf("the create left a mount under %s", sandboxes)
 	}
-
-	secrets, err := secret.New(filepath.Join(app.Root, "secrets"))
-	if err != nil {
-		t.Fatalf("build the secret store: %v", err)
-	}
-
-	manager, err := netns.New()
-	if err != nil {
-		t.Fatalf("build the netns manager: %v", err)
-	}
-
-	source := egress.New(policies, repo, secrets, network.DefaultNameservers, nil)
-
-	net, err := network.New(network.Config{Root: app.Root, Egress: source}, manager)
-	if err != nil {
-		t.Fatalf("build the network service: %v", err)
-	}
-
-	runner, err := runsc.New(filepath.Join(app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
-	if err != nil {
-		t.Fatalf("build the runsc runner: %v", err)
-	}
-
-	bundles, err := bundle.New(app.InitPath)
-	if err != nil {
-		t.Fatalf("build the bundle service: %v", err)
-	}
-
-	provider, err := gvisor.New(runner, bundles, repo.Dir)
-	if err != nil {
-		t.Fatalf("build the provider: %v", err)
-	}
-
-	return layers{repo: repo, net: net, provider: provider}
-}
-
-// awaitEntrypoint waits for the exit status shard-init writes. It is bounded, because the bug this
-// ticket fixes made that file never arrive and the wait then never returned.
-func awaitEntrypoint(t *testing.T, deps layers, id string) models.ExitStatus {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(t.Context(), waitBudget)
-	defer cancel()
-
-	status, err := deps.provider.Wait(ctx, id)
-	if err != nil {
-		t.Fatalf("wait for the entrypoint of %s: %v", id, err)
-	}
-
-	return status
-}
-
-func guestOutput(t *testing.T, deps layers, id string) string {
-	t.Helper()
-
-	path, err := deps.provider.LogPath(id)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-
-	return string(blob)
 }
 
 // effectiveCapabilities reads the one hex word the guest printed out of /proc/self/status.
@@ -450,108 +239,4 @@ func effectiveCapabilities(t *testing.T, output string) uint64 {
 	t.Fatalf("the guest printed %q, which names no CapEff", output)
 
 	return 0
-}
-
-// cleanUp ends the sandbox the test left running and gives its address back. It builds its own
-// context, because the test's own is already cancelled by the time a cleanup runs.
-func cleanUp(t *testing.T, deps layers, id string) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if err := deps.provider.Stop(ctx, id, stopGrace); err != nil {
-		t.Logf("stop %s: %v", id, err)
-	}
-	if err := deps.provider.Remove(ctx, id); err != nil {
-		t.Logf("remove %s: %v", id, err)
-	}
-	if err := deps.net.Release(ctx, id); err != nil {
-		t.Logf("release the network of %s: %v", id, err)
-	}
-	if err := deps.repo.Delete(id); err != nil {
-		t.Logf("delete the record of %s: %v", id, err)
-	}
-}
-
-// records reads the state tree create wrote, rather than reaching back through its own repository.
-func records(t *testing.T, root string) *sandboxstate.Repository {
-	t.Helper()
-
-	repo, err := sandboxstate.New(root)
-	if err != nil {
-		t.Fatalf("open the state repository: %v", err)
-	}
-
-	return repo
-}
-
-func onlySandbox(t *testing.T, root string) string {
-	t.Helper()
-
-	left, err := records(t, root).List()
-	if err != nil {
-		t.Fatalf("list the records: %v", err)
-	}
-	if len(left) != 1 {
-		t.Fatalf("create left %d records, want one", len(left))
-	}
-
-	return left[0].ID
-}
-
-func leases(t *testing.T, root string) []string {
-	t.Helper()
-
-	entries, err := os.ReadDir(filepath.Join(root, "network", "leases"))
-	if err != nil {
-		t.Fatalf("read the leases: %v", err)
-	}
-
-	held := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		held = append(held, entry.Name())
-	}
-
-	return held
-}
-
-// containers is what runsc holds under root. null-netns is the bind mount runsc makes for itself on
-// the first create, and it belongs to no sandbox.
-func containers(t *testing.T, root string) []string {
-	t.Helper()
-
-	entries, err := os.ReadDir(filepath.Join(root, "runsc"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("read the runsc root: %v", err)
-	}
-
-	held := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Name() == "null-netns" {
-			continue
-		}
-
-		held = append(held, entry.Name())
-	}
-
-	return held
-}
-
-func hasLink(t *testing.T, name string) bool {
-	t.Helper()
-
-	manager, err := netns.New()
-	if err != nil {
-		t.Fatalf("open the netns manager: %v", err)
-	}
-
-	exists, err := manager.LinkExists(t.Context(), name)
-	if err != nil {
-		t.Fatalf("LinkExists: %v", err)
-	}
-
-	return exists
 }
