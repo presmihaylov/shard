@@ -8,12 +8,16 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
+
+// warnBudget is how long a warning nobody wants has to arrive before the test says it never came.
+const warnBudget = 2 * time.Second
 
 // execDaemon is a daemon that answers one exec: it takes the connection over and speaks frames.
 type execDaemon struct {
@@ -26,6 +30,8 @@ type execDaemon struct {
 	exit    string
 	// hangUp ends the connection with no exit frame, the way a daemon that died mid-exec does.
 	hangUp bool
+	// skipInput answers and hangs up without reading, the way a command that exited at once does.
+	skipInput bool
 
 	// req is what the client asked for, and input what it typed at the command.
 	req   sandbox.ExecRequest
@@ -59,7 +65,9 @@ func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.input = d.readInput(buffered.Reader)
+	if !d.skipInput {
+		d.input = d.readInput(buffered.Reader)
+	}
 
 	if d.hangUp {
 		return
@@ -195,6 +203,50 @@ func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 	if err == nil || !strings.Contains(err.Error(), "without an exit status") {
 		t.Fatalf("Exec returned %v, want the missing exit status named", err)
+	}
+}
+
+// keyboard blocks until the test releases it, so the input ends after the command already has.
+type keyboard struct {
+	release <-chan struct{}
+}
+
+func (k keyboard) Read([]byte) (int, error) {
+	<-k.release
+
+	return 0, io.EOF
+}
+
+// A command that exits first takes the connection with it, and the frame saying the input ended then
+// has nowhere to go. That is how every exec ends, and no warning belongs to it.
+func TestExecSaysNothingWhenTheCommandEndedFirst(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", exit: "0", skipInput: true}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	release := make(chan struct{})
+	warnings := make(chan string, 4)
+
+	streams := client.ExecStreams{
+		Stdin:  keyboard{release: release},
+		Stdout: io.Discard,
+		Warn:   func(message string) { warnings <- message },
+	}
+
+	status, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, streams)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if status.Code != 0 {
+		t.Errorf("exit code = %d, want 0", status.Code)
+	}
+
+	// The exec is over and the connection with it, so the keyboard ends into nothing.
+	close(release)
+
+	select {
+	case message := <-warnings:
+		t.Errorf("the client warned %q about a command that had already exited", message)
+	case <-time.After(warnBudget):
 	}
 }
 
