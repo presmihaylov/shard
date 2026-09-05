@@ -4,9 +4,9 @@ This is a work in progress, will announce when it's live and ready to be used!
 A single-node sandbox manager. One binary runs isolated sandboxes on a Linux host, with or without
 hardware virtualization, and gives them the same lifecycle verbs either way: run, exec, pause, resume
 and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host without one it drives
-gVisor. An optional `shard serve` exposes the same verbs over a self-hostable REST API.
+gVisor. A resident `shard daemon` exposes the same verbs over a REST API on a unix socket.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Firecracker and the REST API do not exist yet.
+**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet, and the REST API is read-only.
 
 ## Sandboxes
 

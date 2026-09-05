@@ -196,9 +196,10 @@ func (r *Repository) Resolve(ref string) (string, error) {
 		return "", fmt.Errorf("read the name link %s: %w", r.namePath(ref), err)
 	}
 
+	// A refused target is a broken link, never the operator's mistake, so it is no ValidationError.
 	id := filepath.Base(target)
-	if err := validID(id); err != nil {
-		return "", fmt.Errorf("the name %q points at something that is not a sandbox id: %w", ref, err)
+	if validID(id) != nil {
+		return "", fmt.Errorf("the name %q points at %q, which is not a sandbox id", ref, target)
 	}
 
 	return id, nil
@@ -376,7 +377,7 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 			continue
 		}
 		if err != nil {
-			unreadable = errors.Join(unreadable, err)
+			unreadable = errors.Join(unreadable, &UnreadableError{ID: entry.Name(), Err: err})
 
 			continue
 		}
@@ -485,20 +486,37 @@ func validReference(ref string) error { return plainComponent("id or name", ref)
 // The id is a directory name under the root, so anything that is not one plain component is refused.
 func validID(id string) error { return plainComponent("id", id) }
 
+// UnreadableError is one record List could not read, so a caller can tell lost rows from a failed list.
+type UnreadableError struct {
+	ID  string
+	Err error
+}
+
+func (e *UnreadableError) Error() string { return e.Err.Error() }
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
+// ValidationError is a refused id or name: the caller's spelling, never the state of the host.
+type ValidationError struct {
+	Reason string
+}
+
+func (e *ValidationError) Error() string { return e.Reason }
+
 // plainComponent carries the noun, so a refused name never reads as a refused id.
 func plainComponent(kind, s string) error {
 	if s == "" {
-		return fmt.Errorf("the sandbox %s is empty", kind)
+		return &ValidationError{Reason: fmt.Sprintf("the sandbox %s is empty", kind)}
 	}
 
 	if len(s) > maxChars {
-		return fmt.Errorf("the sandbox %s %q is longer than %d characters", kind, s, maxChars)
+		return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q is longer than %d characters", kind, s, maxChars)}
 	}
 
 	for _, c := range s {
 		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return fmt.Errorf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)}
 		}
 	}
 

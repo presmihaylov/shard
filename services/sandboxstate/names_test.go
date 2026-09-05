@@ -1,6 +1,7 @@
 package sandboxstate_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,25 @@ func TestResolveAnswersForANameAndForAnID(t *testing.T) {
 		if id != sb.ID {
 			t.Fatalf("Resolve(%q) = %q, want %q", ref, id, sb.ID)
 		}
+	}
+}
+
+// A link at something that is not an id is the host's state gone wrong, never the caller's spelling.
+func TestResolveRefusesALinkAtSomethingThatIsNotAnID(t *testing.T) {
+	r, root := repo(t)
+
+	if err := os.Symlink("../sandboxes/not an id", filepath.Join(root, "names", "broken")); err != nil {
+		t.Fatalf("plant the link: %v", err)
+	}
+
+	_, err := r.Resolve("broken")
+	if err == nil || !strings.Contains(err.Error(), "not a sandbox id") {
+		t.Fatalf("Resolve got %v, want a refusal that names the link", err)
+	}
+
+	var invalid *sandboxstate.ValidationError
+	if errors.As(err, &invalid) {
+		t.Errorf("the broken link reads as a ValidationError: %v", err)
 	}
 }
 

@@ -5,11 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"slices"
 	"text/tabwriter"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // lsOptions is one parsed shard ls invocation.
@@ -30,12 +30,7 @@ func (a App) ls(_ context.Context, args []string) error {
 	}
 
 	// List answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
-	sandboxes, unreadable := repo.List()
-
-	// A stopped sandbox holds no process, so it is shown on --all only.
-	if !opts.all {
-		sandboxes = slices.DeleteFunc(sandboxes, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })
-	}
+	sandboxes, unreadable := sandbox.List(repo, opts.all)
 
 	if err := writeTable(a.Out, sandboxes, time.Now()); err != nil {
 		return err
