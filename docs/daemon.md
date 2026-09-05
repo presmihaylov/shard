@@ -76,7 +76,7 @@ gets a daemon that answers the reads and the store verbs.
 ## The API socket
 
 The daemon listens on `${root}/shard.sock`, so `/var/lib/shard/shard.sock` by default. It never
-listens on TCP. The socket is `0660 root:shard` when the host has a `shard` group, else `0600 root`,
+listens on TCP: a network address is `shard serve`, a separate process, described below. The socket is `0660 root:shard` when the host has a `shard` group, else `0600 root`,
 and the daemon logs which at startup:
 
 ```
@@ -214,6 +214,60 @@ not on the `http.Client`; a daemon that accepts and never answers fails as `GET 
 no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside it has none the
 client could know, and neither do the four snapshot verbs, because a checkpoint takes as long as
 the memory and the disk it writes; `StopSandbox` and `RemoveSandbox` add the grace to theirs.
+
+## The TCP front
+
+`shard serve` is how a client on another host reaches the daemon. It accepts TCP, terminates TLS,
+checks `Authorization: Bearer <token>` against the token file, and then dials `${root}/shard.sock`
+and copies bytes both ways:
+
+```
+shard --root /var/lib/shard serve --listen :2376 \
+  --cert /etc/shard/serve.crt --key /etc/shard/serve.key --token-file /etc/shard/serve.token
+```
+
+It is a byte proxy and not an API. It reads the request line and the headers of a connection only as
+far as the auth header, replays those bytes onto the socket and then splices the two connections, so
+an exec upgrade and a `logs` follow pass through untouched and every route above works unchanged. A
+bad or missing token is a `401` written before anything is dialed, so an unauthenticated client
+never reaches the daemon. The token is compared in constant time, and neither the front nor the CLI
+ever logs its value. Without `--cert` and `--key` the front refuses to start: there is no plain TCP
+mode to fall back to. The token file must not be readable by everyone on the host, and the front
+refuses one that is.
+
+The check is per connection, as a TLS client certificate would be: the token is read once, at the
+head of the first request, and the rest of that connection is bytes.
+
+**This is a deliberate deviation from dockerd and hypeman, which bind TCP themselves.** The shard
+daemon is root and owns the sandboxes, so the network-facing process is a separate and unprivileged
+one. It runs from its own unit, `packaging/systemd/shard-serve.service`, off unless it is installed
+on purpose:
+
+```
+useradd --system --no-create-home --gid shard shard
+install -d -m0750 /etc/shard
+openssl rand -hex 32 > /etc/shard/serve.token
+chown root:shard /etc/shard/serve.token && chmod 0640 /etc/shard/serve.token
+cp packaging/systemd/shard-serve.service /etc/systemd/system/
+systemctl enable --now shard-serve
+```
+
+The unit runs as `shard:shard`, which is the group the socket is given, and reads the token from a
+root-owned `0640` file that the group can read. The account has no other privilege: it cannot read
+a state file, and the daemon still applies every rule of every verb.
+
+The CLI reaches a front instead of the socket with three flags, or the environment behind them:
+
+```
+shard --host https://box.example.com:2376 --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
+SHARD_HOST=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
+```
+
+`--host` must be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate
+that signed the front's own, which a private CA or a self-signed certificate needs; without it the
+host's own trust store decides. This is one transport switch inside `services/client` and nothing
+else changes: the same typed calls, the same frames, the same errors. It is also the one way a
+client off Linux drives sandboxes, because the daemon itself runs on Linux alone.
 
 ## One daemon per root
 

@@ -52,6 +52,7 @@ linters:
             - github.com/presmihaylov/shard/services/client
             - github.com/presmihaylov/shard/services/sandbox
             - github.com/presmihaylov/shard/services/daemon
+            - github.com/presmihaylov/shard/services/serve
         # models/ is a leaf so that it never participates in an import cycle.
         models-is-a-leaf:
           files:
