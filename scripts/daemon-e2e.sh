@@ -78,6 +78,28 @@ DAEMON_PID=$!
 wait_proxy_pid_is "${DAEMON_PID}" "the restart"
 expect "$(fetch "${ID}" "http://${ALLOWED_HOST}/")" "auth= path=/" "the web answers again after the daemon came back"
 
+step "the daemon answers the API on its socket"
+SOCK="${SHARD_ROOT}/shard.sock"
+api() { curl -s --unix-socket "${SOCK}" -o "${SHARD_ROOT}/api.out" -w '%{http_code}' "http://shard$1"; }
+for _ in $(seq 1 50); do
+	[ -S "${SOCK}" ] && break
+	sleep 0.1
+done
+[ -S "${SOCK}" ] || { cat "${SHARD_ROOT}/daemon2.out"; fail "no socket at ${SOCK}"; }
+MODE=$(stat -c '%a %G' "${SOCK}")
+case "${MODE}" in
+"660 shard" | "600 root") say "the socket is mode ${MODE}" ;;
+*) fail "the socket is mode ${MODE}, want 660 shard or 600 root" ;;
+esac
+expect "$(api /v0/sandboxes)" "200" "GET /v0/sandboxes answers 200"
+jq -e --arg id "${ID}" 'map(.id) | index($id) != null' "${SHARD_ROOT}/api.out" >/dev/null || fail "the list does not hold ${ID}: $(cat "${SHARD_ROOT}/api.out")"
+say "the list holds the sandbox the CLI created"
+expect "$(api "/v0/sandboxes/${ID}")" "200" "GET /v0/sandboxes/${ID} answers 200"
+expect "$(jq -r .state "${SHARD_ROOT}/api.out")" "running" "the sandbox is running over the socket"
+expect "$(api /v0/sandboxes/no-such-sandbox)" "404" "an unknown sandbox is a 404"
+expect "$(api /v0/version)" "200" "GET /v0/version answers 200"
+expect "$(jq -r .version "${SHARD_ROOT}/api.out")" "$(shard version)" "the daemon reports the installed version"
+
 step "verbs work with the daemon dead, and a create refronts"
 kill -9 "${DAEMON_PID}"
 DAEMON_PID=""
