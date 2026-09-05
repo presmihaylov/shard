@@ -27,7 +27,14 @@ type apiTask struct {
 func (apiTask) Name() string { return "api" }
 
 func (t apiTask) Run(ctx context.Context) error {
-	repo, err := t.app.deps().repo()
+	d := t.app.deps()
+
+	repo, err := d.repo()
+	if err != nil {
+		return err
+	}
+
+	enforcer, err := d.egress()
 	if err != nil {
 		return err
 	}
@@ -43,5 +50,5 @@ func (t apiTask) Run(ctx context.Context) error {
 	}
 	log.New(t.app.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(t.app.Root, api.SocketFile), mode, owner)
 
-	return api.Serve(ctx, listener, api.NewHandler(t.app.Version, repo, t.app.Out))
+	return api.Serve(ctx, listener, api.NewHandler(t.app.Version, repo, enforcer, t.app.Out))
 }

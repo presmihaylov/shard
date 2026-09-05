@@ -21,10 +21,8 @@ make build-shard-init-linux  cross-compile the supervisor for the box
 make test                    unit tests; must stay green on macOS
 make test-integration        integration tests, on this host; Linux box only, needs root
 make itest                   integration tests for ITEST_PKG, on the devbox
-make e2e                     the whole lifecycle on this host, as root (SHARD-17)
+make e2e                     the whole lifecycle on this host, as root, over a daemon it starts (SHARD-17)
 make devbox-e2e              the same script, on the devbox
-make daemon-e2e              the daemon and the CLI over one root, curl on the socket (SHARD-124)
-make devbox-daemon-e2e       the same script, on the devbox
 make devbox-demo             record scripts/demo.sh on the devbox into docs/demo.cast (SHARD-36)
 make lint                    golangci-lint (v2: brew install golangci-lint)
 make lint-fix                apply the fixes golangci-lint can make
@@ -66,6 +64,7 @@ services/egress/           compile and apply policy
 services/secret/           grants and destination binding
 services/daemon/           shard daemon, the supervision framework for the background work
 services/api/              the REST handlers the daemon serves over its unix socket
+services/client/           the typed client of that API, which the thin CLI verbs call
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite both substrates must pass

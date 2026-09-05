@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // DefaultRoot is where shard keeps everything on the box.
@@ -56,7 +58,7 @@ Usage:
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
   shard daemon             run the resident process that owns the background work and the API socket; systemd starts it
-  shard version            print the version
+  shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
 The destination is a host, an address or a prefix, or any:
@@ -108,6 +110,9 @@ type App struct {
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
 	InitPath string
 
+	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
+	clientTimeout time.Duration
+
 	// newDeps builds the layers the commands drive. A test replaces it: the real parts need Linux and root.
 	newDeps func(a App) *deps
 }
@@ -117,8 +122,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 	// These read as flags, so they are answered before the flag parser can reject them.
 	if len(args) == 1 {
 		switch args[0] {
-		case "version", "--version":
-			return a.print(a.Version)
+		case "--version":
+			return a.print("client " + a.Version)
 		case "help", "--help", "-h":
 			return a.print(usage)
 		}
@@ -135,7 +140,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 
 	switch args[0] {
 	case "version":
-		return a.print(a.Version)
+		return a.version(ctx)
 	case "create":
 		return a.create(ctx, args[1:])
 	case "exec":
@@ -225,6 +230,30 @@ func (h *hostList) Set(value string) error {
 	*h = append(*h, value)
 
 	return nil
+}
+
+// client speaks to the daemon on the socket under the root, which is all a thin verb reads.
+func (a App) client() *client.Client {
+	c := client.New(a.Root)
+	if a.clientTimeout != 0 {
+		c.Timeout = a.clientTimeout
+	}
+
+	return c
+}
+
+// version prints this binary's line first, so it is on the screen even when no daemon answers.
+func (a App) version(ctx context.Context) error {
+	if err := a.print("client " + a.Version); err != nil {
+		return err
+	}
+
+	daemon, err := a.client().Version(ctx)
+	if err != nil {
+		return err
+	}
+
+	return a.print("daemon " + daemon.Version)
 }
 
 // warn reports something the operator should know that is not a reason to fail the command.

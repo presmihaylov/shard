@@ -12,7 +12,7 @@ import (
 func TestInspectPrintsTheRecordAsJSON(t *testing.T) {
 	var out bytes.Buffer
 
-	app, _ := newLifecycleApp(t, &out, &recorder{}, stopped())
+	app, _ := newClientApp(t, &out, stopped())
 
 	if err := app.Run(t.Context(), []string{"inspect", "web"}); err != nil {
 		t.Fatalf("inspect: %v", err)
@@ -33,11 +33,11 @@ func TestInspectPrintsTheRecordAsJSON(t *testing.T) {
 func TestInspectNamesAMissingSandbox(t *testing.T) {
 	var out bytes.Buffer
 
-	app, d := newLifecycleApp(t, &out, &recorder{}, models.Sandbox{})
+	app, d := newClientApp(t, &out, models.Sandbox{})
 	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
 	err := app.Run(t.Context(), []string{"inspect", "ghost"})
-	if err == nil || !strings.Contains(err.Error(), "ghost") {
-		t.Errorf("inspect returned %v, want the missing sandbox named", err)
+	if err == nil || err.Error() != "no sandbox ghost" {
+		t.Errorf("inspect returned %v, want 'no sandbox ghost'", err)
 	}
 }

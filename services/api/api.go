@@ -15,16 +15,17 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// Handler answers the routes over one repository.
+// Handler answers the routes over one repository and the egress rules the host enforces over it.
 type Handler struct {
-	version string
-	repo    sandbox.Reader
-	log     *log.Logger
+	version  string
+	repo     sandbox.Reader
+	enforcer sandbox.Enforcer
+	log      *log.Logger
 }
 
 // NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, repo sandbox.Reader, out io.Writer) http.Handler {
-	h := &Handler{version: version, repo: repo, log: log.New(out, "", log.LstdFlags)}
+func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, out io.Writer) http.Handler {
+	h := &Handler{version: version, repo: repo, enforcer: enforcer, log: log.New(out, "", log.LstdFlags)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v0/version", h.getVersion)
@@ -77,7 +78,7 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := sandbox.Get(h.repo, r.PathValue("id"))
+	sb, err := sandbox.Inspect(h.repo, h.enforcer, r.PathValue("id"))
 
 	var invalid *sandboxstate.ValidationError
 

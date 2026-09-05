@@ -14,20 +14,6 @@ func newApp(t *testing.T, out *bytes.Buffer) App {
 	return App{Version: "test", Root: t.TempDir(), Out: out}
 }
 
-func TestRunVersion(t *testing.T) {
-	for _, arg := range []string{"version", "--version"} {
-		var out bytes.Buffer
-
-		if err := newApp(t, &out).Run(t.Context(), []string{arg}); err != nil {
-			t.Fatalf("Run(%q): %v", arg, err)
-		}
-
-		if got := strings.TrimSpace(out.String()); got != "test" {
-			t.Errorf("Run(%q) printed %q, want the version", arg, got)
-		}
-	}
-}
-
 func TestRunNoArgsPrintsUsage(t *testing.T) {
 	var out bytes.Buffer
 

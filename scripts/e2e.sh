@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SHARD-17: the whole sandbox lifecycle on a no-KVM Linux box, from an install to a clean host.
-# It installs the two binaries, creates a sandbox, execs into it twice over the same filesystem,
-# pauses, resumes and forks it (SHARD-36), stops it, removes it, and then proves the host holds
-# nothing the sandbox left behind.
+# It installs the two binaries, starts shard daemon over the run's root (SHARD-124), creates a
+# sandbox, execs into it twice over the same filesystem, pauses, resumes and forks it (SHARD-36),
+# stops it, removes it, stops the daemon, and then proves the host holds nothing either left behind.
 #
 #   sudo ./scripts/e2e.sh
 #
@@ -37,6 +37,9 @@ FORK_LINK=""
 # The clones are space separated lists: two come off one stopped source, and both must go on teardown.
 CLONE_IDS=""
 CLONE_LINKS=""
+# The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
+DAEMON_PID=""
+DAEMON_LOG=""
 REPORTED=0
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
@@ -206,6 +209,26 @@ wipe_root() {
 	rm -rf "${SHARD_ROOT}" || true
 }
 
+# start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
+start_daemon() {
+	DAEMON_LOG=$(mktemp)
+	"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
+	DAEMON_PID=$!
+	for _ in $(seq 1 50); do
+		grep -q "api listening on" "${DAEMON_LOG}" && break
+		sleep 0.1
+	done
+	grep -q "api listening on" "${DAEMON_LOG}" || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+}
+
+# stop_daemon ends the daemon this run started and waits for it, so its socket is gone when this returns.
+stop_daemon() {
+	[ -n "${DAEMON_PID}" ] || return 0
+	kill "${DAEMON_PID}" >/dev/null 2>&1 || true
+	wait "${DAEMON_PID}" >/dev/null 2>&1 || true
+	DAEMON_PID=""
+}
+
 # teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
 # record is the only handle by which its mount and its namespace can be found again.
 teardown() {
@@ -222,7 +245,9 @@ teardown() {
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
 
+	stop_daemon
 	wipe_root
+	rm -f "${DAEMON_LOG:-/nonexistent}"
 }
 
 # on_exit is the one handler: it names the step that broke and then gives the host back. The step is
@@ -233,6 +258,7 @@ on_exit() {
 	trap - EXIT
 	if [ "${status}" -ne 0 ]; then
 		report "the command under this step exited non-zero"
+		[ -z "${DAEMON_LOG}" ] || cat "${DAEMON_LOG}" >&2 || true
 	fi
 
 	teardown
@@ -277,10 +303,43 @@ else
 	install -m0755 "${BUILD}/shard" "${PREFIX}/shard"
 	install -m0755 "${BUILD}/shard-init" "${PREFIX}/shard-init"
 	rm -rf "${BUILD}"
-	say "installed $("${PREFIX}/shard" version) into ${PREFIX}"
+	say "installed shard and shard-init into ${PREFIX}"
 fi
 
 wipe_root
+mkdir -p "${SHARD_ROOT}"
+
+step "refuse every read with no daemon up"
+SOCKET="${SHARD_ROOT}/shard.sock"
+CODE=0
+REFUSAL=$(shard ls 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "shard ls answered with no daemon up"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls names the socket and the daemon, and nothing else"
+
+step "start the daemon in the background"
+start_daemon
+[ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
+LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
+say "the daemon logged: ${LISTEN_LINE#* api }"
+
+step "prove the socket mode is what the daemon claims"
+if getent group shard >/dev/null; then
+	WANT_MODE="0660"
+	WANT_GROUP="shard"
+	echo "${LISTEN_LINE}" | grep -q "mode 0660, group shard" || fail "the host has a shard group and the daemon logged '${LISTEN_LINE}'"
+else
+	WANT_MODE="0600"
+	WANT_GROUP="root"
+	echo "${LISTEN_LINE}" | grep -q "mode 0600, no shard group" || fail "the host has no shard group and the daemon logged '${LISTEN_LINE}'"
+fi
+expect "$(stat -c '%a %U:%G' "${SOCKET}")" "${WANT_MODE#0} root:${WANT_GROUP}" "the socket sits at ${WANT_MODE} root:${WANT_GROUP}, as logged"
+
+step "read both versions"
+VERSION_OUT=$(shard version)
+CLIENT_LINE=$(echo "${VERSION_OUT}" | sed -n 1p)
+DAEMON_LINE=$(echo "${VERSION_OUT}" | sed -n 2p)
+[ "${CLIENT_LINE#client }" != "${CLIENT_LINE}" ] || fail "the first line of shard version is '${CLIENT_LINE}', want 'client <v>'"
+expect "${DAEMON_LINE}" "daemon ${CLIENT_LINE#client }" "version prints the client line and the daemon line, and both agree"
 
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
@@ -538,6 +597,10 @@ step "inspect the stopped sandbox"
 shard inspect "${ID}" | grep -q '"state": "stopped"' || fail "shard inspect does not say stopped"
 shard inspect "${ID}" | grep -q '"exit_status"' || fail "shard inspect holds no exit status after the stop"
 say "inspect prints the record with its state and its exit status"
+CODE=0
+REFUSAL=$(shard inspect no-such-sandbox 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "inspect answered for a sandbox nothing holds"
+expect "${REFUSAL}" "shard: no sandbox no-such-sandbox" "inspect of a name nothing holds is one line"
 
 step "clone the stopped sandbox twice"
 # A clone copies the files a stop kept and runs the entrypoint again under a new id: no memory, no snapshot.
@@ -664,6 +727,15 @@ step "remove the sandbox a second time"
 shard rm "${ID}" >/dev/null 2>&1
 say "a second rm is idempotent"
 
+step "stop the daemon and prove the socket is gone"
+stop_daemon
+[ ! -e "${SOCKET}" ] || fail "the socket ${SOCKET} outlived the daemon"
+say "the socket is gone"
+CODE=0
+REFUSAL=$(shard ls 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "shard ls answered with the daemon stopped"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls fails fast once the daemon is gone"
+
 step "clean up"
 teardown
 [ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
@@ -671,4 +743,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, create, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"

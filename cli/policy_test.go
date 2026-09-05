@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 func TestPolicyCreateStoresTheRulesInOrder(t *testing.T) {
@@ -142,7 +143,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 
 	sb := stopped()
 	sb.Policy = "web"
-	app, _ := newLifecycleApp(t, &out, &recorder{}, sb)
+	app, _ := newClientApp(t, &out, sb)
 
 	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "web"}); err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 		t.Fatalf("inspect: %v", err)
 	}
 
-	var got inspected
+	var got sandbox.Inspection
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("inspect printed something that is not JSON: %v\n%s", err, out.String())
 	}
