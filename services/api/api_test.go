@@ -14,16 +14,20 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // seeded is a repository on disk with one running and one stopped sandbox, the way a daemon finds it.
 type seeded struct {
-	root    string
-	repo    *sandboxstate.Repository
-	running models.Sandbox
-	stopped models.Sandbox
-	server  *httptest.Server
+	root     string
+	repo     *sandboxstate.Repository
+	policies *egress.Store
+	running  models.Sandbox
+	stopped  models.Sandbox
+	server   *httptest.Server
 }
 
 func seed(t *testing.T) seeded {
@@ -39,10 +43,22 @@ func seed(t *testing.T) seeded {
 	running := create(t, repo, "web", models.StateRunning)
 	stopped := create(t, repo, "", models.StateStopped)
 
-	server := httptest.NewServer(api.NewHandler("v-test", repo, io.Discard))
+	policies, err := egress.NewStore(filepath.Join(root, "policies"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	if err != nil {
+		t.Fatalf("secret.New: %v", err)
+	}
+
+	enforcer := egress.New(policies, repo, secrets, network.DefaultNameservers, nil)
+
+	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, io.Discard))
 	t.Cleanup(server.Close)
 
-	return seeded{root: root, repo: repo, running: running, stopped: stopped, server: server}
+	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, server: server}
 }
 
 func create(t *testing.T, repo *sandboxstate.Repository, name string, state models.State) models.Sandbox {
@@ -199,6 +215,39 @@ func TestGetAnswersForAnIDAndForAName(t *testing.T) {
 		if status != http.StatusOK || body["id"] != s.running.ID {
 			t.Errorf("GET /v0/sandboxes/%s answered %d %v, want the record of %s", ref, status, body, s.running.ID)
 		}
+	}
+}
+
+// The record only names its policy; what the host enforces for it is compiled on the daemon, never on the client.
+func TestGetCarriesWhatTheHostEnforces(t *testing.T) {
+	s := seed(t)
+
+	if err := s.policies.Set(models.Policy{Name: "deny-all", Rules: []models.Rule{
+		{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}},
+	}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	sb, err := s.repo.Create(models.Sandbox{Image: "docker.io/library/alpine:3.20", Provider: "gvisor", State: models.StateRunning, Policy: "deny-all"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	status, body := get(t, s.server, "/v0/sandboxes/"+sb.ID)
+	if status != http.StatusOK {
+		t.Fatalf("GET /v0/sandboxes/%s answered %d %v", sb.ID, status, body)
+	}
+
+	enforced, ok := body["egress"].(map[string]any)
+	if !ok || enforced["policy"] != "deny-all" {
+		t.Errorf("the record carries the egress %v, want the policy deny-all", body["egress"])
+	}
+	if rules, ok := enforced["rules"].([]any); !ok || len(rules) != 1 {
+		t.Errorf("the egress holds the rules %v, want the one deny", enforced["rules"])
+	}
+
+	if _, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID); body["egress"] != nil {
+		t.Errorf("a sandbox with no policy carries the egress %v", body["egress"])
 	}
 }
 

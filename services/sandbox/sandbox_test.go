@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -84,5 +85,38 @@ func TestGetTakesAnIDOrAName(t *testing.T) {
 	refused := errors.New("the sandbox id or name is empty")
 	if _, err := sandbox.Get(fakeReader{resolveErr: refused}, ""); !errors.Is(err, refused) {
 		t.Errorf("Get passed a Resolve error through as %v, want it unchanged", err)
+	}
+}
+
+// fakeEnforcer answers Effective for whatever policy the record names, and counts the asks.
+type fakeEnforcer struct {
+	asked int
+}
+
+func (f *fakeEnforcer) Effective(sb models.Sandbox) (egress.Effective, error) {
+	f.asked++
+
+	return egress.Effective{Policy: sb.Policy}, nil
+}
+
+func TestInspectAsksTheEnforcerOnlyForARecordThatNamesAPolicy(t *testing.T) {
+	enforcer := &fakeEnforcer{}
+	repo := fakeReader{rows: []models.Sandbox{{ID: "up-1", Name: "web", Policy: "deny-all"}, {ID: "up-2"}}, names: map[string]string{"web": "up-1"}}
+
+	got, err := sandbox.Inspect(repo, enforcer, "web")
+	if err != nil || got.ID != "up-1" || got.Egress == nil || got.Egress.Policy != "deny-all" {
+		t.Errorf("Inspect(web) = %+v, %v; want up-1 with its egress", got, err)
+	}
+
+	got, err = sandbox.Inspect(repo, enforcer, "up-2")
+	if err != nil || got.ID != "up-2" || got.Egress != nil {
+		t.Errorf("Inspect(up-2) = %+v, %v; want up-2 with no egress", got, err)
+	}
+	if enforcer.asked != 1 {
+		t.Errorf("the enforcer was asked %d times, want once, for the record that names a policy", enforcer.asked)
+	}
+
+	if _, err := sandbox.Inspect(repo, enforcer, "ghost"); err == nil {
+		t.Error("Inspect of a reference nothing holds returned no error")
 	}
 }
