@@ -11,7 +11,7 @@ DEVBOX ?= devbox-shard
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
 ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e daemon-e2e devbox-daemon-e2e devbox-demo
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo
 
 all: check build
 
@@ -43,7 +43,7 @@ devbox-sync: build-linux build-shard-init-linux
 	scp -O -q $(BIN)-linux-amd64 $(SHARD_INIT_BIN)-linux-amd64 $(DEVBOX):/tmp/
 	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 /usr/local/bin/shard && \
 		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init'
-	@installed=$$(ssh $(DEVBOX) shard version); \
+	@installed=$$(ssh $(DEVBOX) shard version 2>/dev/null | sed -n 's/^client //p'); \
 		if [ "$$installed" != "$(VERSION)" ]; then \
 			echo "the devbox runs $$installed, not $(VERSION): the install did not land"; \
 			exit 1; \
@@ -59,7 +59,7 @@ itest: devbox-sync
 devbox-test: ITEST_PKG = ./...
 devbox-test: itest
 
-# SHARD-17: the whole lifecycle on this host, the way a stranger with a fresh box would drive it.
+# SHARD-17: the whole lifecycle on this host, the way a stranger with a fresh box would drive it, over a daemon it starts.
 e2e:
 	./scripts/e2e.sh
 
@@ -70,13 +70,6 @@ e2e-test:
 # The same script on the box, over a fresh copy of this tree.
 devbox-e2e:
 	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
-
-# SHARD-124: the daemon and the CLI over one root, with curl on the socket, on this host as root.
-daemon-e2e:
-	./scripts/daemon-e2e.sh
-
-devbox-daemon-e2e:
-	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/daemon-e2e.sh'
 
 # Records the SHARD-36 demo on the box, over the binaries devbox-sync just installed, into docs/demo.cast.
 devbox-demo: devbox-sync

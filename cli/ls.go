@@ -2,14 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // lsOptions is one parsed shard ls invocation.
@@ -17,26 +18,28 @@ type lsOptions struct {
 	all bool
 }
 
-// ls reads the records and nothing else: the state a record holds is what the last verb left there.
-func (a App) ls(_ context.Context, args []string) error {
+// ls asks the daemon and nothing else: the state it lists is what the last verb left in the record.
+func (a App) ls(ctx context.Context, args []string) error {
 	opts, err := parseLs(args)
 	if err != nil {
 		return err
 	}
 
-	repo, err := a.deps().repo()
+	result, err := a.client().ListSandboxes(ctx, opts.all)
 	if err != nil {
 		return err
 	}
 
-	// List answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
-	sandboxes, unreadable := sandbox.List(repo, opts.all)
-
-	if err := writeTable(a.Out, sandboxes, time.Now()); err != nil {
+	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
+	if err := writeTable(a.Out, result.Sandboxes, time.Now()); err != nil {
 		return err
 	}
 
-	return unreadable
+	if len(result.Warnings) == 0 {
+		return nil
+	}
+
+	return errors.New(strings.Join(result.Warnings, "\n"))
 }
 
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {

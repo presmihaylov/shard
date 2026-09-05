@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 func TestParseLsFlags(t *testing.T) {
@@ -30,13 +31,14 @@ func TestParseLsFlags(t *testing.T) {
 	}
 }
 
-// newLsApp wires ls onto a repository that answers List with left, and with unreadable beside it.
+// newLsApp puts a daemon over a repository that answers List with left, and with unreadable beside it.
 func newLsApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadable error) App {
 	t.Helper()
 
 	app, deps := newLifecycleApp(t, out, &recorder{}, models.Sandbox{})
 	repo := deps.repoSvc.(*fakeLifecycleRepo)
 	repo.left, repo.unreadable = left, unreadable
+	serveDaemon(t, deps)
 
 	return app
 }
@@ -112,7 +114,8 @@ func TestLsOnAnEmptyRootPrintsTheHeader(t *testing.T) {
 func TestLsPrintsTheReadableOnesAndReportsTheRest(t *testing.T) {
 	var out bytes.Buffer
 
-	app := newLsApp(t, &out, listed(), errors.New("decode sandbox.json of bad-3: unexpected end of JSON input"))
+	unreadable := &sandboxstate.UnreadableError{ID: "bad-3", Err: errors.New("decode sandbox.json of bad-3: unexpected end of JSON input")}
+	app := newLsApp(t, &out, listed(), unreadable)
 
 	err := app.Run(t.Context(), []string{"ls"})
 	if err == nil || !strings.Contains(err.Error(), "bad-3") {

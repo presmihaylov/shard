@@ -301,7 +301,8 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 	t.Helper()
 
 	r.live = map[string]bool{}
-	root := t.TempDir()
+	// A short root, so the verbs that speak to a daemon can put a socket under it.
+	root := shortRoot(t)
 
 	d := &deps{
 		app:          App{Root: root},
