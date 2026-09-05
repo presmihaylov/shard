@@ -7,6 +7,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // inspected is the record plus what the host enforces for it, which the record only names.
@@ -28,12 +29,7 @@ func (a App) inspect(_ context.Context, args []string) error {
 		return err
 	}
 
-	id, err := repo.Resolve(args[0])
-	if err != nil {
-		return err
-	}
-
-	sb, err := repo.Get(id)
+	sb, err := sandbox.Get(repo, args[0])
 	if err != nil {
 		return err
 	}
@@ -54,7 +50,7 @@ func (a App) inspect(_ context.Context, args []string) error {
 
 	blob, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode the record of sandbox %s: %w", id, err)
+		return fmt.Errorf("encode the record of sandbox %s: %w", sb.ID, err)
 	}
 
 	return a.print(string(blob))

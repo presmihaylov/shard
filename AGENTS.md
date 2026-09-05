@@ -23,6 +23,8 @@ make test-integration        integration tests, on this host; Linux box only, ne
 make itest                   integration tests for ITEST_PKG, on the devbox
 make e2e                     the whole lifecycle on this host, as root (SHARD-17)
 make devbox-e2e              the same script, on the devbox
+make daemon-e2e              the daemon and the CLI over one root, curl on the socket (SHARD-124)
+make devbox-daemon-e2e       the same script, on the devbox
 make devbox-demo             record scripts/demo.sh on the devbox into docs/demo.cast (SHARD-36)
 make lint                    golangci-lint (v2: brew install golangci-lint)
 make lint-fix                apply the fixes golangci-lint can make
@@ -56,18 +58,20 @@ pkg/netns/                 netns, veth, bridge, NAT rules
 pkg/store/                 atomic file write, lockfile
 pkg/proxy/                 intercepting HTTP and TLS proxy
 
-services/sandbox/          the orchestrator, owns the state machine
+services/sandbox/          the verbs the CLI and the API share; grows into the orchestrator
 services/image/            pull, unpack, cache policy
 services/bundle/           build the OCI bundle from an image config
 services/sandboxstate/     the sandbox record repository
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
-services/daemon/           shard serve, the supervision framework for the background work
+services/daemon/           shard daemon, the supervision framework for the background work
+services/api/              the REST handlers the daemon serves over its unix socket
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite both substrates must pass
 
-packaging/systemd/         the unit that installs shard serve as a resident process
+packaging/systemd/         the unit that installs shard daemon as a resident process
+api/                       the OpenAPI spec of the daemon socket
 docs/
 ```
 

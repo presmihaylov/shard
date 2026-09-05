@@ -768,8 +768,26 @@ func TestOneCorruptRecordDoesNotHideTheOthers(t *testing.T) {
 		t.Errorf("the error does not name the corrupt sandbox: %v", err)
 	}
 
+	// The daemon tells a partial list from a failed one by this type, so every row must carry it.
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != broken.ID {
+		t.Errorf("the error is %T, want an UnreadableError for %s", err, broken.ID)
+	}
+
 	if len(all) != 1 || all[0].ID != good.ID {
 		t.Fatalf("List returned %+v, want only the sandbox that reads", all)
+	}
+}
+
+func TestARefusedReferenceIsAValidationError(t *testing.T) {
+	r, _ := repo(t)
+
+	var invalid *sandboxstate.ValidationError
+	if _, err := r.Resolve("not valid!"); !errors.As(err, &invalid) {
+		t.Errorf("Resolve of a bad reference got %T %v, want a ValidationError", err, err)
+	}
+	if _, err := r.Get(""); !errors.As(err, &invalid) {
+		t.Errorf("Get of an empty id got %T %v, want a ValidationError", err, err)
 	}
 }
 

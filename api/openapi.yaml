@@ -1,0 +1,135 @@
+openapi: 3.0.3
+info:
+  title: shard daemon API
+  version: v0
+  description: |
+    The REST surface `shard daemon` answers on the unix socket `${root}/shard.sock`. There is no
+    TCP listener. This slice is read only. Every error body is an Error object.
+servers:
+  - url: http://localhost
+    description: Reach it with `curl --unix-socket ${root}/shard.sock http://localhost/v0/...`.
+paths:
+  /v0/version:
+    get:
+      summary: The build version of the daemon, the same string `shard version` prints.
+      operationId: getVersion
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+  /v0/sandboxes:
+    get:
+      summary: The sandboxes, as `shard ls` lists them.
+      operationId: listSandboxes
+      parameters:
+        - name: all
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include the stopped sandboxes, which hold no process and are hidden by default.
+      responses:
+        "200":
+          description: The sandboxes the daemon could read, and a warning for each record it could not.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxList"
+        "400":
+          description: The `all` query is not a boolean.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The list itself failed, so there are no rows to answer with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v0/sandboxes/{id}:
+    get:
+      summary: One sandbox, by id or by name.
+      operationId: getSandbox
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The id or the name of the sandbox.
+      responses:
+        "200":
+          description: The record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "400":
+          description: The reference is not a valid id or name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Nothing has that id or name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The record or the name link could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: What went wrong, in the words the CLI would print.
+    Version:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+    SandboxList:
+      type: object
+      required: [sandboxes]
+      properties:
+        sandboxes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sandbox"
+        warnings:
+          type: array
+          items:
+            type: string
+          description: One line per record the daemon could not read. Absent when every record was read.
+    Sandbox:
+      type: object
+      description: The sandbox record, as `shard inspect` prints it and as it sits on disk.
+      required: [id, image, state, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        image:
+          type: string
+        state:
+          type: string
+          enum: [created, running, paused, stopped]
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
