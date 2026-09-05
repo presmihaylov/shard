@@ -25,11 +25,17 @@ const (
 	defaultHealthyAfter = time.Minute
 )
 
+// Reconciler makes the records agree with the substrate. The daemon runs it once, before it listens.
+type Reconciler interface {
+	Reconcile(ctx context.Context, report func(string)) error
+}
+
 // Daemon supervises the background tasks for one root.
 type Daemon struct {
-	root  string
-	tasks []Task
-	log   *log.Logger
+	root       string
+	tasks      []Task
+	log        *log.Logger
+	reconciler Reconciler
 
 	minBackoff   time.Duration
 	maxBackoff   time.Duration
@@ -60,6 +66,11 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 
 	d.log.Printf("daemon holds %s with %d tasks", path, len(d.tasks))
 
+	// Under the lock and before the first task, so no verb reads a record the substrate disagrees with.
+	if err := d.reconcile(ctx); err != nil {
+		return err
+	}
+
 	var wg sync.WaitGroup
 	for _, t := range d.tasks {
 		wg.Go(func() { d.supervise(ctx, t) })
@@ -81,4 +92,19 @@ func takeLock(path string) (*store.Lock, error) {
 	}
 
 	return lock, nil
+}
+
+// WithReconciler names what the daemon runs over the records once it holds the root.
+func (d *Daemon) WithReconciler(r Reconciler) *Daemon {
+	d.reconciler = r
+
+	return d
+}
+
+func (d *Daemon) reconcile(ctx context.Context) error {
+	if d.reconciler == nil {
+		return nil
+	}
+
+	return d.reconciler.Reconcile(ctx, func(line string) { d.log.Print(line) })
 }

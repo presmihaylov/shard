@@ -43,6 +43,7 @@ type Network interface {
 	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
 	Release(ctx context.Context, id string) error
 	Reapply(ctx context.Context, id string) error
+	ReapplyAll(ctx context.Context) error
 }
 
 // Secrets is the part of secret.Store a create reads. No verb reads a value: that is the proxy's.
