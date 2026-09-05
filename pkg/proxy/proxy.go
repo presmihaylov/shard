@@ -78,9 +78,7 @@ func (s *Server) ServePlain(l net.Listener) error {
 	return srv.Serve(l)
 }
 
-// ServeTLS terminates HTTPS that was bound for port 443, with a certificate the CA signs for the
-// name the client asked for. A client that names no host gets no certificate, because the proxy
-// cannot tell where it was going.
+// ServeTLS terminates HTTPS bound for port 443; a client that names no host gets no certificate, since the proxy cannot tell where it was going.
 func (s *Server) ServeTLS(l net.Listener) error {
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,

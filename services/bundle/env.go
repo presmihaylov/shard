@@ -44,7 +44,7 @@ func (b Bundle) TrustProxy(ca []byte) error {
 		return err
 	}
 
-	if err := plantProxyCA(b, rt.RootFS, ca); err != nil {
+	if err := plantProxyCA(b, rt.RootFS, rt.Env, ca); err != nil {
 		return err
 	}
 

@@ -272,6 +272,13 @@ func newGrantStateDir(t *testing.T, env []string) string {
 	if err := os.MkdirAll(filepath.Join(stateDir, "bundle"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A grant fronts the sandbox, and that refuses an image that ships no roots.
+	if err := os.MkdirAll(filepath.Join(rootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootFS, "etc/ssl/certs/ca-certificates.crt"), []byte("image-roots\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	config := `{"process":{"args":["/init"],"cwd":"/","env":["` + strings.Join(env, `","`) + `"]},` +
 		`"annotations":{"dev.shard.rootfs":"` + rootFS + `"}}`

@@ -14,9 +14,7 @@ const (
 	defaultMaxEventsBytes = 8 << 20
 )
 
-// Rotate moves an oversized live file behind the rotated name and drops the generation before it.
-// The proxy opens the file per write, so a rename loses nothing: a racing write lands in the
-// renamed file and the next one starts a fresh live file.
+// Rotate renames an oversized live file over the kept generation; the proxy opens the file per write, so a rename loses nothing.
 func (e *Events) Rotate(id string) error {
 	dir, err := e.dir(id)
 	if err != nil {

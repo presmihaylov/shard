@@ -31,9 +31,7 @@ func (a App) serve(ctx context.Context, args []string) error {
 	return daemon.New(a.Root, a.Out, tasks...).Run(ctx)
 }
 
-// proxyTask keeps a proxy serving the root. While a one-shot proxy holds the lock each run reports
-// it and the backoff retry is the takeover loop: the run after that proxy dies wins the lock. A
-// crash of the daemon's own proxy ends the run, and the restart is the recovery.
+// proxyTask keeps a proxy serving the root; the backoff retry is the takeover loop, since the run after a one-shot proxy dies wins its lock.
 type proxyTask struct {
 	app     App
 	gateway netip.Addr

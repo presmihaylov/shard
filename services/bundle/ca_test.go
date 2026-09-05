@@ -45,11 +45,50 @@ func TestBuildWritesNoRootsWhenNothingFrontsTheSandbox(t *testing.T) {
 }
 
 func TestBuildKeepsTheUsersOwnCAVariable(t *testing.T) {
-	spec := models.SandboxSpec{ProxyCA: []byte("ca\n"), Env: []string{"SSL_CERT_FILE=/mine.pem"}}
-	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	spec := newSpec(t)
+	write(t, filepath.Join(spec.RootFS, "mine.pem"), "-----MY ROOT-----\n")
+	spec.ProxyCA = []byte("ca\n")
+	spec.Env = []string{"SSL_CERT_FILE=/mine.pem"}
+	b, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	if !slices.Contains(got.Process.Env, "SSL_CERT_FILE=/mine.pem") || slices.Contains(got.Process.Env, "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt") {
 		t.Errorf("the user's SSL_CERT_FILE was replaced: %v", got.Process.Env)
+	}
+	if bundle := readFile(t, filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); bundle != "-----MY ROOT-----\nca\n" {
+		t.Errorf("the guest bundle reads %q", bundle)
+	}
+}
+
+// A RHEL family image keeps its roots elsewhere; the written file must still start with them.
+func TestBuildKeepsTheRootsOfAUBIShapedImage(t *testing.T) {
+	spec := newSpec(t)
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/pki/tls/certs"), 0o755); err != nil {
+		t.Fatalf("create the image certs dir: %v", err)
+	}
+	write(t, filepath.Join(spec.RootFS, "etc/pki/tls/certs/ca-bundle.crt"), "-----UBI ROOT-----\n")
+	spec.ProxyCA = []byte("-----PROXY CA-----\n")
+
+	b, _ := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if bundle := readFile(t, filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); bundle != "-----UBI ROOT-----\n-----PROXY CA-----\n" {
+		t.Errorf("the guest bundle reads %q", bundle)
+	}
+}
+
+// The env points every library at the written file, so a bundle of the proxy CA alone would drop the public roots.
+func TestBuildRefusesAnImageThatShipsNoRoots(t *testing.T) {
+	spec := newSpec(t)
+	spec.ProxyCA = []byte("-----PROXY CA-----\n")
+	spec = runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	_, err := newService(t).Build(spec)
+	if err == nil {
+		t.Fatal("Build wrote a bundle that holds the proxy CA alone")
+	}
+	for _, want := range []string{spec.RootFS, "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error %q does not name %s", err, want)
+		}
 	}
 }
 
