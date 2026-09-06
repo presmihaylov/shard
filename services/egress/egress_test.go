@@ -318,6 +318,15 @@ func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
 		t.Errorf("Effective = %v, want %v", shape, want)
 	}
 
+	// The proxy logs the id and the host chains log the same one, so the ids count the effective order.
+	var ids []string
+	for _, rule := range got.Rules {
+		ids = append(ids, rule.ID)
+	}
+	if !slices.Equal(ids, []string{"1", "2", "3", "4"}) {
+		t.Errorf("Effective gave the ids %v", ids)
+	}
+
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
 		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
 	}

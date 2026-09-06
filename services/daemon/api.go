@@ -35,7 +35,7 @@ func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
 	life := &lifecycle{deps: d}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}, egressLogRotation{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -94,6 +94,11 @@ func (t apiTask) Run(ctx context.Context) error {
 		return err
 	}
 
+	decisions, err := t.deps.egressReader()
+	if err != nil {
+		return err
+	}
+
 	listener, mode, group, err := api.Listen(cfg.Root)
 	if err != nil {
 		return err
@@ -105,7 +110,7 @@ func (t apiTask) Run(ctx context.Context) error {
 	}
 	log.New(cfg.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	handler := api.NewHandler(cfg.Version, repo, enforcer, t.lifecycle, stores, cfg.Out)
+	handler := api.NewHandler(cfg.Version, repo, enforcer, t.lifecycle, stores, decisions, cfg.Out)
 
 	return api.Serve(ctx, listener, handler)
 }
@@ -259,6 +264,11 @@ func (t proxyTask) Run(ctx context.Context) error {
 		return err
 	}
 
+	decisions, err := t.deps.egressLog()
+	if err != nil {
+		return err
+	}
+
 	// Nothing can listen on the gateway before the bridge carries it, so the host side is built first.
 	hostNet, err := t.deps.net()
 	if err != nil {
@@ -277,7 +287,7 @@ func (t proxyTask) Run(ctx context.Context) error {
 	server, err := proxy.New(proxy.Config{
 		Address:  hostNet.Gateway(),
 		CA:       ca,
-		Director: broker.New(repo, source, secrets),
+		Director: broker.New(repo, source, secrets, decisions),
 		Log:      logger,
 	})
 	if err != nil {
@@ -287,4 +297,52 @@ func (t proxyTask) Run(ctx context.Context) error {
 	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
 
 	return server.Run(ctx)
+}
+
+// egressLogRotation keeps every sandbox's decision log bounded. It renames rather than truncates, so an
+// O_APPEND writer that holds the old file keeps writing into a file the reader still prints.
+type egressLogRotation struct {
+	deps *deps
+}
+
+const (
+	// maxEgressLog is what one log may reach before it is renamed, and one renamed file is kept behind it.
+	maxEgressLog      = 8 << 20
+	egressLogInterval = time.Minute
+)
+
+func (egressLogRotation) Name() string { return "egress-log-rotation" }
+
+func (t egressLogRotation) Run(ctx context.Context) error {
+	repo, err := t.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	decisions, err := t.deps.egressLog()
+	if err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(egressLogInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+
+		sandboxes, err := repo.List()
+		if err != nil {
+			return err
+		}
+
+		for _, sb := range sandboxes {
+			if err := decisions.Rotate(sb.ID, maxEgressLog); err != nil {
+				return err
+			}
+		}
+	}
 }

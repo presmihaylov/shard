@@ -46,17 +46,18 @@ Usage:
                            free what a stopped sandbox still holds
   shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
   shard inspect <id|name>  print the record of a sandbox as JSON
-  shard logs [-f] <id|name>
-                           print what the entrypoint wrote, and with -f keep printing until it stops
+  shard logs [-f] [--egress] <id|name>
+                           print what the entrypoint wrote, and with --egress the egress decisions
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
-  shard secret set --to <host>... [--placeholder <string>] <NAME> [-- VALUE]
+  shard secret set --to <host>... [--placeholder <string>] <NAME> [VALUE]
                            store a secret granted to those hosts; set again to rotate the value
                            the guest sees the placeholder, and the proxy puts the value in its place on a granted request
                            the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
+                           put -- before a VALUE that starts with -
                            --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key
   shard secret ls          list the secrets by name, destination and placeholder, never by value
   shard secret rm [--force] <NAME>

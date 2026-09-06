@@ -35,6 +35,11 @@ type Lifecycle interface {
 	Logs(ctx context.Context, ref string, follow bool, w io.Writer) error
 }
 
+// EgressLog is what shard logs --egress prints: every decision made for one sandbox, oldest first.
+type EgressLog interface {
+	Read(sb models.Sandbox) ([]egress.Record, error)
+}
+
 // Handler answers the routes over one repository, the rules the host enforces, and the one orchestrator.
 type Handler struct {
 	version   string
@@ -42,17 +47,19 @@ type Handler struct {
 	enforcer  sandbox.Enforcer
 	lifecycle Lifecycle
 	stores    Stores
+	egressLog EgressLog
 	log       *log.Logger
 }
 
 // NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, out io.Writer) http.Handler {
+func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, out io.Writer) http.Handler {
 	h := &Handler{
 		version:   version,
 		repo:      repo,
 		enforcer:  enforcer,
 		lifecycle: lifecycle,
 		stores:    stores,
+		egressLog: egressLog,
 		log:       log.New(out, "", log.LstdFlags),
 	}
 
@@ -71,6 +78,7 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.execSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
+	mux.HandleFunc("GET /v0/sandboxes/{id}/egress-log", h.sandboxEgressLog)
 	mux.HandleFunc("GET /v0/policies", h.listPolicies)
 	mux.HandleFunc("GET /v0/policies/{name}", h.getPolicy)
 	mux.HandleFunc("PUT /v0/policies/{name}", h.putPolicy)
@@ -138,6 +146,31 @@ func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
+	id, err := h.repo.Resolve(r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	sb, err := h.repo.Get(id)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	records, err := h.egressLog.Read(sb)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, records)
 }
 
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {

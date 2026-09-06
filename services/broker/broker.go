@@ -10,10 +10,12 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -28,15 +30,21 @@ type Secrets interface {
 	Value(name string) (string, error)
 }
 
+// Log is where every decision goes. A decision that cannot be written closes the door.
+type Log interface {
+	Append(id string, record egress.Record) error
+}
+
 // Broker implements proxy.Director over the stores.
 type Broker struct {
 	records Records
 	egress  *egress.Service
 	secrets Secrets
+	log     Log
 }
 
-func New(records Records, egress *egress.Service, secrets Secrets) *Broker {
-	return &Broker{records: records, egress: egress, secrets: secrets}
+func New(records Records, egress *egress.Service, secrets Secrets, log Log) *Broker {
+	return &Broker{records: records, egress: egress, secrets: secrets, log: log}
 }
 
 // Decide names the sandbox by its address, resolves the host once, and asks the policy about that address.
@@ -48,6 +56,12 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 
 	addrs, err := b.egress.Lookup(ctx, req.Host)
 	if err != nil {
+		// A name that does not resolve is a decision like any other, and the log says why the request stopped.
+		record := egress.Record{Rule: network.RuleResolve, Reason: err.Error()}
+		if logErr := b.record(sb.ID, req, models.ActionDeny, record); logErr != nil {
+			return proxy.Decision{}, logErr
+		}
+
 		return proxy.Decision{}, err
 	}
 	upstream := netip.AddrPortFrom(addrs[0], uint16(req.Port)) //nolint:gosec // the port is 80 or 443
@@ -62,12 +76,33 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		rule = egress.FormatRule(decision.Rule.Rule)
 	}
 
+	record := egress.Record{Address: addrs[0].String(), Rule: decision.ID, RuleText: rule, Reason: decision.Reason}
+	if err := b.record(sb.ID, req, decision.Action, record); err != nil {
+		return proxy.Decision{}, err
+	}
+
 	return proxy.Decision{
 		Allowed:  decision.Action == models.ActionAllow,
 		Upstream: upstream,
 		Rule:     rule,
 		Reason:   decision.Reason,
 	}, nil
+}
+
+// record fills in what every line shares and appends it. Its error is returned, never swallowed: an
+// unlogged decision would make the log a half-truth, and deny-by-default is only tolerable when it is read.
+func (b *Broker) record(id string, req proxy.Request, action models.Action, record egress.Record) error {
+	record.Time = time.Now().UTC()
+	record.Source = egress.SourceProxy
+	record.Verdict = string(action)
+	record.Host = req.Host
+	record.Port = req.Port
+
+	if err := b.log.Append(id, record); err != nil {
+		return fmt.Errorf("log the egress decision of sandbox %s: %w", id, err)
+	}
+
+	return nil
 }
 
 // Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder.

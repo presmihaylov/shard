@@ -142,7 +142,7 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 	// A value that starts with - needs a -- before it, so anything else that does is a misplaced flag.
 	if strings.HasPrefix(rest[0], "-") || (len(rest) > 2 && strings.HasPrefix(rest[1], "-")) {
-		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --to <host> [--placeholder <string>] <NAME> [-- VALUE]")
+		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --to <host> [--placeholder <string>] <NAME> [VALUE], with -- before a value that starts with -")
 	}
 	if len(rest) > 2 {
 		return secretSetOptions{}, fmt.Errorf("secret set takes a name and an optional value, got %d arguments", len(rest))

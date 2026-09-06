@@ -59,10 +59,17 @@ func seed(t *testing.T) seeded {
 
 	verbs, stores := &fakeLifecycle{}, &fakeStores{}
 
-	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, verbs, stores, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, verbs, stores, fakeEgressLog{}, io.Discard))
 	t.Cleanup(server.Close)
 
 	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, server: server}
+}
+
+// fakeEgressLog answers with one line per sandbox, so the handler is what the test exercises.
+type fakeEgressLog struct{}
+
+func (fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
+	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, nil
 }
 
 func create(t *testing.T, repo *sandboxstate.Repository, name string, state models.State) models.Sandbox {
@@ -307,5 +314,36 @@ func TestAnUnknownRouteIsAJSON404(t *testing.T) {
 	status, body := get(t, s.server, "/v1/nothing")
 	if status != http.StatusNotFound || !strings.Contains(body["error"].(string), "/v1/nothing") {
 		t.Errorf("GET /v1/nothing answered %d %v, want a JSON 404", status, body)
+	}
+}
+
+func TestTheEgressLogAnswersForAnIDAndForAName(t *testing.T) {
+	s := seed(t)
+
+	for _, ref := range []string{s.running.ID, "web"} {
+		resp, err := s.server.Client().Get(s.server.URL + "/v0/sandboxes/" + ref + "/egress-log")
+		if err != nil {
+			t.Fatalf("GET the egress log of %s: %v", ref, err)
+		}
+
+		var records []egress.Record
+		err = json.NewDecoder(resp.Body).Decode(&records)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("decode the egress log of %s: %v", ref, err)
+		}
+
+		if resp.StatusCode != http.StatusOK || len(records) != 1 || records[0].Host != "web" {
+			t.Errorf("GET the egress log of %s answered %d %+v", ref, resp.StatusCode, records)
+		}
+	}
+}
+
+func TestTheEgressLogRefusesAnIDThatNeverExisted(t *testing.T) {
+	s := seed(t)
+
+	status, body := get(t, s.server, "/v0/sandboxes/nope/egress-log")
+	if status != http.StatusNotFound {
+		t.Errorf("GET the egress log of an unknown sandbox answered %d %v", status, body)
 	}
 }

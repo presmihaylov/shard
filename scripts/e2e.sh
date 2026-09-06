@@ -656,6 +656,29 @@ REFUSAL=$(shard policy rm e2e-policy 2>&1) || CODE=$?
 echo "${REFUSAL}" | grep -q "${ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
 say "policy rm refused it and named the sandbox"
 
+step "read the egress decision log"
+# The host's half is read from the kernel ring at print time, and the drop is a moment behind the probe.
+EGRESS=""
+for _ in $(seq 1 10); do
+	EGRESS=$(shard logs --egress "${ID}")
+	echo "${EGRESS}" | grep -q '"source":"host"' && break
+	sleep 0.1
+done
+
+named_rule() {
+	echo "${EGRESS}" | grep "$1" | grep "$2" | grep -qE '"rule":"[^"]+"' || fail "the egress log holds no $3 with the rule that decided it"
+	say "the egress log holds $3 with the rule that decided it"
+}
+
+named_rule "\"host\":\"${ECHO_HOST}\"" '"verdict":"allow"' "the proxy's allow"
+named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the proxy's deny"
+named_rule '"source":"host"' '"verdict":"deny"' "the host's drop"
+
+CODE=0
+shard logs --egress -f "${ID}" >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "logs --egress took -f, which has nothing to follow"
+say "logs --egress refuses -f"
+
 step "write a file into the writable layer"
 expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \
 	/bin/sh -c 'echo kept > /root/kept; cat /root/kept'

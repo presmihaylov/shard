@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
@@ -222,6 +223,26 @@ func (d *deps) egressLocked() (*egress.Service, error) {
 	}
 
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
+}
+
+// egressLog is the decision log every fronted sandbox gets one file of, under its own state directory.
+func (d *deps) egressLog() (*egress.Log, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	return egress.NewLog(repo), nil
+}
+
+// egressReader is what shard logs --egress reads: the sandbox's own file plus the host's drops in the ring.
+func (d *deps) egressReader() (*egress.LogReader, error) {
+	decisions, err := d.egressLog()
+	if err != nil {
+		return nil, err
+	}
+
+	return egress.NewLogReader(decisions, kmsg.Reader{}), nil
 }
 
 // proxyCA is the certificate a fronted sandbox is built to trust, minted on the first ask and read back after.

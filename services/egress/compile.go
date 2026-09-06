@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
@@ -76,6 +77,8 @@ type Effective struct {
 // EffectiveRule is one rule and, when the policy did not write it, what did.
 type EffectiveRule struct {
 	models.Rule
+	// ID is the rule's place in the effective order, so the proxy and the host name the same rule in a log.
+	ID      string `json:"id"`
 	Implied string `json:"implied,omitempty"`
 }
 
@@ -147,6 +150,10 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		rules = append(dns, rules...)
 	}
 
+	for i := range rules {
+		rules[i].ID = strconv.Itoa(i + 1)
+	}
+
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
 }
 
@@ -181,10 +188,10 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 		}
 
 		for _, rule := range effective.Rules {
-			compiled, err := s.compile(ctx, rule.Rule)
+			compiled, err := s.compile(ctx, rule)
 			// A granted host the operator did not write into the policy closes itself when it does not resolve.
 			if err != nil && rule.Implied != "" {
-				compiled = network.Compiled{Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
+				compiled = network.Compiled{ID: rule.ID, Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
 				err = nil
 			}
 			if err != nil {
@@ -198,8 +205,8 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	return chains, nil
 }
 
-func (s *Service) compile(ctx context.Context, rule models.Rule) (network.Compiled, error) {
-	compiled := network.Compiled{Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
+func (s *Service) compile(ctx context.Context, rule EffectiveRule) (network.Compiled, error) {
+	compiled := network.Compiled{ID: rule.ID, Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
 
 	switch rule.Destination.Kind {
 	case models.DestinationCIDR:

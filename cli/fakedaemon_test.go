@@ -66,6 +66,8 @@ type fakeDaemon struct {
 	substrateSvc substrate
 	secretSvc    *secret.Store
 	policySvc    *egress.Store
+	// egressLog is what shard logs --egress prints, canned: the real one reads the kernel ring.
+	egressLog []egress.Record
 
 	// The verbs hold exec state between calls, so both are built once and on the first request:
 	// a test replaces a layer after the server is up and before the command runs.
@@ -99,13 +101,20 @@ func (f *fakeDaemon) build() {
 
 func (f *fakeDaemon) policies() (*egress.Store, error) { return f.policySvc, nil }
 
+// fakeEgressLog stands in for the kernel ring, which no unit test on a developer host can read.
+type fakeEgressLog struct {
+	records []egress.Record
+}
+
+func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, error) { return f.records, nil }
+
 // handler answers a request over the layers the test holds now, not the ones it held at the listen.
 func (f *fakeDaemon) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.build()
 
 		enforcer := egress.New(f.policySvc, f.repoSvc, f.secretSvc, network.DefaultNameservers, nil)
-		api.NewHandler("v-daemon", f.repoSvc, enforcer, f.svc, f.stores, io.Discard).ServeHTTP(w, r)
+		api.NewHandler("v-daemon", f.repoSvc, enforcer, f.svc, f.stores, fakeEgressLog{records: f.egressLog}, io.Discard).ServeHTTP(w, r)
 	})
 }
 

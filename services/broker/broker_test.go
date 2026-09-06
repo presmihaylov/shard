@@ -12,6 +12,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -72,7 +73,33 @@ var (
 	upstream = netip.MustParseAddr("93.184.216.34")
 )
 
+// fakeLog keeps what the broker decided, so a test can read the line instead of a file.
+type fakeLog struct {
+	ids     []string
+	records []egress.Record
+	err     error
+}
+
+func (f *fakeLog) Append(id string, record egress.Record) error {
+	if f.err != nil {
+		return f.err
+	}
+
+	f.ids = append(f.ids, id)
+	f.records = append(f.records, record)
+
+	return nil
+}
+
 func newBroker(t *testing.T, records Records, secrets Secrets, policies ...models.Policy) *Broker {
+	t.Helper()
+
+	b, _ := newBrokerLog(t, records, secrets, policies...)
+
+	return b
+}
+
+func newBrokerLog(t *testing.T, records Records, secrets Secrets, policies ...models.Policy) (*Broker, *fakeLog) {
 	t.Helper()
 
 	store, err := egress.NewStore(filepath.Join(t.TempDir(), "policies"))
@@ -88,7 +115,9 @@ func newBroker(t *testing.T, records Records, secrets Secrets, policies ...model
 	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}}
 	svc := egress.New(store, records, secrets, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
 
-	return New(records, svc, secrets)
+	log := &fakeLog{}
+
+	return New(records, svc, secrets, log), log
 }
 
 func request(t *testing.T, method, url string) *http.Request {
@@ -277,5 +306,64 @@ func TestRewritePutsACustomPlaceholderThatHoldsADefaultOneFirst(t *testing.T) {
 	}
 	if out.URL.Path != "/bbbb/aaaa" {
 		t.Errorf("the url became %s", out.URL)
+	}
+}
+
+func TestDecideLogsWhatItDecided(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+	}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, web)
+
+	if _, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if _, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "evil.example.net", Port: 80}); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	if len(log.records) != 2 || log.ids[0] != "locked" {
+		t.Fatalf("the log holds %+v for %v", log.records, log.ids)
+	}
+
+	// The id counts the effective rules, and the dns-implied allows come before the policy's own.
+	allow := log.records[0]
+	if allow.Source != egress.SourceProxy || allow.Verdict != string(models.ActionAllow) {
+		t.Errorf("the allow became %+v", allow)
+	}
+	if allow.Host != "api.example.com" || allow.Port != 443 || allow.Address != upstream.String() || allow.Rule != "3" {
+		t.Errorf("the allow became %+v", allow)
+	}
+	if allow.RuleText != "allow api.example.com tcp:80,443" || allow.Time.IsZero() {
+		t.Errorf("the allow became %+v", allow)
+	}
+
+	if deny := log.records[1]; deny.Verdict != string(models.ActionDeny) || deny.Rule != network.RuleDefault {
+		t.Errorf("the deny became %+v", deny)
+	}
+}
+
+// A name that does not resolve stops the request, and the log says so rather than staying silent.
+func TestDecideLogsAHostItCannotResolve(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, models.Policy{Name: "web"})
+
+	if _, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "nowhere.example.com", Port: 443}); err == nil {
+		t.Fatal("Decide took a host that does not resolve")
+	}
+	if len(log.records) != 1 || log.records[0].Rule != network.RuleResolve || log.records[0].Verdict != string(models.ActionDeny) {
+		t.Errorf("the log holds %+v", log.records)
+	}
+}
+
+// An unlogged decision would make the log a half-truth, so a log that refuses closes the door.
+func TestDecideRefusesWhenTheLogRefuses(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, models.Policy{Name: "web"})
+	log.err = errors.New("the disk is full")
+
+	if _, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}); err == nil {
+		t.Fatal("Decide answered with no log")
 	}
 }

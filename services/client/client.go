@@ -17,6 +17,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -305,4 +306,21 @@ func decodeError(status int, body []byte) error {
 	}
 
 	return &apiError{Status: status, Message: answer.Error}
+}
+
+// EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's.
+func (c *Client) EgressLog(ctx context.Context, ref string, out io.Writer) error {
+	var records []egress.Record
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"/egress-log", nil, &records, c.Timeout); err != nil {
+		return missing(ref, err)
+	}
+
+	encoder := json.NewEncoder(out)
+	for _, record := range records {
+		if err := encoder.Encode(record); err != nil {
+			return fmt.Errorf("write the egress log of sandbox %s: %w", ref, err)
+		}
+	}
+
+	return nil
 }
