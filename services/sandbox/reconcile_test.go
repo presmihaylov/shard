@@ -284,3 +284,25 @@ func TestReconcileAnswersWhenTheHostRulesCannotGoBackOn(t *testing.T) {
 		t.Fatalf("ReconcileAll = %v, want the failure of the re-apply", err)
 	}
 }
+
+func TestReconcileRefusesWhenItCannotReadTheSnapshot(t *testing.T) {
+	// A file where the snapshot directory belongs: the stat fails, and it fails with neither a yes nor a no.
+	blocked := filepath.Join(t.TempDir(), "snapshot")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write the file in the way: %v", err)
+	}
+
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Snapshot: blocked}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+
+	err := lab.run(t)
+	if err == nil || !strings.Contains(err.Error(), blocked) {
+		t.Fatalf("ReconcileAll = %v, want the stat that failed, naming %s", err, blocked)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.StoppedReason != "" {
+		t.Errorf("the record says %s with the reason %q: a stat that failed is not an absent checkpoint",
+			got.State, got.StoppedReason)
+	}
+}

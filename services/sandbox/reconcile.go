@@ -48,7 +48,10 @@ func (s *Service) reconcileOne(ctx context.Context, sb models.Sandbox, report fu
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
 	}
 
-	state := reconciled(sb, status)
+	state, err := reconciled(sb, status)
+	if err != nil {
+		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+	}
 	if state == sb.State {
 		return state, nil
 	}
@@ -79,29 +82,43 @@ func (s *Service) reconcileOne(ctx context.Context, sb models.Sandbox, report fu
 
 // reconciled is the state the record should hold: what the substrate says, and for a paused one what
 // the snapshot on disk says, because a checkpoint holds no process and resume still brings it back.
-func reconciled(sb models.Sandbox, status models.Status) models.State {
+func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	if status.Alive() {
-		return models.StateRunning
+		return models.StateRunning, nil
 	}
 
-	if sb.State == models.StatePaused && hasCheckpoint(sb.Snapshot) {
-		return models.StatePaused
+	if sb.State == models.StatePaused {
+		held, err := hasCheckpoint(sb.Snapshot)
+		if err != nil {
+			return "", err
+		}
+		if held {
+			return models.StatePaused, nil
+		}
 	}
 
 	if sb.State == models.StateRunning || sb.State == models.StatePaused {
-		return models.StateStopped
+		return models.StateStopped, nil
 	}
 
 	// A created record never ran, and a stopped one is already right.
-	return sb.State
+	return sb.State, nil
 }
 
-func hasCheckpoint(dir string) bool {
+// hasCheckpoint answers only what it read. A stat that failed for any other reason is not an absence.
+func hasCheckpoint(dir string) (bool, error) {
 	if dir == "" {
-		return false
+		return false, nil
 	}
 
-	_, err := os.Stat(filepath.Join(dir, checkpointFile))
+	path := filepath.Join(dir, checkpointFile)
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat the checkpoint %s: %w", path, err)
+	}
 
-	return err == nil
+	return true, nil
 }

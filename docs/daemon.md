@@ -62,7 +62,9 @@ one:
   `shard inspect` carries it in the record. A `start` clears it.
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
-  A paused record whose snapshot is gone becomes `stopped` with the same reason.
+  A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
+  checkpoint counts as gone: a read that fails for any other reason refuses the start instead, so
+  one bad boot cannot end every future `resume` while the checkpoint sits on disk.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` is left alone: it never ran.
