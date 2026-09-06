@@ -120,6 +120,24 @@ nap_alive() { shard exec "${ID}" -- /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/nul
 # listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
 listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
 
+# fronted reports the dnat that sends a sandbox's 80 to the proxy. The address is read fresh: a lease
+# is re-allocated across a stop and a start, so one read at the create goes stale.
+fronted() {
+	local id="$1" address
+	address=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${id}/sandbox.json" | cut -d'"' -f4)
+	address="${address%%/*}"
+	[ -n "${address}" ] || fail "the record of ${id} holds no address"
+
+	# No pipe: grep -q closes one early, and under pipefail the producer's SIGPIPE reads as no match.
+	local rules
+	rules=$(nft list table inet shard)
+	case "${rules}" in
+	*"ip saddr ${address} tcp dport 80 dnat"*) return 0 ;;
+	esac
+
+	return 1
+}
+
 # entrypoint_clock reads the guest pid and start time of the entrypoint, which only a restore keeps.
 entrypoint_clock() {
 	shard exec "$1" -- /bin/sh -c 'p=$(pgrep -x sleep); echo "$p $(cut -d" " -f22 /proc/$p/stat)"'
@@ -938,8 +956,6 @@ step "grant a secret to a sandbox that was created without one"
 # This sandbox is created unfronted, so the grant is what plants the placeholder, the CA and the dnat.
 GRANT_ID=$(shard create "${IMAGE}" -- /bin/sh -c 'exec /bin/sleep 600')
 GRANT_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
-GRANT_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
-GRANT_ADDRESS="${GRANT_ADDRESS%%/*}"
 expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder before the grant" /bin/sh -c 'echo "$E2E_TOKEN"'
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null 2>&1 && fail "secret grant took a running sandbox"
 say "secret grant refuses a running sandbox"
@@ -954,7 +970,7 @@ GRANT_BUNDLE=$(shard exec "${GRANT_ID}" -- /bin/sh -c 'cat "$SSL_CERT_FILE"')
 echo "${GRANT_BUNDLE}" | grep -q "${CA_LINE}" || fail "the late grant did not plant the proxy CA"
 [ "$(echo "${GRANT_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the late bundle holds the proxy CA alone"
 say "the grant planted the proxy CA beside the image's roots"
-nft list table inet shard | grep -c "ip saddr ${GRANT_ADDRESS} tcp dport 80 dnat" >/dev/null || fail "the host holds no dnat to the proxy for ${GRANT_LINK}"
+fronted "${GRANT_ID}" || fail "the host holds no dnat to the proxy for ${GRANT_LINK}"
 say "the grant turns the sandbox's 80 and 443 to the proxy"
 expect_fronted "${GRANT_ID}" "the grant fronts the sandbox, and the proxy puts the value in"
 
@@ -965,6 +981,60 @@ shard inspect "${GRANT_ID}" | grep -q '"E2E_TOKEN"' && fail "inspect still names
 shard start "${GRANT_ID}" >/dev/null
 expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder after the ungrant" /bin/sh -c 'echo "$E2E_TOKEN"'
 say "ungrant took the grant and the placeholder back"
+
+step "attach a policy to a sandbox that was created without one"
+# The sandbox holds neither a policy nor a secret here, so nothing fronts it and the attach is what does.
+# The dnat is the whole of fronting; the decision log is history and still holds what the grant sent.
+fronted "${GRANT_ID}" && fail "an unfronted sandbox holds a dnat to the proxy"
+say "a sandbox with no policy and no secret is not fronted"
+
+# The policy names a host, which is what opens DNS: a deny-all would stop the lookup before the proxy.
+shard policy create --deny "${ECHO_HOST}" --deny any e2e-attach >/dev/null
+
+CODE=0
+REFUSAL=$(shard policy attach "${GRANT_ID}" e2e-attach 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy attach took a running sandbox"
+echo "${REFUSAL}" | grep -q "stop it first" || fail "policy attach said '${REFUSAL}', want the fix"
+say "policy attach refuses a running sandbox"
+
+shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard policy attach "${GRANT_ID}" e2e-attach >/dev/null
+shard start "${GRANT_ID}" >/dev/null
+fronted "${GRANT_ID}" || fail "the attach did not turn the sandbox's 80 to the proxy"
+say "the attach fronts the sandbox"
+
+expect_exec_in "${GRANT_ID}" "403 Forbidden" "the attached policy denies the request with a 403" \
+	/bin/sh -c "wget -S -O /dev/null http://${ECHO_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
+DECISIONS=$(shard logs --egress "${GRANT_ID}")
+PROXY_DECISIONS=$(grep '"source":"proxy"' <<<"${DECISIONS}" || true)
+grep -q '"verdict":"deny"' <<<"${PROXY_DECISIONS}" || fail "the egress log holds no proxy deny for ${GRANT_ID}"
+say "the deny is in the egress decision log with source proxy"
+
+shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }' | grep -qx "e2e-attach" || fail "shard ls does not show the attached policy"
+say "shard ls shows the attached policy"
+
+CODE=0
+REFUSAL=$(shard policy rm e2e-attach 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy rm removed a policy an attach put on a sandbox"
+echo "${REFUSAL}" | grep -q "${GRANT_ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
+say "policy rm refuses the attached policy and names the sandbox"
+
+step "detach the policy and prove the sandbox is not fronted any more"
+shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard policy detach "${GRANT_ID}" >/dev/null
+shard start "${GRANT_ID}" >/dev/null
+fronted "${GRANT_ID}" && fail "the detached sandbox still holds a dnat to the proxy"
+shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }' | grep -qx "-" || fail "shard ls still shows a policy after the detach"
+expect_exec_in "${GRANT_ID}" "reachable" "the detached guest still gets out through the NAT" \
+	/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+say "detach leaves the sandbox with no policy and takes the fronting with it"
+
+CODE=0
+shard policy attach "${GRANT_ID}" e2e-missing >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy attach took a policy the host does not hold"
+shard inspect "${GRANT_ID}" | grep -q '"policy"' && fail "the refused attach wrote the record"
+say "policy attach refuses a policy the host does not hold and writes nothing"
+
 
 shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
 shard rm "${GRANT_ID}" >/dev/null
@@ -982,6 +1052,7 @@ say "secret rm removed the secret"
 step "remove the policies nothing holds any more"
 shard policy rm e2e-policy >/dev/null
 shard policy rm e2e-deny-all >/dev/null
+shard policy rm e2e-attach >/dev/null
 absent "the policy file" "$([ -e "${SHARD_ROOT}/policies/e2e-policy.json" ] && echo "${SHARD_ROOT}/policies/e2e-policy.json" || true)"
 say "policy rm removed the policies"
 
@@ -1020,4 +1091,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, grant, ungrant, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"

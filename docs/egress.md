@@ -86,6 +86,32 @@ a dash when the sandbox holds none. Both read the records the way `rm` does, so 
 A policy that does not exist drops everything, so no flag overrides the refusal. That is the rule
 throughout: an error is a closed door, never an open one.
 
+## Attaching after the create
+
+```
+shard stop web
+shard policy attach web locked
+shard start web
+shard policy detach web
+```
+
+`shard policy attach <id|name> <policy>` hands a sandbox that already exists the policy a create with
+`--policy` would have given it, and the host enforces it from the next start. A sandbox holds one
+policy, so an attach replaces the one it holds, and attaching the policy it already holds changes
+nothing. `shard policy detach` leaves the sandbox with no policy, and with its secrets and their
+fronting untouched.
+
+Both verbs take a created or stopped sandbox only, for the reason the secret verbs do: a running
+guest holds its environment in its processes and a paused one holds it in its snapshot, so both are
+refused with `stop it first`. A policy the host does not hold is refused, and the refusal writes
+nothing.
+
+An attach on a sandbox that held neither a policy nor a secret is what fronts it, so the proxy CA is
+planted in the writable layer first, as a grant plants it. A detach leaves the CA in place.
+
+The record and the host table never disagree: the record is written, the rules are applied, and a
+host that refuses the rules puts the record back as it was.
+
 ## What a policy implies
 
 `shard inspect` prints `egress`, which is the policy's rules behind what the host adds for the
