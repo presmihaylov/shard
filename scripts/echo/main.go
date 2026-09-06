@@ -63,7 +63,7 @@ func run() error {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		// The e2e reads the headers back as plain text; no browser ever sees this.
-		fmt.Fprintf(w, "host=%s\nauthorization=%s\nx-e2e-auth=%s\n", r.Host, r.Header.Get("Authorization"), r.Header.Get("X-E2E-Auth")) //nolint:gosec
+		fmt.Fprintf(w, "host=%s\nauthorization=%s\nx-shaped=%s\n", r.Host, r.Header.Get("Authorization"), r.Header.Get("X-Shaped")) //nolint:gosec
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	tlsServer := &http.Server{
