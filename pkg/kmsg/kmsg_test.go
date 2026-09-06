@@ -1,6 +1,7 @@
 package kmsg
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -61,10 +62,7 @@ func TestDateTurnsUptimeIntoWallTimeAgainstTheMark(t *testing.T) {
 }
 
 func TestClipShortensALongRecordForAnError(t *testing.T) {
-	long := ""
-	for range 100 {
-		long += "a"
-	}
+	long := strings.Repeat("a", 100)
 	if len(clip(long)) != 67 {
 		t.Errorf("clip gave %d bytes", len(clip(long)))
 	}
