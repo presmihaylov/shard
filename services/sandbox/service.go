@@ -21,6 +21,9 @@ import (
 // DefaultStopGrace is how long the entrypoint gets to answer SIGTERM before shard kills it.
 const DefaultStopGrace = 10 * time.Second
 
+// DefaultStopSettle is how long past Provider.Stop a stop waits for the substrate to report the sandbox gone.
+const DefaultStopSettle = 5 * time.Second
+
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
@@ -75,6 +78,8 @@ type Config struct {
 	ProxyCA func() ([]byte, error)
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
+	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
+	StopSettle time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -492,6 +497,10 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 		return err
 	}
 
+	if err := s.awaitStopped(ctx, id); err != nil {
+		return err
+	}
+
 	exit, err := s.lastExit(ctx, id)
 	if err != nil {
 		return err
@@ -506,6 +515,37 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 
 		return nil
 	})
+}
+
+// awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
+// stop, and a rm that lands in that moment would refuse it. The record is written only after this.
+func (s *Service) awaitStopped(ctx context.Context, id string) error {
+	// The bound excludes the grace on purpose: Provider.Stop already spent it, and the client's own
+	// timeout is DefaultTimeout plus the grace, which counting it twice would run past.
+	bound := s.cfg.StopSettle
+	if bound == 0 {
+		bound = DefaultStopSettle
+	}
+	deadline := time.Now().Add(bound)
+
+	for {
+		status, err := s.cfg.Provider.Status(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !status.Alive() {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // lastExit reads how the entrypoint ended, once the sandbox is already stopped. A sandbox the grace

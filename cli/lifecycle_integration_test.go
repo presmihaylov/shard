@@ -191,6 +191,27 @@ func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
 	assertNothingLeft(t, app, before, sb)
 }
 
+// SHARD-137: stop returns only once the substrate reports the sandbox gone, so the rm behind it never
+// sees one that is still up. The race was rare, so the pair runs enough times to catch it.
+func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
+	app, out := newCreateApp(t)
+
+	for i := range 20 {
+		id := create(t, app, out, "/bin/sleep", "600")
+		t.Cleanup(func() { cleanUp(t, app, id) })
+
+		if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
+			t.Fatalf("stop %d: %v", i, err)
+		}
+		if err := app.Run(t.Context(), []string{"rm", id}); err != nil {
+			t.Fatalf("rm %d right after the stop: %v", i, err)
+		}
+
+		// stop and rm each print the id, and the next create reads what the buffer holds.
+		out.Reset()
+	}
+}
+
 // TestASecondRmFindsNothingToFree: the record dies last, so an id with no record has nothing else left either.
 func TestASecondRmFindsNothingToFree(t *testing.T) {
 	app, out := newCreateApp(t)
