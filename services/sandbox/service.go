@@ -618,13 +618,15 @@ type holding struct {
 }
 
 // free gives back everything a stop kept, and stops at the first failure: a step that failed still
-// holds what the steps below it name. The record goes last, because it is the only handle by which
-// the mount and the namespace can be found again.
+// holds what the steps below it name. The record comes after the mount and the namespace, because it
+// is the only handle by which either can be found again.
 func (s *Service) free(ctx context.Context, id string) error {
 	held := []holding{
 		{"runsc state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
 		{"netns, veth and address lease", func() error { return s.cfg.Network.Release(ctx, id) }},
 		{"record and state directory", func() error { return s.cfg.Repo.Delete(id) }},
+		// The ruleset is rendered from the records and the leases, so it is right only once this sandbox is in neither.
+		{"host rules", func() error { return s.cfg.Network.ReapplyAll(ctx) }},
 	}
 
 	for i, h := range held {

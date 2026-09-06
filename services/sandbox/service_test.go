@@ -758,7 +758,7 @@ func stoppedOnTheHost(t *testing.T, r *recorder) (*sandbox.Service, layers) {
 	return newService(t, r, sb)
 }
 
-// The record dies last, because it is the only handle by which the mount and the namespace are found.
+// The record comes after the mount and the namespace, and the rules after the record they render from.
 func TestRemoveFreesEveryHoldingInOrder(t *testing.T) {
 	r := &recorder{}
 	svc, _ := stoppedOnTheHost(t, r)
@@ -767,7 +767,7 @@ func TestRemoveFreesEveryHoldingInOrder(t *testing.T) {
 		t.Fatalf("rm: %v", err)
 	}
 
-	want := []string{"provider.Remove", "net.Release", "repo.Delete", "repo.List", "substrate.DropNullNetns"}
+	want := []string{"provider.Remove", "net.Release", "repo.Delete", "net.ReapplyAll", "repo.List", "substrate.DropNullNetns"}
 	if got := r.calls[len(r.calls)-len(want):]; !slices.Equal(got, want) {
 		t.Errorf("rm freed %v, want %v", got, want)
 	}
@@ -865,7 +865,7 @@ func TestRemoveNamesWhatIsLeftOnTheHost(t *testing.T) {
 		t.Fatal("a forced failure returned no error")
 	}
 
-	for _, left := range []string{"netns, veth and address lease", "record and state directory"} {
+	for _, left := range []string{"netns, veth and address lease", "record and state directory", "host rules"} {
 		if !strings.Contains(err.Error(), left) {
 			t.Errorf("rm failed with %v, want it to name the %s it left behind", err, left)
 		}
@@ -875,5 +875,36 @@ func TestRemoveNamesWhatIsLeftOnTheHost(t *testing.T) {
 	}
 	if l.repo.deleted {
 		t.Error("rm deleted the record past a failure, so nothing can reach what is left")
+	}
+}
+
+// The rules are keyed by the address, so an rm that leaves them fronts whoever takes that address next.
+func TestRemoveReappliesTheRulesAfterTheRecordIsGone(t *testing.T) {
+	r := &recorder{}
+	svc, _ := stoppedOnTheHost(t, r)
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+
+	reapplied := slices.Index(r.calls, "net.ReapplyAll")
+	if reapplied < 0 {
+		t.Fatalf("the rm never reapplied the host rules: %v", r.calls)
+	}
+	if deleted := slices.Index(r.calls, "repo.Delete"); reapplied < deleted {
+		t.Errorf("the rm reapplied the rules before it deleted the record: %v", r.calls)
+	}
+}
+
+// A failed reapply leaves rules for a sandbox that is gone, so the error must say so.
+func TestRemoveNamesTheRulesItLeft(t *testing.T) {
+	svc, _ := stoppedOnTheHost(t, &recorder{fail: []string{"net.ReapplyAll"}})
+
+	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	if err == nil {
+		t.Fatal("a forced failure returned no error")
+	}
+	if !strings.Contains(err.Error(), "host rules") {
+		t.Errorf("rm failed with %v, want it to name the host rules it left behind", err)
 	}
 }
