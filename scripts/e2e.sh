@@ -179,6 +179,16 @@ expect_fronted() {
 	say "${note}"
 }
 
+# basic_of prints what one echo host saw inside an HTTP Basic header, decoded. busybox has no curl, so the
+# guest builds the header the way every client does: base64 of "user:placeholder".
+basic_of() {
+	local id="$1" host="$2" got line
+	got=$(shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" http://${host}/") ||
+		fail "the basic auth request to ${host} failed"
+	line=$(grep '^authorization=Basic ' <<<"${got}") || fail "the echo saw no basic header: ${got}"
+	printf '%s' "${line#authorization=Basic }" | base64 -d
+}
+
 # start_echo builds and starts the upstream on the host's 80 and 443. Both must be free: a server already
 # there would answer the guest instead, and the run would prove nothing.
 start_echo() {
@@ -659,6 +669,10 @@ GOT=$(fetch "${ID}" http "${OTHER_HOST}") || fail "the http request to ${OTHER_H
 echo "${GOT}" | grep -qx "authorization=Bearer mock-E2E_TOKEN" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
 echo "${GOT}" | grep -qx "x-shaped=${SHAPED_PLACEHOLDER}" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
 say "a request to a host the policy allows but the grant does not keeps both placeholders"
+
+step "a client that encodes the placeholder still gets the value"
+expect "$(basic_of "${ID}" "${ECHO_HOST}")" "api:${SECRET_VALUE}" "basic auth to the granted host carries the value, decoded and re-encoded"
+expect "$(basic_of "${ID}" "${OTHER_HOST}")" "api:mock-E2E_TOKEN" "basic auth to an ungranted host keeps the placeholder"
 
 expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
