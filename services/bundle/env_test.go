@@ -91,7 +91,7 @@ func TestRemoveEnvDropsTheVariableAndTakesASecondCall(t *testing.T) {
 	}
 }
 
-func TestTrustProxyPlantsTheCALateAndTwiceOver(t *testing.T) {
+func TestTrustProxyPlantsTheCALateAndNeverTwice(t *testing.T) {
 	b := built(t)
 
 	if err := b.TrustProxy([]byte(proxyCA)); err != nil {
@@ -111,12 +111,14 @@ func TestTrustProxyPlantsTheCALateAndTwiceOver(t *testing.T) {
 		t.Errorf("the merged bundle is:\n%s", got)
 	}
 
-	// A grant of a second secret plants again, and the guest must not end up with two copies.
-	if err := b.TrustProxy([]byte(proxyCA)); err != nil {
-		t.Fatalf("the second TrustProxy: %v", err)
-	}
-	if got := readFile(t, filepath.Join(b.Upper, named)); got != imageRoots+proxyCA {
-		t.Errorf("the second plant changed the merged bundle:\n%s", got)
+	// Every later grant plants again, and it must re-merge from the image roots rather than append to its own output.
+	for plant := 2; plant <= 4; plant++ {
+		if err := b.TrustProxy([]byte(proxyCA)); err != nil {
+			t.Fatalf("TrustProxy %d: %v", plant, err)
+		}
+		if got := readFile(t, filepath.Join(b.Upper, named)); got != imageRoots+proxyCA {
+			t.Errorf("plant %d changed the merged bundle:\n%s", plant, got)
+		}
 	}
 }
 
