@@ -16,7 +16,9 @@ import (
 type Decision struct {
 	Action models.Action
 	// Rule is empty when no rule was asked: the floor, a missing policy or no policy at all decided.
-	Rule   EffectiveRule
+	Rule EffectiveRule
+	// ID names what decided, so a log line from the proxy and one from the host point at the same rule.
+	ID     string
 	Reason string
 }
 
@@ -25,11 +27,11 @@ type Decision struct {
 func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Addr) (Decision, error) {
 	// The floor comes before every policy, on the host and here, so no name opens what the host hides.
 	if slices.ContainsFunc(network.Private, func(p netip.Prefix) bool { return p.Contains(addr) }) {
-		return Decision{Action: models.ActionDeny, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}, nil
+		return Decision{Action: models.ActionDeny, ID: network.RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}, nil
 	}
 
 	if sb.Policy == "" {
-		return Decision{Action: models.ActionAllow, Reason: "sandbox " + sb.ID + " has no policy"}, nil
+		return Decision{Action: models.ActionAllow, ID: network.RuleNone, Reason: "sandbox " + sb.ID + " has no policy"}, nil
 	}
 
 	effective, err := s.Effective(sb)
@@ -37,16 +39,16 @@ func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Ad
 		return Decision{}, fmt.Errorf("sandbox %s: %w", sb.ID, err)
 	}
 	if effective.Missing {
-		return Decision{Action: models.ActionDeny, Reason: "policy " + sb.Policy + " does not exist"}, nil
+		return Decision{Action: models.ActionDeny, ID: network.RuleMissing, Reason: "policy " + sb.Policy + " does not exist"}, nil
 	}
 
 	for _, rule := range effective.Rules {
 		if matches(rule.Rule, host, port, addr) {
-			return Decision{Action: rule.Action, Rule: rule, Reason: "the first matching rule of policy " + sb.Policy}, nil
+			return Decision{Action: rule.Action, Rule: rule, ID: rule.ID, Reason: "the first matching rule of policy " + sb.Policy}, nil
 		}
 	}
 
-	return Decision{Action: models.ActionDeny, Reason: "no rule of policy " + sb.Policy + " matches " + host}, nil
+	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + host}, nil
 }
 
 func matches(rule models.Rule, host string, port int, addr netip.Addr) bool {

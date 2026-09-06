@@ -26,6 +26,8 @@ type Chain struct {
 
 // Compiled is one rule with every name already resolved to prefixes. Protocol empty is every protocol.
 type Compiled struct {
+	// ID names the rule in the log line the chain writes when it drops a packet.
+	ID       string
 	Action   models.Action
 	Protocol string
 	Ports    []int
@@ -87,6 +89,7 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	// The private floor comes before the chains, so no rule of a policy opens it.
 	fmt.Fprintf(&b, "\tchain egress {\n")
 	fmt.Fprintf(&b, "\t\toifname %q drop\n", s.cfg.Bridge)
+	fmt.Fprintf(&b, "\t\tip daddr { %[1]s } %[2]s\n", strings.Join(privateRanges, ", "), logStatement(RulePrivate))
 	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
 	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
 	for _, chain := range chains {
@@ -103,9 +106,11 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 		}
 		fmt.Fprintf(&b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
 		for _, rule := range chain.Rules {
-			fmt.Fprintf(&b, "\t\t%s\n", render(rule))
+			for _, line := range render(rule) {
+				fmt.Fprintf(&b, "\t\t%s\n", line)
+			}
 		}
-		fmt.Fprintf(&b, "\t\tdrop\n\t}\n")
+		fmt.Fprintf(&b, "\t\t%s\n\t\tdrop\n\t}\n", logStatement(RuleDefault))
 	}
 
 	b.WriteString("}\n\n")
@@ -128,11 +133,12 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 
 func chainName(host string) string { return "egress_" + host }
 
-// render is one nft rule. A rule that resolved to no prefix matches nothing, and nft refuses an empty
-// set, so it is left out and the chain's own drop says what happens to what it named.
-func render(rule Compiled) string {
+// render is one nft rule, and two when it drops: the verdict ends the packet, so the log goes on its own
+// rule before it. A rule that resolved to no prefix matches nothing, and nft refuses an empty set, so it
+// is left out and the chain's own drop says what happens to what it named.
+func render(rule Compiled) []string {
 	if len(rule.Prefixes) == 0 {
-		return "# no address"
+		return []string{"# no address"}
 	}
 
 	var parts []string
@@ -154,10 +160,28 @@ func render(rule Compiled) string {
 		parts = append(parts, fmt.Sprintf("%s dport { %s }", rule.Protocol, strings.Join(ports, ", ")))
 	}
 
-	verdict := "drop"
+	match := strings.Join(parts, " ")
 	if rule.Action == models.ActionAllow {
-		verdict = "accept"
+		return []string{match + " accept"}
 	}
 
-	return strings.Join(append(parts, verdict), " ")
+	return []string{match + " " + logStatement(rule.ID), match + " drop"}
+}
+
+// The ids a decision carries when no rule of the policy decided it.
+const (
+	RulePrivate = "private"
+	RuleDefault = "default"
+	RuleNone    = "none"
+	RuleMissing = "missing"
+	RuleResolve = "resolve"
+)
+
+// LogPrefix starts every line the chains write into the kernel ring, so shard logs can pick them out.
+const LogPrefix = "shard-egress"
+
+// logStatement writes one line into the kernel ring and names the rule that wrote it. The ring is shared and
+// short, so a probe storm must not fill it: each statement carries its own limit.
+func logStatement(id string) string {
+	return fmt.Sprintf("limit rate 2/second burst 10 packets log prefix %q", LogPrefix+" rule="+id+" ")
 }

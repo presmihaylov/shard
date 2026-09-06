@@ -22,7 +22,8 @@ systemctl enable --now shard
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.
 - **The egress proxy**: the `proxy` task listens on the bridge gateway, ports 30080 and 30443, and
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
-- **Egress log rotation**: the per-sandbox `egress.jsonl` files grow without it.
+- **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
+  passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
   bring it back.
 
@@ -165,6 +166,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
   entrypoint wrote. With `?follow=true` it streams and flushes every write, and ends when the
   sandbox stops or the client goes away. 404; 400 for a `follow` that is not a boolean.
+- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
+  array, oldest first: the proxy's own records merged with the host drops still in the kernel ring.
+  404. `shard logs --egress` prints one record per line.
 
 - `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy, as
   `shard policy ls` and `shard policy show` print them. 404 when the host holds no such policy.

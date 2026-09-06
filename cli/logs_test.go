@@ -3,13 +3,16 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 func TestParseLogsFlags(t *testing.T) {
@@ -130,5 +133,49 @@ func TestLogsReportsADaemonThatIsNotThere(t *testing.T) {
 	err := app.Run(t.Context(), []string{"logs", "sandbox1"})
 	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
 		t.Fatalf("logs with no daemon returned %v", err)
+	}
+}
+
+func TestParseLogsRefusesToFollowTheEgressLog(t *testing.T) {
+	opts, err := parseLogs([]string{"--egress", "sandbox1"})
+	if err != nil {
+		t.Fatalf("parseLogs: %v", err)
+	}
+	if !opts.egress || opts.follow {
+		t.Errorf("parseLogs gave %+v, want the egress log and no follow", opts)
+	}
+
+	if _, err := parseLogs([]string{"--egress", "-f", "sandbox1"}); err == nil {
+		t.Error("parseLogs took --egress with -f")
+	}
+}
+
+func TestLogsPrintsTheEgressDecisionsAsOneLineEach(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newLogsApp(t, &out, running(), "")
+	d.egressLog = []egress.Record{
+		{Time: time.Unix(1, 0).UTC(), Source: egress.SourceProxy, Verdict: "allow", Host: "api.example.com", Port: 443, Rule: "1"},
+		{Time: time.Unix(2, 0).UTC(), Source: egress.SourceHost, Verdict: "deny", Address: "203.0.113.7", Port: 25, Rule: "default"},
+	}
+
+	if err := app.Run(t.Context(), []string{"logs", "--egress", "sandbox1"}); err != nil {
+		t.Fatalf("logs --egress: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("logs --egress printed %q", out.String())
+	}
+
+	var first egress.Record
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("decode the first line: %v", err)
+	}
+	if first.Host != "api.example.com" || first.Rule != "1" {
+		t.Errorf("the first line is %+v", first)
+	}
+	if !strings.Contains(lines[1], `"source":"host"`) {
+		t.Errorf("the second line is %s", lines[1])
 	}
 }
