@@ -273,14 +273,26 @@ func TestSetRefusesAPlaceholderItCannotTellApart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := s.Set("TOKEN", "some-value-123", []string{"a.example.com"}, "sk_test_shaped01")
-	if err == nil || !strings.Contains(err.Error(), "BROKEN") {
-		t.Errorf("Set over an unreadable store = %v, want a refusal naming BROKEN", err)
+	// The default is not exempt: another secret may already have chosen it, and a broken file cannot say.
+	for _, chosen := range []string{"sk_test_shaped01", ""} {
+		_, err := s.Set("TOKEN", "some-value-123", []string{"a.example.com"}, chosen)
+		if err == nil || !strings.Contains(err.Error(), "BROKEN") {
+			t.Errorf("Set with the placeholder %q over an unreadable store = %v, want a refusal naming BROKEN", chosen, err)
+		}
+	}
+}
+
+// A default is a placeholder like any other: two secrets that share one substitute by list order.
+func TestSetRefusesADefaultPlaceholderAnotherSecretChose(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("FOO", "first-value-1", []string{"a.example.com"}, "mock-BAR"); err != nil {
+		t.Fatalf("a placeholder no stored secret owns: %v", err)
 	}
 
-	// The default is exempt: it is derived from the name, so no other secret can have taken it.
-	if _, err := s.Set("TOKEN", "some-value-123", []string{"a.example.com"}, ""); err != nil {
-		t.Errorf("Set with the default placeholder over an unreadable store: %v", err)
+	_, err := s.Set("BAR", "second-value-2", []string{"b.example.com"}, "")
+	if err == nil || !strings.Contains(err.Error(), "FOO") {
+		t.Errorf("Set with the default mock-BAR = %v, want a refusal naming FOO", err)
 	}
 }
 

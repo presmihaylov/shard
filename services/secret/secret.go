@@ -147,11 +147,16 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 		return "", fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
 	}
 
-	// The default is exempt from the rest: a short NAME still gets a placeholder.
+	// The default is exempt from the shape rules alone: a short NAME still gets a placeholder.
 	if chosen != DefaultPlaceholder(name) {
-		if err := s.validPlaceholder(name, chosen); err != nil {
+		if err := shapedPlaceholder(name, chosen); err != nil {
 			return "", err
 		}
+	}
+
+	// Two secrets that share a placeholder substitute by list order, so this rule holds for the default too.
+	if err := s.freePlaceholder(name, chosen); err != nil {
+		return "", err
 	}
 
 	if existing.Placeholder != "" && chosen != existing.Placeholder {
@@ -166,8 +171,8 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 // minPlaceholder keeps a chosen placeholder long enough that it cannot fall inside an ordinary request.
 const minPlaceholder = 8
 
-// validPlaceholder refuses a chosen placeholder the proxy could not find, or that another secret already owns.
-func (s *Store) validPlaceholder(name, chosen string) error {
+// shapedPlaceholder refuses a chosen placeholder the proxy could not find in an ordinary request.
+func shapedPlaceholder(name, chosen string) error {
 	if len(chosen) < minPlaceholder {
 		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minPlaceholder)
 	}
@@ -177,6 +182,11 @@ func (s *Store) validPlaceholder(name, chosen string) error {
 		}
 	}
 
+	return nil
+}
+
+// freePlaceholder refuses a placeholder another secret already owns, as its own or as its default.
+func (s *Store) freePlaceholder(name, chosen string) error {
 	stored, err := s.List()
 	// A secret that does not read back may own the placeholder, so nothing can say it is free.
 	if err != nil {
