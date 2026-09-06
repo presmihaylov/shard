@@ -47,9 +47,10 @@ CLONE_LINKS=""
 DAEMON_PID=""
 DAEMON_LOG=""
 REPORTED=0
-# The daemon runs the proxy, and the echo is the upstream behind it; both live for the whole run.
-DAEMON_PID=""
-DAEMON_LOG=""
+# The two ports the daemon's proxy listens on, as pkg/proxy declares them.
+PROXY_PLAIN_PORT=30080
+PROXY_TLS_PORT=30443
+# The echo is the upstream behind the proxy, and it lives for the whole run.
 ECHO_PID=""
 ECHO_DIR=""
 # The echo names all resolve to this host through sslip.io: one is granted, one is only allowed, one is neither.
@@ -183,30 +184,6 @@ stop_echo() {
 	ECHO_PID=""
 }
 
-# start_daemon runs shard daemon on this root in the background. The proxy verifies the echo's certificate
-# like any upstream's, so the daemon's trust is the host's roots plus that one certificate.
-start_daemon() {
-	DAEMON_LOG=$(mktemp)
-	cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
-	SSL_CERT_FILE="${ECHO_DIR}/trust.pem" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
-	DAEMON_PID=$!
-	for _ in $(seq 1 100); do
-		grep -q "proxy listening on" "${DAEMON_LOG}" && return 0
-		kill -0 "${DAEMON_PID}" 2>/dev/null || break
-		sleep 0.1
-	done
-	fail "the daemon did not start the proxy: $(cat "${DAEMON_LOG}")"
-}
-
-# stop_daemon ends the daemon by pid and proves its socket went with it.
-stop_daemon() {
-	[ -n "${DAEMON_PID}" ] || return 0
-	kill "${DAEMON_PID}" >/dev/null 2>&1 || true
-	wait "${DAEMON_PID}" >/dev/null 2>&1 || true
-	DAEMON_PID=""
-	[ ! -e "${SHARD_ROOT}/shard.sock" ] || fail "the socket ${SHARD_ROOT}/shard.sock outlived the daemon"
-}
-
 # timed runs a command and prints how long it took, so the transcript carries the numbers SHARD-32 asks for.
 # Never redirect a timed call: the redirect would swallow this line, so the wrappers below do it inside.
 timed() {
@@ -298,11 +275,21 @@ wipe_root() {
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
 # It returns non-zero rather than failing, so a teardown can bring one back without ending the script.
 start_daemon() {
+	local busy
+	busy=$(ss -Hltn "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )" 2>/dev/null || true)
+	[ -z "${busy}" ] || return 1
+
 	[ -n "${DAEMON_LOG}" ] || DAEMON_LOG=$(mktemp)
-	"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
+	# The proxy verifies the echo like any upstream, so the daemon trusts the host roots plus that one certificate.
+	local trust=""
+	if [ -f "${ECHO_DIR}/cert.pem" ]; then
+		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
+		trust="${ECHO_DIR}/trust.pem"
+	fi
+	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	for _ in $(seq 1 50); do
-		grep -q "api listening on" "${DAEMON_LOG}" && return 0
+		grep -q "api listening on" "${DAEMON_LOG}" && grep -q "proxy listening on" "${DAEMON_LOG}" && return 0
 		sleep 0.1
 	done
 
@@ -417,11 +404,22 @@ REFUSAL=$(shard ls 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard ls answered with no daemon up"
 expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls names the socket and the daemon, and nothing else"
 
+step "start the echo the fronted sandbox talks to"
+# The echo answers on this host's own address, and sslip.io turns that address into three names.
+HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
+[ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
+ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
+OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
+DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
+start_echo
+say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
+
 step "start the daemon in the background"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
 LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
 say "the daemon logged: ${LISTEN_LINE#* api }"
+say "the daemon logged: $(grep 'proxy listening on' "${DAEMON_LOG}" | sed 's/.*proxy/proxy/')"
 
 step "prove the socket mode is what the daemon claims"
 if getent group shard >/dev/null; then
@@ -441,18 +439,6 @@ CLIENT_LINE=$(echo "${VERSION_OUT}" | sed -n 1p)
 DAEMON_LINE=$(echo "${VERSION_OUT}" | sed -n 2p)
 [ "${CLIENT_LINE#client }" != "${CLIENT_LINE}" ] || fail "the first line of shard version is '${CLIENT_LINE}', want 'client <v>'"
 expect "${DAEMON_LINE}" "daemon ${CLIENT_LINE#client }" "version prints the client line and the daemon line, and both agree"
-
-step "start the echo and the daemon"
-# The echo answers on this host's own address, and sslip.io turns that address into three names.
-HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
-[ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
-ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
-OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
-DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
-start_echo
-say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
-start_daemon
-say "the daemon logged: $(grep 'proxy listening on' "${DAEMON_LOG}" | sed 's/.*proxy/proxy/')"
 
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
