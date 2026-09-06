@@ -165,3 +165,38 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 		t.Errorf("inspect printed %s", out.String())
 	}
 }
+
+func TestPolicyShowNamesTheSandboxesThatHoldThePolicy(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newLifecycleApp(t, &out, &recorder{}, stopped())
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "api.example.com", "web"}); err != nil {
+		t.Fatalf("policy create: %v", err)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"policy", "show", "web"}); err != nil {
+		t.Fatalf("policy show: %v", err)
+	}
+	if strings.Contains(out.String(), "holders") {
+		t.Errorf("policy show printed holders for a policy no sandbox holds: %s", out.String())
+	}
+
+	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sb-1", Policy: "web"}, {ID: "sb-2"}}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"policy", "show", "web"}); err != nil {
+		t.Fatalf("policy show: %v", err)
+	}
+
+	var shown sandbox.PolicyView
+	if err := json.Unmarshal(out.Bytes(), &shown); err != nil {
+		t.Fatalf("decode %s: %v", out.String(), err)
+	}
+	if !slices.Equal(shown.Holders, []string{"sb-1"}) {
+		t.Errorf("policy show printed holders %v, want the one record that names it", shown.Holders)
+	}
+	if len(shown.Rules) != 1 {
+		t.Errorf("policy show printed %d rules beside the holders", len(shown.Rules))
+	}
+}

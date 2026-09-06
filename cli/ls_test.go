@@ -162,3 +162,27 @@ func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 		t.Errorf("ls printed %q, want the state and the reason beside it", out.String())
 	}
 }
+
+func TestLsPrintsThePolicyEachSandboxHolds(t *testing.T) {
+	var out bytes.Buffer
+
+	fronted := listed()
+	fronted[0].Policy = "web"
+
+	app := newLsApp(t, &out, fronted, nil)
+
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if !strings.Contains(lines[0], "POLICY") {
+		t.Errorf("the header is %q, want a POLICY column", lines[0])
+	}
+	if !strings.HasSuffix(lines[1], "web") {
+		t.Errorf("the line %q does not end in the policy it holds", lines[1])
+	}
+	if !strings.HasSuffix(lines[2], "-") {
+		t.Errorf("the line %q does not end in a dash for the sandbox that holds no policy", lines[2])
+	}
+}

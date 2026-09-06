@@ -24,6 +24,9 @@ func DefaultPlaceholder(name string) string { return secret.DefaultPlaceholder(n
 // RuleText is one --allow or --deny as the operator typed it; the daemon owns the grammar.
 type RuleText = sandbox.RuleText
 
+// PolicyView is a policy and the sandboxes whose record names it, which is what policy show prints.
+type PolicyView = sandbox.PolicyView
+
 // SecretsResult is what secret ls prints: the secrets the daemon read, beside the files it could not.
 type SecretsResult struct {
 	Secrets  []Secret `json:"secrets"`
@@ -57,10 +60,10 @@ func (c *Client) ListPolicies(ctx context.Context) ([]models.Policy, error) {
 	return out.Policies, nil
 }
 
-func (c *Client) GetPolicy(ctx context.Context, name string) (models.Policy, error) {
-	var out models.Policy
+func (c *Client) GetPolicy(ctx context.Context, name string) (PolicyView, error) {
+	var out PolicyView
 	if err := c.call(ctx, http.MethodGet, "/v0/policies/"+url.PathEscape(name), nil, &out, c.Timeout); err != nil {
-		return models.Policy{}, err
+		return PolicyView{}, err
 	}
 
 	return out, nil
