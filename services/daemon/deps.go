@@ -151,6 +151,7 @@ func (d *deps) secretsLocked() (*secret.Store, error) {
 }
 
 // holders names the sandboxes whose record grants the secret, so the store can refuse to move a placeholder under them.
+// It takes no lock of its own: it calls the locking d.repo(), and d.mu taken twice by one goroutine deadlocks.
 func (d *deps) holders(name string) ([]string, error) {
 	repo, err := d.repo()
 	if err != nil {
