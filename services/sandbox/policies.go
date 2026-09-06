@@ -69,6 +69,7 @@ func (s *Service) movePolicy(ctx context.Context, id, was, want string) (models.
 		return models.Sandbox{}, err
 	}
 
+	// The revert is honest only because Reapply lands one ruleset through one nft -f: all of it or none.
 	if err := s.cfg.Network.Reapply(ctx, id); err != nil {
 		if revert := s.writePolicy(id, was); revert != nil {
 			return models.Sandbox{}, fmt.Errorf("the host did not take the rules and the record did not go back: %w", errors.Join(err, revert))
