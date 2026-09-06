@@ -18,7 +18,7 @@ const maxSecretBytes = 64 << 10
 
 func (a App) secret(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("secret takes a subcommand: set, ls or rm")
+		return errors.New("secret takes a subcommand: set, ls, rm, grant or ungrant")
 	}
 
 	switch args[0] {
@@ -28,9 +28,13 @@ func (a App) secret(ctx context.Context, args []string) error {
 		return a.secretList(ctx, args[1:])
 	case "rm", "remove":
 		return a.secretRemove(ctx, args[1:])
+	case "grant":
+		return a.secretGrant(ctx, args[1:])
+	case "ungrant":
+		return a.secretUngrant(ctx, args[1:])
 	}
 
-	return fmt.Errorf("unknown secret subcommand %q; want set, ls or rm", args[0])
+	return fmt.Errorf("unknown secret subcommand %q; want set, ls, rm, grant or ungrant", args[0])
 }
 
 // secretSetOptions is one parsed shard secret set invocation.
@@ -226,4 +230,44 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 	opts.name = rest[0]
 
 	return opts, nil
+}
+
+// secretGrant hands a sandbox that already exists the placeholder a create with --secret would have given it.
+func (a App) secretGrant(ctx context.Context, args []string) error {
+	ref, name, err := parseGrant("grant", args)
+	if err != nil {
+		return err
+	}
+
+	sb, err := a.client().GrantSecret(ctx, ref, name)
+	if err != nil {
+		return err
+	}
+
+	return a.print(sb.ID)
+}
+
+func (a App) secretUngrant(ctx context.Context, args []string) error {
+	ref, name, err := parseGrant("ungrant", args)
+	if err != nil {
+		return err
+	}
+
+	sb, err := a.client().UngrantSecret(ctx, ref, name)
+	if err != nil {
+		return err
+	}
+
+	return a.print(sb.ID)
+}
+
+func parseGrant(verb string, args []string) (string, string, error) {
+	if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return "", "", fmt.Errorf("secret %s takes no flags: shard secret %s <id|name> <NAME>", verb, verb)
+	}
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %d arguments", verb, len(args))
+	}
+
+	return args[0], args[1], nil
 }

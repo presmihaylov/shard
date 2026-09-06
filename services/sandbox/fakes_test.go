@@ -75,8 +75,9 @@ type fakeRepo struct {
 	created models.Sandbox
 	// made is the record a fork or a clone created, which lives beside the source the test set up.
 	made *models.Sandbox
-	// snapshotDir replaces the fixed path when a test needs the directory to exist on disk.
+	// snapshotDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
 	snapshotDir string
+	stateDir    string
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
@@ -158,6 +159,9 @@ func (f *fakeRepo) SnapshotDir(id string) (string, error) {
 func (f *fakeRepo) Dir(id string) (string, error) {
 	if err := f.r.record("repo.Dir"); err != nil {
 		return "", err
+	}
+	if f.stateDir != "" {
+		return f.stateDir, nil
 	}
 
 	return "/state/" + id, nil

@@ -43,6 +43,9 @@ RECONCILE_LINK=""
 # The clones are space separated lists: two come off one stopped source, and both must go on teardown.
 CLONE_IDS=""
 CLONE_LINKS=""
+# The sandbox that is created unfronted and granted a secret later (SHARD-114).
+GRANT_ID=""
+GRANT_LINK=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
@@ -317,17 +320,17 @@ stop_daemon() {
 teardown() {
 	local id link
 	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}" ]; then
 		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
-	for id in ${CLONE_IDS} "${RECONCILE_ID}" "${FORK_ID}" "${ID}"; do
+	for id in ${CLONE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
 	done
 	# shellcheck disable=SC2086
-	for link in ${CLONE_LINKS} "${RECONCILE_LINK}" "${FORK_LINK}" "${LINK}"; do
+	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
@@ -923,6 +926,45 @@ step "remove the sandbox"
 shard rm "${ID}" >/dev/null
 say "rm returned"
 
+step "grant a secret to a sandbox that was created without one"
+# This sandbox is created unfronted, so the grant is what plants the placeholder, the CA and the dnat.
+GRANT_ID=$(shard create "${IMAGE}" -- /bin/sh -c 'exec /bin/sleep 600')
+GRANT_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
+GRANT_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
+GRANT_ADDRESS="${GRANT_ADDRESS%%/*}"
+expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder before the grant" /bin/sh -c 'echo "$E2E_TOKEN"'
+shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null 2>&1 && fail "secret grant took a running sandbox"
+say "secret grant refuses a running sandbox"
+
+shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null
+shard inspect "${GRANT_ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
+shard start "${GRANT_ID}" >/dev/null
+expect_exec_in "${GRANT_ID}" "mock-E2E_TOKEN" "the granted guest sees the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+
+GRANT_BUNDLE=$(shard exec "${GRANT_ID}" -- /bin/sh -c 'cat "$SSL_CERT_FILE"')
+echo "${GRANT_BUNDLE}" | grep -q "${CA_LINE}" || fail "the late grant did not plant the proxy CA"
+[ "$(echo "${GRANT_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the late bundle holds the proxy CA alone"
+say "the grant planted the proxy CA beside the image's roots"
+nft list table inet shard | grep -c "ip saddr ${GRANT_ADDRESS} tcp dport 80 dnat" >/dev/null || fail "the host holds no dnat to the proxy for ${GRANT_LINK}"
+say "the grant turns the sandbox's 80 and 443 to the proxy"
+expect_fronted "${GRANT_ID}" "the grant fronts the sandbox, and the proxy puts the value in"
+
+step "ungrant the secret and prove the placeholder is gone"
+shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard secret ungrant "${GRANT_ID}" E2E_TOKEN >/dev/null
+shard inspect "${GRANT_ID}" | grep -q '"E2E_TOKEN"' && fail "inspect still names the grant"
+shard start "${GRANT_ID}" >/dev/null
+expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder after the ungrant" /bin/sh -c 'echo "$E2E_TOKEN"'
+say "ungrant took the grant and the placeholder back"
+
+shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard rm "${GRANT_ID}" >/dev/null
+ip link delete "${GRANT_LINK}" >/dev/null 2>&1 || true
+GRANT_ID=""
+GRANT_LINK=""
+say "the granted sandbox is gone"
+
 step "remove the secret nothing holds any more"
 shard secret rm E2E_TOKEN >/dev/null
 shard secret rm E2E_SHAPED >/dev/null
@@ -970,4 +1012,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, grant, ungrant, rm, prune, daemon down, and a clean host"

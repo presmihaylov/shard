@@ -169,6 +169,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
   array, oldest first: the proxy's own records merged with the host drops still in the kernel ring.
   404. `shard logs --egress` prints one record per line.
+- `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
+  answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
+  writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
+  holds that name; 409 when the sandbox runs or is paused.
+- `DELETE /v0/sandboxes/{id}/secrets/{name}` takes the grant and the placeholder back and answers 200
+  with the record. The proxy CA stays. 404; 409 when the sandbox runs or is paused.
 
 - `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy, as
   `shard policy ls` and `shard policy show` print them. 404 when the host holds no such policy.

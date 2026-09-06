@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // TrustEnv names the variables a fronted sandbox has pointed at its merged CA bundle, so the guest's
@@ -36,8 +36,8 @@ func TrustsUser(env []string) error {
 
 // plantTrust writes the image roots plus the proxy CA to the path the guest already reads, and says
 // which variables to set so every client reads that path. It never writes the proxy CA alone.
-func plantTrust(b Bundle, spec models.SandboxSpec) ([]string, error) {
-	rel, roots, err := imageRoots(spec)
+func plantTrust(b Bundle, rootfs string, env []string, proxyCA []byte) ([]string, error) {
+	rel, roots, err := imageRoots(rootfs, env)
 	if err != nil {
 		return nil, err
 	}
@@ -51,30 +51,30 @@ func plantTrust(b Bundle, spec models.SandboxSpec) ([]string, error) {
 	if roots[len(roots)-1] == '\n' {
 		merged = slices.Clone(roots)
 	}
-	merged = append(merged, spec.ProxyCA...)
+	merged = append(merged, proxyCA...)
 
 	if err := store.WriteFile(target, merged, etcFilePerm); err != nil { // #nosec G306
 		return nil, fmt.Errorf("write %s: %w", target, err)
 	}
 
-	env := make([]string, 0, len(TrustEnv))
+	trust := make([]string, 0, len(TrustEnv))
 	for _, key := range TrustEnv {
-		env = append(env, key+"=/"+rel)
+		trust = append(trust, key+"=/"+rel)
 	}
 
-	return env, nil
+	return trust, nil
 }
 
 // imageRoots reads the image's own CA bundle from the first path that holds one, inside the rootfs only.
-func imageRoots(spec models.SandboxSpec) (string, []byte, error) {
-	root, err := os.OpenRoot(spec.RootFS)
+func imageRoots(rootfs string, env []string) (string, []byte, error) {
+	root, err := os.OpenRoot(rootfs)
 	if err != nil {
-		return "", nil, fmt.Errorf("open the image rootfs %s: %w", spec.RootFS, err)
+		return "", nil, fmt.Errorf("open the image rootfs %s: %w", rootfs, err)
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
 	candidates := slices.Clone(rootPaths)
-	if named := envValue(spec.Env, "SSL_CERT_FILE"); named != "" {
+	if named := envValue(env, "SSL_CERT_FILE"); named != "" {
 		candidates = append([]string{strings.TrimPrefix(path.Clean("/"+named), "/")}, candidates...)
 	}
 
@@ -84,13 +84,13 @@ func imageRoots(spec models.SandboxSpec) (string, []byte, error) {
 			continue
 		}
 		if err != nil {
-			return "", nil, fmt.Errorf("read the CA bundle %s of the image rootfs %s: %w", rel, spec.RootFS, err)
+			return "", nil, fmt.Errorf("read the CA bundle %s of the image rootfs %s: %w", rel, rootfs, err)
 		}
 
 		return rel, roots, nil
 	}
 
-	return "", nil, fmt.Errorf("the image rootfs %s has no CA bundle to add the proxy CA to; tried /%s", spec.RootFS, strings.Join(candidates, ", /"))
+	return "", nil, fmt.Errorf("the image rootfs %s has no CA bundle to add the proxy CA to; tried /%s", rootfs, strings.Join(candidates, ", /"))
 }
 
 func envValue(env []string, name string) string {
@@ -102,4 +102,33 @@ func envValue(env []string, name string) string {
 	}
 
 	return ""
+}
+
+// TrustProxy plants the proxy CA in a bundle that is already built, so a sandbox granted a secret after
+// its create trusts the proxy the way a fronted create does. It reads the image roots again, so it is
+// idempotent: a second call writes the same merged bundle.
+func (b Bundle) TrustProxy(proxyCA []byte) error {
+	if len(proxyCA) == 0 {
+		return errors.New("no proxy CA: there is nothing for the sandbox to trust")
+	}
+
+	spec, err := b.readSpec()
+	if err != nil {
+		return err
+	}
+
+	rootfs := spec.Annotations[rootfsAnnotation]
+	if rootfs == "" {
+		return fmt.Errorf("%s names no image rootfs, so the image roots cannot be read", b.configPath())
+	}
+
+	trust, err := plantTrust(b, rootfs, spec.Process.Env, proxyCA)
+	if err != nil {
+		return err
+	}
+
+	// shard owns the trust store of a fronted sandbox, so a variable the image set is pointed at the merged bundle.
+	spec.Process.Env = runspec.MergeEnv(spec.Process.Env, trust)
+
+	return b.writeSpec(spec)
 }

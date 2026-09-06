@@ -26,8 +26,10 @@ type fakeLifecycle struct {
 	// copied is the body a fork or a clone sent.
 	copied sandbox.CopyRequest
 	ref    string
-	grace  time.Duration
-	force  bool
+	// granted is the secret the grant or the ungrant named.
+	granted string
+	grace   time.Duration
+	force   bool
 
 	// exec is the request the client sent, and input what it typed at the command.
 	exec   sandbox.ExecRequest
@@ -58,6 +60,18 @@ func (f *fakeLifecycle) Start(_ context.Context, ref string) (models.Sandbox, er
 	f.ref = ref
 
 	return models.Sandbox{ID: ref, State: models.StateRunning}, f.err
+}
+
+func (f *fakeLifecycle) GrantSecret(_ context.Context, ref, name string) (models.Sandbox, error) {
+	f.ref, f.granted = ref, name
+
+	return models.Sandbox{ID: ref, Secrets: []string{name}}, f.err
+}
+
+func (f *fakeLifecycle) UngrantSecret(_ context.Context, ref, name string) (models.Sandbox, error) {
+	f.ref, f.granted = ref, name
+
+	return models.Sandbox{ID: ref}, f.err
 }
 
 func (f *fakeLifecycle) Stop(_ context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
@@ -275,6 +289,8 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/resume", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/clone", `{"name":"web-2"}`},
+				{http.MethodPost, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
+				{http.MethodDelete, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 			} {
 				status, got := send(t, s.server, route.method, route.path, route.body)
 				if status != c.status || !strings.Contains(got["error"].(string), c.text) {
@@ -282,6 +298,20 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGrantAndUngrantNameTheSandboxAndTheSecret(t *testing.T) {
+	s := seed(t)
+
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/web/secrets/TOKEN", "")
+	if status != http.StatusOK || s.verbs.ref != "web" || s.verbs.granted != "TOKEN" {
+		t.Errorf("the grant answered %d %v over ref %q and secret %q", status, got, s.verbs.ref, s.verbs.granted)
+	}
+
+	status, got = send(t, s.server, http.MethodDelete, "/v0/sandboxes/web/secrets/TOKEN", "")
+	if status != http.StatusOK || got["secrets"] != nil {
+		t.Errorf("the ungrant answered %d %v, want 200 with a record that holds none", status, got)
 	}
 }
 

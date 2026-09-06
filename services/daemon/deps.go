@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"path/filepath"
-	"slices"
 	"sync"
 
 	"github.com/presmihaylov/shard/models"
@@ -159,19 +158,7 @@ func (d *deps) holders(name string) ([]string, error) {
 		return nil, err
 	}
 
-	sandboxes, err := repo.List()
-	if err != nil {
-		return nil, err
-	}
-
-	var users []string
-	for _, sb := range sandboxes {
-		if slices.Contains(sb.Secrets, name) {
-			users = append(users, sb.ID)
-		}
-	}
-
-	return users, nil
+	return sandbox.SecretHolders(repo, name)
 }
 
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox

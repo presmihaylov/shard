@@ -24,6 +24,28 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
 
+## Granting after the create
+
+```
+shard stop web
+shard secret grant web OPENAI_API_KEY
+shard start web
+shard secret ungrant web OPENAI_API_KEY
+```
+
+`shard secret grant <id|name> <NAME>` hands a sandbox that already exists the same placeholder a
+create with `--secret` would have given it: the placeholder goes into the bundle environment, the
+proxy CA is planted in the writable layer, and the grant goes into the record. `shard secret ungrant`
+takes the placeholder and the grant back, and leaves the CA in place.
+
+Both verbs take a created or stopped sandbox only. A running guest holds its environment in its
+processes and a paused one holds it in its snapshot, so both are refused with `stop it first`. Both
+verbs are safe to run again: a grant the record already names changes nothing.
+
+A grant is refused when the guest environment already holds that name, and a refused grant writes
+nothing at all. `shard secret rm` refuses while any sandbox holds a grant and names the holders:
+ungrant it first, remove those sandboxes, or pass `--force`.
+
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
 fronted: the host turns its web traffic to the egress proxy, which is where the value goes in. See
 `docs/egress.md` for what fronting means. On the way out, the proxy replaces the placeholder with
@@ -70,9 +92,9 @@ reads the store per request, so a live sandbox uses the new value on its next re
 learns that anything changed.
 
 A rotation that also moves the placeholder is refused while any sandbox holds a grant on the secret,
-because that sandbox holds the old placeholder and would never be matched again: ungrant those
-sandboxes first. It is refused too when the sandbox records cannot be read, since nothing can then
-say the secret is free.
+because that sandbox holds the old placeholder and would never be matched again: ungrant it there
+first. It is refused too when the sandbox records cannot be read, since nothing can then say the
+secret is free.
 
 ## A grant may name a wildcard
 
