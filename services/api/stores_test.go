@@ -26,7 +26,7 @@ type fakeStores struct {
 	// value is what a secret PUT carried, which nothing else may ever hold.
 	value        string
 	destinations []string
-	headers      []string
+	placeholder  string
 
 	policies []models.Policy
 	secrets  []secret.Secret
@@ -64,12 +64,12 @@ func (f *fakeStores) RemovePolicy(name string) error {
 }
 
 func (f *fakeStores) SetSecret(name string, req sandbox.SecretRequest) (secret.Secret, error) {
-	f.name, f.value, f.destinations, f.headers = name, req.Value, req.Destinations, req.Headers
+	f.name, f.value, f.destinations, f.placeholder = name, req.Value, req.Destinations, req.Placeholder
 	if f.err != nil {
 		return secret.Secret{}, f.err
 	}
 
-	return secret.Secret{Name: name, Destinations: req.Destinations}, nil
+	return secret.Secret{Name: name, Destinations: req.Destinations, Placeholder: req.Placeholder}, nil
 }
 
 func (f *fakeStores) Secrets() ([]secret.Secret, error) { return f.secrets, f.listErr }
@@ -211,13 +211,13 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 func TestPutSecretCarriesTheValueOnceAndAnswersWithout(t *testing.T) {
 	s := seed(t)
 
-	body := `{"value":"sk-live-synthetic","destinations":["api.example.com"],"headers":["Authorization: Bearer {value}"]}`
+	body := `{"value":"sk-live-synthetic","destinations":["api.example.com"],"placeholder":"sk_test_shaped01"}`
 	status, answer := send(t, s.server, http.MethodPut, "/v0/secrets/openai", body)
 	if status != http.StatusOK {
 		t.Fatalf("PUT /v0/secrets/openai answered %d %v", status, answer)
 	}
-	if s.stores.value != "sk-live-synthetic" || len(s.stores.headers) != 1 {
-		t.Errorf("the store got value %q and headers %v", s.stores.value, s.stores.headers)
+	if s.stores.value != "sk-live-synthetic" || s.stores.placeholder != "sk_test_shaped01" {
+		t.Errorf("the store got value %q and placeholder %q", s.stores.value, s.stores.placeholder)
 	}
 	if _, ok := answer["value"]; ok {
 		t.Errorf("the answer carries the value: %v", answer)

@@ -140,11 +140,11 @@ expect_blocked() {
 	expect "${got}" "blocked" "${note}"
 }
 
-# fetch runs busybox wget in a sandbox against one echo name, over http or https, with the placeholder in
-# the Authorization header, and prints the lines the echo answered with.
+# fetch runs busybox wget in a sandbox against one echo name, over http or https, with the placeholder of
+# each secret in a header, and prints the lines the echo answered with.
 fetch() {
 	local id="$1" scheme="$2" host="$3"
-	shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" ${scheme}://${host}/"
+	shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" --header \"X-Shaped: \$E2E_SHAPED\" ${scheme}://${host}/"
 }
 
 # expect_fronted fails when a request from the sandbox to the granted host does not carry the real value,
@@ -443,7 +443,16 @@ expect "${DAEMON_LINE}" "daemon ${CLIENT_LINE#client }" "version prints the clie
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" --header 'X-E2E-Auth: token {value}' E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN >/dev/null
+# The second secret names its own placeholder, for an SDK that checks the shape of a key before it sends it.
+SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
+SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
+CAUTION=$(shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
+echo "${CAUTION}" | grep -q "visible in the process list" || fail "a value on the command line printed no caution: '${CAUTION}'"
+say "a value on the command line is stored, with a caution on stderr"
+SHAPED_LS=$(shard secret ls)
+echo "${SHAPED_LS}" | grep -q "${SHAPED_PLACEHOLDER}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
+say "secret ls prints the chosen placeholder"
 SECRET_LS=$(shard secret ls)
 echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
 echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
@@ -480,7 +489,7 @@ say "policy create refuses a raw-port name rule, an in-label wildcard, the old s
 
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create --secret E2E_TOKEN --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+ID=$(shard create --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -574,6 +583,10 @@ expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat
 
 step "hold the placeholder and never the value"
 expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bin/sh -c 'echo "$E2E_TOKEN"'
+expect_exec "${SHAPED_PLACEHOLDER}" "the guest sees the chosen placeholder as \$E2E_SHAPED" /bin/sh -c 'echo "$E2E_SHAPED"'
+printf '%s\n' "${SHAPED_VALUE}" | shard secret set --placeholder sk_test_othershape01 E2E_SHAPED >/dev/null 2>"${SHARD_ROOT}/moved.err" && fail "secret set moved a placeholder the sandbox holds"
+grep -q "${ID}" "${SHARD_ROOT}/moved.err" || fail "the refusal does not name the sandbox: $(cat "${SHARD_ROOT}/moved.err")"
+say "secret set refuses to move a placeholder the sandbox holds, and names it"
 # The store file is the one place the value is written; nothing under the sandbox tree or anywhere else holds it.
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
 shard inspect "${ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
@@ -595,13 +608,13 @@ say "the guest trusts the proxy CA and still trusts the image's roots"
 expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
 GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
 echo "${GOT}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
-echo "${GOT}" | grep -qx "x-e2e-auth=token ${SECRET_VALUE}" || fail "the echo saw '${GOT}' over tls, want the header the grant sets"
-say "the same holds over tls, and the proxy set the grant's own header"
+echo "${GOT}" | grep -qx "x-shaped=${SHAPED_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
+say "the same holds over tls, and the chosen placeholder carries its own value"
 
 GOT=$(fetch "${ID}" http "${OTHER_HOST}") || fail "the http request to ${OTHER_HOST} failed"
 echo "${GOT}" | grep -qx "authorization=Bearer mock-E2E_TOKEN" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
-echo "${GOT}" | grep -q "x-e2e-auth=$" || fail "the echo saw '${GOT}' from the other host, want no grant header"
-say "a request to a host the policy allows but the grant does not keeps the placeholder"
+echo "${GOT}" | grep -qx "x-shaped=${SHAPED_PLACEHOLDER}" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
+say "a request to a host the policy allows but the grant does not keeps both placeholders"
 
 expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
@@ -889,6 +902,7 @@ say "rm returned"
 
 step "remove the secret nothing holds any more"
 shard secret rm E2E_TOKEN >/dev/null
+shard secret rm E2E_SHAPED >/dev/null
 absent "the secret file" "$([ -e "${SHARD_ROOT}/secrets/E2E_TOKEN" ] && echo "${SHARD_ROOT}/secrets/E2E_TOKEN" || true)"
 say "secret rm removed the secret"
 

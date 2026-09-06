@@ -53,12 +53,12 @@ Usage:
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
-  shard secret set --to <host>... [--header <h>]... [--match <m>]... <NAME>
-                           store a secret read from stdin, granted to those hosts; set again to rotate the value
-                           the guest sees mock-NAME, and the proxy puts the value in its place on a granted request
-                           --header 'Name: value {value}' is set by the proxy on a granted request, over what the guest sent
-                           --match path=/v1/ method=POST query=k=v header=Name=v gates the headers, all of them must hold
-  shard secret ls          list the secrets by name and destination, never by value
+  shard secret set --to <host>... [--placeholder <string>] <NAME> [-- VALUE]
+                           store a secret granted to those hosts; set again to rotate the value
+                           the guest sees the placeholder, and the proxy puts the value in its place on a granted request
+                           the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
+                           --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key
+  shard secret ls          list the secrets by name, destination and placeholder, never by value
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>

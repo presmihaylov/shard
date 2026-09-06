@@ -70,35 +70,32 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 	}, nil
 }
 
-// Rewrite replaces the placeholder of every secret granted to the host, then sets the headers the grant asks for.
+// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder.
 func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte) ([]byte, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
 		return nil, err
 	}
 
-	// mock-TOKEN sits inside mock-TOKEN_B, so the longest placeholder goes first or a shorter name eats it.
-	names := slices.Clone(sb.Secrets)
-	slices.SortStableFunc(names, func(a, b string) int { return len(b) - len(a) })
+	// A placeholder that is not substituted still maps to itself, so a longer one cannot be eaten by a shorter.
+	type swap struct{ placeholder, with string }
+	swaps := make([]swap, 0, len(sb.Secrets))
 
-	// A name that is not substituted still maps to itself, so one pass cannot let a granted name eat its placeholder.
-	var pairs []string
-	var apply []secret.Header
-
-	for _, name := range names {
-		placeholder := secret.MockValue(name)
-
+	for _, name := range sb.Secrets {
 		sec, err := b.secrets.Get(name)
 		if errors.Is(err, secret.ErrNotFound) {
 			// A secret removed with --force leaves a placeholder no request can redeem, and it goes out as it is.
-			pairs = append(pairs, placeholder, placeholder)
+			placeholder := secret.DefaultPlaceholder(name)
+			swaps = append(swaps, swap{placeholder, placeholder})
+
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
 		if !granted(sec, req.Host) {
-			pairs = append(pairs, placeholder, placeholder)
+			swaps = append(swaps, swap{sec.Placeholder, sec.Placeholder})
+
 			continue
 		}
 
@@ -107,23 +104,18 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 			return nil, err
 		}
 
-		pairs = append(pairs, placeholder, value)
-
-		// The match reads the request the guest sent, so it never sees another grant's substitution.
-		if matches(sec.Match, out) {
-			for _, header := range sec.Headers {
-				apply = append(apply, secret.Header{Name: header.Name, Value: strings.ReplaceAll(header.Value, "{value}", value)})
-			}
-		}
+		swaps = append(swaps, swap{sec.Placeholder, value})
 	}
 
-	body = substitute(out, body, strings.NewReplacer(pairs...))
+	// mock-TOKEN sits inside mock-TOKEN_B, so the longest placeholder goes first or a shorter one eats it.
+	slices.SortStableFunc(swaps, func(a, b swap) int { return len(b.placeholder) - len(a.placeholder) })
 
-	for _, header := range apply {
-		out.Header.Set(header.Name, header.Value)
+	pairs := make([]string, 0, len(swaps)*2)
+	for _, s := range swaps {
+		pairs = append(pairs, s.placeholder, s.with)
 	}
 
-	return body, nil
+	return substitute(out, body, strings.NewReplacer(pairs...)), nil
 }
 
 func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
@@ -169,30 +161,4 @@ func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []by
 	}
 
 	return []byte(replacer.Replace(string(body)))
-}
-
-// matches is all-of over what the grant asks: an empty match meets every request.
-func matches(match secret.Match, out *http.Request) bool {
-	if match.Path != "" && !strings.HasPrefix(out.URL.Path, match.Path) {
-		return false
-	}
-	if match.Method != "" && out.Method != match.Method {
-		return false
-	}
-
-	query := out.URL.Query()
-	for _, pair := range match.Query {
-		key, want, _ := strings.Cut(pair, "=")
-		if query.Get(key) != want {
-			return false
-		}
-	}
-	for _, pair := range match.Headers {
-		key, want, _ := strings.Cut(pair, "=")
-		if out.Header.Get(key) != want {
-			return false
-		}
-	}
-
-	return true
 }

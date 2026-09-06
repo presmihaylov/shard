@@ -107,7 +107,7 @@ func TestDecideNamesTheSandboxByAddressAndPinsTheUpstream(t *testing.T) {
 		{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")},
 		{ID: "free", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.3/16")},
 	}}
-	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
 	web := models.Policy{Name: "web", Rules: []models.Rule{
 		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
 	}}
@@ -147,7 +147,7 @@ func TestDecideNamesTheSandboxByAddressAndPinsTheUpstream(t *testing.T) {
 
 func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "GONE"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
-	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"*.example.com"}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"*.example.com"}}}
 	b := newBroker(t, records, secrets)
 
 	out := request(t, http.MethodPost, "https://api.example.com/v1/mock-TOKEN?key=mock-TOKEN&gone=mock-GONE")
@@ -187,7 +187,7 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 func TestRewriteReplacesTheLongestPlaceholderFirst(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "TOKEN_B"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	secrets := fixedSecrets{
-		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Destinations: []string{"api.example.com"}}},
+		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Placeholder: "mock-TOKEN_B", Destinations: []string{"api.example.com"}}},
 		values:      map[string]string{"TOKEN": "aaaa", "TOKEN_B": "bbbb"},
 	}
 	b := newBroker(t, records, secrets)
@@ -213,7 +213,7 @@ func TestRewriteReplacesTheLongestPlaceholderFirst(t *testing.T) {
 func TestRewriteLeavesASkippedPlaceholderWholeUnderAGrantedPrefix(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "TOKEN_B"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	secrets := fixedSecrets{
-		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Destinations: []string{"other.example.com"}}},
+		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Placeholder: "mock-TOKEN_B", Destinations: []string{"other.example.com"}}},
 		values:      map[string]string{"TOKEN": "aaaa", "TOKEN_B": "bbbb"},
 	}
 	b := newBroker(t, records, secrets)
@@ -236,46 +236,46 @@ func TestRewriteLeavesASkippedPlaceholderWholeUnderAGrantedPrefix(t *testing.T) 
 	}
 }
 
-func TestRewriteSetsTheGrantHeadersWhenTheMatchHolds(t *testing.T) {
-	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
-	secrets := fakeSecrets{"TOKEN": {
-		Name:         "TOKEN",
-		Destinations: []string{"api.example.com"},
-		Headers:      []secret.Header{{Name: "Authorization", Value: "Bearer {value}"}, {Name: "X-Static", Value: "fixed"}},
-		Match:        secret.Match{Path: "/v1/", Method: "POST", Query: []string{"team=blue"}, Headers: []string{"X-Env=prod"}},
-	}}
+func TestRewriteSwapsACustomPlaceholder(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"SHAPED"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"SHAPED": {Name: "SHAPED", Placeholder: "sk_test_shaped01", Destinations: []string{"api.example.com"}}}
 	b := newBroker(t, records, secrets)
-	req := proxy.Request{Source: source, Host: "api.example.com", Port: 443}
 
-	out := request(t, http.MethodPost, "https://api.example.com/v1/chat?team=blue")
-	out.Header.Set("X-Env", "prod")
-	out.Header.Set("Authorization", "Bearer guest-said-so")
-	if _, err := b.Rewrite(t.Context(), req, out, nil); err != nil {
+	out := request(t, http.MethodPost, "https://api.example.com/v1/chat")
+	out.Header.Set("Authorization", "Bearer sk_test_shaped01")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
 		t.Fatal(err)
 	}
-	if out.Header.Get("Authorization") != "Bearer real-TOKEN" || out.Header.Get("X-Static") != "fixed" {
-		t.Errorf("a matching request got %v", out.Header)
+	if out.Header.Get("Authorization") != "Bearer real-SHAPED" {
+		t.Errorf("the granted host got %v", out.Header)
 	}
 
-	for _, miss := range []*http.Request{
-		request(t, http.MethodGet, "https://api.example.com/v1/chat?team=blue"),
-		request(t, http.MethodPost, "https://api.example.com/v2/chat?team=blue"),
-		request(t, http.MethodPost, "https://api.example.com/v1/chat?team=red"),
-		request(t, http.MethodPost, "https://api.example.com/v1/chat?team=blue"),
-	} {
-		if miss.URL.Path == "/v1/chat" && miss.Method == http.MethodPost && miss.URL.RawQuery == "team=blue" {
-			miss.Header.Set("X-Env", "staging")
-		}
-		if miss.Header.Get("X-Env") == "" && miss.Method != http.MethodPost {
-			miss.Header.Set("X-Env", "prod")
-		}
-		miss.Header.Set("Authorization", "Bearer mock-TOKEN")
-		if _, err := b.Rewrite(t.Context(), req, miss, nil); err != nil {
-			t.Fatal(err)
-		}
-		// The match gates the headers only: the placeholder is still replaced.
-		if out := miss.Header.Get("Authorization"); out != "Bearer real-TOKEN" || miss.Header.Get("X-Static") != "" {
-			t.Errorf("%s %s got %v", miss.Method, miss.URL, miss.Header)
-		}
+	out = request(t, http.MethodPost, "https://other.example.com/v1/chat")
+	out.Header.Set("Authorization", "Bearer sk_test_shaped01")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.Header.Get("Authorization") != "Bearer sk_test_shaped01" {
+		t.Errorf("a host the grant does not name got the value: %v", out.Header)
+	}
+}
+
+func TestRewritePutsACustomPlaceholderThatHoldsADefaultOneFirst(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "SHAPED"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fixedSecrets{
+		fakeSecrets: fakeSecrets{
+			"TOKEN":  {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}},
+			"SHAPED": {Name: "SHAPED", Placeholder: "sk_mock-TOKEN_live01", Destinations: []string{"api.example.com"}},
+		},
+		values: map[string]string{"TOKEN": "aaaa", "SHAPED": "bbbb"},
+	}
+	b := newBroker(t, records, secrets)
+
+	out := request(t, http.MethodPost, "https://api.example.com/sk_mock-TOKEN_live01/mock-TOKEN")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.URL.Path != "/bbbb/aaaa" {
+		t.Errorf("the url became %s", out.URL)
 	}
 }

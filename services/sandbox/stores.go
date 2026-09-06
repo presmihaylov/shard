@@ -24,7 +24,7 @@ type PolicyStore interface {
 
 // SecretStore is the part of secret.Store the secret verbs drive. No verb reads a value.
 type SecretStore interface {
-	Set(name, value string, destinations []string, headers []secret.Header, match secret.Match) (secret.Secret, error)
+	Set(name, value string, destinations []string, placeholder string) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
 	List() ([]secret.Secret, error)
 	Remove(name string) error
@@ -92,9 +92,8 @@ type PolicyRequest struct {
 type SecretRequest struct {
 	Value        string   `json:"value"`
 	Destinations []string `json:"destinations,omitempty"`
-	// Headers and Match are as the operator spelled them; the daemon owns the grammar, like a policy rule.
-	Headers []string `json:"headers,omitempty"`
-	Match   []string `json:"match,omitempty"`
+	// Placeholder overrides the default; empty on a rotation keeps the one the secret already has.
+	Placeholder string `json:"placeholder,omitempty"`
 }
 
 // SetPolicy stores the policy and puts the new rules on every sandbox that holds it at once.
@@ -186,21 +185,7 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 		return secret.Secret{}, &RequestError{Err: fmt.Errorf("secret %s has no value", name)}
 	}
 
-	var headers []secret.Header
-	for _, spelling := range req.Headers {
-		header, err := secret.ParseHeader(spelling)
-		if err != nil {
-			return secret.Secret{}, &RequestError{Err: err}
-		}
-		headers = append(headers, header)
-	}
-
-	match, err := secret.ParseMatch(req.Match)
-	if err != nil {
-		return secret.Secret{}, &RequestError{Err: err}
-	}
-
-	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, headers, match)
+	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.Placeholder)
 	if err != nil {
 		return secret.Secret{}, &RequestError{Err: err}
 	}

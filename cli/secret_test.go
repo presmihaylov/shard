@@ -150,68 +150,71 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	}
 }
 
-// A record written before the placeholder was fixed at mock-NAME may hold another, and a sandbox created then holds that one.
 func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
 	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
 	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
-	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := `{"name":"KEY","value":"value-123456","destinations":["api.example.com"],"mock_value":"placeholder-key","updated_at":"2026-01-01T00:00:00Z"}`
-	if err := os.WriteFile(filepath.Join(root, "secrets", "KEY"), []byte(old), 0o600); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"})
+	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
+	app.Root = root
+	err := app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_moved01", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "sb1") || !strings.Contains(err.Error(), "ungrant") {
-		t.Errorf("set over a moved placeholder while held = %v", err)
+		t.Errorf("set that moves a held placeholder = %v", err)
 	}
 
 	repo.unreadable = os.ErrPermission
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
-	err = app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"})
+	err = app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_moved01", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "permission") {
-		t.Errorf("set over a moved placeholder with an unreadable record = %v", err)
+		t.Errorf("set that moves a placeholder with an unreadable record = %v", err)
 	}
 }
 
-func TestSecretSetStoresTheHeadersAndTheMatch(t *testing.T) {
+func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 	var out bytes.Buffer
 
-	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+	app, _ := newSecretApp(t, &out, "from-stdin-1234\n", &fakeLifecycleRepo{r: &recorder{}})
 
-	args := []string{"secret", "set", "--to", "api.example.com", "--header", "Authorization: Bearer {value}", "--match", "path=/v1/", "--match", "method=post", "KEY"}
-	if err := app.Run(t.Context(), args); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY", "on-the-argv-12"}); err != nil {
 		t.Fatalf("secret set: %v", err)
 	}
-
-	blob, err := os.ReadFile(filepath.Join(root, "secrets", "KEY"))
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(out.String(), cautionOnArgv) {
+		t.Errorf("the argv path printed no caution:\n%s", out.String())
 	}
-	for _, want := range []string{`"Authorization"`, `"Bearer {value}"`, `"/v1/"`, `"POST"`} {
-		if !strings.Contains(string(blob), want) {
-			t.Errorf("the record lacks %s:\n%s", want, blob)
-		}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_shaped01", "KEY", "-"}); err != nil {
+		t.Fatalf("secret set -: %v", err)
+	}
+	if strings.Contains(out.String(), "caution") {
+		t.Errorf("the stdin path printed a caution:\n%s", out.String())
 	}
 
 	out.Reset()
 	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Authorization") || strings.Contains(out.String(), "value-123456") {
+	if !strings.Contains(out.String(), "sk_test_shaped01") || strings.Contains(out.String(), "from-stdin") {
 		t.Errorf("ls printed:\n%s", out.String())
 	}
+}
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--header", "no colon", "KEY"}); err == nil {
-		t.Error("set accepted a header with no colon")
-	}
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--match", "verb=GET", "KEY"}); err == nil {
-		t.Error("set accepted a match key it does not know")
+func TestSecretSetRefusesAPlaceholderTheStoreWillNotTake(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	for _, chosen := range []string{"sk_test", "sk test shaped"} {
+		err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--placeholder", chosen, "KEY"})
+		if err == nil {
+			t.Errorf("set took the placeholder %q", chosen)
+		}
 	}
 }
 

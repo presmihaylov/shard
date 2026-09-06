@@ -12,7 +12,6 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
-	"github.com/presmihaylov/shard/services/secret"
 )
 
 func alpine() sandbox.CreateRequest {
@@ -237,7 +236,7 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 func TestCreateHandsTheGuestThePlaceholderAndRecordsTheGrant(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
 
-	if _, err := l.secrets.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, nil, secret.Match{}); err != nil {
+	if _, err := l.secrets.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, ""); err != nil {
 		t.Fatal(err)
 	}
 

@@ -340,7 +340,7 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 			return nil, err
 		}
 
-		env = append(env, name+"="+secret.MockValue(sec.Name))
+		env = append(env, name+"="+sec.Placeholder)
 	}
 
 	return env, nil
