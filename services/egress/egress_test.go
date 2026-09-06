@@ -233,7 +233,7 @@ func TestDecideWalksTheEffectiveRulesByName(t *testing.T) {
 		want models.Action
 		rule string
 	}{
-		{"bad.example.com", 443, public, models.ActionAllow, "allow bad.example.com tcp:80,443"},
+		{"bad.example.com", 443, public, models.ActionDeny, "deny bad.example.com tcp:80,443"},
 		{"api.example.com", 80, public, models.ActionAllow, "allow suffix:example.com tcp:80,443"},
 		{"example.com", 80, public, models.ActionAllow, "allow suffix:example.com tcp:80,443"},
 		{"notexample.com", 443, public, models.ActionDeny, ""},
@@ -291,47 +291,82 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 
 var nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
 
-func TestEffectivePutsWhatTheGrantsImplyFirst(t *testing.T) {
-	s := newStore(t)
-	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
-		t.Fatal(err)
+func TestEffectivePutsThePolicyRulesAheadOfTheGrants(t *testing.T) {
+	// The three spellings are one rule: each covers everything, so each closes every grant when it comes first.
+	for _, catchAll := range []string{"any", "0.0.0.0/0", "0.0.0.0/0 tcp"} {
+		s := newStore(t)
+		if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{
+			mustRule(t, models.ActionAllow, "93.184.216.0/24 tcp:80"),
+			mustRule(t, models.ActionDeny, catchAll),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+
+		svc := New(s, nil, fakeGrants{"TOKEN": {"api.example.com"}}, nameservers, fakeResolver{})
+		sb := models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN", "GONE"}}
+
+		got, err := svc.Effective(sb)
+		if err != nil {
+			t.Fatalf("Effective: %v", err)
+		}
+
+		var shape []string
+		for _, rule := range got.Rules {
+			shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
+		}
+		want := []string{
+			"allow cidr:1.1.1.1 udp dns",
+			"allow cidr:1.1.1.1 tcp dns",
+			"allow cidr:93.184.216.0/24 tcp ",
+			"allow domain:api.example.com tcp secret TOKEN",
+		}
+		if !slices.Equal(shape[:len(want)], want) {
+			t.Errorf("Effective under %q = %v, want %v ahead of the catch-all", catchAll, shape, want)
+		}
+		if last := got.Rules[len(got.Rules)-1]; last.Action != models.ActionDeny || !coversAll(last.Destination) {
+			t.Errorf("the last rule of %q is %v, want the catch-all deny", catchAll, last)
+		}
+
+		// The proxy logs the id and the host chains log the same one, so the ids count the effective order.
+		var ids []string
+		for _, rule := range got.Rules {
+			ids = append(ids, rule.ID)
+		}
+		if !slices.Equal(ids, []string{"1", "2", "3", "4", "5"}) {
+			t.Errorf("Effective gave the ids %v", ids)
+		}
+
+		// A grant still opens its host when the policy says nothing about it, catch-all or not.
+		if decision, err := svc.Decide(sb, "api.example.com", 443, netip.MustParseAddr("93.184.216.34")); err != nil || decision.Action != models.ActionAllow {
+			t.Errorf("under %q the granted host got %+v, %v", catchAll, decision, err)
+		}
 	}
 
-	svc := New(s, nil, fakeGrants{"TOKEN": {"api.example.com"}}, nameservers, fakeResolver{})
-
-	got, err := svc.Effective(models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN", "GONE"}})
-	if err != nil {
-		t.Fatalf("Effective: %v", err)
-	}
-
-	var shape []string
-	for _, rule := range got.Rules {
-		shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
-	}
-	want := []string{
-		"allow cidr:1.1.1.1 udp dns",
-		"allow cidr:1.1.1.1 tcp dns",
-		"allow domain:api.example.com tcp secret TOKEN",
-		"deny group:any  ",
-	}
-	if !slices.Equal(shape, want) {
-		t.Errorf("Effective = %v, want %v", shape, want)
-	}
-
-	// The proxy logs the id and the host chains log the same one, so the ids count the effective order.
-	var ids []string
-	for _, rule := range got.Rules {
-		ids = append(ids, rule.ID)
-	}
-	if !slices.Equal(ids, []string{"1", "2", "3", "4"}) {
-		t.Errorf("Effective gave the ids %v", ids)
-	}
-
+	svc := New(newStore(t), nil, fakeGrants{}, nameservers, fakeResolver{})
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
 		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
 	}
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox3", Policy: "gone"}); err != nil || !got.Missing {
 		t.Errorf("a sandbox whose policy is gone got %+v, %v", got, err)
+	}
+}
+
+// A grant is not a licence: the operator who wrote the deny outranks the grant that came with the secret.
+func TestDecideLetsAPolicyDenyOutrankAGrant(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "api.example.com")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(s, nil, fakeGrants{"TOKEN": {"api.example.com", "hooks.example.net"}}, nameservers, fakeResolver{})
+	sb := models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN"}}
+	public := netip.MustParseAddr("93.184.216.34")
+
+	if got, err := svc.Decide(sb, "api.example.com", 443, public); err != nil || got.Action != models.ActionDeny {
+		t.Errorf("the denied host got %+v, %v, want a deny", got, err)
+	}
+	if got, err := svc.Decide(sb, "hooks.example.net", 443, public); err != nil || got.Action != models.ActionAllow {
+		t.Errorf("the granted host the policy is silent about got %+v, %v, want an allow", got, err)
 	}
 }
 

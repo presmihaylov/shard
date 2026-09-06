@@ -621,6 +621,14 @@ say "a request to a host the policy allows but the grant does not keeps both pla
 
 expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
+step "a policy deny outranks the grant"
+# The three names share the host's address, so 80 and 443 go to the proxy and the proxy is the only judge.
+shard policy create --deny "${ECHO_HOST}" --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+expect_exec "403 Forbidden" "a request to the granted host the policy denies gets a 403" \
+	/bin/sh -c "wget -S -O /dev/null --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
+shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+expect_fronted "${ID}" "the same grant passes again once the policy says nothing about the host"
+
 expect_exec "" "the value is not in the guest's environment" /bin/sh -c "env | grep -F '${SECRET_VALUE}' || true"
 absent "the value in the daemon log" "$(grep -l "${SECRET_VALUE}" "${DAEMON_LOG}" || true)"
 absent "the value in the sandbox tree" "$(grep -rl "${SECRET_VALUE}" "${SHARD_ROOT}/sandboxes/${ID}" 2>/dev/null || true)"
