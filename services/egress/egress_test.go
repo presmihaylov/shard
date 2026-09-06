@@ -467,8 +467,30 @@ func TestValidateWildcardDomainRules(t *testing.T) {
 
 	bad := []string{"api*.example.com", "suffix:*.example.com", "suffix:*"}
 	for _, text := range bad {
-		if _, err := ParseRule(models.ActionAllow, text); err == nil {
+		_, err := ParseRule(models.ActionAllow, text)
+		if err == nil {
 			t.Errorf("ParseRule accepted %q", text)
+
+			continue
 		}
+		// A mistyped rule may carry a secret value, so no refusal echoes the host it refused.
+		if strings.Contains(err.Error(), strings.TrimPrefix(text, "suffix:")) {
+			t.Errorf("the refusal echoes the host it refused: %v", err)
+		}
+	}
+}
+
+func TestValidateNamesThePositionOfTheRuleItRefused(t *testing.T) {
+	policy := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{443}},
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "sk_live_secret"}, Protocol: "tcp", Ports: []int{443}},
+	}}
+
+	err := Validate(policy)
+	if err == nil || !strings.Contains(err.Error(), "rule 2") {
+		t.Errorf("Validate = %v, want the position of the rule it refused", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "sk_live_secret") {
+		t.Errorf("the refusal echoes the host it refused: %v", err)
 	}
 }

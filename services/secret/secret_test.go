@@ -410,3 +410,64 @@ func TestReadRefusesANameThatEscapesTheStore(t *testing.T) {
 		}
 	}
 }
+
+func TestValidNameNeverEchoesTheNameItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	// A mistyped set hands the value as the name, so the refusal must not put it on a screen or in a log.
+	for _, name := range []string{"sk-live-abcdef123456", strings.Repeat("A", maxChars+1)} {
+		err := ValidName(name)
+		if err == nil {
+			t.Fatalf("ValidName(%d characters) took the name", len(name))
+		}
+		if strings.Contains(err.Error(), name) {
+			t.Errorf("the refusal echoes the name it refused")
+		}
+
+		_, err = s.Set(name, "some-value-123", []string{"api.example.com"}, "")
+		if err == nil {
+			t.Fatal("Set took the name")
+		}
+		if strings.Contains(err.Error(), name) {
+			t.Errorf("the Set refusal echoes the name it refused")
+		}
+	}
+}
+
+func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	// A mistyped --to hands the value as the destination, and every refusal keeps it off the screen.
+	for _, dest := range []string{"sk-live-abcdef123456", "https://sk-live-abcdef123456/v1", "10.0.0.1", "nodot", "api*.example.com", "sk_live_underscore.example.com", strings.Repeat("a", 254) + ".example.com"} {
+		_, err := ValidDestination(dest)
+		if err == nil {
+			t.Fatalf("ValidDestination(%d characters) took the destination", len(dest))
+		}
+		if strings.Contains(err.Error(), dest) {
+			t.Errorf("the refusal echoes the destination it refused: %v", err)
+		}
+
+		_, err = s.Set("TOKEN", "some-value-123", []string{dest}, "")
+		if err == nil {
+			t.Fatal("Set took the destination")
+		}
+		if strings.Contains(err.Error(), dest) {
+			t.Errorf("the Set refusal echoes the destination it refused: %v", err)
+		}
+	}
+}
+
+func TestSetNamesThePositionOfTheDestinationItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	_, err := s.Set("TOKEN", "some-value-123", []string{"api.example.com", "cdn.example.com", "bad_host", "ok.example.com"}, "")
+	if err == nil {
+		t.Fatal("Set took a bad destination")
+	}
+	if !strings.Contains(err.Error(), "3rd destination") {
+		t.Errorf("Set = %v, want the position of the destination it refused", err)
+	}
+	if strings.Contains(err.Error(), "bad_host") {
+		t.Errorf("the refusal echoes the destination it refused: %v", err)
+	}
+}
