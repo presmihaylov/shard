@@ -123,7 +123,7 @@ func (f *fakeDaemon) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.build()
 
-		enforcer := egress.New(f.policySvc, f.repoSvc, f.secretSvc, network.DefaultNameservers, nil)
+		enforcer := egress.New(f.policySvc, f.repoSvc, network.DefaultNameservers, nil)
 		api.NewHandler("v-daemon", f.repoSvc, enforcer, f.svc, f.stores, fakeEgressLog{records: f.egressLog}, io.Discard).ServeHTTP(w, r)
 	})
 }

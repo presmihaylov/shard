@@ -24,6 +24,10 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
 
+A grant does not open the host and does not close anything. The sandbox's policy decides what it may
+reach; the grant decides only where the value may be put in. A sandbox with a policy needs an allow
+for the granted host in that policy.
+
 ## Granting after the create
 
 ```

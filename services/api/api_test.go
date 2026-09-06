@@ -17,7 +17,6 @@ import (
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandboxstate"
-	"github.com/presmihaylov/shard/services/secret"
 )
 
 // seeded is a repository on disk with one running and one stopped sandbox, the way a daemon finds it.
@@ -50,12 +49,7 @@ func seed(t *testing.T) seeded {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	secrets, err := secret.New(filepath.Join(root, "secrets"), nil)
-	if err != nil {
-		t.Fatalf("secret.New: %v", err)
-	}
-
-	enforcer := egress.New(policies, repo, secrets, network.DefaultNameservers, nil)
+	enforcer := egress.New(policies, repo, network.DefaultNameservers, nil)
 
 	verbs, stores := &fakeLifecycle{}, &fakeStores{}
 

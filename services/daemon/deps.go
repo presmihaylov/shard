@@ -191,8 +191,8 @@ func (d *deps) policiesLocked() (*egress.Store, error) {
 	return d.policySvc, nil
 }
 
-// egress is what the network service compiles the host rules from. It reads the records, the policies
-// and the grants, so it needs the stores and never the substrate.
+// egress is what the network service compiles the host rules from. It reads the records and the
+// policies, so it needs the stores and never the substrate.
 func (d *deps) egressLocked() (*egress.Service, error) {
 	policies, err := d.policiesLocked()
 	if err != nil {
@@ -204,12 +204,7 @@ func (d *deps) egressLocked() (*egress.Service, error) {
 		return nil, err
 	}
 
-	secrets, err := d.secretsLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
+	return egress.New(policies, repo, network.DefaultNameservers, nil), nil
 }
 
 // egressLog is the decision log every fronted sandbox gets one file of, under its own state directory.

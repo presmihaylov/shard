@@ -113,7 +113,7 @@ func newBrokerLog(t *testing.T, records Records, secrets Secrets, policies ...mo
 	}
 
 	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}}
-	svc := egress.New(store, records, secrets, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
+	svc := egress.New(store, records, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
 
 	log := &fakeLog{}
 
@@ -171,6 +171,40 @@ func TestDecideNamesTheSandboxByAddressAndPinsTheUpstream(t *testing.T) {
 	}
 	if _, err := newBroker(t, fakeRecords{err: errors.New("disk")}, secrets).Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 80}); err == nil {
 		t.Error("unreadable records still judged")
+	}
+}
+
+// A grant opens nothing: the policy decides the host, so a denied one never reaches Rewrite.
+func TestDecideDeniesAGrantedHostThePolicyDoesNotAllow(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com", "other.example.com"}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "other.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+		{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}},
+	}}
+	b := newBroker(t, records, secrets, web)
+
+	got, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got.Allowed || got.Rule != "deny any" {
+		t.Errorf("the granted host the policy does not allow got %+v, want the catch-all deny", got)
+	}
+
+	// The host the policy does allow still substitutes: both halves are needed, and both are there.
+	got, err = b.Decide(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443, TLS: true})
+	if err != nil || !got.Allowed {
+		t.Fatalf("the allowed granted host got %+v, %v", got, err)
+	}
+
+	out := request(t, http.MethodGet, "https://other.example.com/")
+	out.Header.Set("Authorization", "Bearer mock-TOKEN")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if out.Header.Get("Authorization") != "Bearer real-TOKEN" {
+		t.Errorf("the allowed granted host did not get the value: %v", out.Header)
 	}
 }
 
