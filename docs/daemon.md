@@ -167,8 +167,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   entrypoint wrote. With `?follow=true` it streams and flushes every write, and ends when the
   sandbox stops or the client goes away. 404; 400 for a `follow` that is not a boolean.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
-  array, oldest first: the proxy's own records merged with the host drops still in the kernel ring.
+  array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
   404. `shard logs --egress` prints one record per line.
+- `GET /v0/sandboxes/{id}/egress-log?follow=true` answers 101 and takes the connection over, like an
+  exec: one record per stdout frame, and the reason the follow ended on the exit frame. A removed
+  sandbox ends it that way; a failure of the follow goes on the error frame. 404 before the 101; 400
+  for a `follow` that is not a boolean.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already

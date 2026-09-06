@@ -42,6 +42,8 @@ type Lifecycle interface {
 // EgressLog is what shard logs --egress prints: every decision made for one sandbox, oldest first.
 type EgressLog interface {
 	Read(sb models.Sandbox) ([]egress.Record, error)
+	// Follow yields the records the log holds and then every one appended after, until ctx ends.
+	Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error
 }
 
 // Handler answers the routes over one repository, the rules the host enforces, and the one orchestrator.
@@ -167,6 +169,19 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.repo.Get(id)
 	if err != nil {
 		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	follow, err := boolQuery(r, "follow")
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	if follow {
+		h.followEgressLog(w, r, sb)
 
 		return
 	}

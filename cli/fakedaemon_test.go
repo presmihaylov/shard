@@ -118,6 +118,17 @@ type fakeEgressLog struct {
 
 func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, error) { return f.records, nil }
 
+// Follow hands over what the log holds and then ends as a removed sandbox does.
+func (f fakeEgressLog) Follow(_ context.Context, _ models.Sandbox, yield func(egress.Record) error) error {
+	for _, record := range f.records {
+		if err := yield(record); err != nil {
+			return err
+		}
+	}
+
+	return egress.ErrSandboxGone
+}
+
 // handler answers a request over the layers the test holds now, not the ones it held at the listen.
 func (f *fakeDaemon) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

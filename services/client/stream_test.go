@@ -310,3 +310,101 @@ func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 		t.Fatalf("Logs returned %v, want no sandbox ghost", err)
 	}
 }
+
+// followDaemon answers a follow the way the daemon does: 101, then one frame per record.
+type followDaemon struct {
+	t      *testing.T
+	frames []struct {
+		stream  byte
+		payload string
+	}
+
+	asked string
+}
+
+func (d *followDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	d.asked = r.URL.RequestURI()
+
+	conn, buffered, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		d.t.Errorf("hijack: %v", err)
+
+		return
+	}
+	defer conn.Close()
+
+	if _, err := buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection: Upgrade\r\n\r\n"); err != nil {
+		d.t.Errorf("answer the follow: %v", err)
+
+		return
+	}
+	if err := buffered.Flush(); err != nil {
+		d.t.Errorf("flush the answer: %v", err)
+
+		return
+	}
+
+	frames := api.NewFrameWriter(conn)
+	for _, frame := range d.frames {
+		if err := frames.Write(frame.stream, []byte(frame.payload)); err != nil {
+			d.t.Errorf("write a frame of stream %d: %v", frame.stream, err)
+		}
+	}
+}
+
+func TestFollowEgressLogPrintsEveryRecordAndWhyItEnded(t *testing.T) {
+	daemon := &followDaemon{t: t, frames: []struct {
+		stream  byte
+		payload string
+	}{
+		{api.StreamStdout, `{"rule":"1"}` + "\n"},
+		{api.StreamStdout, `{"rule":"2"}` + "\n"},
+		{api.StreamStdout, `{"rule":"3"}` + "\n"},
+		{api.StreamExit, "the sandbox was removed"},
+	}}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out, errOut bytes.Buffer
+	if err := c.FollowEgressLog(t.Context(), "sandbox1", &out, &errOut); err != nil {
+		t.Fatalf("FollowEgressLog: %v", err)
+	}
+
+	if want := `{"rule":"1"}` + "\n" + `{"rule":"2"}` + "\n" + `{"rule":"3"}` + "\n"; out.String() != want {
+		t.Errorf("the follow printed %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "the sandbox was removed") {
+		t.Errorf("the follow said %q about why it ended", errOut.String())
+	}
+	if daemon.asked != "/v0/sandboxes/sandbox1/egress-log?follow=true" {
+		t.Errorf("the client asked %q", daemon.asked)
+	}
+}
+
+// A failure of the follow itself is not a removed sandbox, and it must reach the operator as one.
+func TestFollowEgressLogReportsAFailureOfTheFollow(t *testing.T) {
+	daemon := &followDaemon{t: t, frames: []struct {
+		stream  byte
+		payload string
+	}{{api.StreamError, "read the log: permission denied"}}}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out, errOut bytes.Buffer
+
+	err := c.FollowEgressLog(t.Context(), "sandbox1", &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("FollowEgressLog returned %v", err)
+	}
+}
+
+func TestFollowEgressLogReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+
+	var out, errOut bytes.Buffer
+
+	err := c.FollowEgressLog(t.Context(), "ghost", &out, &errOut)
+
+	var missing *client.NotFoundError
+	if !errors.As(err, &missing) || missing.Ref != "ghost" {
+		t.Fatalf("FollowEgressLog returned %v, want no sandbox ghost", err)
+	}
+}

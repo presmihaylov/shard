@@ -136,7 +136,7 @@ func TestLogsReportsADaemonThatIsNotThere(t *testing.T) {
 	}
 }
 
-func TestParseLogsRefusesToFollowTheEgressLog(t *testing.T) {
+func TestParseLogsTakesTheEgressLogWithAndWithoutAFollow(t *testing.T) {
 	opts, err := parseLogs([]string{"--egress", "sandbox1"})
 	if err != nil {
 		t.Fatalf("parseLogs: %v", err)
@@ -145,8 +145,12 @@ func TestParseLogsRefusesToFollowTheEgressLog(t *testing.T) {
 		t.Errorf("parseLogs gave %+v, want the egress log and no follow", opts)
 	}
 
-	if _, err := parseLogs([]string{"--egress", "-f", "sandbox1"}); err == nil {
-		t.Error("parseLogs took --egress with -f")
+	opts, err = parseLogs([]string{"--egress", "-f", "sandbox1"})
+	if err != nil {
+		t.Fatalf("parseLogs with --egress -f: %v", err)
+	}
+	if !opts.egress || !opts.follow {
+		t.Errorf("parseLogs gave %+v, want the egress log and a follow", opts)
 	}
 }
 
