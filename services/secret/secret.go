@@ -109,8 +109,9 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 	}
 
 	bound := make([]string, 0, len(destinations))
-	for _, dest := range destinations {
-		canonical, err := ValidDestination(dest)
+	for i, dest := range destinations {
+		// The refusal names the position and never the value, so a list of destinations still says which one.
+		canonical, err := validDestination(ordinal(i+1)+" destination", dest)
 		if err != nil {
 			return Secret{}, err
 		}
@@ -341,26 +342,30 @@ var labelShape = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // ValidDestination canonicalises a host name, so the proxy compares what a request names against
 // one spelling. An address is refused: a secret goes to a name the proxy can see in the request.
 func ValidDestination(dest string) (string, error) {
+	return validDestination("destination", dest)
+}
+
+// validDestination phrases its refusals about subject, which a caller with several destinations
+// makes an ordinal. A mistyped --to hands the value as one, so no refusal here echoes what it refused.
+func validDestination(subject, dest string) (string, error) {
 	canonical := strings.ToLower(strings.TrimSuffix(dest, "."))
 
-	// A mistyped --to hands the value as the destination, so no refusal here echoes what it refused.
-
 	if canonical == "" {
-		return "", errors.New("the destination is empty")
+		return "", fmt.Errorf("the %s is empty", subject)
 	}
 	if strings.ContainsAny(canonical, "/:") {
-		return "", errors.New("the destination is a host name alone: no scheme, no port, no path")
+		return "", fmt.Errorf("the %s is a host name alone: no scheme, no port, no path", subject)
 	}
 	if _, err := netip.ParseAddr(canonical); err == nil {
-		return "", errors.New("the destination is an address: a secret is granted to a host name")
+		return "", fmt.Errorf("the %s is an address: a secret is granted to a host name", subject)
 	}
 	if len(canonical) > 253 {
-		return "", errors.New("the destination is longer than a host name may be")
+		return "", fmt.Errorf("the %s is longer than a host name may be", subject)
 	}
 
 	labels := strings.Split(canonical, ".")
 	if len(labels) < 2 {
-		return "", errors.New("the destination has no dot: name the host the way a request does")
+		return "", fmt.Errorf("the %s has no dot: name the host the way a request does", subject)
 	}
 	for _, label := range labels {
 		// A whole label may be a wildcard; api* would be an unmatchable shape.
@@ -368,12 +373,28 @@ func ValidDestination(dest string) (string, error) {
 			continue
 		}
 		if strings.Contains(label, "*") {
-			return "", errors.New("the destination puts * inside a label: a wildcard replaces a whole label")
+			return "", fmt.Errorf("the %s puts * inside a label: a wildcard replaces a whole label", subject)
 		}
 		if !labelShape.MatchString(label) {
-			return "", errors.New("the destination is not a host name")
+			return "", fmt.Errorf("the %s is not a host name", subject)
 		}
 	}
 
 	return canonical, nil
+}
+
+// ordinal spells a position, so a refusal can say which destination it means without naming it.
+func ordinal(n int) string {
+	suffix := "th"
+	switch {
+	case n%100 >= 11 && n%100 <= 13:
+	case n%10 == 1:
+		suffix = "st"
+	case n%10 == 2:
+		suffix = "nd"
+	case n%10 == 3:
+		suffix = "rd"
+	}
+
+	return fmt.Sprintf("%d%s", n, suffix)
 }

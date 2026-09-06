@@ -371,7 +371,7 @@ func validHostValue(dest models.Destination) error {
 		return err
 	}
 	if dest.Kind == models.DestinationDomainSuffix {
-		return fmt.Errorf("a suffix rule takes no wildcard: %q already names every name under it", dest.Value)
+		return errors.New("a suffix rule takes no wildcard: it already names every name under it")
 	}
 	if dest.Value == "*" {
 		return nil

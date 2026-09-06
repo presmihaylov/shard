@@ -456,3 +456,18 @@ func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestSetNamesThePositionOfTheDestinationItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	_, err := s.Set("TOKEN", "some-value-123", []string{"api.example.com", "cdn.example.com", "bad_host", "ok.example.com"}, "")
+	if err == nil {
+		t.Fatal("Set took a bad destination")
+	}
+	if !strings.Contains(err.Error(), "3rd destination") {
+		t.Errorf("Set = %v, want the position of the destination it refused", err)
+	}
+	if strings.Contains(err.Error(), "bad_host") {
+		t.Errorf("the refusal echoes the destination it refused: %v", err)
+	}
+}
