@@ -92,7 +92,10 @@ throughout: an error is a closed door, never an open one.
 sandbox, each addition marked `implied`:
 
 - **`secret NAME`**: a secret granted to the sandbox allows `tcp` 80 and 443 to every host it was
-  granted to. The grant is the allow; the policy does not have to repeat it.
+  granted to. The grant is the allow; the policy does not have to repeat it. A policy rule outranks
+  it: the grant's allows sit behind the policy's own rules, so an explicit `deny` of a granted host
+  drops. They sit ahead of the policy's catch-all, so a grant still opens its host under `deny any`,
+  and `any` and `0.0.0.0/0` are the same catch-all.
 - **`dns`**: a policy that names a domain, or a sandbox that holds a secret, allows `udp` and `tcp`
   53 to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
   address and `any` rules opens no DNS.
