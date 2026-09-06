@@ -56,9 +56,9 @@ fronted: the host turns its web traffic to the egress proxy, which is where the 
 the value, in the URL, the headers and the body, and only when the request is bound for a granted
 destination. A request to any other host carries the placeholder as it is, so a guest that posts its
 environment to an attacker posts the placeholder. A body past 8 MiB streams through untouched: put
-the key in a header, where every SDK puts it. A credential the client encodes before it sends it,
-HTTP Basic auth included, is not substituted; the proxy finds the placeholder only where it appears
-verbatim.
+the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
+re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
+substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
 
 **The placeholder.** An SDK that checks the shape of a key before it sends it never sends
 `mock-NAME`, so `--placeholder` gives the guest a string of the right shape:

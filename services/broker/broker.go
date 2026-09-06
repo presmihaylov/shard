@@ -4,6 +4,7 @@ package broker
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -191,9 +192,38 @@ func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []by
 		out.Header[name] = values
 	}
 
+	rewriteBasic(out, replacer)
+
 	if body == nil {
 		return nil
 	}
 
 	return []byte(replacer.Replace(string(body)))
+}
+
+// rewriteBasic substitutes inside HTTP Basic auth, which every client encodes before the placeholder can be seen.
+func rewriteBasic(out *http.Request, replacer *strings.Replacer) {
+	const scheme = "Basic "
+
+	value := out.Header.Get("Authorization")
+	if len(value) <= len(scheme) || !strings.EqualFold(value[:len(scheme)], scheme) {
+		return
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(value[len(scheme):])
+	if err != nil {
+		return
+	}
+
+	// A strange but valid-for-its-client header is left alone: a 400 here would break the guest, not protect it.
+	if !strings.Contains(string(decoded), ":") {
+		return
+	}
+
+	swapped := replacer.Replace(string(decoded))
+	if swapped == string(decoded) {
+		return
+	}
+
+	out.Header.Set("Authorization", value[:len(scheme)]+base64.StdEncoding.EncodeToString([]byte(swapped)))
 }

@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/netip"
@@ -340,6 +341,115 @@ func TestRewritePutsACustomPlaceholderThatHoldsADefaultOneFirst(t *testing.T) {
 	}
 	if out.URL.Path != "/bbbb/aaaa" {
 		t.Errorf("the url became %s", out.URL)
+	}
+}
+
+func basic(user, pass string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+// A client encodes Basic auth before the request leaves the guest, so the placeholder is only there decoded.
+func TestRewriteSubstitutesInsideBasicAuth(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
+	b := newBroker(t, records, secrets)
+
+	for _, tc := range []struct {
+		name, sent, want string
+	}{
+		{"the password part", basic("api", "mock-TOKEN"), basic("api", "real-TOKEN")},
+		{"the user part", basic("mock-TOKEN", ""), basic("real-TOKEN", "")},
+		{"a lowercase scheme", strings.Replace(basic("api", "mock-TOKEN"), "Basic ", "basic ", 1), strings.Replace(basic("api", "real-TOKEN"), "Basic ", "basic ", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := request(t, http.MethodGet, "https://api.example.com/")
+			out.Header.Set("Authorization", tc.sent)
+
+			if strings.Contains(tc.sent, "real-TOKEN") {
+				t.Fatalf("the sent header already holds the value: %s", tc.sent)
+			}
+			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			got := out.Header.Get("Authorization")
+			if got != tc.want {
+				t.Errorf("the header became %q, want %q", got, tc.want)
+			}
+
+			decoded, err := base64.StdEncoding.DecodeString(strings.SplitN(got, " ", 2)[1])
+			if err != nil {
+				t.Fatalf("the header is no longer base64: %v", err)
+			}
+			if strings.Contains(string(decoded), "mock-TOKEN") {
+				t.Errorf("the placeholder went out inside the header: %s", decoded)
+			}
+		})
+	}
+}
+
+// Both parts hold a placeholder, and the longest-first order holds inside the decoded string too.
+func TestRewriteSubstitutesBothPartsOfBasicAuth(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "TOKEN_B"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fixedSecrets{
+		fakeSecrets: fakeSecrets{
+			"TOKEN":   {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}},
+			"TOKEN_B": {Name: "TOKEN_B", Placeholder: "mock-TOKEN_B", Destinations: []string{"api.example.com"}},
+		},
+		values: map[string]string{"TOKEN": "aaaa", "TOKEN_B": "bbbb"},
+	}
+	b := newBroker(t, records, secrets)
+
+	out := request(t, http.MethodGet, "https://api.example.com/")
+	out.Header.Set("Authorization", basic("mock-TOKEN_B", "mock-TOKEN"))
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.Header.Get("Authorization") != basic("bbbb", "aaaa") {
+		t.Errorf("the header became %q", out.Header.Get("Authorization"))
+	}
+}
+
+// A header the proxy cannot read, or has no business in, goes out exactly as the guest sent it.
+func TestRewriteLeavesAHeaderItCannotSubstituteAlone(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
+	b := newBroker(t, records, secrets)
+
+	for _, tc := range []struct{ name, sent, host string }{
+		{"malformed base64", "Basic not!base64", "api.example.com"},
+		{"no colon in the decoded string", "Basic " + base64.StdEncoding.EncodeToString([]byte("mock-TOKEN")), "api.example.com"},
+		{"an empty token", "Basic ", "api.example.com"},
+		{"another scheme", "Digest " + base64.StdEncoding.EncodeToString([]byte("api:mock-TOKEN")), "api.example.com"},
+		{"a host the grant does not name", basic("api", "mock-TOKEN"), "evil.example.net"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := request(t, http.MethodGet, "https://"+tc.host+"/")
+			out.Header.Set("Authorization", tc.sent)
+			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: tc.host, Port: 443}, out, nil); err != nil {
+				t.Fatal(err)
+			}
+			if out.Header.Get("Authorization") != tc.sent {
+				t.Errorf("the header became %q, want it byte for byte as sent", out.Header.Get("Authorization"))
+			}
+		})
+	}
+}
+
+// Proxy-Authorization is for the proxy, never the upstream, so no value is ever put in it.
+func TestRewriteLeavesProxyAuthorizationAlone(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
+	b := newBroker(t, records, secrets)
+
+	sent := basic("api", "mock-TOKEN")
+	out := request(t, http.MethodGet, "https://api.example.com/")
+	out.Header.Set("Proxy-Authorization", sent)
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.Header.Get("Proxy-Authorization") != sent {
+		t.Errorf("the header became %q", out.Header.Get("Proxy-Authorization"))
 	}
 }
 
