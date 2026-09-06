@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,9 +95,12 @@ func TestForkTakesOnlyASnapshotAndAFreeId(t *testing.T) {
 
 // A snapshot that failed must leave the sandbox running and the snapshot it had, even after a Ctrl-C.
 func TestAFailedCheckpointThawsTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
-	calls := filepath.Join(t.TempDir(), "calls")
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	// The checkpoint reports itself and then blocks, so the cut-off never races the fake runsc.
+	started, release := fifo(t, filepath.Join(work, "started")), fifo(t, filepath.Join(work, "release"))
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
-case "$*" in *checkpoint*) sleep 5;; esac
+case "$*" in *checkpoint*) echo yes > `+started+`; cat `+release+`;; esac
 echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 
 	dir := filepath.Join(t.TempDir(), "snap")
@@ -108,10 +112,29 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 	}
 
 	// The checkpoint outlives the context, which is what a Ctrl-C in the middle of one looks like.
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	if err := p.Pause(ctx, "amber-otter-1a2b", dir); err == nil {
+	done := make(chan error, 1)
+	go func() { done <- p.Pause(ctx, "amber-otter-1a2b", dir) }()
+
+	running := make(chan error, 1)
+	go func() {
+		_, err := os.ReadFile(started)
+		running <- err
+	}()
+
+	select {
+	case err := <-running:
+		if err != nil {
+			t.Fatalf("wait for the checkpoint to start: %v", err)
+		}
+	case err := <-done:
+		t.Fatalf("Pause returned %v before it reached the checkpoint", err)
+	}
+	cancel()
+
+	if err := <-done; err == nil {
 		t.Fatal("Pause returned no error for a checkpoint that was cut short")
 	}
 
@@ -209,6 +232,17 @@ func unitFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+// fifo is the test's channel into the fake runsc: an open blocks until the other side opens too.
+func fifo(t *testing.T, path string) string {
+	t.Helper()
+
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("make the fifo %s: %v", path, err)
+	}
+
+	return path
 }
 
 // A clone copies the layer, so a source that still writes it is refused before anything is laid out.
