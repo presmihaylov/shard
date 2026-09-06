@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// The ring is the one thing no unit test can stand in for: only a real read proves the mark and the
-// dating. The EPIPE path is not provoked here, because it needs the kernel to overwrite the record the
-// reader is on, which no test can ask for; it is counted, not returned, so a miss loses records and
-// never the follower.
+// Only a real read proves the mark and the dating, so no unit test stands in for the ring.
+
+// EPIPE is not provoked here: it needs the kernel to overwrite the record the reader is on, and it
+// is counted, not returned, so a miss loses records and never the follower.
 func TestFollowWalksTheRingAndDatesItAgainstTheMark(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("reading /dev/kmsg needs root")
