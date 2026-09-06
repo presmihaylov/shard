@@ -680,6 +680,58 @@ func TestStopReportsAWaitThatFailedForAnotherReason(t *testing.T) {
 	}
 }
 
+// runsc can report a sandbox alive for a moment after a clean stop, and a rm that lands there refuses it.
+func TestStopWaitsForTheSubstrateToReportTheSandboxGone(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.aliveAfterStop = 3
+
+	sb, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if l.provider.aliveAfterStop != 0 {
+		t.Errorf("stop returned with %d alive answers left", l.provider.aliveAfterStop)
+	}
+	if sb.State != models.StateStopped {
+		t.Errorf("the record says %s, want stopped", sb.State)
+	}
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("the rm right after the stop was refused: %v", err)
+	}
+}
+
+// Refuse, never downgrade: a sandbox the substrate still reports alive is not written down as stopped.
+func TestStopRefusesASandboxThatNeverSettles(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.StopSettle = 20 * time.Millisecond })
+	l.provider.aliveAfterStop = -1
+
+	_, err := svc.Stop(t.Context(), "sandbox1", 0)
+	if err == nil {
+		t.Fatal("a sandbox that never settles returned no error")
+	}
+	if !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), string(models.StateRunning)) {
+		t.Errorf("the error is %q, want it to name the sandbox and the state the substrate reports", err)
+	}
+	if l.repo.sb.State != models.StateRunning {
+		t.Errorf("the record says %s, want it left as it was", l.repo.sb.State)
+	}
+}
+
+func TestStopEndsTheWaitWhenTheContextIsCancelled(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	l.provider.aliveAfterStop = -1
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := svc.Stop(ctx, "sandbox1", sandbox.DefaultStopGrace); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop answered %v, want the context's own error", err)
+	}
+}
+
 // A start that failed after the substrate came up leaves a stopped record over a live sandbox.
 func TestStopEndsASandboxWhoseRecordSaysStopped(t *testing.T) {
 	sb := running()

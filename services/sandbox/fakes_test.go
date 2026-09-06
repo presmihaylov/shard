@@ -249,6 +249,9 @@ type fakeProvider struct {
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
+	// aliveAfterStop is the substrate reporting a stopped sandbox alive that many more times, which is
+	// the race stop waits out. A negative count never settles.
+	aliveAfterStop int
 	// exits runs on the second Status, and the sandbox is gone from that call on.
 	exits       func()
 	statusCalls int
@@ -372,7 +375,9 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 		return err
 	}
 	f.stopped, f.grace = true, grace
-	f.status = models.Status{Exists: true, State: models.StateStopped}
+	if f.aliveAfterStop == 0 {
+		f.status = models.Status{Exists: true, State: models.StateStopped}
+	}
 
 	return nil
 }
@@ -392,6 +397,15 @@ func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
 func (f *fakeProvider) Status(context.Context, string) (models.Status, error) {
 	if err := f.r.record("provider.Status"); err != nil {
 		return models.Status{}, err
+	}
+
+	if f.stopped && f.aliveAfterStop != 0 {
+		f.aliveAfterStop--
+		if f.aliveAfterStop == 0 {
+			f.status = models.Status{Exists: true, State: models.StateStopped}
+		}
+
+		return models.Status{Exists: true, State: models.StateRunning}, nil
 	}
 
 	// exits is the sandbox writing its last line and going, which happens while a follow is up.
@@ -441,7 +455,7 @@ type layers struct {
 }
 
 // newService wires the orchestrator onto fakes and the two file stores, over the one record sb.
-func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service, layers) {
+func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sandbox.Config)) (*sandbox.Service, layers) {
 	t.Helper()
 
 	r.live = map[string]bool{}
@@ -472,7 +486,7 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service,
 		policies:  policies,
 	}
 
-	svc := sandbox.New(sandbox.Config{
+	cfg := sandbox.Config{
 		Repo:      l.repo,
 		Images:    fakeImages{r: r},
 		Network:   l.net,
@@ -489,9 +503,12 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service,
 			return ca.CertPEM(), nil
 		},
 		PullTimeout: time.Minute,
-	})
+	}
+	for _, apply := range tune {
+		apply(&cfg)
+	}
 
-	return svc, l
+	return sandbox.New(cfg), l
 }
 
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
