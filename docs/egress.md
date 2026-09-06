@@ -60,6 +60,10 @@ egress proxy on the bridge gateway, port 30080 for plain HTTP and 30443 for TLS,
 judges every request by host name with the same rules the host enforces. Nothing else changes: the
 host table still decides every other port, and a sandbox with neither is never fronted.
 
+The proxy is an HTTP proxy for 80 and 443 alone. Every other port is decided by the host chain by
+itself, allowed or dropped, and is never brokered, so a secret sent on one leaves as the
+placeholder. See `docs/secrets.md`.
+
 The proxy runs in `shard daemon` only, as its `proxy` task. Every verb goes over the daemon socket,
 so a fronted sandbox is only ever created, started, forked or cloned by the process that runs the
 proxy: there is no path that fronts a sandbox and leaves the DNAT leading nowhere.
