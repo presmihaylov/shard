@@ -135,7 +135,7 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.placeholder, "placeholder", "", "what the guest holds in place of the value, default mock-NAME")
+	flags.StringVar(&opts.placeholder, "placeholder", "", "what the guest holds in place of the value, letters, digits, _, - and . only, default mock-NAME")
 
 	if err := flags.Parse(args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)

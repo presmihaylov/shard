@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -172,15 +171,17 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 // minPlaceholder keeps a chosen placeholder long enough that it cannot fall inside an ordinary request.
 const minPlaceholder = 8
 
+// placeholderCharset is what no URL, JSON or base64 encoder alters, so the proxy finds the string the
+// guest was handed. A character outside it goes on the wire rewritten and nothing is ever swapped.
+var placeholderCharset = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // shapedPlaceholder refuses a chosen placeholder the proxy could not find in an ordinary request.
 func shapedPlaceholder(name, chosen string) error {
 	if len(chosen) < minPlaceholder {
 		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minPlaceholder)
 	}
-	for _, r := range chosen {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return fmt.Errorf("the placeholder of secret %s holds whitespace or a control character", name)
-		}
+	if !placeholderCharset.MatchString(chosen) {
+		return fmt.Errorf("the placeholder of secret %s holds a character outside letters, digits, _, - and .: an encoding would alter it", name)
 	}
 
 	return nil

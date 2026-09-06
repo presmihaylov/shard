@@ -67,8 +67,9 @@ substituted; the proxy finds the placeholder only where it appears verbatim or i
 shard secret set --to api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
 ```
 
-A chosen placeholder is refused when it is inside the value, when it is shorter than 8 characters,
-when it holds whitespace or a control character, or when another secret already owns it as its own
+A chosen placeholder is letters, digits, `_`, `-` and `.`, so no URL, JSON or base64 encoder ever
+changes it on the way out. It is refused when it is inside the value, when it is shorter than 8
+characters, when it holds anything outside that set, or when another secret already owns it as its own
 placeholder or as its default. The default `mock-NAME` is exempt from all but the first, so a short
 name still gets one. Changing the placeholder of a secret a sandbox holds is refused: that guest
 already holds the old one, so ungrant it first. `shard secret ls` prints the placeholder.
