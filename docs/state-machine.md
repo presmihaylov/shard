@@ -37,8 +37,8 @@ can print `running (exited 0)`. **`stop` is the only thing that ends a sandbox.*
 
 **`stop` returns once the sandbox has stopped.** The substrate can report one alive for a moment after
 a clean stop, so `stop` waits for it to be gone before it writes the record, and fails without changing
-the record if that has not happened within the grace plus 5 seconds. A `rm` right behind a `stop` is
-therefore never refused with `stop it first`.
+the record if that has not happened within 5 seconds of the substrate returning. A `rm` right behind a
+`stop` is therefore never refused with `stop it first`.
 
 **`stopped` is not terminal, and it is not a provider verb either.** Every sandbox has its own
 writable layer over the shared read-only image, so `shard start` re-runs the entrypoint and finds the

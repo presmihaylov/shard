@@ -21,7 +21,7 @@ import (
 // DefaultStopGrace is how long the entrypoint gets to answer SIGTERM before shard kills it.
 const DefaultStopGrace = 10 * time.Second
 
-// DefaultStopSettle is how long past the grace a stop waits for the substrate to report the sandbox gone.
+// DefaultStopSettle is how long past Provider.Stop a stop waits for the substrate to report the sandbox gone.
 const DefaultStopSettle = 5 * time.Second
 
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
@@ -497,7 +497,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 		return err
 	}
 
-	if err := s.awaitStopped(ctx, id, grace); err != nil {
+	if err := s.awaitStopped(ctx, id); err != nil {
 		return err
 	}
 
@@ -519,12 +519,13 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
 // stop, and a rm that lands in that moment would refuse it. The record is written only after this.
-func (s *Service) awaitStopped(ctx context.Context, id string, grace time.Duration) error {
-	settle := s.cfg.StopSettle
-	if settle == 0 {
-		settle = DefaultStopSettle
+func (s *Service) awaitStopped(ctx context.Context, id string) error {
+	// The bound excludes the grace on purpose: Provider.Stop already spent it, and the client's own
+	// timeout is DefaultTimeout plus the grace, which counting it twice would run past.
+	bound := s.cfg.StopSettle
+	if bound == 0 {
+		bound = DefaultStopSettle
 	}
-	bound := grace + settle
 	deadline := time.Now().Add(bound)
 
 	for {
