@@ -481,6 +481,12 @@ SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
 CAUTION=$(shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
 echo "${CAUTION}" | grep -q "visible in the process list" || fail "a value on the command line printed no caution: '${CAUTION}'"
 say "a value on the command line is stored, with a caution on stderr"
+# The caution follows the store, so a refused set warns about a value it never took.
+CODE=0
+REFUSED_CAUTION=$(shard secret set --to no-dot E2E_REFUSED "${SHAPED_VALUE}" 2>&1 >/dev/null) || CODE=$?
+[ "${CODE}" != "0" ] || fail "secret set took a destination with no dot"
+echo "${REFUSED_CAUTION}" | grep -q "caution" && fail "a refused set cautioned: '${REFUSED_CAUTION}'"
+say "a refused set prints no caution"
 SHAPED_LS=$(shard secret ls)
 echo "${SHAPED_LS}" | grep -q "${SHAPED_PLACEHOLDER}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
 say "secret ls prints the chosen placeholder"

@@ -49,6 +49,9 @@ type secretSetOptions struct {
 	hasValue bool
 }
 
+// valueOnArgv says the value followed the name, which is the one way that puts it in the process list.
+func (o secretSetOptions) valueOnArgv() bool { return o.hasValue && o.value != "-" }
+
 // cautionOnArgv is printed once, exactly, when the value came from argv: ps showed it while the command ran.
 const cautionOnArgv = "caution: the value was on the command line and visible in the process list while the command ran; pipe it on stdin to avoid that"
 
@@ -68,16 +71,17 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The caution follows the store, so a refused command does not caution about a value it never took.
+	if opts.valueOnArgv() && a.Err != nil {
+		fmt.Fprintln(a.Err, cautionOnArgv)
+	}
+
 	return a.print(sec.Name)
 }
 
 // secretValue takes the value three ways: after the name, on stdin, or from a prompt with the echo off.
 func (a App) secretValue(opts secretSetOptions) (string, error) {
-	if opts.hasValue && opts.value != "-" {
-		if a.Err != nil {
-			fmt.Fprintln(a.Err, cautionOnArgv)
-		}
-
+	if opts.valueOnArgv() {
 		return opts.value, nil
 	}
 
