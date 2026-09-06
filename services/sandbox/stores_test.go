@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -102,5 +103,24 @@ func TestPolicyShowFailsWhenARecordDoesNotReadBack(t *testing.T) {
 
 	if _, err := stores.Policy("web"); err == nil {
 		t.Fatal("Policy answered a view over records it could not read")
+	}
+}
+
+// The policy is stored by the time the holders are read, so the failure says so rather than leaving the
+// operator to guess whether it landed.
+func TestSetPolicySaysThePolicyLandedWhenItCannotTellWhoHoldsIt(t *testing.T) {
+	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
+	repo := &fakeRepo{r: &recorder{fail: []string{"repo.List"}}}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
+
+	_, err := stores.SetPolicy(t.Context(), "web", sandbox.PolicyRequest{})
+	if err == nil {
+		t.Fatal("SetPolicy answered over records it could not read")
+	}
+	if !strings.Contains(err.Error(), "policy web is stored") {
+		t.Errorf("SetPolicy failed with %q, which does not say the policy landed", err)
+	}
+	if policies.policy.Name != "web" {
+		t.Error("the policy was not stored before the holders were read")
 	}
 }

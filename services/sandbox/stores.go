@@ -121,7 +121,7 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
 	if err != nil {
-		return models.Policy{}, err
+		return models.Policy{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
 	}
 	if len(users) == 0 {
 		return policy, nil
