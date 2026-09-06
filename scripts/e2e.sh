@@ -34,6 +34,9 @@ ID=""
 LINK=""
 FORK_ID=""
 FORK_LINK=""
+# The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
+RECONCILE_ID=""
+RECONCILE_LINK=""
 # The clones are space separated lists: two come off one stopped source, and both must go on teardown.
 CLONE_IDS=""
 CLONE_LINKS=""
@@ -94,6 +97,9 @@ expect_exec_in() {
 
 	expect "${got}" "${want}" "${note}"
 }
+
+# nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
+nap_alive() { shard exec "${ID}" -- /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
 
 # listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
 listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
@@ -236,17 +242,17 @@ stop_daemon() {
 teardown() {
 	local id link
 	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}" ]; then
 		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
-	for id in ${CLONE_IDS} "${FORK_ID}" "${ID}"; do
+	for id in ${CLONE_IDS} "${RECONCILE_ID}" "${FORK_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
 	done
 	# shellcheck disable=SC2086
-	for link in ${CLONE_LINKS} "${FORK_LINK}" "${LINK}"; do
+	for link in ${CLONE_LINKS} "${RECONCILE_LINK}" "${FORK_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
@@ -408,9 +414,18 @@ echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}'
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
 
-step "restart the daemon and prove the sandbox outlives it"
+step "restart the daemon and prove the sandbox and an exec in flight outlive it"
 SANDBOX_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
 [ -n "${SANDBOX_PID}" ] || fail "the record holds no pid"
+# The exec is in flight when the daemon goes: its client dies with the stream, its guest process must not.
+(shard exec "${ID}" -- /bin/sleep 313 >/dev/null 2>&1 || true) &
+EXEC_CLIENT_PID=$!
+for _ in $(seq 1 50); do
+	nap_alive && break
+	sleep 0.2
+done
+nap_alive || fail "the background exec never started in the guest"
+say "an exec runs /bin/sleep 313 in the guest"
 stop_daemon
 [ ! -e "${SOCKET}" ] || fail "the socket ${SOCKET} outlived the daemon"
 kill -0 "${SANDBOX_PID}" 2>/dev/null || fail "the sandbox process ${SANDBOX_PID} died with the daemon"
@@ -418,6 +433,41 @@ say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
+nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK} after the daemon restart"
+say "the host still holds the egress chain of the sandbox"
+expect_exec "alive" "the guest process of the exec in flight outlived the daemon" \
+	/bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null && echo alive'
+# The pause step reads the entrypoint by name, so the nap must be gone before it: nothing reattaches to it.
+shard exec "${ID}" -- /bin/sh -c 'pkill -f "[s]leep 313"' >/dev/null
+wait "${EXEC_CLIENT_PID}" 2>/dev/null || true
+say "the client of that exec is gone, and no verb reattaches to it"
+
+step "reconcile a sandbox the host lost while the daemon was down"
+RECONCILE_ID=$(shard create --name e2e-lost "${IMAGE}" -- /bin/sleep 600)
+RECONCILE_RECORD="${SHARD_ROOT}/sandboxes/${RECONCILE_ID}/sandbox.json"
+RECONCILE_LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECONCILE_RECORD}" | cut -d'"' -f4)
+RECONCILE_PID=$(grep -o '"pid": *[0-9]*' "${RECONCILE_RECORD}" | grep -o '[0-9]*$')
+[ -n "${RECONCILE_PID}" ] || fail "the record of ${RECONCILE_ID} holds no pid"
+stop_daemon
+kill -9 "${RECONCILE_PID}" 2>/dev/null || true
+for _ in $(seq 1 50); do
+	kill -0 "${RECONCILE_PID}" 2>/dev/null || break
+	sleep 0.1
+done
+kill -0 "${RECONCILE_PID}" 2>/dev/null && fail "the sandbox process ${RECONCILE_PID} survived the kill"
+say "the sandbox process ${RECONCILE_PID} is gone and the record still says running"
+start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+expect "$(listed_state "${RECONCILE_ID}")" "stopped" "the daemon corrected the record of the sandbox it lost"
+shard ls --all | grep "^${RECONCILE_ID}" | grep -q "daemon restarted and found no process" \
+	|| fail "shard ls gives no reason for ${RECONCILE_ID}"
+say "ls gives the reason: daemon restarted and found no process"
+grep -q "${RECONCILE_ID}" "${DAEMON_LOG}" || fail "the daemon logged no line for the record it corrected"
+say "the daemon logged the record it corrected"
+shard rm --force "${RECONCILE_ID}" >/dev/null || fail "rm did not free the sandbox the host lost"
+ip link delete "${RECONCILE_LINK}" >/dev/null 2>&1 || true
+RECONCILE_ID=""
+RECONCILE_LINK=""
+say "rm freed what it left on the host"
 
 step "read the output of the entrypoint"
 # The line lands when the guest gets to it, which is after create returned.
@@ -574,6 +624,9 @@ absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && ech
 absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
 FORK_ID=""
 FORK_LINK=""
+# The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
+RECONCILE_ID=""
+RECONCILE_LINK=""
 expect_exec "before-the-pause" "the source runs on after the fork is gone" /bin/cat /root/at-pause
 
 step "refuse to remove a sandbox that is still up"

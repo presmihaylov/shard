@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -81,9 +79,13 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	}
 
 	// The checkpoint is the last file the provider writes before it deletes, so its presence means paused.
-	_, statErr := os.Stat(filepath.Join(dir, checkpointFile))
+	held, err := hasCheckpoint(dir)
+	if err != nil {
+		return err
+	}
+
 	state := models.StateStopped
-	if statErr == nil {
+	if held {
 		state = models.StatePaused
 	}
 

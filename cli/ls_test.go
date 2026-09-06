@@ -145,3 +145,20 @@ func TestUptime(t *testing.T) {
 		}
 	}
 }
+
+func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
+	var out bytes.Buffer
+
+	left := []models.Sandbox{{ID: "down-2", Image: "alpine:3.20", State: models.StateStopped,
+		StoppedReason: "daemon restarted and found no process", CreatedAt: time.Now()}}
+
+	app := newLsApp(t, &out, left, nil)
+
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "stopped (daemon restarted and found no process)") {
+		t.Errorf("ls printed %q, want the state and the reason beside it", out.String())
+	}
+}

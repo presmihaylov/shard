@@ -163,3 +163,79 @@ func TestRunCreatesAFreshRoot(t *testing.T) {
 		t.Fatalf("serve on a fresh root: %v", err)
 	}
 }
+
+// fakeReconciler stands in for the check of the records, and says whether a task had already started.
+type fakeReconciler struct {
+	err     error
+	ran     atomic.Bool
+	reports []string
+	// task is the one the daemon supervises, and tasks is how many runs it had when this was called.
+	task  *fakeTask
+	tasks int32
+}
+
+func (f *fakeReconciler) Reconcile(_ context.Context, report func(string)) error {
+	if f.task != nil {
+		f.tasks = f.task.runs.Load()
+	}
+	f.ran.Store(true)
+	for _, line := range f.reports {
+		report(line)
+	}
+
+	return f.err
+}
+
+func TestRunReconcilesBeforeItStartsATask(t *testing.T) {
+	task := &fakeTask{}
+	rec := &fakeReconciler{task: task}
+	d := fast(New(t.TempDir(), io.Discard, task)).WithReconciler(rec)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	for task.runs.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if !rec.ran.Load() {
+		t.Fatal("the daemon started a task and never checked the records")
+	}
+	if rec.tasks != 0 {
+		t.Errorf("%d tasks had started when the records were checked, want none", rec.tasks)
+	}
+}
+
+func TestRunRefusesToServeOverRecordsItCouldNotCheck(t *testing.T) {
+	rec := &fakeReconciler{err: errors.New("runsc is not on this host")}
+	task := &fakeTask{}
+
+	err := fast(New(t.TempDir(), io.Discard, task)).WithReconciler(rec).Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "runsc is not on this host") {
+		t.Fatalf("Run = %v, want the reconcile's own refusal", err)
+	}
+	if task.runs.Load() != 0 {
+		t.Errorf("the api task ran %d times over records the daemon could not check", task.runs.Load())
+	}
+}
+
+func TestRunLogsWhatTheReconcileCorrected(t *testing.T) {
+	rec := &fakeReconciler{reports: []string{"sandbox1 is stopped"}}
+	var out strings.Builder
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := fast(New(t.TempDir(), &out)).WithReconciler(rec).Run(ctx); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+
+	if !strings.Contains(out.String(), "sandbox1 is stopped") {
+		t.Errorf("the daemon logged %q, want the line the reconcile reported", out.String())
+	}
+}

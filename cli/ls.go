@@ -48,7 +48,7 @@ func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, sb.State, uptime(sb, now), address(sb))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -56,6 +56,15 @@ func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	}
 
 	return nil
+}
+
+// state carries the reason a sandbox nobody stopped is stopped, which is the one an operator asks about.
+func state(sb models.Sandbox) string {
+	if sb.StoppedReason == "" {
+		return string(sb.State)
+	}
+
+	return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 }
 
 // uptime is how long the sandbox has been up. A stopped or paused one is not, whatever its record was created.
