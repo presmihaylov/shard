@@ -55,9 +55,7 @@ func Open() (*Follower, error) {
 
 	f := &Follower{fd: fd}
 	if err := f.mark(); err != nil {
-		unix.Close(fd)
-
-		return nil, err
+		return nil, errors.Join(err, f.Close())
 	}
 
 	return f, nil
