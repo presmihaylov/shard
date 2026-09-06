@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -116,9 +118,19 @@ func sendInput(frames *api.FrameWriter, streams ExecStreams) {
 		}
 	}
 
-	if err := frames.Write(api.StreamStdinClose, nil); err != nil {
+	// A command that exited first took the connection with it, and its exit frame already said so.
+	if err := frames.Write(api.StreamStdinClose, nil); err != nil && !gone(err) {
 		warn(streams.Warn, fmt.Sprintf("the command was not told the input had ended: %v", err))
 	}
+}
+
+// gone reports the errors a write hits once the other end of the connection is done with it.
+func gone(err error) bool {
+	return errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET)
 }
 
 func copyInput(frames *api.FrameWriter, r io.Reader) error {
