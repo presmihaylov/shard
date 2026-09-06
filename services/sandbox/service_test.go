@@ -258,6 +258,49 @@ func TestCreateHandsTheGuestThePlaceholderAndRecordsTheGrant(t *testing.T) {
 	if strings.Join(l.repo.created.Secrets, ",") != "API_KEY" {
 		t.Errorf("the record grants %v, want API_KEY", l.repo.created.Secrets)
 	}
+
+	// The guest reaches the granted host through the proxy, so it must trust the CA the proxy terminates with.
+	if !strings.HasPrefix(string(l.provider.spec.ProxyCA), "-----BEGIN CERTIFICATE-----") {
+		t.Errorf("the spec carries %q as the proxy CA", l.provider.spec.ProxyCA)
+	}
+}
+
+// An unfronted sandbox reaches the network directly, so nothing plants a CA in its trust store.
+func TestCreateWithoutAPolicyOrASecretFrontsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+
+	if _, err := svc.Create(t.Context(), alpine()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if l.provider.spec.ProxyCA != nil {
+		t.Error("an unfronted sandbox was handed the proxy CA")
+	}
+	if slices.Contains(r.calls, "net.Reapply") {
+		t.Errorf("a create with no policy and no secret reapplied the rules: %v", r.calls)
+	}
+}
+
+// shard owns the trust store of a fronted sandbox, so an env that points a client elsewhere is refused.
+func TestCreateRefusesATrustVariableOnAFrontedSandbox(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, models.Sandbox{})
+
+	req := alpine()
+	req.Env = []string{"SSL_CERT_FILE=/mine.pem"}
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("an unfronted create refused SSL_CERT_FILE: %v", err)
+	}
+
+	req.Secrets = []string{"API_KEY"}
+
+	_, err := svc.Create(t.Context(), req)
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "SSL_CERT_FILE") {
+		t.Fatalf("a fronted create with SSL_CERT_FILE = %v, want a request error naming it", err)
+	}
 }
 
 func TestCreateRefusesASecretTheStoreDoesNotHoldBeforeThePull(t *testing.T) {

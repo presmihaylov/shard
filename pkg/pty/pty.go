@@ -5,6 +5,8 @@ package pty
 import (
 	"errors"
 	"os"
+
+	"golang.org/x/term"
 )
 
 // ErrNotLinux keeps a developer Mac honest. It is not models.ErrUnsupported: a missing kernel is not
@@ -42,6 +44,11 @@ func IsTerminal(f *os.File) bool { return isTerminal(f) }
 
 // SizeOf reads the window size of a terminal.
 func SizeOf(f *os.File) (Size, error) { return sizeOf(f) }
+
+// ReadPassword reads one line from a terminal with the echo off, so a secret lands on no screen.
+func ReadPassword(f *os.File) ([]byte, error) {
+	return term.ReadPassword(int(f.Fd())) //nolint:gosec // a file descriptor is small enough for an int
+}
 
 // MakeRaw hands every keystroke through untouched, so Ctrl-C reaches the guest instead of shard.
 func MakeRaw(f *os.File) (Restore, error) { return makeRaw(f) }

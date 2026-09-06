@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,23 @@ func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRep
 	}
 	t.Cleanup(func() { _ = in.Close() })
 
-	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	holders := func(name string) ([]string, error) {
+		sandboxes, err := repo.List()
+		if err != nil {
+			return nil, err
+		}
+
+		var users []string
+		for _, sb := range sandboxes {
+			if slices.Contains(sb.Secrets, name) {
+				users = append(users, sb.ID)
+			}
+		}
+
+		return users, nil
+	}
+
+	secrets, err := secret.New(filepath.Join(root, "secrets"), holders)
 	if err != nil {
 		t.Fatalf("secret.New: %v", err)
 	}
@@ -133,11 +150,11 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	}
 }
 
-func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
+func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
 	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
-	app, root := newSecretApp(t, &out, "value-123456\n", repo)
+	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
@@ -145,9 +162,59 @@ func TestSecretSetRefusesANewPlaceholderWhileASandboxHoldsIt(t *testing.T) {
 
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
-	err := app.Run(t.Context(), []string{"secret", "set", "--mock-value", "another-placeholder", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "sb1") {
-		t.Errorf("set with a new placeholder while held = %v", err)
+	err := app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_moved01", "KEY"})
+	if err == nil || !strings.Contains(err.Error(), "sb1") || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("set that moves a held placeholder = %v", err)
+	}
+
+	repo.unreadable = os.ErrPermission
+	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
+	app.Root = root
+	err = app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_moved01", "KEY"})
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Errorf("set that moves a placeholder with an unreadable record = %v", err)
+	}
+}
+
+func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newSecretApp(t, &out, "from-stdin-1234\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY", "on-the-argv-12"}); err != nil {
+		t.Fatalf("secret set: %v", err)
+	}
+	if !strings.Contains(out.String(), cautionOnArgv) {
+		t.Errorf("the argv path printed no caution:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_shaped01", "KEY", "-"}); err != nil {
+		t.Fatalf("secret set -: %v", err)
+	}
+	if strings.Contains(out.String(), "caution") {
+		t.Errorf("the stdin path printed a caution:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "sk_test_shaped01") || strings.Contains(out.String(), "from-stdin") {
+		t.Errorf("ls printed:\n%s", out.String())
+	}
+}
+
+func TestSecretSetRefusesAPlaceholderTheStoreWillNotTake(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	for _, chosen := range []string{"sk_test", "sk test shaped"} {
+		err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--placeholder", chosen, "KEY"})
+		if err == nil {
+			t.Errorf("set took the placeholder %q", chosen)
+		}
 	}
 }
 

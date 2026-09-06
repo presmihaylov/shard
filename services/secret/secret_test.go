@@ -13,7 +13,7 @@ func newStore(t *testing.T) (*Store, string) {
 
 	dir := filepath.Join(t.TempDir(), "secrets")
 
-	s, err := New(dir)
+	s, err := New(dir, func(string) ([]string, error) { return nil, nil })
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -32,8 +32,8 @@ func TestSetWritesOneFileNobodyElseCanRead(t *testing.T) {
 	if got, want := sec.Destinations, []string{"api.example.com"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("destinations %v, want the one canonical host %v", got, want)
 	}
-	if sec.MockValue != "mock-API_KEY" {
-		t.Errorf("placeholder %q, want mock-API_KEY", sec.MockValue)
+	if sec.Placeholder != "mock-API_KEY" {
+		t.Errorf("placeholder %q, want mock-API_KEY", sec.Placeholder)
 	}
 
 	info, err := os.Stat(dir)
@@ -67,7 +67,7 @@ func TestNewTightensAnExistingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := New(dir); err != nil {
+	if _, err := New(dir, nil); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestGetAndListNeverCarryTheValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if strings.Contains(sec.Name+sec.MockValue+strings.Join(sec.Destinations, ""), value) {
+	if strings.Contains(sec.Name+strings.Join(sec.Destinations, "")+sec.Placeholder, value) {
 		t.Errorf("Get carried the value: %+v", sec)
 	}
 
@@ -111,7 +111,7 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Set("TOKEN", "second-value-2", []string{"b.example.com"}, "placeholder-token"); err != nil {
+	if _, err := s.Set("TOKEN", "second-value-2", []string{"b.example.com"}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "b.example.com" || sec.MockValue != "placeholder-token" {
+	if strings.Join(sec.Destinations, ",") != "b.example.com" {
 		t.Errorf("the second set did not replace the first: %+v", sec)
 	}
 
@@ -145,7 +145,7 @@ func TestSetReplacesAndRemoveIsIdempotent(t *testing.T) {
 func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	s, _ := newStore(t)
 
-	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "placeholder-token"); err != nil {
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "sk_test_shaped01"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Set("TOKEN", "second-value-2", nil, ""); err != nil {
@@ -156,8 +156,11 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sec.Destinations, ",") != "a.example.com" || sec.MockValue != "placeholder-token" {
-		t.Errorf("the rotation changed the grant or the placeholder: %+v", sec)
+	if strings.Join(sec.Destinations, ",") != "a.example.com" {
+		t.Errorf("the rotation changed the grant: %+v", sec)
+	}
+	if sec.Placeholder != "sk_test_shaped01" {
+		t.Errorf("the rotation moved the placeholder to %q", sec.Placeholder)
 	}
 
 	value, err := s.Value("TOKEN")
@@ -169,15 +172,139 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 	}
 }
 
-func TestSetGivesAShortNameItsDefaultPlaceholder(t *testing.T) {
+func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	held, err := New(dir, func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := held.Set("TOKEN", "old-value-1", []string{"a.example.com"}, "sk_test_first001"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = held.Set("TOKEN", "new-value-2", nil, "sk_test_second02")
+	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("a change of a held placeholder = %v, want a refusal naming sandbox1", err)
+	}
+
+	value, err := held.Value("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "old-value-1" {
+		t.Error("the refused change wrote the value")
+	}
+
+	// The value alone still rotates while a sandbox holds it: only the placeholder is what the guest holds.
+	if _, err := held.Set("TOKEN", "new-value-2", nil, ""); err != nil {
+		t.Errorf("a rotation that keeps the placeholder: %v", err)
+	}
+
+	// With the holders gone the change lands.
+	free, err := New(dir, func(string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := free.Set("TOKEN", "new-value-3", nil, "sk_test_second02"); err != nil {
+		t.Fatalf("a change once ungranted: %v", err)
+	}
+	sec, err := free.Get("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sec.Placeholder != "sk_test_second02" {
+		t.Errorf("the placeholder after the change is %q", sec.Placeholder)
+	}
+}
+
+func TestSetRefusesToMoveAPlaceholderItCannotAccountFor(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	seed, err := New(dir, func(string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Set("TOKEN", "old-value-1", []string{"a.example.com"}, "sk_test_first001"); err != nil {
+		t.Fatal(err)
+	}
+
+	blind, err := New(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blind.Set("TOKEN", "new-value-2", nil, "sk_test_second02"); err == nil || !strings.Contains(err.Error(), "ungrant") {
+		t.Errorf("a change with no holders callback = %v, want a refusal", err)
+	}
+
+	broken, err := New(dir, func(string) ([]string, error) { return nil, os.ErrPermission })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broken.Set("TOKEN", "new-value-2", nil, "sk_test_second02"); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("a change with unreadable holders = %v, want the read error", err)
+	}
+}
+
+func TestSetRefusesAPlaceholderAnotherSecretOwns(t *testing.T) {
 	s, _ := newStore(t)
 
-	sec, err := s.Set("K", "some-value-123", []string{"example.com"}, "")
-	if err != nil {
-		t.Fatalf("Set: %v", err)
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "sk_test_taken001"); err != nil {
+		t.Fatal(err)
 	}
-	if sec.MockValue != "mock-K" {
-		t.Errorf("MockValue = %q, want mock-K", sec.MockValue)
+
+	for _, chosen := range []string{"sk_test_taken001", "mock-TOKEN"} {
+		_, err := s.Set("OTHER", "second-value-2", []string{"b.example.com"}, chosen)
+		if err == nil || !strings.Contains(err.Error(), "TOKEN") {
+			t.Errorf("Set with the placeholder %q = %v, want a refusal naming TOKEN", chosen, err)
+		}
+	}
+
+	// Its own placeholder is not another secret's, so a rotation that names it again lands.
+	if _, err := s.Set("TOKEN", "third-value-3", nil, "sk_test_taken001"); err != nil {
+		t.Errorf("a rotation that names the placeholder it already has: %v", err)
+	}
+}
+
+func TestSetRefusesAPlaceholderItCannotTellApart(t *testing.T) {
+	s, dir := newStore(t)
+
+	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The default is not exempt: another secret may already have chosen it, and a broken file cannot say.
+	for _, chosen := range []string{"sk_test_shaped01", ""} {
+		_, err := s.Set("TOKEN", "some-value-123", []string{"a.example.com"}, chosen)
+		if err == nil || !strings.Contains(err.Error(), "BROKEN") {
+			t.Errorf("Set with the placeholder %q over an unreadable store = %v, want a refusal naming BROKEN", chosen, err)
+		}
+	}
+}
+
+// A default is a placeholder like any other: two secrets that share one substitute by list order.
+func TestSetRefusesADefaultPlaceholderAnotherSecretChose(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("FOO", "first-value-1", []string{"a.example.com"}, "mock-BAR"); err != nil {
+		t.Fatalf("a placeholder no stored secret owns: %v", err)
+	}
+
+	_, err := s.Set("BAR", "second-value-2", []string{"b.example.com"}, "")
+	if err == nil || !strings.Contains(err.Error(), "FOO") {
+		t.Errorf("Set with the default mock-BAR = %v, want a refusal naming FOO", err)
+	}
+}
+
+func TestTheDefaultPlaceholderIsExemptFromTheLengthRule(t *testing.T) {
+	s, _ := newStore(t)
+
+	sec, err := s.Set("K", "some-value-123", []string{"a.example.com"}, "")
+	if err != nil {
+		t.Fatalf("Set of a one-letter name: %v", err)
+	}
+	if sec.Placeholder != "mock-K" || len(sec.Placeholder) >= minPlaceholder {
+		t.Errorf("the default placeholder is %q, want a short one the rule does not reach", sec.Placeholder)
 	}
 }
 
@@ -229,12 +356,12 @@ func TestSetRefusals(t *testing.T) {
 	s, _ := newStore(t)
 
 	cases := []struct {
-		name  string
-		key   string
-		value string
-		to    []string
-		mock  string
-		want  string
+		name        string
+		key         string
+		value       string
+		to          []string
+		placeholder string
+		want        string
 	}{
 		{"lowercase name", "api_key", "v-1234567", []string{"example.com"}, "", "environment variable name"},
 		{"digit first", "1KEY", "v-1234567", []string{"example.com"}, "", "environment variable name"},
@@ -244,16 +371,18 @@ func TestSetRefusals(t *testing.T) {
 		{"port in destination", "KEY", "v-1234567", []string{"example.com:443"}, "", "no scheme"},
 		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "", "is an address"},
 		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
+		{"bare wildcard", "KEY", "v-1234567", []string{"*"}, "", "has no dot"},
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
-		{"mock is the value", "KEY", "v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"mock inside the value", "KEY", "abc-v-1234567", []string{"example.com"}, "v-1234567", "inside its value"},
-		{"short mock", "KEY", "v-1234567", []string{"example.com"}, "abc", "shorter than"},
-		{"mock with space", "KEY", "v-1234567", []string{"example.com"}, "mock value", "whitespace"},
+		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
+		{"chosen placeholder inside the value", "KEY", "abc-sk_test_shaped01-1", []string{"example.com"}, "sk_test_shaped01", "inside its value"},
+		{"placeholder too short", "KEY", "v-1234567", []string{"example.com"}, "sk_test", "shorter than"},
+		{"whitespace in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk test shaped", "whitespace or a control"},
+		{"control character in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test\x01shaped", "whitespace or a control"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.Set(tc.key, tc.value, tc.to, tc.mock)
+			_, err := s.Set(tc.key, tc.value, tc.to, tc.placeholder)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("Set = %v, want an error mentioning %q", err, tc.want)
 			}

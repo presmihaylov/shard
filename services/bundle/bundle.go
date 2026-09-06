@@ -15,6 +15,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // guestShardDir is the guest mount point of the per-sandbox host directory shard-init writes to.
@@ -79,6 +80,14 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 
 	if err := writeNetworkFiles(b, spec); err != nil {
 		return Bundle{}, err
+	}
+
+	if spec.ProxyCA != nil {
+		trust, err := plantTrust(b, spec)
+		if err != nil {
+			return Bundle{}, err
+		}
+		spec.Env = runspec.MergeEnv(spec.Env, trust)
 	}
 
 	runtimeSpec, err := s.runtimeSpec(spec, b)

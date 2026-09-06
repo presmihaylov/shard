@@ -3,11 +3,14 @@
 # It installs the two binaries, starts shard daemon over the run's root (SHARD-124), creates a
 # sandbox, execs into it twice over the same filesystem, pauses, resumes and forks it (SHARD-36),
 # stops it, removes it, stops the daemon, and then proves the host holds nothing either left behind.
+# One sandbox holds a secret and a policy, so it is fronted: the run starts an echo server on the
+# host's 80 and 443 and proves the proxy puts the value in on the granted host only (SHARD-71).
 #
 #   sudo ./scripts/e2e.sh
 #
-# The run keeps its own state root, but the bridge, the subnet and the veth names belong to the
-# host, so it must not run beside live sandboxes from another root. It refuses one that has any.
+# The run keeps its own state root, but the bridge, the subnet, the veth names and the two echo
+# ports belong to the host, so it must not run beside live sandboxes from another root. It refuses
+# one that has any, and a host whose 80 or 443 is taken.
 #
 # Environment:
 #   PREFIX     where the binaries are installed        (default /usr/local/bin)
@@ -44,6 +47,16 @@ CLONE_LINKS=""
 DAEMON_PID=""
 DAEMON_LOG=""
 REPORTED=0
+# The two ports the daemon's proxy listens on, as pkg/proxy declares them.
+PROXY_PLAIN_PORT=30080
+PROXY_TLS_PORT=30443
+# The echo is the upstream behind the proxy, and it lives for the whole run.
+ECHO_PID=""
+ECHO_DIR=""
+# The echo names all resolve to this host through sslip.io: one is granted, one is only allowed, one is neither.
+ECHO_HOST=""
+OTHER_HOST=""
+DENIED_HOST=""
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
 # once: a failure reaches it through fail and then again through the exit handler.
@@ -125,6 +138,50 @@ expect_blocked() {
 	local id="$1" note="$2" got
 	got=$(shard exec "${id}" -- /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 && echo reachable || echo blocked')
 	expect "${got}" "blocked" "${note}"
+}
+
+# fetch runs busybox wget in a sandbox against one echo name, over http or https, with the placeholder of
+# each secret in a header, and prints the lines the echo answered with.
+fetch() {
+	local id="$1" scheme="$2" host="$3"
+	shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" --header \"X-Shaped: \$E2E_SHAPED\" ${scheme}://${host}/"
+}
+
+# expect_fronted fails when a request from the sandbox to the granted host does not carry the real value,
+# which proves the request went through the proxy and the proxy put the value in.
+expect_fronted() {
+	local id="$1" note="$2" got
+	if ! got=$(fetch "${id}" http "${ECHO_HOST}"); then
+		fail "the request to ${ECHO_HOST} from ${id} failed"
+	fi
+	echo "${got}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${got}', want the value in Authorization"
+	say "${note}"
+}
+
+# start_echo builds and starts the upstream on the host's 80 and 443. Both must be free: a server already
+# there would answer the guest instead, and the run would prove nothing.
+start_echo() {
+	local busy
+	busy=$(ss -Hltn '( sport = :80 or sport = :443 )' 2>/dev/null || true)
+	[ -z "${busy}" ] || fail "port 80 or 443 is taken on this host, and the echo needs both: ${busy}"
+
+	ECHO_DIR=$(mktemp -d)
+	go build -o "${ECHO_DIR}/echo" ./scripts/echo
+	"${ECHO_DIR}/echo" -address "${HOST_IPV4}" -names "${ECHO_HOST},${OTHER_HOST}" -cert-out "${ECHO_DIR}/cert.pem" -ready "${ECHO_DIR}/ready" >"${ECHO_DIR}/log" 2>&1 &
+	ECHO_PID=$!
+	for _ in $(seq 1 50); do
+		[ -f "${ECHO_DIR}/ready" ] && return 0
+		kill -0 "${ECHO_PID}" 2>/dev/null || break
+		sleep 0.1
+	done
+	fail "the echo did not come up: $(cat "${ECHO_DIR}/log")"
+}
+
+stop_echo() {
+	[ -n "${ECHO_PID}" ] || return 0
+	kill "${ECHO_PID}" >/dev/null 2>&1 || true
+	wait "${ECHO_PID}" >/dev/null 2>&1 || true
+	ECHO_PID=""
 }
 
 # timed runs a command and prints how long it took, so the transcript carries the numbers SHARD-32 asks for.
@@ -218,11 +275,21 @@ wipe_root() {
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
 # It returns non-zero rather than failing, so a teardown can bring one back without ending the script.
 start_daemon() {
+	local busy
+	busy=$(ss -Hltn "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )" 2>/dev/null || true)
+	[ -z "${busy}" ] || return 1
+
 	[ -n "${DAEMON_LOG}" ] || DAEMON_LOG=$(mktemp)
-	"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
+	# The proxy verifies the echo like any upstream, so the daemon trusts the host roots plus that one certificate.
+	local trust=""
+	if [ -f "${ECHO_DIR}/cert.pem" ]; then
+		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
+		trust="${ECHO_DIR}/trust.pem"
+	fi
+	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	for _ in $(seq 1 50); do
-		grep -q "api listening on" "${DAEMON_LOG}" && return 0
+		grep -q "api listening on" "${DAEMON_LOG}" && grep -q "proxy listening on" "${DAEMON_LOG}" && return 0
 		sleep 0.1
 	done
 
@@ -266,8 +333,9 @@ teardown() {
 	done
 
 	stop_daemon || echo "teardown: the socket ${SHARD_ROOT}/shard.sock outlived the daemon" >&2
+	stop_echo
 	wipe_root
-	rm -f "${DAEMON_LOG:-/nonexistent}"
+	rm -rf "${ECHO_DIR:-/nonexistent}" "${DAEMON_LOG:-/nonexistent}"
 }
 
 # on_exit is the one handler: it names the step that broke and then gives the host back. The step is
@@ -295,13 +363,13 @@ trap on_exit EXIT
 
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives netns, nft and runsc, so this needs root"
-for binary in runsc ip nft go; do
+for binary in runsc ip ss nft go; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
 if [ ! -e /dev/kvm ]; then
 	say "no /dev/kvm, which is the box this ticket targets"
 fi
-say "runsc, ip, nft and go are on the host"
+say "runsc, ip, ss, nft and go are on the host"
 
 check_host_is_free
 say "no other sandbox holds a link on this host"
@@ -311,10 +379,10 @@ check_root
 say "this run owns the root ${SHARD_ROOT}"
 
 step "install shard and its guest supervisor"
+cd "$(dirname "$0")/.."
 if [ "${SKIP_INSTALL:-0}" = "1" ]; then
 	say "skipped, running against the binaries already in ${PREFIX}"
 else
-	cd "$(dirname "$0")/.."
 	# Build outside the tree: this runs as root, and root-owned files in a checkout are a trap.
 	BUILD=$(mktemp -d)
 	go build -o "${BUILD}/shard" ./cmd/shard
@@ -336,11 +404,22 @@ REFUSAL=$(shard ls 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard ls answered with no daemon up"
 expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls names the socket and the daemon, and nothing else"
 
+step "start the echo the fronted sandbox talks to"
+# The echo answers on this host's own address, and sslip.io turns that address into three names.
+HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
+[ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
+ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
+OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
+DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
+start_echo
+say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
+
 step "start the daemon in the background"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
 LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
 say "the daemon logged: ${LISTEN_LINE#* api }"
+say "the daemon logged: $(grep 'proxy listening on' "${DAEMON_LOG}" | sed 's/.*proxy/proxy/')"
 
 step "prove the socket mode is what the daemon claims"
 if getent group shard >/dev/null; then
@@ -364,7 +443,16 @@ expect "${DAEMON_LINE}" "daemon ${CLIENT_LINE#client }" "version prints the clie
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to api.example.com E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN >/dev/null
+# The second secret names its own placeholder, for an SDK that checks the shape of a key before it sends it.
+SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
+SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
+CAUTION=$(shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
+echo "${CAUTION}" | grep -q "visible in the process list" || fail "a value on the command line printed no caution: '${CAUTION}'"
+say "a value on the command line is stored, with a caution on stderr"
+SHAPED_LS=$(shard secret ls)
+echo "${SHAPED_LS}" | grep -q "${SHAPED_PLACEHOLDER}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
+say "secret ls prints the chosen placeholder"
 SECRET_LS=$(shard secret ls)
 echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
 echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
@@ -374,17 +462,17 @@ SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 say "the secret file is mode 0600"
 
 step "store an egress policy"
-# The probe address is allowed on every protocol, so the ping the network checks use goes through, and nothing else does.
+# The probe address is allowed on every protocol, so the ping the network checks use goes through. The
+# other echo name is allowed by rule and not granted, so a request to it must keep the placeholder.
 shard policy create --deny any e2e-deny-all >/dev/null
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
 shard policy show e2e-policy | grep -q '"kind": "cidr"' || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
-CODE=0
-REFUSAL=$(shard policy create --allow suffix:example.com e2e-bad 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "policy create accepted a suffix rule"
-echo "${REFUSAL}" | grep -q "SHARD-71" || fail "policy create said '${REFUSAL}', want it to name the proxy ticket"
+shard policy create --allow suffix:example.com --allow '*.example.com' e2e-web >/dev/null
+shard policy rm e2e-web >/dev/null
+say "policy create accepts a suffix rule and a wildcard rule, which the proxy matches"
 CODE=0
 shard policy create --allow 'api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a domain rule on a raw port"
@@ -397,11 +485,11 @@ shard policy create --allow 'domain:api.example.com' e2e-bad >/dev/null 2>&1 || 
 CODE=0
 shard policy create --allow private e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a rule naming the private ranges"
-say "policy create refuses a suffix rule, a raw-port name rule, an in-label wildcard, the old spelling and private"
+say "policy create refuses a raw-port name rule, an in-label wildcard, the old spelling and private"
 
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create --secret E2E_TOKEN --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+ID=$(shard create --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -440,7 +528,8 @@ say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
-nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK} after the daemon restart"
+# grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
+nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK} after the daemon restart"
 say "the host still holds the egress chain of the sandbox"
 expect_exec "alive" "the guest process of the exec in flight outlived the daemon" \
 	/bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null && echo alive'
@@ -494,6 +583,10 @@ expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat
 
 step "hold the placeholder and never the value"
 expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bin/sh -c 'echo "$E2E_TOKEN"'
+expect_exec "${SHAPED_PLACEHOLDER}" "the guest sees the chosen placeholder as \$E2E_SHAPED" /bin/sh -c 'echo "$E2E_SHAPED"'
+printf '%s\n' "${SHAPED_VALUE}" | shard secret set --placeholder sk_test_othershape01 E2E_SHAPED >/dev/null 2>"${SHARD_ROOT}/moved.err" && fail "secret set moved a placeholder the sandbox holds"
+grep -q "${ID}" "${SHARD_ROOT}/moved.err" || fail "the refusal does not name the sandbox: $(cat "${SHARD_ROOT}/moved.err")"
+say "secret set refuses to move a placeholder the sandbox holds, and names it"
 # The store file is the one place the value is written; nothing under the sandbox tree or anywhere else holds it.
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
 shard inspect "${ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
@@ -501,19 +594,47 @@ say "inspect names the secret and holds no value"
 shard secret rm E2E_TOKEN >/dev/null 2>&1 && fail "secret rm removed a secret a sandbox holds"
 say "secret rm refuses while the sandbox holds the secret"
 
+step "front the sandbox through the proxy"
+# grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
+nft list table inet shard | grep -c "dnat ip to .*:30080" >/dev/null || fail "the host holds no dnat to the proxy for ${LINK}"
+say "the host turns the sandbox's 80 and 443 to the proxy"
+# The guest trusts the proxy CA beside the image's own roots, at the path the image already reads.
+CA_LINE=$(sed -n 2p "${SHARD_ROOT}/proxy/ca.crt")
+GUEST_BUNDLE=$(shard exec "${ID}" -- /bin/sh -c 'cat "$SSL_CERT_FILE"')
+echo "${GUEST_BUNDLE}" | grep -q "${CA_LINE}" || fail "the guest's \$SSL_CERT_FILE does not hold the proxy CA"
+[ "$(echo "${GUEST_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the guest's bundle holds the proxy CA alone"
+say "the guest trusts the proxy CA and still trusts the image's roots"
+
+expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
+GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
+echo "${GOT}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
+echo "${GOT}" | grep -qx "x-shaped=${SHAPED_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
+say "the same holds over tls, and the chosen placeholder carries its own value"
+
+GOT=$(fetch "${ID}" http "${OTHER_HOST}") || fail "the http request to ${OTHER_HOST} failed"
+echo "${GOT}" | grep -qx "authorization=Bearer mock-E2E_TOKEN" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
+echo "${GOT}" | grep -qx "x-shaped=${SHAPED_PLACEHOLDER}" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
+say "a request to a host the policy allows but the grant does not keeps both placeholders"
+
+expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
+	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
+expect_exec "" "the value is not in the guest's environment" /bin/sh -c "env | grep -F '${SECRET_VALUE}' || true"
+absent "the value in the daemon log" "$(grep -l "${SECRET_VALUE}" "${DAEMON_LOG}" || true)"
+absent "the value in the sandbox tree" "$(grep -rl "${SECRET_VALUE}" "${SHARD_ROOT}/sandboxes/${ID}" 2>/dev/null || true)"
+
 step "reach the network from the sandbox"
 expect_network "after the create"
 
 step "enforce the egress policy"
-nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK}"
-nft list table bridge shard | grep -q "iifname \"${LINK}\"" || fail "the host does not pin the address of ${LINK}"
+nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK}"
+nft list table bridge shard | grep -c "iifname \"${LINK}\"" >/dev/null || fail "the host does not pin the address of ${LINK}"
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 # The probe is only proof once the same address answers when a rule allows it.
-shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
 	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "blocked" "the floor holds under the policy: the metadata address is dropped" \
 	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
 expect_exec "blocked" "the floor holds under the policy: the gateway is dropped" \
@@ -526,7 +647,7 @@ say "inspect names the policy and what the host enforces"
 shard policy create --deny any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
-shard policy create --allow 1.1.1.1 --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_network "after the policy was put back"
 
 CODE=0
@@ -567,6 +688,8 @@ grep -q '"state": *"paused"' "${RECORD}" || fail "the record does not say paused
 SNAPSHOT=$(grep -o '"snapshot": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
 [ -f "${SNAPSHOT}/checkpoint.img" ] || fail "there is no checkpoint at ${SNAPSHOT}/checkpoint.img"
 say "the record says paused and the snapshot is at ${SNAPSHOT}"
+# The snapshot is the guest's memory after it sent the placeholder out, so the value must not be in it.
+absent "the value in the memory snapshot" "$(grep -rl "${SECRET_VALUE}" "${SNAPSHOT}" 2>/dev/null || true)"
 
 # The whole point of a pause: the memory goes back to the host. runsc holds nothing, so the process is gone.
 absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
@@ -591,6 +714,7 @@ expect_exec "before-the-pause" "the file written before the pause is there after
 # The restore rebuilt the guest over a new namespace, and the host rules were applied again over it.
 expect_network "after the resume"
 expect_blocked "${ID}" "the policy holds after the resume"
+expect_fronted "${ID}" "the proxy fronts the sandbox after the resume"
 
 step "fork the paused snapshot into a second sandbox"
 # A fork reads the snapshot, so the source may run on: the fork is the sandbox as it was at the pause.
@@ -610,6 +734,7 @@ shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not car
 shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
 expect_blocked "${FORK_ID}" "the policy holds on the fork"
 expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
 
 expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
 expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
@@ -710,6 +835,7 @@ for CLONE_ID in "$@"; do
 	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
 	expect_exec_in "${CLONE_ID}" "mock-E2E_TOKEN" "clone ${CLONE_ID} holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 	expect_blocked "${CLONE_ID}" "the policy holds on clone ${CLONE_ID}"
+	expect_fronted "${CLONE_ID}" "the proxy fronts clone ${CLONE_ID}"
 	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
 done
 say "both clones run the entrypoint again over the source's files, each on its own address"
@@ -763,6 +889,7 @@ expect_exec "kept" "the file written before the stop is there after the start" /
 # gVisor took the address at the first create, so this proves the start built the netns again.
 expect_network "after the start"
 expect_blocked "${ID}" "the policy holds after the start"
+expect_fronted "${ID}" "the proxy fronts the sandbox after the start"
 
 step "stop the started sandbox"
 shard stop --time "${GRACE}" "${ID}" >/dev/null
@@ -775,6 +902,7 @@ say "rm returned"
 
 step "remove the secret nothing holds any more"
 shard secret rm E2E_TOKEN >/dev/null
+shard secret rm E2E_SHAPED >/dev/null
 absent "the secret file" "$([ -e "${SHARD_ROOT}/secrets/E2E_TOKEN" ] && echo "${SHARD_ROOT}/secrets/E2E_TOKEN" || true)"
 say "secret rm removed the secret"
 
@@ -819,4 +947,4 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, daemon restart, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, rm, prune, daemon down, and a clean host"

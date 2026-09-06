@@ -60,6 +60,7 @@ services/sandbox/          the orchestrator: the lifecycle verbs the daemon serv
 services/image/            pull, unpack, cache policy
 services/bundle/           build the OCI bundle from an image config
 services/sandboxstate/     the sandbox record repository
+services/broker/           the proxy director: judge a request, put the secret value in
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
 services/daemon/           shard daemon: the wiring of every layer, and the background work

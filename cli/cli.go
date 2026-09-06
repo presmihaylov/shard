@@ -53,9 +53,12 @@ Usage:
   shard image rm [--force] <image>
                            remove a pulled image, and with --force one a sandbox still references
   shard image prune        remove every pulled image no sandbox references
-  shard secret set --to <host>... [--mock-value <v>] <NAME>
-                           store a secret read from stdin, granted to those hosts; set again to rotate the value
-  shard secret ls          list the secrets by name and destination, never by value
+  shard secret set --to <host>... [--placeholder <string>] <NAME> [-- VALUE]
+                           store a secret granted to those hosts; set again to rotate the value
+                           the guest sees the placeholder, and the proxy puts the value in its place on a granted request
+                           the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
+                           --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key
+  shard secret ls          list the secrets by name, destination and placeholder, never by value
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>
@@ -63,13 +66,16 @@ Usage:
   shard policy show <name> print a policy as JSON
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
-  shard daemon             run the resident process that owns the sandbox lifecycle, the background work and the API socket; systemd starts it
+  shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
 The destination is a host, an address or a prefix, or any:
   10.0.0.0/8 tcp:22   api.example.com   any udp:53
-A name rule is tcp to ports 80 and 443 only, and both when no port is named.
+A name rule is tcp to ports 80 and 443 only, and both when no port is named. A name may carry a
+wildcard, *.example.com for any depth, api.*.example.com for one label, and * for every host, and
+a suffix:example.com rule names the host and everything under it. These match in the proxy only.
+A sandbox with a policy or a secret is fronted: its web traffic goes through the proxy the daemon runs.
 
 Create flags, which must precede the image:
   --name <name>            a handle every verb takes in place of the id

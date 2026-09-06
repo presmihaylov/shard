@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -442,7 +443,7 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service,
 	r.live = map[string]bool{}
 	root := t.TempDir()
 
-	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	secrets, err := secret.New(filepath.Join(root, "secrets"), nil)
 	if err != nil {
 		t.Fatalf("secret.New: %v", err)
 	}
@@ -468,13 +469,21 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox) (*sandbox.Service,
 	}
 
 	svc := sandbox.New(sandbox.Config{
-		Repo:        l.repo,
-		Images:      fakeImages{r: r},
-		Network:     l.net,
-		Provider:    l.provider,
-		Secrets:     secrets,
-		Policies:    policies,
-		Substrate:   l.substrate,
+		Repo:      l.repo,
+		Images:    fakeImages{r: r},
+		Network:   l.net,
+		Provider:  l.provider,
+		Secrets:   secrets,
+		Policies:  policies,
+		Substrate: l.substrate,
+		ProxyCA: func() ([]byte, error) {
+			ca, err := proxy.LoadCA(filepath.Join(root, "proxy"))
+			if err != nil {
+				return nil, err
+			}
+
+			return ca.CertPEM(), nil
+		},
 		PullTimeout: time.Minute,
 	})
 

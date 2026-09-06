@@ -24,7 +24,7 @@ type PolicyStore interface {
 
 // SecretStore is the part of secret.Store the secret verbs drive. No verb reads a value.
 type SecretStore interface {
-	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
+	Set(name, value string, destinations []string, placeholder string) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
 	List() ([]secret.Secret, error)
 	Remove(name string) error
@@ -92,7 +92,8 @@ type PolicyRequest struct {
 type SecretRequest struct {
 	Value        string   `json:"value"`
 	Destinations []string `json:"destinations,omitempty"`
-	MockValue    string   `json:"mock_value,omitempty"`
+	// Placeholder overrides the default; empty on a rotation keeps the one the secret already has.
+	Placeholder string `json:"placeholder,omitempty"`
 }
 
 // SetPolicy stores the policy and puts the new rules on every sandbox that holds it at once.
@@ -184,14 +185,7 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 		return secret.Secret{}, &RequestError{Err: fmt.Errorf("secret %s has no value", name)}
 	}
 
-	// A sandbox holds the placeholder it was created with, so a new one would never be matched for it.
-	if req.MockValue != "" {
-		if err := s.placeholderFree(name, req.MockValue); err != nil {
-			return secret.Secret{}, err
-		}
-	}
-
-	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.MockValue)
+	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.Placeholder)
 	if err != nil {
 		return secret.Secret{}, &RequestError{Err: err}
 	}
@@ -221,18 +215,6 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 	}
 
 	return s.cfg.Secrets.Remove(name)
-}
-
-func (s *Stores) placeholderFree(name, mock string) error {
-	existing, err := s.cfg.Secrets.Get(name)
-	if errors.Is(err, secret.ErrNotFound) || (err == nil && existing.MockValue == mock) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	return s.ungranted(name)
 }
 
 // ungranted refuses when a record names the secret. A stopped sandbox counts: start hands it the placeholder again.

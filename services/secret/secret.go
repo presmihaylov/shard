@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -33,27 +34,32 @@ type Secret struct {
 	Name string `json:"name"`
 	// Destinations is where the value may go. A request to any other host never carries it.
 	Destinations []string `json:"destinations"`
-	// MockValue is what the guest sees in its environment. Its shape can matter to an SDK.
-	MockValue string    `json:"mock_value"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// Placeholder is what the guest holds in place of the value, so it is not secret and it is printed.
+	Placeholder string    `json:"placeholder"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
+
+// Holders names the sandboxes that hold a grant on a secret, so a placeholder change knows who still sees it.
+type Holders func(name string) ([]string, error)
 
 // record is the file on disk. It is the only place the value is written.
 type record struct {
 	Value        string    `json:"value"`
 	Destinations []string  `json:"destinations"`
-	MockValue    string    `json:"mock_value"`
+	Placeholder  string    `json:"placeholder"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Store is the secret repository. One file per secret, mode 0600, under a directory nobody else
 // may list.
 type Store struct {
-	dir string
+	dir     string
+	holders Holders
 }
 
-// New prepares the store directory, which is <root>/secrets on the box.
-func New(dir string) (*Store, error) {
+// New prepares the store directory, which is <root>/secrets on the box. A nil holders cannot say who
+// holds a placeholder, so such a store refuses to change one.
+func New(dir string, holders Holders) (*Store, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("the secret store needs an absolute path, got %q", dir)
 	}
@@ -67,12 +73,12 @@ func New(dir string) (*Store, error) {
 		return nil, fmt.Errorf("chmod %s: %w", dir, err)
 	}
 
-	return &Store{dir: dir}, nil
+	return &Store{dir: dir, holders: holders}, nil
 }
 
 // Set writes the secret, or replaces the one of that name. A replace is the rotation: nothing
 // caches a value, so a live sandbox uses the new one on its next request.
-func (s *Store) Set(name, value string, destinations []string, mock string) (Secret, error) {
+func (s *Store) Set(name, value string, destinations []string, placeholder string) (Secret, error) {
 	if err := ValidName(name); err != nil {
 		return Secret{}, err
 	}
@@ -89,13 +95,15 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Secret{}, err
 	}
+
+	chosen, err := s.placeholder(name, value, placeholder, existing)
+	if err != nil {
+		return Secret{}, err
+	}
+
 	if len(destinations) == 0 {
 		destinations = existing.Destinations
 	}
-	if mock == "" {
-		mock = existing.MockValue
-	}
-
 	if len(destinations) == 0 {
 		return Secret{}, fmt.Errorf("secret %s has no destination: a secret is granted to a host, never to a sandbox alone", name)
 	}
@@ -111,16 +119,7 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 		}
 	}
 
-	// The default is exempt from the length rule, so a short name still gets a placeholder.
-	chosen := mock != ""
-	if !chosen {
-		mock = MockValue(name)
-	}
-	if err := validMock(name, mock, value, chosen); err != nil {
-		return Secret{}, err
-	}
-
-	rec := record{Value: value, Destinations: bound, MockValue: mock, UpdatedAt: time.Now().UTC()}
+	rec := record{Value: value, Destinations: bound, Placeholder: chosen, UpdatedAt: time.Now().UTC()}
 
 	blob, err := json.Marshal(rec)
 	if err != nil {
@@ -132,6 +131,96 @@ func (s *Store) Set(name, value string, destinations []string, mock string) (Sec
 	}
 
 	return rec.public(name), nil
+}
+
+// placeholder settles what the guest will hold: the chosen one, else the stored one, else the default.
+func (s *Store) placeholder(name, value, chosen string, existing record) (string, error) {
+	if chosen == "" {
+		chosen = existing.Placeholder
+	}
+	if chosen == "" {
+		chosen = DefaultPlaceholder(name)
+	}
+
+	// A guest that held the value would need no proxy, so this rule holds for the default too.
+	if strings.Contains(value, chosen) {
+		return "", fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
+	}
+
+	// The default is exempt from the shape rules alone: a short NAME still gets a placeholder.
+	if chosen != DefaultPlaceholder(name) {
+		if err := shapedPlaceholder(name, chosen); err != nil {
+			return "", err
+		}
+	}
+
+	// Two secrets that share a placeholder substitute by list order, so this rule holds for the default too.
+	if err := s.freePlaceholder(name, chosen); err != nil {
+		return "", err
+	}
+
+	if existing.Placeholder != "" && chosen != existing.Placeholder {
+		if err := s.placeholderMoved(name); err != nil {
+			return "", err
+		}
+	}
+
+	return chosen, nil
+}
+
+// minPlaceholder keeps a chosen placeholder long enough that it cannot fall inside an ordinary request.
+const minPlaceholder = 8
+
+// shapedPlaceholder refuses a chosen placeholder the proxy could not find in an ordinary request.
+func shapedPlaceholder(name, chosen string) error {
+	if len(chosen) < minPlaceholder {
+		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minPlaceholder)
+	}
+	for _, r := range chosen {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("the placeholder of secret %s holds whitespace or a control character", name)
+		}
+	}
+
+	return nil
+}
+
+// freePlaceholder refuses a placeholder another secret already owns, as its own or as its default.
+func (s *Store) freePlaceholder(name, chosen string) error {
+	stored, err := s.List()
+	// A secret that does not read back may own the placeholder, so nothing can say it is free.
+	if err != nil {
+		return fmt.Errorf("the placeholder of secret %s cannot be told apart from the stored ones: %w", name, err)
+	}
+
+	for _, other := range stored {
+		if other.Name == name {
+			continue
+		}
+		if chosen == other.Placeholder || chosen == DefaultPlaceholder(other.Name) {
+			return fmt.Errorf("the placeholder of secret %s is the placeholder of secret %s", name, other.Name)
+		}
+	}
+
+	return nil
+}
+
+// placeholderMoved refuses to change what a running guest already holds: the placeholder moves only
+// when no sandbox holds a grant on the secret.
+func (s *Store) placeholderMoved(name string) error {
+	if s.holders == nil {
+		return fmt.Errorf("secret %s changes its placeholder and the store cannot tell which sandboxes hold it: ungrant it first", name)
+	}
+
+	holders, err := s.holders(name)
+	if err != nil {
+		return fmt.Errorf("secret %s changes its placeholder and the sandboxes that hold it cannot be read: %w", name, err)
+	}
+	if len(holders) != 0 {
+		return fmt.Errorf("secret %s changes its placeholder and sandbox %s still holds it: ungrant it first", name, strings.Join(holders, ", "))
+	}
+
+	return nil
 }
 
 // Get reads what the store says about a secret, and never the value.
@@ -221,11 +310,11 @@ func (s *Store) read(name string) (record, error) {
 func (s *Store) path(name string) string { return filepath.Join(s.dir, name) }
 
 func (r record) public(name string) Secret {
-	return Secret{Name: name, Destinations: slices.Clone(r.Destinations), MockValue: r.MockValue, UpdatedAt: r.UpdatedAt}
+	return Secret{Name: name, Destinations: slices.Clone(r.Destinations), Placeholder: r.Placeholder, UpdatedAt: r.UpdatedAt}
 }
 
-// MockValue is the placeholder the guest sees for a secret that set no other.
-func MockValue(name string) string { return "mock-" + name }
+// DefaultPlaceholder is what the guest holds in place of the value when the operator names none.
+func DefaultPlaceholder(name string) string { return "mock-" + name }
 
 // A secret name is the environment variable the guest reads, so it is shaped like one.
 var nameShape = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
@@ -284,22 +373,4 @@ func ValidDestination(dest string) (string, error) {
 	}
 
 	return canonical, nil
-}
-
-// validMock refuses a placeholder that is the value, which the guest would then hold, and one too
-// short to be found in a request without also matching something else.
-func validMock(name, mock, value string, chosen bool) error {
-	const minChars = 8
-
-	if strings.Contains(value, mock) {
-		return fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
-	}
-	if chosen && len(mock) < minChars {
-		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minChars)
-	}
-	if strings.ContainsAny(mock, " \t\r\n\x00") {
-		return fmt.Errorf("the placeholder of secret %s holds whitespace, which a request would split", name)
-	}
-
-	return nil
 }

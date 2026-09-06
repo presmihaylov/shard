@@ -127,6 +127,13 @@ func normalise(cfg Config) (Config, netip.Addr, error) {
 // Gateway is the bridge's own address, which every sandbox routes through.
 func (s *Service) Gateway() netip.Addr { return s.gateway }
 
+// Gateway is what the config would make the bridge address, for a caller with no netns to build a Service over.
+func Gateway(cfg Config) (netip.Addr, error) {
+	_, gateway, err := normalise(cfg)
+
+	return gateway, err
+}
+
 // Bridge is the host interface every sandbox hangs off.
 func (s *Service) Bridge() string { return s.cfg.Bridge }
 

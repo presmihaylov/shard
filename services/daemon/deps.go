@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"path/filepath"
+	"slices"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -22,6 +25,10 @@ import (
 type deps struct {
 	cfg Config
 
+	// The tasks run at once and share one deps, so every getter builds under this lock. A getter that
+	// needs another one calls its locked form, because a Mutex taken twice by one goroutine deadlocks.
+	mu sync.Mutex
+
 	imageSvc     *image.Service
 	repoSvc      *sandboxstate.Repository
 	netSvc       *network.Service
@@ -32,7 +39,7 @@ type deps struct {
 	runnerSvc    *runsc.Runner
 }
 
-func (d *deps) images() (*image.Service, error) {
+func (d *deps) imagesLocked() (*image.Service, error) {
 	if d.imageSvc != nil {
 		return d.imageSvc, nil
 	}
@@ -46,7 +53,7 @@ func (d *deps) images() (*image.Service, error) {
 	return d.imageSvc, nil
 }
 
-func (d *deps) repo() (*sandboxstate.Repository, error) {
+func (d *deps) repoLocked() (*sandboxstate.Repository, error) {
 	if d.repoSvc != nil {
 		return d.repoSvc, nil
 	}
@@ -60,7 +67,7 @@ func (d *deps) repo() (*sandboxstate.Repository, error) {
 	return d.repoSvc, nil
 }
 
-func (d *deps) net() (*network.Service, error) {
+func (d *deps) netLocked() (*network.Service, error) {
 	if d.netSvc != nil {
 		return d.netSvc, nil
 	}
@@ -70,7 +77,7 @@ func (d *deps) net() (*network.Service, error) {
 		return nil, err
 	}
 
-	source, err := d.egress()
+	source, err := d.egressLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -84,17 +91,17 @@ func (d *deps) net() (*network.Service, error) {
 	return d.netSvc, nil
 }
 
-func (d *deps) provider() (models.Provider, error) {
+func (d *deps) providerLocked() (models.Provider, error) {
 	if d.providerSvc != nil {
 		return d.providerSvc, nil
 	}
 
-	repo, err := d.repo()
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	runner, err := d.runner()
+	runner, err := d.runnerLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +122,7 @@ func (d *deps) provider() (models.Provider, error) {
 
 // runner drives the runsc binary. The mode is fixed on it and must match the one the sandbox was
 // created with, so every verb builds it here and nowhere else.
-func (d *deps) runner() (*runsc.Runner, error) {
+func (d *deps) runnerLocked() (*runsc.Runner, error) {
 	if d.runnerSvc != nil {
 		return d.runnerSvc, nil
 	}
@@ -129,12 +136,12 @@ func (d *deps) runner() (*runsc.Runner, error) {
 	return d.runnerSvc, nil
 }
 
-func (d *deps) secrets() (*secret.Store, error) {
+func (d *deps) secretsLocked() (*secret.Store, error) {
 	if d.secretSvc != nil {
 		return d.secretSvc, nil
 	}
 
-	store, err := secret.New(filepath.Join(d.cfg.Root, "secrets"))
+	store, err := secret.New(filepath.Join(d.cfg.Root, "secrets"), d.holders)
 	if err != nil {
 		return nil, err
 	}
@@ -143,14 +150,37 @@ func (d *deps) secrets() (*secret.Store, error) {
 	return d.secretSvc, nil
 }
 
+// holders names the sandboxes whose record grants the secret, so the store can refuse to move a placeholder under them.
+// It takes no lock of its own: it calls the locking d.repo(), and d.mu taken twice by one goroutine deadlocks.
+func (d *deps) holders(name string) ([]string, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	sandboxes, err := repo.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var users []string
+	for _, sb := range sandboxes {
+		if slices.Contains(sb.Secrets, name) {
+			users = append(users, sb.ID)
+		}
+	}
+
+	return users, nil
+}
+
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
 // teardown gives it back.
-func (d *deps) substrate() (*runsc.Runner, error) {
+func (d *deps) substrateLocked() (*runsc.Runner, error) {
 	if d.substrateSvc != nil {
 		return d.substrateSvc, nil
 	}
 
-	runner, err := d.runner()
+	runner, err := d.runnerLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +189,7 @@ func (d *deps) substrate() (*runsc.Runner, error) {
 	return d.substrateSvc, nil
 }
 
-func (d *deps) policies() (*egress.Store, error) {
+func (d *deps) policiesLocked() (*egress.Store, error) {
 	if d.policySvc != nil {
 		return d.policySvc, nil
 	}
@@ -175,18 +205,18 @@ func (d *deps) policies() (*egress.Store, error) {
 
 // egress is what the network service compiles the host rules from. It reads the records, the policies
 // and the grants, so it needs the stores and never the substrate.
-func (d *deps) egress() (*egress.Service, error) {
-	policies, err := d.policies()
+func (d *deps) egressLocked() (*egress.Service, error) {
+	policies, err := d.policiesLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	repo, err := d.repo()
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	secrets, err := d.secrets()
+	secrets, err := d.secretsLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -194,39 +224,52 @@ func (d *deps) egress() (*egress.Service, error) {
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
 }
 
+// proxyCA is the certificate a fronted sandbox is built to trust, minted on the first ask and read back after.
+func (d *deps) proxyCA() ([]byte, error) {
+	ca, err := proxy.LoadCA(filepath.Join(d.cfg.Root, "proxy"))
+	if err != nil {
+		return nil, err
+	}
+
+	return ca.CertPEM(), nil
+}
+
 // lifecycle wires the orchestrator over every layer the sandbox verbs drive, once per daemon.
 func (d *deps) lifecycle() (*sandbox.Service, error) {
-	images, err := d.images()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	images, err := d.imagesLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	repo, err := d.repo()
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	net, err := d.net()
+	net, err := d.netLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	provider, err := d.provider()
+	provider, err := d.providerLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	secrets, err := d.secrets()
+	secrets, err := d.secretsLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	policies, err := d.policies()
+	policies, err := d.policiesLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	sub, err := d.substrate()
+	sub, err := d.substrateLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -239,28 +282,32 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		Secrets:     secrets,
 		Policies:    policies,
 		Substrate:   sub,
+		ProxyCA:     d.proxyCA,
 		PullTimeout: d.cfg.PullTimeout,
 	}), nil
 }
 
 // stores wires the policy, secret and image verbs. They read and write files, so they need no substrate.
 func (d *deps) stores() (*sandbox.Stores, error) {
-	repo, err := d.repo()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	images, err := d.images()
+	images, err := d.imagesLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	secrets, err := d.secrets()
+	secrets, err := d.secretsLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	policies, err := d.policies()
+	policies, err := d.policiesLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -273,4 +320,33 @@ func (d *deps) stores() (*sandbox.Stores, error) {
 		Network:     func() (sandbox.Reapplier, error) { return d.net() },
 		PullTimeout: d.cfg.PullTimeout,
 	}), nil
+}
+
+// A getter with no lock of its own is reachable only from one that holds it. These four are not.
+func (d *deps) repo() (*sandboxstate.Repository, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.repoLocked()
+}
+
+func (d *deps) net() (*network.Service, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.netLocked()
+}
+
+func (d *deps) secrets() (*secret.Store, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.secretsLocked()
+}
+
+func (d *deps) egress() (*egress.Service, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.egressLocked()
 }

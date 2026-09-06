@@ -395,7 +395,7 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	secrets, err := secret.New(filepath.Join(root, "secrets"), nil)
 	if err != nil {
 		t.Fatalf("secret.New: %v", err)
 	}

@@ -37,31 +37,72 @@ func (a App) secret(ctx context.Context, args []string) error {
 type secretSetOptions struct {
 	name         string
 	destinations []string
-	mock         string
+	// placeholder overrides the default; empty leaves the default, or the stored one on a rotation.
+	placeholder string
+	// value is what followed the name, and hasValue tells an empty one from none at all.
+	value    string
+	hasValue bool
 }
 
-// secretSet reads the value from stdin, so it lands in no shell history and no process listing.
+// cautionOnArgv is printed once, exactly, when the value came from argv: ps showed it while the command ran.
+const cautionOnArgv = "caution: the value was on the command line and visible in the process list while the command ran; pipe it on stdin to avoid that"
+
 func (a App) secretSet(ctx context.Context, args []string) error {
 	opts, err := parseSecretSet(args)
 	if err != nil {
 		return err
 	}
 
-	if pty.IsTerminal(a.stdin()) {
-		return errors.New("secret set reads the value from stdin: pipe it in, as in printf '%s' \"$TOKEN\" | shard secret set --to <host> NAME")
-	}
-
-	value, err := readSecretValue(a.stdin())
+	value, err := a.secretValue(opts)
 	if err != nil {
 		return err
 	}
 
-	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.mock)
+	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
 	if err != nil {
 		return err
 	}
 
 	return a.print(sec.Name)
+}
+
+// secretValue takes the value three ways: after the name, on stdin, or from a prompt with the echo off.
+func (a App) secretValue(opts secretSetOptions) (string, error) {
+	if opts.hasValue && opts.value != "-" {
+		if a.Err != nil {
+			fmt.Fprintln(a.Err, cautionOnArgv)
+		}
+
+		return opts.value, nil
+	}
+
+	if opts.value == "-" || !pty.IsTerminal(a.stdin()) {
+		return readSecretValue(a.stdin())
+	}
+
+	return a.promptSecretValue(opts.name)
+}
+
+// promptSecretValue asks the terminal with the echo off, so the value lands in no history and on no screen.
+func (a App) promptSecretValue(name string) (string, error) {
+	if a.Err != nil {
+		fmt.Fprintf(a.Err, "value for %s: ", name)
+	}
+
+	blob, err := pty.ReadPassword(a.stdin())
+	if a.Err != nil {
+		fmt.Fprintln(a.Err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the secret value from the terminal: %w", err)
+	}
+
+	value := string(blob)
+	if value == "" {
+		return "", fmt.Errorf("the secret value of %s is empty", name)
+	}
+
+	return value, nil
 }
 
 // readSecretValue takes the whole of stdin less one trailing newline, which is what echo and a
@@ -89,21 +130,28 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.mock, "mock-value", "", "the placeholder the guest sees in place of the value")
+	flags.StringVar(&opts.placeholder, "placeholder", "", "what the guest holds in place of the value, default mock-NAME")
 
 	if err := flags.Parse(args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
 	}
 
 	rest := flags.Args()
-	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --to <host> <NAME>")
+	if len(rest) == 0 {
+		return secretSetOptions{}, errors.New("secret set takes a name and an optional value, got none")
 	}
-	if len(rest) != 1 {
-		return secretSetOptions{}, fmt.Errorf("secret set takes one name, got %d", len(rest))
+	// A value that starts with - needs a -- before it, so anything else that does is a misplaced flag.
+	if strings.HasPrefix(rest[0], "-") || (len(rest) > 2 && strings.HasPrefix(rest[1], "-")) {
+		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --to <host> [--placeholder <string>] <NAME> [-- VALUE]")
+	}
+	if len(rest) > 2 {
+		return secretSetOptions{}, fmt.Errorf("secret set takes a name and an optional value, got %d arguments", len(rest))
 	}
 
 	opts.name = rest[0]
+	if len(rest) == 2 {
+		opts.value, opts.hasValue = rest[1], true
+	}
 
 	return opts, nil
 }
@@ -122,7 +170,7 @@ func (a App) secretList(ctx context.Context, args []string) error {
 	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
 
 	for _, sec := range result.Secrets {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.MockValue, humanAge(sec.UpdatedAt))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.Placeholder, humanAge(sec.UpdatedAt))
 	}
 
 	if err := w.Flush(); err != nil {
