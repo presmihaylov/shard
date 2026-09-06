@@ -74,18 +74,9 @@ func clip(text string) string {
 	return text[:most] + "..."
 }
 
-// date turns every record's uptime into wall time, against one mark whose uptime and wall time are both known.
-func date(records []Record, markUptime time.Duration, markWall time.Time) []Record {
-	dated := make([]Record, 0, len(records))
-	for _, record := range records {
-		record.Time = markWall.Add(record.Uptime - markUptime).UTC()
-		dated = append(dated, record)
-	}
+// at turns one record's uptime into wall time, against a mark whose uptime and wall time are both known.
+func at(record Record, markUptime time.Duration, markWall time.Time) Record {
+	record.Time = markWall.Add(record.Uptime - markUptime).UTC()
 
-	return dated
+	return record
 }
-
-// Reader is the ring itself. It holds nothing: every Read walks the ring from its oldest record.
-type Reader struct{}
-
-func (Reader) Read() ([]Record, error) { return Read() }

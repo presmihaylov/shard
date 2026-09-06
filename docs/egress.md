@@ -155,21 +155,23 @@ Every fronted sandbox keeps a decision log, and `shard logs --egress <id|name>` 
 record per line, oldest first. A record names the time, the source, the verdict, the host, the port,
 the address, the rule that decided and its text. It never carries a header, a body or a secret value.
 
-There are two sources, and the log merges them:
+There are two sources, and the daemon writes both into the one file,
+`${root}/sandboxes/<id>/egress.jsonl`:
 
-- **`proxy`**: one record per request the proxy judged, allowed or denied. The daemon writes it to
-  `${root}/sandboxes/<id>/egress.jsonl`. A decision that cannot be written closes the door: the
-  request is refused rather than let out unlogged.
+- **`proxy`**: one record per request the proxy judged, allowed or denied. A decision that cannot be
+  written closes the door: the request is refused rather than let out unlogged.
 - **`host`**: one record per packet the host chains dropped, which is everything the proxy never saw.
-  The chains log into the kernel ring buffer, and shard reads it at print time.
+  The chains log into the kernel ring buffer, and the daemon tails the ring into the file, within a
+  second of the drop. A read never touches the ring.
 
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
 prints as `egress`, or one of `private`, `default`, `none`, `missing` and `resolve`.
 
 Two limits are worth knowing:
 
-- **The kernel ring is shared and short.** It holds what the whole host logged, so the oldest host
-  drops fall off it while the proxy's own records stay. A busy box loses them in minutes. Each chain
-  rule logs at 2 lines per second, with a burst of 10, so a probe storm cannot fill the ring.
+- **A drop the daemon was down for is lost once the ring drops it.** The daemon keeps the last
+  kernel sequence it wrote in `${root}/egress.cursor` and writes the ring's backlog when it starts,
+  so a restart loses only what the ring itself overwrote in the meantime. Each chain rule logs at 2
+  lines per second, with a burst of 10, so a probe storm cannot fill the ring.
 - **The log file is rotated at 8 MiB** and one file is kept behind it, so a sandbox holds 16 MiB at
   most. The daemon does the rotation once a minute.

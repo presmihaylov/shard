@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/broker"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -35,7 +37,7 @@ func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
 	life := &lifecycle{deps: d}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}, egressLogRotation{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -333,6 +335,44 @@ func (t proxyTask) Run(ctx context.Context) error {
 	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
 
 	return server.Run(ctx)
+}
+
+// egressLogTailer moves the host's drops out of the kernel ring and into the sandbox's own log, where
+// they are as durable as the proxy's decisions and a follow is a tail of one file.
+type egressLogTailer struct {
+	deps *deps
+}
+
+func (egressLogTailer) Name() string { return "egress-log-tailer" }
+
+func (t egressLogTailer) Run(ctx context.Context) error {
+	repo, err := t.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	decisions, err := t.deps.egressLog()
+	if err != nil {
+		return err
+	}
+
+	ring, err := kmsg.Open()
+	if err != nil {
+		return err
+	}
+	defer ring.Close()
+
+	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
+
+	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, logger).Run(ctx, ring); err != nil {
+		return err
+	}
+
+	if lost := ring.Overwritten(); lost > 0 {
+		logger.Printf("egress log: the ring overwrote %d records under the tailer", lost)
+	}
+
+	return nil
 }
 
 // egressLogRotation keeps every sandbox's decision log bounded. It renames rather than truncates, so an

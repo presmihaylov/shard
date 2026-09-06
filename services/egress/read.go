@@ -1,66 +1,30 @@
 package egress
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/services/network"
 )
 
-// Ring is the kernel ring buffer the host chains log their drops into.
-type Ring interface {
-	Read() ([]kmsg.Record, error)
-}
-
-// LogReader is both halves of what one sandbox's egress produced: the proxy's own records, and the
-// packets the host chains dropped before the proxy ever saw them.
+// LogReader is what shard logs --egress reads: one sandbox's own file. The daemon writes both halves
+// into it, the proxy's own decisions and the packets the host chains dropped, so a read needs no ring.
 type LogReader struct {
-	log  *Log
-	ring Ring
+	log *Log
 }
 
-func NewLogReader(log *Log, ring Ring) *LogReader { return &LogReader{log: log, ring: ring} }
+func NewLogReader(log *Log) *LogReader { return &LogReader{log: log} }
 
-// Read merges both halves by time, oldest first. The ring is shared and short, so the host's oldest
-// lines fall off it while the sandbox's own file keeps every line the proxy wrote.
+// Read returns the sandbox's records by time, oldest first. The file holds each source in time order
+// already, and the tailer appends a host drop within a second of it, so a sort is enough.
 func (r *LogReader) Read(sb models.Sandbox) ([]Record, error) {
-	decisions, err := r.log.Read(sb.ID)
+	records, err := r.log.Read(sb.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	lines, err := r.ring.Read()
-	if err != nil {
-		return nil, fmt.Errorf("read the kernel ring buffer: %w", err)
-	}
-
-	return Merge(decisions, HostDrops(lines, sb)), nil
-}
-
-// HostDrops keeps the ring's lines that this sandbox's chains wrote. The kernel names the bridge and never
-// the port, so the source address is what picks the sandbox, and an address is reused: a line older than
-// the sandbox belongs to whoever held the address before it.
-func HostDrops(lines []kmsg.Record, sb models.Sandbox) []Record {
-	if !sb.Address.IsValid() {
-		return nil
-	}
-	source := sb.Address.Addr().String()
-
-	var records []Record
-	for _, line := range lines {
-		record, ok := hostDrop(line.Message)
-		if !ok || record.source != source || line.Time.Before(sb.CreatedAt) {
-			continue
-		}
-
-		record.Time = line.Time
-		records = append(records, record.Record)
-	}
-
-	return records
+	return Merge(records), nil
 }
 
 // drop is one parsed log line: the record it becomes, and the address that says whose it is.

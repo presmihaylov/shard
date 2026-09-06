@@ -49,15 +49,15 @@ func TestParseRefusesARecordItCannotRead(t *testing.T) {
 
 func TestDateTurnsUptimeIntoWallTimeAgainstTheMark(t *testing.T) {
 	mark := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	records := []Record{{Uptime: 90 * time.Second}, {Uptime: 130 * time.Second}}
 
-	dated := date(records, 100*time.Second, mark)
+	before := at(Record{Uptime: 90 * time.Second}, 100*time.Second, mark)
+	after := at(Record{Uptime: 130 * time.Second}, 100*time.Second, mark)
 
-	if !dated[0].Time.Equal(mark.Add(-10 * time.Second)) {
-		t.Errorf("the record before the mark became %s", dated[0].Time)
+	if !before.Time.Equal(mark.Add(-10 * time.Second)) {
+		t.Errorf("the record before the mark became %s", before.Time)
 	}
-	if !dated[1].Time.Equal(mark.Add(30 * time.Second)) {
-		t.Errorf("the record after the mark became %s", dated[1].Time)
+	if !after.Time.Equal(mark.Add(30 * time.Second)) {
+		t.Errorf("the record after the mark became %s", after.Time)
 	}
 }
 
