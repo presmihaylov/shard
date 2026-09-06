@@ -343,22 +343,24 @@ var labelShape = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 func ValidDestination(dest string) (string, error) {
 	canonical := strings.ToLower(strings.TrimSuffix(dest, "."))
 
+	// A mistyped --to hands the value as the destination, so no refusal here echoes what it refused.
+
 	if canonical == "" {
 		return "", errors.New("the destination is empty")
 	}
 	if strings.ContainsAny(canonical, "/:") {
-		return "", fmt.Errorf("the destination %q is a host name alone: no scheme, no port, no path", dest)
+		return "", errors.New("the destination is a host name alone: no scheme, no port, no path")
 	}
 	if _, err := netip.ParseAddr(canonical); err == nil {
-		return "", fmt.Errorf("the destination %q is an address: a secret is granted to a host name", dest)
+		return "", errors.New("the destination is an address: a secret is granted to a host name")
 	}
 	if len(canonical) > 253 {
-		return "", fmt.Errorf("the destination %q is longer than a host name may be", dest)
+		return "", errors.New("the destination is longer than a host name may be")
 	}
 
 	labels := strings.Split(canonical, ".")
 	if len(labels) < 2 {
-		return "", fmt.Errorf("the destination %q has no dot: name the host the way a request does", dest)
+		return "", errors.New("the destination has no dot: name the host the way a request does")
 	}
 	for _, label := range labels {
 		// A whole label may be a wildcard; api* would be an unmatchable shape.
@@ -366,10 +368,10 @@ func ValidDestination(dest string) (string, error) {
 			continue
 		}
 		if strings.Contains(label, "*") {
-			return "", fmt.Errorf("the destination %q puts * inside a label: a wildcard replaces a whole label", dest)
+			return "", errors.New("the destination puts * inside a label: a wildcard replaces a whole label")
 		}
 		if !labelShape.MatchString(label) {
-			return "", fmt.Errorf("the destination %q is not a host name", dest)
+			return "", errors.New("the destination is not a host name")
 		}
 	}
 

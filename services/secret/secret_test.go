@@ -433,3 +433,26 @@ func TestValidNameNeverEchoesTheNameItRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	// A mistyped --to hands the value as the destination, and every refusal keeps it off the screen.
+	for _, dest := range []string{"sk-live-abcdef123456", "https://sk-live-abcdef123456/v1", "10.0.0.1", "nodot", "api*.example.com", "sk_live_underscore.example.com", strings.Repeat("a", 254) + ".example.com"} {
+		_, err := ValidDestination(dest)
+		if err == nil {
+			t.Fatalf("ValidDestination(%d characters) took the destination", len(dest))
+		}
+		if strings.Contains(err.Error(), dest) {
+			t.Errorf("the refusal echoes the destination it refused: %v", err)
+		}
+
+		_, err = s.Set("TOKEN", "some-value-123", []string{dest}, "")
+		if err == nil {
+			t.Fatal("Set took the destination")
+		}
+		if strings.Contains(err.Error(), dest) {
+			t.Errorf("the Set refusal echoes the destination it refused: %v", err)
+		}
+	}
+}
