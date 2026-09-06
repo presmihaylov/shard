@@ -626,6 +626,29 @@ echo "${GUEST_BUNDLE}" | grep -q "${CA_LINE}" || fail "the guest's \$SSL_CERT_FI
 [ "$(echo "${GUEST_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the guest's bundle holds the proxy CA alone"
 say "the guest trusts the proxy CA and still trusts the image's roots"
 
+step "a grant opens nothing: the policy alone decides the host"
+# The policy so far names 1.1.1.1 and the other host, so the granted host falls to the catch-all.
+DENIED=$(shard exec "${ID}" -- /bin/sh -c "wget -S -O - --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1" || true)
+grep -q "403 Forbidden" <<<"${DENIED}" || fail "the granted host the policy does not allow answered '${DENIED}'"
+grep -q "authorization=" <<<"${DENIED}" && fail "the echo answered a request the proxy should have denied"
+say "a granted host the policy does not allow gets a 403, and the echo never sees the request"
+
+DECISIONS=$(shard logs --egress "${ID}")
+PROXY_DENIES=$(grep '"source":"proxy"' <<<"${DECISIONS}" | grep '"verdict":"deny"' || true)
+grep -q "\"host\":\"${ECHO_HOST}\"" <<<"${PROXY_DENIES}" || fail "the egress log holds no proxy deny for ${ECHO_HOST}"
+grep -qE '"rule_text":"deny (any|0\.0\.0\.0/0)"' <<<"${PROXY_DENIES}" || fail "the deny does not name the catch-all: ${PROXY_DENIES}"
+say "the egress log names the catch-all that denied it, with source proxy"
+
+step "a secret opens no DNS either"
+# Only address rules, so nothing implies port 53. The address is not a nameserver: allowing one would
+# open DNS by address and prove nothing.
+shard policy create --allow 1.0.0.1 --deny any e2e-policy >/dev/null
+expect_exec "unresolved" "a policy of addresses only leaves the granted host unresolvable" \
+	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
+
+# From here the policy allows the granted host, which is what every step below needs.
+shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+
 expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
 GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
 echo "${GOT}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
@@ -639,13 +662,13 @@ say "a request to a host the policy allows but the grant does not keeps both pla
 
 expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
-step "a policy deny outranks the grant"
+step "a policy deny closes a granted host"
 # The three names share the host's address, so 80 and 443 go to the proxy and the proxy is the only judge.
 shard policy create --deny "${ECHO_HOST}" --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "403 Forbidden" "a request to the granted host the policy denies gets a 403" \
 	/bin/sh -c "wget -S -O /dev/null --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
-shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
-expect_fronted "${ID}" "the same grant passes again once the policy says nothing about the host"
+shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+expect_fronted "${ID}" "the same grant passes again once the policy allows the host"
 
 expect_exec "" "the value is not in the guest's environment" /bin/sh -c "env | grep -F '${SECRET_VALUE}' || true"
 absent "the value in the daemon log" "$(grep -l "${SECRET_VALUE}" "${DAEMON_LOG}" || true)"
@@ -660,10 +683,10 @@ nft list table bridge shard | grep -c "iifname \"${LINK}\"" >/dev/null || fail "
 say "the host holds a chain for the sandbox and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 # The probe is only proof once the same address answers when a rule allows it.
-shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
 	/bin/sh -c 'ping -c 1 -W 3 8.8.8.8 >/dev/null && echo reachable'
-shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "blocked" "the floor holds under the policy: the metadata address is dropped" \
 	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
 expect_exec "blocked" "the floor holds under the policy: the gateway is dropped" \
@@ -676,7 +699,7 @@ say "inspect names the policy and what the host enforces"
 shard policy create --deny any e2e-policy >/dev/null
 BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
-shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_network "after the policy was put back"
 
 CODE=0

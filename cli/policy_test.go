@@ -287,3 +287,31 @@ func TestParsePolicyAttachRefusesTheWrongArguments(t *testing.T) {
 		}
 	}
 }
+
+// A grant opens nothing, so inspect prints the policy's own rules and never one implied by a secret.
+func TestInspectShowsNoRuleImpliedByAGrant(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _, _ := grantApp(t, &out, models.StateStopped)
+
+	if err := app.Run(t.Context(), []string{"policy", "create", "--deny", "any", "locked"}); err != nil {
+		t.Fatalf("policy create: %v", err)
+	}
+	if err := app.Run(t.Context(), []string{"secret", "grant", "web", "TOKEN"}); err != nil {
+		t.Fatalf("secret grant: %v", err)
+	}
+	if err := app.Run(t.Context(), []string{"policy", "attach", "web", "locked"}); err != nil {
+		t.Fatalf("policy attach: %v", err)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"inspect", "web"}); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if strings.Contains(out.String(), "implied") || strings.Contains(out.String(), "api.example.com") {
+		t.Errorf("inspect printed a rule the grant implied:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"policy": "locked"`) {
+		t.Errorf("inspect does not name the policy:\n%s", out.String())
+	}
+}

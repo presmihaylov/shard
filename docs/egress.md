@@ -49,6 +49,10 @@ the host table skips them and the proxy alone enforces them. The proxy speaks HT
 nothing else; a name on a raw port would be an address guess, so `policy create` refuses it and
 says to use an address.
 
+A grant opens nothing. Egress is the policy's alone: the policy must allow a granted host like any
+other, and under `deny any` a granted host is denied and the value is never put in. A sandbox with no
+policy keeps the default, which is the internet and nothing private.
+
 ## The proxy
 
 A sandbox that holds a policy or a secret is fronted: the host turns its `tcp` 80 and 443 to the
@@ -117,14 +121,10 @@ host that refuses the rules puts the record back as it was.
 `shard inspect` prints `egress`, which is the policy's rules behind what the host adds for the
 sandbox, each addition marked `implied`:
 
-- **`secret NAME`**: a secret granted to the sandbox allows `tcp` 80 and 443 to every host it was
-  granted to. The grant is the allow; the policy does not have to repeat it. A policy rule outranks
-  it: the grant's allows sit behind the policy's own rules, so an explicit `deny` of a granted host
-  drops. They sit ahead of the policy's catch-all, so a grant still opens its host under `deny any`,
-  and `any` and `0.0.0.0/0` are the same catch-all.
-- **`dns`**: a policy that names a domain, or a sandbox that holds a secret, allows `udp` and `tcp`
-  53 to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
-  address and `any` rules opens no DNS.
+- **`dns`**: a policy that names a domain or a suffix allows `udp` and `tcp` 53 to the sandbox
+  nameservers. A name is no use to a guest that cannot resolve it. A policy of only address and `any`
+  rules opens no DNS, and a secret does not open it either: name the host in the policy if the guest
+  must resolve it.
 
 ## Names are resolved on the host
 
@@ -135,8 +135,6 @@ nameservers the guest uses, so a guest that answers its own lookups changes noth
   to apply it again.
 - A name in a policy rule that does not resolve fails the apply, and with it the create, the start
   or the policy command that asked for it. The host keeps the rules it had.
-- A name a grant implies is not in the policy, so one that does not resolve closes that host and
-  nothing else: the sandbox comes up, and it cannot reach that host until the next apply.
 - A CDN address shared by many hosts is allowed for all of them on the host table. The proxy closes
   that for 80 and 443 by matching the name in the request.
 

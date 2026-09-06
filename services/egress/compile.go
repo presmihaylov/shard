@@ -12,17 +12,11 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/network"
-	"github.com/presmihaylov/shard/services/secret"
 )
 
 // Records is the part of the sandbox repository the compiler reads.
 type Records interface {
 	List() ([]models.Sandbox, error)
-}
-
-// Grants is the part of the secret store the compiler reads: never a value, only where one may go.
-type Grants interface {
-	Get(name string) (secret.Secret, error)
 }
 
 // Resolver turns a name into addresses; the default asks the sandbox nameservers, so host and guest agree.
@@ -34,18 +28,17 @@ type Resolver interface {
 type Service struct {
 	policies    *Store
 	records     Records
-	grants      Grants
 	resolver    Resolver
 	nameservers []netip.Addr
 }
 
 // New wires a compiler over the stores. A nil resolver resolves through the nameservers.
-func New(policies *Store, records Records, grants Grants, nameservers []netip.Addr, resolver Resolver) *Service {
+func New(policies *Store, records Records, nameservers []netip.Addr, resolver Resolver) *Service {
 	if resolver == nil {
 		resolver = &net.Resolver{PreferGo: true, Dial: dialNameservers(nameservers)}
 	}
 
-	return &Service{policies: policies, records: records, grants: grants, resolver: resolver, nameservers: nameservers}
+	return &Service{policies: policies, records: records, resolver: resolver, nameservers: nameservers}
 }
 
 // dialNameservers sends every lookup to the sandbox nameservers, and not to whatever the host resolves through.
@@ -66,7 +59,7 @@ func dialNameservers(nameservers []netip.Addr) func(ctx context.Context, network
 	}
 }
 
-// Effective is what the host enforces for one sandbox: the policy's own rules ahead of what its grants imply.
+// Effective is what the host enforces for one sandbox: the policy's own rules, and the DNS they need.
 type Effective struct {
 	Policy string `json:"policy"`
 	// Missing is set when the record names a policy the store no longer holds: then everything is dropped.
@@ -97,43 +90,14 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		return Effective{}, err
 	}
 
-	var granted []EffectiveRule
-
-	needsDNS := false
-	for _, name := range sb.Secrets {
-		grant, err := s.grants.Get(name)
-		if errors.Is(err, secret.ErrNotFound) {
-			// A secret removed with --force leaves the grant behind, and a grant of nothing implies nothing.
-			continue
-		}
-		if err != nil {
-			return Effective{}, err
-		}
-
-		needsDNS = true
-		for _, dest := range grant.Destinations {
-			granted = append(granted, EffectiveRule{
-				Rule: models.Rule{
-					Action:      models.ActionAllow,
-					Destination: models.Destination{Kind: models.DestinationDomain, Value: dest},
-					Protocol:    "tcp",
-					Ports:       slices.Clone(webPorts),
-				},
-				Implied: "secret " + name,
-			})
-		}
-	}
-
 	var rules []EffectiveRule
+	needsDNS := false
 	for _, rule := range policy.Rules {
 		if named(rule.Destination.Kind) {
 			needsDNS = true
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
-
-	// A policy rule outranks a grant, but a catch-all is not about the granted host, so the grants go before it.
-	rules = slices.Insert(rules, catchAll(rules), granted...)
 
 	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to the nameservers.
 	if needsDNS {
@@ -159,30 +123,6 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
-}
-
-// catchAll is where a grant-implied allow goes: before the policy's first catch-all, or last when it has none.
-func catchAll(rules []EffectiveRule) int {
-	for i, rule := range rules {
-		if coversAll(rule.Destination) {
-			return i
-		}
-	}
-
-	return len(rules)
-}
-
-// coversAll reads coverage, not spelling, so any, 0.0.0.0/0 and a prefix of length 0 are all one rule.
-func coversAll(dest models.Destination) bool {
-	if dest.Kind == models.DestinationGroup && dest.Value == "any" {
-		return true
-	}
-	if dest.Kind != models.DestinationCIDR {
-		return false
-	}
-	prefix, err := parseCIDR(dest.Value)
-
-	return err == nil && prefix.Bits() == 0
 }
 
 // Fronted says the sandbox's web traffic goes through the proxy, which a policy or a secret asks for.
@@ -217,11 +157,6 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 
 		for _, rule := range effective.Rules {
 			compiled, err := s.compile(ctx, rule)
-			// A granted host the operator did not write into the policy closes itself when it does not resolve.
-			if err != nil && rule.Implied != "" {
-				compiled = network.Compiled{ID: rule.ID, Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
-				err = nil
-			}
 			if err != nil {
 				return nil, fmt.Errorf("sandbox %s policy %s: %w", sb.ID, sb.Policy, err)
 			}
