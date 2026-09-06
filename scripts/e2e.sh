@@ -519,7 +519,8 @@ say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
-nft list table inet shard | grep -q "chain egress_${LINK}" || fail "the host holds no chain for ${LINK} after the daemon restart"
+# grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
+nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK} after the daemon restart"
 say "the host still holds the egress chain of the sandbox"
 expect_exec "alive" "the guest process of the exec in flight outlived the daemon" \
 	/bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null && echo alive'
