@@ -122,7 +122,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	for _, rule := range policy.Rules {
-		if rule.Destination.Kind == models.DestinationDomain {
+		if named(rule.Destination.Kind) {
 			needsDNS = true
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
@@ -150,7 +150,12 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	return Effective{Policy: sb.Policy, Rules: rules}, nil
 }
 
-// Chains compiles one chain per sandbox with a policy and an address; a lease outlives a stop, so the chain does too.
+// Fronted says the sandbox's web traffic goes through the proxy, which a policy or a secret asks for.
+func Fronted(sb models.Sandbox) bool {
+	return sb.Policy != "" || len(sb.Secrets) != 0
+}
+
+// Chains compiles one chain per fronted sandbox with an address; a lease outlives a stop, so the chain does too.
 func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	sandboxes, err := s.records.List()
 	if err != nil {
@@ -159,7 +164,14 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 
 	var chains []network.Chain
 	for _, sb := range sandboxes {
-		if sb.Policy == "" || !sb.Address.IsValid() {
+		if !Fronted(sb) || !sb.Address.IsValid() {
+			continue
+		}
+
+		chain := network.Chain{Address: sb.Address.Addr(), Policy: sb.Policy != ""}
+		if !chain.Policy {
+			chains = append(chains, chain)
+
 			continue
 		}
 
@@ -168,7 +180,6 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 			return nil, fmt.Errorf("sandbox %s: %w", sb.ID, err)
 		}
 
-		chain := network.Chain{Address: sb.Address.Addr()}
 		for _, rule := range effective.Rules {
 			compiled, err := s.compile(ctx, rule.Rule)
 			// A granted host the operator did not write into the policy closes itself when it does not resolve.
@@ -209,6 +220,8 @@ func (s *Service) compile(ctx context.Context, rule models.Rule) (network.Compil
 			return network.Compiled{}, err
 		}
 		compiled.Prefixes = prefixes
+	case models.DestinationDomainSuffix:
+		// The proxy matches a suffix by name; the chain sees addresses, so the web ports never reach it.
 	default:
 		return network.Compiled{}, fmt.Errorf("the host cannot enforce a %s rule", rule.Destination.Kind)
 	}

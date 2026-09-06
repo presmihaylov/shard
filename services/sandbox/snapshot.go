@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -369,8 +370,8 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 		return claim, err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if from.Policy != "" {
+	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if egress.Fronted(from) {
 		if err := s.cfg.Network.Reapply(ctx, claim.id); err != nil {
 			return claim, err
 		}

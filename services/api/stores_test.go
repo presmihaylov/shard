@@ -26,7 +26,7 @@ type fakeStores struct {
 	// value is what a secret PUT carried, which nothing else may ever hold.
 	value        string
 	destinations []string
-	mock         string
+	headers      []string
 
 	policies []models.Policy
 	secrets  []secret.Secret
@@ -64,12 +64,12 @@ func (f *fakeStores) RemovePolicy(name string) error {
 }
 
 func (f *fakeStores) SetSecret(name string, req sandbox.SecretRequest) (secret.Secret, error) {
-	f.name, f.value, f.destinations, f.mock = name, req.Value, req.Destinations, req.MockValue
+	f.name, f.value, f.destinations, f.headers = name, req.Value, req.Destinations, req.Headers
 	if f.err != nil {
 		return secret.Secret{}, f.err
 	}
 
-	return secret.Secret{Name: name, Destinations: req.Destinations, MockValue: req.MockValue}, nil
+	return secret.Secret{Name: name, Destinations: req.Destinations}, nil
 }
 
 func (f *fakeStores) Secrets() ([]secret.Secret, error) { return f.secrets, f.listErr }
@@ -180,7 +180,6 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 	s.stores.secrets = []secret.Secret{{
 		Name:         "openai",
 		Destinations: []string{"api.example.com"},
-		MockValue:    "sk-mock",
 		UpdatedAt:    time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC),
 	}}
 	s.stores.listErr = errors.New("secret broken.json does not decode")
@@ -198,7 +197,7 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 	if _, ok := row["value"]; ok {
 		t.Error("the list answered with a value")
 	}
-	if row["name"] != "openai" || row["mock_value"] != "sk-mock" {
+	if row["name"] != "openai" {
 		t.Errorf("the row is %v", row)
 	}
 
@@ -212,13 +211,13 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 func TestPutSecretCarriesTheValueOnceAndAnswersWithout(t *testing.T) {
 	s := seed(t)
 
-	body := `{"value":"sk-live-synthetic","destinations":["api.example.com"],"mock_value":"sk-mock"}`
+	body := `{"value":"sk-live-synthetic","destinations":["api.example.com"],"headers":["Authorization: Bearer {value}"]}`
 	status, answer := send(t, s.server, http.MethodPut, "/v0/secrets/openai", body)
 	if status != http.StatusOK {
 		t.Fatalf("PUT /v0/secrets/openai answered %d %v", status, answer)
 	}
-	if s.stores.value != "sk-live-synthetic" || s.stores.mock != "sk-mock" {
-		t.Errorf("the store got value %q and placeholder %q", s.stores.value, s.stores.mock)
+	if s.stores.value != "sk-live-synthetic" || len(s.stores.headers) != 1 {
+		t.Errorf("the store got value %q and headers %v", s.stores.value, s.stores.headers)
 	}
 	if _, ok := answer["value"]; ok {
 		t.Errorf("the answer carries the value: %v", answer)

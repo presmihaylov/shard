@@ -24,7 +24,7 @@ type PolicyStore interface {
 
 // SecretStore is the part of secret.Store the secret verbs drive. No verb reads a value.
 type SecretStore interface {
-	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
+	Set(name, value string, destinations []string, headers []secret.Header, match secret.Match) (secret.Secret, error)
 	Get(name string) (secret.Secret, error)
 	List() ([]secret.Secret, error)
 	Remove(name string) error
@@ -92,7 +92,9 @@ type PolicyRequest struct {
 type SecretRequest struct {
 	Value        string   `json:"value"`
 	Destinations []string `json:"destinations,omitempty"`
-	MockValue    string   `json:"mock_value,omitempty"`
+	// Headers and Match are as the operator spelled them; the daemon owns the grammar, like a policy rule.
+	Headers []string `json:"headers,omitempty"`
+	Match   []string `json:"match,omitempty"`
 }
 
 // SetPolicy stores the policy and puts the new rules on every sandbox that holds it at once.
@@ -184,14 +186,21 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 		return secret.Secret{}, &RequestError{Err: fmt.Errorf("secret %s has no value", name)}
 	}
 
-	// A sandbox holds the placeholder it was created with, so a new one would never be matched for it.
-	if req.MockValue != "" {
-		if err := s.placeholderFree(name, req.MockValue); err != nil {
-			return secret.Secret{}, err
+	var headers []secret.Header
+	for _, spelling := range req.Headers {
+		header, err := secret.ParseHeader(spelling)
+		if err != nil {
+			return secret.Secret{}, &RequestError{Err: err}
 		}
+		headers = append(headers, header)
 	}
 
-	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.MockValue)
+	match, err := secret.ParseMatch(req.Match)
+	if err != nil {
+		return secret.Secret{}, &RequestError{Err: err}
+	}
+
+	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, headers, match)
 	if err != nil {
 		return secret.Secret{}, &RequestError{Err: err}
 	}
@@ -221,18 +230,6 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 	}
 
 	return s.cfg.Secrets.Remove(name)
-}
-
-func (s *Stores) placeholderFree(name, mock string) error {
-	existing, err := s.cfg.Secrets.Get(name)
-	if errors.Is(err, secret.ErrNotFound) || (err == nil && existing.MockValue == mock) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	return s.ungranted(name)
 }
 
 // ungranted refuses when a record names the secret. A stopped sandbox counts: start hands it the placeholder again.

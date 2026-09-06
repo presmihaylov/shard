@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -33,7 +35,7 @@ func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
 	life := &lifecycle{deps: d}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -230,4 +232,59 @@ func (l *lifecycle) Logs(ctx context.Context, ref string, follow bool, w io.Writ
 	}
 
 	return svc.Logs(ctx, ref, follow, w)
+}
+
+// proxyTask runs the egress proxy every fronted sandbox's web traffic is turned to, on the bridge gateway.
+type proxyTask struct {
+	deps *deps
+}
+
+func (proxyTask) Name() string { return "proxy" }
+
+func (t proxyTask) Run(ctx context.Context) error {
+	cfg := t.deps.cfg
+
+	repo, err := t.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	secrets, err := t.deps.secrets()
+	if err != nil {
+		return err
+	}
+
+	source, err := t.deps.egress()
+	if err != nil {
+		return err
+	}
+
+	// Nothing can listen on the gateway before the bridge carries it, so the host side is built first.
+	hostNet, err := t.deps.net()
+	if err != nil {
+		return err
+	}
+	if err := hostNet.ReapplyAll(ctx); err != nil {
+		return err
+	}
+
+	ca, err := proxy.LoadCA(filepath.Join(cfg.Root, "proxy"))
+	if err != nil {
+		return err
+	}
+
+	logger := log.New(cfg.Out, "", log.LstdFlags)
+	server, err := proxy.New(proxy.Config{
+		Address:  hostNet.Gateway(),
+		CA:       ca,
+		Director: broker.New(repo, source, secrets),
+		Log:      logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
+
+	return server.Run(ctx)
 }

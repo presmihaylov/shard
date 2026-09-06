@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // maxSecretBytes bounds what set reads, so a stray redirect of a disk image does not become a secret.
@@ -37,7 +38,9 @@ func (a App) secret(ctx context.Context, args []string) error {
 type secretSetOptions struct {
 	name         string
 	destinations []string
-	mock         string
+	// headers and match are as the operator spelled them; the daemon owns the grammar, like a policy rule.
+	headers []string
+	match   []string
 }
 
 // secretSet reads the value from stdin, so it lands in no shell history and no process listing.
@@ -56,7 +59,7 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.mock)
+	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.headers, opts.match)
 	if err != nil {
 		return err
 	}
@@ -89,7 +92,8 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.mock, "mock-value", "", "the placeholder the guest sees in place of the value")
+	flags.Var((*stringList)(&opts.headers), "header", "a header the proxy sets on a granted request, as 'Name: value {value}', repeatable")
+	flags.Var((*stringList)(&opts.match), "match", "a condition every --header needs, as path=, method=, query=k=v or header=Name=v, repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
@@ -108,6 +112,17 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	return opts, nil
 }
 
+// stringList collects a repeatable flag as it was spelled; the daemon parses each entry.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+
+	return nil
+}
+
 func (a App) secretList(ctx context.Context, args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("secret ls takes no arguments, got %d", len(args))
@@ -119,10 +134,14 @@ func (a App) secretList(ctx context.Context, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
+	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tHEADERS\tUPDATED")
 
 	for _, sec := range result.Secrets {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.MockValue, humanAge(sec.UpdatedAt))
+		names := make([]string, 0, len(sec.Headers))
+		for _, header := range sec.Headers {
+			names = append(names, header.Name)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), client.MockValue(sec.Name), strings.Join(names, ","), humanAge(sec.UpdatedAt))
 	}
 
 	if err := w.Flush(); err != nil {

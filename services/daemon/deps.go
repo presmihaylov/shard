@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"path/filepath"
+	"slices"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -134,13 +136,35 @@ func (d *deps) secrets() (*secret.Store, error) {
 		return d.secretSvc, nil
 	}
 
-	store, err := secret.New(filepath.Join(d.cfg.Root, "secrets"))
+	store, err := secret.New(filepath.Join(d.cfg.Root, "secrets"), d.holders)
 	if err != nil {
 		return nil, err
 	}
 	d.secretSvc = store
 
 	return d.secretSvc, nil
+}
+
+// holders names the sandboxes whose record grants the secret, so the store can refuse to move a placeholder under them.
+func (d *deps) holders(name string) ([]string, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	sandboxes, err := repo.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var users []string
+	for _, sb := range sandboxes {
+		if slices.Contains(sb.Secrets, name) {
+			users = append(users, sb.ID)
+		}
+	}
+
+	return users, nil
 }
 
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
@@ -194,6 +218,16 @@ func (d *deps) egress() (*egress.Service, error) {
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
 }
 
+// proxyCA is the certificate a fronted sandbox is built to trust, minted on the first ask and read back after.
+func (d *deps) proxyCA() ([]byte, error) {
+	ca, err := proxy.LoadCA(filepath.Join(d.cfg.Root, "proxy"))
+	if err != nil {
+		return nil, err
+	}
+
+	return ca.CertPEM(), nil
+}
+
 // lifecycle wires the orchestrator over every layer the sandbox verbs drive, once per daemon.
 func (d *deps) lifecycle() (*sandbox.Service, error) {
 	images, err := d.images()
@@ -239,6 +273,7 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		Secrets:     secrets,
 		Policies:    policies,
 		Substrate:   sub,
+		ProxyCA:     d.proxyCA,
 		PullTimeout: d.cfg.PullTimeout,
 	}), nil
 }

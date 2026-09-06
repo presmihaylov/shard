@@ -216,16 +216,16 @@ func validDestination(rule models.Rule) error {
 		}
 
 		return nil
-	case models.DestinationDomain:
+	case models.DestinationDomain, models.DestinationDomainSuffix:
 		if err := validHostValue(dest); err != nil {
 			return err
 		}
 		// A name is enforced through the proxy, which speaks HTTP and TLS: on any other port it would be an address guess.
 		if rule.Protocol != "tcp" {
-			return fmt.Errorf("a domain rule is tcp only, got %q", rule.Protocol)
+			return fmt.Errorf("a %s rule is tcp only, got %q", dest.Kind, rule.Protocol)
 		}
 		if len(rule.Ports) == 0 {
-			return errors.New("a domain rule names ports 80 and 443 only, got none: without one it would open every tcp port")
+			return fmt.Errorf("a %s rule names ports 80 and 443 only, got none: without one it would open every tcp port", dest.Kind)
 		}
 		for _, port := range rule.Ports {
 			if !slices.Contains(webPorts, port) {
@@ -234,8 +234,6 @@ func validDestination(rule models.Rule) error {
 		}
 
 		return nil
-	case models.DestinationDomainSuffix:
-		return errors.New("a suffix rule needs the egress proxy, which SHARD-71 ships: name the bare host for now")
 	}
 
 	return fmt.Errorf("the destination kind %q is not cidr, domain or group", dest.Kind)
@@ -284,11 +282,11 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 		rule.Ports = parsed
 	}
 
-	// A domain rule with no port is the web, which is all a domain rule may name anyway.
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "" {
+	// A name rule with no port is the web, which is all a name rule may name anyway.
+	if named(rule.Destination.Kind) && rule.Protocol == "" {
 		rule.Protocol = "tcp"
 	}
-	if rule.Destination.Kind == models.DestinationDomain && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
+	if named(rule.Destination.Kind) && rule.Protocol == "tcp" && len(rule.Ports) == 0 {
 		rule.Ports = slices.Clone(webPorts)
 	}
 
@@ -297,6 +295,11 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 	}
 
 	return rule, nil
+}
+
+// named says the rule matches a host name, which only the proxy can see.
+func named(kind models.DestinationKind) bool {
+	return kind == models.DestinationDomain || kind == models.DestinationDomainSuffix
 }
 
 // parseDestination reads the kind from the shape: an address or a prefix is a cidr, any is the

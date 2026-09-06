@@ -18,6 +18,9 @@ type Image = image.Image
 // Secret is one entry of the secret store: a name and its destinations, never a value.
 type Secret = secret.Secret
 
+// MockValue is the placeholder a sandbox gets for a secret, so ls can print it without asking the daemon.
+func MockValue(name string) string { return secret.MockValue(name) }
+
 // RuleText is one --allow or --deny as the operator typed it; the daemon owns the grammar.
 type RuleText = sandbox.RuleText
 
@@ -89,8 +92,8 @@ func (c *Client) ListSecrets(ctx context.Context) (SecretsResult, error) {
 }
 
 // SetSecret is the one call that carries a value. Nothing on either side logs it or answers with it.
-func (c *Client) SetSecret(ctx context.Context, name, value string, destinations []string, mock string) (Secret, error) {
-	req := sandbox.SecretRequest{Value: value, Destinations: destinations, MockValue: mock}
+func (c *Client) SetSecret(ctx context.Context, name, value string, destinations, headers, match []string) (Secret, error) {
+	req := sandbox.SecretRequest{Value: value, Destinations: destinations, Headers: headers, Match: match}
 
 	var out Secret
 	if err := c.call(ctx, http.MethodPut, "/v0/secrets/"+url.PathEscape(name), req, &out, c.Timeout); err != nil {

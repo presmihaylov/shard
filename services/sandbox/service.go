@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/runspec"
@@ -70,6 +71,8 @@ type Config struct {
 	Secrets   Secrets
 	Policies  Policies
 	Substrate Substrate
+	// ProxyCA hands a fronted sandbox the certificate it must trust, so the proxy can terminate its TLS.
+	ProxyCA func() ([]byte, error)
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
 }
@@ -104,6 +107,9 @@ type CreateRequest struct {
 	Policy    string           `json:"policy,omitempty"`
 	Resources models.Resources `json:"resources"`
 }
+
+// fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
+func (r CreateRequest) fronted() bool { return r.Policy != "" || len(r.Secrets) != 0 }
 
 // RequestError is a request refused before anything was claimed, and never the state of a sandbox.
 type RequestError struct {
@@ -157,6 +163,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		}
 	}
 
+	// Before the pull too: a fronted sandbox is built to trust the proxy, and no CA means no bundle to build.
+	var proxyCA []byte
+	if req.fronted() {
+		if proxyCA, err = s.proxyCA(); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
+
 	var td Teardown
 
 	defer func() {
@@ -195,6 +209,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		User:       req.User,
 		Network:    netSpec,
 		Resources:  req.Resources,
+		ProxyCA:    proxyCA,
 	}, img.Config)
 
 	// Create rolls back its own mount only, and an interrupt can leave the sandbox process runsc
@@ -209,8 +224,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		return models.Sandbox{}, err
 	}
 
-	// The chain is keyed by the address, which the record holds only now, so the host learns it before the guest runs.
-	if req.Policy != "" {
+	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
+	if req.fronted() {
 		if err := s.cfg.Network.Reapply(ctx, id); err != nil {
 			return models.Sandbox{}, err
 		}
@@ -281,6 +296,12 @@ func validate(req CreateRequest) error {
 		}
 	}
 
+	if req.fronted() {
+		if err := bundle.TrustsUser(req.Env); err != nil {
+			return &RequestError{Err: err}
+		}
+	}
+
 	// An entry that is not an assignment is dropped by the merge, and the guest then lacks it without a word.
 	for _, entry := range req.Env {
 		key, _, found := strings.Cut(entry, "=")
@@ -319,7 +340,7 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 			return nil, err
 		}
 
-		env = append(env, name+"="+sec.MockValue)
+		env = append(env, name+"="+secret.MockValue(sec.Name))
 	}
 
 	return env, nil
@@ -607,4 +628,13 @@ func (s *Service) record(id string) (models.Sandbox, error) {
 	}
 
 	return sb, nil
+}
+
+// proxyCA is what a fronted sandbox is built to trust. A shard without one fronts nothing, and says so.
+func (s *Service) proxyCA() ([]byte, error) {
+	if s.cfg.ProxyCA == nil {
+		return nil, &RequestError{Err: errors.New("this shard has no proxy CA, so it cannot front a sandbox")}
+	}
+
+	return s.cfg.ProxyCA()
 }
