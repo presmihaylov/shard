@@ -51,14 +51,17 @@ nothing at all. `shard secret rm` refuses while any sandbox holds a grant and na
 ungrant it first, remove those sandboxes, or pass `--force`.
 
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
-fronted: the host turns its web traffic to the egress proxy, which is where the value goes in. See
-`docs/egress.md` for what fronting means. On the way out, the proxy replaces the placeholder with
+fronted: the host turns its HTTP on 80 and 443 to the egress proxy, which is where the value goes
+in. See `docs/egress.md` for what fronting means. On the way out, the proxy replaces the placeholder with
 the value, in the URL, the headers and the body, and only when the request is bound for a granted
 destination. A request to any other host carries the placeholder as it is, so a guest that posts its
 environment to an attacker posts the placeholder. A body past 8 MiB streams through untouched: put
 the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
 re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
 substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
+Brokering covers HTTP on ports 80 and 443 today. A credential sent on any other port or protocol, a
+database password on 5432 or SMTP on 587, leaves as the placeholder and the service refuses it; the
+policy still decides whether the connection is allowed at all.
 
 **The placeholder.** An SDK that checks the shape of a key before it sends it never sends
 `mock-NAME`, so `--placeholder` gives the guest a string of the right shape:
@@ -80,6 +83,23 @@ stdin is a pipe, which is the way to use in a script, because the value then lan
 history and no process listing. With a terminal and no value it prompts with the echo off. A value
 given on the command line is stored, and `set` prints one caution to stderr: `ps` showed the value
 while the command ran.
+
+## Clients the proxy certificate does not reach
+
+The proxy CA is planted at the path the image already reads, and `SSL_CERT_FILE`,
+`REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` point at it. OpenSSL and everything on it reads it:
+curl, Python, Ruby, PHP, Go and .NET on Linux. So do Python `requests` and `httpx`, and Node, Deno
+and Bun. Three kinds of client do not.
+
+**Java** trusts its own keystore. Import the CA in the image with `keytool -importcert`, or point
+`-Djavax.net.ssl.trustStore` at a store that holds it. The CA is the file `SSL_CERT_FILE` names.
+
+**Rust built with `rustls` and `webpki-roots`** compiles its roots in. Build with
+`rustls-native-certs` instead, which reads the same file.
+
+**Any client that pins a certificate or a public key** rejects the proxy by design and cannot be
+fronted. The call fails closed with a certificate error, so nothing leaks: the request never goes
+out and the placeholder is never substituted.
 
 ## What it stops, and what it does not
 
