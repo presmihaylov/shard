@@ -210,6 +210,32 @@ func TestRewriteReplacesTheLongestPlaceholderFirst(t *testing.T) {
 	}
 }
 
+func TestRewriteLeavesASkippedPlaceholderWholeUnderAGrantedPrefix(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "TOKEN_B"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fixedSecrets{
+		fakeSecrets: fakeSecrets{"TOKEN": {Name: "TOKEN", Destinations: []string{"api.example.com"}}, "TOKEN_B": {Name: "TOKEN_B", Destinations: []string{"other.example.com"}}},
+		values:      map[string]string{"TOKEN": "aaaa", "TOKEN_B": "bbbb"},
+	}
+	b := newBroker(t, records, secrets)
+
+	out := request(t, http.MethodPost, "https://api.example.com/mock-TOKEN_B/mock-TOKEN")
+	out.Header.Set("Authorization", "Bearer mock-TOKEN_B")
+
+	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`))
+	if err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if out.URL.Path != "/mock-TOKEN_B/aaaa" {
+		t.Errorf("the url became %s", out.URL)
+	}
+	if out.Header.Get("Authorization") != "Bearer mock-TOKEN_B" {
+		t.Errorf("the headers became %v", out.Header)
+	}
+	if string(body) != `{"a":"aaaa","b":"mock-TOKEN_B"}` {
+		t.Errorf("the body became %s", body)
+	}
+}
+
 func TestRewriteSetsTheGrantHeadersWhenTheMatchHolds(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	secrets := fakeSecrets{"TOKEN": {

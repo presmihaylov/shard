@@ -3,7 +3,6 @@
 package broker
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -82,16 +81,24 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 	names := slices.Clone(sb.Secrets)
 	slices.SortStableFunc(names, func(a, b string) int { return len(b) - len(a) })
 
+	// A name that is not substituted still maps to itself, so one pass cannot let a granted name eat its placeholder.
+	var pairs []string
+	var apply []secret.Header
+
 	for _, name := range names {
+		placeholder := secret.MockValue(name)
+
 		sec, err := b.secrets.Get(name)
 		if errors.Is(err, secret.ErrNotFound) {
 			// A secret removed with --force leaves a placeholder no request can redeem, and it goes out as it is.
+			pairs = append(pairs, placeholder, placeholder)
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
 		if !granted(sec, req.Host) {
+			pairs = append(pairs, placeholder, placeholder)
 			continue
 		}
 
@@ -100,12 +107,20 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 			return nil, err
 		}
 
-		body = substitute(out, body, secret.MockValue(name), value)
+		pairs = append(pairs, placeholder, value)
+
+		// The match reads the request the guest sent, so it never sees another grant's substitution.
 		if matches(sec.Match, out) {
 			for _, header := range sec.Headers {
-				out.Header.Set(header.Name, strings.ReplaceAll(header.Value, "{value}", value))
+				apply = append(apply, secret.Header{Name: header.Name, Value: strings.ReplaceAll(header.Value, "{value}", value)})
 			}
 		}
+	}
+
+	body = substitute(out, body, strings.NewReplacer(pairs...))
+
+	for _, header := range apply {
+		out.Header.Set(header.Name, header.Value)
 	}
 
 	return body, nil
@@ -137,16 +152,14 @@ func granted(sec secret.Secret, host string) bool {
 }
 
 // substitute edits the URL, every header value and the held body; a body that was too long to hold is nil and passes as it is.
-func substitute(out *http.Request, body []byte, placeholder, value string) []byte {
-	replace := func(s string) string { return strings.ReplaceAll(s, placeholder, value) }
-
-	out.URL.Path = replace(out.URL.Path)
-	out.URL.RawPath = replace(out.URL.RawPath)
-	out.URL.RawQuery = replace(out.URL.RawQuery)
+func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []byte {
+	out.URL.Path = replacer.Replace(out.URL.Path)
+	out.URL.RawPath = replacer.Replace(out.URL.RawPath)
+	out.URL.RawQuery = replacer.Replace(out.URL.RawQuery)
 
 	for name, values := range out.Header {
 		for i, v := range values {
-			values[i] = replace(v)
+			values[i] = replacer.Replace(v)
 		}
 		out.Header[name] = values
 	}
@@ -155,7 +168,7 @@ func substitute(out *http.Request, body []byte, placeholder, value string) []byt
 		return nil
 	}
 
-	return bytes.ReplaceAll(body, []byte(placeholder), []byte(value))
+	return []byte(replacer.Replace(string(body)))
 }
 
 // matches is all-of over what the grant asks: an empty match meets every request.
