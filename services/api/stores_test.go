@@ -29,6 +29,8 @@ type fakeStores struct {
 	placeholder  string
 
 	policies []models.Policy
+	// holders is what the policy GET answers beside the policy itself.
+	holders  []string
 	secrets  []secret.Secret
 	images   []image.Image
 	warnings []string
@@ -46,13 +48,13 @@ func (f *fakeStores) SetPolicy(_ context.Context, name string, req sandbox.Polic
 	return models.Policy{Name: name}, nil
 }
 
-func (f *fakeStores) Policy(name string) (models.Policy, error) {
+func (f *fakeStores) Policy(name string) (sandbox.PolicyView, error) {
 	f.name = name
 	if f.err != nil {
-		return models.Policy{}, f.err
+		return sandbox.PolicyView{}, f.err
 	}
 
-	return models.Policy{Name: name}, nil
+	return sandbox.PolicyView{Policy: models.Policy{Name: name}, Holders: f.holders}, nil
 }
 
 func (f *fakeStores) Policies() ([]models.Policy, error) { return f.policies, f.err }

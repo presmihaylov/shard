@@ -13,7 +13,7 @@ import (
 // Stores is the part of sandbox.Stores the policy, secret and image routes call.
 type Stores interface {
 	SetPolicy(ctx context.Context, name string, req sandbox.PolicyRequest) (models.Policy, error)
-	Policy(name string) (models.Policy, error)
+	Policy(name string) (sandbox.PolicyView, error)
 	Policies() ([]models.Policy, error)
 	RemovePolicy(name string) error
 	SetSecret(name string, req sandbox.SecretRequest) (secret.Secret, error)

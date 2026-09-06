@@ -45,10 +45,10 @@ func (a App) ls(ctx context.Context, args []string) error {
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP")
+	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {

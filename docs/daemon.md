@@ -176,8 +176,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `DELETE /v0/sandboxes/{id}/secrets/{name}` takes the grant and the placeholder back and answers 200
   with the record. The proxy CA stays. 404; 409 when the sandbox runs or is paused.
 
-- `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy, as
-  `shard policy ls` and `shard policy show` print them. 404 when the host holds no such policy.
+- `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy with
+  `holders`, the sandboxes whose record names it, omitted when none does. That is what `shard policy
+  ls` and `shard policy show` print. 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   in the order they were given, compiles them, stores the policy and re-applies it at once to every
   sandbox that names it. It answers 200 with the policy. The CLI never parses a rule: the daemon owns

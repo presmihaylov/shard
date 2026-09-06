@@ -79,8 +79,12 @@ The rules for a fronted sandbox follow its record like its chain: a stopped sand
 removes them and `start` writes them again.
 
 `shard policy ls` lists the names, and `shard policy rm` refuses while a sandbox record names
-the policy: remove the sandbox first. A policy that does not exist drops everything, so no flag
-overrides the refusal. That is the rule throughout: an error is a closed door, never an open one.
+the policy: remove the sandbox first. `shard policy show` prints `holders`, the sandboxes whose
+record names the policy, and omits the field when none does. `shard ls` prints a `POLICY` column,
+a dash when the sandbox holds none. Both read the records the way `rm` does, so they agree.
+
+A policy that does not exist drops everything, so no flag overrides the refusal. That is the rule
+throughout: an error is a closed door, never an open one.
 
 ## What a policy implies
 

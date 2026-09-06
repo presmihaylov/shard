@@ -44,7 +44,7 @@ Usage:
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
                            free what a stopped sandbox still holds
-  shard ls [--all]         list the sandboxes that are up, and with --all the stopped ones too
+  shard ls [--all]         list the sandboxes that are up, with the policy each holds, and with --all the stopped ones too
   shard inspect <id|name>  print the record of a sandbox as JSON
   shard logs [-f] [--egress] <id|name>
                            print what the entrypoint wrote, and with --egress the egress decisions
@@ -68,7 +68,7 @@ Usage:
                            take that placeholder back
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>
                            store an egress policy, rules first match first, and drop what none match
-  shard policy show <name> print a policy as JSON
+  shard policy show <name> print a policy as JSON, with the sandboxes that hold it
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it

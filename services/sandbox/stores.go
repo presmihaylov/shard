@@ -119,9 +119,9 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 		return models.Policy{}, err
 	}
 
-	users, err := s.policyUsers(name)
+	users, err := PolicyHolders(s.cfg.Repo, name)
 	if err != nil {
-		return models.Policy{}, err
+		return models.Policy{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
 	}
 	if len(users) == 0 {
 		return policy, nil
@@ -134,8 +134,25 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 	return policy, nil
 }
 
-func (s *Stores) Policy(name string) (models.Policy, error) {
-	return s.cfg.Policies.Get(name)
+// PolicyView is a stored policy and the sandboxes whose record names it. The holders are read from the
+// records on every ask, so nothing stores them and nothing can go stale.
+type PolicyView struct {
+	models.Policy
+	Holders []string `json:"holders,omitempty"`
+}
+
+func (s *Stores) Policy(name string) (PolicyView, error) {
+	policy, err := s.cfg.Policies.Get(name)
+	if err != nil {
+		return PolicyView{}, err
+	}
+
+	holders, err := PolicyHolders(s.cfg.Repo, name)
+	if err != nil {
+		return PolicyView{}, err
+	}
+
+	return PolicyView{Policy: policy, Holders: holders}, nil
 }
 
 func (s *Stores) Policies() ([]models.Policy, error) {
@@ -148,7 +165,7 @@ func (s *Stores) RemovePolicy(name string) error {
 		return err
 	}
 
-	users, err := s.policyUsers(name)
+	users, err := PolicyHolders(s.cfg.Repo, name)
 	if err != nil {
 		return err
 	}
@@ -159,21 +176,23 @@ func (s *Stores) RemovePolicy(name string) error {
 	return s.cfg.Policies.Remove(name)
 }
 
-// policyUsers names the sandboxes whose record holds the policy.
-func (s *Stores) policyUsers(name string) ([]string, error) {
-	sandboxes, unreadable := s.cfg.Repo.List()
+// PolicyHolders names the sandboxes whose record holds the policy. Every ask goes through this one, so
+// what show prints and what rm refuses can never disagree.
+func PolicyHolders(repo Reader, name string) ([]string, error) {
+	sandboxes, unreadable := repo.List()
+	// A record that does not read back may name the policy, so nothing can say it is free.
 	if unreadable != nil {
 		return nil, fmt.Errorf("cannot tell which sandboxes hold the policy: %w", unreadable)
 	}
 
-	var users []string
+	var holders []string
 	for _, sb := range sandboxes {
 		if sb.Policy == name {
-			users = append(users, sb.ID)
+			holders = append(holders, sb.ID)
 		}
 	}
 
-	return users, nil
+	return holders, nil
 }
 
 // SetSecret stores the value, which is never logged, never echoed back and never written to a record.
