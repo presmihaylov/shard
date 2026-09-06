@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -68,6 +69,8 @@ type fakeDaemon struct {
 	policySvc    *egress.Store
 	// egressLog is what shard logs --egress prints, canned: the real one reads the kernel ring.
 	egressLog []egress.Record
+	// proxyCA is what a grant plants in the guest, and nil is a shard that fronts nothing.
+	proxyCA []byte
 
 	// The verbs hold exec state between calls, so both are built once and on the first request:
 	// a test replaces a layer after the server is up and before the command runs.
@@ -79,13 +82,20 @@ type fakeDaemon struct {
 func (f *fakeDaemon) build() {
 	f.once.Do(func() {
 		f.svc = sandbox.New(sandbox.Config{
-			Repo:        f.repoSvc,
-			Images:      f.imageSvc,
-			Network:     f.netSvc,
-			Provider:    f.providerSvc,
-			Secrets:     f.secretSvc,
-			Policies:    f.policySvc,
-			Substrate:   f.substrateSvc,
+			Repo:      f.repoSvc,
+			Images:    f.imageSvc,
+			Network:   f.netSvc,
+			Provider:  f.providerSvc,
+			Secrets:   f.secretSvc,
+			Policies:  f.policySvc,
+			Substrate: f.substrateSvc,
+			ProxyCA: func() ([]byte, error) {
+				if f.proxyCA == nil {
+					return nil, errors.New("this shard has no proxy CA, so it cannot front a sandbox")
+				}
+
+				return f.proxyCA, nil
+			},
 			PullTimeout: time.Minute,
 		})
 		f.stores = sandbox.NewStores(sandbox.StoresConfig{

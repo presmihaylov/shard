@@ -62,6 +62,10 @@ Usage:
   shard secret ls          list the secrets by name, destination and placeholder, never by value
   shard secret rm [--force] <NAME>
                            remove a secret, and with --force one a sandbox still holds
+  shard secret grant <id|name> <NAME>
+                           hand a created or stopped sandbox the placeholder of a stored secret
+  shard secret ungrant <id|name> <NAME>
+                           take that placeholder back
   shard policy create [--allow <rule>]... [--deny <rule>]... <name>
                            store an egress policy, rules first match first, and drop what none match
   shard policy show <name> print a policy as JSON

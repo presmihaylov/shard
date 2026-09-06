@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/runspec"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -32,21 +35,7 @@ func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRep
 	}
 	t.Cleanup(func() { _ = in.Close() })
 
-	holders := func(name string) ([]string, error) {
-		sandboxes, err := repo.List()
-		if err != nil {
-			return nil, err
-		}
-
-		var users []string
-		for _, sb := range sandboxes {
-			if slices.Contains(sb.Secrets, name) {
-				users = append(users, sb.ID)
-			}
-		}
-
-		return users, nil
-	}
+	holders := func(name string) ([]string, error) { return sandbox.SecretHolders(repo, name) }
 
 	secrets, err := secret.New(filepath.Join(root, "secrets"), holders)
 	if err != nil {
@@ -296,5 +285,131 @@ func TestSecretRmOfAMissingSecretFails(t *testing.T) {
 	err := app.Run(t.Context(), []string{"secret", "rm", "NOPE"})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("rm of a missing secret = %v", err)
+	}
+}
+
+// grantApp puts a daemon up over a sandbox whose bundle is on disk, which is what a grant edits.
+func grantApp(t *testing.T, out *bytes.Buffer, state models.State) (App, *fakeLifecycleRepo, bundle.Bundle) {
+	t.Helper()
+
+	root := shortRoot(t)
+
+	secrets, err := secret.New(filepath.Join(root, "secrets"), nil)
+	if err != nil {
+		t.Fatalf("secret.New: %v", err)
+	}
+	if _, err := secrets.Set("TOKEN", "s3cr3t-value", []string{"api.example.com"}, ""); err != nil {
+		t.Fatalf("secrets.Set: %v", err)
+	}
+
+	policies, err := egress.NewStore(filepath.Join(root, "policies"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	repo := &fakeLifecycleRepo{r: &recorder{}, sb: models.Sandbox{ID: "sandbox1", Name: "web", State: state}, stateDir: t.TempDir()}
+
+	rootfs := filepath.Join(t.TempDir(), "rootfs")
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc/ssl/certs/ca-certificates.crt"), []byte("image-roots\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	builder, err := bundle.New("/usr/local/bin/shard-init")
+	if err != nil {
+		t.Fatalf("bundle.New: %v", err)
+	}
+	b, err := builder.Build(runspec.Resolve(models.SandboxSpec{ID: "sandbox1", StateDir: repo.stateDir, RootFS: rootfs},
+		models.ImageConfig{Entrypoint: []string{"/bin/sh"}}))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	daemon := &fakeDaemon{
+		app:       App{Root: root},
+		repoSvc:   repo,
+		secretSvc: secrets,
+		policySvc: policies,
+		netSvc:    &fakeLifecycleNet{r: repo.r},
+		proxyCA:   []byte("-----BEGIN CERTIFICATE-----\nproxy-ca\n-----END CERTIFICATE-----\n"),
+	}
+	serveDaemon(t, daemon)
+
+	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute}, repo, b
+}
+
+func TestSecretGrantAndUngrantRoundTrip(t *testing.T) {
+	var out bytes.Buffer
+
+	app, repo, b := grantApp(t, &out, models.StateStopped)
+
+	if err := app.Run(t.Context(), []string{"secret", "grant", "web", "TOKEN"}); err != nil {
+		t.Fatalf("secret grant: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
+		t.Errorf("grant printed %q, want the sandbox id", got)
+	}
+	if !slices.Contains(repo.sb.Secrets, "TOKEN") {
+		t.Errorf("the record holds %v, want the grant", repo.sb.Secrets)
+	}
+
+	rt, err := b.Runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rt.Env, "TOKEN=mock-TOKEN") {
+		t.Errorf("the guest environment is %v, want the placeholder", rt.Env)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"secret", "ungrant", "web", "TOKEN"}); err != nil {
+		t.Fatalf("secret ungrant: %v", err)
+	}
+	if len(repo.sb.Secrets) != 0 {
+		t.Errorf("the record still holds %v", repo.sb.Secrets)
+	}
+
+	rt, err = b.Runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rt.Env, "TOKEN=mock-TOKEN") {
+		t.Errorf("the guest environment still holds the placeholder: %v", rt.Env)
+	}
+}
+
+func TestSecretGrantRefusesARunningSandboxAndAMissingSecret(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _, _ := grantApp(t, &out, models.StateRunning)
+
+	err := app.Run(t.Context(), []string{"secret", "grant", "web", "TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Errorf("the grant of a running sandbox = %v", err)
+	}
+
+	app, _, _ = grantApp(t, &out, models.StateStopped)
+
+	err = app.Run(t.Context(), []string{"secret", "grant", "web", "MISSING"})
+	if err == nil || !strings.Contains(err.Error(), "shard secret set") {
+		t.Errorf("the grant of a secret the store does not hold = %v", err)
+	}
+}
+
+func TestParseSecretGrantRefusesTheWrongArguments(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _, _ := grantApp(t, &out, models.StateStopped)
+
+	for _, args := range [][]string{
+		{"secret", "grant", "web"},
+		{"secret", "grant", "web", "TOKEN", "OTHER"},
+		{"secret", "ungrant", "--force", "web", "TOKEN"},
+	} {
+		if err := app.Run(t.Context(), args); err == nil {
+			t.Errorf("%v was taken", args)
+		}
 	}
 }

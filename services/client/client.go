@@ -158,6 +158,27 @@ func (c *Client) StopSandbox(ctx context.Context, ref string, grace time.Duratio
 	return out, nil
 }
 
+// GrantSecret hands a created or stopped sandbox the placeholder of a stored secret.
+func (c *Client) GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	return c.grant(ctx, http.MethodPost, ref, name)
+}
+
+// UngrantSecret takes the placeholder back, and leaves the proxy CA the grant planted.
+func (c *Client) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	return c.grant(ctx, http.MethodDelete, ref, name)
+}
+
+func (c *Client) grant(ctx context.Context, method, ref, name string) (models.Sandbox, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/secrets/" + url.PathEscape(name)
+
+	var out models.Sandbox
+	if err := c.call(ctx, method, path, nil, &out, c.Timeout); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
 // RemoveSandbox frees a stopped sandbox; force stops a live one first, with grace as that stop's.
 func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool, grace time.Duration) error {
 	path := "/v0/sandboxes/" + url.PathEscape(ref)

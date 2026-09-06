@@ -219,24 +219,16 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 
 // ungranted refuses when a record names the secret. A stopped sandbox counts: start hands it the placeholder again.
 func (s *Stores) ungranted(name string) error {
-	sandboxes, unreadable := s.cfg.Repo.List()
-	// A record that does not read back may name the secret, so nothing can say it is free.
-	if unreadable != nil {
-		return fmt.Errorf("cannot tell which sandboxes hold the secret: %w", unreadable)
-	}
-
-	var users []string
-	for _, sb := range sandboxes {
-		if slices.Contains(sb.Secrets, name) {
-			users = append(users, sb.ID)
-		}
+	users, err := SecretHolders(s.cfg.Repo, name)
+	if err != nil {
+		return err
 	}
 
 	if len(users) == 0 {
 		return nil
 	}
 
-	return &HeldError{Subject: "secret " + name, Verb: "granted to", Users: users, Fix: "remove the sandbox first, or pass --force"}
+	return &HeldError{Subject: "secret " + name, Verb: "granted to", Users: users, Fix: "ungrant it first, remove the sandbox, or pass --force"}
 }
 
 // PullImage fetches the reference and unpacks its rootfs. A second pull of the same one needs no network.

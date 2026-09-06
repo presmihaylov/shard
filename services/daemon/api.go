@@ -149,6 +149,24 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 	return svc.Create(ctx, req)
 }
 
+func (l *lifecycle) GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.GrantSecret(ctx, ref, name)
+}
+
+func (l *lifecycle) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.UngrantSecret(ctx, ref, name)
+}
+
 func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {

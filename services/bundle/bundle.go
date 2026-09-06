@@ -2,7 +2,6 @@
 package bundle
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +13,6 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -83,7 +81,7 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	}
 
 	if spec.ProxyCA != nil {
-		trust, err := plantTrust(b, spec)
+		trust, err := plantTrust(b, spec.RootFS, spec.Env, spec.ProxyCA)
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -95,14 +93,8 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
-	encoded, err := json.MarshalIndent(runtimeSpec, "", "\t")
-	if err != nil {
-		return Bundle{}, fmt.Errorf("marshal the runtime spec: %w", err)
-	}
-
-	configPath := filepath.Join(b.Dir, "config.json")
-	if err := store.WriteFile(configPath, encoded, 0o644); err != nil { // #nosec G306
-		return Bundle{}, fmt.Errorf("write %s: %w", configPath, err)
+	if err := b.writeSpec(runtimeSpec); err != nil {
+		return Bundle{}, err
 	}
 
 	return b, nil
@@ -124,25 +116,14 @@ type Runtime struct {
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
 func (b Bundle) Runtime() (Runtime, error) {
-	configPath := filepath.Join(b.Dir, "config.json")
-
-	blob, err := os.ReadFile(configPath)
+	spec, err := b.readSpec()
 	if err != nil {
-		return Runtime{}, fmt.Errorf("read %s: %w", configPath, err)
-	}
-
-	var spec specs.Spec
-	if err := json.Unmarshal(blob, &spec); err != nil {
-		return Runtime{}, fmt.Errorf("decode %s: %w", configPath, err)
-	}
-
-	if spec.Process == nil {
-		return Runtime{}, fmt.Errorf("%s names no process, so nothing says what the entrypoint runs with", configPath)
+		return Runtime{}, err
 	}
 
 	groups, err := parseGroups(supervisorFlag(spec.Process.Args, "-groups"))
 	if err != nil {
-		return Runtime{}, fmt.Errorf("read the entrypoint groups back from %s: %w", configPath, err)
+		return Runtime{}, fmt.Errorf("read the entrypoint groups back from %s: %w", b.configPath(), err)
 	}
 
 	return Runtime{
