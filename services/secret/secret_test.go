@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -447,6 +448,38 @@ func TestARefusedPlaceholderNeverEchoesIt(t *testing.T) {
 func TestTheDefaultPlaceholderAlwaysFitsTheSet(t *testing.T) {
 	if !placeholderCharset.MatchString(DefaultPlaceholder("A")) {
 		t.Errorf("the default placeholder of the shortest legal name is outside the set")
+	}
+}
+
+// A record written before the charset rule holds a placeholder the rule refuses. Rotation is what an
+// operator reaches for when a key leaks, so it must not be blocked by the placeholder it carries forward.
+func TestRotationCarriesForwardAPlaceholderTheRuleWouldRefuse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	s, err := New(dir, func(string) ([]string, error) { return []string{"sb1"}, nil })
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	legacy := record{Value: "sk-live-old", Destinations: []string{"api.example.com"}, Placeholder: "sk+test+legacy"}
+	blob, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path("API_KEY"), blob, filePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	sec, err := s.Set("API_KEY", "sk-live-new", nil, "")
+	if err != nil {
+		t.Fatalf("a rotation that names no placeholder: %v", err)
+	}
+	if sec.Placeholder != "sk+test+legacy" {
+		t.Errorf("the rotation moved the placeholder to %q", sec.Placeholder)
+	}
+
+	if _, err := s.Set("API_KEY", "sk-live-newer", nil, "sk+test+worse"); err == nil {
+		t.Error("a newly named placeholder outside the set was taken")
 	}
 }
 

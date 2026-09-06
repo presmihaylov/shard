@@ -135,6 +135,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 
 // placeholder settles what the guest will hold: the chosen one, else the stored one, else the default.
 func (s *Store) placeholder(name, value, chosen string, existing record) (string, error) {
+	named := chosen
 	if chosen == "" {
 		chosen = existing.Placeholder
 	}
@@ -147,9 +148,10 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 		return "", fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
 	}
 
-	// The default is exempt from the shape rules alone: a short NAME still gets a placeholder.
-	if chosen != DefaultPlaceholder(name) {
-		if err := shapedPlaceholder(name, chosen); err != nil {
+	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
+	// forward, and the default is exempt too, so a short NAME still gets a placeholder.
+	if named != "" && named != DefaultPlaceholder(name) {
+		if err := shapedPlaceholder(name, named); err != nil {
 			return "", err
 		}
 	}

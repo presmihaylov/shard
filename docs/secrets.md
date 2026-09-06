@@ -71,8 +71,9 @@ A chosen placeholder is letters, digits, `_`, `-` and `.`, so no URL, JSON or ba
 changes it on the way out. It is refused when it is inside the value, when it is shorter than 8
 characters, when it holds anything outside that set, or when another secret already owns it as its own
 placeholder or as its default. The default `mock-NAME` is exempt from all but the first, so a short
-name still gets one. Changing the placeholder of a secret a sandbox holds is refused: that guest
-already holds the old one, so ungrant it first. `shard secret ls` prints the placeholder.
+name still gets one. Only a placeholder this call names is checked for shape, so a rotation is never
+blocked by the one the record carries forward. Changing the placeholder of a secret a sandbox holds
+is refused: that guest already holds the old one, so ungrant it first. `shard secret ls` prints the placeholder.
 
 **The value.** `shard secret set` takes it three ways. It reads stdin when the value is `-` or when
 stdin is a pipe, which is the way to use in a script, because the value then lands in no shell
