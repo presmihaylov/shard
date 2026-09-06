@@ -58,7 +58,7 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 		failAt  string
 		cleanup []string
 	}{
-		{"images.Pull", nil},
+		{"images.Claim", nil},
 		{"repo.Create", nil},
 		{"repo.Dir", []string{"repo.Delete"}},
 		{"net.Allocate", []string{"net.Release", "repo.Delete"}},
@@ -273,7 +273,7 @@ func TestCreateRefusesASecretTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "secret NOPE does not exist") {
 		t.Fatalf("create = %v, want a request error naming the secret", err)
 	}
-	if slices.Contains(r.calls, "images.Pull") {
+	if slices.Contains(r.calls, "images.Claim") {
 		t.Errorf("a missing secret still cost a pull: %v", r.calls)
 	}
 }
@@ -315,7 +315,7 @@ func TestCreateRefusesAPolicyTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "policy not found") {
 		t.Fatalf("create = %v, want a request error naming the policy", err)
 	}
-	if slices.Contains(r.calls, "images.Pull") {
+	if slices.Contains(r.calls, "images.Claim") {
 		t.Errorf("a missing policy still cost a pull: %v", r.calls)
 	}
 }

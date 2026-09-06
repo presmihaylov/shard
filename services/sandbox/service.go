@@ -35,7 +35,7 @@ type Repository interface {
 
 // Images is the part of image.Service a create drives.
 type Images interface {
-	Pull(ctx context.Context, ref string) (image.Image, error)
+	Claim(ctx context.Context, ref string, record func(image.Image) error) (image.Image, error)
 }
 
 // Network is the part of network.Service the lifecycle verbs drive.
@@ -324,24 +324,9 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// claim pulls the image and writes the record that says the rootfs is in use.
+// claim pulls the image and writes the record that says the rootfs is in use, both under the image
+// lock: a prune that swept between the two would delete the rootfs this create is about to run.
 func (s *Service) claim(ctx context.Context, td *Teardown, req CreateRequest) (image.Image, string, string, error) {
-	// A pull self-heals its own partial work and sweeps a killed unpack under its own lock, so it
-	// claims nothing this verb has to give back.
-	img, err := s.pull(ctx, req.Image)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-
-	id, dir, err := s.claimRecord(td, img, req)
-	if err != nil {
-		return image.Image{}, "", "", err
-	}
-
-	return img, id, dir, nil
-}
-
-func (s *Service) pull(ctx context.Context, ref string) (image.Image, error) {
 	// A registry that accepts the connection and then stalls would otherwise pin the daemon forever.
 	if s.cfg.PullTimeout > 0 {
 		var cancel context.CancelFunc
@@ -349,7 +334,18 @@ func (s *Service) pull(ctx context.Context, ref string) (image.Image, error) {
 		defer cancel()
 	}
 
-	return s.cfg.Images.Pull(ctx, ref)
+	var id, dir string
+	img, err := s.cfg.Images.Claim(ctx, req.Image, func(img image.Image) error {
+		var err error
+		id, dir, err = s.claimRecord(td, img, req)
+
+		return err
+	})
+	if err != nil {
+		return image.Image{}, "", "", err
+	}
+
+	return img, id, dir, nil
 }
 
 // claimRecord takes the id, which is the only handle every later step is named by.

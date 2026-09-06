@@ -23,6 +23,7 @@ import (
 // imageService is the part of image.Service the daemon drives, behind which a test puts a fake.
 type imageService interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
+	Claim(ctx context.Context, ref string, record func(image.Image) error) (image.Image, error)
 	List() ([]image.Image, error)
 	Orphaned(ref string) ([]string, error)
 	Remove(ctx context.Context, ref string, free func() error) error

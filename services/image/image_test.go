@@ -3,7 +3,9 @@ package image_test
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -498,5 +500,44 @@ func TestRemoveRunsTheCheckBeforeAnythingGoes(t *testing.T) {
 
 	if _, err := os.Stat(img.RootFS); err != nil {
 		t.Errorf("the rootfs went under a refused removal: %v", err)
+	}
+}
+
+// TestClaimKeepsTheRootFSUntilTheRecordIsWritten: a create pulls and writes its sandbox record under
+// one lock, so a prune that sweeps by reachability cannot land between the two and take the rootfs.
+func TestClaimKeepsTheRootFSUntilTheRecordIsWritten(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	removed := make(chan error, 1)
+	var rootfs string
+	_, err := svc.Claim(t.Context(), ref, func(img image.Image) error {
+		// free stands for the check image rm and prune both run over the sandbox records.
+		go func() { removed <- svc.Remove(context.Background(), ref, func() error { return nil }) }()
+
+		select {
+		case err := <-removed:
+			return errors.Join(errors.New("the removal ran before the record was written"), err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		if _, err := os.Stat(img.RootFS); err != nil {
+			return fmt.Errorf("stat the rootfs the claim pulled: %w", err)
+		}
+
+		rootfs = img.RootFS
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("claim %s: %v", ref, err)
+	}
+
+	if err := <-removed; err != nil {
+		t.Fatalf("the removal after the record: %v", err)
+	}
+
+	if _, err := os.Stat(rootfs); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the rootfs outlived the removal: %v", err)
 	}
 }

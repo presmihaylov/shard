@@ -52,12 +52,14 @@ type fakeImages struct {
 	r *recorder
 }
 
-func (f fakeImages) Pull(context.Context, string) (image.Image, error) {
-	if err := f.r.record("images.Pull"); err != nil {
+func (f fakeImages) Claim(_ context.Context, _ string, record func(image.Image) error) (image.Image, error) {
+	if err := f.r.record("images.Claim"); err != nil {
 		return image.Image{}, err
 	}
 
-	return image.Image{Reference: "alpine:3.20", RootFS: "/images/alpine"}, nil
+	img := image.Image{Reference: "alpine:3.20", RootFS: "/images/alpine"}
+
+	return img, record(img)
 }
 
 // fakeRepo holds one record, so a test says what it held before the verb ran and reads what it holds after.

@@ -67,7 +67,7 @@ func New(root string, opts ...registry.Option) (*Service, error) {
 }
 
 // Pull fetches ref and unpacks it. A second pull of the same reference needs no network.
-func (s *Service) Pull(ctx context.Context, ref string) (_ Image, err error) {
+func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 	// The cache is read before the lock, so a pulled image still runs while another pull downloads.
 	img, found, err := s.cached(ref)
 	if err != nil || found {
@@ -77,8 +77,30 @@ func (s *Service) Pull(ctx context.Context, ref string) (_ Image, err error) {
 	s.write.Lock()
 	defer s.write.Unlock()
 
+	return s.pullLocked(ctx, ref)
+}
+
+// Claim pulls ref and runs record before it lets go of the tree, so a removal that sweeps by
+// reachability cannot delete a rootfs whose sandbox record is still on its way to disk.
+func (s *Service) Claim(ctx context.Context, ref string, record func(Image) error) (Image, error) {
+	s.write.Lock()
+	defer s.write.Unlock()
+
+	img, err := s.pullLocked(ctx, ref)
+	if err != nil {
+		return Image{}, err
+	}
+
+	if err := record(img); err != nil {
+		return Image{}, err
+	}
+
+	return img, nil
+}
+
+func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 	// Whoever held the lock may have been pulling this very reference.
-	img, found, err = s.cached(ref)
+	img, found, err := s.cached(ref)
 	if err != nil || found {
 		return img, err
 	}
