@@ -261,6 +261,7 @@ func (s *Server) readHead(conn net.Conn) ([]byte, error) {
 	return head, nil
 }
 
+// readHead reads a byte at a time because a buffered reader would swallow body bytes past the blank line, which the splice would then lose.
 func readHead(r io.Reader) ([]byte, error) {
 	head := make([]byte, 0, 1024)
 	one := make([]byte, 1)

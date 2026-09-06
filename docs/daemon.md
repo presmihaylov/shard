@@ -242,6 +242,9 @@ refuses one that is.
 The check is per connection, as a TLS client certificate would be: the token is read once, at the
 head of the first request, and the rest of that connection is bytes.
 
+The front reads the token file once, at start, so a rotation needs a `shard serve` restart, and that
+restart ends no connection that is already spliced.
+
 **This is a deliberate deviation from dockerd and hypeman, which bind TCP themselves.** The shard
 daemon is root and owns the sandboxes, so the network-facing process is a separate and unprivileged
 one. It runs from its own unit, `packaging/systemd/shard-serve.service`, off unless it is installed
