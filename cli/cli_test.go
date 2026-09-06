@@ -2,16 +2,34 @@ package cli
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/presmihaylov/shard/services/image"
 )
 
 func newApp(t *testing.T, out *bytes.Buffer) App {
 	t.Helper()
 
 	return App{Version: "test", Root: t.TempDir(), Out: out}
+}
+
+// newStoreApp puts a daemon on the real image store up, for the verbs that only read one.
+func newStoreApp(t *testing.T, out *bytes.Buffer) (App, string) {
+	t.Helper()
+
+	root := shortRoot(t)
+
+	images, err := image.New(filepath.Join(root, "images"))
+	if err != nil {
+		t.Fatalf("image.New: %v", err)
+	}
+
+	serveDaemon(t, &fakeDaemon{app: App{Root: root}, imageSvc: images})
+
+	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute}, root
 }
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
@@ -37,7 +55,9 @@ func TestRunUnknownCommand(t *testing.T) {
 func TestImageLsOnAnEmptyRoot(t *testing.T) {
 	var out bytes.Buffer
 
-	if err := newApp(t, &out).Run(t.Context(), []string{"image", "ls"}); err != nil {
+	app, _ := newStoreApp(t, &out)
+
+	if err := app.Run(t.Context(), []string{"image", "ls"}); err != nil {
 		t.Fatalf("image ls: %v", err)
 	}
 
@@ -79,15 +99,12 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 
 func TestRootFlagPrecedesTheCommand(t *testing.T) {
 	var out bytes.Buffer
-	root := t.TempDir()
 
+	_, root := newStoreApp(t, &out)
+
+	// The daemon answers on the socket under that root, and the default root has none.
 	if err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "ls"}); err != nil {
 		t.Fatalf("image ls: %v", err)
-	}
-
-	// The default root is /var/lib/shard, so a layout under the temporary one proves the flag landed.
-	if _, err := os.Stat(filepath.Join(root, "images", "layout", "index.json")); err != nil {
-		t.Errorf("the root flag was ignored: %v", err)
 	}
 }
 
@@ -115,9 +132,10 @@ func TestRootMustBeAbsolute(t *testing.T) {
 
 func TestTimeoutFlagIsParsed(t *testing.T) {
 	var out bytes.Buffer
-	app := App{Version: "test", Out: &out}
 
-	if err := app.Run(t.Context(), []string{"--timeout", "5s", "--root", t.TempDir(), "image", "ls"}); err != nil {
+	app, _ := newStoreApp(t, &out)
+
+	if err := app.Run(t.Context(), []string{"--timeout", "5s", "image", "ls"}); err != nil {
 		t.Fatalf("image ls: %v", err)
 	}
 }
@@ -128,33 +146,5 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 	err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--timeout", "never", "image", "ls"})
 	if err == nil {
 		t.Fatal("a bad --timeout returned no error")
-	}
-}
-
-// TestImageLsBuildsOnlyTheImageService is the reason every layer is built on the first ask: the
-// provider needs runsc on the host and the network service needs root, and image ls needs neither.
-func TestImageLsBuildsOnlyTheImageService(t *testing.T) {
-	var out bytes.Buffer
-
-	d := &deps{}
-	app := App{Version: "test", Root: t.TempDir(), Out: &out}
-	app.newDeps = func(a App) *deps {
-		d.app = a
-
-		return d
-	}
-
-	if err := app.Run(t.Context(), []string{"image", "ls"}); err != nil {
-		t.Fatalf("image ls: %v", err)
-	}
-
-	if d.imageSvc == nil {
-		t.Error("image ls built no image service")
-	}
-
-	for name, built := range map[string]bool{"provider": d.providerSvc != nil, "network service": d.netSvc != nil, "repository": d.repoSvc != nil} {
-		if built {
-			t.Errorf("image ls built the %s, which needs a Linux host and root", name)
-		}
 	}
 }

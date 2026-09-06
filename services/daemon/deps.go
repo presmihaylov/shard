@@ -1,8 +1,6 @@
-package cli
+package daemon
 
 import (
-	"context"
-	"os"
 	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
@@ -19,84 +17,27 @@ import (
 	"github.com/presmihaylov/shard/services/secret"
 )
 
-// imageService is the part of image.Service the commands drive. The service is a struct, so this is
-// the only seam a test can put a fake behind.
-type imageService interface {
-	Pull(ctx context.Context, ref string) (image.Image, error)
-	List() ([]image.Image, error)
-	Hold(ctx context.Context) (func() error, error)
-	Orphaned(ref string) ([]string, error)
-	Remove(ctx context.Context, ref string, free func() error) error
-}
-
-// sandboxRepo is the part of sandboxstate.Repository the commands drive.
-type sandboxRepo interface {
-	Create(sb models.Sandbox) (models.Sandbox, error)
-	Get(id string) (models.Sandbox, error)
-	Resolve(ref string) (string, error)
-	List() ([]models.Sandbox, error)
-	Update(id string, mutate func(*models.Sandbox) error) error
-	Delete(id string) error
-	Dir(id string) (string, error)
-	SnapshotDir(id string) (string, error)
-}
-
-// sandboxNetwork is the part of network.Service the commands drive.
-type sandboxNetwork interface {
-	Allocate(ctx context.Context, id string) (models.NetworkSpec, error)
-	Release(ctx context.Context, id string) error
-	Reapply(ctx context.Context, id string) error
-	ReapplyAll(ctx context.Context) error
-}
-
-// secretStore is the part of secret.Store the commands drive. No command reads a value: that is the proxy's.
-type secretStore interface {
-	Set(name, value string, destinations []string, mock string) (secret.Secret, error)
-	Get(name string) (secret.Secret, error)
-	List() ([]secret.Secret, error)
-	Remove(name string) error
-}
-
-// substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
-// teardown gives it back.
-type substrate interface {
-	DropNullNetns() error
-}
-
-// deps is every layer a shard command can drive. Each one is built on the first ask and kept, so a
-// command that never asks for the provider or the network never needs runsc, netns or root: that is
-// what keeps version, pull and image working off Linux and off root.
+// deps is every layer the daemon drives. Each one is built on the first ask and kept, so a daemon on
+// a host without runsc, netns or root still answers the reads and the store verbs.
 type deps struct {
-	app App
+	cfg Config
 
-	imageSvc     imageService
-	repoSvc      sandboxRepo
-	netSvc       sandboxNetwork
+	imageSvc     *image.Service
+	repoSvc      *sandboxstate.Repository
+	netSvc       *network.Service
 	providerSvc  models.Provider
-	substrateSvc substrate
-	secretSvc    secretStore
+	substrateSvc *runsc.Runner
+	secretSvc    *secret.Store
 	policySvc    *egress.Store
 	runnerSvc    *runsc.Runner
-
-	// The terminal this shard process holds. A test replaces it: a pipe is not a terminal.
-	inFile *os.File
 }
 
-// deps builds what the command is about to drive, through the seam a test replaces.
-func (a App) deps() *deps {
-	if a.newDeps != nil {
-		return a.newDeps(a)
-	}
-
-	return &deps{app: a}
-}
-
-func (d *deps) images() (imageService, error) {
+func (d *deps) images() (*image.Service, error) {
 	if d.imageSvc != nil {
 		return d.imageSvc, nil
 	}
 
-	svc, err := image.New(filepath.Join(d.app.Root, "images"), registry.WithInsecureRegistries(d.app.Insecure...))
+	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), registry.WithInsecureRegistries(d.cfg.Insecure...))
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +46,12 @@ func (d *deps) images() (imageService, error) {
 	return d.imageSvc, nil
 }
 
-func (d *deps) repo() (sandboxRepo, error) {
+func (d *deps) repo() (*sandboxstate.Repository, error) {
 	if d.repoSvc != nil {
 		return d.repoSvc, nil
 	}
 
-	repo, err := sandboxstate.New(d.app.Root)
+	repo, err := sandboxstate.New(d.cfg.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +60,7 @@ func (d *deps) repo() (sandboxRepo, error) {
 	return d.repoSvc, nil
 }
 
-func (d *deps) net() (sandboxNetwork, error) {
+func (d *deps) net() (*network.Service, error) {
 	if d.netSvc != nil {
 		return d.netSvc, nil
 	}
@@ -134,7 +75,7 @@ func (d *deps) net() (sandboxNetwork, error) {
 		return nil, err
 	}
 
-	svc, err := network.New(network.Config{Root: d.app.Root, Egress: source}, manager)
+	svc, err := network.New(network.Config{Root: d.cfg.Root, Egress: source}, manager)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +99,7 @@ func (d *deps) provider() (models.Provider, error) {
 		return nil, err
 	}
 
-	bundles, err := bundle.New(d.app.InitPath)
+	bundles, err := bundle.New(d.cfg.InitPath)
 	if err != nil {
 		return nil, err
 	}
@@ -173,13 +114,13 @@ func (d *deps) provider() (models.Provider, error) {
 }
 
 // runner drives the runsc binary. The mode is fixed on it and must match the one the sandbox was
-// created with, so every command builds it here and nowhere else.
+// created with, so every verb builds it here and nowhere else.
 func (d *deps) runner() (*runsc.Runner, error) {
 	if d.runnerSvc != nil {
 		return d.runnerSvc, nil
 	}
 
-	runner, err := runsc.New(filepath.Join(d.app.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	runner, err := runsc.New(filepath.Join(d.cfg.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
 	if err != nil {
 		return nil, err
 	}
@@ -188,13 +129,12 @@ func (d *deps) runner() (*runsc.Runner, error) {
 	return d.runnerSvc, nil
 }
 
-// secrets is a plain file store, so a test drives the real one under a temporary root.
-func (d *deps) secrets() (secretStore, error) {
+func (d *deps) secrets() (*secret.Store, error) {
 	if d.secretSvc != nil {
 		return d.secretSvc, nil
 	}
 
-	store, err := secret.New(filepath.Join(d.app.Root, "secrets"))
+	store, err := secret.New(filepath.Join(d.cfg.Root, "secrets"))
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +143,9 @@ func (d *deps) secrets() (secretStore, error) {
 	return d.secretSvc, nil
 }
 
-func (d *deps) substrate() (substrate, error) {
+// substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
+// teardown gives it back.
+func (d *deps) substrate() (*runsc.Runner, error) {
 	if d.substrateSvc != nil {
 		return d.substrateSvc, nil
 	}
@@ -217,20 +159,12 @@ func (d *deps) substrate() (substrate, error) {
 	return d.substrateSvc, nil
 }
 
-func (d *deps) stdin() *os.File {
-	if d.inFile == nil {
-		d.inFile = os.Stdin
-	}
-
-	return d.inFile
-}
-
 func (d *deps) policies() (*egress.Store, error) {
 	if d.policySvc != nil {
 		return d.policySvc, nil
 	}
 
-	svc, err := egress.NewStore(filepath.Join(d.app.Root, "policies"))
+	svc, err := egress.NewStore(filepath.Join(d.cfg.Root, "policies"))
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +194,7 @@ func (d *deps) egress() (*egress.Service, error) {
 	return egress.New(policies, repo, secrets, network.DefaultNameservers, nil), nil
 }
 
-// lifecycle wires the orchestrator over every layer the four verbs drive, once per daemon.
+// lifecycle wires the orchestrator over every layer the sandbox verbs drive, once per daemon.
 func (d *deps) lifecycle() (*sandbox.Service, error) {
 	images, err := d.images()
 	if err != nil {
@@ -305,6 +239,38 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		Secrets:     secrets,
 		Policies:    policies,
 		Substrate:   sub,
-		PullTimeout: d.app.Timeout,
+		PullTimeout: d.cfg.PullTimeout,
+	}), nil
+}
+
+// stores wires the policy, secret and image verbs. They read and write files, so they need no substrate.
+func (d *deps) stores() (*sandbox.Stores, error) {
+	repo, err := d.repo()
+	if err != nil {
+		return nil, err
+	}
+
+	images, err := d.images()
+	if err != nil {
+		return nil, err
+	}
+
+	secrets, err := d.secrets()
+	if err != nil {
+		return nil, err
+	}
+
+	policies, err := d.policies()
+	if err != nil {
+		return nil, err
+	}
+
+	return sandbox.NewStores(sandbox.StoresConfig{
+		Repo:        repo,
+		Policies:    policies,
+		Secrets:     secrets,
+		Images:      images,
+		Network:     func() (sandbox.Reapplier, error) { return d.net() },
+		PullTimeout: d.cfg.PullTimeout,
 	}), nil
 }

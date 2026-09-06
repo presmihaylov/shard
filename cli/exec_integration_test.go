@@ -240,7 +240,7 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 	}()
 
 	app.Out, app.Err = terminal.Replica, terminal.Replica
-	app.newDeps = func(a App) *deps { return &deps{app: a, inFile: terminal.Replica} }
+	app.in = terminal.Replica
 
 	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "--", "/bin/sh", "-c", "stty size; exit 7"})
 

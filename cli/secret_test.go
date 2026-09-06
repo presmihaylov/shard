@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
-// newSecretApp drives the real store under a temporary root, with stdin replaced by what the test pipes in.
+// newSecretApp puts a daemon on the real store up, with stdin replaced by what the test pipes in.
 func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRepo) (App, string) {
 	t.Helper()
 
-	root := t.TempDir()
+	root := shortRoot(t)
 
 	in, err := os.CreateTemp(t.TempDir(), "stdin")
 	if err != nil {
@@ -29,10 +31,19 @@ func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRep
 	}
 	t.Cleanup(func() { _ = in.Close() })
 
-	app := App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute}
-	app.newDeps = func(a App) *deps { return &deps{app: a, inFile: in, repoSvc: repo} }
+	secrets, err := secret.New(filepath.Join(root, "secrets"))
+	if err != nil {
+		t.Fatalf("secret.New: %v", err)
+	}
 
-	return app, root
+	policies, err := egress.NewStore(filepath.Join(root, "policies"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	serveDaemon(t, &fakeDaemon{app: App{Root: root}, repoSvc: repo, secretSvc: secrets, policySvc: policies})
+
+	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute, in: in}, root
 }
 
 func TestSecretSetLsRmRoundTrip(t *testing.T) {
@@ -61,7 +72,8 @@ func TestSecretSetLsRmRoundTrip(t *testing.T) {
 	// The value lives in exactly one file, and a grep of everything else under the root finds nothing.
 	found := 0
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		// The socket under the root is not a file to read, and neither is a directory.
+		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
 		blob, err := os.ReadFile(path)

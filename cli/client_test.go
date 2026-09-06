@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,39 +16,13 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// serveDaemon answers on the socket under the app's root over its fakes, the way the daemon does over the stores.
-func serveDaemon(t *testing.T, d *deps) {
+// newClientApp is newLifecycleApp for the verbs whose test reads no call order.
+func newClientApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox) (App, *fakeDaemon) {
 	t.Helper()
 
-	repo, err := d.repo()
-	if err != nil {
-		t.Fatalf("repo: %v", err)
-	}
+	app, f := newLifecycleApp(t, out, &recorder{}, sb)
 
-	enforcer, err := d.egress()
-	if err != nil {
-		t.Fatalf("egress: %v", err)
-	}
-
-	listener, err := net.Listen("unix", filepath.Join(d.app.Root, api.SocketFile))
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	server := httptest.NewUnstartedServer(api.NewHandler("v-daemon", repo, enforcer, &lifecycle{deps: d}, io.Discard))
-	server.Listener = listener
-	server.Start()
-	t.Cleanup(server.Close)
-}
-
-// newClientApp is newLifecycleApp with a daemon up on its root, for the verbs that only speak to one.
-func newClientApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox) (App, *deps) {
-	t.Helper()
-
-	app, d := newLifecycleApp(t, out, &recorder{}, sb)
-	serveDaemon(t, d)
-
-	return app, d
+	return app, f
 }
 
 func TestVersionPrintsBothLines(t *testing.T) {

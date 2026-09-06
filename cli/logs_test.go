@@ -34,7 +34,7 @@ func TestParseLogsFlags(t *testing.T) {
 }
 
 // newLogsApp wires logs onto a daemon whose output file already holds what the entrypoint wrote.
-func newLogsApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox, written string) (App, *deps) {
+func newLogsApp(t *testing.T, out *bytes.Buffer, sb models.Sandbox, written string) (App, *fakeDaemon) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "output.log")

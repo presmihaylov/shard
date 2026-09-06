@@ -13,13 +13,12 @@ import (
 )
 
 // newDaemonCreateApp is newClientApp with an image service that pulls nothing, so a create round trip needs no registry.
-func newDaemonCreateApp(t *testing.T, out *bytes.Buffer) (App, *deps, *recorder) {
+func newDaemonCreateApp(t *testing.T, out *bytes.Buffer) (App, *fakeDaemon, *recorder) {
 	t.Helper()
 
 	r := &recorder{}
 	app, d := newLifecycleApp(t, out, r, models.Sandbox{})
 	d.imageSvc = fakeImages{r: r}
-	serveDaemon(t, d)
 
 	return app, d, r
 }
@@ -39,7 +38,7 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 	}
 
 	// The daemon ran the verb: the pull, the record and the start all happened behind the socket.
-	want := []string{"images.Pull", "repo.Create", "net.Allocate", "provider.Create", "provider.Start"}
+	want := []string{"images.Claim", "repo.Create", "net.Allocate", "provider.Create", "provider.Start"}
 	if got := keep(r.calls, want...); !slices.Equal(got, want) {
 		t.Errorf("the daemon drove %v, want %v", got, want)
 	}
@@ -63,7 +62,7 @@ func TestCreatePrintsTheDaemonsRefusalAsItCame(t *testing.T) {
 	if err == nil || err.Error() != "secret NOPE does not exist: run shard secret set --to <host> NOPE first" {
 		t.Errorf("create = %v, want the daemon's refusal as it came", err)
 	}
-	if slices.Contains(r.calls, "images.Pull") {
+	if slices.Contains(r.calls, "images.Claim") {
 		t.Errorf("a refused create still cost a pull: %v", r.calls)
 	}
 }

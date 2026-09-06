@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -363,14 +364,13 @@ func TestPullWaitsForThePullInFlight(t *testing.T) {
 	t.Cleanup(gate.release)
 
 	ref := pushImage(t, server, "app:1.0", map[string]string{"etc/hostname": "box"})
-	root := t.TempDir()
-	first, second := newServiceAt(t, root, server), newServiceAt(t, root, server)
+	svc := newServiceAt(t, t.TempDir(), server)
 
 	gate.arm()
 
 	pulled := make(chan error, 1)
 	go func() {
-		_, err := first.Pull(t.Context(), ref)
+		_, err := svc.Pull(t.Context(), ref)
 		pulled <- err
 	}()
 
@@ -380,20 +380,25 @@ func TestPullWaitsForThePullInFlight(t *testing.T) {
 		t.Fatalf("the first Pull ended before it fetched a blob: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
+	second := make(chan error, 1)
+	go func() {
+		_, err := svc.Pull(t.Context(), ref)
+		second <- err
+	}()
 
-	// The message matters as much as the deadline: a second pull that reached the registry at all
-	// has already written blobs the first one's rollback would collect.
-	_, err := second.Pull(ctx, ref)
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the lock") {
-		t.Fatalf("the second Pull returned %v, want it to wait for the first one's lock", err)
+	select {
+	case err := <-second:
+		t.Fatalf("the second Pull ran beside the first and returned %v", err)
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	gate.release()
 
 	if err := <-pulled; err != nil {
 		t.Fatalf("the first Pull: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("the second Pull: %v", err)
 	}
 }
 
@@ -498,32 +503,41 @@ func TestRemoveRunsTheCheckBeforeAnythingGoes(t *testing.T) {
 	}
 }
 
-// A create holds the store shared while it claims its record, and a removal waits that hold out.
-func TestRemoveWaitsForAHold(t *testing.T) {
+// TestClaimKeepsTheRootFSUntilTheRecordIsWritten: a create pulls and writes its sandbox record under
+// one lock, so a prune that sweeps by reachability cannot land between the two and take the rootfs.
+func TestClaimKeepsTheRootFSUntilTheRecordIsWritten(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
 	svc := newService(t, server)
 
-	if _, err := svc.Pull(t.Context(), ref); err != nil {
-		t.Fatalf("Pull: %v", err)
-	}
+	removed := make(chan error, 1)
+	var rootfs string
+	_, err := svc.Claim(t.Context(), ref, func(img image.Image) error {
+		// free stands for the check image rm and prune both run over the sandbox records.
+		go func() { removed <- svc.Remove(context.Background(), ref, func() error { return nil }) }()
 
-	release, err := svc.Hold(t.Context())
+		select {
+		case err := <-removed:
+			return errors.Join(errors.New("the removal ran before the record was written"), err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		if _, err := os.Stat(img.RootFS); err != nil {
+			return fmt.Errorf("stat the rootfs the claim pulled: %w", err)
+		}
+
+		rootfs = img.RootFS
+
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("Hold: %v", err)
+		t.Fatalf("claim %s: %v", ref, err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
-	defer cancel()
-
-	if err := svc.Remove(ctx, ref, nothing); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Remove under a hold returned %v, want it to wait until the context gave up", err)
+	if err := <-removed; err != nil {
+		t.Fatalf("the removal after the record: %v", err)
 	}
 
-	if err := release(); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	if err := svc.Remove(t.Context(), ref, nothing); err != nil {
-		t.Fatalf("Remove after the release: %v", err)
+	if _, err := os.Stat(rootfs); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the rootfs outlived the removal: %v", err)
 	}
 }
