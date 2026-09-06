@@ -413,3 +413,26 @@ func TestParseSecretGrantRefusesTheWrongArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretSetRefusesABadNameBeforeItAsksTheDaemon(t *testing.T) {
+	var out bytes.Buffer
+
+	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
+
+	// A mistyped set hands the value as the name, so the refusal must not echo it and must write nothing.
+	err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "sk-live-abcdef123456"})
+	if err == nil || !strings.Contains(err.Error(), "environment variable name") {
+		t.Fatalf("set with a bad name = %v", err)
+	}
+	if strings.Contains(err.Error(), "sk-live-abcdef123456") {
+		t.Errorf("the refusal echoes the name it refused: %v", err)
+	}
+
+	entries, readErr := os.ReadDir(filepath.Join(root, "secrets"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("a refused set wrote %d files", len(entries))
+	}
+}

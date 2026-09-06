@@ -324,11 +324,12 @@ func ValidName(name string) error {
 	if name == "" {
 		return errors.New("the secret name is empty")
 	}
+	// A mistyped set hands the value as the name, so a refusal never echoes what it refused.
 	if len(name) > maxChars {
-		return fmt.Errorf("the secret name %q is longer than %d characters", name, maxChars)
+		return fmt.Errorf("the secret name is longer than %d characters", maxChars)
 	}
 	if !nameShape.MatchString(name) {
-		return fmt.Errorf("the secret name %q is not an environment variable name: uppercase letters, digits and _, not starting with a digit", name)
+		return errors.New("the secret name is not an environment variable name: uppercase letters, digits and _, not starting with a digit")
 	}
 
 	return nil

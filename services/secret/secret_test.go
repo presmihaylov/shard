@@ -410,3 +410,26 @@ func TestReadRefusesANameThatEscapesTheStore(t *testing.T) {
 		}
 	}
 }
+
+func TestValidNameNeverEchoesTheNameItRefused(t *testing.T) {
+	s, _ := newStore(t)
+
+	// A mistyped set hands the value as the name, so the refusal must not put it on a screen or in a log.
+	for _, name := range []string{"sk-live-abcdef123456", strings.Repeat("A", maxChars+1)} {
+		err := ValidName(name)
+		if err == nil {
+			t.Fatalf("ValidName(%d characters) took the name", len(name))
+		}
+		if strings.Contains(err.Error(), name) {
+			t.Errorf("the refusal echoes the name it refused")
+		}
+
+		_, err = s.Set(name, "some-value-123", []string{"api.example.com"}, "")
+		if err == nil {
+			t.Fatal("Set took the name")
+		}
+		if strings.Contains(err.Error(), name) {
+			t.Errorf("the Set refusal echoes the name it refused")
+		}
+	}
+}

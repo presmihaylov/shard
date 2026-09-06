@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // maxSecretBytes bounds what set reads, so a stray redirect of a disk image does not become a secret.
@@ -153,6 +154,10 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 
 	opts.name = rest[0]
+	// A mistyped set hands the value as the name, so it is refused here and never reaches the socket.
+	if err := sandbox.ValidSecretName(opts.name); err != nil {
+		return secretSetOptions{}, err
+	}
 	if len(rest) == 2 {
 		opts.value, opts.hasValue = rest[1], true
 	}
