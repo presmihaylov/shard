@@ -98,7 +98,7 @@ func TestAFailedCheckpointThawsTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
 	work := t.TempDir()
 	calls := filepath.Join(work, "calls")
 	// The checkpoint reports itself and then blocks, so the cut-off never races the fake runsc.
-	started, release := fifo(t, filepath.Join(work, "started")), fifo(t, filepath.Join(work, "release"))
+	started, release := fifo(t, filepath.Join(work, "started")), heldOpen(t, filepath.Join(work, "release"))
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
 case "$*" in *checkpoint*) echo yes > `+started+`; cat `+release+`;; esac
 echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
@@ -241,6 +241,24 @@ func fifo(t *testing.T, path string) string {
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatalf("make the fifo %s: %v", path, err)
 	}
+
+	return path
+}
+
+// heldOpen keeps a write end of the fifo, so the reader a killed fake leaves behind sees EOF and exits.
+// The open is O_RDWR because a write-only open would block until that reader arrives, which it may never do.
+func heldOpen(t *testing.T, path string) string {
+	t.Helper()
+
+	f, err := os.OpenFile(fifo(t, path), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("hold the fifo %s open: %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close the fifo %s: %v", path, err)
+		}
+	})
 
 	return path
 }
