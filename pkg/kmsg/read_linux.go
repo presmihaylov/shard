@@ -3,6 +3,7 @@
 package kmsg
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -27,37 +28,130 @@ const device = "/dev/kmsg"
 const (
 	markWait = 2 * time.Second
 	markPoll = 10 * time.Millisecond
+	// remarkInterval keeps the drift between the kernel clock and wall time under a second.
+	remarkInterval = time.Hour
 )
 
-// Read returns every record the ring still holds, oldest first, dated against a mark written now.
-func Read() ([]Record, error) {
+// Follower walks the ring from its oldest record and then stays at its end. It dates every record
+// against a mark it wrote itself, never against the boot time, and re-marks so the drift stays small.
+type Follower struct {
+	fd         int
+	markUptime time.Duration
+	markWall   time.Time
+	marked     time.Time
+	// overwritten counts the records the kernel dropped under the reader, which no reader can get back.
+	overwritten uint64
+}
+
+// Overwritten is how many records the ring lost under this follower.
+func (f *Follower) Overwritten() uint64 { return f.overwritten }
+
+// Open opens the ring at its oldest record and writes the first mark.
+func Open() (*Follower, error) {
+	fd, err := openRing()
+	if err != nil {
+		return nil, err
+	}
+
+	f := &Follower{fd: fd}
+	if err := f.mark(); err != nil {
+		unix.Close(fd)
+
+		return nil, err
+	}
+
+	return f, nil
+}
+
+func (f *Follower) Close() error {
+	if err := unix.Close(f.fd); err != nil {
+		return fmt.Errorf("close %s: %w", device, err)
+	}
+
+	return nil
+}
+
+// Follow hands every record to yield, oldest first, until ctx ends or yield fails. caughtUp is called
+// once, when the backlog the ring held at Open is spent and the follower sits at its end.
+func (f *Follower) Follow(ctx context.Context, yield func(Record) error, caughtUp func()) error {
+	buf := make([]byte, MaxLine)
+	var announced bool
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if time.Since(f.marked) >= remarkInterval {
+			if err := f.mark(); err != nil {
+				return err
+			}
+		}
+
+		n, err := unix.Read(f.fd, buf)
+		if errors.Is(err, unix.EAGAIN) {
+			if !announced {
+				announced = true
+				caughtUp()
+			}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(markPoll):
+			}
+
+			continue
+		}
+		// EPIPE says the record this read wanted was overwritten; the kernel has already moved to the next one.
+		if errors.Is(err, unix.EPIPE) {
+			f.overwritten++
+
+			continue
+		}
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s: %w", device, err)
+		}
+
+		record, err := parse(string(buf[:n]))
+		if err != nil {
+			return err
+		}
+		if err := yield(at(record, f.markUptime, f.markWall)); err != nil {
+			return err
+		}
+	}
+}
+
+// mark writes one line into the ring and learns the kernel timestamp it went in at, which is the one
+// point where the kernel clock and wall time are both known.
+func (f *Follower) mark() error {
 	// The watcher is opened before the mark is written and sits at the end of the ring, so it reads the mark and nothing older.
 	watcher, err := openRing()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer unix.Close(watcher)
 
 	if _, err := unix.Seek(watcher, 0, unix.SEEK_END); err != nil {
-		return nil, fmt.Errorf("seek to the end of %s: %w", device, err)
+		return fmt.Errorf("seek to the end of %s: %w", device, err)
 	}
 
 	mark, wall, err := writeMark()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	uptime, err := awaitMark(watcher, mark)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	records, err := readAll()
-	if err != nil {
-		return nil, err
-	}
+	f.markUptime, f.markWall, f.marked = uptime, wall, time.Now()
 
-	return date(records, uptime, wall), nil
+	return nil
 }
 
 // awaitMark reads the ring's new records until the mark arrives, and answers with the kernel's own timestamp for it.
@@ -115,42 +209,6 @@ func writeMark() (string, time.Time, error) {
 	}
 
 	return mark, wall, nil
-}
-
-// readAll walks the ring from its oldest record to its end. One read is one record, and the buffer is
-// sized to MaxLine, so a record longer than that is truncated by the kernel rather than split over reads.
-func readAll() ([]Record, error) {
-	fd, err := openRing()
-	if err != nil {
-		return nil, err
-	}
-	defer unix.Close(fd)
-
-	var records []Record
-	buf := make([]byte, MaxLine)
-
-	for {
-		n, err := unix.Read(fd, buf)
-		if errors.Is(err, unix.EAGAIN) {
-			return records, nil
-		}
-		// EPIPE says the record this read wanted was overwritten; the kernel has already moved to the next one.
-		if errors.Is(err, unix.EPIPE) {
-			continue
-		}
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", device, err)
-		}
-
-		record, err := parse(string(buf[:n]))
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
 }
 
 func openRing() (int, error) {

@@ -723,9 +723,9 @@ echo "${REFUSAL}" | grep -q "${ID}" || fail "policy rm said '${REFUSAL}', want i
 say "policy rm refused it and named the sandbox"
 
 step "read the egress decision log"
-# The host's half is read from the kernel ring at print time, and the drop is a moment behind the probe.
+# The daemon tails the host's half out of the kernel ring, so the drop is a moment behind the probe.
 EGRESS=""
-for _ in $(seq 1 10); do
+for _ in $(seq 1 20); do
 	EGRESS=$(shard logs --egress "${ID}")
 	echo "${EGRESS}" | grep -q '"source":"host"' && break
 	sleep 0.1
@@ -739,6 +739,29 @@ named_rule() {
 named_rule "\"host\":\"${ECHO_HOST}\"" '"verdict":"allow"' "the proxy's allow"
 named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the proxy's deny"
 named_rule '"source":"host"' '"verdict":"deny"' "the host's drop"
+
+# The ring is shared and short, so a drop only ever read from it is gone within minutes. It is in the
+# sandbox's own file, which outlives the daemon that wrote it.
+stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
+
+# A drop that lands while the daemon is down is still in the ring when it comes back, so catch-up
+# writes it. The kernel is asked for the line directly: no guest can be driven without a daemon.
+SANDBOX_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${ID}/sandbox.json" | cut -d'"' -f4)
+SANDBOX_ADDRESS="${SANDBOX_ADDRESS%%/*}"
+for _ in 1 2; do
+	echo "<4>shard-egress rule=e2e-catchup SRC=${SANDBOX_ADDRESS} DST=203.0.113.9 PROTO=TCP DPT=25 " >/dev/kmsg
+done
+
+start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+shard logs --egress "${ID}" | grep -q '"source":"host"' || fail "the host drop did not outlive the daemon that wrote it"
+say "the host drop is still in the log after a daemon restart"
+
+for _ in $(seq 1 20); do
+	shard logs --egress "${ID}" | grep -q '"rule":"e2e-catchup"' && break
+	sleep 0.1
+done
+shard logs --egress "${ID}" | grep -q '"rule":"e2e-catchup"' || fail "the drop that landed while the daemon was down never reached the log"
+say "a drop that landed while the daemon was down is written at catch-up"
 
 CODE=0
 shard logs --egress -f "${ID}" >/dev/null 2>&1 || CODE=$?
