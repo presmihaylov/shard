@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -64,6 +65,22 @@ type fakeEgressLog struct{}
 
 func (fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
 	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, nil
+}
+
+// Follow hands over the same line and then ends as a removed sandbox does, so a test needs no clock.
+func (f fakeEgressLog) Follow(_ context.Context, sb models.Sandbox, yield func(egress.Record) error) error {
+	records, err := f.Read(sb)
+	if err != nil {
+		return err
+	}
+
+	for _, record := range records {
+		if err := yield(record); err != nil {
+			return err
+		}
+	}
+
+	return egress.ErrSandboxGone
 }
 
 func create(t *testing.T, repo *sandboxstate.Repository, name string, state models.State) models.Sandbox {

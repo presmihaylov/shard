@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -259,4 +261,58 @@ func (l *logWriter) Write(p []byte) (int, error) {
 	}
 
 	return n, nil
+}
+
+// followEgressLog streams one sandbox's decisions over the connection this request came in on. It
+// takes the connection over like an exec does, so the end of the log carries a reason and not a
+// bare close: a record goes as a stdout frame, and a removed sandbox as an error frame.
+func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
+	conn, buffered, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("take over the connection of the egress log of sandbox %s: %v", sb.ID, err))
+
+		return
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			h.log.Printf("api: egress log of sandbox %s: close the connection: %v", sb.ID, err)
+		}
+	}()
+
+	if _, err := buffered.WriteString(upgrade + "\r\n"); err != nil {
+		h.log.Printf("api: egress log of sandbox %s: answer the follow: %v", sb.ID, err)
+
+		return
+	}
+	if err := buffered.Flush(); err != nil {
+		h.log.Printf("api: egress log of sandbox %s: answer the follow: %v", sb.ID, err)
+
+		return
+	}
+
+	frames := NewFrameWriter(conn)
+
+	err = h.egressLog.Follow(r.Context(), sb, func(record egress.Record) error {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("encode an egress record of sandbox %s: %w", sb.ID, err)
+		}
+
+		return frames.Write(StreamStdout, append(line, '\n'))
+	})
+
+	// The client hung up or the daemon is going down, and neither is anything to say on the wire.
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+
+	// A removed sandbox ends the follow and never fails it, so it goes on the stream the client exits on.
+	stream := StreamError
+	if errors.Is(err, egress.ErrSandboxGone) {
+		stream = StreamExit
+	}
+
+	if writeErr := frames.Write(stream, []byte(err.Error())); writeErr != nil {
+		h.log.Printf("api: egress log of sandbox %s: %v", sb.ID, writeErr)
+	}
 }

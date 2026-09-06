@@ -47,7 +47,7 @@ Usage:
   shard ls [--all]         list the sandboxes that are up, with the policy each holds, and with --all the stopped ones too
   shard inspect <id|name>  print the record of a sandbox as JSON
   shard logs [-f] [--egress] <id|name>
-                           print what the entrypoint wrote, and with --egress the egress decisions
+                           print what the entrypoint wrote, and with --egress the egress decisions; -f follows either
   shard pull <image>       pull an image and unpack its rootfs
   shard image ls           list the pulled images
   shard image rm [--force] <image>

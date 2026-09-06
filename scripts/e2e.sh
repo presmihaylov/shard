@@ -763,10 +763,25 @@ done
 shard logs --egress "${ID}" | grep -q '"rule":"e2e-catchup"' || fail "the drop that landed while the daemon was down never reached the log"
 say "a drop that landed while the daemon was down is written at catch-up"
 
-CODE=0
-shard logs --egress -f "${ID}" >/dev/null 2>&1 || CODE=$?
-[ "${CODE}" != "0" ] || fail "logs --egress took -f, which has nothing to follow"
-say "logs --egress refuses -f"
+# A follow is a tail of the one file, so both halves of the log reach it live.
+FOLLOW_LOG=$(mktemp)
+shard logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
+FOLLOW_PID=$!
+
+shard exec "${ID}" -- /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
+shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1' >/dev/null 2>&1 || true
+
+for _ in $(seq 1 20); do
+	grep -q '"verdict":"deny"' "${FOLLOW_LOG}" && grep -q '"source":"host"' "${FOLLOW_LOG}" && break
+	sleep 0.1
+done
+
+kill "${FOLLOW_PID}" 2>/dev/null || true
+wait "${FOLLOW_PID}" 2>/dev/null || true
+
+grep -q '"verdict":"deny"' "${FOLLOW_LOG}" || fail "the follow never printed the proxy's deny: $(cat "${FOLLOW_LOG}")"
+grep -q '"source":"host"' "${FOLLOW_LOG}" || fail "the follow never printed the host's drop: $(cat "${FOLLOW_LOG}")"
+say "logs -f --egress prints both halves as they happen"
 
 step "write a file into the writable layer"
 expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \

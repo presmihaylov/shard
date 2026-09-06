@@ -303,3 +303,90 @@ func warn(report func(string), message string) {
 
 	report(message)
 }
+
+// FollowEgressLog prints one decision per line as the daemon writes it, until the caller's context
+// ends. A sandbox removed under the follow ends it with a word on why, and never a bare close.
+func (c *Client) FollowEgressLog(ctx context.Context, ref string, out, errOut io.Writer) (err error) {
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, conn.Close()) }()
+
+	stop := interrupt(ctx, conn)
+	defer func() { err = errors.Join(err, stop()) }()
+
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/egress-log?follow=true"
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shard"+path, nil) //nolint:gosec // G704: the ref only lands in the path; this connection is the socket whatever the URL says
+	if err != nil {
+		return fmt.Errorf("build the request for the egress log of sandbox %s: %w", ref, err)
+	}
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "tcp")
+
+	if err := request.Write(conn); err != nil {
+		return fmt.Errorf("ask for the egress log of sandbox %s on %s: %w", ref, c.path, err)
+	}
+
+	reader := bufio.NewReader(conn)
+
+	resp, err := http.ReadResponse(reader, request)
+	if err != nil {
+		// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		return fmt.Errorf("read the answer to the egress log of sandbox %s on %s: %w", ref, c.path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		answer, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read the refusal of the egress log of sandbox %s: %w", ref, err)
+		}
+
+		return missing(ref, decodeError(resp.StatusCode, answer))
+	}
+
+	return readEgressLog(ctx, reader, ref, out, errOut)
+}
+
+// readEgressLog prints every record frame and ends on the daemon's close, which is what a removed
+// sandbox and a daemon going down both look like from here.
+func readEgressLog(ctx context.Context, r io.Reader, ref string, out, errOut io.Writer) error {
+	for {
+		stream, payload, err := api.ReadFrame(r)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			return err
+		}
+
+		switch stream {
+		case api.StreamStdout:
+			if err := write(out, payload); err != nil {
+				return err
+			}
+		case api.StreamExit:
+			// The sandbox is gone, which is a reason to stop printing and not a failure of the follow.
+			reason := fmt.Sprintf("the egress log of sandbox %s ended: %s\n", ref, payload)
+			if err := write(errOut, []byte(reason)); err != nil {
+				return fmt.Errorf("write why the egress log of sandbox %s ended: %w", ref, err)
+			}
+
+			return nil
+		case api.StreamError:
+			return fmt.Errorf("the egress log of sandbox %s ended: %s", ref, payload)
+		default:
+			return fmt.Errorf("the daemon sent a frame of stream %d, which no daemon sends", stream)
+		}
+	}
+}

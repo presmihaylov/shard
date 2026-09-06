@@ -3,6 +3,7 @@ package api_test
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -291,5 +293,77 @@ func TestLogsFollowEndsWhenTheSandboxStops(t *testing.T) {
 	}
 	if !s.verbs.followed {
 		t.Error("the daemon was never told to follow")
+	}
+}
+
+// The follow route hands over the connection like an exec, so its records arrive as frames and the
+// end of the log carries a reason.
+func TestEgressLogFollowStreamsTheRecordsAndSaysWhyItEnded(t *testing.T) {
+	s := seed(t)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(s.server.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/egress-log?follow=true", nil)
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "tcp")
+
+	if err := req.Write(conn); err != nil {
+		t.Fatalf("write the request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+
+	resp, err := http.ReadResponse(reader, req)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("the daemon answered %d, want 101", resp.StatusCode)
+	}
+
+	stream, payload, err := api.ReadFrame(reader)
+	if err != nil {
+		t.Fatalf("read the record frame: %v", err)
+	}
+	if stream != api.StreamStdout {
+		t.Errorf("the record came on stream %d", stream)
+	}
+
+	var record egress.Record
+	if err := json.Unmarshal(payload, &record); err != nil {
+		t.Fatalf("decode the record: %v", err)
+	}
+	if record.Host != s.running.Name {
+		t.Errorf("the record is %+v", record)
+	}
+
+	stream, payload, err = api.ReadFrame(reader)
+	if err != nil {
+		t.Fatalf("read the last frame: %v", err)
+	}
+	if stream != api.StreamExit || !strings.Contains(string(payload), "removed") {
+		t.Errorf("the follow ended with a frame of stream %d saying %q", stream, payload)
+	}
+}
+
+// A sandbox the daemon does not hold is refused before anything is on the wire.
+func TestEgressLogFollowRefusesAnIDTheDaemonDoesNotHold(t *testing.T) {
+	s := seed(t)
+
+	code, body := send(t, s.server, http.MethodGet, "/v0/sandboxes/nosuch/egress-log?follow=true", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("the daemon answered %d, want 404", code)
+	}
+	if answer, _ := body["error"].(string); answer == "" {
+		t.Error("the refusal carried no words")
 	}
 }

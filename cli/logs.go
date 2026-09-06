@@ -21,6 +21,10 @@ func (a App) logs(ctx context.Context, args []string) error {
 		return err
 	}
 
+	if opts.egress && opts.follow {
+		return a.client().FollowEgressLog(ctx, opts.id, a.Out, a.Err)
+	}
+
 	if opts.egress {
 		return a.client().EgressLog(ctx, opts.id, a.Out)
 	}
@@ -38,11 +42,6 @@ func parseLogs(args []string) (logsOptions, error) {
 
 	if err := flags.Parse(args); err != nil {
 		return logsOptions{}, fmt.Errorf("parse the logs flags: %w", err)
-	}
-
-	// The egress log is a file that is read once, not a stream, so there is nothing for -f to follow.
-	if opts.egress && opts.follow {
-		return logsOptions{}, fmt.Errorf("logs --egress cannot follow: drop -f")
 	}
 
 	rest := flags.Args()
