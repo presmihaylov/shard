@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -136,6 +135,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 
 // placeholder settles what the guest will hold: the chosen one, else the stored one, else the default.
 func (s *Store) placeholder(name, value, chosen string, existing record) (string, error) {
+	named := chosen
 	if chosen == "" {
 		chosen = existing.Placeholder
 	}
@@ -148,9 +148,10 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 		return "", fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
 	}
 
-	// The default is exempt from the shape rules alone: a short NAME still gets a placeholder.
-	if chosen != DefaultPlaceholder(name) {
-		if err := shapedPlaceholder(name, chosen); err != nil {
+	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
+	// forward, and the default is exempt too, so a short NAME still gets a placeholder.
+	if named != "" && named != DefaultPlaceholder(name) {
+		if err := shapedPlaceholder(name, named); err != nil {
 			return "", err
 		}
 	}
@@ -172,15 +173,17 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 // minPlaceholder keeps a chosen placeholder long enough that it cannot fall inside an ordinary request.
 const minPlaceholder = 8
 
+// placeholderCharset is what no URL, JSON or base64 encoder alters, so the proxy finds the string the
+// guest was handed. A character outside it goes on the wire rewritten and nothing is ever swapped.
+var placeholderCharset = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // shapedPlaceholder refuses a chosen placeholder the proxy could not find in an ordinary request.
 func shapedPlaceholder(name, chosen string) error {
 	if len(chosen) < minPlaceholder {
 		return fmt.Errorf("the placeholder of secret %s is shorter than %d characters", name, minPlaceholder)
 	}
-	for _, r := range chosen {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return fmt.Errorf("the placeholder of secret %s holds whitespace or a control character", name)
-		}
+	if !placeholderCharset.MatchString(chosen) {
+		return fmt.Errorf("the placeholder of secret %s holds a character outside letters, digits, _, - and .: an encoding would alter it", name)
 	}
 
 	return nil

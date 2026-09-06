@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -376,8 +377,12 @@ func TestSetRefusals(t *testing.T) {
 		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
 		{"chosen placeholder inside the value", "KEY", "abc-sk_test_shaped01-1", []string{"example.com"}, "sk_test_shaped01", "inside its value"},
 		{"placeholder too short", "KEY", "v-1234567", []string{"example.com"}, "sk_test", "shorter than"},
-		{"whitespace in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk test shaped", "whitespace or a control"},
-		{"control character in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test\x01shaped", "whitespace or a control"},
+		{"whitespace in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk test shaped", "outside letters, digits"},
+		{"control character in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test\x01shaped", "outside letters, digits"},
+		{"a plus in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test+shaped", "outside letters, digits"},
+		{"a slash in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test/shaped", "outside letters, digits"},
+		{"a quote in the placeholder", "KEY", "v-1234567", []string{"example.com"}, `sk_test"shaped`, "outside letters, digits"},
+		{"an equals in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test=shaped", "outside letters, digits"},
 	}
 
 	for _, tc := range cases {
@@ -408,6 +413,73 @@ func TestReadRefusesANameThatEscapesTheStore(t *testing.T) {
 		if err := s.Remove(name); err == nil {
 			t.Errorf("Remove(%q) succeeded", name)
 		}
+	}
+}
+
+// A placeholder outside the set is rewritten by the client's encoder, so the proxy would never find it.
+func TestSetTakesAPlaceholderNoEncoderAlters(t *testing.T) {
+	s, _ := newStore(t)
+
+	sec, err := s.Set("KEY", "v-1234567", []string{"example.com"}, "sk_test.e2e-01")
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if sec.Placeholder != "sk_test.e2e-01" {
+		t.Errorf("the store kept %q", sec.Placeholder)
+	}
+}
+
+// A mistyped --placeholder hands the value as the placeholder, so no refusal may put it on a screen.
+func TestARefusedPlaceholderNeverEchoesIt(t *testing.T) {
+	s, _ := newStore(t)
+
+	for _, chosen := range []string{"sk+live+abcdef123456", "sk/live/abcdef123456", `sk"live"abcdef123456`, "sk=live=abcdef123456", "sk live abcdef123456"} {
+		_, err := s.Set("KEY", "v-1234567", []string{"example.com"}, chosen)
+		if err == nil {
+			t.Fatalf("Set took the placeholder %q", chosen)
+		}
+		if strings.Contains(err.Error(), chosen) {
+			t.Errorf("the refusal echoes the placeholder it refused: %v", err)
+		}
+	}
+}
+
+// The default is exempt from the shape rules, and a name that could fail the set cannot exist anyway.
+func TestTheDefaultPlaceholderAlwaysFitsTheSet(t *testing.T) {
+	if !placeholderCharset.MatchString(DefaultPlaceholder("A")) {
+		t.Errorf("the default placeholder of the shortest legal name is outside the set")
+	}
+}
+
+// A record written before the charset rule holds a placeholder the rule refuses. Rotation is what an
+// operator reaches for when a key leaks, so it must not be blocked by the placeholder it carries forward.
+func TestRotationCarriesForwardAPlaceholderTheRuleWouldRefuse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	s, err := New(dir, func(string) ([]string, error) { return []string{"sb1"}, nil })
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	legacy := record{Value: "sk-live-old", Destinations: []string{"api.example.com"}, Placeholder: "sk+test+legacy"}
+	blob, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path("API_KEY"), blob, filePerm); err != nil {
+		t.Fatal(err)
+	}
+
+	sec, err := s.Set("API_KEY", "sk-live-new", nil, "")
+	if err != nil {
+		t.Fatalf("a rotation that names no placeholder: %v", err)
+	}
+	if sec.Placeholder != "sk+test+legacy" {
+		t.Errorf("the rotation moved the placeholder to %q", sec.Placeholder)
+	}
+
+	if _, err := s.Set("API_KEY", "sk-live-newer", nil, "sk+test+worse"); err == nil {
+		t.Error("a newly named placeholder outside the set was taken")
 	}
 }
 
