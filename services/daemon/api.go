@@ -167,6 +167,24 @@ func (l *lifecycle) UngrantSecret(ctx context.Context, ref, name string) (models
 	return svc.UngrantSecret(ctx, ref, name)
 }
 
+func (l *lifecycle) AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.AttachPolicy(ctx, ref, name)
+}
+
+func (l *lifecycle) DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return svc.DetachPolicy(ctx, ref)
+}
+
 func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {

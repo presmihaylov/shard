@@ -71,6 +71,10 @@ Usage:
   shard policy show <name> print a policy as JSON, with the sandboxes that hold it
   shard policy ls          list the policies
   shard policy rm <name>   remove a policy no sandbox holds
+  shard policy attach <id|name> <policy>
+                           hand a created or stopped sandbox a stored policy, replacing the one it holds
+  shard policy detach <id|name>
+                           leave the sandbox with no policy, and with its secrets untouched
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
@@ -87,6 +91,7 @@ Create flags, which must precede the image:
   --env KEY=VALUE          set an environment variable, repeatable
   --secret <NAME>          hand the guest a placeholder for a stored secret as $NAME, repeatable
   --policy <name>          the egress policy the host enforces; without one the sandbox reaches the internet and nothing private
+                           a sandbox that already exists takes one with shard policy attach
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded

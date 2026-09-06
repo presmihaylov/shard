@@ -28,8 +28,10 @@ type fakeLifecycle struct {
 	ref    string
 	// granted is the secret the grant or the ungrant named.
 	granted string
-	grace   time.Duration
-	force   bool
+	// attached is the policy the attach named.
+	attached string
+	grace    time.Duration
+	force    bool
 
 	// exec is the request the client sent, and input what it typed at the command.
 	exec   sandbox.ExecRequest
@@ -70,6 +72,18 @@ func (f *fakeLifecycle) GrantSecret(_ context.Context, ref, name string) (models
 
 func (f *fakeLifecycle) UngrantSecret(_ context.Context, ref, name string) (models.Sandbox, error) {
 	f.ref, f.granted = ref, name
+
+	return models.Sandbox{ID: ref}, f.err
+}
+
+func (f *fakeLifecycle) AttachPolicy(_ context.Context, ref, name string) (models.Sandbox, error) {
+	f.ref, f.attached = ref, name
+
+	return models.Sandbox{ID: ref, Policy: name}, f.err
+}
+
+func (f *fakeLifecycle) DetachPolicy(_ context.Context, ref string) (models.Sandbox, error) {
+	f.ref, f.attached = ref, ""
 
 	return models.Sandbox{ID: ref}, f.err
 }
@@ -291,6 +305,8 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/clone", `{"name":"web-2"}`},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 				{http.MethodDelete, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
+				{http.MethodPut, "/v0/sandboxes/sandbox1/policy", `{"policy":"locked"}`},
+				{http.MethodDelete, "/v0/sandboxes/sandbox1/policy", ""},
 			} {
 				status, got := send(t, s.server, route.method, route.path, route.body)
 				if status != c.status || !strings.Contains(got["error"].(string), c.text) {
@@ -312,6 +328,36 @@ func TestGrantAndUngrantNameTheSandboxAndTheSecret(t *testing.T) {
 	status, got = send(t, s.server, http.MethodDelete, "/v0/sandboxes/web/secrets/TOKEN", "")
 	if status != http.StatusOK || got["secrets"] != nil {
 		t.Errorf("the ungrant answered %d %v, want 200 with a record that holds none", status, got)
+	}
+}
+
+func TestAttachAndDetachNameTheSandboxAndThePolicy(t *testing.T) {
+	s := seed(t)
+
+	status, got := send(t, s.server, http.MethodPut, "/v0/sandboxes/web/policy", `{"policy":"locked"}`)
+	if status != http.StatusOK || s.verbs.ref != "web" || s.verbs.attached != "locked" {
+		t.Errorf("the attach answered %d %v over ref %q and policy %q", status, got, s.verbs.ref, s.verbs.attached)
+	}
+	if got["policy"] != "locked" {
+		t.Errorf("the attach answered a record that holds %v", got["policy"])
+	}
+
+	status, got = send(t, s.server, http.MethodDelete, "/v0/sandboxes/web/policy", "")
+	if status != http.StatusOK || got["policy"] != nil {
+		t.Errorf("the detach answered %d %v, want 200 with a record that holds none", status, got)
+	}
+}
+
+// A body the handler cannot read is a 400, and the orchestrator is never asked.
+func TestAttachRefusesABodyItCannotRead(t *testing.T) {
+	s := seed(t)
+
+	status, got := send(t, s.server, http.MethodPut, "/v0/sandboxes/web/policy", "{")
+	if status != http.StatusBadRequest {
+		t.Errorf("the attach answered %d %v, want 400", status, got)
+	}
+	if s.verbs.ref != "" {
+		t.Errorf("the handler asked the orchestrator over ref %q", s.verbs.ref)
 	}
 }
 

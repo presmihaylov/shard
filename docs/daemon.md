@@ -175,6 +175,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   holds that name; 409 when the sandbox runs or is paused.
 - `DELETE /v0/sandboxes/{id}/secrets/{name}` takes the grant and the placeholder back and answers 200
   with the record. The proxy CA stays. 404; 409 when the sandbox runs or is paused.
+- `PUT /v0/sandboxes/{id}/policy` takes `{"policy": "<name>"}` and gives a created or stopped sandbox
+  that policy, answering 200 with the record: the record is written, the host rules are applied, and a
+  host that refuses them puts the record back. A sandbox holds one policy, so this replaces the one it
+  holds. 404; 400 when the host holds no such policy; 409 when the sandbox runs or is paused.
+- `DELETE /v0/sandboxes/{id}/policy` leaves the sandbox with no policy and answers 200 with the record.
+  The secrets it holds and the proxy CA stay. 404; 409 when the sandbox runs or is paused.
 
 - `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy with
   `holders`, the sandboxes whose record names it, omitted when none does. That is what `shard policy

@@ -35,6 +35,8 @@ type Lifecycle interface {
 	Logs(ctx context.Context, ref string, follow bool, w io.Writer) error
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
+	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
+	DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error)
 }
 
 // EgressLog is what shard logs --egress prints: every decision made for one sandbox, oldest first.
@@ -83,6 +85,8 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 	mux.HandleFunc("GET /v0/sandboxes/{id}/egress-log", h.sandboxEgressLog)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/secrets/{name}", h.grantSecret)
 	mux.HandleFunc("DELETE /v0/sandboxes/{id}/secrets/{name}", h.ungrantSecret)
+	mux.HandleFunc("PUT /v0/sandboxes/{id}/policy", h.attachPolicy)
+	mux.HandleFunc("DELETE /v0/sandboxes/{id}/policy", h.detachPolicy)
 	mux.HandleFunc("GET /v0/policies", h.listPolicies)
 	mux.HandleFunc("GET /v0/policies/{name}", h.getPolicy)
 	mux.HandleFunc("PUT /v0/policies/{name}", h.putPolicy)
@@ -190,6 +194,35 @@ func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.UngrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
+	var req sandbox.PolicyAttachRequest
+	if err := decode(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	sb, err := h.lifecycle.AttachPolicy(r.Context(), r.PathValue("id"), req.Policy)
+	if err != nil {
+		h.writeError(w, status(err), err.Error())
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, sb)
+}
+
+func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
+	sb, err := h.lifecycle.DetachPolicy(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.writeError(w, status(err), err.Error())
 

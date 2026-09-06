@@ -200,3 +200,90 @@ func TestPolicyShowNamesTheSandboxesThatHoldThePolicy(t *testing.T) {
 		t.Errorf("policy show printed %d rules beside the holders", len(shown.Rules))
 	}
 }
+
+func TestPolicyAttachAndDetachRoundTrip(t *testing.T) {
+	var out bytes.Buffer
+
+	app, repo, _ := grantApp(t, &out, models.StateStopped)
+
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "any", "locked"}); err != nil {
+		t.Fatalf("policy create: %v", err)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"policy", "attach", "web", "locked"}); err != nil {
+		t.Fatalf("policy attach: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
+		t.Errorf("attach printed %q, want the sandbox id", got)
+	}
+	if repo.sb.Policy != "locked" {
+		t.Errorf("the record holds %q, want the policy", repo.sb.Policy)
+	}
+
+	// policy rm and the POLICY column read the record, so both follow the attach without a change of their own.
+	repo.left = []models.Sandbox{repo.sb}
+	err := app.Run(t.Context(), []string{"policy", "rm", "locked"})
+	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
+		t.Errorf("policy rm of an attached policy = %v", err)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+	if !strings.Contains(out.String(), "locked") {
+		t.Errorf("ls printed %q, want the policy", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"policy", "detach", "web"}); err != nil {
+		t.Fatalf("policy detach: %v", err)
+	}
+	if repo.sb.Policy != "" {
+		t.Errorf("the record still holds %q", repo.sb.Policy)
+	}
+}
+
+func TestPolicyAttachRefusesARunningSandboxAndAMissingPolicy(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _, _ := grantApp(t, &out, models.StateRunning)
+	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "any", "locked"}); err != nil {
+		t.Fatalf("policy create: %v", err)
+	}
+
+	err := app.Run(t.Context(), []string{"policy", "attach", "web", "locked"})
+	if err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Errorf("the attach of a running sandbox = %v", err)
+	}
+
+	app, repo, _ := grantApp(t, &out, models.StateStopped)
+
+	err = app.Run(t.Context(), []string{"policy", "attach", "web", "missing"})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("the attach of a policy the store does not hold = %v", err)
+	}
+	if repo.sb.Policy != "" {
+		t.Errorf("the refused attach wrote %q to the record", repo.sb.Policy)
+	}
+}
+
+func TestParsePolicyAttachRefusesTheWrongArguments(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _, _ := grantApp(t, &out, models.StateStopped)
+
+	for _, args := range [][]string{
+		{"policy", "attach", "web"},
+		{"policy", "attach", "web", "locked", "other"},
+		{"policy", "attach", "--force", "web", "locked"},
+		{"policy", "detach"},
+		{"policy", "detach", "web", "locked"},
+		{"policy", "detach", "--force", "web"},
+	} {
+		if err := app.Run(t.Context(), args); err == nil {
+			t.Errorf("%v was taken", args)
+		}
+	}
+}

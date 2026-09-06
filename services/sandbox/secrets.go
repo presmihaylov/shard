@@ -137,6 +137,11 @@ func (s *Service) held(ref, name, verb string) (string, models.Sandbox, func(), 
 		return "", models.Sandbox{}, nil, &RequestError{Err: err}
 	}
 
+	return s.holdCreatedOrStopped(ref, "secret "+verb+" takes a created or stopped sandbox: stop it first")
+}
+
+// holdCreatedOrStopped locks the sandbox and refuses every state a verb that rewrites the bundle cannot take.
+func (s *Service) holdCreatedOrStopped(ref, fix string) (string, models.Sandbox, func(), error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return "", models.Sandbox{}, nil, err
@@ -154,7 +159,7 @@ func (s *Service) held(ref, name, verb string) (string, models.Sandbox, func(), 
 	if sb.State != models.StateCreated && sb.State != models.StateStopped {
 		unlock()
 
-		return "", models.Sandbox{}, nil, &StateError{ID: id, State: sb.State, Fix: "secret " + verb + " takes a created or stopped sandbox: stop it first"}
+		return "", models.Sandbox{}, nil, &StateError{ID: id, State: sb.State, Fix: fix}
 	}
 
 	return id, sb, unlock, nil

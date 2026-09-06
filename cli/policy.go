@@ -17,7 +17,7 @@ import (
 
 func (a App) policy(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("policy takes a subcommand: create, show, ls or rm")
+		return errors.New("policy takes a subcommand: create, show, ls, rm, attach or detach")
 	}
 
 	switch args[0] {
@@ -29,6 +29,10 @@ func (a App) policy(ctx context.Context, args []string) error {
 		return a.policyList(ctx, args[1:])
 	case "rm", "remove":
 		return a.policyRemove(ctx, args[1:])
+	case "attach":
+		return a.policyAttach(ctx, args[1:])
+	case "detach":
+		return a.policyDetach(ctx, args[1:])
 	}
 
 	return fmt.Errorf("unknown policy subcommand %q; run shard help", args[0])
@@ -150,4 +154,43 @@ func parsePolicyRemove(args []string) (string, error) {
 	}
 
 	return args[0], nil
+}
+
+// policyAttach hands a sandbox that already exists the policy a create with --policy would have given it.
+func (a App) policyAttach(ctx context.Context, args []string) error {
+	if err := noFlags("attach", args, 2, "shard policy attach <id|name> <policy>"); err != nil {
+		return err
+	}
+
+	sb, err := a.client().AttachPolicy(ctx, args[0], args[1])
+	if err != nil {
+		return err
+	}
+
+	return a.print(sb.ID)
+}
+
+func (a App) policyDetach(ctx context.Context, args []string) error {
+	if err := noFlags("detach", args, 1, "shard policy detach <id|name>"); err != nil {
+		return err
+	}
+
+	sb, err := a.client().DetachPolicy(ctx, args[0])
+	if err != nil {
+		return err
+	}
+
+	return a.print(sb.ID)
+}
+
+// noFlags refuses a flag on a verb that takes none, and any argument count but the one it wants.
+func noFlags(verb string, args []string, want int, usage string) error {
+	if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return fmt.Errorf("policy %s takes no flags: %s", verb, usage)
+	}
+	if len(args) != want {
+		return fmt.Errorf("policy %s takes %d arguments, got %d: %s", verb, want, len(args), usage)
+	}
+
+	return nil
 }

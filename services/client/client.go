@@ -168,6 +168,27 @@ func (c *Client) UngrantSecret(ctx context.Context, ref, name string) (models.Sa
 	return c.grant(ctx, http.MethodDelete, ref, name)
 }
 
+// AttachPolicy gives a created or stopped sandbox the policy the host enforces from its next start.
+func (c *Client) AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error) {
+	return c.policy(ctx, http.MethodPut, ref, sandbox.PolicyAttachRequest{Policy: name})
+}
+
+// DetachPolicy leaves the sandbox with no policy, and with the secrets it holds untouched.
+func (c *Client) DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error) {
+	return c.policy(ctx, http.MethodDelete, ref, nil)
+}
+
+func (c *Client) policy(ctx context.Context, method, ref string, body any) (models.Sandbox, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/policy"
+
+	var out models.Sandbox
+	if err := c.call(ctx, method, path, body, &out, c.Timeout); err != nil {
+		return models.Sandbox{}, missing(ref, err)
+	}
+
+	return out, nil
+}
+
 func (c *Client) grant(ctx context.Context, method, ref, name string) (models.Sandbox, error) {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/secrets/" + url.PathEscape(name)
 
