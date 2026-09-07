@@ -41,9 +41,9 @@ type Tailer struct {
 	repo Sandboxes
 	out  *log.Logger
 
-	// addresses is the sandbox behind each address, rebuilt on a miss: a sandbox that has just started
-	// is the ordinary miss, and a drop names an address and never an id.
-	addresses map[string]models.Sandbox
+	// holders is the sandbox behind each address and each host interface, rebuilt on a miss: a sandbox
+	// that has just started is the ordinary miss, and a drop names one of those and never an id.
+	holders   map[string]models.Sandbox
 	refreshed time.Time
 }
 
@@ -70,7 +70,7 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 			return nil
 		}
 
-		sb, found := t.sandboxAt(record.source)
+		sb, found := t.sandboxFor(record.source, record.iface)
 		if !found {
 			unattributed++
 
@@ -83,7 +83,14 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 
 		record.Time = line.Time
 		if err := t.log.Append(sb.ID, record.Record); err != nil {
-			return err
+			// A cached holder can name a sandbox that has just been removed, and its file went with it.
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			t.forget(sb)
+			unattributed++
+
+			return nil
 		}
 
 		cursor, seen = line.Sequence, true
@@ -101,10 +108,10 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 	return err
 }
 
-// sandboxAt answers which sandbox holds an address.
-func (t *Tailer) sandboxAt(address string) (models.Sandbox, bool) {
-	sb, ok := t.addresses[address]
-	if ok {
+// sandboxFor answers whose drop this is. A routed drop names the sandbox's address, and an IPv6 one
+// dies at the port before it is routed, so the port is the only thing that names it.
+func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
+	if sb, ok := t.holder(keys); ok {
 		return sb, true
 	}
 	if time.Since(t.refreshed) < refreshEvery {
@@ -118,16 +125,41 @@ func (t *Tailer) sandboxAt(address string) (models.Sandbox, bool) {
 	}
 
 	t.refreshed = time.Now()
-	t.addresses = map[string]models.Sandbox{}
+	t.holders = map[string]models.Sandbox{}
 	for _, each := range sandboxes {
 		if each.Address.IsValid() {
-			t.addresses[each.Address.Addr().String()] = each
+			t.holders[each.Address.Addr().String()] = each
+		}
+		if each.HostInterface != "" {
+			t.holders[each.HostInterface] = each
 		}
 	}
 
-	sb, ok = t.addresses[address]
+	return t.holder(keys)
+}
 
-	return sb, ok
+// forget drops a sandbox the records no longer hold, so the next line rebuilds instead of hitting it.
+func (t *Tailer) forget(sb models.Sandbox) {
+	for key, held := range t.holders {
+		if held.ID == sb.ID {
+			delete(t.holders, key)
+		}
+	}
+	t.refreshed = time.Time{}
+}
+
+// holder takes the first key that names a sandbox, so a line carrying both is read by its address.
+func (t *Tailer) holder(keys []string) (models.Sandbox, bool) {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if sb, ok := t.holders[key]; ok {
+			return sb, true
+		}
+	}
+
+	return models.Sandbox{}, false
 }
 
 // cursor reads the last sequence written. An unreadable one means write everything the ring holds: a

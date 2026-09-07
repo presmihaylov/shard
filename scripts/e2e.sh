@@ -714,6 +714,9 @@ expect_exec "blocked" "the floor holds under the policy: the gateway is dropped"
 # The host keeps the proxy ports on its own address and drops the rest, and that drop is logged too.
 expect_exec "blocked" "the floor holds under the policy: a non-web port on the host is dropped" \
 	/bin/sh -c 'wget -T 2 -q -O /dev/null http://10.87.0.1:5432/ >/dev/null 2>&1 && echo reachable || echo blocked'
+# IPv6 matches no rule in the forward path, so the port it came in on drops it and logs the drop.
+shard exec "${ID}" -- /bin/sh -c 'ping -6 -c 1 -W 2 ff02::1%eth0 || ping6 -c 1 -W 2 ff02::1%eth0' >/dev/null 2>&1 || true
+say "the guest sent an IPv6 packet, which the port must drop"
 shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
 shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
 say "inspect names the policy and what the host enforces"
@@ -736,7 +739,7 @@ step "read the egress decision log"
 EGRESS=""
 for _ in $(seq 1 20); do
 	EGRESS=$(shard logs --egress "${ID}")
-	echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"local"' && break
+	echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"ipv6"' && break
 	sleep 0.1
 done
 
@@ -750,6 +753,8 @@ named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the proxy's deny"
 named_rule '"source":"host"' '"verdict":"deny"' "the host's drop"
 echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"local"' || fail "the egress log holds no drop of a packet aimed at the host's own address"
 say "the egress log holds the drop of a packet aimed at the host's own address, on rule local"
+echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"ipv6"' || fail "the egress log holds no drop of an IPv6 packet"
+say "the egress log holds the drop of an IPv6 packet, on rule ipv6"
 
 # The ring is shared and short, so a drop only ever read from it is gone within minutes. It is in the
 # sandbox's own file, which outlives the daemon that wrote it.

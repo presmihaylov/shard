@@ -55,6 +55,23 @@ func TestHostDropNamesTheHostsOwnAddress(t *testing.T) {
 	}
 }
 
+// An IPv6 drop dies at the port, so the port and not an address is what names its sandbox.
+func TestHostDropNamesThePortAnIPv6PacketDiedOn(t *testing.T) {
+	drop, ok := hostDrop("shard-egress rule=ipv6 IN=shardv2 OUT= SRC=fe80:0000:0000:0000:50f0:2aff:fe51:7d92 DST=ff02:0000:0000:0000:0000:0000:0000:0002 PROTO=ICMPv6 TYPE=133")
+	if !ok {
+		t.Fatal("hostDrop refused an IPv6 line")
+	}
+	if drop.iface != "shardv2" {
+		t.Errorf("the port became %q", drop.iface)
+	}
+	if drop.Rule != network.RuleIPv6 {
+		t.Errorf("rule = %q, want %q", drop.Rule, network.RuleIPv6)
+	}
+	if !strings.Contains(drop.Reason, "no policy rule can match") {
+		t.Errorf("reason = %q, want it to say why an IPv6 packet is not a policy drop", drop.Reason)
+	}
+}
+
 func TestHostDropRefusesALineWithNoRule(t *testing.T) {
 	if _, ok := hostDrop("shard-egress SRC=10.87.0.2 DST=203.0.113.7"); ok {
 		t.Error("hostDrop took a line with no rule")
