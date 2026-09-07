@@ -70,12 +70,12 @@ func (c *Client) GetPolicy(ctx context.Context, name string) (PolicyView, error)
 }
 
 // SetPolicy sends the rules in the order the operator typed them, which is the order the host evaluates them.
-func (c *Client) SetPolicy(ctx context.Context, name string, rules []RuleText) (models.Policy, error) {
+func (c *Client) SetPolicy(ctx context.Context, name string, rules []RuleText) (PolicyView, error) {
 	req := sandbox.PolicyRequest{Rules: rules}
 
-	var out models.Policy
+	var out PolicyView
 	if err := c.call(ctx, http.MethodPut, "/v0/policies/"+url.PathEscape(name), req, &out, c.Timeout); err != nil {
-		return models.Policy{}, err
+		return PolicyView{}, err
 	}
 
 	return out, nil

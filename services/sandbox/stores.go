@@ -97,41 +97,41 @@ type SecretRequest struct {
 }
 
 // SetPolicy stores the policy and puts the new rules on every sandbox that holds it at once.
-func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) (models.Policy, error) {
+func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) (PolicyView, error) {
 	if err := egress.ValidName(name); err != nil {
-		return models.Policy{}, &RequestError{Err: err}
+		return PolicyView{}, &RequestError{Err: err}
 	}
 
 	policy := models.Policy{Name: name}
 	for _, text := range req.Rules {
 		rule, err := egress.ParseRule(text.Action, text.Rule)
 		if err != nil {
-			return models.Policy{}, &RequestError{Err: err}
+			return PolicyView{}, &RequestError{Err: err}
 		}
 		policy.Rules = append(policy.Rules, rule)
 	}
 
 	if err := egress.Validate(policy); err != nil {
-		return models.Policy{}, &RequestError{Err: err}
+		return PolicyView{}, &RequestError{Err: err}
 	}
 
 	if err := s.cfg.Policies.Set(policy); err != nil {
-		return models.Policy{}, err
+		return PolicyView{}, err
 	}
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
 	if err != nil {
-		return models.Policy{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
+		return PolicyView{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
 	}
 	if len(users) == 0 {
-		return policy, nil
+		return PolicyView{Policy: policy, DNS: dnsState(policy)}, nil
 	}
 
 	if err := s.reapplyAll(ctx); err != nil {
-		return models.Policy{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
+		return PolicyView{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
 	}
 
-	return policy, nil
+	return PolicyView{Policy: policy, DNS: dnsState(policy)}, nil
 }
 
 // PolicyView is a stored policy and the sandboxes whose record names it. The holders are read from the
@@ -139,6 +139,17 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 type PolicyView struct {
 	models.Policy
 	Holders []string `json:"holders,omitempty"`
+	// DNS is open or closed, computed from the rules, because nothing stores whether a policy resolves.
+	DNS string `json:"dns"`
+}
+
+// dnsState is the word the view carries, so show and create never disagree about what opens DNS.
+func dnsState(policy models.Policy) string {
+	if egress.OpensDNS(policy) {
+		return "open"
+	}
+
+	return "closed"
 }
 
 func (s *Stores) Policy(name string) (PolicyView, error) {
@@ -152,7 +163,7 @@ func (s *Stores) Policy(name string) (PolicyView, error) {
 		return PolicyView{}, err
 	}
 
-	return PolicyView{Policy: policy, Holders: holders}, nil
+	return PolicyView{Policy: policy, Holders: holders, DNS: dnsState(policy)}, nil
 }
 
 func (s *Stores) Policies() ([]models.Policy, error) {

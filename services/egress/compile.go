@@ -91,16 +91,17 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	}
 
 	var rules []EffectiveRule
-	needsDNS := false
+	// A dns rule and a name rule open the same door, and the operator should read which one did it.
+	implied := "dns"
 	for _, rule := range policy.Rules {
-		if named(rule.Destination.Kind) {
-			needsDNS = true
+		if rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupDNS {
+			implied = "dns rule"
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
 
 	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to the nameservers.
-	if needsDNS {
+	if OpensDNS(policy) {
 		var dns []EffectiveRule
 		for _, ns := range s.nameservers {
 			for _, proto := range []string{"udp", "tcp"} {
@@ -111,7 +112,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 						Protocol:    proto,
 						Ports:       []int{53},
 					},
-					Implied: "dns",
+					Implied: implied,
 				})
 			}
 		}

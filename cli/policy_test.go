@@ -315,3 +315,26 @@ func TestInspectShowsNoRuleImpliedByAGrant(t *testing.T) {
 		t.Errorf("inspect does not name the policy:\n%s", out.String())
 	}
 }
+
+// The lookup fails an hour later inside the guest, so create says it while the operator can still act.
+func TestPolicyCreateNotesAPolicyThatOpensNoDNS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule string
+		note bool
+	}{
+		{"addresses", "203.0.113.7 tcp:443", true},
+		{"named", "api.example.com", false},
+		{"asked", "dns", false},
+	} {
+		var out bytes.Buffer
+		app, _ := newLifecycleApp(t, &out, &recorder{}, stopped())
+
+		if err := app.Run(t.Context(), []string{"policy", "create", "--allow", tc.rule, tc.name}); err != nil {
+			t.Fatalf("policy create %s: %v", tc.name, err)
+		}
+		if got := strings.Contains(out.String(), noteNoDNS); got != tc.note {
+			t.Errorf("allow %s printed %q, want the note to be %v", tc.rule, out.String(), tc.note)
+		}
+	}
+}

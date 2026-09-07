@@ -132,6 +132,7 @@ func TestParseDestinationReadsTheKindFromTheShape(t *testing.T) {
 		kind models.DestinationKind
 	}{
 		{"any", models.DestinationGroup},
+		{"dns", models.DestinationGroup},
 		{"1.1.1.1", models.DestinationCIDR},
 		{"10.0.0.0/8", models.DestinationCIDR},
 		{"suffix:example.com", models.DestinationDomainSuffix},
@@ -479,5 +480,74 @@ func TestValidateNamesThePositionOfTheRuleItRefused(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "sk_live_secret") {
 		t.Errorf("the refusal echoes the host it refused: %v", err)
+	}
+}
+
+// dns is a destination the operator can say outright, and it is closed until an allow opens it.
+func TestAllowDNSIsARuleAndDenyDNSIsRefused(t *testing.T) {
+	rule, err := ParseRule(models.ActionAllow, "dns")
+	if err != nil {
+		t.Fatalf("ParseRule(allow dns): %v", err)
+	}
+	if rule.Destination.Kind != models.DestinationGroup || rule.Destination.Value != "dns" {
+		t.Errorf("allow dns parsed as %+v", rule.Destination)
+	}
+	if err := Validate(models.Policy{Name: "web", Rules: []models.Rule{rule}}); err != nil {
+		t.Errorf("Validate of an allow dns policy: %v", err)
+	}
+
+	_, err = ParseRule(models.ActionDeny, "dns")
+	if err == nil || !strings.Contains(err.Error(), "dns is closed unless a rule or a name rule opens it") {
+		t.Errorf("ParseRule(deny dns) = %v", err)
+	}
+}
+
+// The explicit rule opens the same door a name rule does, and the implied rule says which one asked.
+func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "addr", Rules: []models.Rule{
+		mustRule(t, models.ActionAllow, "203.0.113.7 tcp:443"),
+		mustRule(t, models.ActionAllow, "dns"),
+		mustRule(t, models.ActionDeny, "any"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := New(s, nil, nameservers, fakeResolver{}).Effective(models.Sandbox{ID: "sandbox1", Policy: "addr"})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+
+	var shape []string
+	for _, rule := range got.Rules {
+		shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
+	}
+	want := []string{
+		"allow cidr:1.1.1.1 udp dns rule",
+		"allow cidr:1.1.1.1 tcp dns rule",
+		"allow cidr:203.0.113.7 tcp ",
+		"allow group:dns  ",
+		"deny group:any  ",
+	}
+	if !slices.Equal(shape, want) {
+		t.Errorf("Effective = %v, want %v", shape, want)
+	}
+}
+
+func TestOpensDNSReadsWhatEachPolicyAsksFor(t *testing.T) {
+	for _, tc := range []struct {
+		rule string
+		want bool
+	}{
+		{"api.example.com", true},
+		{"suffix:example.com", true},
+		{"dns", true},
+		{"203.0.113.7 tcp:443", false},
+		{"any", false},
+	} {
+		policy := models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, tc.rule)}}
+		if got := OpensDNS(policy); got != tc.want {
+			t.Errorf("OpensDNS(allow %s) = %v, want %v", tc.rule, got, tc.want)
+		}
 	}
 }
