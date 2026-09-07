@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // fakeTask counts its runs and answers each one from a script; past the script it blocks until ctx ends.
@@ -42,13 +40,14 @@ func fast(d *Daemon) *Daemon {
 
 func TestRunRefusesASecondDaemon(t *testing.T) {
 	root := t.TempDir()
-	first := fast(New(root, io.Discard))
+	held := &fakeTask{}
+	first := fast(New(root, io.Discard, held))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- first.Run(ctx) }()
 
-	waitHeld(t, root)
+	waitHeld(t, held)
 
 	if err := New(root, io.Discard).Run(t.Context()); err == nil || !strings.Contains(err.Error(), "already holds") {
 		t.Errorf("a second daemon got %v, want a refusal", err)
@@ -130,21 +129,13 @@ func TestRunEndsCleanlyWithZeroTasks(t *testing.T) {
 	}
 }
 
-// waitHeld waits until the daemon under root holds the singleton lock.
-func waitHeld(t *testing.T, root string) {
+// waitHeld waits until the daemon holds the singleton lock, which its first task starting proves: Run
+// takes the lock before it supervises anything. The test must never take the lock to find out, because
+// takeLock is single-shot and would lose to the probe and blame the daemon for it.
+func waitHeld(t *testing.T, started *fakeTask) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		lock, err := store.TryAcquire(filepath.Join(root, LockFile), 0o600)
-		if err != nil {
-			t.Fatalf("TryAcquire: %v", err)
-		}
-		if lock == nil {
-			return
-		}
-		if err := lock.Release(); err != nil {
-			t.Fatalf("Release: %v", err)
-		}
+	for started.runs.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the daemon never took the lock")
 		}
