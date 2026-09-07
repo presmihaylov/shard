@@ -58,6 +58,32 @@ func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 	}
 }
 
+// The link is deleted on the stop and made again on the start, so the two race. iproute2 has two
+// phrasings for a device that is gone, and only one of them used to read as the not-found case.
+func TestStopAndStartAgainNeverTripOverTheLinkTheOtherTook(t *testing.T) {
+	app, out := newCreateApp(t)
+
+	id := create(t, app, out, "/bin/sleep", "600")
+	t.Cleanup(func() { cleanUp(t, app, id) })
+
+	for round := range 20 {
+		if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
+			t.Fatalf("stop on round %d: %v", round, err)
+		}
+		if err := app.Run(t.Context(), []string{"start", id}); err != nil {
+			t.Fatalf("start on round %d: %v", round, err)
+		}
+	}
+
+	after := record(t, app, id)
+	if after.State != models.StateRunning {
+		t.Fatalf("the record says %q, want running", after.State)
+	}
+	if !hasLink(t, after.HostInterface) {
+		t.Errorf("the last start left no host interface %s", after.HostInterface)
+	}
+}
+
 // TestStopKillsAnEntrypointThatIgnoresTheSignal is the other half of the grace: an entrypoint that
 // never answers is killed, and nothing then records how it ended.
 func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
