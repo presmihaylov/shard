@@ -253,3 +253,58 @@ func writeCursor(t *testing.T, root, value string) {
 		t.Fatalf("write the cursor: %v", err)
 	}
 }
+
+// staleDirs is the moment a sandbox was removed and its address re-leased: one id holds no directory.
+type staleDirs struct {
+	root string
+	gone string
+}
+
+func (s staleDirs) Dir(id string) (string, error) {
+	dir := filepath.Join(s.root, id)
+	if id == s.gone {
+		return dir, nil
+	}
+
+	return dir, os.MkdirAll(dir, 0o700)
+}
+
+// relet hands out the removed sandbox once, then the one that took its address, as the records would.
+type relet struct {
+	sandboxes []models.Sandbox
+	listed    int
+}
+
+func (r *relet) List() ([]models.Sandbox, error) {
+	r.listed++
+	if r.listed == 1 {
+		return r.sandboxes[:1], nil
+	}
+
+	return r.sandboxes[1:], nil
+}
+
+// A cached holder that is gone must not eat the line: the sandbox that took its address gets the drop.
+func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
+	var out strings.Builder
+	root := t.TempDir()
+	gone := sandbox(t)
+	took := models.Sandbox{ID: "sb2", Address: gone.Address, CreatedAt: time.Unix(105, 0).UTC()}
+	decisions := NewLog(staleDirs{root: root, gone: gone.ID})
+	tailer := NewTailer(root, decisions, &relet{sandboxes: []models.Sandbox{gone, took}}, log.New(&out, "", 0))
+
+	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "default")}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, err := decisions.Read(took.ID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(records) != 1 || records[0].Rule != "default" {
+		t.Fatalf("the log of the sandbox that took the address holds %+v", records)
+	}
+	if got := out.String(); strings.Contains(got, "no longer exists") {
+		t.Errorf("the tailer counted the drop as unattributed: %q", got)
+	}
+}
