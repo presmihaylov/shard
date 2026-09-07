@@ -26,6 +26,7 @@ type Decision struct {
 // the rules. The proxy asks it, so a name rule matches here by name where the host chains cannot.
 func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Addr) (Decision, error) {
 	// The floor comes before every policy, on the host and here, so no name opens what the host hides.
+	// It reads the resolved address on purpose: on the Host header a private-resolving name would pass.
 	if slices.ContainsFunc(network.Private, func(p netip.Prefix) bool { return p.Contains(addr) }) {
 		return Decision{Action: models.ActionDeny, ID: network.RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}, nil
 	}
