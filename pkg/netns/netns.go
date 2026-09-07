@@ -44,6 +44,8 @@ var (
 	existsMessages   = []string{"File exists", "Address already assigned"}
 	notFoundMessages = []string{
 		"Cannot find device",
+		// iproute2 says this instead when the device goes away between its lookup and its delete.
+		"No such device",
 		"does not exist",
 		"No such file or directory",
 		"Cannot remove namespace file",

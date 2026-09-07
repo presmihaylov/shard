@@ -95,11 +95,14 @@ func TestDeleteNamespaceAcceptsOneThatIsGone(t *testing.T) {
 	}
 }
 
+// iproute2 has two phrasings for a link that is gone, and a start after a stop races into the second.
 func TestDeleteLinkAcceptsOneThatIsGone(t *testing.T) {
-	m, _ := fake(t, "", "Cannot find device \"shardv2\"", 1)
+	for _, message := range []string{`Cannot find device "shardv2"`, "RTNETLINK answers: No such device"} {
+		m, _ := fake(t, "", message, 1)
 
-	if err := m.DeleteLink(t.Context(), "shardv2"); err != nil {
-		t.Fatalf("DeleteLink: %v", err)
+		if err := m.DeleteLink(t.Context(), "shardv2"); err != nil {
+			t.Fatalf("DeleteLink on %q: %v", message, err)
+		}
 	}
 }
 

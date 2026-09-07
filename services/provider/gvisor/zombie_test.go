@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,4 +81,24 @@ func awaitZombie(t *testing.T, pid int) {
 	}
 
 	t.Fatalf("the child %d never became a zombie", pid)
+}
+
+// A stop deletes the sandbox and a start remakes it, so a read of /proc races the exit. The kernel
+// answers ESRCH for a process that goes away between the open and the read, not ENOENT.
+func TestVanishedReadsBothWaysAProcessGoesAway(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"no such directory": {&os.PathError{Op: "open", Path: "/proc/7/stat", Err: syscall.ENOENT}, true},
+		"no such process":   {&os.PathError{Op: "read", Path: "/proc/7/stat", Err: syscall.ESRCH}, true},
+		"permission":        {&os.PathError{Op: "open", Path: "/proc/7/stat", Err: syscall.EACCES}, false},
+		"nothing":           {nil, false},
+	}
+
+	for name, c := range cases {
+		if got := gvisor.Vanished(c.err); got != c.want {
+			t.Errorf("%s: vanished is %v, want %v", name, got, c.want)
+		}
+	}
 }

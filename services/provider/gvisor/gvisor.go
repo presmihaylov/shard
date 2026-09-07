@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -668,7 +669,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 // kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
 func zombie(pid int) (bool, error) {
 	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if errors.Is(err, fs.ErrNotExist) {
+	if vanished(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -676,6 +677,12 @@ func zombie(pid int) (bool, error) {
 	}
 
 	return zombieStat(string(stat)), nil
+}
+
+// vanished reads the two ways a process goes away under the read: /proc holds no such directory, or
+// the kernel answers ESRCH because the process exited between the open and the read.
+func vanished(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }
 
 // zombieStat reads the state field, which follows the comm, and the comm may hold a parenthesis itself.
