@@ -124,3 +124,26 @@ func TestSetPolicySaysThePolicyLandedWhenItCannotTellWhoHoldsIt(t *testing.T) {
 		t.Error("the policy was not stored before the holders were read")
 	}
 }
+
+// Nothing stores whether a policy resolves, so the view computes it and show and create agree.
+func TestPolicyViewSaysWhetherDNSIsOpen(t *testing.T) {
+	for _, tc := range []struct {
+		rule models.Rule
+		want string
+	}{
+		{models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{443}}, "open"},
+		{models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationGroup, Value: "dns"}}, "open"},
+		{models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "203.0.113.7/32"}}, "closed"},
+	} {
+		policy := models.Policy{Name: "web", Rules: []models.Rule{tc.rule}}
+		stores := sandbox.NewStores(sandbox.StoresConfig{Repo: &fakeRepo{r: &recorder{}}, Policies: &fakePolicies{policy: policy}})
+
+		view, err := stores.Policy("web")
+		if err != nil {
+			t.Fatalf("Policy: %v", err)
+		}
+		if view.DNS != tc.want {
+			t.Errorf("the view of %+v says dns is %q, want %q", tc.rule, view.DNS, tc.want)
+		}
+	}
+}

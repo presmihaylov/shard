@@ -35,6 +35,22 @@ const (
 // webPorts is what a domain rule may name: the proxy speaks HTTP and TLS and nothing else.
 var webPorts = []int{80, 443}
 
+// GroupDNS is the destination that asks for DNS outright, for a policy that names no host to imply it.
+const GroupDNS = "dns"
+
+// OpensDNS says whether the policy lets the guest resolve: a name needs one, and a rule may ask outright.
+func OpensDNS(policy models.Policy) bool {
+	return slices.ContainsFunc(policy.Rules, opensDNS)
+}
+
+func opensDNS(rule models.Rule) bool {
+	if named(rule.Destination.Kind) {
+		return true
+	}
+
+	return rule.Action == models.ActionAllow && rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupDNS
+}
+
 // Store keeps one JSON file per policy under <root>/policies.
 type Store struct {
 	dir string
@@ -212,7 +228,11 @@ func validDestination(rule models.Rule) error {
 		return err
 	case models.DestinationGroup:
 		if _, known := network.Groups[dest.Value]; !known {
-			return fmt.Errorf("the group %q is not any", dest.Value)
+			return fmt.Errorf("the group %q is not any or dns", dest.Value)
+		}
+		// One way to spell each state: dns is shut until something opens it, so only allow says anything.
+		if dest.Value == GroupDNS && rule.Action != models.ActionAllow {
+			return errors.New("dns is closed unless a rule or a name rule opens it")
 		}
 
 		return nil
@@ -305,8 +325,8 @@ func named(kind models.DestinationKind) bool {
 // parseDestination reads the kind from the shape: an address or a prefix is a cidr, any is the
 // group, suffix: names a suffix, and everything else is a domain.
 func parseDestination(text string) (models.Destination, error) {
-	if text == "any" {
-		return models.Destination{Kind: models.DestinationGroup, Value: "any"}, nil
+	if text == "any" || text == GroupDNS {
+		return models.Destination{Kind: models.DestinationGroup, Value: text}, nil
 	}
 	if text == "private" || text == "group:private" {
 		return models.Destination{}, errors.New("the private ranges are always blocked, and no rule changes that")
@@ -321,7 +341,7 @@ func parseDestination(text string) (models.Destination, error) {
 		return models.Destination{Kind: models.DestinationDomainSuffix, Value: value}, nil
 	}
 	if kind, _, found := strings.Cut(text, ":"); found && slices.Contains([]string{"cidr", "domain", "domain-suffix", "group"}, kind) {
-		return models.Destination{}, fmt.Errorf("%q spells the old syntax: write the destination bare, as <host>, <cidr>, suffix:<name> or any", text)
+		return models.Destination{}, fmt.Errorf("%q spells the old syntax: write the destination bare, as <host>, <cidr>, suffix:<name>, any or dns", text)
 	}
 
 	return models.Destination{Kind: models.DestinationDomain, Value: text}, nil

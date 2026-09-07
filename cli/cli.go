@@ -79,8 +79,10 @@ Usage:
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
-The destination is a host, an address or a prefix, or any:
-  10.0.0.0/8 tcp:22   api.example.com   any udp:53
+The destination is a host, an address or a prefix, or any, or dns:
+  10.0.0.0/8 tcp:22   api.example.com   any udp:53   dns
+An allow dns rule opens udp and tcp 53 to the sandbox nameservers, which a name rule opens anyway.
+A deny dns rule is refused: dns is closed until a rule opens it.
 A name rule is tcp to ports 80 and 443 only, and both when no port is named. A name may carry a
 wildcard, *.example.com for any depth, api.*.example.com for one label, and * for every host, and
 a suffix:example.com rule names the host and everything under it. These match in the proxy only.

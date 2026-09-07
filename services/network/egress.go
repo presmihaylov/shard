@@ -40,6 +40,8 @@ var privateRanges = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "1
 // Groups is what a group destination names. The private ranges are the floor, not a group.
 var Groups = map[string][]netip.Prefix{
 	"any": {netip.MustParsePrefix("0.0.0.0/0")},
+	// dns names no prefix of its own: it asks for the implied rule, which holds the nameservers.
+	"dns": nil,
 }
 
 // Private is the floor's ranges, for the proxy's own check of a resolved address.

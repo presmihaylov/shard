@@ -125,17 +125,24 @@ host that refuses the rules puts the record back as it was.
 `shard inspect` prints `egress`, which is the policy's rules behind what the host adds for the
 sandbox, each addition marked `implied`:
 
-- **`dns`**: a policy that names a domain or a suffix allows `udp` and `tcp` 53 to the sandbox
-  nameservers. A name is no use to a guest that cannot resolve it. A policy of only address and `any`
-  rules opens no DNS, and a secret does not open it either: name the host in the policy if the guest
-  must resolve it.
+- **`dns`**: a policy that names a domain or a suffix, or says `allow dns`, allows `udp` and `tcp` 53
+  to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
+  address and `any` rules opens no DNS, and a secret does not open it either: name the host in the
+  policy, or say `allow dns`, if the guest must resolve it. When an explicit rule opened it, the
+  implied rule reads `dns rule` in place of `dns`.
 
 A policy of only address rules is the case to watch. `allow 203.0.113.7` gives the guest an address
 it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
 lookup. It is in the egress log, as a host record on port 53 to the nameserver, and what never
 appears is a request to the host the tool was after: a port 53 drop under no request for that host is
-this case. Add a name rule for the host, or a rule that names the nameservers, and the implied `dns`
-opens with it.
+this case. `shard policy create` says so at the moment you store such a policy. Add a name rule for
+the host, or a rule that names the nameservers, or add `--allow dns`, and the implied `dns` opens
+with it.
+
+A rule id is its position in the effective order, so an edit that opens DNS on a policy that had none
+puts four implied rules in front and moves every rule down by four. `shard inspect` and the `rule`
+field of the egress log both name that position, so a line written before the edit names a different
+rule after it. Any inserted rule does this; `allow dns` is the one that reads as purely additive.
 
 ## Names are resolved on the host
 

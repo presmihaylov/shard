@@ -662,6 +662,34 @@ shard policy create --allow 1.0.0.1 --deny any e2e-policy >/dev/null
 expect_exec "unresolved" "a policy of addresses only leaves the granted host unresolvable" \
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
 
+NOTE=$(shard policy create --allow 1.0.0.1 --deny any e2e-note 2>&1 >/dev/null)
+echo "${NOTE}" | grep -q "this policy opens no DNS" || fail "policy create said '${NOTE}' over a policy that opens no DNS"
+shard policy rm e2e-note >/dev/null
+say "policy create notes a policy that opens no DNS, and exits 0"
+
+# The lookup the address-only policy dropped is in the log, as a host drop on port 53 to a nameserver.
+DNS_DROP=""
+for _ in $(seq 1 20); do
+	DNS_DROP=$(shard logs --egress "${ID}" | grep '"source":"host"' | grep '"port":53' || true)
+	[ -n "${DNS_DROP}" ] && break
+	sleep 0.1
+done
+[ -n "${DNS_DROP}" ] || fail "the egress log holds no host drop on port 53 for the lookup the policy closed"
+say "the dropped lookup is in the egress log, as a host drop on port 53"
+
+step "allow dns opens the lookup the address rules left shut"
+shard policy create --allow 1.0.0.1 --allow dns --allow "${ECHO_HOST}" --deny any e2e-policy >/dev/null
+expect_exec "resolved" "the same policy with --allow dns resolves the echo name" \
+	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
+shard policy show e2e-policy | grep -q '"dns": "open"' || fail "policy show does not say dns is open"
+shard inspect "${ID}" | grep -q '"implied": "dns rule"' || fail "inspect does not name the dns rule that opened 53"
+say "policy show says dns is open and inspect names the rule that opened 53"
+
+CODE=0
+shard policy create --deny dns e2e-bad >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy create accepted a deny dns rule"
+say "policy create refuses deny dns: dns is closed until a rule opens it"
+
 # From here the policy allows the granted host, which is what every step below needs.
 shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 

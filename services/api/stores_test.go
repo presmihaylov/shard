@@ -37,15 +37,17 @@ type fakeStores struct {
 	removed  []string
 	// listErr is what the secret list reports beside the secrets that read.
 	listErr error
+	// dns is the word the policy view carries, open or closed.
+	dns string
 }
 
-func (f *fakeStores) SetPolicy(_ context.Context, name string, req sandbox.PolicyRequest) (models.Policy, error) {
+func (f *fakeStores) SetPolicy(_ context.Context, name string, req sandbox.PolicyRequest) (sandbox.PolicyView, error) {
 	f.name, f.rules = name, req.Rules
 	if f.err != nil {
-		return models.Policy{}, f.err
+		return sandbox.PolicyView{}, f.err
 	}
 
-	return models.Policy{Name: name}, nil
+	return sandbox.PolicyView{Policy: models.Policy{Name: name}, DNS: f.dns}, nil
 }
 
 func (f *fakeStores) Policy(name string) (sandbox.PolicyView, error) {

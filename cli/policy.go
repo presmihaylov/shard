@@ -64,8 +64,18 @@ func (a App) policyCreate(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The lookup fails inside the guest an hour later, so say it now, while the operator can act.
+	if policy.DNS == dnsClosed && a.Err != nil {
+		fmt.Fprintln(a.Err, noteNoDNS)
+	}
+
 	return a.print(policy.Name)
 }
+
+const (
+	dnsClosed = "closed"
+	noteNoDNS = "note: this policy opens no DNS; a program that looks a name up fails on the lookup; add a name rule, or --allow dns"
+)
 
 func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 	var rules []client.RuleText
