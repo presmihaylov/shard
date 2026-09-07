@@ -1112,7 +1112,18 @@ say "policy attach refuses a policy the host does not hold and writes nothing"
 
 
 shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+GRANT_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
+GRANT_ADDRESS="${GRANT_ADDRESS%%/*}"
 shard rm "${GRANT_ID}" >/dev/null
+# The rules are keyed by the address, so rules left here would front whoever takes that address next.
+for _ in $(seq 1 10); do
+	RULES=$(nft list ruleset)
+	echo "${RULES}" | grep -q "${GRANT_ADDRESS}" || break
+	sleep 0.1
+done
+echo "${RULES}" | grep -q "${GRANT_ADDRESS}" && fail "rm left the host rules of ${GRANT_ADDRESS}: $(echo "${RULES}" | grep "${GRANT_ADDRESS}")"
+echo "${RULES}" | grep -q "chain egress_${GRANT_LINK}" && fail "rm left the egress chain of ${GRANT_LINK}"
+say "rm took the host rules of the sandbox with it"
 ip link delete "${GRANT_LINK}" >/dev/null 2>&1 || true
 GRANT_ID=""
 GRANT_LINK=""
