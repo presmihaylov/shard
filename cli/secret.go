@@ -53,7 +53,7 @@ type secretSetOptions struct {
 func (o secretSetOptions) valueOnArgv() bool { return o.hasValue && o.value != "-" }
 
 // cautionOnArgv is printed once, exactly, when the value came from argv: ps showed it while the command ran.
-const cautionOnArgv = "caution: the value was on the command line and visible in the process list while the command ran; pipe it on stdin to avoid that"
+const cautionOnArgv = "caution: the value was on the command line and visible in the process list while the command ran; pipe it on stdin next time"
 
 func (a App) secretSet(ctx context.Context, args []string) error {
 	opts, err := parseSecretSet(args)
@@ -66,14 +66,14 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The caution is about what ps saw while the command ran, and a refusal does not un-see it.
+	if opts.valueOnArgv() && a.Err != nil {
+		fmt.Fprintln(a.Err, cautionOnArgv)
+	}
+
 	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
 	if err != nil {
 		return err
-	}
-
-	// The caution follows the store, so a refused command does not caution about a value it never took.
-	if opts.valueOnArgv() && a.Err != nil {
-		fmt.Fprintln(a.Err, cautionOnArgv)
 	}
 
 	return a.print(sec.Name)

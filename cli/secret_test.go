@@ -185,13 +185,13 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 		t.Errorf("the stdin path printed a caution:\n%s", out.String())
 	}
 
-	// The caution follows the store, so a command the store refused warns about nothing.
+	// The refusal is where the caution matters most: the operator is about to retype the value.
 	out.Reset()
 	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "no-dot", "KEY", "on-the-argv-12"}); err == nil || !strings.Contains(err.Error(), "dot") {
 		t.Fatalf("a set with a dotless destination = %v, want a refusal that names the missing dot", err)
 	}
-	if strings.Contains(out.String(), "caution") {
-		t.Errorf("a refused set cautioned about a value it never took:\n%s", out.String())
+	if !strings.Contains(out.String(), "caution") {
+		t.Errorf("a refused set printed no caution for a value ps already saw:\n%s", out.String())
 	}
 
 	out.Reset()

@@ -81,8 +81,9 @@ is refused: that guest already holds the old one, so ungrant it first. `shard se
 **The value.** `shard secret set` takes it three ways. It reads stdin when the value is `-` or when
 stdin is a pipe, which is the way to use in a script, because the value then lands in no shell
 history and no process listing. With a terminal and no value it prompts with the echo off. A value
-given on the command line is stored, and `set` prints one caution to stderr once the store took it:
-`ps` showed the value while the command ran. A `set` the store refused prints no caution.
+given on the command line is stored, and `set` prints one caution to stderr: `ps` showed the value
+while the command ran. A `set` the store refused prints the same caution, because the value was on
+the command line either way and the operator is about to type it again.
 
 ## Clients the proxy certificate does not reach
 
