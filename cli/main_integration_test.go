@@ -11,14 +11,18 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostclean"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
@@ -59,36 +63,105 @@ func run(m *testing.M) (int, error) {
 		// Every test skips itself on such a host, and a daemon it cannot use would only fail to start.
 		return m.Run(), nil
 	}
+	if err := hostclean.Refuse(stateRoots()...); err != nil {
+		return 1, err
+	}
+	teardownOnSignal()
 
 	build, err := os.MkdirTemp("", "shard-build")
 	if err != nil {
 		return 1, fmt.Errorf("make a build directory: %w", err)
 	}
-	defer func() {
-		if err := os.RemoveAll(build); err != nil {
-			fmt.Fprintf(os.Stderr, "remove %s: %v\n", build, err)
-		}
-	}()
 
 	// The daemon under test is this tree, not whatever binary the box happens to have installed.
 	shard = filepath.Join(build, "shard")
 	out, err := exec.Command(goTool(), "build", "-o", shard, "github.com/presmihaylov/shard/cmd/shard").CombinedOutput()
 	if err != nil {
-		return 1, fmt.Errorf("build shard: %w: %s", err, out)
+		return 1, errors.Join(fmt.Errorf("build shard: %w: %s", err, out), teardown())
 	}
 
 	daemonUnderTest, err = spawnDaemon()
 	if err != nil {
-		return 1, err
+		return 1, errors.Join(err, teardown())
 	}
 
 	code := m.Run()
 
-	if err := daemonUnderTest.stop(); err != nil {
-		return 1, err
+	return code, teardown()
+}
+
+// stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
+// so a run refuses to start on it.
+func stateRoots() []string { return underTemp("shard-itest", "shard-build", "shard-daemon") }
+
+// tempPrefixes adds the scratch directory of an exec, which a killed daemon leaves and nothing pins.
+func tempPrefixes() []string { return append(stateRoots(), underTemp("shard-exec-")...) }
+
+func underTemp(prefixes ...string) []string {
+	out := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		out = append(out, filepath.Join(os.TempDir(), prefix))
 	}
 
-	return code, nil
+	return out
+}
+
+var torndown sync.Once
+
+// teardown gives the host back, and runs every step even when one fails, because a skipped step
+// leaves a netns, a mount or an address lease that the next run trips over.
+func teardown() error {
+	var err error
+	torndown.Do(func() {
+		var errs []error
+		// The sandboxes go first: only the daemon that holds the record can free what the record names.
+		if daemonUnderTest != nil {
+			errs = append(errs, removeEverySandbox(daemonUnderTest.root), daemonUnderTest.stop())
+		}
+		errs = append(errs, hostclean.Sweep(tempPrefixes()...))
+		err = errors.Join(errs...)
+	})
+
+	return err
+}
+
+// teardownOnSignal gives the host back when the run is interrupted, which is how a developer ends a
+// test that hangs. 130 is what a shell reports for a run that a SIGINT ended.
+func teardownOnSignal() {
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		signalled := <-interrupted
+		if err := teardown(); err != nil {
+			fmt.Fprintf(os.Stderr, "give the host back after %s: %v\n", signalled, err)
+		}
+
+		os.Exit(130)
+	}()
+}
+
+// removeEverySandbox takes back what a test left, whether it passed, failed or never got to its own cleanup.
+func removeEverySandbox(root string) error {
+	c := client.New(root)
+	c.Timeout = waitBudget
+
+	ctx, cancel := context.WithTimeout(context.Background(), waitBudget)
+	defer cancel()
+
+	listed, err := c.ListSandboxes(ctx, true)
+	if err != nil {
+		return fmt.Errorf("list the sandboxes the tests left: %w", err)
+	}
+
+	var errs []error
+	for _, left := range listed.Sandboxes {
+		if err := c.RemoveSandbox(ctx, left.ID, true, stopGrace); err != nil {
+			errs = append(errs, fmt.Errorf("remove the sandbox %s the tests left: %w", left.ID, err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // goTool is what the Makefile falls back to as well: sudo drops /usr/local/go/bin from PATH.
@@ -171,26 +244,26 @@ func (d *testDaemon) await() error {
 	}
 }
 
-// stop ends the daemon by its own pid, proves its socket is gone, and gives the root back.
+// stop ends the daemon by its own pid, proves its socket is gone, and gives the root back. Every step
+// runs even when one before it failed: a root left mounted is what the next run refuses to start on.
 func (d *testDaemon) stop() error {
+	var errs []error
 	if err := d.cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("signal the daemon: %w", err)
+		errs = append(errs, fmt.Errorf("signal the daemon: %w", err))
 	}
 	if err := d.cmd.Wait(); err != nil {
-		return fmt.Errorf("the daemon ended with %w:\n%s", err, d.logged())
+		errs = append(errs, fmt.Errorf("the daemon ended with %w:\n%s", err, d.logged()))
 	}
 
 	socket := filepath.Join(d.root, api.SocketFile)
 	if _, err := os.Lstat(socket); !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("the socket %s outlived the daemon: %w", socket, err)
+		errs = append(errs, fmt.Errorf("the socket %s outlived the daemon: %w", socket, err))
 	}
 
-	// A create that failed leaves the runsc null-netns behind, and the removal below trips over it.
-	if err := exec.Command("umount", "-l", filepath.Join(d.root, "runsc", "null-netns")).Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "unmount the runsc null-netns of %s: %v\n", d.root, err)
-	}
+	// A create that failed leaves the rootfs and the runsc null-netns mounted, and RemoveAll trips over them.
+	errs = append(errs, hostclean.Unmount(d.root))
 
-	return errors.Join(os.RemoveAll(d.root), os.Remove(d.log))
+	return errors.Join(append(errs, os.RemoveAll(d.root), os.Remove(d.log))...)
 }
 
 // logged is what the daemon wrote, which is the only account of a failure that happened inside it.
@@ -231,7 +304,8 @@ func ownDaemon(t *testing.T, env ...string) (App, *bytes.Buffer) {
 		t.Fatalf("start a daemon of this test's own: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := d.stop(); err != nil {
+		// The sandboxes go first: only the daemon that holds the record can free what the record names.
+		if err := errors.Join(removeEverySandbox(d.root), d.stop()); err != nil {
 			t.Errorf("stop the daemon of this test: %v", err)
 		}
 	})

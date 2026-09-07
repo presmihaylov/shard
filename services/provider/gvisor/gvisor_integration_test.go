@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/hostclean"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -589,6 +591,12 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if err := hostclean.Refuse(stateRoots()...); err != nil {
+		fmt.Fprintln(os.Stderr, "gvisor integration tests:", err)
+		os.Exit(1)
+	}
+	teardownOnSignal()
+
 	roots := map[string]*string{"shard-12-images": &imageRoot, "shard-13-network": &networkRoot}
 
 	for prefix, target := range roots {
@@ -602,15 +610,59 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	sweepCgroups()
+	if err := teardown(); err != nil {
+		fmt.Fprintln(os.Stderr, "give the host back:", err)
 
-	for _, target := range roots {
-		if err := os.RemoveAll(*target); err != nil {
-			fmt.Fprintln(os.Stderr, "remove", *target, err)
-		}
+		code = 1
 	}
 
 	os.Exit(code)
+}
+
+// stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
+// so a run refuses to start on it.
+func stateRoots() []string { return underTemp("shard-12-images", "shard-13-network") }
+
+// tempPrefixes adds the scratch directory of an exec, which a killed run leaves and nothing pins.
+func tempPrefixes() []string { return append(stateRoots(), underTemp("shard-exec-")...) }
+
+func underTemp(prefixes ...string) []string {
+	out := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		out = append(out, filepath.Join(os.TempDir(), prefix))
+	}
+
+	return out
+}
+
+var torndown sync.Once
+
+// teardown gives the host back: the cgroups a failed create left, then the mounts, the namespaces,
+// the links and the roots. Every step runs even when one fails, or the next run trips over the rest.
+func teardown() error {
+	var err error
+	torndown.Do(func() {
+		sweepCgroups()
+		err = hostclean.Sweep(tempPrefixes()...)
+	})
+
+	return err
+}
+
+// teardownOnSignal gives the host back when the run is interrupted, which is how a developer ends a
+// test that hangs. 130 is what a shell reports for a run that a SIGINT ended.
+func teardownOnSignal() {
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		signalled := <-interrupted
+		if err := teardown(); err != nil {
+			fmt.Fprintf(os.Stderr, "give the host back after %s: %v\n", signalled, err)
+		}
+
+		os.Exit(130)
+	}()
 }
 
 // sweepCgroups removes what a failed create leaves at the cgroup root. runsc removes its own cgroup
