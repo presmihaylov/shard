@@ -130,6 +130,13 @@ sandbox, each addition marked `implied`:
   rules opens no DNS, and a secret does not open it either: name the host in the policy if the guest
   must resolve it.
 
+A policy of only address rules is the case to watch. `allow 203.0.113.7` gives the guest an address
+it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
+lookup. It is in the egress log, as a host record on port 53 to the nameserver, and what never
+appears is a request to the host the tool was after: a port 53 drop under no request for that host is
+this case. Add a name rule for the host, or a rule that names the nameservers, and the implied `dns`
+opens with it.
+
 ## Names are resolved on the host
 
 A name rule compiles to the IPv4 addresses the name resolves to at apply time, through the same
@@ -151,7 +158,8 @@ is a configuration, not a rule, so the table does not rely on it: every port dro
 and the `egress` chain drops it again for anything that reaches the forward path another way.
 
 Each drop is logged on rule `ipv6`, so it reads in `shard logs --egress` like any other decision. A
-guest that needs IPv6 is not supported today; it fails closed and says so in the log.
+sandbox is IPv4 only today: it gets one IPv4 address and no IPv6 route, and every IPv6 packet it
+sends is dropped and logged. IPv6 support is a later addition, not a design limit.
 
 ## A policy change is immediate
 
