@@ -45,6 +45,9 @@ type Tailer struct {
 	// that has just started is the ordinary miss, and a drop names one of those and never an id.
 	holders   map[string]models.Sandbox
 	refreshed time.Time
+
+	// unattributed counts the drops of one Run whose sandbox no longer exists, for the one line it prints.
+	unattributed int
 }
 
 func NewTailer(root string, decisions *Log, repo Sandboxes, out *log.Logger) *Tailer {
@@ -59,7 +62,7 @@ const refreshEvery = time.Second
 func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 	cursor, seen := t.cursor()
 
-	var unattributed int
+	t.unattributed = 0
 	err := ring.Follow(ctx, func(line kmsg.Record) error {
 		if seen && line.Sequence <= cursor {
 			return nil
@@ -70,26 +73,12 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 			return nil
 		}
 
-		sb, found := t.sandboxFor(record.source, record.iface)
-		if !found {
-			unattributed++
-
-			return nil
-		}
-		// An address is reused, so a line older than the sandbox belongs to whoever held it before.
-		if line.Time.Before(sb.CreatedAt) {
-			return nil
-		}
-
 		record.Time = line.Time
-		if err := t.log.Append(sb.ID, record.Record); err != nil {
-			// A cached holder can name a sandbox that has just been removed, and its file went with it.
-			if !errors.Is(err, fs.ErrNotExist) {
-				return err
-			}
-			t.forget(sb)
-			unattributed++
-
+		written, err := t.attribute(record)
+		if err != nil {
+			return err
+		}
+		if !written {
 			return nil
 		}
 
@@ -97,8 +86,8 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 
 		return t.writeCursor(line.Sequence)
 	}, func() {
-		if unattributed > 0 {
-			t.out.Printf("egress log: %d host drops named a sandbox that no longer exists", unattributed)
+		if t.unattributed > 0 {
+			t.out.Printf("egress log: %d host drops named a sandbox that no longer exists", t.unattributed)
 		}
 	})
 	if errors.Is(err, context.Canceled) {
@@ -136,6 +125,38 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	}
 
 	return t.holder(keys)
+}
+
+// attribute writes one drop into the sandbox that holds it, and answers false when it wrote nothing.
+// A cached holder can name a sandbox that is gone and whose port a new one now holds, and the write
+// is the first thing that finds out, so a write that lands on no file asks the records once more.
+func (t *Tailer) attribute(record drop) (bool, error) {
+	for range 2 {
+		sb, found := t.sandboxFor(record.source, record.iface)
+		if !found {
+			t.unattributed++
+
+			return false, nil
+		}
+		// An address is reused, so a line older than the sandbox belongs to whoever held it before.
+		if record.Time.Before(sb.CreatedAt) {
+			return false, nil
+		}
+
+		err := t.log.Append(sb.ID, record.Record)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+
+		t.forget(sb)
+	}
+
+	t.unattributed++
+
+	return false, nil
 }
 
 // forget drops a sandbox the records no longer hold, so the next line rebuilds instead of hitting it.
