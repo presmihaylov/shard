@@ -4,19 +4,22 @@
 package hostclean
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/netns"
 )
 
-// linkPattern is how services/network names a host veth: the tests must not know the sandbox ids.
-var linkPattern = regexp.MustCompile(`shardv[0-9]+`)
+// sandboxDir and recordFile are where the daemon keeps a sandbox record, under a root of its own.
+const (
+	sandboxDir = "sandboxes"
+	recordFile = "sandbox.json"
+)
 
 // mountinfo is where the kernel lists what is mounted, and the only account of a mount a run leaked.
 const mountinfo = "/proc/self/mountinfo"
@@ -31,18 +34,14 @@ type Leftover struct {
 
 func (l Leftover) String() string { return l.What + " " + l.Path }
 
-// Find lists what an integration run leaves when it does not tear down. The prefixes are the temp
-// roots of the package that asks, so one package never reports the roots of another.
+// Find lists what an integration run leaves when it does not tear down. Everything it names is owned
+// by a root of the package that asks, so a run beside the systemd unit reports and takes none of its.
 func Find(prefixes ...string) ([]Leftover, error) {
 	mounts, err := leftMounts(prefixes)
 	if err != nil {
 		return nil, err
 	}
-	namespaces, err := leftNamespaces()
-	if err != nil {
-		return nil, err
-	}
-	links, err := leftLinks()
+	sandboxes, err := leftSandboxes(prefixes)
 	if err != nil {
 		return nil, err
 	}
@@ -51,14 +50,12 @@ func Find(prefixes ...string) ([]Leftover, error) {
 		return nil, err
 	}
 
-	// The order is the order Sweep must take them in: a mount pins the root it lives under.
-	return append(append(append(mounts, namespaces...), links...), roots...), nil
+	// The order is the order Sweep must take them in: a mount pins the root it lives under, and the
+	// record under that root is the only handle by which the namespace and the link can be found.
+	return append(append(mounts, sandboxes...), roots...), nil
 }
 
 // Sweep takes back everything Find names, and what it could not take is what the error names.
-//
-// It is safe only because Refuse ran first: a box that carried no sandbox at the start carries only
-// this run's own at the end, so a wholesale sweep of the namespaces and the links takes nothing else.
 func Sweep(prefixes ...string) error {
 	left, err := Find(prefixes...)
 	if err != nil {
@@ -94,8 +91,8 @@ func Unmount(prefixes ...string) error {
 	return removeEach(mounts)
 }
 
-// Refuse fails a run on a box that already carries a sandbox. The lease pool lives under this run's
-// own root, so it would hand out an address another root holds and delete that sandbox's veth.
+// Refuse fails a run on a root an earlier run of the same package left, because its lease pool lives
+// in that root: a new pool would hand out an address the old one holds and delete that sandbox's veth.
 func Refuse(prefixes ...string) error {
 	left, err := Find(prefixes...)
 	if err != nil {
@@ -132,49 +129,92 @@ func leftMounts(prefixes []string) ([]Leftover, error) {
 	return out, nil
 }
 
-// leftNamespaces names every network namespace on the host, because a sandbox is the only thing here
-// that makes one and a box that runs these tests runs nothing else.
-func leftNamespaces() ([]Leftover, error) {
-	entries, err := os.ReadDir(netns.RunDir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+// leftSandboxes names the namespace and the veth of every sandbox a leftover root still records. The
+// record is what makes them ours: a namespace no root of this package names belongs to another run.
+func leftSandboxes(prefixes []string) ([]Leftover, error) {
+	roots, err := match(prefixes)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", netns.RunDir, err)
+		return nil, err
 	}
 
-	out := make([]Leftover, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, Leftover{What: "the namespace", Path: entry.Name(), remove: run("ip", "netns", "delete", entry.Name())})
+	var out []Leftover
+	for _, root := range roots {
+		entries, err := os.ReadDir(filepath.Join(root, sandboxDir))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the sandboxes of %s: %w", root, err)
+		}
+
+		for _, entry := range entries {
+			out = append(out, sandboxOf(root, entry.Name())...)
+		}
 	}
 
 	return out, nil
 }
 
-func leftLinks() ([]Leftover, error) {
-	listed, err := exec.Command("ip", "-o", "link", "show").Output()
-	if err != nil {
-		return nil, fmt.Errorf("list the host links: %w", err)
-	}
-
+// sandboxOf names what one record still holds on the host. A namespace or a link that is already
+// gone is named by no leftover, so a teardown that ran twice reports nothing the second time.
+func sandboxOf(root, id string) []Leftover {
 	var out []Leftover
-	for _, name := range unique(linkPattern.FindAllString(string(listed), -1)) {
-		out = append(out, Leftover{What: "the sandbox link", Path: name, remove: run("ip", "link", "delete", name)})
+	if _, err := os.Stat(netns.NamespacePath(id)); err == nil {
+		out = append(out, Leftover{What: "the namespace", Path: id, remove: run("ip", "netns", "delete", id)})
 	}
 
-	return out, nil
+	link := hostInterface(filepath.Join(root, sandboxDir, id, recordFile))
+	if link == "" {
+		return out
+	}
+	if exec.Command("ip", "link", "show", link).Run() != nil {
+		return out
+	}
+
+	return append(out, Leftover{What: "the sandbox link", Path: link, remove: run("ip", "link", "delete", link)})
+}
+
+// hostInterface reads the one field of a record this package needs, and answers "" for a record a
+// crashed run never finished writing.
+func hostInterface(record string) string {
+	blob, err := os.ReadFile(record)
+	if err != nil {
+		return ""
+	}
+
+	var held struct {
+		HostInterface string `json:"host_interface"`
+	}
+	if json.Unmarshal(blob, &held) != nil {
+		return ""
+	}
+
+	return held.HostInterface
 }
 
 func leftRoots(prefixes []string) ([]Leftover, error) {
-	var out []Leftover
+	roots, err := match(prefixes)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Leftover, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, Leftover{What: "the temp root", Path: root, remove: removeAll(root)})
+	}
+
+	return out, nil
+}
+
+// match answers the roots an earlier run of this package left, which is the whole of what it owns.
+func match(prefixes []string) ([]string, error) {
+	var out []string
 	for _, prefix := range prefixes {
 		matches, err := filepath.Glob(prefix + "*")
 		if err != nil {
 			return nil, fmt.Errorf("list the roots under %s: %w", prefix, err)
 		}
-		for _, match := range matches {
-			out = append(out, Leftover{What: "the temp root", Path: match, remove: removeAll(match)})
-		}
+		out = append(out, matches...)
 	}
 
 	return out, nil
@@ -204,20 +244,6 @@ func hasPrefix(path string, prefixes []string) bool {
 	}
 
 	return false
-}
-
-func unique(names []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, name := range names {
-		if !seen[name] {
-			seen[name] = true
-			out = append(out, name)
-		}
-	}
-	sort.Strings(out)
-
-	return out
 }
 
 func run(binary string, args ...string) func() error {

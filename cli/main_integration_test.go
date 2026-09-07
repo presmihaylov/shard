@@ -108,15 +108,13 @@ func underTemp(prefixes ...string) []string {
 
 var torndown sync.Once
 
-// teardown gives the host back, and runs every step even when one fails, because a step that is
-// skipped leaves a netns, a mount or an address lease that the next run trips over.
-//
-// The sandboxes go first: a sandbox outlives its daemon by design, so only the daemon that holds the
-// record can free the namespace and the mount that the record names.
+// teardown gives the host back, and runs every step even when one fails, because a skipped step
+// leaves a netns, a mount or an address lease that the next run trips over.
 func teardown() error {
 	var err error
 	torndown.Do(func() {
 		var errs []error
+		// The sandboxes go first: only the daemon that holds the record can free what the record names.
 		if daemonUnderTest != nil {
 			errs = append(errs, removeEverySandbox(daemonUnderTest.root), daemonUnderTest.stop())
 		}

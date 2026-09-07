@@ -3,6 +3,8 @@
 package hostclean
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -19,10 +21,18 @@ func TestMountPointsReadsTheOnesUnderARootOfOurs(t *testing.T) {
 	}
 }
 
-func TestLinkPatternNamesEveryHostVeth(t *testing.T) {
-	listed := "2: eth0: <BROADCAST> mtu 1500\n3: shardv2@if4: <BROADCAST> mtu 1500\n4: shard0: <BROADCAST> mtu 1500\n5: shardv2@if9: <UP>\n"
+// The record is the only handle on the veth, so a record a crashed run never finished names none.
+func TestHostInterfaceReadsTheVethOffTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "sandbox.json")
+	if err := os.WriteFile(record, []byte(`{"id":"amber-otter-1a2b","host_interface":"shardv7"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	if got := unique(linkPattern.FindAllString(listed, -1)); !slices.Equal(got, []string{"shardv2"}) {
-		t.Errorf("the links = %v, want the veth once and not the bridge", got)
+	if got := hostInterface(record); got != "shardv7" {
+		t.Errorf("hostInterface = %q, want shardv7", got)
+	}
+	if got := hostInterface(filepath.Join(dir, "missing.json")); got != "" {
+		t.Errorf("a record that is not there named %q", got)
 	}
 }
