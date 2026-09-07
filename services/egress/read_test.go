@@ -2,10 +2,12 @@ package egress
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 func sandbox(t *testing.T) models.Sandbox {
@@ -39,6 +41,20 @@ func TestHostDropReadsTheLineTheChainsWrote(t *testing.T) {
 }
 
 // A line with no rule is not one of ours, whatever else it carries.
+// A local drop is the host taking its own address back, not a rule of the policy, so it reads apart.
+func TestHostDropNamesTheHostsOwnAddress(t *testing.T) {
+	drop, ok := hostDrop("shard-egress rule=local IN=shard0 SRC=10.87.0.2 DST=10.87.0.1 PROTO=TCP DPT=5432")
+	if !ok {
+		t.Fatal("hostDrop refused a local line")
+	}
+	if drop.Rule != network.RuleLocal {
+		t.Errorf("rule = %q, want %q", drop.Rule, network.RuleLocal)
+	}
+	if !strings.Contains(drop.Reason, "the host's own address") {
+		t.Errorf("reason = %q, want it to name the host's own address", drop.Reason)
+	}
+}
+
 func TestHostDropRefusesALineWithNoRule(t *testing.T) {
 	if _, ok := hostDrop("shard-egress SRC=10.87.0.2 DST=203.0.113.7"); ok {
 		t.Error("hostDrop took a line with no rule")

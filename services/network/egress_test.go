@@ -44,7 +44,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		"ip saddr 10.87.0.2 jump egress_shardv2",
 		"type nat hook prerouting priority dstnat; policy accept;\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 80 dnat ip to 10.87.0.1:30080\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 443 dnat ip to 10.87.0.1:30443",
 		"iifname \"shard0\" ip saddr 10.87.0.3 tcp dport 80 dnat ip to 10.87.0.1:30080",
-		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" drop",
+		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" drop",
 		"table bridge shard\ndelete table bridge shard",
 		"table bridge shard {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tmeta ibrname \"shard0\" drop\n\t}",
 		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop\n\t\tiifname \"shardv2\" arp saddr ip != 10.87.0.2 drop",

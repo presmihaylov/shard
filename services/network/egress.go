@@ -79,6 +79,8 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
 	}
+	// The guest reaching the host's own address is a drop like any other, so it says so in the log too.
+	fmt.Fprintf(&b, "\t\tiifname %q %s\n", s.cfg.Bridge, logStatement(RuleLocal))
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n\t}\n\n", s.cfg.Bridge)
 
 	// The hook keeps policy accept, so a table the host also filters in is not overridden: every drop is explicit.
@@ -172,6 +174,7 @@ func render(rule Compiled) []string {
 const (
 	RulePrivate = "private"
 	RuleDefault = "default"
+	RuleLocal   = "local"
 	RuleNone    = "none"
 	RuleMissing = "missing"
 	RuleResolve = "resolve"
