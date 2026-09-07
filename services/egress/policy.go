@@ -341,7 +341,7 @@ func parseDestination(text string) (models.Destination, error) {
 		return models.Destination{Kind: models.DestinationDomainSuffix, Value: value}, nil
 	}
 	if kind, _, found := strings.Cut(text, ":"); found && slices.Contains([]string{"cidr", "domain", "domain-suffix", "group"}, kind) {
-		return models.Destination{}, fmt.Errorf("%q spells the old syntax: write the destination bare, as <host>, <cidr>, suffix:<name> or any", text)
+		return models.Destination{}, fmt.Errorf("%q spells the old syntax: write the destination bare, as <host>, <cidr>, suffix:<name>, any or dns", text)
 	}
 
 	return models.Destination{Kind: models.DestinationDomain, Value: text}, nil

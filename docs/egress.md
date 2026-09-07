@@ -139,6 +139,11 @@ this case. `shard policy create` says so at the moment you store such a policy. 
 the host, or a rule that names the nameservers, or add `--allow dns`, and the implied `dns` opens
 with it.
 
+A rule id is its position in the effective order, so an edit that opens DNS on a policy that had none
+puts four implied rules in front and moves every rule down by four. `shard inspect` and the `rule`
+field of the egress log both name that position, so a line written before the edit names a different
+rule after it. Any inserted rule does this; `allow dns` is the one that reads as purely additive.
+
 ## Names are resolved on the host
 
 A name rule compiles to the IPv4 addresses the name resolves to at apply time, through the same
