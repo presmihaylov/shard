@@ -61,10 +61,19 @@ func hostDrop(message string) (drop, bool) {
 			Port:    port,
 			Address: fields["DST"],
 			Rule:    rule,
-			Reason:  "the host chains dropped a " + protocol(fields["PROTO"]) + " packet",
+			Reason:  reason(rule, protocol(fields["PROTO"])),
 		},
 		source: fields["SRC"],
 	}, true
+}
+
+// reason says what the chain that logged the line was doing, because a local drop is not a policy drop.
+func reason(rule, proto string) string {
+	if rule == network.RuleLocal {
+		return "the host chains dropped a " + proto + " packet to the host's own address"
+	}
+
+	return "the host chains dropped a " + proto + " packet"
 }
 
 func protocol(proto string) string {

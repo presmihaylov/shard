@@ -167,7 +167,9 @@ There are two sources, and the daemon writes both into the one file,
   second of the drop. A read never touches the ring.
 
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
-prints as `egress`, or one of `private`, `default`, `none`, `missing` and `resolve`.
+prints as `egress`, or one of `private`, `default`, `local`, `none`, `missing` and `resolve`. A
+packet the guest sent to the host's own address carries `local`: the host takes the proxy ports and
+drops the rest, so that drop is logged like any other.
 
 Two limits are worth knowing:
 
