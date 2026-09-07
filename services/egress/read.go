@@ -27,10 +27,11 @@ func (r *LogReader) Read(sb models.Sandbox) ([]Record, error) {
 	return Merge(records), nil
 }
 
-// drop is one parsed log line: the record it becomes, and the address that says whose it is.
+// drop is one parsed log line: the record it becomes, and the two things that say whose it is.
 type drop struct {
 	Record
 	source string
+	iface  string
 }
 
 func hostDrop(message string) (drop, bool) {
@@ -64,13 +65,18 @@ func hostDrop(message string) (drop, bool) {
 			Reason:  reason(rule, protocol(fields["PROTO"])),
 		},
 		source: fields["SRC"],
+		iface:  fields["IN"],
 	}, true
 }
 
-// reason says what the chain that logged the line was doing, because a local drop is not a policy drop.
+// reason says what the chain that logged the line was doing, because neither a local drop nor an IPv6
+// one is a policy drop.
 func reason(rule, proto string) string {
 	if rule == network.RuleLocal {
 		return "the host chains dropped a " + proto + " packet to the host's own address"
+	}
+	if rule == network.RuleIPv6 {
+		return "the host chains dropped an IPv6 " + proto + " packet: no policy rule can match one"
 	}
 
 	return "the host chains dropped a " + proto + " packet"

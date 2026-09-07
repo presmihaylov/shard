@@ -142,6 +142,17 @@ nameservers the guest uses, so a guest that answers its own lookups changes noth
 - A CDN address shared by many hosts is allowed for all of them on the host table. The proxy closes
   that for 80 and 443 by matching the name in the request.
 
+## The policy is IPv4, and IPv6 is dropped
+
+Every match in the host table is `ip saddr` or `ip daddr`, which is IPv4 only, so no rule of a policy
+can ever match an IPv6 packet. A guest gets an IPv4 address and an IPv4 default route and nothing
+sends router advertisements on the bridge, so a guest has no routable IPv6 address to send from. That
+is a configuration, not a rule, so the table does not rely on it: every port drops IPv6 as it arrives,
+and the `egress` chain drops it again for anything that reaches the forward path another way.
+
+Each drop is logged on rule `ipv6`, so it reads in `shard logs --egress` like any other decision. A
+guest that needs IPv6 is not supported today; it fails closed and says so in the log.
+
 ## A policy change is immediate
 
 Storing a policy again enforces it at once on every sandbox that holds it, running or paused. There
@@ -167,9 +178,10 @@ There are two sources, and the daemon writes both into the one file,
   second of the drop. A read never touches the ring.
 
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
-prints as `egress`, or one of `private`, `default`, `local`, `none`, `missing` and `resolve`. A
-packet the guest sent to the host's own address carries `local`: the host takes the proxy ports and
-drops the rest, so that drop is logged like any other.
+prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`, `missing` and
+`resolve`. A packet the guest sent to the host's own address carries `local`: the host takes the
+proxy ports and drops the rest, so that drop is logged like any other. An IPv6 packet carries
+`ipv6`, and is named by the port it died on rather than by its address.
 
 Two limits are worth knowing:
 

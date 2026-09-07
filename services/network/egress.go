@@ -91,6 +91,9 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	// The private floor comes before the chains, so no rule of a policy opens it.
 	fmt.Fprintf(&b, "\tchain egress {\n")
 	fmt.Fprintf(&b, "\t\toifname %q drop\n", s.cfg.Bridge)
+	// Every match below is v4 only, so a v6 packet would fall out of this chain and be forwarded.
+	fmt.Fprintf(&b, "\t\tmeta nfproto ipv6 %s\n", logStatement(RuleIPv6))
+	fmt.Fprintf(&b, "\t\tmeta nfproto ipv6 drop\n")
 	fmt.Fprintf(&b, "\t\tip daddr { %[1]s } %[2]s\n", strings.Join(privateRanges, ", "), logStatement(RulePrivate))
 	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
 	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
@@ -125,6 +128,9 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	// Every leased port is pinned to its address, in IP and in ARP, so no sandbox can send as another.
 	fmt.Fprintf(&b, "\tchain prerouting {\n\t\ttype filter hook prerouting priority filter; policy accept;\n")
 	for _, address := range leases {
+		// The anti-spoof pair pins v4 and ARP only, so v6 dies at the port it came in on, named by that port.
+		fmt.Fprintf(&b, "\t\tiifname %[1]q ether type ip6 %[2]s\n", s.hostInterface(address), logStatement(RuleIPv6))
+		fmt.Fprintf(&b, "\t\tiifname %[1]q ether type ip6 drop\n", s.hostInterface(address))
 		fmt.Fprintf(&b, "\t\tiifname %[1]q ether type ip ip saddr != %[2]s drop\n", s.hostInterface(address), address)
 		fmt.Fprintf(&b, "\t\tiifname %[1]q arp saddr ip != %[2]s drop\n", s.hostInterface(address), address)
 	}
@@ -178,6 +184,7 @@ const (
 	RuleNone    = "none"
 	RuleMissing = "missing"
 	RuleResolve = "resolve"
+	RuleIPv6    = "ipv6"
 )
 
 // LogPrefix starts every line the chains write into the kernel ring, so shard logs can pick them out.

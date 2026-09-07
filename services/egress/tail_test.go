@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/kmsg"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 // fakeRing hands the tailer canned records the way /dev/kmsg would on the box, and then stops.
@@ -146,6 +147,51 @@ func TestTailCountsTheDropsOfASandboxThatIsGone(t *testing.T) {
 		t.Fatalf("the log holds %+v", records)
 	}
 	if got := out.String(); !strings.Contains(got, "2 host drops") || strings.Count(got, "\n") != 1 {
+		t.Errorf("the tailer said %q", got)
+	}
+}
+
+// An IPv6 packet dies at the port before it is routed, so its address names nobody and the port must.
+func TestTailNamesAnIPv6DropByThePortItDiedOn(t *testing.T) {
+	sb := sandbox(t)
+	sb.HostInterface = "shardv2"
+	tailer, _, decisions := newTailer(t, io.Discard, sb)
+
+	ring := &fakeRing{records: []kmsg.Record{{
+		Sequence: 7,
+		Time:     time.Unix(110, 0).UTC(),
+		Message:  "shard-egress rule=ipv6 IN=shardv2 SRC=fe80:0000:0000:0000:50f0:2aff:fe51:7d92 DST=ff02:0000:0000:0000:0000:0000:0000:0002 PROTO=ICMPv6",
+	}}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, err := decisions.Read(sb.ID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(records) != 1 || records[0].Rule != network.RuleIPv6 {
+		t.Fatalf("the log holds %+v", records)
+	}
+}
+
+// goneDirs is a sandbox removed between the drop and the write: the daemon holds no directory for it.
+type goneDirs struct{ root string }
+
+func (g goneDirs) Dir(id string) (string, error) { return filepath.Join(g.root, id), nil }
+
+// A removed sandbox must not fail the tailer: the task would restart and read the whole ring again.
+func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
+	var out strings.Builder
+	root := t.TempDir()
+	decisions := NewLog(goneDirs{root: root})
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sandbox(t)}}, log.New(&out, "", 0))
+
+	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2")}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := out.String(); !strings.Contains(got, "1 host drops") {
 		t.Errorf("the tailer said %q", got)
 	}
 }
