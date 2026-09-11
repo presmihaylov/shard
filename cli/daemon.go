@@ -20,5 +20,6 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		Insecure:    a.Insecure,
 		PullTimeout: a.Timeout,
 		InitPath:    a.InitPath,
+		Provider:    a.Provider,
 	})
 }

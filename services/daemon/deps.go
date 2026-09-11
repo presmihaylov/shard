@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 
@@ -9,11 +10,13 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/sysboxrunc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/provider/sysbox"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
@@ -100,23 +103,40 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	runner, err := d.runnerLocked()
-	if err != nil {
-		return nil, err
-	}
-
 	bundles, err := bundle.New(d.cfg.InitPath)
 	if err != nil {
 		return nil, err
 	}
 
-	provider, err := gvisor.New(runner, bundles, repo.Dir)
+	provider, err := d.newProvider(bundles, repo.Dir)
 	if err != nil {
 		return nil, err
 	}
 	d.providerSvc = provider
 
 	return d.providerSvc, nil
+}
+
+// newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default.
+func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, error)) (models.Provider, error) {
+	switch d.cfg.Provider {
+	case "", gvisor.Name:
+		runner, err := d.runnerLocked()
+		if err != nil {
+			return nil, err
+		}
+
+		return gvisor.New(runner, bundles, dirs)
+	case sysbox.Name:
+		runner, err := sysboxrunc.New(filepath.Join(d.cfg.Root, "sysbox-runc"))
+		if err != nil {
+			return nil, err
+		}
+
+		return sysbox.New(runner, bundles, dirs)
+	default:
+		return nil, fmt.Errorf("unknown provider %q: shard knows %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name)
+	}
 }
 
 // runner drives the runsc binary. The mode is fixed on it and must match the one the sandbox was
