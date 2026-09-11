@@ -509,3 +509,37 @@ func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
 		t.Errorf("Resources are %+v, want %+v", rt.Resources, want)
 	}
 }
+
+// The gVisor bundle must not change by a byte: no user namespace and no id mapping unless the spec asks.
+func TestBuildJoinsNoUserNamespaceUnlessAsked(t *testing.T) {
+	spec := models.SandboxSpec{Network: models.NetworkSpec{NetnsPath: "/var/run/netns/shard-1"}}
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	if slices.ContainsFunc(got.Linux.Namespaces, func(n specs.LinuxNamespace) bool { return n.Type == specs.UserNamespace }) {
+		t.Error("the bundle joins a user namespace nothing asked for")
+	}
+	if got.Linux.UIDMappings != nil || got.Linux.GIDMappings != nil {
+		t.Errorf("the bundle maps ids %v %v, want none", got.Linux.UIDMappings, got.Linux.GIDMappings)
+	}
+}
+
+func TestBuildJoinsTheUserNamespaceThatOwnsTheNetns(t *testing.T) {
+	spec := models.SandboxSpec{Network: models.NetworkSpec{
+		NetnsPath: "/var/run/netns/shard-1",
+		Userns:    models.UserNamespace{Path: "/var/run/shard/userns/shard-1", HostID: 165536, Size: 65536},
+	}}
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	i := slices.IndexFunc(got.Linux.Namespaces, func(n specs.LinuxNamespace) bool { return n.Type == specs.UserNamespace })
+	if i < 0 {
+		t.Fatal("the bundle joins no user namespace")
+	}
+	if got.Linux.Namespaces[i].Path != "/var/run/shard/userns/shard-1" {
+		t.Errorf("userns path %q, want /var/run/shard/userns/shard-1", got.Linux.Namespaces[i].Path)
+	}
+
+	want := []specs.LinuxIDMapping{{ContainerID: 0, HostID: 165536, Size: 65536}}
+	if !slices.Equal(got.Linux.UIDMappings, want) || !slices.Equal(got.Linux.GIDMappings, want) {
+		t.Errorf("mappings %v %v, want %v for both", got.Linux.UIDMappings, got.Linux.GIDMappings, want)
+	}
+}

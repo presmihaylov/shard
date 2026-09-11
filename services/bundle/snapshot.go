@@ -92,7 +92,9 @@ func (s *Service) clone(configPath string, layers map[string]string, spec models
 
 	cfg.Hostname = firstNonEmpty(spec.Name, spec.ID)
 	cfg.Linux.CgroupsPath = CgroupsPath(spec.ID)
-	cfg.Linux.Namespaces = namespaces(spec.Network.NetnsPath)
+	cfg.Linux.Namespaces = namespaces(spec.Network)
+	cfg.Linux.UIDMappings = idMappings(spec.Network.Userns)
+	cfg.Linux.GIDMappings = idMappings(spec.Network.Userns)
 	// The same mounts by destination, type and options, which a restore checks, over this bundle's sources.
 	cfg.Mounts = mounts(b.ShardDir, b.Tmp, s.initPath, resourcesOf(cfg.Linux))
 

@@ -72,6 +72,17 @@ type Status struct {
 // Alive is the assertion the keep-alive default rests on: only Stop and Pause take a sandbox out of it.
 func (s Status) Alive() bool { return s.Exists && s.State != StateStopped }
 
+// UserNamespace is a user namespace a sandbox joins, pinned on the host like the netns it owns.
+type UserNamespace struct {
+	Path string
+	// HostID is where guest uid and gid 0 land on the host; Size is how many ids follow it.
+	HostID uint32
+	Size   uint32
+}
+
+// Set reports whether the sandbox joins a user namespace of its own.
+func (u UserNamespace) Set() bool { return u.Path != "" }
+
 // SandboxSpec is substrate-neutral: gVisor builds an OCI bundle from it, Firecracker an EROFS disk.
 type SandboxSpec struct {
 	ID   string
@@ -127,8 +138,11 @@ type ImageConfig struct {
 // NetworkSpec is allocated before Create, so the provider joins a namespace it did not build.
 type NetworkSpec struct {
 	NetnsPath string
-	Address   netip.Prefix
-	Gateway   netip.Addr
+	// Userns is the user namespace that owns the netns, when the substrate runs the guest in one of
+	// its own. The zero value is the host's, which is what gVisor joins.
+	Userns  UserNamespace
+	Address netip.Prefix
+	Gateway netip.Addr
 	// HostInterface is the veth or tap on the host side of the link. Netfilter rules target it.
 	HostInterface string
 	// Nameservers is what the guest resolver reads. Neither substrate resolves a name itself.
