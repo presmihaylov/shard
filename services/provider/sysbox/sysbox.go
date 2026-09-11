@@ -72,6 +72,12 @@ func New(runner *sysboxrunc.Runner, bundles *bundle.Service, dirs StateDirs) (*P
 
 func (p *Provider) Name() string { return Name }
 
+// Userns is the mapping every sandbox's network namespace must belong to, so the guest owns it.
+func (p *Provider) Userns() netns.IDMapping { return Userns }
+
+// ReleaseRoot has nothing to give back: sysbox-runc pins no mount under its root between sandboxes.
+func (p *Provider) ReleaseRoot() error { return nil }
+
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
 func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	// A live id must not be re-created: the rollback below would unmount the rootfs the first one runs on.
