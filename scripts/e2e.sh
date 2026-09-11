@@ -16,7 +16,13 @@
 #   PREFIX     where the binaries are installed        (default /usr/local/bin)
 #   SHARD_ROOT where this run keeps its state          (default /var/lib/shard-e2e)
 #   IMAGE      the image the sandbox is built from     (default alpine:3.20)
+#   PROVIDER   the substrate the daemon runs on: gvisor or sysbox (default gvisor)
+#   DIND_IMAGE the image the sysbox docker step runs dockerd from (default docker:27-dind)
 #   SKIP_INSTALL=1 to run against the binaries already on the box
+#
+# On sysbox the snapshot steps become their refusals: the provider claims no pause, resume or fork,
+# and the run proves each one says so by name while the sandbox runs on. Sysbox then earns its slot:
+# a second sandbox runs dockerd and a docker build inside it, which no other substrate here can.
 
 set -euo pipefail
 
@@ -26,6 +32,8 @@ export PATH="${PATH}:/usr/sbin:/sbin"
 PREFIX=${PREFIX:-/usr/local/bin}
 SHARD_ROOT=${SHARD_ROOT:-/var/lib/shard-e2e}
 IMAGE=${IMAGE:-alpine:3.20}
+PROVIDER=${PROVIDER:-gvisor}
+DIND_IMAGE=${DIND_IMAGE:-docker:27-dind}
 GRACE=${GRACE:-5s}
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
@@ -46,6 +54,9 @@ CLONE_LINKS=""
 # The sandbox that is created unfronted and granted a secret later (SHARD-114).
 GRANT_ID=""
 GRANT_LINK=""
+# The sandbox the sysbox docker step runs dockerd in (SHARD-90).
+DIND_ID=""
+DIND_LINK=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
@@ -317,7 +328,7 @@ start_daemon() {
 		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
 		trust="${ECHO_DIR}/trust.pem"
 	fi
-	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
+	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" --provider "${PROVIDER}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
@@ -375,17 +386,17 @@ stop_daemon() {
 teardown() {
 	local id link
 	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}" ]; then
 		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
-	for id in ${CLONE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${ID}"; do
+	for id in ${CLONE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
 	done
 	# shellcheck disable=SC2086
-	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${LINK}"; do
+	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
@@ -412,6 +423,16 @@ on_exit() {
 	exit "${status}"
 }
 
+# runtime_binary names the binary the provider drives, and refuses a provider the daemon does not know.
+# The daemon would refuse it too, but only at the first create, after the install and the echo are up.
+runtime_binary() {
+	case "$1" in
+	gvisor) printf 'runsc\n' ;;
+	sysbox) printf 'sysbox-runc\n' ;;
+	*) fail "PROVIDER must be gvisor or sysbox, got '$1'" ;;
+	esac
+}
+
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
 if [ -n "${E2E_LIB_ONLY:-}" ]; then
 	return 0
@@ -420,14 +441,15 @@ fi
 trap on_exit EXIT
 
 step "check the host"
-[ "$(id -u)" = "0" ] || fail "shard drives netns, nft and runsc, so this needs root"
-for binary in runsc ip ss nft go; do
+RUNTIME=$(runtime_binary "${PROVIDER}")
+[ "$(id -u)" = "0" ] || fail "shard drives netns, nft and ${RUNTIME}, so this needs root"
+for binary in "${RUNTIME}" ip ss nft go; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
 if [ ! -e /dev/kvm ]; then
 	say "no /dev/kvm, which is the box this ticket targets"
 fi
-say "runsc, ip, ss, nft and go are on the host"
+say "${RUNTIME}, ip, ss, nft and go are on the host, and the run is on ${PROVIDER}"
 
 check_host_is_free
 say "no other sandbox holds a link on this host"
@@ -869,95 +891,163 @@ CODE=0
 shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
 
-step "pause the sandbox"
-# A restore keeps the guest's processes; a restart makes new ones. The entrypoint's pid and start
-# time tell the two apart from outside, and the file proves the layer went with the memory.
-shard exec "${ID}" -- /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
-CLOCK_BEFORE=$(entrypoint_clock "${ID}")
-[ -n "${CLOCK_BEFORE}" ] || fail "the guest has no entrypoint to read a clock from"
-say "the entrypoint is guest pid and start time ${CLOCK_BEFORE} before the pause"
-PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
-RSS_BEFORE=$(rss_kib "${PID}")
-[ -n "${RSS_BEFORE}" ] || fail "the sandbox process ${PID} has no resident set to read"
-say "the sandbox process ${PID} holds ${RSS_BEFORE} KiB on the host before the pause"
+# snapshot_steps pause, resume and fork the sandbox, which only a provider that holds snapshots can do.
+snapshot_steps() {
+	step "pause the sandbox"
+	# A restore keeps the guest's processes; a restart makes new ones. The entrypoint's pid and start
+	# time tell the two apart from outside, and the file proves the layer went with the memory.
+	shard exec "${ID}" -- /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
+	CLOCK_BEFORE=$(entrypoint_clock "${ID}")
+	[ -n "${CLOCK_BEFORE}" ] || fail "the guest has no entrypoint to read a clock from"
+	say "the entrypoint is guest pid and start time ${CLOCK_BEFORE} before the pause"
+	PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
+	RSS_BEFORE=$(rss_kib "${PID}")
+	[ -n "${RSS_BEFORE}" ] || fail "the sandbox process ${PID} has no resident set to read"
+	say "the sandbox process ${PID} holds ${RSS_BEFORE} KiB on the host before the pause"
 
-timed "pause" pause_it
-grep -q '"state": *"paused"' "${RECORD}" || fail "the record does not say paused"
-SNAPSHOT=$(grep -o '"snapshot": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
-[ -f "${SNAPSHOT}/checkpoint.img" ] || fail "there is no checkpoint at ${SNAPSHOT}/checkpoint.img"
-say "the record says paused and the snapshot is at ${SNAPSHOT}"
-# The snapshot is the guest's memory after it sent the placeholder out, so the value must not be in it.
-absent "the value in the memory snapshot" "$(grep -rl "${SECRET_VALUE}" "${SNAPSHOT}" 2>/dev/null || true)"
+	timed "pause" pause_it
+	grep -q '"state": *"paused"' "${RECORD}" || fail "the record does not say paused"
+	SNAPSHOT=$(grep -o '"snapshot": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
+	[ -f "${SNAPSHOT}/checkpoint.img" ] || fail "there is no checkpoint at ${SNAPSHOT}/checkpoint.img"
+	say "the record says paused and the snapshot is at ${SNAPSHOT}"
+	# The snapshot is the guest's memory after it sent the placeholder out, so the value must not be in it.
+	absent "the value in the memory snapshot" "$(grep -rl "${SECRET_VALUE}" "${SNAPSHOT}" 2>/dev/null || true)"
 
-# The whole point of a pause: the memory goes back to the host. runsc holds nothing, so the process is gone.
-absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
-absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
-absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/sandboxes/${ID}" || true)"
-[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
+	# The whole point of a pause: the memory goes back to the host. runsc holds nothing, so the process is gone.
+	absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
+	absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
+	absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/sandboxes/${ID}" || true)"
+	[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
 
-CODE=0
-REFUSAL=$(shard exec "${ID}" -- /bin/true 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
-echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
-say "exec refused the paused sandbox and named the resume"
+	CODE=0
+	REFUSAL=$(shard exec "${ID}" -- /bin/true 2>&1) || CODE=$?
+	[ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
+	echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
+	say "exec refused the paused sandbox and named the resume"
 
-step "resume the sandbox"
-timed "resume" resume_it
-grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the resume"
-grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the resume changed the address"
-say "the record says running on the same address"
+	step "resume the sandbox"
+	timed "resume" resume_it
+	grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the resume"
+	grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the resume changed the address"
+	say "the record says running on the same address"
 
-expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE}" "the entrypoint is the same process with the same start time, so the resume was a restore"
-expect_exec "before-the-pause" "the file written before the pause is there after the resume" /bin/cat /root/at-pause
-# The restore rebuilt the guest over a new namespace, and the host rules were applied again over it.
-expect_network "after the resume"
-expect_blocked "${ID}" "the policy holds after the resume"
-expect_fronted "${ID}" "the proxy fronts the sandbox after the resume"
+	expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE}" "the entrypoint is the same process with the same start time, so the resume was a restore"
+	expect_exec "before-the-pause" "the file written before the pause is there after the resume" /bin/cat /root/at-pause
+	# The restore rebuilt the guest over a new namespace, and the host rules were applied again over it.
+	expect_network "after the resume"
+	expect_blocked "${ID}" "the policy holds after the resume"
+	expect_fronted "${ID}" "the proxy fronts the sandbox after the resume"
 
-step "fork the paused snapshot into a second sandbox"
-# A fork reads the snapshot, so the source may run on: the fork is the sandbox as it was at the pause.
-timed "fork" fork_it
-[ -n "${FORK_ID}" ] && [ "${FORK_ID}" != "${ID}" ] || fail "fork printed '${FORK_ID}', want a new id"
-FORK_RECORD="${SHARD_ROOT}/sandboxes/${FORK_ID}/sandbox.json"
-FORK_ADDRESS=$(grep -o '"address": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
-FORK_LINK=$(grep -o '"host_interface": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
-[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
-say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
+	step "fork the paused snapshot into a second sandbox"
+	# A fork reads the snapshot, so the source may run on: the fork is the sandbox as it was at the pause.
+	timed "fork" fork_it
+	[ -n "${FORK_ID}" ] && [ "${FORK_ID}" != "${ID}" ] || fail "fork printed '${FORK_ID}', want a new id"
+	FORK_RECORD="${SHARD_ROOT}/sandboxes/${FORK_ID}/sandbox.json"
+	FORK_ADDRESS=$(grep -o '"address": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+	FORK_LINK=$(grep -o '"host_interface": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+	[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
+	say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
 
-[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
-[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
-say "ls shows the source and the fork running side by side"
+	[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
+	[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
+	say "ls shows the source and the fork running side by side"
 
-shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
-shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
-expect_blocked "${FORK_ID}" "the policy holds on the fork"
-expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
-expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
+	shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
+	shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
+	expect_blocked "${FORK_ID}" "the policy holds on the fork"
+	expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+	expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
 
-expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
-expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
-	/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${FORK_ADDRESS}'"
-expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
-	/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
-expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
-shard exec "${FORK_ID}" -- /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
+	expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
+	expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
+		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${FORK_ADDRESS}'"
+	expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
+		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+	expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
+	shard exec "${FORK_ID}" -- /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
 
-CODE=0
-shard exec "${ID}" -- /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
-[ "${CODE}" != "0" ] || fail "the source sees the file the fork wrote"
-say "the source does not see what the fork wrote"
+	CODE=0
+	shard exec "${ID}" -- /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
+	[ "${CODE}" != "0" ] || fail "the source sees the file the fork wrote"
+	say "the source does not see what the fork wrote"
 
-step "stop and remove the fork"
-shard stop --time "${GRACE}" "${FORK_ID}" >/dev/null
-shard rm "${FORK_ID}" >/dev/null
-absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${FORK_ID}" || true)"
-absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
-FORK_ID=""
-FORK_LINK=""
-# The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
-RECONCILE_ID=""
-RECONCILE_LINK=""
-expect_exec "before-the-pause" "the source runs on after the fork is gone" /bin/cat /root/at-pause
+	step "stop and remove the fork"
+	shard stop --time "${GRACE}" "${FORK_ID}" >/dev/null
+	shard rm "${FORK_ID}" >/dev/null
+	absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${FORK_ID}" || true)"
+	absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
+	FORK_ID=""
+	FORK_LINK=""
+	# The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
+	RECONCILE_ID=""
+	RECONCILE_LINK=""
+	expect_exec "before-the-pause" "the source runs on after the fork is gone" /bin/cat /root/at-pause
+}
+
+# snapshot_refusals prove a provider without snapshots refuses each verb by name and leaves the sandbox running.
+snapshot_refusals() {
+	local verb refusal code
+	for verb in pause resume; do
+		step "refuse to ${verb} on ${PROVIDER}"
+		code=0
+		refusal=$(shard "${verb}" "${ID}" 2>&1) || code=$?
+		[ "${code}" != "0" ] || fail "shard ${verb} exited 0 on ${PROVIDER}, which holds no snapshots"
+		expect "${refusal}" "shard: provider ${PROVIDER} does not support ${verb} on this host" "${verb} names the provider and the verb"
+		[ "$(listed_state "${ID}")" = "running" ] || fail "the refused ${verb} left the sandbox $(listed_state "${ID}")"
+	done
+
+	step "refuse to fork on ${PROVIDER}"
+	code=0
+	refusal=$(shard fork --name e2e-fork "${ID}" 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "shard fork exited 0 on ${PROVIDER}, which holds no snapshots"
+	expect "${refusal}" "shard: provider ${PROVIDER} does not support fork on this host" "fork names the provider and the verb"
+	absent "a sandbox named e2e-fork" "$(shard ls --all | grep e2e-fork || true)"
+	expect_exec "still-running" "the source runs on after the refusals" /bin/echo still-running
+}
+
+# docker_steps run dockerd in a second sandbox and a docker build inside it: the workload Sysbox is
+# here for. The image's own entrypoint sets up cgroups and iptables before dockerd, so it is bypassed
+# on purpose: the sandbox already holds a cgroup of its own, and the daemon is what is under test.
+docker_steps() {
+	step "run dockerd inside a sandbox on ${PROVIDER}"
+	DIND_ID=$(shard create --name e2e-dind "${DIND_IMAGE}" -- /usr/local/bin/dockerd)
+	[ -n "${DIND_ID}" ] || fail "create printed no id for the dockerd sandbox"
+	DIND_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${DIND_ID}/sandbox.json" | cut -d'"' -f4)
+	say "the dockerd sandbox is ${DIND_ID} on the link ${DIND_LINK}"
+
+	# dockerd takes a few seconds to open its socket; the log names the failure when it never does.
+	local ready=0
+	for _ in $(seq 1 150); do
+		shard exec "${DIND_ID}" -- docker info >/dev/null 2>&1 && ready=1 && break
+		sleep 0.2
+	done
+	[ "${ready}" = "1" ] || fail "docker info never answered inside ${DIND_ID}: $(shard logs "${DIND_ID}" | tail -n 20)"
+	say "docker info answers inside the sandbox"
+
+	step "docker build and run an image inside the sandbox"
+	expect_exec_in "${DIND_ID}" "built-inside" "an image built by the nested dockerd runs and reads its own layer" \
+		/bin/sh -c 'mkdir -p /tmp/e2e && printf "FROM alpine:3.20\nRUN echo built-inside > /built\n" > /tmp/e2e/Dockerfile && docker build -q -t e2e-nested /tmp/e2e >/dev/null && docker run --rm e2e-nested cat /built'
+	# The nested image lives in the sandbox's layer, so the host's image store never sees it.
+	absent "the nested image in the host store" "$(shard image ls | grep e2e-nested || true)"
+
+	step "stop and remove the dockerd sandbox"
+	shard stop --time "${GRACE}" "${DIND_ID}" >/dev/null
+	[ "$(listed_state "${DIND_ID}")" = "stopped" ] || fail "shard ls --all does not list the dockerd sandbox stopped"
+	shard rm "${DIND_ID}" >/dev/null
+	absent "the dockerd sandbox's record" "$([ -e "${SHARD_ROOT}/sandboxes/${DIND_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${DIND_ID}" || true)"
+	absent "the dockerd sandbox's link" "$(ip link show "${DIND_LINK}" 2>/dev/null || true)"
+	absent "the dockerd sandbox's cgroup" "$([ -e "/sys/fs/cgroup/shard/${DIND_ID}" ] && echo "/sys/fs/cgroup/shard/${DIND_ID}" || true)"
+	DIND_ID=""
+	DIND_LINK=""
+	expect_exec "still-running" "the first sandbox runs on beside the docker steps" /bin/echo still-running
+}
+
+if [ "${PROVIDER}" = "gvisor" ]; then
+	snapshot_steps
+else
+	snapshot_refusals
+	docker_steps
+fi
 
 step "refuse to remove a sandbox that is still up"
 CODE=0
@@ -1248,4 +1338,9 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED: install, daemon up, version, create, daemon restart, proxy, exec, exec again, pause, resume, fork, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
+if [ "${PROVIDER}" = "gvisor" ]; then
+	SNAPSHOT_STEPS="pause, resume, fork"
+else
+	SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside"
+fi
+echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, create, daemon restart, proxy, exec, exec again, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
