@@ -50,9 +50,9 @@ type sandboxNetwork interface {
 	ReapplyAll(ctx context.Context) error
 }
 
-// substrate is what the runsc root holds for itself, which belongs to no sandbox.
+// substrate is what the runtime keeps under its own root, which belongs to no sandbox.
 type substrate interface {
-	DropNullNetns() error
+	ReleaseRoot() error
 }
 
 // fakeDaemon is a daemon whose layers are fakes, on the socket under its root. The CLI reaches it the

@@ -31,14 +31,13 @@ type deps struct {
 	// needs another one calls its locked form, because a Mutex taken twice by one goroutine deadlocks.
 	mu sync.Mutex
 
-	imageSvc     *image.Service
-	repoSvc      *sandboxstate.Repository
-	netSvc       *network.Service
-	providerSvc  models.Provider
-	substrateSvc *runsc.Runner
-	secretSvc    *secret.Store
-	policySvc    *egress.Store
-	runnerSvc    *runsc.Runner
+	imageSvc    *image.Service
+	repoSvc     *sandboxstate.Repository
+	netSvc      *network.Service
+	providerSvc models.Provider
+	secretSvc   *secret.Store
+	policySvc   *egress.Store
+	runnerSvc   *runsc.Runner
 }
 
 func (d *deps) imagesLocked() (*image.Service, error) {
@@ -84,12 +83,9 @@ func (d *deps) netLocked() (*network.Service, error) {
 		return nil, err
 	}
 
-	cfg := network.Config{Root: d.cfg.Root, Egress: source}
-	if d.cfg.Provider == sysbox.Name {
-		cfg.Userns = sysbox.Userns
-	}
-
-	svc, err := network.New(cfg, manager)
+	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
+	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
+	svc, err := network.New(network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns}, manager)
 	if err != nil {
 		return nil, err
 	}
@@ -185,20 +181,41 @@ func (d *deps) holders(name string) ([]string, error) {
 	return sandbox.SecretHolders(repo, name)
 }
 
-// substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
-// teardown gives it back.
-func (d *deps) substrateLocked() (*runsc.Runner, error) {
-	if d.substrateSvc != nil {
-		return d.substrateSvc, nil
+// usernsOwner is a provider whose sandboxes' namespaces must belong to a user namespace of its mapping.
+type usernsOwner interface {
+	Userns() netns.IDMapping
+}
+
+// userns is what the network service asks before it builds a namespace. The daemon does not know
+// substrates, so an unset mapping is the answer for a provider that is not an owner.
+func (d *deps) userns() (netns.IDMapping, error) {
+	provider, err := d.provider()
+	if err != nil {
+		return netns.IDMapping{}, err
 	}
 
-	runner, err := d.runnerLocked()
+	owner, ok := provider.(usernsOwner)
+	if !ok {
+		return netns.IDMapping{}, nil
+	}
+
+	return owner.Userns(), nil
+}
+
+// substrateLocked is the provider's own hook for what its runtime keeps under its root. Every
+// provider shard knows implements it, so a missing one is a bug, not a host.
+func (d *deps) substrateLocked() (sandbox.Substrate, error) {
+	provider, err := d.providerLocked()
 	if err != nil {
 		return nil, err
 	}
-	d.substrateSvc = runner
 
-	return d.substrateSvc, nil
+	sub, ok := provider.(sandbox.Substrate)
+	if !ok {
+		return nil, fmt.Errorf("provider %s cannot release its runtime root", provider.Name())
+	}
+
+	return sub, nil
 }
 
 func (d *deps) policiesLocked() (*egress.Store, error) {
@@ -356,6 +373,13 @@ func (d *deps) repo() (*sandboxstate.Repository, error) {
 	defer d.mu.Unlock()
 
 	return d.repoLocked()
+}
+
+func (d *deps) provider() (models.Provider, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.providerLocked()
 }
 
 func (d *deps) net() (*network.Service, error) {
