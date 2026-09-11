@@ -40,6 +40,10 @@ func (m *Manager) addOwnedNamespace(ctx context.Context, name string, owner IDMa
 	}
 
 	pinned := m.pin(ctx, name, child.Process.Pid)
+	if pinned != nil {
+		// Half a pair would make the next attempt fail on the netns name; retry starts from nothing.
+		pinned = errors.Join(pinned, m.DeleteNamespace(ctx, name))
+	}
 
 	// The holder goes whether the pins landed or not; the pins keep the namespaces, not the process.
 	return errors.Join(pinned, release(stdin, child))
@@ -52,11 +56,12 @@ func (m *Manager) pin(ctx context.Context, name string, pid int) error {
 	}
 
 	target := UsernsPath(name)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	// Only the daemon, as root, opens these; runc joins the namespace with root's credentials.
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		return fmt.Errorf("make %s: %w", filepath.Dir(target), err)
 	}
 
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_RDONLY, 0o444)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("make the pin %s: %w", target, err)
 	}
