@@ -152,10 +152,9 @@ type ExecOptions struct {
 	Stderr *os.File
 }
 
-// Exec runs a command in a running container and returns the code it exited with, which is no failure
-// of this driver. A command sysbox-runc cannot start exits 1 with the reason on the guest's stderr and
-// nothing in its own log, so the lookup against RootFS is what catches it; without one, a missing
-// command reads as a command that exited 1. The caller checks the container is running first.
+// Exec runs a command in a running container and returns its exit code, which is no driver failure.
+// sysbox-runc reports a command it cannot start as exit 1 with nothing in its own log, so only the
+// lookup against RootFS tells the two apart. The caller checks the container is running first.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
 		return 0, errors.New("no command: sysbox-runc exec has nothing to run")
@@ -232,6 +231,10 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 }
 
 // pathOf is the PATH the guest command is looked up on, which is the one the exec is given.
+// defaultPath is the OCI image spec default, what sysbox-runc itself resolves against when the
+// process env names no PATH; the lookup must not refuse what the runtime would run.
+const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 func pathOf(env []string) string {
 	for _, entry := range env {
 		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
@@ -239,7 +242,7 @@ func pathOf(env []string) string {
 		}
 	}
 
-	return ""
+	return defaultPath
 }
 
 // interrupt ends the guest process a cancelled exec started. It is SIGKILL because nothing above this

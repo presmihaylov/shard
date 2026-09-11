@@ -397,6 +397,13 @@ func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Exec refused a command that is on the guest's PATH: %v", err)
 	}
+
+	// No PATH in the env means the OCI default, which is what sysbox-runc would resolve against.
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{
+		Argv: []string{"true"}, RootFS: rootfs,
+	}); err != nil {
+		t.Fatalf("Exec refused a command on the default PATH when the env named none: %v", err)
+	}
 }
 
 // writingOwnPID is a fake whose "guest process" is the fake itself, so a kill on the pid it wrote is safe.

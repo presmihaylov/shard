@@ -23,10 +23,9 @@ type LookupError struct {
 
 func (e *LookupError) Error() string { return e.Reason }
 
-// LookPath finds the command the way the guest's execve would, inside rootfs: a name with a slash is
-// taken from workDir, a bare one is searched on pathEnv, and a symlink resolves inside the tree. It
-// answers as a shell does: not found, or found and not executable. A file it finds may still fail to
-// run, a script whose interpreter is missing being the usual case, and that one keeps its exit code 1.
+// LookPath finds the command as the guest's execve would, inside rootfs: a slash means from workDir,
+// a bare name is searched on pathEnv, symlinks resolve inside the tree. It answers like a shell: not
+// found, or not executable. A found file can still fail to run (missing interpreter) and keeps exit 1.
 func LookPath(rootfs, workDir, pathEnv, name string) error {
 	if name == "" {
 		return &LookupError{Reason: "empty command"}
