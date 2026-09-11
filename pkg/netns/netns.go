@@ -105,14 +105,15 @@ func (m *Manager) AddNamespace(ctx context.Context, name string) error {
 }
 
 // DeleteNamespace drops the namespace and every interface in it, which includes one end of each veth
-// pair, so the host end goes with it.
+// pair, so the host end goes with it. It is idempotent.
 func (m *Manager) DeleteNamespace(ctx context.Context, name string) error {
 	err := m.run(ctx, "netns", "delete", name)
-	if errors.Is(err, ErrNotFound) {
-		return nil
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
 	}
 
-	return err
+	// The user namespace that owned it, if AddOwnedNamespace made one, goes with it.
+	return unpinUserns(name)
 }
 
 // NamespaceExists asks the filesystem, because the bind mount is the namespace's only name.
