@@ -58,10 +58,9 @@ type Config struct {
 	Nameservers []netip.Addr
 	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
 	Egress EgressSource
-	// Userns, when set, answers the mapping every namespace is owned by, which a substrate that runs
-	// the guest in a user namespace of its own needs: without it the guest has no CAP_NET_ADMIN over
-	// its own netns. Nil, or an unset mapping, is the host's user namespace, which is what gVisor joins.
-	// It is asked at Allocate and never at boot, so the host side comes up without the substrate.
+	// Userns answers the mapping every namespace is owned by, which a substrate that runs the guest in
+	// a user namespace of its own needs for CAP_NET_ADMIN over its netns. Nil or unset is the host's,
+	// which gVisor joins. Asked at Allocate and never at boot, so the host side needs no substrate.
 	Userns func() (netns.IDMapping, error)
 }
 
