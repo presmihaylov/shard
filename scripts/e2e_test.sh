@@ -186,6 +186,55 @@ rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 DAEMON_LOG=""
 
 echo
+echo "== wait_for_daemon waits for the socket and the proxy line, and names the cause on a miss"
+SHARD_ROOT=$(mktemp -d)
+DAEMON_LOG=$(mktemp)
+# A daemon that is slow: nothing for 1 s, then the socket and the proxy line, well inside the bound.
+(sleep 1; : >"${DAEMON_LOG}.tmp"; python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "${SHARD_ROOT}/shard.sock" 2>/dev/null || touch "${SHARD_ROOT}/shard.sock"; echo "proxy listening on 30080" >>"${DAEMON_LOG}"; sleep 30) &
+DAEMON_PID=$!
+BEFORE=$(date +%s)
+DAEMON_START_BOUND=20 wait_for_daemon >/dev/null 2>&1
+check "a slow daemon is waited for" "$?" "0"
+check "the wait ended with the daemon, not with the bound" "$(( $(date +%s) - BEFORE < 10 ))" "1"
+kill "${DAEMON_PID}" 2>/dev/null; wait "${DAEMON_PID}" 2>/dev/null
+rm -f "${DAEMON_LOG}.tmp"
+
+# A daemon that wrote both lines and never a socket file counts as up too.
+: >"${DAEMON_LOG}"
+rm -f "${SHARD_ROOT}/shard.sock"
+printf 'api listening on %s\nproxy listening on 30080\n' "${SHARD_ROOT}/shard.sock" >"${DAEMON_LOG}"
+sleep 30 &
+DAEMON_PID=$!
+DAEMON_START_BOUND=5 wait_for_daemon >/dev/null 2>&1
+check "the two log lines are enough" "$?" "0"
+kill "${DAEMON_PID}" 2>/dev/null; wait "${DAEMON_PID}" 2>/dev/null
+
+# A daemon that died is reported at once, with its log, not after the bound.
+echo "bind: address already in use" >"${DAEMON_LOG}"
+true &
+DAEMON_PID=$!
+wait "${DAEMON_PID}" 2>/dev/null
+BEFORE=$(date +%s)
+MISS=$(DAEMON_START_BOUND=20 wait_for_daemon 2>&1 >/dev/null)
+check "a dead daemon is a miss" "$?" "1"
+check "the miss came at once" "$(( $(date +%s) - BEFORE < 5 ))" "1"
+check "the miss names the exit" "$(echo "${MISS}" | grep -c 'exited before it listened')" "1"
+check "the miss prints the log" "$(echo "${MISS}" | grep -c 'address already in use')" "1"
+
+# A daemon that hangs is given the bound and then reported with its log.
+echo "still loading" >"${DAEMON_LOG}"
+sleep 30 &
+DAEMON_PID=$!
+MISS=$(DAEMON_START_BOUND=1 wait_for_daemon 2>&1 >/dev/null)
+check "a silent daemon is a miss at the bound" "$?" "1"
+check "the miss names the bound" "$(echo "${MISS}" | grep -c 'within 1s')" "1"
+check "the miss prints the log" "$(echo "${MISS}" | grep -c 'still loading')" "1"
+kill "${DAEMON_PID}" 2>/dev/null; wait "${DAEMON_PID}" 2>/dev/null
+DAEMON_PID=""
+rm -rf "${SHARD_ROOT}" "${DAEMON_LOG}"
+DAEMON_LOG=""
+
+echo
 echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
 check "no line assigns FORK_ID to ID" "$(grep -c '^ID="\${FORK_ID}"' "${HERE}/e2e.sh")" "0"
 
@@ -245,4 +294,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the host guard, the unmount, the teardown, the timer, the failure report and the exec status"
+echo "e2e self-test PASSED: the root guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report and the exec status"
