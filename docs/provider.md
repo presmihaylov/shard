@@ -17,7 +17,7 @@ records exist: the other substrate has never heard of those sandboxes.
 | Tenancy | many tenants on one host | **one tenant per host**, see below | many tenants on one host |
 | Status | every verb | every required verb, no snapshot verb | does not exist yet |
 
-The capability table. The first row is the required verbs; the other three are what `Capabilities`
+The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
 
 | Verb | gVisor | Sysbox | Firecracker |
