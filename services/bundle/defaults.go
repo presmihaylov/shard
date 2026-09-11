@@ -112,12 +112,30 @@ func mounts(shardDir, tmpDir, initPath string, r models.Resources) []specs.Mount
 }
 
 // namespaces gives the sandbox its own everything. An empty netns path means one the runtime creates.
-func namespaces(netnsPath string) []specs.LinuxNamespace {
-	return []specs.LinuxNamespace{
+func namespaces(network models.NetworkSpec) []specs.LinuxNamespace {
+	list := []specs.LinuxNamespace{
 		{Type: specs.PIDNamespace},
 		{Type: specs.IPCNamespace},
 		{Type: specs.UTSNamespace},
 		{Type: specs.MountNamespace},
-		{Type: specs.NetworkNamespace, Path: netnsPath},
+		{Type: specs.NetworkNamespace, Path: network.NetnsPath},
 	}
+
+	// Only a substrate that runs the guest in a user namespace of its own gets one: the config of a
+	// gVisor sandbox must not change by a byte.
+	if network.Userns.Set() {
+		list = append(list, specs.LinuxNamespace{Type: specs.UserNamespace, Path: network.Userns.Path})
+	}
+
+	return list
+}
+
+// idMappings is the guest's view of the user namespace it joins, which the runtime checks against the
+// namespace itself. Nil when the guest joins none.
+func idMappings(userns models.UserNamespace) []specs.LinuxIDMapping {
+	if !userns.Set() {
+		return nil
+	}
+
+	return []specs.LinuxIDMapping{{ContainerID: 0, HostID: userns.HostID, Size: userns.Size}}
 }

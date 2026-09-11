@@ -247,3 +247,29 @@ func TestRoutesAsksIpForJSON(t *testing.T) {
 		t.Errorf("ip was called with %v", got)
 	}
 }
+
+func TestDeleteNamespaceStillAsksIproute2First(t *testing.T) {
+	m, argvFile := fake(t, "", "", 0)
+
+	if err := m.DeleteNamespace(t.Context(), "x"); err != nil {
+		t.Fatalf("DeleteNamespace: %v", err)
+	}
+	if got := argv(t, argvFile); !slices.Equal(got, []string{"netns", "delete", "x"}) {
+		t.Errorf("ip ran %v, want netns delete x", got)
+	}
+}
+
+func TestAddOwnedNamespaceRefusesAnEmptyMapping(t *testing.T) {
+	m, _ := fake(t, "", "", 0)
+
+	err := m.AddOwnedNamespace(t.Context(), "x", IDMapping{})
+	if err == nil || !strings.Contains(err.Error(), "mapping") {
+		t.Fatalf("AddOwnedNamespace took an empty mapping: %v", err)
+	}
+}
+
+func TestUsernsPathIsUnderShardsOwnRunDir(t *testing.T) {
+	if got := UsernsPath("x"); got != "/var/run/shard/userns/x" {
+		t.Errorf("got %q, want /var/run/shard/userns/x", got)
+	}
+}
