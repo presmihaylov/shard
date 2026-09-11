@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -34,4 +37,38 @@ func TestTheGettersBuildOneLayerUnderConcurrentAsks(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+// --provider picks the substrate by name. A name shard does not know fails the first ask, not a sandbox.
+func TestTheProviderIsPickedByName(t *testing.T) {
+	// Both runners look their binary up on PATH, and neither substrate is installed where the tests run.
+	bin := t.TempDir()
+	for _, binary := range []string{"runsc", "sysbox-runc"} {
+		if err := os.WriteFile(filepath.Join(bin, binary), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatalf("write the fake %s: %v", binary, err)
+		}
+	}
+	t.Setenv("PATH", bin)
+
+	for _, name := range []string{"", "gvisor", "sysbox"} {
+		d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: name}}
+
+		provider, err := d.providerLocked()
+		if err != nil {
+			t.Fatalf("provider %q: %v", name, err)
+		}
+
+		want := name
+		if want == "" {
+			want = "gvisor"
+		}
+		if got := provider.Name(); got != want {
+			t.Errorf("--provider %q built %s, want %s", name, got, want)
+		}
+	}
+
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
+	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "firecracker"`) {
+		t.Errorf("an unknown provider built %v, want a refusal that names it", err)
+	}
 }

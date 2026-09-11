@@ -117,7 +117,8 @@ Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)
   --timeout <duration>     how long a pull may take, read by the daemon (default 30m)
   --insecure-registry <host>
-                           allow plaintext http to this registry host, repeatable`
+                           allow plaintext http to this registry host, repeatable
+  --provider <name>        the substrate the daemon runs sandboxes on: gvisor or sysbox (default gvisor)`
 
 // App is the wiring one shard process needs.
 type App struct {
@@ -133,6 +134,8 @@ type App struct {
 	Timeout time.Duration
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
 	InitPath string
+	// Provider names the substrate the daemon runs sandboxes on. Empty is gVisor.
+	Provider string
 
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
 	clientTimeout time.Duration
@@ -232,6 +235,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.StringVar(&a.Root, "root", a.Root, "where shard keeps its state")
 	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
 	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
+	flags.StringVar(&a.Provider, "provider", a.Provider, "the substrate the daemon runs sandboxes on")
 
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("parse the flags: %w", err)
