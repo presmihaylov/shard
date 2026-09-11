@@ -7,6 +7,8 @@ LDFLAGS  := -X main.version=$(VERSION)
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
 DEVBOX ?= devbox-shard
+# PROVIDER is the substrate the e2e daemon runs on: gvisor or sysbox.
+PROVIDER ?= gvisor
 
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
 ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
@@ -61,7 +63,7 @@ devbox-test: itest
 
 # SHARD-17: the whole lifecycle on this host, the way a stranger with a fresh box would drive it, over a daemon it starts.
 e2e:
-	./scripts/e2e.sh
+	PROVIDER=$(PROVIDER) ./scripts/e2e.sh
 
 # The guards in that script decide what gets deleted, so they are tested off the box, without root.
 e2e-test:
@@ -69,7 +71,7 @@ e2e-test:
 
 # The same script on the box, over a fresh copy of this tree.
 devbox-e2e:
-	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
+	tar czf - --exclude bin --exclude .git --exclude .claude . | ssh $(DEVBOX) 'sudo rm -rf ~/shard-e2e && mkdir -p ~/shard-e2e && tar xzf - -C ~/shard-e2e && cd ~/shard-e2e && sudo PROVIDER=$(PROVIDER) PATH=$$PATH:/usr/local/go/bin ./scripts/e2e.sh'
 
 # Records the SHARD-36 demo on the box, over the binaries devbox-sync just installed, into docs/demo.cast.
 devbox-demo: devbox-sync
