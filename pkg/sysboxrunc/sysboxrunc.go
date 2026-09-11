@@ -230,11 +230,11 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 	return append(append(args, id), opts.Argv...)
 }
 
-// pathOf is the PATH the guest command is looked up on, which is the one the exec is given.
 // defaultPath is the OCI image spec default, what sysbox-runc itself resolves against when the
 // process env names no PATH; the lookup must not refuse what the runtime would run.
 const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+// pathOf is the PATH the guest command is looked up on, which is the one the exec is given.
 func pathOf(env []string) string {
 	for _, entry := range env {
 		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
