@@ -138,8 +138,10 @@ func (t *Tailer) attribute(record drop) (bool, error) {
 
 			return false, nil
 		}
-		// An address is reused, so a line older than the sandbox belongs to whoever held it before.
+		// An address is reused, so a line older than the sandbox belongs to whoever held it before: gone, so counted.
 		if record.Time.Before(sb.CreatedAt) {
+			t.unattributed++
+
 			return false, nil
 		}
 

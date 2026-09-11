@@ -199,7 +199,8 @@ func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
 // An address is reused, so a line older than the sandbox belongs to whoever held the address before it.
 func TestTailLeavesADropOlderThanTheSandbox(t *testing.T) {
 	sb := sandbox(t)
-	tailer, _, decisions := newTailer(t, io.Discard, sb)
+	var out strings.Builder
+	tailer, _, decisions := newTailer(t, &out, sb)
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 90, "2")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -211,6 +212,10 @@ func TestTailLeavesADropOlderThanTheSandbox(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
+	}
+	// The address was held by a sandbox that is gone, so the summary counts the drop with the other orphans.
+	if got := out.String(); !strings.Contains(got, "1 host drops named a sandbox that no longer exists") {
+		t.Errorf("the predecessor's drop was discarded without a count: %q", got)
 	}
 }
 
