@@ -2,8 +2,9 @@
 
 `shard` is a single-node sandbox manager. One binary runs isolated sandboxes on a
 Linux host with or without hardware virtualization, and gives them the same
-lifecycle verbs either way. With `/dev/kvm` it drives Firecracker; without one it
-drives gVisor.
+lifecycle verbs either way. It drives gVisor by default, Sysbox for Docker inside
+the sandbox, and Firecracker with `/dev/kvm`. Sysbox has no pause, resume or fork
+and is single-tenant; `docs/provider.md` has the matrix.
 
 `CLAUDE.md` is a symlink to this file. Edit this file, never the symlink. A
 Windows checkout needs `core.symlinks=true`.
@@ -50,6 +51,7 @@ cli/                       command definitions and flag parsing
 models/                    Sandbox, states, Provider, Capabilities, Policy
 
 pkg/runsc/                 the runsc binary
+pkg/sysboxrunc/            the sysbox-runc binary
 pkg/firecracker/           the firecracker binary and its API socket
 pkg/registry/              OCI registry transport
 pkg/netns/                 netns, veth, bridge, NAT rules
@@ -67,8 +69,9 @@ services/daemon/           shard daemon: the wiring of every layer, and the back
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
 services/provider/gvisor/       implements models.Provider on gVisor
+services/provider/sysbox/       implements models.Provider on Sysbox
 services/provider/firecracker/  implements models.Provider on Firecracker
-services/provider/conformance/  the test suite both substrates must pass
+services/provider/conformance/  the test suite every substrate must pass
 
 packaging/systemd/         the unit that installs shard daemon as a resident process
 docs/
@@ -86,7 +89,7 @@ docs/
   `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports
   nothing else in the module. Splitting it per concern creates import cycles.
-- **The `Provider` interface lives in `models/`.** Both provider implementations
+- **The `Provider` interface lives in `models/`.** Every provider implementation
   and `cli` need it, so it does not live at a single consumer. Do not move it.
 - **`services/provider/` holds no Go code of its own.** It is a parent directory
   only, so the substrates stay siblings. `conformance/` is the one sibling that
@@ -129,7 +132,7 @@ make itest ITEST_PKG=./services/image/...
 
 `devbox-test` is the same target with `ITEST_PKG=./...`.
 
-Hetzner Cloud exposes no `/dev/kvm`, so the devbox covers gVisor only.
+Hetzner Cloud exposes no `/dev/kvm`, so the devbox covers gVisor and Sysbox, not Firecracker.
 Firecracker needs a dedicated server, which is a decision for SHARD-20.
 
 ## Tests

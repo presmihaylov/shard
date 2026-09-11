@@ -3,6 +3,52 @@
 One interface, `models.Provider`, and one implementation per substrate. `models/provider.go` is the
 code; this page says what the signatures cannot.
 
+## The substrates
+
+`shard daemon --provider <name>` picks one substrate for the whole host, and every sandbox on that
+host runs on it. A record names the substrate that made it. Do not switch a host's provider while
+records exist: the other substrate has never heard of those sandboxes.
+
+| | gVisor (`gvisor`, the default) | Sysbox (`sysbox`) | Firecracker |
+|---|---|---|---|
+| Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | a microVM, needs `/dev/kvm` |
+| Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native |
+| Docker or systemd inside | no | yes | yes |
+| Tenancy | many tenants on one host | **one tenant per host**, see below | many tenants on one host |
+| Status | every verb | every required verb, no snapshot verb | does not exist yet |
+
+The capability table. The first row is the required verbs; the other three are what `Capabilities`
+reports and the CLI refuses on:
+
+| Verb | gVisor | Sysbox | Firecracker |
+|---|---|---|---|
+| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | planned |
+| `pause` | yes | **no** | planned |
+| `resume` | yes | **no** | planned |
+| `fork` | yes | **no** | planned |
+
+### What Sysbox does not do
+
+**Sysbox has no pause, no resume and no fork.** `sysbox-runc` dropped upstream `runc`'s
+`checkpoint` and `restore` (nestybox/sysbox#715, open since 2023), so there is no memory image to
+take. The provider claims `{Pause: false, Resume: false, Fork: false}` and each verb refuses by name:
+`provider sysbox does not support pause on this host`. Nothing is emulated: a `pause` on Sysbox is a
+refusal, not a stop, and the sandbox runs on. `clone` still works, because it needs no snapshot.
+
+**Sysbox CE is single-tenant.** Sysbox CE maps every container to the same host uid range,
+`0 165536 65536`; exclusive ranges were a Sysbox EE feature, and EE is gone. So two Sysbox sandboxes
+are isolated from the host and **not from each other**: a process that escapes one container's
+namespaces has the uid of every other sandbox's root. Run one tenant per Sysbox host. Do not place
+two customers' sandboxes on one. shard pins that same mapping on the user namespace that owns each
+sandbox's netns (`services/provider/sysbox.Userns`), which is why the guest holds `CAP_NET_ADMIN` over
+its own interface and nothing else. The upstream fix is an exclusive-range allocator in
+`sysbox-mgr`, and until it lands this limit stands.
+
+**Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
+and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a
+daemon that answers the reads and refuses every sandbox verb, the same as a gVisor host without
+`runsc`.
+
 ## Required verbs against optional verbs
 
 Ten verbs are required. Every substrate must do all of them, and none of them has a capability
@@ -90,5 +136,10 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
   refuses a source that is running, naming both the sandbox and its state;
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
-It does not prove anything about the network: there is one substrate today, so there is nothing to
-generalize. SHARD-45 owns that when Firecracker lands.
+Both substrates run it from their own `*_integration_test.go` under `make itest`. On Sysbox every
+snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves the
+refuse path there and the snapshot path only on gVisor. The snapshot-shaped interface questions wait
+for Firecracker (SHARD-45).
+
+It does not prove anything about the network: both substrates join a namespace the network service
+built, so there is nothing to generalize yet.
