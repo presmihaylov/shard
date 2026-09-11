@@ -75,6 +75,15 @@ check "the run's own root" "$(rootVerdict /var/lib/shard-e2e)" "/var/lib/shard-e
 check "the run's own root with a trailing slash" "$(rootVerdict /var/lib/shard-e2e/)" "/var/lib/shard-e2e"
 
 echo
+echo "== runtime_binary names the runtime of each provider and refuses the rest"
+check "gvisor drives runsc" "$(runtime_binary gvisor 2>/dev/null)" "runsc"
+check "sysbox drives sysbox-runc" "$(runtime_binary sysbox 2>/dev/null)" "sysbox-runc"
+(runtime_binary firecracker) >/dev/null 2>&1
+check "a provider the daemon does not know" "$?" "1"
+(runtime_binary "") >/dev/null 2>&1
+check "an empty provider" "$?" "1"
+
+echo
 echo "== check_host_is_free refuses a host that already carries a sandbox"
 STUB_LINKS=""
 ip() { printf '%s\n' "${STUB_LINKS}"; }
@@ -293,4 +302,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report and the exec status"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report and the exec status"
