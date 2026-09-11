@@ -58,10 +58,11 @@ type Config struct {
 	Nameservers []netip.Addr
 	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
 	Egress EgressSource
-	// Userns, when set, makes every namespace owned by a user namespace with this mapping, which a
-	// substrate that runs the guest in one of its own needs: without it the guest has no CAP_NET_ADMIN
-	// over its own netns. Unset is the host's user namespace, which is what gVisor joins.
-	Userns netns.IDMapping
+	// Userns, when set, answers the mapping every namespace is owned by, which a substrate that runs
+	// the guest in a user namespace of its own needs: without it the guest has no CAP_NET_ADMIN over
+	// its own netns. Nil, or an unset mapping, is the host's user namespace, which is what gVisor joins.
+	// It is asked at Allocate and never at boot, so the host side comes up without the substrate.
+	Userns func() (netns.IDMapping, error)
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -242,18 +243,32 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		}
 	}
 
-	if err := s.attach(ctx, id, address); err != nil {
+	owner, err := s.owner()
+	if err != nil {
+		return models.NetworkSpec{}, err
+	}
+
+	if err := s.attach(ctx, id, address, owner); err != nil {
 		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
 	}
 
-	return s.spec(id, address), nil
+	return s.spec(id, address, owner), nil
+}
+
+// owner is the mapping the namespaces belong to, asked once per Allocate so the spec and the netns agree.
+func (s *Service) owner() (netns.IDMapping, error) {
+	if s.cfg.Userns == nil {
+		return netns.IDMapping{}, nil
+	}
+
+	return s.cfg.Userns()
 }
 
 // spec is what the provider joins. It is derived, so any shard process can rebuild it from the record.
-func (s *Service) spec(id string, address netip.Addr) models.NetworkSpec {
+func (s *Service) spec(id string, address netip.Addr, owner netns.IDMapping) models.NetworkSpec {
 	return models.NetworkSpec{
 		NetnsPath:     netns.NamespacePath(id),
-		Userns:        s.userns(id),
+		Userns:        userns(id, owner),
 		Address:       netip.PrefixFrom(address, s.cfg.Subnet.Bits()),
 		Gateway:       s.gateway,
 		HostInterface: s.hostInterface(address),
@@ -263,15 +278,15 @@ func (s *Service) spec(id string, address netip.Addr) models.NetworkSpec {
 }
 
 // userns is the user namespace the guest joins, which is none unless the config asks for one.
-func (s *Service) userns(id string) models.UserNamespace {
-	if !s.cfg.Userns.Set() {
+func userns(id string, owner netns.IDMapping) models.UserNamespace {
+	if !owner.Set() {
 		return models.UserNamespace{}
 	}
 
-	return models.UserNamespace{Path: netns.UsernsPath(id), HostID: s.cfg.Userns.HostID, Size: s.cfg.Userns.Size}
+	return models.UserNamespace{Path: netns.UsernsPath(id), HostID: owner.HostID, Size: owner.Size}
 }
 
-func (s *Service) attach(ctx context.Context, id string, address netip.Addr) error {
+func (s *Service) attach(ctx context.Context, id string, address netip.Addr, owner netns.IDMapping) error {
 	host := s.hostInterface(address)
 
 	// The lease says the address is this sandbox's, so an interface a crashed run left is ours to replace.
@@ -279,7 +294,7 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr) err
 		return err
 	}
 
-	if err := s.addNamespace(ctx, id); err != nil {
+	if err := s.addNamespace(ctx, id, owner); err != nil {
 		return err
 	}
 
@@ -304,9 +319,9 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr) err
 }
 
 // addNamespace makes the netns, owned by a user namespace of the sandbox's own when the config asks for one.
-func (s *Service) addNamespace(ctx context.Context, id string) error {
-	if s.cfg.Userns.Set() {
-		return s.manager.AddOwnedNamespace(ctx, id, s.cfg.Userns)
+func (s *Service) addNamespace(ctx context.Context, id string, owner netns.IDMapping) error {
+	if owner.Set() {
+		return s.manager.AddOwnedNamespace(ctx, id, owner)
 	}
 
 	return s.manager.AddNamespace(ctx, id)

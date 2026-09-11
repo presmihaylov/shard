@@ -83,18 +83,9 @@ func (d *deps) netLocked() (*network.Service, error) {
 		return nil, err
 	}
 
-	provider, err := d.providerLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	// The provider says whether its sandboxes own their namespaces; the daemon does not know substrates.
-	cfg := network.Config{Root: d.cfg.Root, Egress: source}
-	if owner, ok := provider.(usernsOwner); ok {
-		cfg.Userns = owner.Userns()
-	}
-
-	svc, err := network.New(cfg, manager)
+	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
+	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
+	svc, err := network.New(network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns}, manager)
 	if err != nil {
 		return nil, err
 	}
@@ -190,11 +181,25 @@ func (d *deps) holders(name string) ([]string, error) {
 	return sandbox.SecretHolders(repo, name)
 }
 
-// substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
-// teardown gives it back.
 // usernsOwner is a provider whose sandboxes' namespaces must belong to a user namespace of its mapping.
 type usernsOwner interface {
 	Userns() netns.IDMapping
+}
+
+// userns is what the network service asks before it builds a namespace. The daemon does not know
+// substrates, so an unset mapping is the answer for a provider that is not an owner.
+func (d *deps) userns() (netns.IDMapping, error) {
+	provider, err := d.provider()
+	if err != nil {
+		return netns.IDMapping{}, err
+	}
+
+	owner, ok := provider.(usernsOwner)
+	if !ok {
+		return netns.IDMapping{}, nil
+	}
+
+	return owner.Userns(), nil
 }
 
 // substrateLocked is the provider's own hook for what its runtime keeps under its root. Every
@@ -368,6 +373,13 @@ func (d *deps) repo() (*sandboxstate.Repository, error) {
 	defer d.mu.Unlock()
 
 	return d.repoLocked()
+}
+
+func (d *deps) provider() (models.Provider, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.providerLocked()
 }
 
 func (d *deps) net() (*network.Service, error) {

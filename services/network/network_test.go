@@ -184,15 +184,15 @@ func TestConflictIgnoresTheBridgesOwnRoute(t *testing.T) {
 func TestTheSpecNamesNoUserNamespaceUnlessAsked(t *testing.T) {
 	s := newService(t, Config{})
 
-	if got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2")); got.Userns.Set() {
+	if got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2"), netns.IDMapping{}); got.Userns.Set() {
 		t.Errorf("the spec joins the user namespace %+v with none configured", got.Userns)
 	}
 }
 
 func TestTheSpecNamesTheUserNamespaceThatOwnsTheNetns(t *testing.T) {
-	s := newService(t, Config{Userns: netns.IDMapping{HostID: 165536, Size: 65536}})
+	s := newService(t, Config{})
 
-	got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2")).Userns
+	got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2"), netns.IDMapping{HostID: 165536, Size: 65536}).Userns
 	if got.Path != netns.UsernsPath("amber-otter") {
 		t.Errorf("userns path %q, want %q", got.Path, netns.UsernsPath("amber-otter"))
 	}
