@@ -190,14 +190,13 @@ echo "== wait_for_daemon waits for the socket and the proxy line, and names the 
 SHARD_ROOT=$(mktemp -d)
 DAEMON_LOG=$(mktemp)
 # A daemon that is slow: nothing for 1 s, then the socket and the proxy line, well inside the bound.
-(sleep 1; : >"${DAEMON_LOG}.tmp"; python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "${SHARD_ROOT}/shard.sock" 2>/dev/null || touch "${SHARD_ROOT}/shard.sock"; echo "proxy listening on 30080" >>"${DAEMON_LOG}"; sleep 30) &
+(sleep 1; python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "${SHARD_ROOT}/shard.sock"; echo "proxy listening on 30080" >>"${DAEMON_LOG}"; sleep 30) &
 DAEMON_PID=$!
 BEFORE=$(date +%s)
 DAEMON_START_BOUND=20 wait_for_daemon >/dev/null 2>&1
 check "a slow daemon is waited for" "$?" "0"
 check "the wait ended with the daemon, not with the bound" "$(( $(date +%s) - BEFORE < 10 ))" "1"
 kill "${DAEMON_PID}" 2>/dev/null; wait "${DAEMON_PID}" 2>/dev/null
-rm -f "${DAEMON_LOG}.tmp"
 
 # A daemon that wrote both lines and never a socket file counts as up too.
 : >"${DAEMON_LOG}"
