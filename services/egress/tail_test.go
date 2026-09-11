@@ -197,7 +197,7 @@ func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
 }
 
 // An address is reused, so a line older than the sandbox belongs to whoever held the address before it.
-func TestTailLeavesADropOlderThanTheSandbox(t *testing.T) {
+func TestTailCountsADropOlderThanTheSandbox(t *testing.T) {
 	sb := sandbox(t)
 	var out strings.Builder
 	tailer, _, decisions := newTailer(t, &out, sb)
