@@ -1,7 +1,6 @@
-// Package sysbox runs sandboxes on Sysbox by driving bare sysbox-runc.
-//
-// Sysbox is the substrate that runs Docker and systemd inside the sandbox, and it has no snapshot
-// at all: Capabilities is all false and the three optional verbs refuse by name (SHARD-90).
+// Package sysbox runs sandboxes on Sysbox by driving bare sysbox-runc. Sysbox is the substrate that
+// runs Docker and systemd inside the sandbox, and it has no snapshot at all: Capabilities is all
+// false and the three optional verbs refuse by name.
 package sysbox
 
 import (
