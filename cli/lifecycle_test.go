@@ -377,8 +377,8 @@ type fakeLifecycleSubstrate struct {
 	dropped bool
 }
 
-func (f *fakeLifecycleSubstrate) DropNullNetns() error {
-	if err := f.r.record("substrate.DropNullNetns"); err != nil {
+func (f *fakeLifecycleSubstrate) ReleaseRoot() error {
+	if err := f.r.record("substrate.ReleaseRoot"); err != nil {
 		return err
 	}
 	f.dropped = true

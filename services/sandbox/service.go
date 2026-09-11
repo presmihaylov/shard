@@ -60,9 +60,10 @@ type Policies interface {
 	Get(name string) (models.Policy, error)
 }
 
-// Substrate is what the runsc root holds for itself, which no per-sandbox teardown gives back.
+// Substrate is what the runtime keeps under its own root, which no per-sandbox teardown gives back.
+// Each provider implements it for its runtime; one that keeps nothing answers nil.
 type Substrate interface {
-	DropNullNetns() error
+	ReleaseRoot() error
 }
 
 // Config is every layer the orchestrator drives. The daemon builds each one once.
@@ -622,7 +623,7 @@ type holding struct {
 // is the only handle by which either can be found again.
 func (s *Service) free(ctx context.Context, id string) error {
 	held := []holding{
-		{"runsc state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
+		{"runtime state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
 		{"netns, veth and address lease", func() error { return s.cfg.Network.Release(ctx, id) }},
 		{"record and state directory", func() error { return s.cfg.Repo.Delete(id) }},
 		// The ruleset is rendered from the records and the leases, so it is right only once this sandbox is in neither.
@@ -648,8 +649,8 @@ func (s *Service) free(ctx context.Context, id string) error {
 
 // dropSubstrateRoot gives back what the substrate keeps for itself once no sandbox is left to use
 // it. An operator otherwise meets it as an rm -rf of the root that fails with EBUSY.
-// A create that runs beside this one is no reason to keep it: runsc binds the mount again on its
-// next create, and a live sandbox does not need this mount to stay up.
+// A create that runs beside this one is no reason to keep it: the runtime takes it again on its
+// next create, and a live sandbox does not need it to stay up.
 func (s *Service) dropSubstrateRoot() error {
 	left, err := s.cfg.Repo.List()
 	if err != nil {
@@ -659,7 +660,7 @@ func (s *Service) dropSubstrateRoot() error {
 		return nil
 	}
 
-	return s.cfg.Substrate.DropNullNetns()
+	return s.cfg.Substrate.ReleaseRoot()
 }
 
 // record reads the record back once the verb is done, which is what the caller prints.

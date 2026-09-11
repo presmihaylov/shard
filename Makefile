@@ -11,7 +11,7 @@ DEVBOX ?= devbox-shard
 PROVIDER ?= gvisor
 
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
-ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/...
+ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/... ./services/provider/sysbox/...
 
 .PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo
 
