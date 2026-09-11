@@ -319,12 +319,39 @@ start_daemon() {
 	fi
 	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
-	for _ in $(seq 1 50); do
-		grep -q "api listening on" "${DAEMON_LOG}" && grep -q "proxy listening on" "${DAEMON_LOG}" && return 0
+	wait_for_daemon
+}
+
+# A cold daemon on a busy box can take well over 5 s to bind, so the bound is generous and never the signal.
+DAEMON_START_BOUND=${DAEMON_START_BOUND:-60}
+
+# wait_for_daemon answers once the daemon has bound its socket and its proxy, or as soon as it died,
+# and prints what it logged on a miss so the failure names the cause and not the clock.
+wait_for_daemon() {
+	local deadline
+	deadline=$(($(date +%s) + DAEMON_START_BOUND))
+	while :; do
+		daemon_ready && return 0
+		if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
+			echo "the daemon ${DAEMON_PID} exited before it listened; it logged:" >&2
+			cat "${DAEMON_LOG}" >&2
+
+			return 1
+		fi
+		if [ "$(date +%s)" -ge "${deadline}" ]; then
+			echo "the daemon ${DAEMON_PID} listened on nothing within ${DAEMON_START_BOUND}s; it logged:" >&2
+			cat "${DAEMON_LOG}" >&2
+
+			return 1
+		fi
 		sleep 0.1
 	done
+}
 
-	return 1
+# The socket file appears when the API binds, so either it or the log line proves that half.
+daemon_ready() {
+	{ [ -S "${SHARD_ROOT}/shard.sock" ] || grep -q "api listening on" "${DAEMON_LOG}"; } &&
+		grep -q "proxy listening on" "${DAEMON_LOG}"
 }
 
 # stop_daemon ends the daemon this run started, by its own pid, and answers only once the socket it
@@ -446,7 +473,7 @@ start_echo
 say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
 
 step "start the daemon in the background"
-start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+start_daemon || fail "the daemon did not come up"
 [ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
 LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
 say "the daemon logged: ${LISTEN_LINE#* api }"
@@ -562,7 +589,7 @@ say "an exec runs /bin/sleep 313 in the guest"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 kill -0 "${SANDBOX_PID}" 2>/dev/null || fail "the sandbox process ${SANDBOX_PID} died with the daemon"
 say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
-start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+start_daemon || fail "the daemon did not come up"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
 # grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
@@ -589,7 +616,7 @@ for _ in $(seq 1 50); do
 done
 kill -0 "${RECONCILE_PID}" 2>/dev/null && fail "the sandbox process ${RECONCILE_PID} survived the kill"
 say "the sandbox process ${RECONCILE_PID} is gone and the record still says running"
-start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+start_daemon || fail "the daemon did not come up"
 expect "$(listed_state "${RECONCILE_ID}")" "stopped" "the daemon corrected the record of the sandbox it lost"
 shard ls --all | grep "^${RECONCILE_ID}" | grep -q "daemon restarted and found no process" \
 	|| fail "shard ls gives no reason for ${RECONCILE_ID}"
@@ -796,7 +823,7 @@ for _ in 1 2; do
 	echo "<4>shard-egress rule=e2e-catchup SRC=${SANDBOX_ADDRESS} DST=203.0.113.9 PROTO=TCP DPT=25 " >/dev/kmsg
 done
 
-start_daemon || fail "the daemon logged no socket after 5s: $(cat "${DAEMON_LOG}")"
+start_daemon || fail "the daemon did not come up"
 shard logs --egress "${ID}" | grep -q '"source":"host"' || fail "the host drop did not outlive the daemon that wrote it"
 say "the host drop is still in the log after a daemon restart"
 
