@@ -3,12 +3,30 @@ This is a work in progress, will announce when it's live and ready to be used!
 
 A single-node sandbox manager. One binary runs isolated sandboxes on a Linux host, with or without
 hardware virtualization, and gives them the same lifecycle verbs either way: run, exec, pause, resume
-and fork. On a host with `/dev/kvm` it drives Firecracker microVMs; on a host without one it drives
-gVisor. A resident `shard daemon` owns the state and serves it over a REST API on a unix socket; the
-CLI is a thin client of that socket, one verb at a time.
+and fork. It drives gVisor by default, Sysbox when you need Docker or systemd inside the sandbox,
+and Firecracker microVMs on a host with `/dev/kvm`. A resident `shard daemon` owns the state and
+serves it over a REST API on a unix socket; the CLI is a thin client of that socket, one verb at a
+time.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Firecracker does not exist yet. Every verb speaks
-to the daemon and needs it up. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor. Sysbox runs every verb but pause, resume and fork,
+which it refuses. Firecracker does not exist yet. Every verb speaks to the daemon and needs it up.
+See `docs/daemon.md`.
+
+## Providers
+
+`shard daemon --provider gvisor|sysbox` picks the substrate for the host. `docs/provider.md` has the
+full matrix; the short form:
+
+| | gVisor (default) | Sysbox |
+|---|---|---|
+| Isolation | user-space kernel | container with a user namespace |
+| Syscall cost | high on file-heavy work | near native |
+| Docker or systemd inside | no | yes |
+| pause, resume, fork | yes | **no, refused by name** |
+| Tenancy | many tenants per host | **one tenant per host** |
+
+Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
+host and not from each other. Run one tenant per Sysbox host.
 
 ## Sandboxes
 
@@ -46,6 +64,8 @@ with a smaller set and no error, and its snapshots restore only where that small
 does not promise a restore across machines (gvisor#11486), so shard promises it only on the host
 that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
 snapshot that exists, so it is not a thing to tune.
+
+The snapshot verbs exist on gVisor only. On Sysbox each one refuses by name and the sandbox runs on.
 
 `shard pause` writes a running sandbox into a snapshot and frees its memory; `shard resume` runs it
 again from there, and `shard fork` starts a new sandbox from the snapshot of another and leaves the
