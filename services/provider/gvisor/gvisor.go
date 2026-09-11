@@ -73,6 +73,9 @@ func (p *Provider) Name() string { return Name }
 
 func (p *Provider) Capabilities() models.Capabilities { return p.caps }
 
+// ReleaseRoot unmounts the null netns runsc keeps under its root, which no sandbox teardown drops.
+func (p *Provider) ReleaseRoot() error { return p.runsc.DropNullNetns() }
+
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
 func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	// The sentry boots inside the cgroup runsc builds from this number, so a bound under its own cost

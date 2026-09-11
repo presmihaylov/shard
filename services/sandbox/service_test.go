@@ -767,7 +767,7 @@ func TestRemoveFreesEveryHoldingInOrder(t *testing.T) {
 		t.Fatalf("rm: %v", err)
 	}
 
-	want := []string{"provider.Remove", "net.Release", "repo.Delete", "net.ReapplyAll", "repo.List", "substrate.DropNullNetns"}
+	want := []string{"provider.Remove", "net.Release", "repo.Delete", "net.ReapplyAll", "repo.List", "substrate.ReleaseRoot"}
 	if got := r.calls[len(r.calls)-len(want):]; !slices.Equal(got, want) {
 		t.Errorf("rm freed %v, want %v", got, want)
 	}
@@ -870,8 +870,8 @@ func TestRemoveNamesWhatIsLeftOnTheHost(t *testing.T) {
 			t.Errorf("rm failed with %v, want it to name the %s it left behind", err, left)
 		}
 	}
-	if strings.Contains(err.Error(), "runsc state and rootfs mount") {
-		t.Errorf("rm failed with %v, but it did free the runsc state", err)
+	if strings.Contains(err.Error(), "runtime state and rootfs mount") {
+		t.Errorf("rm failed with %v, but it did free the runtime state", err)
 	}
 	if l.repo.deleted {
 		t.Error("rm deleted the record past a failure, so nothing can reach what is left")

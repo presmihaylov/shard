@@ -429,14 +429,14 @@ func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) 
 	return f.exit, nil
 }
 
-// fakeSubstrate stands in for the runsc root, which off Linux has no mount to give back.
+// fakeSubstrate stands in for the runtime root, which off Linux has no mount to give back.
 type fakeSubstrate struct {
 	r       *recorder
 	dropped bool
 }
 
-func (f *fakeSubstrate) DropNullNetns() error {
-	if err := f.r.record("substrate.DropNullNetns"); err != nil {
+func (f *fakeSubstrate) ReleaseRoot() error {
+	if err := f.r.record("substrate.ReleaseRoot"); err != nil {
 		return err
 	}
 	f.dropped = true

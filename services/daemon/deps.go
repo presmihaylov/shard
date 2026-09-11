@@ -31,14 +31,13 @@ type deps struct {
 	// needs another one calls its locked form, because a Mutex taken twice by one goroutine deadlocks.
 	mu sync.Mutex
 
-	imageSvc     *image.Service
-	repoSvc      *sandboxstate.Repository
-	netSvc       *network.Service
-	providerSvc  models.Provider
-	substrateSvc *runsc.Runner
-	secretSvc    *secret.Store
-	policySvc    *egress.Store
-	runnerSvc    *runsc.Runner
+	imageSvc    *image.Service
+	repoSvc     *sandboxstate.Repository
+	netSvc      *network.Service
+	providerSvc models.Provider
+	secretSvc   *secret.Store
+	policySvc   *egress.Store
+	runnerSvc   *runsc.Runner
 }
 
 func (d *deps) imagesLocked() (*image.Service, error) {
@@ -84,9 +83,15 @@ func (d *deps) netLocked() (*network.Service, error) {
 		return nil, err
 	}
 
+	provider, err := d.providerLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	// The provider says whether its sandboxes own their namespaces; the daemon does not know substrates.
 	cfg := network.Config{Root: d.cfg.Root, Egress: source}
-	if d.cfg.Provider == sysbox.Name {
-		cfg.Userns = sysbox.Userns
+	if owner, ok := provider.(usernsOwner); ok {
+		cfg.Userns = owner.Userns()
 	}
 
 	svc, err := network.New(cfg, manager)
@@ -187,18 +192,25 @@ func (d *deps) holders(name string) ([]string, error) {
 
 // substrate is what the runsc root holds for itself. It belongs to no sandbox, so no per-sandbox
 // teardown gives it back.
-func (d *deps) substrateLocked() (*runsc.Runner, error) {
-	if d.substrateSvc != nil {
-		return d.substrateSvc, nil
-	}
+// usernsOwner is a provider whose sandboxes' namespaces must belong to a user namespace of its mapping.
+type usernsOwner interface {
+	Userns() netns.IDMapping
+}
 
-	runner, err := d.runnerLocked()
+// substrateLocked is the provider's own hook for what its runtime keeps under its root. Every
+// provider shard knows implements it, so a missing one is a bug, not a host.
+func (d *deps) substrateLocked() (sandbox.Substrate, error) {
+	provider, err := d.providerLocked()
 	if err != nil {
 		return nil, err
 	}
-	d.substrateSvc = runner
 
-	return d.substrateSvc, nil
+	sub, ok := provider.(sandbox.Substrate)
+	if !ok {
+		return nil, fmt.Errorf("provider %s cannot release its runtime root", provider.Name())
+	}
+
+	return sub, nil
 }
 
 func (d *deps) policiesLocked() (*egress.Store, error) {
