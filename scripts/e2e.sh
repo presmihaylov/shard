@@ -33,6 +33,8 @@ PREFIX=${PREFIX:-/usr/local/bin}
 SHARD_ROOT=${SHARD_ROOT:-/var/lib/shard-e2e}
 IMAGE=${IMAGE:-alpine:3.20}
 PROVIDER=${PROVIDER:-gvisor}
+# Where the daemon pins each sandbox's user namespace on sysbox (pkg/netns.UsernsRunDir).
+USERNS_DIR=/var/run/shard/userns
 DIND_IMAGE=${DIND_IMAGE:-docker:27-dind}
 GRACE=${GRACE:-5s}
 
@@ -394,6 +396,9 @@ teardown() {
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
+		# sysbox pins the userns next to the netns; a bind mount survives the rm of its file.
+		umount "${USERNS_DIR}/${id}" >/dev/null 2>&1 || true
+		rm -f "${USERNS_DIR}/${id}"
 	done
 	# shellcheck disable=SC2086
 	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
@@ -1307,6 +1312,7 @@ step "prove the host holds nothing the sandbox left"
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"
 absent "the address lease" "$([ -e "${LEASE}" ] && echo "${LEASE}" || true)"
 absent "the namespace" "$(ip netns list | grep "^${ID}" || true)"
+absent "the user namespace pin" "$([ -e "${USERNS_DIR}/${ID}" ] && echo "${USERNS_DIR}/${ID}" || true)"
 absent "the link" "$(ip link show "${LINK}" 2>/dev/null || true)"
 absent "the address" "$(ip -o addr | grep "${ADDRESS%%/*}" || true)"
 absent "the rootfs mount" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
