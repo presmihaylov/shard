@@ -72,3 +72,55 @@ func TestTheProviderIsPickedByName(t *testing.T) {
 		t.Errorf("an unknown provider built %v, want a refusal that names it", err)
 	}
 }
+
+// SHARD-93: a Sysbox host has no runsc, and the daemon must not need one. What the runtime keeps under
+// its root, and whether the guest owns its namespaces, are the provider's to say, not the daemon's.
+func TestASysboxDaemonNeedsNoRunsc(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "sysbox-runc"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write the fake sysbox-runc: %v", err)
+	}
+	t.Setenv("PATH", bin)
+
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "sysbox"}}
+
+	if _, err := d.substrateLocked(); err != nil {
+		t.Fatalf("the substrate hook of a sysbox daemon: %v", err)
+	}
+
+	got, err := d.userns()
+	if err != nil {
+		t.Fatalf("the userns of a sysbox daemon: %v", err)
+	}
+	if got.HostID != 165536 || got.Size != 65536 {
+		t.Errorf("sysbox userns is %+v, want the Sysbox CE mapping 165536+65536", got)
+	}
+
+	g := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "gvisor"}}
+	if _, err := g.substrateLocked(); err == nil || !strings.Contains(err.Error(), "runsc") {
+		t.Errorf("a gvisor daemon without runsc built its substrate with %v, want a refusal naming runsc", err)
+	}
+	if _, err := g.userns(); err == nil || !strings.Contains(err.Error(), "runsc") {
+		t.Errorf("a gvisor daemon without runsc answered its userns with %v, want a refusal naming runsc", err)
+	}
+}
+
+// The userns is the provider's answer, so the network cannot be built before the substrate is
+// found. It is asked at Allocate instead, and a gVisor daemon answers it with no mapping at all.
+func TestTheUsernsIsAskedOfTheProviderNotTheName(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "runsc"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write the fake runsc: %v", err)
+	}
+	t.Setenv("PATH", bin)
+
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "gvisor"}}
+
+	got, err := d.userns()
+	if err != nil {
+		t.Fatalf("the userns of a gvisor daemon: %v", err)
+	}
+	if got.Set() {
+		t.Errorf("a gvisor daemon owns its namespaces from %+v, want the host's user namespace", got)
+	}
+}

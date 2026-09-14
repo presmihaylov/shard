@@ -291,7 +291,7 @@ func newServiceOwnedBy(t *testing.T, owner netns.IDMapping) (*network.Service, *
 		Root:   t.TempDir(),
 		Bridge: testBridge,
 		Subnet: netip.MustParsePrefix(testSubnet),
-		Userns: owner,
+		Userns: func() (netns.IDMapping, error) { return owner, nil },
 	}, m)
 	if err != nil {
 		t.Fatalf("open the network service: %v", err)
