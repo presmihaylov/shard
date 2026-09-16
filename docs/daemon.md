@@ -55,7 +55,9 @@ An exec is a resource the daemon owns for the life of the sandbox. It starts the
 keeps the last 8 MiB of its output, so a client that drops re-attaches by exec id, replays what it
 missed and streams the rest. One client attaches at a time. The record holds the exit once the
 command ends, `kill` signals it while it runs, and only an `rm` of the exec or a `stop` of the
-sandbox frees it.
+sandbox frees it. The daemon keeps at most 32 exited execs per sandbox, so a new exec evicts the
+oldest exited one and the retained output stays bounded; a running exec never counts. An evicted
+exec answers 404, the same as a deleted one.
 
 An exec does not outlive the daemon. The daemon holds the record and the buffer in memory, and
 `shard-init` holds the guest process, so a restart cuts every client off and loses the record while
@@ -271,8 +273,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
   answer until the command ends, then answers the ended record. With the WebSocket handshake it
   answers 101 instead and attaches: it replays the buffered output, then streams live to the exit on
-  stream 3. 404 when the exec ended with the sandbox or belongs to another; 409 `in_use` for a second
-  attach. A drop leaves the command running, so a later attach replays it again.
+  stream 3. 404 when the exec ended with the sandbox, was evicted by the 32-exec cap, or belongs to
+  another; 409 `in_use` for a second attach. A drop leaves the command running, so a later attach
+  replays it again.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
   TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;

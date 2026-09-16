@@ -272,6 +272,17 @@ func (e *execSession) record() models.Exec {
 	return rec
 }
 
+// exited reports whether the command ended and when. It reads exitedAt without the lock: setResult
+// writes it before it closes done, so a closed done makes the read safe.
+func (e *execSession) exited() (bool, time.Time) {
+	select {
+	case <-e.done:
+		return true, *e.exitedAt
+	default:
+		return false, time.Time{}
+	}
+}
+
 // setPID keeps the pid the provider reported and wakes a kill that waits for it.
 func (e *execSession) setPID(pid int) {
 	e.pidMu.Lock()
@@ -401,6 +412,7 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 	}
 
 	s.holdExec(execID, session)
+	s.capExitedExecs(id)
 
 	return session.record(), nil
 }
@@ -786,6 +798,41 @@ func (s *Service) dropExec(execID string) {
 	defer s.execMu.Unlock()
 
 	delete(s.execs, execID)
+}
+
+// exitedExecCap bounds the exited execs one sandbox retains, so a sandbox that runs many commands in a
+// loop does not grow without a bound.
+const exitedExecCap = 32
+
+// capExitedExecs keeps at most exitedExecCap exited execs for one sandbox and drops the oldest, so an
+// evicted exec answers 404 like a deleted one. A running exec never counts and is never evicted.
+func (s *Service) capExitedExecs(sandboxID string) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	type aged struct {
+		session *execSession
+		at      time.Time
+	}
+
+	var exited []aged
+	for _, session := range s.execs {
+		if session.sandboxID != sandboxID {
+			continue
+		}
+		if done, at := session.exited(); done {
+			exited = append(exited, aged{session: session, at: at})
+		}
+	}
+	if len(exited) <= exitedExecCap {
+		return
+	}
+
+	slices.SortFunc(exited, func(a, b aged) int { return a.at.Compare(b.at) })
+	for _, e := range exited[:len(exited)-exitedExecCap] {
+		e.session.cancel()
+		delete(s.execs, e.session.id)
+	}
 }
 
 // readyForExec resolves the reference and refuses a sandbox no command can run in. The record

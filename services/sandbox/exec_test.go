@@ -767,3 +767,44 @@ func TestStopForgetsTheSandboxExecs(t *testing.T) {
 		t.Errorf("a get after the stop returned %v, want an exec that is not found", err)
 	}
 }
+
+// A sandbox that runs many execs does not grow without a bound. The daemon keeps a fixed number of the
+// most recent exited execs, so it evicts the oldest, which then answers not-found like a deleted exec.
+func TestManyExecsEvictTheOldestNotTheNewest(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	const runs = 100
+	ids := make([]string, 0, runs)
+	for i := range runs {
+		exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+		if err != nil {
+			t.Fatalf("CreateExec %d: %v", i, err)
+		}
+		if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+			t.Fatalf("WaitExec %d: %v", i, err)
+		}
+		ids = append(ids, exec.ID)
+	}
+
+	held, err := svc.ListExecs(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("ListExecs: %v", err)
+	}
+
+	// The cap bounds retention well below one record per run.
+	if len(held) >= runs {
+		t.Fatalf("the sandbox holds %d execs after %d runs, want the cap to bound it", len(held), runs)
+	}
+	if len(held) > runs/2 {
+		t.Errorf("the sandbox holds %d execs, want the cap to keep it small", len(held))
+	}
+
+	// The oldest run is evicted and answers not-found, the newest is kept: eviction drops the oldest.
+	if _, err := svc.GetExec(t.Context(), "sandbox1", ids[0]); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("the oldest exec answered %v, want not found after eviction", err)
+	}
+	if _, err := svc.GetExec(t.Context(), "sandbox1", ids[runs-1]); err != nil {
+		t.Errorf("the newest exec answered %v, want it kept", err)
+	}
+}
