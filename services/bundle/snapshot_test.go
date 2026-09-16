@@ -42,6 +42,7 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 		StateDir: t.TempDir(),
 		Network: models.NetworkSpec{
 			NetnsPath:   "/run/netns/s-fork",
+			Userns:      models.UserNamespace{Path: "/run/shard/userns/s-fork", HostID: 165536, Size: 65536},
 			Address:     netip.MustParsePrefix("10.87.0.3/16"),
 			Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
 		},
@@ -66,6 +67,12 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 		if ns.Type == specs.NetworkNamespace && ns.Path != "/run/netns/s-fork" {
 			t.Errorf("netns %q, want the fork's", ns.Path)
 		}
+		if ns.Type == specs.UserNamespace && ns.Path != "/run/shard/userns/s-fork" {
+			t.Errorf("userns %q, want the fork's", ns.Path)
+		}
+	}
+	if len(got.Linux.UIDMappings) != 1 || got.Linux.UIDMappings[0].HostID != 165536 {
+		t.Errorf("uid mappings %v, want the fork's single mapping", got.Linux.UIDMappings)
 	}
 
 	// The restore checks the process and the mounts by destination, so those must be the source's.

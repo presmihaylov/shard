@@ -58,6 +58,10 @@ type Config struct {
 	Nameservers []netip.Addr
 	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
 	Egress EgressSource
+	// Userns, when set, makes every namespace owned by a user namespace with this mapping, which a
+	// substrate that runs the guest in one of its own needs: without it the guest has no CAP_NET_ADMIN
+	// over its own netns. Unset is the host's user namespace, which is what gVisor joins.
+	Userns netns.IDMapping
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -249,12 +253,22 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 func (s *Service) spec(id string, address netip.Addr) models.NetworkSpec {
 	return models.NetworkSpec{
 		NetnsPath:     netns.NamespacePath(id),
+		Userns:        s.userns(id),
 		Address:       netip.PrefixFrom(address, s.cfg.Subnet.Bits()),
 		Gateway:       s.gateway,
 		HostInterface: s.hostInterface(address),
 		// Cloned: the spec crosses into the provider and the bundle, and neither may reach back here.
 		Nameservers: slices.Clone(s.cfg.Nameservers),
 	}
+}
+
+// userns is the user namespace the guest joins, which is none unless the config asks for one.
+func (s *Service) userns(id string) models.UserNamespace {
+	if !s.cfg.Userns.Set() {
+		return models.UserNamespace{}
+	}
+
+	return models.UserNamespace{Path: netns.UsernsPath(id), HostID: s.cfg.Userns.HostID, Size: s.cfg.Userns.Size}
 }
 
 func (s *Service) attach(ctx context.Context, id string, address netip.Addr) error {
@@ -265,7 +279,7 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr) err
 		return err
 	}
 
-	if err := s.manager.AddNamespace(ctx, id); err != nil {
+	if err := s.addNamespace(ctx, id); err != nil {
 		return err
 	}
 
@@ -287,6 +301,15 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr) err
 	}
 
 	return s.configureGuest(ctx, id, address)
+}
+
+// addNamespace makes the netns, owned by a user namespace of the sandbox's own when the config asks for one.
+func (s *Service) addNamespace(ctx context.Context, id string) error {
+	if s.cfg.Userns.Set() {
+		return s.manager.AddOwnedNamespace(ctx, id, s.cfg.Userns)
+	}
+
+	return s.manager.AddNamespace(ctx, id)
 }
 
 // configureGuest addresses the namespace before the sandbox joins it, because a substrate reads the

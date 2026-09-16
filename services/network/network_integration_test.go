@@ -224,7 +224,61 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	}
 }
 
+// The mapping Sysbox CE hands every container; the test only needs one that is not the host's.
+var testOwner = netns.IDMapping{HostID: 165536, Size: 65536}
+
+// A guest that joins the user namespace shard pinned owns the netns: it may add a link there, which
+// the same guest in the host's user namespace may not.
+func TestAnOwnedNamespaceGivesTheGuestNetAdminOverIt(t *testing.T) {
+	s, _ := newServiceOwnedBy(t, testOwner)
+	spec := allocate(t, s, "owned-otter")
+
+	if spec.Userns.Path != netns.UsernsPath("owned-otter") {
+		t.Fatalf("the spec names the userns %q, want the pinned one", spec.Userns.Path)
+	}
+	if _, err := os.Stat(spec.Userns.Path); err != nil {
+		t.Fatalf("the user namespace at %s: %v", spec.Userns.Path, err)
+	}
+
+	uidMap := run(t, "nsenter", "--user="+spec.Userns.Path, "-S", "0", "-G", "0", "cat", "/proc/self/uid_map")
+	if fields := strings.Fields(uidMap); !slices.Equal(fields, []string{"0", "165536", "65536"}) {
+		t.Errorf("uid_map is %q, want 0 165536 65536", strings.TrimSpace(uidMap))
+	}
+
+	run(t, "nsenter", "--user="+spec.Userns.Path, "--net="+spec.NetnsPath, "-S", "0", "-G", "0",
+		"ip", "link", "add", "d0", "type", "dummy")
+
+	// The shape Sysbox has without the owner: in the netns first, then in a user namespace of its own.
+	out, err := exec.Command("nsenter", "--net="+spec.NetnsPath, "unshare", "--user", "--map-root-user",
+		"ip", "link", "add", "d1", "type", "dummy").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "not permitted") {
+		t.Errorf("a guest in a user namespace that is not the owner added a link: %v: %s", err, out)
+	}
+}
+
+func TestReleaseUnpinsTheUserNamespace(t *testing.T) {
+	s, _ := newServiceOwnedBy(t, testOwner)
+	spec := allocate(t, s, "owned-otter")
+
+	if err := s.Release(t.Context(), "owned-otter"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := os.Stat(spec.Userns.Path); !os.IsNotExist(err) {
+		t.Errorf("the user namespace pin at %s is still there: %v", spec.Userns.Path, err)
+	}
+	if _, err := os.Stat(spec.NetnsPath); !os.IsNotExist(err) {
+		t.Errorf("the netns at %s is still there: %v", spec.NetnsPath, err)
+	}
+}
+
 func newService(t *testing.T) (*network.Service, *netns.Manager) {
+	t.Helper()
+
+	return newServiceOwnedBy(t, netns.IDMapping{})
+}
+
+// newServiceOwnedBy is newService with every namespace owned by a user namespace with the mapping.
+func newServiceOwnedBy(t *testing.T, owner netns.IDMapping) (*network.Service, *netns.Manager) {
 	t.Helper()
 	requireNetworkTools(t)
 
@@ -237,6 +291,7 @@ func newService(t *testing.T) (*network.Service, *netns.Manager) {
 		Root:   t.TempDir(),
 		Bridge: testBridge,
 		Subnet: netip.MustParsePrefix(testSubnet),
+		Userns: owner,
 	}, m)
 	if err != nil {
 		t.Fatalf("open the network service: %v", err)

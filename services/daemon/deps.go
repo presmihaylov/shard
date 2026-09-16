@@ -84,7 +84,12 @@ func (d *deps) netLocked() (*network.Service, error) {
 		return nil, err
 	}
 
-	svc, err := network.New(network.Config{Root: d.cfg.Root, Egress: source}, manager)
+	cfg := network.Config{Root: d.cfg.Root, Egress: source}
+	if d.cfg.Provider == sysbox.Name {
+		cfg.Userns = sysbox.Userns
+	}
+
+	svc, err := network.New(cfg, manager)
 	if err != nil {
 		return nil, err
 	}

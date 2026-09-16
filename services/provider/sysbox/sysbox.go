@@ -17,6 +17,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/sysboxrunc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
@@ -24,6 +25,11 @@ import (
 
 // Name is the substrate, as the record and every refusal name it.
 const Name = "sysbox"
+
+// Userns is the one mapping Sysbox CE gives every container, so the netns shard makes for a sandbox
+// has to be owned by a user namespace with exactly it or the guest has no CAP_NET_ADMIN over it.
+// One mapping for all sandboxes is why Sysbox CE is a single-tenant substrate.
+var Userns = netns.IDMapping{HostID: 165536, Size: 65536}
 
 // logFile holds the guest's stdout and stderr, interleaved the way a terminal would show them.
 const logFile = "output.log"
