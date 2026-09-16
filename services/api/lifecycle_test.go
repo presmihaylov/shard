@@ -26,6 +26,8 @@ type fakeLifecycle struct {
 	// copied is the body a fork or a clone sent.
 	copied sandbox.CopyRequest
 	ref    string
+	// waited is the ref a get with ?wait blocked on.
+	waited string
 	// granted is the secret the grant or the ungrant named.
 	granted string
 	// attached is the policy the attach named.
@@ -70,7 +72,14 @@ type fakeLifecycle struct {
 func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
 
-	return models.Sandbox{ID: "sandbox1", Name: req.Name, Image: req.Image, State: models.StateRunning}, f.err
+	return models.Sandbox{ID: "sandbox1", Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
+}
+
+// WaitState records the ref a get with ?wait blocked on, and refuses like any verb.
+func (f *fakeLifecycle) WaitState(_ context.Context, ref string) error {
+	f.waited = ref
+
+	return f.err
 }
 
 func (f *fakeLifecycle) Start(_ context.Context, ref string) (models.Sandbox, error) {
@@ -356,8 +365,8 @@ func TestCreateAnswers201WithTheRecord(t *testing.T) {
 
 	body := `{"image":"alpine:3.20","name":"web","command":["sh","-c","sleep 600"],"env":["A=1"],"secrets":["TOKEN"],"policy":"locked","resources":{"memory_mib":512,"vcpus":2}}`
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", body)
-	if status != http.StatusCreated || got["id"] != "sandbox1" || got["state"] != "running" {
-		t.Fatalf("POST /v0/sandboxes answered %d %v, want 201 with the record", status, got)
+	if status != http.StatusCreated || got["id"] != "sandbox1" || got["state"] != "pending" {
+		t.Fatalf("POST /v0/sandboxes answered %d %v, want 201 with the pending record", status, got)
 	}
 
 	var want sandbox.CreateRequest

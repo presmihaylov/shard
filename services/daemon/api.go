@@ -38,10 +38,15 @@ type Config struct {
 // Run supervises the daemon's tasks over one root until ctx ends.
 func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
-	life := &lifecycle{deps: d}
+	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, oomRestart{deps: d, lifecycle: life, interval: oomInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	err := New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, oomRestart{deps: d, lifecycle: life, interval: oomInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+
+	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
+	life.wait()
+
+	return err
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -147,9 +152,15 @@ func (p process) Daemon() (api.Daemon, error) {
 // lifecycle builds the orchestrator on the first verb, so a daemon on a host without runsc still answers reads.
 type lifecycle struct {
 	deps *deps
+	// base outlives one request: a create's background pull and start run under it, and it ends when the daemon stops.
+	base context.Context
 
 	mu  sync.Mutex
 	svc *sandbox.Service
+	// pending names each create the daemon still runs, so a wait knows when the sandbox leaves pending.
+	pending map[string]chan struct{}
+	// wg holds the background creates, so a shutdown does not leave one half-built.
+	wg sync.WaitGroup
 }
 
 func (l *lifecycle) service() (*sandbox.Service, error) {
@@ -169,14 +180,88 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 	return l.svc, nil
 }
 
+// Create runs synchronously when the image is cached and answers running, so a create off a warm cache
+// keeps its shape. An uncached image records the sandbox pending and pulls, builds and starts it in the
+// background, where it lands running or failed. A wait blocks on the record leaving pending.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 
-	return svc.Create(ctx, req)
+	images, err := l.deps.images()
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	// A cached image needs no pull, so the create finishes here and lands running; only an uncached one goes async.
+	cached, err := images.Cached(req.Image)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+	if cached {
+		return svc.Create(ctx, req)
+	}
+
+	sb, err := svc.Prepare(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	done := make(chan struct{})
+	l.mu.Lock()
+	if l.pending == nil {
+		l.pending = map[string]chan struct{}{}
+	}
+	l.pending[sb.ID] = done
+	l.mu.Unlock()
+
+	// The pull outlives the request, so it runs under base, not the caller's context, and ends with the daemon.
+	l.wg.Go(func() {
+		completeErr := svc.Complete(l.base, sb.ID, req)
+
+		l.mu.Lock()
+		delete(l.pending, sb.ID)
+		l.mu.Unlock()
+		close(done)
+
+		if completeErr != nil {
+			log.New(l.deps.cfg.Out, "", log.LstdFlags).Printf("create %s failed: %v", sb.ID, completeErr)
+		}
+	})
+
+	return sb, nil
 }
+
+// WaitState blocks until the sandbox leaves pending, or answers at once when no create runs behind it.
+func (l *lifecycle) WaitState(ctx context.Context, ref string) error {
+	repo, err := l.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	id, err := repo.Resolve(ref)
+	if err != nil {
+		return err
+	}
+
+	l.mu.Lock()
+	done, ok := l.pending[id]
+	l.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// wait blocks until every background create has ended, so a stopped daemon leaves none half-built.
+func (l *lifecycle) wait() { l.wg.Wait() }
 
 func (l *lifecycle) GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
 	svc, err := l.service()

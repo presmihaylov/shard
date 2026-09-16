@@ -142,6 +142,18 @@ func (s *Service) cached(ref string) (Image, bool, error) {
 	return img, err == nil, err
 }
 
+// Cached says whether ref is pulled and unpacked, so a create can start it now instead of in the background.
+// A ref that does not parse is not in the store, and the create path is what rejects it, not this read.
+func (s *Service) Cached(ref string) (bool, error) {
+	if _, err := Canonical(ref); err != nil {
+		return false, nil
+	}
+
+	_, found, err := s.cached(ref)
+
+	return found, err
+}
+
 // reclaim drops the blobs a failed pull left behind, which nothing else reaches once the index misses them.
 func (s *Service) reclaim() error {
 	if err := s.store.Collect(); err != nil {

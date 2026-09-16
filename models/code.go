@@ -10,6 +10,7 @@ const (
 	CodeSandboxNotStopped Code = "sandbox_not_stopped"
 	CodeSandboxNotPaused  Code = "sandbox_not_paused"
 	CodeSandboxLive       Code = "sandbox_live"
+	CodeSandboxFailed     Code = "sandbox_failed"
 	CodeNoSnapshot        Code = "no_snapshot"
 	CodeUnsupported       Code = "unsupported"
 	CodeInUse             Code = "in_use"

@@ -20,6 +20,8 @@ type Sandbox struct {
 	ExitStatus *ExitStatus `json:"exit_status,omitempty"`
 	// StoppedReason says why shard stopped it when no operator did, empty otherwise.
 	StoppedReason string `json:"stopped_reason,omitempty"`
+	// FailedReason says why a create never reached running, set only in state failed.
+	FailedReason string `json:"failed_reason,omitempty"`
 
 	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
 	// does not consume it, so it stands until the next pause replaces it or rm removes it.

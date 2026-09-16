@@ -395,6 +395,24 @@ func holdings(t *testing.T, app App) []string {
 	return held
 }
 
+// addedHoldings names what the host holds now that it did not hold before, so a test reads the one
+// record a failed create leaves without depending on what the shared daemon already held.
+func addedHoldings(before, after []string) []string {
+	was := make(map[string]bool, len(before))
+	for _, h := range before {
+		was[h] = true
+	}
+
+	added := make([]string, 0, len(after))
+	for _, h := range after {
+		if !was[h] {
+			added = append(added, h)
+		}
+	}
+
+	return added
+}
+
 // leases answers the id in every lease file, because the file itself is named after the address.
 func leases(t *testing.T, root string) []string {
 	t.Helper()

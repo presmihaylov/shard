@@ -375,6 +375,13 @@ func (d *deps) repo() (*sandboxstate.Repository, error) {
 	return d.repoLocked()
 }
 
+func (d *deps) images() (*image.Service, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.imagesLocked()
+}
+
 func (d *deps) provider() (models.Provider, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

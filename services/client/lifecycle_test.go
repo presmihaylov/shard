@@ -59,15 +59,15 @@ func TestCreateSandboxPostsTheRequestAndDecodesTheRecord(t *testing.T) {
 }
 
 // A create pulls the image inside the daemon, and no per-request deadline can say how long that takes.
-func TestCreateSandboxOutlivesTheClientTimeout(t *testing.T) {
+func TestWaitSandboxOutlivesTheClientTimeout(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
-		answer(http.StatusCreated, `{"id":"sandbox1"}`)(w, r)
+		answer(http.StatusOK, `{"id":"sandbox1","state":"running"}`)(w, r)
 	})
 	c.Timeout = 20 * time.Millisecond
 
-	if _, err := c.CreateSandbox(t.Context(), sandbox.CreateRequest{Image: "alpine"}); err != nil {
-		t.Errorf("CreateSandbox = %v, want the record after the pull however long it took", err)
+	if _, err := c.WaitSandbox(t.Context(), "sandbox1"); err != nil {
+		t.Errorf("WaitSandbox = %v, want the record after the create finished however long it took", err)
 	}
 }
 

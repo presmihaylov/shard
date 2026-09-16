@@ -13,6 +13,9 @@ import (
 // LostReason is what a record says once the daemon found no process and no snapshot behind it.
 const LostReason = "daemon restarted and found no process"
 
+// InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
+const InterruptedReason = "the daemon restarted before the create finished"
+
 // ReconcileAll makes the records agree with the substrate, before the daemon serves its first verb.
 // It corrects a record and never deletes one, and it reports one line per record it corrected.
 func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
@@ -65,6 +68,23 @@ func (s *Service) reconcileOne(ctx context.Context, sb models.Sandbox, report fu
 		return state, nil
 	}
 
+	// A pending record whose start never took is a create the daemon dropped: it ends failed, not stopped.
+	if state == models.StateFailed {
+		err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+			rec.State = models.StateFailed
+			rec.PID = 0
+			rec.FailedReason = InterruptedReason
+
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("sandbox %s never finished its create but its record was not updated: %w", sb.ID, err)
+		}
+		report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says failed, %s", sb.ID, sb.State, InterruptedReason))
+
+		return state, nil
+	}
+
 	err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
@@ -95,6 +115,11 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		if held {
 			return models.StatePaused, nil
 		}
+	}
+
+	// A pending create whose start never took never reached running, so it is a failed create.
+	if sb.State == models.StatePending {
+		return models.StateFailed, nil
 	}
 
 	if sb.State == models.StateRunning || sb.State == models.StatePaused {

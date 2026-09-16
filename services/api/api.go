@@ -23,6 +23,8 @@ import (
 // Lifecycle is the part of sandbox.Service the routes that change a sandbox call.
 type Lifecycle interface {
 	Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error)
+	// WaitState blocks until the sandbox leaves pending, so a get with ?wait sees running or failed.
+	WaitState(ctx context.Context, ref string) error
 	Start(ctx context.Context, ref string) (models.Sandbox, error)
 	Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error)
 	Remove(ctx context.Context, ref string, force bool, grace time.Duration) error
@@ -214,8 +216,25 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: sandboxes, Next: next, Warnings: warnings})
 }
 
+// getSandbox answers the record two ways: ?wait=true blocks until a pending create lands, the default reads now.
 func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := sandbox.Inspect(h.repo, h.enforcer, r.PathValue("id"))
+	wait, err := boolQuery(r, "wait")
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	ref := r.PathValue("id")
+	if wait {
+		if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+	}
+
+	sb, err := sandbox.Inspect(h.repo, h.enforcer, ref)
 	if err != nil {
 		h.writeError(w, err)
 

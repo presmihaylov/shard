@@ -852,6 +852,10 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 		return "", err
 	}
 
+	if err := failedGuard(id, sb); err != nil {
+		return "", err
+	}
+
 	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
 	if sb.State == models.StateStopped {
 		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}

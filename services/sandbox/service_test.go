@@ -54,46 +54,41 @@ func TestCreateNeverWaitsForTheEntrypoint(t *testing.T) {
 }
 
 // TestCreateTearsDownWhatItBuilt forces a failure at each claim and asserts exactly what is given back.
+// A failed create keeps the record and marks it failed, so it never gives the record back.
 func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 	cases := []struct {
-		failAt  string
-		cleanup []string
+		failAt   string
+		giveBack []string
 	}{
-		{"images.Claim", nil},
-		{"repo.Create", nil},
-		{"repo.Dir", []string{"repo.Delete"}},
-		{"net.Allocate", []string{"net.Release", "repo.Delete"}},
+		{"images.Pull", nil},
+		{"repo.Dir", nil},
+		{"net.Allocate", []string{"net.Release"}},
 		// Create rolls back its own mount only, so the substrate claim is given back here too.
-		{"provider.Create", []string{"provider.Remove", "net.Release", "repo.Delete"}},
-		{"provider.Status", []string{"provider.Remove", "net.Release", "repo.Delete"}},
-		{"repo.Update#1", []string{"provider.Remove", "net.Release", "repo.Delete"}},
-		{"provider.Start", []string{"provider.Remove", "net.Release", "repo.Delete"}},
-		// The second update comes after a successful start, and a live sandbox is never given back.
-		{"repo.Update#2", nil},
+		{"provider.Create", []string{"provider.Remove", "net.Release"}},
+		{"provider.Status", []string{"provider.Remove", "net.Release"}},
+		{"repo.Update#1", []string{"provider.Remove", "net.Release"}},
+		{"provider.Start", []string{"provider.Remove", "net.Release"}},
 	}
 
 	for _, c := range cases {
 		t.Run(c.failAt, func(t *testing.T) {
 			r := &recorder{fail: []string{c.failAt}}
-			svc, _ := newService(t, r, models.Sandbox{})
+			svc, l := newService(t, r, models.Sandbox{})
 
 			if _, err := svc.Create(t.Context(), alpine()); err == nil {
 				t.Fatal("a forced failure returned no error")
 			}
 
-			if got := r.calls[len(r.calls)-len(c.cleanup):]; !slices.Equal(got, c.cleanup) {
-				t.Errorf("tore down %v, want %v", got, c.cleanup)
+			if got := keep(r.calls, "provider.Remove", "net.Release"); !slices.Equal(got, c.giveBack) {
+				t.Errorf("gave back %v, want %v", got, c.giveBack)
 			}
 
-			// An empty tail matches anything, so the cases that give nothing back need their own assertion.
-			if len(c.cleanup) > 0 {
-				return
+			// The record is the failure report, so it stays: only rm frees a failed sandbox.
+			if slices.Contains(r.calls, "repo.Delete") {
+				t.Errorf("a failed create deleted the record: %v", r.calls)
 			}
-
-			for _, step := range []string{"provider.Remove", "net.Release", "repo.Delete"} {
-				if slices.Contains(r.calls, step) {
-					t.Errorf("tore down %v, want nothing", r.calls)
-				}
+			if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedReason == "" {
+				t.Errorf("the record is %s reason %q, want failed with a reason", l.repo.sb.State, l.repo.sb.FailedReason)
 			}
 		})
 	}
@@ -144,14 +139,9 @@ func TestCreateStopsUnwindingAtTheFirstFailure(t *testing.T) {
 		t.Fatal("a forced failure returned no error")
 	}
 
-	if last := r.calls[len(r.calls)-1]; last != "provider.Remove" {
-		t.Fatalf("the unwind went on to %q after provider.Remove failed", last)
-	}
-
-	for _, step := range []string{"net.Release", "repo.Delete"} {
-		if slices.Contains(r.calls, step) {
-			t.Errorf("ran %s after a failed give-back; the sandbox is still on the host", step)
-		}
+	// The unwind is LIFO and stops at the first give-back that fails, so net.Release never runs.
+	if got := keep(r.calls, "provider.Remove", "net.Release", "repo.Delete"); !slices.Equal(got, []string{"provider.Remove"}) {
+		t.Errorf("unwound %v, want it to stop at provider.Remove", got)
 	}
 }
 
@@ -189,8 +179,8 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 	if l.repo.sb.HostInterface != "shardv2" {
 		t.Errorf("the record holds host interface %q, want shardv2", l.repo.sb.HostInterface)
 	}
-	if l.repo.sb.State != models.StateCreated {
-		t.Errorf("the record says %s before the start was recorded, want created", l.repo.sb.State)
+	if l.repo.sb.State != models.StatePending {
+		t.Errorf("the record says %s before the start was recorded, want pending", l.repo.sb.State)
 	}
 }
 
@@ -342,7 +332,7 @@ func TestCreateRefusesASecretTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "secret NOPE does not exist") {
 		t.Fatalf("create = %v, want a request error naming the secret", err)
 	}
-	if slices.Contains(r.calls, "images.Claim") {
+	if slices.Contains(r.calls, "images.Pull") {
 		t.Errorf("a missing secret still cost a pull: %v", r.calls)
 	}
 }
@@ -384,7 +374,7 @@ func TestCreateRefusesAPolicyTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "policy not found") {
 		t.Fatalf("create = %v, want a request error naming the policy", err)
 	}
-	if slices.Contains(r.calls, "images.Claim") {
+	if slices.Contains(r.calls, "images.Pull") {
 		t.Errorf("a missing policy still cost a pull: %v", r.calls)
 	}
 }
