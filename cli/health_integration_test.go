@@ -13,6 +13,9 @@ import (
 // healthBudget covers a 1 s interval, a probe of a few seconds and the retries, with room for a slow box.
 const healthBudget = 90 * time.Second
 
+// httpdImage has the httpd applet that the alpine build of busybox leaves out.
+const httpdImage = "busybox:1.36"
+
 func TestTheDaemonProbesASandboxWithACommand(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
@@ -54,9 +57,9 @@ func TestTheDaemonProbesASandboxOverHTTP(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	// busybox httpd serves /www in the foreground, and the second command ends it on request.
+	// httpd serves /www in the foreground; alpine leaves it out of its busybox, so this is the docker one.
 	script := "mkdir -p /www && echo ok > /www/healthz && httpd -f -p 8080 -h /www"
-	args := []string{"create", "--health-http", "8080/healthz", "--health-interval", "1s", "--health-retries", "1", testImage, "--", "/bin/sh", "-c", script}
+	args := []string{"create", "--health-http", "8080/healthz", "--health-interval", "1s", "--health-retries", "1", httpdImage, "--", "/bin/sh", "-c", script}
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("create: %v", err)
 	}
