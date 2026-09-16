@@ -30,6 +30,8 @@ type Config struct {
 	PullTimeout time.Duration
 	// InitPath is the host path of the guest supervisor.
 	InitPath string
+	// Provider names the substrate: gvisor.Name, sysbox.Name, or empty for gVisor.
+	Provider string
 }
 
 // Run supervises the daemon's tasks over one root until ctx ends.

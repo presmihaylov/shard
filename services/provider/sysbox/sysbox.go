@@ -1,5 +1,7 @@
-// Package gvisor runs sandboxes on gVisor by driving bare runsc.
-package gvisor
+// Package sysbox runs sandboxes on Sysbox by driving bare sysbox-runc. Sysbox is the substrate that
+// runs Docker and systemd inside the sandbox, and it has no snapshot at all: Capabilities is all
+// false and the three optional verbs refuse by name.
+package sysbox
 
 import (
 	"context"
@@ -11,26 +13,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
-	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/sysboxrunc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
-// Name is the substrate, as --provider and the record name it.
-const Name = "gvisor"
+// Name is the substrate, as the record and every refusal name it.
+const Name = "sysbox"
 
 // logFile holds the guest's stdout and stderr, interleaved the way a terminal would show them.
 const logFile = "output.log"
 
 const (
-	// pollInterval paces every wait here. runsc state is a socket round trip, so it is not free.
+	// pollInterval paces every wait here. sysbox-runc state is a process spawn, so it is not free.
 	pollInterval = 100 * time.Millisecond
-	// killGrace bounds the wait after SIGKILL, which the sentry cannot refuse.
+	// killGrace bounds the wait after SIGKILL, which nothing in the container can refuse.
 	killGrace = 10 * time.Second
 	// startGrace bounds the wait for the supervisor's handshake, which it writes as soon as it forks.
 	startGrace = 30 * time.Second
@@ -39,49 +40,34 @@ const (
 // diagnosticTail bounds what a failed start quotes back from the sandbox's own output.
 const diagnosticTail = 4 << 10
 
-// checkpointFile is the one file every runsc checkpoint writes, so its absence says there is no snapshot.
-const checkpointFile = "checkpoint.img"
-
-// StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes:
-// every verb below takes an id, and shard runs no daemon that could remember the path from Create.
+// StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes.
 type StateDirs func(id string) (string, error)
 
 var _ models.Provider = (*Provider)(nil)
 
-// Provider implements models.Provider on gVisor.
+// Provider implements models.Provider on Sysbox. The snapshot verbs are NoSnapshots' refusals.
 type Provider struct {
-	runsc   *runsc.Runner
+	models.NoSnapshots
+
+	runc    *sysboxrunc.Runner
 	bundles *bundle.Service
 	dirs    StateDirs
-	caps    models.Capabilities
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
 }
 
-func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
+func New(runner *sysboxrunc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
 	if runner == nil || bundles == nil || dirs == nil {
-		return nil, errors.New("the gvisor provider needs a runsc runner, a bundle service and a state directory lookup")
+		return nil, errors.New("the sysbox provider needs a sysbox-runc runner, a bundle service and a state directory lookup")
 	}
 
-	// Capabilities is fixed once here, so it needs no context and cannot fail.
-	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
-
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root}, nil
+	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runc: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
 }
 
 func (p *Provider) Name() string { return Name }
 
-func (p *Provider) Capabilities() models.Capabilities { return p.caps }
-
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
 func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
-	// The sentry boots inside the cgroup runsc builds from this number, so a bound under its own cost
-	// kills the create with nothing shard can read back.
-	if mib := spec.Resources.MemoryMiB; mib > 0 && mib < MinimumMemoryMiB {
-		return fmt.Errorf("sandbox %s asks for %d MiB, and %s needs at least %d MiB: the sentry itself costs about 30 MiB",
-			spec.ID, mib, Name, MinimumMemoryMiB)
-	}
-
 	// A live id must not be re-created: the rollback below would unmount the rootfs the first one runs on.
 	status, err := p.Status(ctx, spec.ID)
 	if err != nil {
@@ -91,7 +77,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
 	}
 
-	// A rootfs that stands while runsc holds nothing may still be a live sandbox's, so never build over it.
+	// A rootfs that stands while sysbox-runc holds nothing may still be a live sandbox's, so never build over it.
 	existing, err := bundle.Open(spec.StateDir)
 	if err != nil {
 		return err
@@ -117,7 +103,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	return nil
 }
 
-func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) error {
+// create runs sysbox-runc create over the log the container inherits. The memory bound rides in
+// config.json and runc applies it to the cgroup itself, so nothing here touches the cgroup after.
+func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
 	// A create over a state directory that already ran must not let the previous run answer a wait or
 	// a start, so both of the supervisor's files go before anything else runs.
 	for _, stale := range []string{b.ExitFile, b.ReadyFile} {
@@ -126,92 +114,19 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		}
 	}
 
-	return p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
-	})
-}
-
-// bringUp runs the runsc verb that forks the sandbox process, over the log it inherits and inside
-// the cgroup shard owns, and then moves the host bounds where create and restore both need them.
-func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, up func(out *os.File) error) (err error) {
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
 	if err != nil {
 		return err
 	}
-	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
+	// The container keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	// runsc rmdirs every cgroup it made on delete, the parent included, so the parent must be shard's.
-	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
-		return err
-	}
-
-	if err := up(out); err != nil {
-		return err
-	}
-
-	if err := boundMemory(p.cgroupRoot, spec); err != nil {
-		// The caller drops the rootfs mount, so a sandbox left created would run on a mount that is gone.
-		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
-	}
-
-	return nil
+	return p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
 }
 
-// boundMemory moves the host bounds off the bound the guest sees. runsc has already given the sentry
-// the operator's number as its budget, and the host cgroup must sit above it, because that one cgroup
-// also charges the sentry's own working set.
-func boundMemory(root string, spec models.SandboxSpec) error {
-	bound := bundle.MemoryBound(spec.Resources)
-	if bound == 0 {
-		return nil
-	}
-
-	dir := cgroupDir(root, spec.ID)
-
-	applied, err := cgroup.MemoryMax(dir)
-	if err != nil {
-		return fmt.Errorf("read back the memory bound of sandbox %s: %w", spec.ID, err)
-	}
-
-	// runsc applies nothing at all when the cgroup is already there, and an unbounded sandbox is a
-	// downgrade, so anything but the number the spec asked for ends the create.
-	if applied != bound {
-		return fmt.Errorf("sandbox %s asked runsc for a %d byte memory bound on %s, which holds %d, where -1 is no bound at all",
-			spec.ID, bound, filepath.Join(dir, "memory.max"), applied)
-	}
-
-	if err := cgroup.SetMemoryMax(dir, MemoryCeiling(spec.Resources)); err != nil {
-		return fmt.Errorf("raise the memory ceiling of sandbox %s: %w", spec.ID, err)
-	}
-
-	if err := cgroup.SetMemoryHigh(dir, MemoryThrottle(spec.Resources)); err != nil {
-		return fmt.Errorf("throttle the memory of sandbox %s: %w", spec.ID, err)
-	}
-
-	// Guest memory is sentry shmem, and shmem is swap-backed, so on a host with swap the throttle
-	// reclaims instead of holding and stops being the wall the ceiling above it depends on.
-	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
-		return fmt.Errorf("pin the swap of sandbox %s to none: %w", spec.ID, err)
-	}
-
-	// Guest memory sits in systrap stubs, so the kernel alone would take one stub and leave the sentry.
-	if err := cgroup.SetOOMGroup(dir); err != nil {
-		return fmt.Errorf("group the OOM kill of sandbox %s: %w", spec.ID, err)
-	}
-
-	return nil
-}
-
-// cgroupDir is the host side of the path the bundle names.
-func cgroupDir(root, id string) string {
-	return filepath.Join(root, bundle.CgroupsPath(id))
-}
-
-// Start runs the entrypoint. runsc never starts a stopped container again, so a stopped sandbox is
-// re-created first over the writable layer its state directory kept.
-// It returns only once the supervisor says the entrypoint forked, because runsc start unblocks the
-// task and reads nothing back: a broken entrypoint would otherwise report as a started sandbox.
+// Start runs the entrypoint. runc never starts a stopped container again, so a stopped sandbox is
+// re-created first over the writable layer its state directory kept. It returns only once the
+// supervisor says the entrypoint forked, because runc start reads nothing back.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	dir, err := p.dirs(id)
 	if err != nil {
@@ -234,57 +149,47 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := p.runsc.Start(ctx, id); err != nil {
+	if err := p.runc.Start(ctx, id); err != nil {
 		return err
 	}
 
 	return p.awaitStarted(ctx, id, b)
 }
 
-// recreate is how a stopped sandbox runs again: runsc never starts one, so the container goes and a
-// new one comes up over the same bundle, whose writable layer and config.json the stop kept.
+// recreate is how a stopped sandbox runs again: the old container goes and a new one comes up over
+// the same bundle, whose writable layer and config.json the stop kept.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
-	spec, err := p.reclaim(ctx, id, dir, b, held)
-	if err != nil {
-		return err
-	}
-
-	if err := p.create(ctx, spec, b); err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	return nil
-}
-
-// reclaim readies a state directory runsc holds nothing live in for a new sandbox process: the old
-// container and its cgroup go, and the writable layer is mounted again over the image it records.
-func (p *Provider) reclaim(ctx context.Context, id, dir string, b bundle.Bundle, held bool) (models.SandboxSpec, error) {
 	if err := orphaned(b, id, held); err != nil {
-		return models.SandboxSpec{}, err
+		return err
 	}
 
 	// Everything the new run needs is checked before the old container goes, so a refusal costs nothing.
 	rt, err := imageOf(b, id)
 	if err != nil {
-		return models.SandboxSpec{}, err
+		return err
 	}
 
 	if held {
-		if err := p.runsc.Delete(ctx, id, true); err != nil {
-			return models.SandboxSpec{}, err
+		if err := p.runc.Delete(ctx, id, true); err != nil {
+			return err
 		}
 	}
 
-	// A cgroup runsc left behind would make the create refuse the bound it could not apply.
+	// A cgroup a killed container left behind would carry its counters into the new run.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return models.SandboxSpec{}, fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
+		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	if err := b.Mount(rt.RootFS); err != nil {
-		return models.SandboxSpec{}, err
+		return err
 	}
 
-	return models.SandboxSpec{ID: id, StateDir: dir, Resources: rt.Resources}, nil
+	spec := models.SandboxSpec{ID: id, StateDir: dir, Resources: rt.Resources}
+	if err := p.create(ctx, spec, b); err != nil {
+		return errors.Join(err, b.Unmount())
+	}
+
+	return nil
 }
 
 // awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
@@ -395,24 +300,25 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 
-	// runsc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
+	// runc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
 	if status.State == models.StateCreated {
-		if err := p.runsc.Delete(ctx, id, true); err != nil {
+		if err := p.runc.Delete(ctx, id, true); err != nil {
 			return err
 		}
 
 		return p.unmount(id, status.Exists)
 	}
 
-	// A frozen sentry delivers no signal, and only a pause that broke off leaves one behind.
+	// A frozen cgroup delivers no signal. Nothing of shard's freezes a Sysbox sandbox, so this is
+	// only ever a container something else paused by hand.
 	if status.State == models.StatePaused {
-		if err := p.runsc.Resume(ctx, id); err != nil {
+		if err := p.runc.Resume(ctx, id); err != nil {
 			return err
 		}
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
-	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
+	if err := p.runc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		return err
 	}
 
@@ -427,12 +333,12 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	// runsc still holds a sandbox it has stopped, so the status read above is what owns the mount.
+	// sysbox-runc still holds a sandbox it has stopped, so the status read above is what owns the mount.
 	return p.unmount(id, status.Exists)
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
-	if err := p.runsc.Kill(ctx, id, "KILL", true); err != nil && !gone(err) {
+	if err := p.runc.Kill(ctx, id, "KILL", true); err != nil && !gone(err) {
 		return err
 	}
 
@@ -447,20 +353,20 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 	return nil
 }
 
-// Remove deletes runsc's own state. The record and the state directory belong to the repository.
+// Remove deletes sysbox-runc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	// runsc delete --force exits 0 for an id it never held, so only a status read says who owns the rootfs.
+	// sysbox-runc delete --force exits 0 for an id it never held, so only a status read says who owns the rootfs.
 	status, err := p.Status(ctx, id)
 	if err != nil {
 		return err
 	}
 
 	// --force, because a running sandbox holds the rootfs.
-	if err := p.runsc.Delete(ctx, id, true); err != nil {
+	if err := p.runc.Delete(ctx, id, true); err != nil {
 		return err
 	}
 
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the next create of the id.
+	// runc drops the cgroup of a sandbox it holds; a killed one leaves it, and its counters, behind.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
@@ -470,7 +376,7 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 }
 
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
-// held says whether runsc knew the sandbox, because only that answers who owns the rootfs.
+// held says whether sysbox-runc knew the sandbox, because only that answers who owns the rootfs.
 func (p *Provider) unmount(id string, held bool) error {
 	b, err := p.open(id)
 	if err != nil {
@@ -484,8 +390,8 @@ func (p *Provider) unmount(id string, held bool) error {
 	return b.Unmount()
 }
 
-// orphaned refuses a rootfs that stands while runsc holds nothing: something deleted the metadata by
-// hand, and the sandbox that rootfs belongs to may still be running.
+// orphaned refuses a rootfs that stands while sysbox-runc holds nothing: something deleted the
+// metadata by hand, and the sandbox that rootfs belongs to may still be running.
 func orphaned(b bundle.Bundle, id string, held bool) error {
 	if held {
 		return nil
@@ -499,12 +405,12 @@ func orphaned(b bundle.Bundle, id string, held bool) error {
 		return nil
 	}
 
-	return fmt.Errorf("runsc does not hold sandbox %s but its rootfs is still mounted at %s", id, b.RootFS)
+	return fmt.Errorf("sysbox-runc does not hold sandbox %s but its rootfs is still mounted at %s", id, b.RootFS)
 }
 
 // gone reports whether a signal failed because the sandbox had already ended, which is what a stop wants.
 func gone(err error) bool {
-	return errors.Is(err, runsc.ErrNotRunning) || errors.Is(err, runsc.ErrNotFound)
+	return errors.Is(err, sysboxrunc.ErrNotRunning) || errors.Is(err, sysboxrunc.ErrNotFound)
 }
 
 // Exec runs a command in a sandbox that already runs. It is not the entrypoint: the supervisor never
@@ -514,8 +420,8 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, fmt.Errorf("sandbox %s: exec has no command to run", id)
 	}
 
-	// runsc exec writes its own startup failures to the guest's stderr, so an exit code alone cannot
-	// tell a broken exec from a command that failed. Refuse anything but a running sandbox first.
+	// sysbox-runc exec reports its own startup failures as the command's exit 1, so an exit code
+	// alone cannot tell a broken exec from a command that failed. Refuse anything but a running sandbox first.
 	status, err := p.Status(ctx, id)
 	if err != nil {
 		return models.ExitStatus{}, err
@@ -537,43 +443,44 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, err
 	}
 
-	code, err := p.runsc.Exec(ctx, id, opts)
+	code, err := p.runc.Exec(ctx, id, opts)
 	if err != nil {
 		return models.ExitStatus{}, notStarted(id, err)
 	}
 
-	// Signal stays 0: runsc reports an exec's exit code and nothing about the signal that ended it.
+	// Signal stays 0: runc reports an exec's exit code and nothing about the signal that ended it.
 	return models.ExitStatus{Code: code}, nil
 }
 
-// notStarted gives a command runsc refused to start a name the cli can answer with a shell's own
-// exit code, because runsc reports every one of them as its internal 128.
+// notStarted gives a command the driver refused to start a name the cli can answer with a shell's
+// own exit code. The driver looked the command up on the host, so the reason is the shell's wording.
 func notStarted(id string, err error) error {
-	var start *runsc.ExecStartError
-	if !errors.As(err, &start) {
+	var lookup *sysboxrunc.LookupError
+	if !errors.As(err, &lookup) {
 		return err
 	}
 
 	code := models.CommandNotFoundExitCode
-	if start.NotExecutable {
+	if lookup.NotExecutable {
 		code = models.CommandNotExecutableExitCode
 	}
 
-	return &models.CommandNotStartedError{Sandbox: id, Reason: start.Reason, Code: code}
+	return &models.CommandNotStartedError{Sandbox: id, Reason: lookup.Reason, Code: code}
 }
 
 // execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
-// the rootfs it resolves a user against is the sandbox's live tree, not the image's.
-func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, error) {
+// the rootfs it resolves a user and the command against is the sandbox's live tree, not the image's.
+func execOptions(b bundle.Bundle, spec models.ExecSpec) (sysboxrunc.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
-		return runsc.ExecOptions{}, err
+		return sysboxrunc.ExecOptions{}, err
 	}
 
-	opts := runsc.ExecOptions{
+	opts := sysboxrunc.ExecOptions{
 		Argv:    spec.Argv,
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
+		RootFS:  b.RootFS,
 		TTY:     spec.TTY,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
@@ -586,7 +493,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	if spec.User != "" {
 		identity, err := bundle.ResolveUser(b.RootFS, spec.User)
 		if err != nil {
-			return runsc.ExecOptions{}, err
+			return sysboxrunc.ExecOptions{}, err
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
@@ -605,8 +512,8 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// Wait blocks until the entrypoint exits. runsc wait cannot serve it: PID 1 is the supervisor and it
-// never exits, so runsc wait would block forever. Watch the file shard-init writes instead.
+// Wait blocks until the entrypoint exits. runc wait cannot serve it: PID 1 is the supervisor and it
+// never exits, so it would block forever. Watch the file shard-init writes instead.
 func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, error) {
 	b, err := p.open(id)
 	if err != nil {
@@ -639,10 +546,11 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 }
 
-// Status asks the substrate, because a record saying running can outlive a shard restart.
+// Status asks the substrate, because a record saying running can outlive a shard restart. runc reads
+// the init process itself and calls a reaped or zombie one stopped, so nothing here second-guesses it.
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
-	state, err := p.runsc.State(ctx, id)
-	if errors.Is(err, runsc.ErrNotFound) {
+	state, err := p.runc.State(ctx, id)
+	if errors.Is(err, sysboxrunc.ErrNotFound) {
 		return models.Status{OOMKilled: p.oomKilled(id)}, nil
 	}
 	if err != nil {
@@ -650,15 +558,6 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
-	if status.Alive() {
-		dead, err := zombie(state.PID)
-		if err != nil {
-			return models.Status{}, err
-		}
-		if dead {
-			status.State, status.PID = models.StateStopped, 0
-		}
-	}
 	if !status.Alive() {
 		status.OOMKilled = p.oomKilled(id)
 	}
@@ -666,39 +565,9 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	return status, nil
 }
 
-// zombie reports a sandbox process that exited and waits for its reaper. runsc probes it with
-// kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
-func zombie(pid int) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if vanished(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read the state of the sandbox process %d: %w", pid, err)
-	}
-
-	return zombieStat(string(stat)), nil
-}
-
-// vanished reads the two ways a process goes away under the read: /proc holds no such directory, or
-// the kernel answers ESRCH because the process exited between the open and the read.
-func vanished(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
-}
-
-// zombieStat reads the state field, which follows the comm, and the comm may hold a parenthesis itself.
-func zombieStat(stat string) bool {
-	i := strings.LastIndexByte(stat, ')')
-	if i < 0 || i+2 >= len(stat) {
-		return false
-	}
-
-	return stat[i+2] == 'Z'
-}
-
-// oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
-// any of runsc's cleanup, so the cgroup and its counters outlive the sandbox and are the only record.
-// A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
+// oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes a guest process without
+// running any of runc's cleanup, so the cgroup and its counters outlive the sandbox and are the only
+// record. A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
 func (p *Provider) oomKilled(id string) bool {
 	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
 	if err != nil {
@@ -708,178 +577,24 @@ func (p *Provider) oomKilled(id string) bool {
 	return events.OOM > 0
 }
 
-// stateOf maps the five runsc statuses onto the four shard states. A container runsc is still
-// creating has nothing in its guest running, which is what created means here.
-func stateOf(status runsc.Status) models.State {
+// cgroupDir is the host side of the path the bundle names.
+func cgroupDir(root, id string) string {
+	return filepath.Join(root, bundle.CgroupsPath(id))
+}
+
+// stateOf maps the runc statuses onto the four shard states. A container runc is still creating has
+// nothing in its guest running, which is what created means here.
+func stateOf(status sysboxrunc.Status) models.State {
 	switch status {
-	case runsc.StatusRunning:
+	case sysboxrunc.StatusRunning:
 		return models.StateRunning
-	case runsc.StatusPaused:
+	case sysboxrunc.StatusPaused:
 		return models.StatePaused
-	case runsc.StatusStopped:
+	case sysboxrunc.StatusStopped:
 		return models.StateStopped
 	default:
 		return models.StateCreated
 	}
-}
-
-// Pause writes the sandbox into dir and then deletes it from runsc, because a checkpointed container
-// still holds its whole memory until it is deleted. runsc then holds nothing, as after a stop before
-// the entrypoint ran, and the snapshot plus the state directory is everything a resume needs.
-func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
-	status, err := p.Status(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !status.Exists {
-		return fmt.Errorf("sandbox %s does not exist on %s", id, Name)
-	}
-	if status.State != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, status.State, Name)
-	}
-
-	b, err := p.open(id)
-	if err != nil {
-		return err
-	}
-
-	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
-	tmp := dir + ".tmp"
-	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
-	}
-	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
-	}
-
-	if err := p.runsc.Pause(ctx, id); err != nil {
-		return err
-	}
-
-	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
-	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(tmp)); err != nil {
-		// Only stop ends a sandbox, so one whose snapshot failed goes on running, even after a Ctrl-C.
-		thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
-		defer cancel()
-
-		return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
-	}
-
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", dir, err)
-	}
-	if err := os.Rename(tmp, dir); err != nil {
-		return fmt.Errorf("move the snapshot into place: %w", err)
-	}
-
-	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.
-	ctx = context.WithoutCancel(ctx)
-
-	if err := p.runsc.Delete(ctx, id, true); err != nil {
-		return err
-	}
-
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the resume.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
-	}
-
-	// The layer stays, which is what the resume mounts again, and only the merged view goes.
-	return b.Unmount()
-}
-
-// Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
-// as a new runsc container: the one the pause deleted is gone for good.
-func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
-	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)
-	}
-
-	stateDir, err := p.dirs(id)
-	if err != nil {
-		return err
-	}
-
-	b, err := bundle.Open(stateDir)
-	if err != nil {
-		return err
-	}
-
-	status, err := p.Status(ctx, id)
-	if err != nil {
-		return err
-	}
-	if status.Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: resume takes a paused sandbox, which %s holds nothing of", id, status.State, Name, Name)
-	}
-
-	spec, err := p.reclaim(ctx, id, stateDir, b, status.Exists)
-	if err != nil {
-		return err
-	}
-
-	err = p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
-	})
-	if err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	return nil
-}
-
-// Fork restores the snapshot in dir as a new sandbox over its own copy of the layer: two forks share nothing.
-func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
-	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("no snapshot to fork in %s: %w", dir, err)
-	}
-
-	status, err := p.Status(ctx, spec.ID)
-	if err != nil {
-		return err
-	}
-	if status.Alive() {
-		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
-	}
-
-	existing, err := bundle.Open(spec.StateDir)
-	if err != nil {
-		return err
-	}
-	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
-		return err
-	}
-
-	b, err := p.bundles.Fork(dir, spec)
-	if err != nil {
-		return err
-	}
-
-	rt, err := imageOf(b, spec.ID)
-	if err != nil {
-		return err
-	}
-
-	// A cgroup a removed sandbox of this id left behind would make the restore refuse the bound.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
-	}
-
-	if err := b.Mount(rt.RootFS); err != nil {
-		return err
-	}
-
-	// The sentry's budget is in the memory image, so the fork is bound the way the source was.
-	spec.Resources = rt.Resources
-
-	err = p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
-	})
-	if err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	return nil
 }
 
 // Clone is a start after a stop under a new id: the source's layers are copied and its entrypoint runs again.
@@ -934,7 +649,7 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 
-	// A cgroup a removed sandbox of this id left behind would make the create refuse the bound.
+	// A cgroup a removed sandbox of this id left behind would carry its counters into the clone.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
 	}
@@ -950,7 +665,7 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return errors.Join(err, b.Unmount())
 	}
 
-	if err := p.runsc.Start(ctx, spec.ID); err != nil {
+	if err := p.runc.Start(ctx, spec.ID); err != nil {
 		return err
 	}
 
@@ -973,7 +688,7 @@ func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
 	return rt, nil
 }
 
-// LogPath is where the guest's stdout and stderr land. SHARD-23 turns it into shard logs.
+// LogPath is where the guest's stdout and stderr land.
 func (p *Provider) LogPath(id string) (string, error) {
 	dir, err := p.dirs(id)
 	if err != nil {
