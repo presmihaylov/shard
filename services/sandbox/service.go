@@ -114,6 +114,8 @@ type CreateRequest struct {
 	// Policy is what the host enforces for the sandbox.
 	Policy    string           `json:"policy,omitempty"`
 	Resources models.Resources `json:"resources"`
+	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
+	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
 }
 
 // fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
@@ -299,6 +301,10 @@ func validate(req CreateRequest) error {
 	if req.Resources.VCPUs < 0 {
 		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
 	}
+	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
+	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
+		return &RequestError{Err: errors.New("restart_on_oom needs a memory bound, and the request sets none")}
+	}
 
 	if req.Policy != "" {
 		if err := egress.ValidName(req.Policy); err != nil {
@@ -383,14 +389,15 @@ func (s *Service) claim(ctx context.Context, td *Teardown, req CreateRequest) (i
 // claimRecord takes the id, which is the only handle every later step is named by.
 func (s *Service) claimRecord(td *Teardown, img image.Image, req CreateRequest) (string, string, error) {
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
-		Name:      req.Name,
-		Image:     img.Reference,
-		Provider:  s.cfg.Provider.Name(),
-		State:     models.StateCreated,
-		Resources: req.Resources,
-		Secrets:   req.Secrets,
-		Policy:    req.Policy,
-		CreatedAt: time.Now().UTC(),
+		Name:         req.Name,
+		Image:        img.Reference,
+		Provider:     s.cfg.Provider.Name(),
+		State:        models.StateCreated,
+		Resources:    req.Resources,
+		Secrets:      req.Secrets,
+		Policy:       req.Policy,
+		RestartOnOOM: req.RestartOnOOM,
+		CreatedAt:    time.Now().UTC(),
 	})
 	if err != nil {
 		return "", "", err
@@ -446,20 +453,25 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "start takes a stopped sandbox", Code: models.CodeSandboxNotStopped}
 	}
 
-	// The lease survived the stop, so this hands back the same address over a namespace built again.
-	if _, err := s.cfg.Network.Allocate(ctx, id); err != nil {
-		return models.Sandbox{}, err
-	}
-
-	if err := s.cfg.Provider.Start(ctx, id); err != nil {
-		return models.Sandbox{}, errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false))
-	}
-
-	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false); err != nil {
+	if err := s.start(ctx, id); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(id)
+}
+
+// start is the run itself, for a caller that holds the lock and checked the record says stopped.
+func (s *Service) start(ctx context.Context, id string) error {
+	// The lease survived the stop, so this hands back the same address over a namespace built again.
+	if _, err := s.cfg.Network.Allocate(ctx, id); err != nil {
+		return err
+	}
+
+	if err := s.cfg.Provider.Start(ctx, id); err != nil {
+		return errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false))
+	}
+
+	return RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false)
 }
 
 // Stop ends the processes and keeps everything rm frees: the record, the lease, the address and the

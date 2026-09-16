@@ -35,6 +35,12 @@ type Sandbox struct {
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.
 	Resources Resources `json:"resources"`
 
+	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
+	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
+	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
+	OOMRestarts    int       `json:"oom_restarts,omitempty"`
+	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
+
 	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
 	// reach a request only at the proxy, so this list is a grant and never a value.
 	Secrets []string `json:"secrets,omitempty"`

@@ -163,6 +163,31 @@ func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	}
 }
 
+func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
+	var out bytes.Buffer
+
+	sandboxes := listed()
+	sandboxes[0].RestartOnOOM = true
+	sandboxes[0].OOMRestarts = 2
+
+	app := newLsApp(t, &out, sandboxes, nil)
+
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if !strings.Contains(lines[0], "RESTART") {
+		t.Errorf("the header is %q, want a RESTART column", lines[0])
+	}
+	if !strings.Contains(lines[1], "on-oom 2/5") {
+		t.Errorf("the line %q does not show the policy and the starts it spent", lines[1])
+	}
+	if strings.Contains(lines[2], "on-oom") {
+		t.Errorf("the line %q shows a policy the sandbox never asked for", lines[2])
+	}
+}
+
 func TestLsPrintsThePolicyEachSandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 

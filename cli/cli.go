@@ -52,7 +52,7 @@ Usage:
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
                            free what a stopped sandbox still holds
-  shard ls [--all]         list the sandboxes that are up, with the policy each holds, and with --all the stopped ones too
+  shard ls [--all]         list the sandboxes that are up, with the restart policy and the egress policy each holds, and with --all the stopped ones too
   shard inspect <id|name>  print the record of a sandbox as JSON
   shard logs [-f] [--egress] <id|name>
                            print what the entrypoint wrote, and with --egress the egress decisions; -f follows either
@@ -108,6 +108,7 @@ Create flags, which must precede the image:
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound, 0 for unbounded
   --cpus <n>               the vcpu bound, 0 for unbounded
+  --restart-on-oom         start the sandbox again when the host ends it for its memory, 5 times at most; needs --memory
 
 Exec flags, which must precede the id or name:
   -i                       keep stdin open on the command

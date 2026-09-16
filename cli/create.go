@@ -41,6 +41,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
+	flags.BoolVar(&req.RestartOnOOM, "restart-on-oom", false, "start the sandbox again when the host ends it for its memory")
 
 	if err := flags.Parse(args); err != nil {
 		return sandbox.CreateRequest{}, fmt.Errorf("parse the create flags: %w", err)
@@ -63,6 +64,10 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 	if req.Resources.VCPUs < 0 {
 		return sandbox.CreateRequest{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
+	}
+	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
+	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
+		return sandbox.CreateRequest{}, errors.New("--restart-on-oom needs a memory bound, set --memory")
 	}
 
 	if req.Policy != "" {

@@ -222,7 +222,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: "ran out of memory and the host ended it", Fix: fmt.Sprintf("remove it with shard rm %s and create another with a larger --memory", id)}
+		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("remove it with shard rm %s and create another with a larger --memory", id)}
 	}
 
 	if !status.Exists {
