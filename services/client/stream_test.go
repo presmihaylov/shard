@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
@@ -19,86 +22,90 @@ import (
 // warnBudget is how long a warning nobody wants has to arrive before the test says it never came.
 const warnBudget = 2 * time.Second
 
-// execDaemon is a daemon that answers one exec: it takes the connection over and speaks frames.
+// execDaemon answers one exec the way the daemon does: the create with a ticket, the attach over a WebSocket.
 type execDaemon struct {
 	t      *testing.T
 	execID string
 
-	out     string
-	errOut  string
-	failure string
-	exit    string
-	// hangUp ends the connection with no exit frame, the way a daemon that died mid-exec does.
-	hangUp bool
-	// skipInput answers and hangs up without reading, the way a command that exited at once does.
+	out    string
+	errOut string
+	// exit or failure is the message that ends the session; hangUp ends it with neither, as a daemon that died does.
+	exit    *api.ExitMessage
+	failure *api.FailureMessage
+	hangUp  bool
+	// skipInput answers and exits without reading, the way a command that exited at once does.
 	skipInput bool
+	// waits reads the input until the client goes away, the way a command that never exits does.
+	waits bool
 
-	// req is what the client asked for, and input what it typed at the command.
-	req   sandbox.ExecRequest
-	input string
+	// req is what the client asked for, attached the path it opened, and input what it typed at the command.
+	req      sandbox.ExecRequest
+	attached string
+	input    string
 }
 
 func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if err := json.NewDecoder(r.Body).Decode(&d.req); err != nil {
-		d.t.Errorf("decode the exec request: %v", err)
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&d.req); err != nil {
+			d.t.Errorf("decode the exec request: %v", err)
+
+			return
+		}
+
+		answer(http.StatusCreated, `{"exec":"`+d.execID+`","expires_at":"2026-09-16T08:01:00Z"}`)(w, r)
 
 		return
 	}
 
-	conn, buffered, err := http.NewResponseController(w).Hijack()
+	d.attached = r.URL.Path
+
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		d.t.Errorf("hijack: %v", err)
+		d.t.Errorf("accept the attach: %v", err)
 
 		return
 	}
-	defer conn.Close()
-
-	answer := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection: Upgrade\r\n" + api.ExecIDHeader + ": " + d.execID + "\r\n\r\n"
-	if _, err := buffered.WriteString(answer); err != nil {
-		d.t.Errorf("answer the exec: %v", err)
-
-		return
-	}
-	if err := buffered.Flush(); err != nil {
-		d.t.Errorf("flush the answer: %v", err)
-
-		return
-	}
+	defer conn.CloseNow()
 
 	if !d.skipInput {
-		d.input = d.readInput(buffered.Reader)
+		d.input = d.readInput(conn)
 	}
-
-	if d.hangUp {
+	if d.hangUp || d.waits {
 		return
 	}
 
-	frames := api.NewFrameWriter(conn)
-	for _, frame := range []struct {
-		stream  byte
-		payload string
-	}{{api.StreamStdout, d.out}, {api.StreamStderr, d.errOut}, {api.StreamError, d.failure}, {api.StreamExit, d.exit}} {
-		if frame.payload == "" && frame.stream != api.StreamExit {
-			continue
-		}
-		if err := frames.Write(frame.stream, []byte(frame.payload)); err != nil {
-			d.t.Errorf("write a frame of stream %d: %v", frame.stream, err)
-		}
+	d.send(conn, api.StreamStdout, []byte(d.out))
+	d.send(conn, api.StreamStderr, []byte(d.errOut))
+
+	if d.failure != nil {
+		d.send(conn, api.StreamFailure, mustJSON(d.t, d.failure))
+	}
+	if d.exit != nil {
+		d.send(conn, api.StreamExit, mustJSON(d.t, d.exit))
+	}
+
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		d.t.Errorf("close the attach: %v", err)
 	}
 }
 
-// readInput collects what the client typed until it says the keyboard has ended.
-func (d *execDaemon) readInput(r io.Reader) string {
+func (d *execDaemon) send(conn *websocket.Conn, stream byte, payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+
+	if err := api.Send(context.Background(), conn, stream, payload); err != nil {
+		d.t.Errorf("send a message of stream %d: %v", stream, err)
+	}
+}
+
+// readInput collects what the client typed until it says the keyboard has ended, or it goes away.
+func (d *execDaemon) readInput(conn *websocket.Conn) string {
 	var typed strings.Builder
 
 	for {
-		stream, payload, err := api.ReadFrame(r)
-		if errors.Is(err, io.EOF) {
-			return typed.String()
-		}
+		stream, payload, err := api.Receive(context.Background(), conn)
 		if err != nil {
-			d.t.Errorf("read a frame: %v", err)
-
 			return typed.String()
 		}
 
@@ -108,15 +115,26 @@ func (d *execDaemon) readInput(r io.Reader) string {
 		case api.StreamStdinClose:
 			return typed.String()
 		default:
-			d.t.Errorf("the client sent a frame of stream %d", stream)
+			d.t.Errorf("the client sent a message of stream %d", stream)
 
 			return typed.String()
 		}
 	}
 }
 
-func TestExecCarriesTheCommandAndReportsItsExitStatus(t *testing.T) {
-	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", out: "hello\n", errOut: "careful\n", exit: "7"}
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return raw
+}
+
+func TestExecCreatesThenAttachesAndReportsTheExitStatus(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", out: "hello\n", errOut: "careful\n", exit: &api.ExitMessage{Code: 7}}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	var out, errOut bytes.Buffer
@@ -141,20 +159,20 @@ func TestExecCarriesTheCommandAndReportsItsExitStatus(t *testing.T) {
 	if out.String() != "hello\n" || errOut.String() != "careful\n" {
 		t.Errorf("stdout = %q, stderr = %q", out.String(), errOut.String())
 	}
-	if named != "1a2b3c4d5e6f7a8b" {
-		t.Errorf("the exec was named %q", named)
+	if named != "1a2b3c4d5e6f7a8b" || daemon.attached != "/v0/sandboxes/sandbox1/exec/1a2b3c4d5e6f7a8b" {
+		t.Errorf("the exec was named %q and attached at %q", named, daemon.attached)
 	}
 	if daemon.input != "typed\n" {
 		t.Errorf("the daemon read %q, want typed", daemon.input)
 	}
-	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" {
+	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin {
 		t.Errorf("the daemon was asked for %+v", daemon.req)
 	}
 }
 
-// A command that never ran arrives as an error frame and an exit frame, and rebuilds as the typed error.
+// A command that never ran exits with the code a shell answers and a reason, and rebuilds as the typed error.
 func TestExecReportsACommandThatNeverRan(t *testing.T) {
-	daemon := &execDaemon{t: t, failure: "failed to load /bin/nope: no such file or directory", exit: "127"}
+	daemon := &execDaemon{t: t, exit: &api.ExitMessage{Code: 127, Error: "failed to load /bin/nope: no such file or directory"}}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"/bin/nope"}}, client.ExecStreams{})
@@ -163,23 +181,55 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 	if !errors.As(err, &notStarted) {
 		t.Fatalf("Exec returned %v, want a command that never ran", err)
 	}
-	if notStarted.Code != 127 {
-		t.Errorf("code = %d, want 127", notStarted.Code)
+	if notStarted.Code != 127 || notStarted.Reason != daemon.exit.Error || notStarted.Sandbox != "sandbox1" {
+		t.Errorf("Exec returned %+v, want 127 with the reason in sandbox1", notStarted)
 	}
-	if notStarted.Reason != daemon.failure {
-		t.Errorf("reason = %q, want %q", notStarted.Reason, daemon.failure)
+	if daemon.req.Stdin {
+		t.Error("the daemon was asked for stdin, and the client had none")
 	}
-	if notStarted.Sandbox != "sandbox1" {
-		t.Errorf("sandbox = %q, want sandbox1", notStarted.Sandbox)
+}
+
+// A failure after the 101 arrives as the last message, and rebuilds as the error a refusal would have been.
+func TestExecReportsAFailureAfterThe101(t *testing.T) {
+	daemon := &execDaemon{t: t, failure: &api.FailureMessage{Error: "runsc: boom", Code: models.CodeInternal}}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
+
+	var failure *client.APIError
+	if !errors.As(err, &failure) || failure.Code != models.CodeInternal || failure.Message != "runsc: boom" {
+		t.Fatalf("Exec returned %v, want the daemon's failure with its code", err)
 	}
 }
 
 // Nothing is on the wire before the command runs, so a refusal is still a status and a JSON body.
-func TestExecReportsARefusalBeforeTheUpgrade(t *testing.T) {
+func TestExecReportsARefusalOfTheCreate(t *testing.T) {
 	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is stopped: start it again with shard start sandbox1","code":"sandbox_not_running"}`))
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
-	if err == nil || !strings.Contains(err.Error(), "shard start sandbox1") {
+
+	var refusal *client.APIError
+	if !errors.As(err, &refusal) || refusal.Code != models.CodeSandboxNotRunning || !strings.Contains(err.Error(), "shard start sandbox1") {
+		t.Fatalf("Exec returned %v, want the daemon's refusal", err)
+	}
+}
+
+// An attach the daemon refuses is a status and a JSON body instead of the 101, and it reads like any refusal.
+func TestExecReportsARefusalOfTheAttach(t *testing.T) {
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			answer(http.StatusCreated, `{"exec":"1a2b3c4d5e6f7a8b","expires_at":"2026-09-16T08:01:00Z"}`)(w, r)
+
+			return
+		}
+
+		answer(http.StatusConflict, `{"error":"exec 1a2b3c4d5e6f7a8b is already attached: create another","code":"in_use"}`)(w, r)
+	})
+
+	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
+
+	var refusal *client.APIError
+	if !errors.As(err, &refusal) || refusal.Code != models.CodeInUse || !strings.Contains(err.Error(), "already attached") {
 		t.Fatalf("Exec returned %v, want the daemon's refusal", err)
 	}
 }
@@ -195,7 +245,7 @@ func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 	}
 }
 
-// Every exec ends with an exit frame, so a connection that ends without one is a failure and not a zero.
+// Every exec ends with an exit or a failure, so a session that ends with neither is a failure and not a zero.
 func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
 	daemon := &execDaemon{t: t, hangUp: true}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
@@ -203,6 +253,20 @@ func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 	if err == nil || !strings.Contains(err.Error(), "without an exit status") {
 		t.Fatalf("Exec returned %v, want the missing exit status named", err)
+	}
+}
+
+// An interrupt ends the session, which is how a client kills the command it was running.
+func TestExecEndsWhenTheContextDoes(t *testing.T) {
+	daemon := &execDaemon{t: t, waits: true}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	streams := client.ExecStreams{Started: func(string) { cancel() }}
+
+	_, err := c.Exec(ctx, "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}}, streams)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Exec returned %v, want the cancelled context", err)
 	}
 }
 
@@ -217,10 +281,10 @@ func (k keyboard) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// A command that exits first takes the connection with it, and the frame saying the input ended then
+// A command that exits first takes the session with it, and the message saying the input ended then
 // has nowhere to go. That is how every exec ends, and no warning belongs to it.
 func TestExecSaysNothingWhenTheCommandEndedFirst(t *testing.T) {
-	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", exit: "0", skipInput: true}
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", exit: &api.ExitMessage{}, skipInput: true}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	release := make(chan struct{})
@@ -240,7 +304,7 @@ func TestExecSaysNothingWhenTheCommandEndedFirst(t *testing.T) {
 		t.Errorf("exit code = %d, want 0", status.Code)
 	}
 
-	// The exec is over and the connection with it, so the keyboard ends into nothing.
+	// The exec is over and the session with it, so the keyboard ends into nothing.
 	close(release)
 
 	select {
@@ -274,7 +338,7 @@ func TestResizeExecPostsTheWindow(t *testing.T) {
 	}
 }
 
-func TestLogsWritesWhatTheDaemonStreams(t *testing.T) {
+func TestLogsWritesWhatTheDaemonAnswers(t *testing.T) {
 	var asked string
 
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
@@ -286,14 +350,14 @@ func TestLogsWritesWhatTheDaemonStreams(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := c.Logs(t.Context(), "sandbox1", true, &out); err != nil {
+	if err := c.Logs(t.Context(), "sandbox1", false, &out); err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 
 	if out.String() != "hello\nworld\n" {
 		t.Errorf("Logs wrote %q", out.String())
 	}
-	if asked != "/v0/sandboxes/sandbox1/logs?follow=true" {
+	if asked != "/v0/sandboxes/sandbox1/logs" {
 		t.Errorf("the client asked %q", asked)
 	}
 }
@@ -303,21 +367,29 @@ func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 
 	var out bytes.Buffer
 
-	err := c.Logs(t.Context(), "ghost", false, &out)
+	for _, follow := range []bool{false, true} {
+		err := c.Logs(t.Context(), "ghost", follow, &out)
 
-	var missing *client.NotFoundError
-	if !errors.As(err, &missing) || missing.Ref != "ghost" {
-		t.Fatalf("Logs returned %v, want no sandbox ghost", err)
+		var missing *client.NotFoundError
+		if !errors.As(err, &missing) || missing.Ref != "ghost" {
+			t.Fatalf("Logs with follow=%v returned %v, want no sandbox ghost", follow, err)
+		}
 	}
 }
 
-// followDaemon answers a follow the way the daemon does: 101, then one frame per record.
+// message is one thing a follow says: a binary message of a stream, or a text one.
+type message struct {
+	stream  byte
+	text    bool
+	payload string
+}
+
+// followDaemon answers a follow the way the daemon does: the 101, the messages, and a close that says why.
 type followDaemon struct {
-	t      *testing.T
-	frames []struct {
-		stream  byte
-		payload string
-	}
+	t        *testing.T
+	messages []message
+	code     websocket.StatusCode
+	reason   string
 
 	asked string
 }
@@ -325,43 +397,76 @@ type followDaemon struct {
 func (d *followDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.asked = r.URL.RequestURI()
 
-	conn, buffered, err := http.NewResponseController(w).Hijack()
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		d.t.Errorf("hijack: %v", err)
+		d.t.Errorf("accept the follow: %v", err)
 
 		return
 	}
-	defer conn.Close()
+	defer conn.CloseNow()
 
-	if _, err := buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection: Upgrade\r\n\r\n"); err != nil {
-		d.t.Errorf("answer the follow: %v", err)
+	for _, m := range d.messages {
+		if m.text {
+			if err := conn.Write(context.Background(), websocket.MessageText, []byte(m.payload)); err != nil {
+				d.t.Errorf("send a text message: %v", err)
+			}
 
-		return
-	}
-	if err := buffered.Flush(); err != nil {
-		d.t.Errorf("flush the answer: %v", err)
-
-		return
-	}
-
-	frames := api.NewFrameWriter(conn)
-	for _, frame := range d.frames {
-		if err := frames.Write(frame.stream, []byte(frame.payload)); err != nil {
-			d.t.Errorf("write a frame of stream %d: %v", frame.stream, err)
+			continue
 		}
+
+		if err := api.Send(context.Background(), conn, m.stream, []byte(m.payload)); err != nil {
+			d.t.Errorf("send a message of stream %d: %v", m.stream, err)
+		}
+	}
+
+	if err := conn.Close(d.code, d.reason); err != nil {
+		d.t.Errorf("close the follow: %v", err)
+	}
+}
+
+func TestLogsFollowWritesEveryMessageUntilTheEnd(t *testing.T) {
+	daemon := &followDaemon{t: t, messages: []message{
+		{stream: api.StreamStdout, payload: "hello\n"},
+		{stream: api.StreamStdout, payload: "world\n"},
+		{stream: api.StreamExit, payload: `{"reason":"stopped"}`},
+	}, code: websocket.StatusNormalClosure}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+	if err := c.Logs(t.Context(), "sandbox1", true, &out); err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+
+	if out.String() != "hello\nworld\n" {
+		t.Errorf("the follow wrote %q", out.String())
+	}
+	if daemon.asked != "/v0/sandboxes/sandbox1/logs?follow=true" {
+		t.Errorf("the client asked %q", daemon.asked)
+	}
+}
+
+func TestLogsFollowReportsAFailureOfTheFollow(t *testing.T) {
+	daemon := &followDaemon{t: t, messages: []message{
+		{stream: api.StreamFailure, payload: `{"error":"read the output: permission denied","code":"internal"}`},
+	}, code: websocket.StatusNormalClosure}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+
+	err := c.Logs(t.Context(), "sandbox1", true, &out)
+
+	var failure *client.APIError
+	if !errors.As(err, &failure) || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Logs returned %v, want the daemon's failure", err)
 	}
 }
 
 func TestFollowEgressLogPrintsEveryRecordAndWhyItEnded(t *testing.T) {
-	daemon := &followDaemon{t: t, frames: []struct {
-		stream  byte
-		payload string
-	}{
-		{api.StreamStdout, `{"rule":"1"}` + "\n"},
-		{api.StreamStdout, `{"rule":"2"}` + "\n"},
-		{api.StreamStdout, `{"rule":"3"}` + "\n"},
-		{api.StreamExit, "the sandbox was removed"},
-	}}
+	daemon := &followDaemon{t: t, messages: []message{
+		{text: true, payload: `{"rule":"1"}`},
+		{text: true, payload: `{"rule":"2"}`},
+		{text: true, payload: `{"rule":"3"}`},
+	}, code: websocket.StatusNormalClosure, reason: "the sandbox was removed"}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	var out, errOut bytes.Buffer
@@ -382,10 +487,7 @@ func TestFollowEgressLogPrintsEveryRecordAndWhyItEnded(t *testing.T) {
 
 // A failure of the follow itself is not a removed sandbox, and it must reach the operator as one.
 func TestFollowEgressLogReportsAFailureOfTheFollow(t *testing.T) {
-	daemon := &followDaemon{t: t, frames: []struct {
-		stream  byte
-		payload string
-	}{{api.StreamError, "read the log: permission denied"}}}
+	daemon := &followDaemon{t: t, code: websocket.StatusInternalError, reason: "read the log: permission denied"}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	var out, errOut bytes.Buffer

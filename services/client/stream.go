@@ -1,8 +1,6 @@
 package client
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,16 +10,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"syscall"
-	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// stdinChunk is how much of the keyboard one frame carries.
+// stdinChunk is how much of the keyboard one message carries.
 const stdinChunk = 32 * 1024
 
 // ExecStreams is where one exec's stdio goes on this side of the socket.
@@ -36,110 +34,106 @@ type ExecStreams struct {
 	Warn func(message string)
 }
 
-// Exec runs one command in a sandbox over a connection it takes over from HTTP: the daemon answers
-// 101 and both sides then speak frames. It reports the guest's exit status, and a command that never
-// ran as a models.CommandNotStartedError.
+// Exec creates the exec, then attaches over a WebSocket, which starts it; a command that never ran is a CommandNotStartedError.
 func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams ExecStreams) (exit models.ExitStatus, err error) {
-	conn, err := c.dial(ctx)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	defer func() { err = errors.Join(err, conn.Close()) }()
-
-	stop := interrupt(ctx, conn)
-	defer func() { err = errors.Join(err, stop()) }()
-
 	// The daemon gives the command no stdin unless this client has one to type into it.
 	req.Stdin = streams.Stdin != nil
 
-	reader, execID, err := c.upgrade(ctx, conn, ref, req)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	if streams.Started != nil {
-		streams.Started(execID)
-	}
-
-	frames := api.NewFrameWriter(conn)
-	// Nothing waits for this copier: it blocks on a terminal this process does not own.
-	go sendInput(frames, streams)
-
-	return readExec(reader, ref, streams)
-}
-
-// upgrade writes the request itself and reads the 101, because net/http gives no connection back.
-func (c *Client) upgrade(ctx context.Context, conn net.Conn, ref string, req sandbox.ExecRequest) (*bufio.Reader, string, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("encode the exec of sandbox %s: %w", ref, err)
-	}
-
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec"
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://shard"+path, bytes.NewReader(body)) //nolint:gosec // G704: the ref only lands in the path; this connection is the socket whatever the URL says
+	var ticket sandbox.ExecTicket
+	if err := c.call(ctx, http.MethodPost, path, req, &ticket, c.Timeout); err != nil {
+		return models.ExitStatus{}, missing(ref, err)
+	}
+
+	conn, err := c.open(ctx, path+"/"+url.PathEscape(ticket.ID), "the exec of sandbox "+ref)
 	if err != nil {
-		return nil, "", fmt.Errorf("build the request for the exec of sandbox %s: %w", ref, err)
+		return models.ExitStatus{}, missing(ref, err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "tcp")
+	defer func() { err = errors.Join(err, closeStream(conn)) }()
 
-	if err := request.Write(conn); err != nil {
-		return nil, "", fmt.Errorf("ask for the exec of sandbox %s on %s: %w", ref, c.path, err)
+	if streams.Started != nil {
+		streams.Started(ticket.ID)
 	}
 
-	reader := bufio.NewReader(conn)
+	// Nothing waits for this copier: it blocks on a terminal this process does not own.
+	go sendInput(ctx, conn, streams)
 
-	resp, err := http.ReadResponse(reader, request)
-	if err != nil {
-		return nil, "", fmt.Errorf("read the answer to the exec of sandbox %s on %s: %w", ref, c.path, err)
+	return readExec(ctx, conn, ref, streams)
+}
+
+// open dials one streaming route. A refusal comes before the 101, as the status and the body any call gets.
+func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, error) {
+	conn, resp, err := websocket.Dial(ctx, "ws://shard"+path, &websocket.DialOptions{HTTPClient: c.http}) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		answer, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, "", fmt.Errorf("read the refusal of the exec of sandbox %s: %w", ref, err)
+	var connect *ConnectError
+	if errors.As(err, &connect) {
+		return nil, connect
+	}
+	if err != nil && resp != nil {
+		answer, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("read the refusal of %s: %w", what, readErr)
 		}
 
-		return nil, "", missing(ref, decodeError(resp.StatusCode, answer))
+		return nil, decodeError(resp.StatusCode, answer)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s on %s: %w", what, c.path, err)
 	}
 
-	return reader, resp.Header.Get(api.ExecIDHeader), nil
+	conn.SetReadLimit(api.MaxPayload + 1)
+
+	return conn, nil
+}
+
+// closeStream ends a session both sides are done with; one the library closed on a cancelled context reports nothing.
+func closeStream(conn *websocket.Conn) error {
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("close the stream: %w", err)
+	}
+
+	return nil
 }
 
 // sendInput forwards the keyboard and then says so, because a guest that reads waits for the end of it.
-func sendInput(frames *api.FrameWriter, streams ExecStreams) {
+func sendInput(ctx context.Context, conn *websocket.Conn, streams ExecStreams) {
 	if streams.Stdin != nil {
-		if err := copyInput(frames, streams.Stdin); err != nil {
-			warn(streams.Warn, fmt.Sprintf("the keyboard stopped reaching the command: %v", err))
+		if err := copyInput(ctx, conn, streams.Stdin); err != nil {
+			if !gone(ctx, err) {
+				warn(streams.Warn, fmt.Sprintf("the keyboard stopped reaching the command: %v", err))
+			}
 
 			return
 		}
 	}
 
-	// A command that exited first took the connection with it, and its exit frame already said so.
-	if err := frames.Write(api.StreamStdinClose, nil); err != nil && !gone(err) {
+	// A command that exited first took the session with it, and its exit message already said so.
+	if err := api.Send(ctx, conn, api.StreamStdinClose, nil); err != nil && !gone(ctx, err) {
 		warn(streams.Warn, fmt.Sprintf("the command was not told the input had ended: %v", err))
 	}
 }
 
-// gone reports the errors a write hits once the other end of the connection is done with it.
-func gone(err error) bool {
-	return errors.Is(err, net.ErrClosed) ||
+// gone reports the errors a write hits once the other end of the session is done with it.
+func gone(ctx context.Context, err error) bool {
+	return ctx.Err() != nil ||
+		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, os.ErrClosed) ||
 		errors.Is(err, io.ErrClosedPipe) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, syscall.ECONNRESET)
 }
 
-func copyInput(frames *api.FrameWriter, r io.Reader) error {
+func copyInput(ctx context.Context, conn *websocket.Conn, r io.Reader) error {
 	buf := make([]byte, stdinChunk)
 
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			if err := frames.Write(api.StreamStdin, buf[:n]); err != nil {
+			if err := api.Send(ctx, conn, api.StreamStdin, buf[:n]); err != nil {
 				return err
 			}
 		}
@@ -152,21 +146,12 @@ func copyInput(frames *api.FrameWriter, r io.Reader) error {
 	}
 }
 
-// readExec writes the guest's output where it belongs and ends on the exit frame, which every exec has.
-func readExec(r io.Reader, ref string, streams ExecStreams) (models.ExitStatus, error) {
-	var failure string
-
+// readExec writes the guest's output where it belongs and ends on the exit or the failure, which every exec has.
+func readExec(ctx context.Context, conn *websocket.Conn, ref string, streams ExecStreams) (models.ExitStatus, error) {
 	for {
-		stream, payload, err := api.ReadFrame(r)
-		if errors.Is(err, io.EOF) {
-			if failure != "" {
-				return models.ExitStatus{}, errors.New(failure)
-			}
-
-			return models.ExitStatus{}, fmt.Errorf("the exec in sandbox %s ended without an exit status", ref)
-		}
+		stream, payload, err := api.Receive(ctx, conn)
 		if err != nil {
-			return models.ExitStatus{}, err
+			return models.ExitStatus{}, ended(ctx, err, ref)
 		}
 
 		switch stream {
@@ -178,29 +163,47 @@ func readExec(r io.Reader, ref string, streams ExecStreams) (models.ExitStatus, 
 			if err := write(streams.Stderr, payload); err != nil {
 				return models.ExitStatus{}, err
 			}
-		case api.StreamError:
-			failure = string(payload)
 		case api.StreamExit:
-			return exitOf(payload, ref, failure)
+			return exitOf(payload, ref)
+		case api.StreamFailure:
+			return models.ExitStatus{}, failureOf(payload, ref)
 		default:
-			return models.ExitStatus{}, fmt.Errorf("the daemon sent a frame of stream %d, which no daemon sends", stream)
+			return models.ExitStatus{}, fmt.Errorf("the daemon sent a message of stream %d, which no daemon sends", stream)
 		}
 	}
 }
 
-// exitOf reads the exit frame. An exit that follows a failure is a command the sandbox never ran,
-// and the code is then the one a shell answers for the same refusal.
-func exitOf(payload []byte, ref, failure string) (models.ExitStatus, error) {
-	code, err := strconv.Atoi(string(payload))
-	if err != nil {
+// ended names a session that ended before its exit, which only an interrupt on this side does on purpose.
+func ended(ctx context.Context, err error, ref string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("the exec in sandbox %s: %w", ref, ctx.Err())
+	}
+
+	return fmt.Errorf("the exec in sandbox %s ended without an exit status: %w", ref, err)
+}
+
+// exitOf reads the exit message; one that carries an error is a command the sandbox never ran, with a shell's code.
+func exitOf(payload []byte, ref string) (models.ExitStatus, error) {
+	var exit api.ExitMessage
+	if err := json.Unmarshal(payload, &exit); err != nil {
 		return models.ExitStatus{}, fmt.Errorf("the daemon answered %q as the exit status of the exec in sandbox %s", payload, ref)
 	}
 
-	if failure != "" {
-		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: ref, Reason: failure, Code: code}
+	if exit.Error != "" {
+		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: ref, Reason: exit.Error, Code: exit.Code}
 	}
 
-	return models.ExitStatus{Code: code}, nil
+	return models.ExitStatus{Code: exit.Code, Signal: exit.Signal}, nil
+}
+
+// failureOf reads a failure message into the error a refusal before the 101 would have been.
+func failureOf(payload []byte, ref string) error {
+	var failure api.FailureMessage
+	if err := json.Unmarshal(payload, &failure); err != nil || failure.Error == "" {
+		return fmt.Errorf("the daemon answered %q as the failure of the exec in sandbox %s", payload, ref)
+	}
+
+	return &APIError{Code: failure.Code, Message: failure.Error}
 }
 
 // ResizeExec sets the window of a running exec, which is what this terminal's SIGWINCH forwards.
@@ -215,11 +218,11 @@ func (c *Client) ResizeExec(ctx context.Context, ref, execID string, size sandbo
 }
 
 // Logs writes what the entrypoint wrote into w. A follow has no bound of its own: it ends when the
-// sandbox stops, or when the caller's context does.
+// sandbox stops or is removed, or when the caller's context does.
 func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/logs"
 	if follow {
-		path += "?follow=true"
+		return c.followLogs(ctx, ref, path+"?follow=true", w)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shard"+path, nil) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
@@ -232,10 +235,6 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 	var connect *ConnectError
 	if errors.As(err, &connect) {
 		return connect
-	}
-	// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
-	if err != nil && ctx.Err() != nil {
-		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("GET %s on %s: %w", path, c.path, err)
@@ -252,35 +251,45 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 	}
 
 	if _, err := io.Copy(w, resp.Body); err != nil {
-		// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
-		if ctx.Err() != nil {
-			return nil
-		}
-
 		return fmt.Errorf("read the output of sandbox %s: %w", ref, err)
 	}
 
 	return nil
 }
 
-// interrupt ends the reads when ctx does, so a command the operator gave up on gives the terminal back.
-func interrupt(ctx context.Context, conn net.Conn) func() error {
-	done := make(chan struct{})
-	exited := make(chan error, 1)
+// followLogs prints the output as the daemon sends it and ends on the end message, whatever its reason.
+func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) (err error) {
+	conn, err := c.open(ctx, path, "the output of sandbox "+ref)
+	if err != nil && ctx.Err() != nil {
+		return nil
+	}
+	if err != nil {
+		return missing(ref, err)
+	}
+	defer func() { err = errors.Join(err, closeStream(conn)) }()
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			exited <- conn.SetDeadline(time.Now())
-		case <-done:
-			exited <- nil
+	for {
+		stream, payload, err := api.Receive(ctx, conn)
+		// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
+		if err != nil && ctx.Err() != nil {
+			return nil
 		}
-	}()
+		if err != nil {
+			return fmt.Errorf("follow the output of sandbox %s: %w", ref, err)
+		}
 
-	return func() error {
-		close(done)
-
-		return <-exited
+		switch stream {
+		case api.StreamStdout:
+			if err := write(w, payload); err != nil {
+				return err
+			}
+		case api.StreamExit:
+			return nil
+		case api.StreamFailure:
+			return failureOf(payload, ref)
+		default:
+			return fmt.Errorf("the daemon sent a message of stream %d, which no daemon sends", stream)
+		}
 	}
 }
 
@@ -307,86 +316,54 @@ func warn(report func(string), message string) {
 // FollowEgressLog prints one decision per line as the daemon writes it, until the caller's context
 // ends. A sandbox removed under the follow ends it with a word on why, and never a bare close.
 func (c *Client) FollowEgressLog(ctx context.Context, ref string, out, errOut io.Writer) (err error) {
-	conn, err := c.dial(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, conn.Close()) }()
-
-	stop := interrupt(ctx, conn)
-	defer func() { err = errors.Join(err, stop()) }()
-
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/egress-log?follow=true"
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shard"+path, nil) //nolint:gosec // G704: the ref only lands in the path; this connection is the socket whatever the URL says
+	conn, err := c.open(ctx, path, "the egress log of sandbox "+ref)
+	if err != nil && ctx.Err() != nil {
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("build the request for the egress log of sandbox %s: %w", ref, err)
+		return missing(ref, err)
 	}
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "tcp")
+	defer func() { err = errors.Join(err, closeStream(conn)) }()
 
-	if err := request.Write(conn); err != nil {
-		return fmt.Errorf("ask for the egress log of sandbox %s on %s: %w", ref, c.path, err)
-	}
-
-	reader := bufio.NewReader(conn)
-
-	resp, err := http.ReadResponse(reader, request)
-	if err != nil {
-		// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		return fmt.Errorf("read the answer to the egress log of sandbox %s on %s: %w", ref, c.path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		answer, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read the refusal of the egress log of sandbox %s: %w", ref, err)
-		}
-
-		return missing(ref, decodeError(resp.StatusCode, answer))
-	}
-
-	return readEgressLog(ctx, reader, ref, out, errOut)
-}
-
-// readEgressLog prints every record frame and ends on the daemon's close, which is what a removed
-// sandbox and a daemon going down both look like from here.
-func readEgressLog(ctx context.Context, r io.Reader, ref string, out, errOut io.Writer) error {
 	for {
-		stream, payload, err := api.ReadFrame(r)
-		if errors.Is(err, io.EOF) {
+		kind, record, err := conn.Read(ctx)
+		// An interrupt is how an operator leaves a follow, and it leaves nothing behind on the host.
+		if err != nil && ctx.Err() != nil {
 			return nil
 		}
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
+			return egressLogEnd(err, ref, errOut)
+		}
+		if kind != websocket.MessageText {
+			return fmt.Errorf("the daemon sent a binary message on the egress log of sandbox %s, which no daemon sends", ref)
+		}
 
+		if err := write(out, append(record, '\n')); err != nil {
 			return err
 		}
-
-		switch stream {
-		case api.StreamStdout:
-			if err := write(out, payload); err != nil {
-				return err
-			}
-		case api.StreamExit:
-			// The sandbox is gone, which is a reason to stop printing and not a failure of the follow.
-			reason := fmt.Sprintf("the egress log of sandbox %s ended: %s\n", ref, payload)
-			if err := write(errOut, []byte(reason)); err != nil {
-				return fmt.Errorf("write why the egress log of sandbox %s ended: %w", ref, err)
-			}
-
-			return nil
-		case api.StreamError:
-			return fmt.Errorf("the egress log of sandbox %s ended: %s", ref, payload)
-		default:
-			return fmt.Errorf("the daemon sent a frame of stream %d, which no daemon sends", stream)
-		}
 	}
+}
+
+// egressLogEnd reads the daemon's close: a normal one with a reason is why the follow ended, and not a failure of it.
+func egressLogEnd(err error, ref string, errOut io.Writer) error {
+	var closed websocket.CloseError
+	if !errors.As(err, &closed) {
+		return fmt.Errorf("follow the egress log of sandbox %s: %w", ref, err)
+	}
+
+	if closed.Code != websocket.StatusNormalClosure {
+		return fmt.Errorf("the egress log of sandbox %s ended: %s", ref, closed.Reason)
+	}
+	if closed.Reason == "" {
+		return nil
+	}
+
+	reason := fmt.Sprintf("the egress log of sandbox %s ended: %s\n", ref, closed.Reason)
+	if err := write(errOut, []byte(reason)); err != nil {
+		return fmt.Errorf("write why the egress log of sandbox %s ended: %w", ref, err)
+	}
+
+	return nil
 }

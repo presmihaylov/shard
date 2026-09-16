@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,19 +9,37 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strconv"
+	"strings"
+
+	"github.com/coder/websocket"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// upgrade is the answer to an exec: the connection stops being HTTP and carries frames both ways.
-const upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection: Upgrade\r\n"
-
-func (h *Handler) execSandbox(w http.ResponseWriter, r *http.Request) {
+// createExec validates the command and names the exec; nothing runs until a client attaches.
+func (h *Handler) createExec(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.ExecRequest
 	if err := decode(r, &req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	ticket, err := h.lifecycle.CreateExec(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusCreated, ticket)
+}
+
+// attachExec runs the exec over the WebSocket the client opens. Every refusal comes before the 101.
+func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
+	if err := handshake(r); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -32,28 +49,34 @@ func (h *Handler) execSandbox(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	session := &execSession{w: w, log: h.log, cancel: cancel}
+	session := &execSession{w: w, r: r, log: h.log, cancel: cancel}
 	defer session.close()
 
 	stdin, writer := io.Pipe()
 	session.stdin = writer
 
 	streams := sandbox.Streams{
+		Stdin:   stdin,
 		Stdout:  session.stream(StreamStdout),
 		Stderr:  session.stream(StreamStderr),
 		Started: session.start,
-		Warn:    func(message string) { h.log.Printf("api: exec in sandbox %s: %s", r.PathValue("id"), message) },
-	}
-	// A client that types nothing leaves the command with no stdin, which is what exec without -i means.
-	if req.Stdin {
-		streams.Stdin = stdin
+		Warn: func(message string) {
+			h.log.Printf("api: exec %s in sandbox %s: %s", r.PathValue("exec"), r.PathValue("id"), message)
+		},
 	}
 
-	exit, err := h.lifecycle.Exec(ctx, r.PathValue("id"), req, streams)
+	exit, err := h.lifecycle.Attach(ctx, r.PathValue("id"), r.PathValue("exec"), streams)
 
 	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
-	if !session.upgraded {
+	if !session.answered {
 		h.writeError(w, err)
+
+		return
+	}
+
+	// The library answered the handshake with its own refusal, so the daemon's log is the one place left.
+	if session.conn == nil {
+		h.log.Printf("api: exec %s in sandbox %s: %v", r.PathValue("exec"), r.PathValue("id"), err)
 
 		return
 	}
@@ -61,43 +84,63 @@ func (h *Handler) execSandbox(w http.ResponseWriter, r *http.Request) {
 	session.finish(exit, err)
 }
 
-// execSession is the client side of one exec: the frames it sends in, and the frames the guest sends back.
-type execSession struct {
-	w      http.ResponseWriter
-	log    *log.Logger
-	cancel context.CancelFunc
-
-	upgraded bool
-	conn     net.Conn
-	frames   *FrameWriter
-	stdin    *io.PipeWriter
-}
-
-// start answers the 101 and takes the connection, so everything after this is frames and never HTTP.
-func (e *execSession) start(execID string) error {
-	conn, buffered, err := http.NewResponseController(e.w).Hijack()
-	if err != nil {
-		return fmt.Errorf("take over the connection of exec %s: %w", execID, err)
+// handshake refuses a request that is not the WebSocket opening handshake, before the library answers in plain text.
+func handshake(r *http.Request) error {
+	switch {
+	case !hasToken(r.Header.Get("Connection"), "upgrade"),
+		!hasToken(r.Header.Get("Upgrade"), "websocket"),
+		r.Header.Get("Sec-WebSocket-Version") != "13",
+		r.Header.Get("Sec-WebSocket-Key") == "":
+		return ErrWebSocketRequired
 	}
-	e.upgraded, e.conn, e.frames = true, conn, NewFrameWriter(conn)
-
-	if _, err := buffered.WriteString(upgrade + ExecIDHeader + ": " + execID + "\r\n\r\n"); err != nil {
-		return fmt.Errorf("answer the exec %s: %w", execID, err)
-	}
-	if err := buffered.Flush(); err != nil {
-		return fmt.Errorf("answer the exec %s: %w", execID, err)
-	}
-
-	// The buffered reader may already hold the first frames, so the loop reads from it and not from the connection.
-	go e.read(buffered.Reader)
 
 	return nil
 }
 
-// read moves the client's frames into the guest's stdin until the client says it is done, or goes away.
-func (e *execSession) read(r *bufio.Reader) {
+// hasToken says whether a comma-separated header names token, in any case.
+func hasToken(header, token string) bool {
+	for part := range strings.SplitSeq(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// execSession is the client side of one exec: the messages it sends in, and the ones the guest sends back.
+type execSession struct {
+	w      http.ResponseWriter
+	r      *http.Request
+	log    *log.Logger
+	cancel context.CancelFunc
+
+	// answered says the handshake was answered, in the affirmative or not, so no JSON body follows it.
+	answered bool
+	conn     *websocket.Conn
+	stdin    *io.PipeWriter
+}
+
+// start answers the 101 and takes the connection, so everything after this is messages and never HTTP.
+func (e *execSession) start(execID string) error {
+	e.answered = true
+
+	conn, err := websocket.Accept(e.w, e.r, nil)
+	if err != nil {
+		return fmt.Errorf("open the WebSocket of exec %s: %w", execID, err)
+	}
+	conn.SetReadLimit(MaxPayload + 1)
+	e.conn = conn
+
+	go e.read()
+
+	return nil
+}
+
+// read moves the client's messages into the guest's stdin until the client says it is done, or goes away.
+func (e *execSession) read() {
 	for {
-		stream, payload, err := ReadFrame(r)
+		stream, payload, err := Receive(context.Background(), e.conn)
 		if err != nil {
 			// The client is gone, so the command goes with it: an exec belongs to the connection that asked for it.
 			e.closeStdin(err)
@@ -116,8 +159,8 @@ func (e *execSession) read(r *bufio.Reader) {
 		case StreamStdinClose:
 			e.closeStdin(io.EOF)
 		default:
-			e.log.Printf("api: exec: the client sent a frame of stream %d, which no client sends", stream)
-			e.closeStdin(fmt.Errorf("the client sent a frame of stream %d", stream))
+			e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
+			e.closeStdin(fmt.Errorf("the client sent a message of stream %d", stream))
 			e.cancel()
 
 			return
@@ -132,37 +175,34 @@ func (e *execSession) closeStdin(err error) {
 	}
 }
 
-// finish says how the command ended. A command that never ran carries both frames, so the client can
-// answer with the code a shell answers for it.
+// finish says how the command ended. A command that never ran exits with the code a shell answers for it.
 func (e *execSession) finish(exit models.ExitStatus, err error) {
 	var notStarted *models.CommandNotStartedError
 	if errors.As(err, &notStarted) {
-		// The reason travels alone, because the client names the sandbox again when it rebuilds the error.
-		e.send(StreamError, notStarted.Reason)
-		e.send(StreamExit, strconv.Itoa(notStarted.Code))
+		e.send(StreamExit, ExitMessage{Code: notStarted.Code, Error: notStarted.Reason})
 
 		return
 	}
 
 	if err != nil {
-		e.send(StreamError, err.Error())
+		e.send(StreamFailure, failureOf(err))
 
 		return
 	}
 
-	e.send(StreamExit, strconv.Itoa(exit.Code))
+	e.send(StreamExit, ExitMessage{Code: exit.Code, Signal: exit.Signal})
 }
 
-func (e *execSession) send(stream byte, payload string) {
-	if err := e.frames.Write(stream, []byte(payload)); err != nil {
-		e.log.Printf("api: exec: write the frame of stream %d: %v", stream, err)
+func (e *execSession) send(stream byte, payload any) {
+	if err := sendJSON(e.r.Context(), e.conn, stream, payload); err != nil {
+		e.log.Printf("api: exec: %v", err)
 	}
 }
 
-// stream is the io.Writer the guest's output is copied into, one frame per copy.
+// stream is the io.Writer the guest's output is copied into, one message per copy.
 func (e *execSession) stream(stream byte) io.Writer {
 	return writerFunc(func(p []byte) (int, error) {
-		if err := e.frames.Write(stream, p); err != nil {
+		if err := Send(e.r.Context(), e.conn, stream, p); err != nil {
 			return 0, err
 		}
 
@@ -170,16 +210,17 @@ func (e *execSession) stream(stream byte) io.Writer {
 	})
 }
 
-// close ends the connection this exec owned. A session that never upgraded still owns the response.
+// close ends the connection this exec owned. A client that left first closed it, which is how it ends a command.
 func (e *execSession) close() {
 	e.closeStdin(io.EOF)
 
-	if !e.upgraded {
+	if e.conn == nil {
 		return
 	}
 
-	if err := e.conn.Close(); err != nil {
-		e.log.Printf("api: exec: close the connection: %v", err)
+	err := e.conn.Close(websocket.StatusNormalClosure, "")
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		e.log.Printf("api: exec: close the WebSocket: %v", err)
 	}
 }
 
@@ -212,9 +253,15 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if follow {
+		h.followLogs(w, r)
+
+		return
+	}
+
 	out := &logWriter{w: w}
 
-	err = h.lifecycle.Logs(r.Context(), r.PathValue("id"), follow, out)
+	err = h.lifecycle.Logs(r.Context(), r.PathValue("id"), out)
 
 	// Once a byte is out the status is already 200, so the rest of the failure goes to the daemon's log.
 	if err != nil && out.wrote {
@@ -234,7 +281,7 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// logWriter answers 200 on the first byte and flushes every write, so a follow arrives as it happens.
+// logWriter answers 200 on the first byte and flushes every write, so the body arrives as it is read.
 type logWriter struct {
 	w     http.ResponseWriter
 	wrote bool
@@ -263,56 +310,137 @@ func (l *logWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// followEgressLog streams one sandbox's decisions over the connection this request came in on. It
-// takes the connection over like an exec does, so the end of the log carries a reason and not a
-// bare close: a record goes as a stdout frame, and a removed sandbox as an error frame.
-func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
-	conn, buffered, err := http.NewResponseController(w).Hijack()
+// followLogs streams the output over a WebSocket and says why the follow ended, so the client can tell a stop from a rm.
+func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
+	// A reference nothing holds is refused before the 101, like every other refusal.
+	id, err := h.repo.Resolve(r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, fmt.Errorf("take over the connection of the egress log of sandbox %s: %w", sb.ID, err))
+		h.writeError(w, err)
 
 		return
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			h.log.Printf("api: egress log of sandbox %s: close the connection: %v", sb.ID, err)
+	if _, err := h.repo.Get(id); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	f, err := h.follow(w, r, "logs of sandbox "+id)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+	defer f.close(websocket.StatusNormalClosure, "")
+
+	reason, err := h.lifecycle.FollowLogs(f.ctx, id, writerFunc(func(p []byte) (int, error) {
+		if err := Send(f.ctx, f.conn, StreamStdout, p); err != nil {
+			return 0, err
 		}
-	}()
 
-	if _, err := buffered.WriteString(upgrade + "\r\n"); err != nil {
-		h.log.Printf("api: egress log of sandbox %s: answer the follow: %v", sb.ID, err)
+		return len(p), nil
+	}))
+
+	// The client hung up or the daemon is going down, and neither is anything to say on the wire.
+	if f.ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		f.send(StreamFailure, failureOf(err))
 
 		return
 	}
-	if err := buffered.Flush(); err != nil {
-		h.log.Printf("api: egress log of sandbox %s: answer the follow: %v", sb.ID, err)
+
+	f.send(StreamExit, EndMessage{Reason: reason})
+}
+
+// followEgressLog sends one text message per decision, and the close reason says why the follow ended.
+func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
+	f, err := h.follow(w, r, "egress log of sandbox "+sb.ID)
+	if err != nil {
+		h.writeError(w, err)
 
 		return
 	}
 
-	frames := NewFrameWriter(conn)
-
-	err = h.egressLog.Follow(r.Context(), sb, func(record egress.Record) error {
+	err = h.egressLog.Follow(f.ctx, sb, func(record egress.Record) error {
 		line, err := json.Marshal(record)
 		if err != nil {
 			return fmt.Errorf("encode an egress record of sandbox %s: %w", sb.ID, err)
 		}
 
-		return frames.Write(StreamStdout, append(line, '\n'))
+		if err := f.conn.Write(f.ctx, websocket.MessageText, line); err != nil {
+			return fmt.Errorf("send an egress record of sandbox %s: %w", sb.ID, err)
+		}
+
+		return nil
 	})
 
-	// The client hung up or the daemon is going down, and neither is anything to say on the wire.
-	if err == nil || errors.Is(err, context.Canceled) {
-		return
+	switch {
+	case f.ctx.Err() != nil:
+		f.close(websocket.StatusNormalClosure, "")
+	case errors.Is(err, egress.ErrSandboxGone):
+		f.close(websocket.StatusNormalClosure, err.Error())
+	case err != nil:
+		f.close(websocket.StatusInternalError, err.Error())
+	default:
+		f.close(websocket.StatusNormalClosure, "")
+	}
+}
+
+// follower is one WebSocket the daemon only writes to; its ctx ends when the client closes or goes away.
+type follower struct {
+	conn *websocket.Conn
+	ctx  context.Context
+	log  *log.Logger
+	what string
+}
+
+// follow refuses a request without the handshake as JSON, then answers the 101 and starts reading for the close.
+func (h *Handler) follow(w http.ResponseWriter, r *http.Request, what string) (*follower, error) {
+	if err := handshake(r); err != nil {
+		return nil, err
 	}
 
-	// A removed sandbox ends the follow and never fails it, so it goes on the stream the client exits on.
-	stream := StreamError
-	if errors.Is(err, egress.ErrSandboxGone) {
-		stream = StreamExit
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return nil, fmt.Errorf("open the WebSocket of the %s: %w", what, err)
 	}
 
-	if writeErr := frames.Write(stream, []byte(err.Error())); writeErr != nil {
-		h.log.Printf("api: egress log of sandbox %s: %v", sb.ID, writeErr)
+	return &follower{conn: conn, ctx: conn.CloseRead(r.Context()), log: h.log, what: what}, nil
+}
+
+func (f *follower) send(stream byte, payload any) {
+	if err := sendJSON(f.ctx, f.conn, stream, payload); err != nil {
+		f.log.Printf("api: %s: %v", f.what, err)
 	}
+}
+
+// close ends the follow with a status and a reason the client can print; a reason has 123 bytes on the wire.
+func (f *follower) close(code websocket.StatusCode, reason string) {
+	if len(reason) > 123 {
+		reason = strings.ToValidUTF8(reason[:123], "")
+	}
+
+	err := f.conn.Close(code, reason)
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		f.log.Printf("api: %s: close the WebSocket: %v", f.what, err)
+	}
+}
+
+// sendJSON encodes payload as the message of stream; nothing the daemon sends is over MaxPayload.
+func sendJSON(ctx context.Context, conn *websocket.Conn, stream byte, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode the message of stream %d: %w", stream, err)
+	}
+
+	return Send(ctx, conn, stream, body)
+}
+
+// failureOf is the failure message of an error, the same status and code an error body would carry.
+func failureOf(err error) FailureMessage {
+	_, code := classify(err)
+
+	return FailureMessage{Error: err.Error(), Code: code}
 }

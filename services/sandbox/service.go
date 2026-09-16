@@ -81,6 +81,8 @@ type Config struct {
 	PullTimeout time.Duration
 	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
 	StopSettle time.Duration
+	// ExecExpiry overrides DefaultExecExpiry, which only a test has a reason to do.
+	ExecExpiry time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -90,7 +92,7 @@ type Service struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 
-	// execs holds the exec sessions that run on a terminal, so a resize finds the pty of one by id.
+	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
 }

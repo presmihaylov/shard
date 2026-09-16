@@ -51,17 +51,21 @@ func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
 	svc := sandbox.New(sandbox.Config{Repo: &fakeRepo{r: r, sb: running()}, Provider: &replicaHolder{t: t}})
 
 	req := sandbox.ExecRequest{Command: []string{"/bin/true"}, TTY: true}
+	ticket, err := svc.CreateExec(context.Background(), "sandbox1", req)
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := svc.Exec(context.Background(), "sandbox1", req, sandbox.Streams{Stdout: io.Discard})
+		_, err := svc.Attach(context.Background(), "sandbox1", ticket.ID, sandbox.Streams{Stdout: io.Discard})
 		done <- err
 	}()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Exec: %v", err)
+			t.Fatalf("Attach: %v", err)
 		}
 	case <-time.After(execReturnBudget):
 		t.Fatalf("the exec did not return within %s, and the command it ran is long gone", execReturnBudget)

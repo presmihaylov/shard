@@ -19,6 +19,9 @@ import (
 // drainBudget is how long the command's last output may take to arrive once the command itself is gone.
 const drainBudget = 2 * time.Second
 
+// DefaultExecExpiry is how long a created exec waits for its attach before the daemon forgets it.
+const DefaultExecExpiry = 60 * time.Second
+
 // ExecRequest is one command to run in a sandbox that already runs. It is the body of POST /v0/sandboxes/{id}/exec.
 type ExecRequest struct {
 	Command []string `json:"command"`
@@ -37,6 +40,12 @@ type ExecRequest struct {
 type TerminalSize struct {
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
+}
+
+// ExecTicket is what a create answers: the name an attach and a resize use, and when the exec is gone without one.
+type ExecTicket struct {
+	ID        string    `json:"exec"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // Streams is where one exec's stdio goes. The caller owns them: a nil Stdin is a command that reads nothing.
@@ -62,27 +71,73 @@ func (e *UnavailableError) Error() string {
 	return fmt.Sprintf("sandbox %s %s: %s", e.ID, e.Why, e.Fix)
 }
 
-// execSession is one exec on a terminal, kept until it ends so a resize can find its pty.
+// AttachedError is an exec a client already attached to: one attach runs the command, and it is under way.
+type AttachedError struct {
+	ID string
+}
+
+func (e *AttachedError) Error() string {
+	return fmt.Sprintf("exec %s is already attached: create another", e.ID)
+}
+
+// execSession is one exec from its create to its end, so an attach finds the request and a resize the pty.
 type execSession struct {
 	sandboxID string
+	req       ExecRequest
+	expiry    *time.Timer
+	attached  bool
 	pair      *pty.Pty
 }
 
-// Exec runs one command in a sandbox that is already up. It is never the entrypoint, and its exit
-// ends nothing: only stop ends a sandbox.
-func (s *Service) Exec(ctx context.Context, ref string, req ExecRequest, streams Streams) (models.ExitStatus, error) {
+// CreateExec validates one command for a sandbox that is up and names it; nothing runs until Attach.
+func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (ExecTicket, error) {
 	if len(req.Command) == 0 {
-		return models.ExitStatus{}, &RequestError{Err: errors.New("the request names no command to run")}
+		return ExecTicket{}, &RequestError{Err: errors.New("the request names no command to run")}
 	}
 
 	id, err := s.readyForExec(ctx, ref)
 	if err != nil {
-		return models.ExitStatus{}, err
+		return ExecTicket{}, err
 	}
 
 	execID, err := newExecID()
 	if err != nil {
+		return ExecTicket{}, err
+	}
+
+	expiry := s.execExpiry()
+	session := &execSession{sandboxID: id, req: req}
+	session.expiry = time.AfterFunc(expiry, func() { s.expireExec(execID) })
+	s.holdExec(execID, session)
+
+	return ExecTicket{ID: execID, ExpiresAt: time.Now().Add(expiry).UTC().Truncate(time.Second)}, nil
+}
+
+// Attach runs the command a create named; its exit ends nothing, because only stop ends a sandbox.
+func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (models.ExitStatus, error) {
+	id, err := s.cfg.Repo.Resolve(ref)
+	if err != nil {
 		return models.ExitStatus{}, err
+	}
+
+	req, err := s.takeExec(id, execID)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	defer s.dropExec(execID)
+
+	// The sandbox may have gone since the create, and the refusal still comes before anything is on the wire.
+	if _, err := s.readyForExec(ctx, id); err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	// A command created without stdin reads nothing, so what the client types goes nowhere rather than stalling it.
+	if !req.Stdin && streams.Stdin != nil {
+		stdin := streams.Stdin
+		streams.Stdin = nil
+		go func() {
+			warn(streams.Warn, copyStream(io.Discard, stdin), "the keyboard of a command without stdin")
+		}()
 	}
 
 	if req.TTY {
@@ -90,6 +145,46 @@ func (s *Service) Exec(ctx context.Context, ref string, req ExecRequest, streams
 	}
 
 	return s.execOnPipes(ctx, id, execID, req, streams)
+}
+
+func (s *Service) execExpiry() time.Duration {
+	if s.cfg.ExecExpiry != 0 {
+		return s.cfg.ExecExpiry
+	}
+
+	return DefaultExecExpiry
+}
+
+// takeExec claims a created exec for the one attach that runs it, and answers what the create was asked.
+func (s *Service) takeExec(id, execID string) (ExecRequest, error) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	session := s.execs[execID]
+	if session == nil || session.sandboxID != id {
+		return ExecRequest{}, fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
+	}
+	if session.attached {
+		return ExecRequest{}, &AttachedError{ID: execID}
+	}
+
+	session.attached = true
+	session.expiry.Stop()
+
+	return session.req, nil
+}
+
+// expireExec forgets an exec nobody attached; one that was attached in the meantime stays until it ends.
+func (s *Service) expireExec(execID string) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	session := s.execs[execID]
+	if session == nil || session.attached {
+		return
+	}
+
+	delete(s.execs, execID)
 }
 
 // readyForExec resolves the reference and refuses a sandbox no command can run in. The record
@@ -141,6 +236,11 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 func (s *Service) execOnPipes(ctx context.Context, id, execID string, req ExecRequest, streams Streams) (status models.ExitStatus, err error) {
 	spec := specOf(req)
 
+	// The client is answered before the copiers exist, so what they write to is settled when they start.
+	if err := started(streams, execID); err != nil {
+		return models.ExitStatus{}, err
+	}
+
 	if streams.Stdin != nil {
 		reader, writer, err := os.Pipe()
 		if err != nil {
@@ -166,10 +266,6 @@ func (s *Service) execOnPipes(ctx context.Context, id, execID string, req ExecRe
 		return models.ExitStatus{}, errors.Join(err, out.Close())
 	}
 	spec.Stderr = errOut
-
-	if err := started(streams, execID); err != nil {
-		return models.ExitStatus{}, errors.Join(err, out.Close(), errOut.Close())
-	}
 
 	status, execErr := s.cfg.Provider.Exec(ctx, id, spec)
 
@@ -209,12 +305,16 @@ func (s *Service) execOnTerminal(ctx context.Context, id, execID string, req Exe
 		}
 	}
 
-	s.holdExec(execID, &execSession{sandboxID: id, pair: pair})
-	defer s.dropExec(execID)
+	s.holdTerminal(execID, pair)
 
 	spec := specOf(req)
 	// A terminal carries one stream, so all three fds are the same file.
 	spec.Stdin, spec.Stdout, spec.Stderr = pair.Replica, pair.Replica, pair.Replica
+
+	// The client is answered before the copiers exist, so what they write to is settled when they start.
+	if err := started(streams, execID); err != nil {
+		return models.ExitStatus{}, err
+	}
 
 	if streams.Stdin != nil {
 		go func() {
@@ -226,10 +326,6 @@ func (s *Service) execOnTerminal(ctx context.Context, id, execID string, req Exe
 	go func() {
 		drained <- copyStream(streams.Stdout, pair.Master)
 	}()
-
-	if err := started(streams, execID); err != nil {
-		return models.ExitStatus{}, err
-	}
 
 	status, err = s.cfg.Provider.Exec(ctx, id, spec)
 
@@ -258,16 +354,25 @@ func (s *Service) ResizeExec(_ context.Context, ref, execID string, size Termina
 		return err
 	}
 
-	s.execMu.Lock()
-	session := s.execs[execID]
-	s.execMu.Unlock()
-
-	// An exec that already ended is gone, and so is one that belongs to another sandbox.
-	if session == nil || session.sandboxID != id {
+	pair := s.terminalOf(id, execID)
+	// An exec that already ended is gone, and so is one that belongs to another sandbox or runs on pipes.
+	if pair == nil {
 		return fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
 	}
 
-	return session.pair.Resize(pty.Size{Rows: size.Rows, Cols: size.Cols})
+	return pair.Resize(pty.Size{Rows: size.Rows, Cols: size.Cols})
+}
+
+func (s *Service) terminalOf(id, execID string) *pty.Pty {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	session := s.execs[execID]
+	if session == nil || session.sandboxID != id {
+		return nil
+	}
+
+	return session.pair
 }
 
 func (s *Service) holdExec(execID string, session *execSession) {
@@ -275,6 +380,14 @@ func (s *Service) holdExec(execID string, session *execSession) {
 	defer s.execMu.Unlock()
 
 	s.execs[execID] = session
+}
+
+// holdTerminal is where a resize finds the pty, set once the attach opened it.
+func (s *Service) holdTerminal(execID string, pair *pty.Pty) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	s.execs[execID].pair = pair
 }
 
 func (s *Service) dropExec(execID string) {

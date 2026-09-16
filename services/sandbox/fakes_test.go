@@ -263,6 +263,9 @@ type fakeProvider struct {
 	execErr    error
 	execID     string
 	execSpec   models.ExecSpec
+	// execBegan is closed when a command starts, and execWaits holds it there until the test closes it.
+	execBegan chan struct{}
+	execWaits chan struct{}
 }
 
 func (f *fakeProvider) LogPath(string) (string, error) {
@@ -278,6 +281,13 @@ func (f *fakeProvider) Exec(_ context.Context, id string, spec models.ExecSpec) 
 		return models.ExitStatus{}, err
 	}
 	f.execID, f.execSpec = id, spec
+
+	if f.execBegan != nil {
+		close(f.execBegan)
+	}
+	if f.execWaits != nil {
+		<-f.execWaits
+	}
 
 	if spec.Stdin != nil {
 		read, err := io.ReadAll(spec.Stdin)

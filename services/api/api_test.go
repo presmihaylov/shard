@@ -54,7 +54,7 @@ func seed(t *testing.T) seeded {
 
 	enforcer := egress.New(policies, repo, network.DefaultNameservers, nil)
 
-	verbs, stores := &fakeLifecycle{}, &fakeStores{}
+	verbs, stores := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}
 
 	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, fakeEgressLog{}, io.Discard))
 	t.Cleanup(server.Close)
