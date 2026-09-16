@@ -13,6 +13,8 @@ const (
 	CodeNoSnapshot        Code = "no_snapshot"
 	CodeUnsupported       Code = "unsupported"
 	CodeInUse             Code = "in_use"
+	CodeExecExited        Code = "exec_exited"
+	CodeExecRunning       Code = "exec_running"
 	CodeWebSocketRequired Code = "websocket_required"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeInternal          Code = "internal"

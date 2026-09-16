@@ -81,8 +81,6 @@ type Config struct {
 	PullTimeout time.Duration
 	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
 	StopSettle time.Duration
-	// ExecExpiry overrides DefaultExecExpiry, which only a test has a reason to do.
-	ExecExpiry time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -535,6 +533,9 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 	if err := s.awaitStopped(ctx, id); err != nil {
 		return err
 	}
+
+	// A stop takes the sandbox's execs with it: their buffers go and their commands end.
+	s.dropExecs(id)
 
 	exit, err := s.lastExit(ctx, id)
 	if err != nil {

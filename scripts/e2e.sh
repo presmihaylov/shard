@@ -699,6 +699,13 @@ say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon did not come up"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
+# An exec is a record now, so a curl GET names it and its exit after the shard exec that ran it returns.
+EXECS=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/exec")
+EXEC_ID=$(echo "${EXECS}" | grep -o '"exec": *"[^"]*"' | head -1 | cut -d'"' -f4)
+[ -n "${EXEC_ID}" ] || fail "the sandbox lists no exec after a shard exec returned: ${EXECS}"
+RECORD_JSON=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/exec/${EXEC_ID}")
+echo "${RECORD_JSON}" | grep -q '"state": *"exited"' || fail "the exec record ${EXEC_ID} is not exited: ${RECORD_JSON}"
+say "a curl GET answers the exited exec record ${EXEC_ID} that shard exec left behind"
 # grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
 nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK} after the daemon restart"
 say "the host still holds the egress chain of the sandbox"

@@ -464,6 +464,15 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	return models.ExitStatus{Code: code}, nil
 }
 
+// Signal sends one signal to a running exec by the host pid the driver reported for it.
+func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string) error {
+	if err := p.runc.Signal(ctx, id, pid, signal); err != nil {
+		return fmt.Errorf("sandbox %s: %w", id, err)
+	}
+
+	return nil
+}
+
 // notStarted gives a command the driver refused to start a name the cli can answer with a shell's
 // own exit code. The driver looked the command up on the host, so the reason is the shell's wording.
 func notStarted(id string, err error) error {
@@ -497,6 +506,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (sysboxrunc.ExecOptions,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
 		Stderr:  spec.Stderr,
+		Report:  spec.Report,
 	}
 
 	// A named user is resolved against the sandbox's live tree; an unnamed one is the entrypoint's own,

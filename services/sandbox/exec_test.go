@@ -2,11 +2,13 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -14,7 +16,7 @@ import (
 )
 
 // execOf is one exec over the fakes, created and then attached, with the streams a test reads back.
-func execOf(t *testing.T, l layers, svc *sandbox.Service, ref string, req sandbox.ExecRequest, stdin string) (models.ExitStatus, *bytes.Buffer, *bytes.Buffer, error) {
+func execOf(t *testing.T, _ layers, svc *sandbox.Service, ref string, req sandbox.ExecRequest, stdin string) (models.ExitStatus, *bytes.Buffer, *bytes.Buffer, error) {
 	t.Helper()
 
 	var out, errOut bytes.Buffer
@@ -25,73 +27,91 @@ func execOf(t *testing.T, l layers, svc *sandbox.Service, ref string, req sandbo
 		req.Stdin = true
 	}
 
-	ticket, err := svc.CreateExec(t.Context(), ref, req)
+	exec, err := svc.CreateExec(t.Context(), ref, req)
 	if err != nil {
 		return models.ExitStatus{}, &out, &errOut, err
 	}
 
-	status, err := svc.Attach(t.Context(), ref, ticket.ID, streams)
+	status, err := svc.Attach(t.Context(), ref, exec.ID, streams)
 
 	return status, &out, &errOut, err
 }
 
-// attach is the second step alone, for a test that holds the ticket itself.
+// attach is the second step alone, for a test that holds the exec id itself.
 func attach(t *testing.T, svc *sandbox.Service, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
 	t.Helper()
 
 	return svc.Attach(t.Context(), ref, execID, streams)
 }
 
-func TestCreateExecNamesTheExecAndWhenItExpires(t *testing.T) {
-	r := &recorder{}
-	svc, _ := newService(t, r, running())
-
-	before := time.Now()
-
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
-	if err != nil {
-		t.Fatalf("CreateExec: %v", err)
-	}
-
-	if ticket.ID == "" {
-		t.Fatal("the exec was never named")
-	}
-	if ticket.ExpiresAt.Location() != time.UTC || ticket.ExpiresAt.Nanosecond() != 0 {
-		t.Errorf("expires_at = %v, want a whole second in UTC", ticket.ExpiresAt)
-	}
-	if got := ticket.ExpiresAt.Sub(before); got < sandbox.DefaultExecExpiry-2*time.Second || got > sandbox.DefaultExecExpiry+time.Second {
-		t.Errorf("the exec expires in %s, want about %s", got, sandbox.DefaultExecExpiry)
-	}
-	if slices.Contains(r.calls, "provider.Exec") {
-		t.Error("the create reached the provider, and nothing runs before the attach")
-	}
+// notifyWriter closes wrote the first time it is written to, so a test can wait for the replay to land.
+type notifyWriter struct {
+	buf   bytes.Buffer
+	once  sync.Once
+	wrote chan struct{}
 }
 
-// Nobody attached in time, so the exec is gone and the attach finds nothing.
-func TestAnExecNobodyAttachesExpires(t *testing.T) {
-	r := &recorder{}
-	svc, _ := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.ExecExpiry = 20 * time.Millisecond })
+func (w *notifyWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.wrote) })
 
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	return w.buf.Write(p)
+}
+
+// The command starts the moment the create returns, whether or not a client ever attaches.
+func TestCreateExecStartsTheCommandAndNamesIt(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
 	if err != nil {
 		t.Fatalf("CreateExec: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
-		if errors.Is(err, sandboxstate.ErrNotFound) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the exec never expired: the attach returned %v", err)
-		}
-
-		time.Sleep(10 * time.Millisecond)
+	if exec.ID == "" {
+		t.Fatal("the exec was never named")
+	}
+	if exec.Sandbox != "sandbox1" {
+		t.Errorf("the exec names sandbox %q, want sandbox1", exec.Sandbox)
+	}
+	if exec.State != models.ExecRunning {
+		t.Errorf("the exec is %q, want running", exec.State)
 	}
 
-	if err := svc.ResizeExec(t.Context(), "sandbox1", ticket.ID, sandbox.TerminalSize{Rows: 24, Cols: 80}); !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Errorf("a resize of the expired exec returned %v, want an exec that is not found", err)
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if got.State != models.ExecRunning {
+		t.Errorf("the exec is %q with no client attached, want running", got.State)
+	}
+
+	close(l.provider.execWaits)
+}
+
+// The command runs and can be waited on with nobody ever attaching to it.
+func TestAnExecRunsWithNoClientAttached(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+	l.provider.execExit = models.ExitStatus{Code: 5}
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	close(l.provider.execWaits)
+
+	done, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+	if done.State != models.ExecExited {
+		t.Errorf("the exec is %q, want exited", done.State)
+	}
+	if done.ExitStatus == nil || done.ExitStatus.Code != 5 {
+		t.Errorf("the exec ended with %+v, want code 5", done.ExitStatus)
 	}
 }
 
@@ -108,30 +128,35 @@ func TestAttachRefusesAnExecNobodyCreated(t *testing.T) {
 	}
 }
 
-// One attach per exec: the second finds it taken and is told to create another.
+// One attach per exec: the second finds it taken. After the command ends, an attach replays it instead.
 func TestAttachRefusesASecondAttach(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
-	l.provider.execBegan = make(chan struct{})
 	l.provider.execWaits = make(chan struct{})
 
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
 	if err != nil {
 		t.Fatalf("CreateExec: %v", err)
 	}
 
+	attached := make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
-		_, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
+		streams := sandbox.Streams{Stdout: io.Discard, Started: func(string) error {
+			close(attached)
+
+			return nil
+		}}
+		_, err := attach(t, svc, "sandbox1", exec.ID, streams)
 		first <- err
 	}()
 
-	<-l.provider.execBegan
+	<-attached
 
-	_, err = attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
+	_, err = attach(t, svc, "sandbox1", exec.ID, sandbox.Streams{})
 
-	var attached *sandbox.AttachedError
-	if !errors.As(err, &attached) || attached.ID != ticket.ID {
+	var inUse *sandbox.AttachedError
+	if !errors.As(err, &inUse) || inUse.ID != exec.ID {
 		t.Errorf("the second attach returned %v, want the exec named as attached", err)
 	}
 
@@ -141,9 +166,9 @@ func TestAttachRefusesASecondAttach(t *testing.T) {
 		t.Errorf("the first attach returned %v", err)
 	}
 
-	// The exec is over, so a third attach finds nothing and not a session in use.
-	if _, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{}); !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Errorf("an attach after the end returned %v, want an exec that is not found", err)
+	// The command is over, but the record stays, so an attach now replays it and answers the exit.
+	if _, err := attach(t, svc, "sandbox1", exec.ID, sandbox.Streams{}); err != nil {
+		t.Errorf("an attach after the end returned %v, want a replay and the exit", err)
 	}
 }
 
@@ -308,12 +333,12 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 	}
 }
 
-// The exec id names the session for as long as it runs, and a resize reaches the pty by it.
-func TestExecNamesTheSessionBeforeItRuns(t *testing.T) {
+// The attach names the exec to the client before it replays anything, so a resize reaches the pty by it.
+func TestAttachNamesTheExecBeforeTheReplay(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
 
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
 	if err != nil {
 		t.Fatalf("CreateExec: %v", err)
 	}
@@ -325,54 +350,420 @@ func TestExecNamesTheSessionBeforeItRuns(t *testing.T) {
 		return nil
 	}}
 
-	if _, err := attach(t, svc, "sandbox1", ticket.ID, streams); err != nil {
+	if _, err := attach(t, svc, "sandbox1", exec.ID, streams); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if named != ticket.ID {
-		t.Fatalf("the exec was named %q, want %s", named, ticket.ID)
+	if named != exec.ID {
+		t.Fatalf("the exec was named %q, want %s", named, exec.ID)
 	}
 	if l.provider.execID != "sandbox1" {
 		t.Errorf("the provider was given id %q, want sandbox1", l.provider.execID)
 	}
 }
 
-// A client that goes away before the command runs ends the exec, and the substrate is never reached.
-func TestExecEndsWhenTheClientCannotBeAnswered(t *testing.T) {
+// A client that cannot be answered ends its own attach, and the command it left runs on regardless.
+func TestAttachEndsWhenTheClientCannotBeAnswered(t *testing.T) {
 	r := &recorder{}
-	svc, _ := newService(t, r, running())
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+	l.provider.execExit = models.ExitStatus{Code: 9}
 
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
 	if err != nil {
 		t.Fatalf("CreateExec: %v", err)
 	}
 
 	streams := sandbox.Streams{Started: func(string) error { return errors.New("the client is gone") }}
-
-	if _, err := attach(t, svc, "sandbox1", ticket.ID, streams); err == nil {
-		t.Fatal("Attach ran a command nobody was left to answer")
+	if _, err := attach(t, svc, "sandbox1", exec.ID, streams); err == nil {
+		t.Fatal("the attach answered a client that had gone")
 	}
-	if slices.Contains(r.calls, "provider.Exec") {
-		t.Error("exec reached the provider for a client that had gone")
+
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if got.State != models.ExecRunning {
+		t.Errorf("the command is %q after the client left, want running", got.State)
+	}
+
+	close(l.provider.execWaits)
+
+	done, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+	if done.ExitStatus == nil || done.ExitStatus.Code != 9 {
+		t.Errorf("the command ended with %+v, want code 9", done.ExitStatus)
 	}
 }
 
-// A resize of an exec that has ended, or has no terminal yet, is a resize of nothing, and it says so.
-func TestResizeExecRefusesAnExecNobodyIsRunning(t *testing.T) {
+// A client that drops leaves the command running, and the next attach replays the output and the exit.
+func TestAttachReplaysAfterADropAndReturnsTheExit(t *testing.T) {
 	r := &recorder{}
-	svc, _ := newService(t, r, running())
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+	l.provider.execOut = "live\n"
+	l.provider.execExit = models.ExitStatus{Code: 4}
 
-	err := svc.ResizeExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b", sandbox.TerminalSize{Rows: 24, Cols: 80})
-	if !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Fatalf("ResizeExec returned %v, want an exec that is not found", err)
-	}
-
-	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}, TTY: true})
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
 	if err != nil {
 		t.Fatalf("CreateExec: %v", err)
 	}
 
-	err = svc.ResizeExec(t.Context(), "sandbox1", ticket.ID, sandbox.TerminalSize{Rows: 24, Cols: 80})
-	if !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Fatalf("ResizeExec before the attach returned %v, want an exec that is not found", err)
+	out1 := &notifyWriter{wrote: make(chan struct{})}
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := svc.Attach(ctx1, "sandbox1", exec.ID, sandbox.Streams{Stdout: out1})
+		first <- err
+	}()
+
+	<-out1.wrote
+	cancel1()
+
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the dropped attach returned %v, want a cancelled context", err)
+	}
+
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if got.State != models.ExecRunning {
+		t.Errorf("the command is %q after the client dropped, want running", got.State)
+	}
+
+	var out2 bytes.Buffer
+	second := make(chan error, 1)
+	status := make(chan models.ExitStatus, 1)
+	go func() {
+		exit, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out2})
+		status <- exit
+		second <- err
+	}()
+
+	close(l.provider.execWaits)
+
+	if err := <-second; err != nil {
+		t.Fatalf("the re-attach returned %v", err)
+	}
+	if exit := <-status; exit.Code != 4 {
+		t.Errorf("the re-attach answered code %d, want 4", exit.Code)
+	}
+	if out2.String() != "live\n" {
+		t.Errorf("the re-attach replayed %q, want live", out2.String())
+	}
+}
+
+func TestGetExecAnswersTheRecordThenTheExit(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+	l.provider.execExit = models.ExitStatus{Code: 2}
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if got.State != models.ExecRunning || got.ExitStatus != nil {
+		t.Errorf("the running exec is %+v, want running with no exit", got)
+	}
+
+	close(l.provider.execWaits)
+
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+
+	got, err = svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec after the end: %v", err)
+	}
+	if got.State != models.ExecExited || got.ExitStatus == nil || got.ExitStatus.Code != 2 {
+		t.Errorf("the ended exec is %+v, want exited with code 2", got)
+	}
+}
+
+func TestGetExecRefusesAnExecNobodyCreated(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	if _, err := svc.GetExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b"); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("GetExec returned %v, want an exec that is not found", err)
+	}
+}
+
+func TestListExecsAnswersEverySandboxExec(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	first, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	second, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	execs, err := svc.ListExecs(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("ListExecs: %v", err)
+	}
+	if len(execs) != 2 {
+		t.Fatalf("the list holds %d execs, want 2", len(execs))
+	}
+	if !slices.IsSortedFunc(execs, func(a, b models.Exec) int { return strings.Compare(a.ID, b.ID) }) {
+		t.Errorf("the list is not sorted by id: %v", execs)
+	}
+
+	ids := []string{execs[0].ID, execs[1].ID}
+	if !slices.Contains(ids, first.ID) || !slices.Contains(ids, second.ID) {
+		t.Errorf("the list %v is missing one of %s and %s", ids, first.ID, second.ID)
+	}
+}
+
+func TestListExecsRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.repo.missing = true
+
+	if _, err := svc.ListExecs(t.Context(), "sandbox1"); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("ListExecs returned %v, want a sandbox that is not found", err)
+	}
+}
+
+// A kill waits for the pid the provider reported, then signals it, and the default signal is TERM.
+func TestKillExecSignalsTheRunningCommand(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.signaled = make(chan struct{})
+	l.provider.execPID = 4242
+	l.provider.execExit = models.ExitStatus{Code: 143}
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if err := svc.KillExec(t.Context(), "sandbox1", exec.ID, ""); err != nil {
+		t.Fatalf("KillExec: %v", err)
+	}
+
+	done, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+	if done.ExitStatus == nil || done.ExitStatus.Code != 143 {
+		t.Errorf("the killed command ended with %+v, want code 143", done.ExitStatus)
+	}
+	if l.provider.signalGot != "TERM" {
+		t.Errorf("the provider was sent %q, want TERM", l.provider.signalGot)
+	}
+	if l.provider.signalPID != 4242 {
+		t.Errorf("the provider signalled pid %d, want 4242", l.provider.signalPID)
+	}
+}
+
+func TestKillExecRefusesAnExecThatHasExited(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+
+	err = svc.KillExec(t.Context(), "sandbox1", exec.ID, "TERM")
+
+	var exited *sandbox.ExecExitedError
+	if !errors.As(err, &exited) || exited.ID != exec.ID {
+		t.Errorf("the kill of an ended exec returned %v, want the exec named as exited", err)
+	}
+}
+
+func TestKillExecRefusesAnUnknownSignal(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	err = svc.KillExec(t.Context(), "sandbox1", exec.ID, "HUP")
+	if err == nil || !strings.Contains(err.Error(), "TERM or KILL") {
+		t.Fatalf("the kill with an unknown signal returned %v, want a refusal", err)
+	}
+	if slices.Contains(r.calls, "provider.Signal") {
+		t.Error("an unknown signal still reached the provider")
+	}
+
+	close(l.provider.execWaits)
+}
+
+func TestDeleteExecRefusesAnExecStillRunning(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	err = svc.DeleteExec(t.Context(), "sandbox1", exec.ID)
+
+	var runningErr *sandbox.ExecRunningError
+	if !errors.As(err, &runningErr) || runningErr.ID != exec.ID {
+		t.Errorf("the delete of a running exec returned %v, want the exec named as running", err)
+	}
+
+	close(l.provider.execWaits)
+}
+
+func TestDeleteExecForgetsAnExecThatHasEnded(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+
+	if err := svc.DeleteExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("DeleteExec: %v", err)
+	}
+
+	if _, err := svc.GetExec(t.Context(), "sandbox1", exec.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("a get after the delete returned %v, want an exec that is not found", err)
+	}
+}
+
+// The daemon keeps only the last execBufferCap bytes, and a replay that lost bytes is marked truncated.
+func TestExecKeepsTheLastBytesAndMarksItTruncated(t *testing.T) {
+	const cap = 8 << 20
+
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execOut = strings.Repeat("a", cap+(1<<20))
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	// The command ends first, so the buffer holds only its evicted tail and an attach replays that.
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+
+	var out bytes.Buffer
+	if _, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out}); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if out.Len() > cap {
+		t.Errorf("the replay is %d bytes, want no more than the %d byte cap", out.Len(), cap)
+	}
+	if out.Len() <= cap-(1<<20) {
+		t.Errorf("the replay is %d bytes, want the buffer kept close to its %d byte cap", out.Len(), cap)
+	}
+
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if !got.Truncated {
+		t.Error("the record is not marked truncated, and the replay lost its oldest bytes")
+	}
+}
+
+// A command with stdin reads nothing until a client attaches and types, then ends the input.
+func TestExecStdinReachesTheCommandOnlyThroughAnAttach(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execExit = models.ExitStatus{Code: 5}
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"cat"}, Stdin: true})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	got, err := svc.GetExec(t.Context(), "sandbox1", exec.ID)
+	if err != nil {
+		t.Fatalf("GetExec: %v", err)
+	}
+	if got.State != models.ExecRunning {
+		t.Errorf("the command is %q with no client attached, want running on a stdin it cannot read yet", got.State)
+	}
+
+	streams := sandbox.Streams{Stdin: strings.NewReader("hi\n"), Stdout: io.Discard}
+	status, err := svc.Attach(t.Context(), "sandbox1", exec.ID, streams)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if status.Code != 5 {
+		t.Errorf("the command ended with code %d, want 5", status.Code)
+	}
+	if l.provider.execInput != "hi\n" {
+		t.Errorf("the command read %q, want hi", l.provider.execInput)
+	}
+}
+
+// A resize of an exec nobody created, and of one that runs on pipes, is a resize of nothing. A real
+// terminal needs Linux, so the resize of a running terminal is proven in the integration suite.
+func TestResizeExecRefusesAnExecWithNoTerminal(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+
+	if err := svc.ResizeExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b", sandbox.TerminalSize{Rows: 24, Cols: 80}); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("ResizeExec of an unknown exec returned %v, want an exec that is not found", err)
+	}
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if err := svc.ResizeExec(t.Context(), "sandbox1", exec.ID, sandbox.TerminalSize{Rows: 24, Cols: 80}); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("ResizeExec of a pipe exec returned %v, want an exec with no terminal", err)
+	}
+
+	close(l.provider.execWaits)
+}
+
+// A stop takes the sandbox's execs with it, so a get after the stop finds nothing.
+func TestStopForgetsTheSandboxExecs(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if _, err := svc.GetExec(t.Context(), "sandbox1", exec.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("a get after the stop returned %v, want an exec that is not found", err)
 	}
 }

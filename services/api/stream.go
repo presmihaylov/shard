@@ -29,17 +29,118 @@ func (h *Handler) createExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticket, err := h.lifecycle.CreateExec(r.Context(), r.PathValue("id"), req)
+	exec, err := h.lifecycle.CreateExec(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		h.writeError(w, err)
 
 		return
 	}
 
-	h.writeJSON(w, http.StatusCreated, ticket)
+	h.writeJSON(w, http.StatusCreated, exec)
 }
 
-// attachExec runs the exec over the WebSocket the client opens. Every refusal comes before the 101.
+// execsResponse is a page of one sandbox's execs, oldest id first.
+type execsResponse struct {
+	Execs []models.Exec `json:"execs"`
+	Next  *string       `json:"next"`
+}
+
+// listExecs answers a page of the sandbox's execs.
+func (h *Handler) listExecs(w http.ResponseWriter, r *http.Request) {
+	q, err := pageOf(r, sandbox.ValidExecID)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	execs, err := h.lifecycle.ListExecs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	execs, next := page(execs, q, func(e models.Exec) string { return e.ID })
+
+	h.writeJSON(w, http.StatusOK, execsResponse{Execs: execs, Next: next})
+}
+
+// getExec answers one exec three ways: a WebSocket upgrade attaches, ?wait=true blocks until it ends,
+// and a plain GET is the record as it stands now.
+func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
+	if handshake(r) == nil {
+		h.attachExec(w, r)
+
+		return
+	}
+
+	wait, err := boolQuery(r, "wait")
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if wait {
+		exec, err := h.lifecycle.WaitExec(r.Context(), r.PathValue("id"), r.PathValue("exec"))
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		h.writeJSON(w, http.StatusOK, exec)
+
+		return
+	}
+
+	exec, err := h.lifecycle.GetExec(r.Context(), r.PathValue("id"), r.PathValue("exec"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, exec)
+}
+
+// killRequest names the signal a kill sends. An empty signal is TERM.
+type killRequest struct {
+	Signal string `json:"signal,omitempty"`
+}
+
+// killExec sends one signal to a running exec.
+func (h *Handler) killExec(w http.ResponseWriter, r *http.Request) {
+	var req killRequest
+	if err := decode(r, &req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := h.lifecycle.KillExec(r.Context(), r.PathValue("id"), r.PathValue("exec"), req.Signal); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteExec forgets an exec that has ended and frees its buffer.
+func (h *Handler) deleteExec(w http.ResponseWriter, r *http.Request) {
+	if err := h.lifecycle.DeleteExec(r.Context(), r.PathValue("id"), r.PathValue("exec")); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// attachExec replays the exec's buffer to the client, then streams it live until the command ends. It is
+// reached over the WebSocket the client opens, and every refusal comes before the 101.
 func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	if err := handshake(r); err != nil {
 		h.writeError(w, err)
@@ -80,6 +181,11 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	if session.conn == nil {
 		h.log.Printf("api: exec %s in sandbox %s: %v", r.PathValue("exec"), r.PathValue("id"), err)
 
+		return
+	}
+
+	// The client hung up, so the command runs on and there is no live socket left to send an exit over.
+	if ctx.Err() != nil {
 		return
 	}
 

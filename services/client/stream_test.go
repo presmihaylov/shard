@@ -54,7 +54,7 @@ func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		answer(http.StatusCreated, `{"exec":"`+d.execID+`","expires_at":"2026-09-16T08:01:00Z"}`)(w, r)
+		answer(http.StatusCreated, `{"exec":"`+d.execID+`","state":"running"}`)(w, r)
 
 		return
 	}
@@ -248,7 +248,7 @@ func TestExecReportsARefusalOfTheCreate(t *testing.T) {
 func TestExecReportsARefusalOfTheAttach(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			answer(http.StatusCreated, `{"exec":"1a2b3c4d5e6f7a8b","expires_at":"2026-09-16T08:01:00Z"}`)(w, r)
+			answer(http.StatusCreated, `{"exec":"1a2b3c4d5e6f7a8b","state":"running"}`)(w, r)
 
 			return
 		}

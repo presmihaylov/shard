@@ -33,6 +33,10 @@ type Provider interface {
 	// always 0, because a substrate reports an exec's exit code and nothing else.
 	Exec(ctx context.Context, id string, spec ExecSpec) (ExitStatus, error)
 
+	// Signal sends one signal to a running exec by the pid ExecSpec.Report gave for it. The pid is
+	// whatever handle that provider signals by, so a caller only ever passes back what Report reported.
+	Signal(ctx context.Context, id string, pid int, signal string) error
+
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
 	// Under a restart policy it returns the first exit of the run; once the sandbox is stopped, the last.
 	// It reports ErrNoExitStatus for a sandbox a stop had to kill, which recorded no exit.
@@ -130,6 +134,8 @@ type ExecSpec struct {
 	Stdin  *os.File
 	Stdout *os.File
 	Stderr *os.File
+	// Report is called once with the guest process id, so the caller can Signal the exec while it runs.
+	Report func(pid int)
 }
 
 // ImageConfig is the part of an OCI image config a sandbox is built from. The spec overrides it.

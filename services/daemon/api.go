@@ -277,10 +277,10 @@ func (l *lifecycle) Clone(ctx context.Context, ref string, req sandbox.CopyReque
 	return svc.Clone(ctx, ref, req)
 }
 
-func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error) {
+func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error) {
 	svc, err := l.service()
 	if err != nil {
-		return sandbox.ExecTicket{}, err
+		return models.Exec{}, err
 	}
 
 	return svc.CreateExec(ctx, ref, req)
@@ -293,6 +293,51 @@ func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sand
 	}
 
 	return svc.Attach(ctx, ref, execID, streams)
+}
+
+func (l *lifecycle) ListExecs(ctx context.Context, ref string) ([]models.Exec, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListExecs(ctx, ref)
+}
+
+func (l *lifecycle) GetExec(ctx context.Context, ref, execID string) (models.Exec, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Exec{}, err
+	}
+
+	return svc.GetExec(ctx, ref, execID)
+}
+
+func (l *lifecycle) WaitExec(ctx context.Context, ref, execID string) (models.Exec, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Exec{}, err
+	}
+
+	return svc.WaitExec(ctx, ref, execID)
+}
+
+func (l *lifecycle) KillExec(ctx context.Context, ref, execID, signal string) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.KillExec(ctx, ref, execID, signal)
+}
+
+func (l *lifecycle) DeleteExec(ctx context.Context, ref, execID string) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.DeleteExec(ctx, ref, execID)
 }
 
 func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error {

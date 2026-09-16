@@ -30,8 +30,13 @@ type Lifecycle interface {
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error)
+	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
 	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error)
+	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
+	GetExec(ctx context.Context, ref, execID string) (models.Exec, error)
+	WaitExec(ctx context.Context, ref, execID string) (models.Exec, error)
+	KillExec(ctx context.Context, ref, execID, signal string) error
+	DeleteExec(ctx context.Context, ref, execID string) error
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
@@ -109,7 +114,10 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	mux.HandleFunc("POST /v0/sandboxes/{id}/fork", h.forkSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/clone", h.cloneSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.createExec)
-	mux.HandleFunc("GET /v0/sandboxes/{id}/exec/{exec}", h.attachExec)
+	mux.HandleFunc("GET /v0/sandboxes/{id}/exec", h.listExecs)
+	mux.HandleFunc("GET /v0/sandboxes/{id}/exec/{exec}", h.getExec)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/kill", h.killExec)
+	mux.HandleFunc("DELETE /v0/sandboxes/{id}/exec/{exec}", h.deleteExec)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/egress-log", h.sandboxEgressLog)
@@ -446,6 +454,8 @@ func classify(err error) (int, models.Code) {
 	var unavailable *sandbox.UnavailableError
 	var held *sandbox.HeldError
 	var attached *sandbox.AttachedError
+	var execExited *sandbox.ExecExitedError
+	var execRunning *sandbox.ExecRunningError
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request):
@@ -459,6 +469,10 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, state.Code
 	case errors.As(err, &unavailable):
 		return http.StatusConflict, models.CodeSandboxNotRunning
+	case errors.As(err, &execExited):
+		return http.StatusConflict, models.CodeExecExited
+	case errors.As(err, &execRunning):
+		return http.StatusConflict, models.CodeExecRunning
 	case errors.As(err, &held), errors.As(err, &attached):
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):

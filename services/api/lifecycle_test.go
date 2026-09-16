@@ -48,6 +48,16 @@ type fakeLifecycle struct {
 	resizedExec string
 	size        sandbox.TerminalSize
 
+	// execState is the state a get reports, and execStatus how a waited or a got exec ended.
+	execState  models.ExecState
+	execStatus *models.ExitStatus
+	// execs is the page a list answers.
+	execs []models.Exec
+	// killedExec and killSignal are the exec and the signal a kill named; deletedExec the delete's.
+	killedExec  string
+	killSignal  string
+	deletedExec string
+
 	// lines is what the output holds, and stops is what ends a follow, with reason as why.
 	lines    []string
 	followed bool
@@ -129,15 +139,67 @@ func (f *fakeLifecycle) Clone(_ context.Context, ref string, req sandbox.CopyReq
 	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
 }
 
-// CreateExec names the exec the way the orchestrator does, and refuses like any verb.
-func (f *fakeLifecycle) CreateExec(_ context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error) {
+// CreateExec starts the exec the way the orchestrator does, running from the moment it returns.
+func (f *fakeLifecycle) CreateExec(_ context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error) {
 	f.ref, f.exec = ref, req
 
 	if f.err != nil {
-		return sandbox.ExecTicket{}, f.err
+		return models.Exec{}, f.err
 	}
 
-	return sandbox.ExecTicket{ID: f.execID, ExpiresAt: time.Date(2026, 9, 16, 8, 1, 0, 0, time.UTC)}, nil
+	return f.record(f.execID, models.ExecRunning), nil
+}
+
+// record is the exec the fake reports, named after the reference and the request it last saw.
+func (f *fakeLifecycle) record(execID string, state models.ExecState) models.Exec {
+	return models.Exec{ID: execID, Sandbox: f.ref, Command: f.exec.Command, State: state, ExitStatus: f.execStatus}
+}
+
+// ListExecs answers the page the test loaded, the way the orchestrator lists a sandbox's execs.
+func (f *fakeLifecycle) ListExecs(_ context.Context, ref string) ([]models.Exec, error) {
+	f.ref = ref
+
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return f.execs, nil
+}
+
+// GetExec answers the record as it stands, and refuses like any verb.
+func (f *fakeLifecycle) GetExec(_ context.Context, ref, execID string) (models.Exec, error) {
+	f.ref = ref
+
+	if f.err != nil {
+		return models.Exec{}, f.err
+	}
+
+	return f.record(execID, f.execState), nil
+}
+
+// WaitExec answers the record once it has ended, so its state is exited and it carries its status.
+func (f *fakeLifecycle) WaitExec(_ context.Context, ref, execID string) (models.Exec, error) {
+	f.ref = ref
+
+	if f.err != nil {
+		return models.Exec{}, f.err
+	}
+
+	return f.record(execID, models.ExecExited), nil
+}
+
+// KillExec records the exec and the signal it was sent, and refuses like any verb.
+func (f *fakeLifecycle) KillExec(_ context.Context, ref, execID, signal string) error {
+	f.ref, f.killedExec, f.killSignal = ref, execID, signal
+
+	return f.err
+}
+
+// DeleteExec records the exec it forgot, and refuses like any verb.
+func (f *fakeLifecycle) DeleteExec(_ context.Context, ref, execID string) error {
+	f.ref, f.deletedExec = ref, execID
+
+	return f.err
 }
 
 // Attach answers the client the way the orchestrator does: it starts the session, writes, and then exits.
