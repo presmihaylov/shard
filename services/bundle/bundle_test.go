@@ -33,6 +33,35 @@ func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 	}
 }
 
+func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
+	restart := models.RestartSpec{Policy: models.RestartOnFailure, Retries: 3, Backoff: 2}
+	b, got := build(t, models.SandboxSpec{Restart: restart}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	want := []string{
+		bundle.GuestInitPath, "-exit-file", guestExitFile, "-ready-file", guestReadyFile,
+		"-restart", "on-failure", "-retries", "3", "-backoff", "2s", "-restart-file", "/.shard/restarts.json",
+		"--", "/bin/sh",
+	}
+	if !slices.Equal(got.Process.Args, want) {
+		t.Errorf("got args %v, want %v", got.Process.Args, want)
+	}
+	if want := filepath.Join(b.ShardDir, "restarts.json"); b.RestartFile != want {
+		t.Errorf("got the restart file at %q, want %q", b.RestartFile, want)
+	}
+
+	count, err := b.RestartCount()
+	if err != nil || count != (models.RestartCount{}) {
+		t.Errorf("RestartCount() = %+v, %v before any start again, want zero and no error", count, err)
+	}
+	if err := os.WriteFile(b.RestartFile, []byte(`{"count":2,"gave_up":true}`), 0o600); err != nil {
+		t.Fatalf("write the restart file: %v", err)
+	}
+	count, err = b.RestartCount()
+	if err != nil || count.Count != 2 || !count.GaveUp {
+		t.Errorf("RestartCount() = %+v, %v, want 2 starts again and a give-up", count, err)
+	}
+}
+
 func TestBuildRefusesAnImageWithNothingToRun(t *testing.T) {
 	_, err := newService(t).Build(newSpec(t))
 	if err == nil {

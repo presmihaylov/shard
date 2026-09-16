@@ -188,6 +188,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		RestartOnOOM: src.RestartOnOOM,
 		HealthCheck:  src.HealthCheck,
 		Health:       src.Health,
+		Restart:      src.Restart,
 		ExitStatus:   src.ExitStatus,
 	})
 	defer claim.unlock()
@@ -258,6 +259,7 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 		Policy:       src.Policy,
 		RestartOnOOM: src.RestartOnOOM,
 		HealthCheck:  src.HealthCheck,
+		Restart:      freshRestart(src.Restart),
 	})
 	defer claim.unlock()
 

@@ -113,15 +113,17 @@ func atoi(s string) int {
 }
 
 type supervisor struct {
-	cmd       *exec.Cmd
-	exitFile  string
-	readyFile string
-	out       *bufio.Reader
+	cmd         *exec.Cmd
+	exitFile    string
+	readyFile   string
+	restartFile string
+	out         *bufio.Reader
 	// waited records that a test collected the exit itself, so the cleanup does not wait twice.
 	waited bool
 }
 
-func startSupervisor(t *testing.T, role, child string) *supervisor {
+// restart flags go before the entrypoint; the count file lands beside the exit file when any are given.
+func startSupervisor(t *testing.T, role, child string, restart ...string) *supervisor {
 	t.Helper()
 
 	exe, err := os.Executable()
@@ -132,7 +134,12 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 	dir := t.TempDir()
 	exitFile := filepath.Join(dir, "exit.json")
 	readyFile := filepath.Join(dir, "started")
-	cmd := exec.Command(exe, "-exit-file", exitFile, "-ready-file", readyFile, "--", exe, childPrefix+child)
+	restartFile := filepath.Join(dir, "restarts.json")
+	args := []string{"-exit-file", exitFile, "-ready-file", readyFile}
+	if len(restart) > 0 {
+		args = append(append(args, restart...), "-restart-file", restartFile)
+	}
+	cmd := exec.Command(exe, append(args, "--", exe, childPrefix+child)...)
 	cmd.Env = append(os.Environ(), roleEnv+"="+role)
 	cmd.Stderr = os.Stderr
 
@@ -144,7 +151,7 @@ func startSupervisor(t *testing.T, role, child string) *supervisor {
 		t.Fatalf("start the supervisor: %v", err)
 	}
 
-	super := &supervisor{cmd: cmd, exitFile: exitFile, readyFile: readyFile, out: bufio.NewReader(pipe)}
+	super := &supervisor{cmd: cmd, exitFile: exitFile, readyFile: readyFile, restartFile: restartFile, out: bufio.NewReader(pipe)}
 
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -193,6 +200,27 @@ func (s *supervisor) awaitExitStatus(t *testing.T) models.ExitStatus {
 	})
 
 	return status
+}
+
+// awaitRestartCount waits until the count file says what the test wants of it.
+func (s *supervisor) awaitRestartCount(t *testing.T, want func(models.RestartCount) bool) models.RestartCount {
+	t.Helper()
+
+	var count models.RestartCount
+	waitFor(t, 15*time.Second, "the restart count file", func() bool {
+		blob, err := os.ReadFile(s.restartFile)
+		if err != nil {
+			return false
+		}
+
+		if err := json.Unmarshal(blob, &count); err != nil {
+			t.Fatalf("the restart count file is not valid JSON: %v", err)
+		}
+
+		return want(count)
+	})
+
+	return count
 }
 
 // awaitExit collects the supervisor's own exit, which nothing but a stop signal produces.
@@ -290,6 +318,63 @@ func TestTermEndsASupervisorWhoseEntrypointAlreadyExited(t *testing.T) {
 	}
 
 	super.awaitExit(t)
+}
+
+func TestOnFailureStartsTheEntrypointAgainUntilTheRetriesAreSpent(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:1", "-restart", "on-failure", "-retries", "2", "-backoff", "20ms")
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.GaveUp })
+	if count.Count != 2 || count.LastAt.IsZero() {
+		t.Errorf("the count is %+v, want 2 starts again with a time on the last", count)
+	}
+	if status := super.awaitExitStatus(t); status.Code != 1 {
+		t.Errorf("exit status is %+v, want code 1 from the last run", status)
+	}
+	if !super.alive(t) {
+		t.Error("the supervisor exited at the cap, so a sandbox does not outlive a give-up")
+	}
+}
+
+func TestAlwaysStartsTheEntrypointAgainAfterACleanExit(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:0", "-restart", "always", "-retries", "1", "-backoff", "20ms")
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.GaveUp })
+	if count.Count != 1 {
+		t.Errorf("the count is %+v, want 1 start again", count)
+	}
+}
+
+func TestOnFailureLeavesACleanExitAlone(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:0", "-restart", "on-failure", "-retries", "2", "-backoff", "20ms")
+	super.awaitExitStatus(t)
+
+	// The first start again would land within the backoff, so a quiet wait past it proves the point.
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(super.restartFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the restart count file exists after a clean exit (stat: %v), want none", err)
+	}
+}
+
+func TestTermDuringTheBackoffEndsTheSupervisorAtOnce(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:1", "-restart", "on-failure", "-retries", "5", "-backoff", "10s")
+	super.awaitExitStatus(t)
+
+	if err := super.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+
+	super.awaitExit(t)
+}
+
+func TestTheBackoffDoublesUpToTheCap(t *testing.T) {
+	policy := restartPolicy{backoff: time.Second}
+	cases := map[int]time.Duration{0: time.Second, 1: 2 * time.Second, 5: 32 * time.Second, 6: 60 * time.Second, 100: 60 * time.Second}
+
+	for started, want := range cases {
+		if got := policy.wait(started); got != want {
+			t.Errorf("wait(%d) = %s, want %s", started, got, want)
+		}
+	}
 }
 
 func TestNoZombiesAfterManyChildren(t *testing.T) {
@@ -454,6 +539,11 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		"user with an extra":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "1000:1000:10", "--", "/bin/true"},
 		"an id past 32 bits":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "4294967296:0", "--", "/bin/true"},
 		"a negative id":       {exitFlag, exitPath, readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
+		"unknown policy":      {exitFlag, exitPath, readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
+		"policy with no file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
+		"relative count file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
+		"zero retries":        {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-retries", "0", "--", "/bin/true"},
+		"zero backoff":        {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},
 	}
 
 	for name, args := range cases {

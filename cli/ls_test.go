@@ -188,6 +188,32 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	}
 }
 
+func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
+	var out bytes.Buffer
+
+	sandboxes := listed()
+	sandboxes[0].Restart = &models.Restart{
+		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
+		RestartCount: models.RestartCount{Count: 5, GaveUp: true},
+	}
+	sandboxes[0].RestartOnOOM = true
+	sandboxes[1].Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1}}
+
+	app := newLsApp(t, &out, sandboxes, nil)
+
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if !strings.Contains(lines[1], "on-failure 5/5 gave up, on-oom") {
+		t.Errorf("the line %q does not show both policies, the starts spent and the give-up", lines[1])
+	}
+	if !strings.Contains(lines[2], "always") || strings.Contains(lines[2], "always 0") {
+		t.Errorf("the line %q does not show a policy that has not started again yet as the policy alone", lines[2])
+	}
+}
+
 func TestLsPrintsWhatTheProbesFound(t *testing.T) {
 	var out bytes.Buffer
 

@@ -23,7 +23,8 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...] -- <entrypoint> [args...]`
+  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
+             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -60,6 +61,10 @@ func run(args []string) error {
 	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
+	policy := flags.String("restart", string(models.RestartNo), "when the entrypoint is started again: no, on-failure or always")
+	restartFile := flags.String("restart-file", "", "file the count of starts again is written to, as JSON")
+	retries := flags.Int("retries", defaultRetries, "how many starts again before the supervisor gives up")
+	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -86,7 +91,12 @@ func run(args []string) error {
 		return err
 	}
 
-	err = supervise(flags.Args(), *exitFile, *readyFile, credential)
+	restart, err := parseRestart(*policy, *restartFile, *retries, *backoff)
+	if err != nil {
+		return err
+	}
+
+	err = supervise(flags.Args(), *exitFile, *readyFile, credential, restart)
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -99,7 +109,7 @@ func run(args []string) error {
 
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, exitFile, readyFile string, credential *syscall.Credential) error {
+func supervise(entrypointArgv []string, exitFile, readyFile string, credential *syscall.Credential, restart restartPolicy) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
 	stopSignals := make(chan os.Signal, 4)
@@ -117,18 +127,27 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 	}
 
 	stopping := false
+	var count models.RestartCount
+	// startAgain fires once the backoff has passed, and stays nil while nothing is due.
+	var startAgain <-chan time.Time
 
 	for {
 		select {
 		case <-childDeaths:
 			// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
-			if collectDeadChildren(entrypointPID, exitFile) {
-				entrypointPID = 0
+			exit, exited := collectDeadChildren(entrypointPID, exitFile)
+			if !exited {
+				continue
 			}
+			entrypointPID = 0
 			// The exit status is written by now, so a stop that was waiting for it may finish.
-			if stopping && entrypointPID == 0 {
+			if stopping {
 				return nil
 			}
+			startAgain = restart.schedule(exit, &count)
+		case <-startAgain:
+			startAgain = nil
+			entrypointPID = restart.startAgain(entrypointArgv, credential, &count)
 		case received := <-stopSignals:
 			stopping = true
 			// Nothing is left to forward to, and a stop that had to wait out its grace is a stop that failed.
@@ -158,7 +177,9 @@ func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 }
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.
-func collectDeadChildren(entrypointPID int, exitFile string) bool {
+// It reports how the entrypoint ended when it was among them.
+func collectDeadChildren(entrypointPID int, exitFile string) (models.ExitStatus, bool) {
+	var exit models.ExitStatus
 	entrypointExited := false
 	for {
 		var waitStatus syscall.WaitStatus
@@ -167,24 +188,25 @@ func collectDeadChildren(entrypointPID int, exitFile string) bool {
 			continue
 		}
 		if errors.Is(err, syscall.ECHILD) {
-			return entrypointExited
+			return exit, entrypointExited
 		}
 		// PID 1 must survive, so an unexpected wait error is reported and the next SIGCHLD tries again.
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init: wait for a child:", err)
 
-			return entrypointExited
+			return exit, entrypointExited
 		}
 		// Zero means children are alive but none has died, so nothing is left to collect right now.
 		if deadPID <= 0 {
-			return entrypointExited
+			return exit, entrypointExited
 		}
 		if entrypointPID == 0 || deadPID != entrypointPID {
 			continue
 		}
 
+		exit = exitStatusFrom(waitStatus)
 		// A sandbox outlives its entrypoint, so a lost exit status is reported and never fatal (AGENTS.md).
-		if err := writeExitStatus(exitFile, exitStatusFrom(waitStatus)); err != nil {
+		if err := writeJSON(exitFile, "the exit status", exit); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init:", err)
 		}
 		entrypointExited = true
@@ -212,10 +234,10 @@ var permanentErrnos = []syscall.Errno{
 }
 
 // Retry first: a transient full disk must not cost the exit status of an otherwise healthy sandbox.
-func writeExitStatus(path string, status models.ExitStatus) error {
-	encoded, err := json.Marshal(status)
+func writeJSON(path, what string, value any) error {
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("marshal the exit status: %w", err)
+		return fmt.Errorf("marshal %s: %w", what, err)
 	}
 
 	var last error
@@ -230,11 +252,11 @@ func writeExitStatus(path string, status models.ExitStatus) error {
 			return nil
 		}
 		if slices.ContainsFunc(permanentErrnos, func(code syscall.Errno) bool { return errors.Is(last, code) }) {
-			return fmt.Errorf("write the exit status: %w", last)
+			return fmt.Errorf("write %s: %w", what, last)
 		}
 	}
 
-	return fmt.Errorf("write the exit status after %d attempts: %w", exitFileAttempts, last)
+	return fmt.Errorf("write %s after %d attempts: %w", what, exitFileAttempts, last)
 }
 
 // PID 1 keeps its own ids, so it can always write the exit file into the root owned host directory.

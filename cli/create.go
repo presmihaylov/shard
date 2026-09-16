@@ -46,6 +46,10 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
 	flags.BoolVar(&req.RestartOnOOM, "restart-on-oom", false, "start the sandbox again when the host ends it for its memory")
+	var restart restartFlags
+	flags.StringVar(&restart.policy, "restart", "", "when the entrypoint is started again inside the sandbox: no, on-failure or always")
+	flags.IntVar(&restart.retries, "restart-retries", 0, "the starts again before the supervisor gives up")
+	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "the wait before the first start again, in whole seconds; it doubles each time")
 	var health healthFlags
 	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox, which passes on exit 0")
 	flags.StringVar(&health.http, "health-http", "", "a PORT[/PATH] the daemon GETs from the host, which passes on a 2xx or 3xx")
@@ -58,6 +62,9 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 
 	if req.Health, err = health.request(); err != nil {
+		return sandbox.CreateRequest{}, err
+	}
+	if req.Restart, err = restart.request(); err != nil {
 		return sandbox.CreateRequest{}, err
 	}
 
@@ -164,6 +171,36 @@ func (h healthFlags) request() (*models.HealthCheck, error) {
 	}
 
 	return hc, nil
+}
+
+// restartFlags is the policy as the flags spell it, before the daemon's seconds.
+type restartFlags struct {
+	policy  string
+	retries int
+	backoff time.Duration
+}
+
+// request turns the flags into the create body's policy, or nil when none names one.
+func (r restartFlags) request() (*models.RestartSpec, error) {
+	if r.policy == "" {
+		if r.retries != 0 || r.backoff != 0 {
+			return nil, errors.New("--restart-retries and --restart-backoff tune a policy, set --restart")
+		}
+
+		return nil, nil
+	}
+
+	if r.retries < 0 {
+		return nil, fmt.Errorf("--restart-retries is a count and cannot be negative, got %d", r.retries)
+	}
+
+	spec := &models.RestartSpec{Policy: models.RestartPolicy(r.policy), Retries: r.retries}
+	var err error
+	if spec.Backoff, err = wholeSeconds("--restart-backoff", r.backoff); err != nil {
+		return nil, err
+	}
+
+	return spec, nil
 }
 
 // parseHTTPProbe reads PORT or PORT/PATH, as in 8080/healthz.

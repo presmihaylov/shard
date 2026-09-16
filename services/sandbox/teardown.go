@@ -81,9 +81,10 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 			// The old exit is what the previous run did, and this run has not ended.
 			sb.ExitStatus = nil
 		}
-		// A new run starts with nothing probed, and a resume keeps what its probes had found.
+		// A new run starts with nothing probed and nothing started again; a resume keeps both.
 		if !keepExit {
 			sb.Health = startingHealth(sb.HealthCheck)
+			sb.Restart = freshRestart(sb.Restart)
 		}
 
 		return nil

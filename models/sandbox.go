@@ -45,6 +45,9 @@ type Sandbox struct {
 	HealthCheck *HealthCheck `json:"health_check,omitempty"`
 	Health      *Health      `json:"health,omitempty"`
 
+	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
+	Restart *Restart `json:"restart,omitempty"`
+
 	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
 	// reach a request only at the proxy, so this list is a grant and never a value.
 	Secrets []string `json:"secrets,omitempty"`

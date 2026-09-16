@@ -34,10 +34,14 @@ type Provider interface {
 	Exec(ctx context.Context, id string, spec ExecSpec) (ExitStatus, error)
 
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
+	// Under a restart policy it returns the first exit of the run; once the sandbox is stopped, the last.
 	// It reports ErrNoExitStatus for a sandbox a stop had to kill, which recorded no exit.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
 	// Status asks the substrate, because a record saying running can outlive a shard restart.
 	Status(ctx context.Context, id string) (Status, error)
+	// Restarts reads what the supervisor keeps beside the exit file: how often it started the
+	// entrypoint again on this run, and whether it gave up. It is zero for a run that never did.
+	Restarts(ctx context.Context, id string) (RestartCount, error)
 	// LogPath names the file the guest's output lands in. SHARD-23 turns it into shard logs.
 	LogPath(id string) (string, error)
 
@@ -102,6 +106,8 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
+	// Restart is what the supervisor is told about starting the entrypoint again; the zero value is never.
+	Restart RestartSpec
 
 	// ProxyCA is the PEM certificate a fronted sandbox must trust, so the proxy can terminate its TLS; nil fronts nothing.
 	ProxyCA []byte

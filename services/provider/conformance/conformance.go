@@ -237,6 +237,43 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	t.Run("TheEntrypointIsStartedAgainUnderARestartPolicy", func(t *testing.T) {
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell("exit 3")
+		spec.Restart = models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 1}
+		id := s.start(t, spec)
+
+		count := s.awaitRestarts(t, id, func(count models.RestartCount) bool { return count.GaveUp })
+		if count.Count != 2 || count.LastAt.IsZero() {
+			t.Errorf("Restarts reads %+v at the give-up, want 2 starts again with a time on the last", count)
+		}
+		if !s.status(t, id).Alive() {
+			t.Error("the sandbox ended at the give-up, which only a stop may do")
+		}
+
+		exit, err := s.Provider.Wait(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if exit.Code != 3 {
+			t.Errorf("Wait reads code %d after the give-up, want 3 from the last run", exit.Code)
+		}
+		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if err := s.Provider.Remove(t.Context(), id); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+
+		// The next run under this state directory must not inherit what the last one counted.
+		if err := s.Provider.Create(t.Context(), spec); err != nil {
+			t.Fatalf("the second Create: %v", err)
+		}
+		if count := s.restarts(t, id); count != (models.RestartCount{}) {
+			t.Errorf("Restarts reads %+v after a second Create, want zero", count)
+		}
+	})
+
 	t.Run("WaitReturnsACancelledContext", func(t *testing.T) {
 		id := s.start(t, s.NewIgnoresTermSpec(t))
 
@@ -480,6 +517,36 @@ func (s Subject) exec(t *testing.T, id string, spec models.ExecSpec) (models.Exi
 	}
 
 	return status, string(written)
+}
+
+func (s Subject) restarts(t *testing.T, id string) models.RestartCount {
+	t.Helper()
+
+	count, err := s.Provider.Restarts(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Restarts: %v", err)
+	}
+
+	return count
+}
+
+// awaitRestarts polls the count until it says what the subtest wants, or the slack runs out.
+func (s Subject) awaitRestarts(t *testing.T, id string, want func(models.RestartCount) bool) models.RestartCount {
+	t.Helper()
+
+	deadline := time.Now().Add(waitSlack)
+	for time.Now().Before(deadline) {
+		count := s.restarts(t, id)
+		if want(count) {
+			return count
+		}
+
+		time.Sleep(readyPoll)
+	}
+
+	t.Fatalf("the restart count of %s never read as wanted within %s", id, waitSlack)
+
+	return models.RestartCount{}
 }
 
 // Only Stop ends a sandbox, so Status is the assertion the whole keep-alive default rests on.

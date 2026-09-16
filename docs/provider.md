@@ -86,7 +86,10 @@ record never answers for it. The two disagree on purpose:
   `stopped` and `Status` reports `Exists: false`.
 
 `Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. The
-entrypoint exiting is not a transition, and `Wait` returning does not end anything.
+entrypoint exiting is not a transition, and `Wait` returning does not end anything. Under a restart
+policy `Wait` returns the first exit of the run, not the settled one: the supervisor rewrites the exit
+file per exit and clears nothing, so only a stopped sandbox answers with its last exit. No verb waits
+on the entrypoint; `stop` is the one caller, and it reads after the sandbox is down.
 
 ## What `Exec` means
 
