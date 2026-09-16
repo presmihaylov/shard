@@ -199,7 +199,7 @@ func TestTheSnapshotVerbsOutliveTheClientTimeout(t *testing.T) {
 }
 
 func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
 
 	calls := map[string]func() error{
 		"start":  func() error { _, err := c.StartSandbox(t.Context(), "ghost"); return err },
@@ -223,7 +223,7 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 
 // A refusal is an APIError a caller can errors.As on: the code and the holders ride with the daemon's line.
 func TestARefusalDecodesIntoAnAPIErrorWithItsCode(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"secret openai is granted to sandbox quiet-heron-3f0a: remove the sandbox first, or pass --force","code":"in_use","holders":["quiet-heron-3f0a"]}`))
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":{"code":"in_use","message":"secret openai is granted to sandbox quiet-heron-3f0a: remove the sandbox first, or pass --force","holders":["quiet-heron-3f0a"]}}`))
 
 	err := c.RemoveSecret(t.Context(), "openai", false)
 
@@ -241,7 +241,7 @@ func TestARefusalDecodesIntoAnAPIErrorWithItsCode(t *testing.T) {
 
 // A 409 is the daemon's refusal in its own words, which the CLI prints as it came.
 func TestAConflictCarriesTheDaemonsMessage(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force","code":"sandbox_not_stopped"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":{"code":"sandbox_not_stopped","message":"sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"}}`))
 
 	err := c.RemoveSandbox(t.Context(), "sandbox1", false, time.Second)
 	if err == nil || err.Error() != "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force" {

@@ -239,13 +239,15 @@ func TestABadTokenIs401AndNothingIsDialed(t *testing.T) {
 		}
 
 		var body struct {
-			Error string      `json:"error"`
-			Code  models.Code `json:"code"`
+			Error struct {
+				Code    models.Code `json:"code"`
+				Message string      `json:"message"`
+			} `json:"error"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 			t.Fatalf("decode the refusal: %v", err)
 		}
-		if body.Code != models.CodeUnauthorized || body.Error == "" {
+		if body.Error.Code != models.CodeUnauthorized || body.Error.Message == "" {
 			t.Errorf("the refusal reads %+v, want a line and the code unauthorized", body)
 		}
 	}

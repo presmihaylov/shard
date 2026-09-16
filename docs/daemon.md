@@ -312,8 +312,8 @@ A stream is a WebSocket (RFC 6455) on the same route, opened with the standard h
 refusal comes before the 101 as a status and a JSON body. An exec carries binary messages whose
 first byte is the stream and the rest the payload: the client sends 0 (stdin) and 4 (stdin closed,
 empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"error"` when
-the command never ran) and 5 (a failure of the daemon's own, `{"error", "code"}` like an error
-body). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
+the command never ran) and 5 (a failure of the daemon's own, `{"error", "code"}`, flat: the
+stream predates the error object and keeps its shape). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
 session and the daemon closes with 1000; a client that closes first kills the command. A `tty` exec
 carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
 apart. Ping and pong are the standard ones.
@@ -321,8 +321,9 @@ apart. Ping and pong are the standard ones.
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb the
 provider does not claim is a 409 too: `provider <name> does not support <verb> on this host`.
 
-Every error body is `{"error": "<message>", "code": "<code>"}`: `error` is the line the CLI prints,
-`code` is what a program matches on, and nothing else is ever in the table.
+Every error body is `{"error": {"code": "<code>", "message": "<message>"}}`: `message` is the
+line the CLI prints, `code` is what a program matches on, and nothing else is ever in the table.
+Whatever else a refusal carries lives inside `error`, and nothing else is ever at the root.
 
 | code | status | when |
 |---|---|---|
@@ -334,13 +335,14 @@ Every error body is `{"error": "<message>", "code": "<code>"}`: `error` is the l
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_snapshot` | 409 | resume or fork when the record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
-| `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; the body adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
+| `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `websocket_required` | 400 | `?follow=true` or an exec attach without the WebSocket handshake |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
-`services/client` decodes the body into `*client.APIError`, with `Status`, `Code`, `Message` and
-`Holders`, so a caller matches on the code with `errors.As` and never on the text.
+`services/client` decodes that object alone into `*client.APIError`, with `Status`, `Code`, `Message`
+and `Holders`, so a caller matches on the code with `errors.As` and never on the text; a body of
+any other shape is quoted as it came, under `internal`.
 
 The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes the contract as `/v1`.
 

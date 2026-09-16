@@ -35,7 +35,7 @@ const (
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
-const unauthorized = `{"error":"the request carries no valid bearer token","code":"unauthorized"}`
+const unauthorized = `{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}`
 
 // Config is the wiring one front needs.
 type Config struct {
@@ -226,7 +226,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socket)
 	if err != nil {
 		s.log.Printf("dial the daemon socket %s for %s: %v", s.socket, conn.RemoteAddr(), err)
-		s.answer(conn, "502 Bad Gateway", `{"error":"the shard daemon does not answer on its socket","code":"internal"}`)
+		s.answer(conn, "502 Bad Gateway", `{"error":{"code":"internal","message":"the shard daemon does not answer on its socket"}}`)
 
 		return
 	}

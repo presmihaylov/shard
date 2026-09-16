@@ -92,13 +92,15 @@ func (c rawClient) dial(id, execID string) (*websocket.Conn, int, models.Code) {
 	}
 
 	var refusal struct {
-		Code models.Code `json:"code"`
+		Error struct {
+			Code models.Code `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
 		c.t.Fatalf("decode the refusal of the attach: %v", err)
 	}
 
-	return nil, resp.StatusCode, refusal.Code
+	return nil, resp.StatusCode, refusal.Error.Code
 }
 
 // plainGet asks the attach without the handshake, which is a JSON refusal and no exec.
@@ -112,13 +114,15 @@ func (c rawClient) plainGet(path string) (int, models.Code) {
 	defer resp.Body.Close()
 
 	var refusal struct {
-		Code models.Code `json:"code"`
+		Error struct {
+			Code models.Code `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
 		c.t.Fatalf("decode the answer of GET %s: %v", path, err)
 	}
 
-	return resp.StatusCode, refusal.Code
+	return resp.StatusCode, refusal.Error.Code
 }
 
 // send writes one message of stream with payload.

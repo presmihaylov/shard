@@ -424,15 +424,17 @@ func (c *Client) wrap(caller context.Context, method, path string, bound time.Du
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came, under internal.
 func decodeError(status int, body []byte) error {
 	var answer struct {
-		Error   string      `json:"error"`
-		Code    models.Code `json:"code"`
-		Holders []string    `json:"holders"`
+		Error struct {
+			Code    models.Code `json:"code"`
+			Message string      `json:"message"`
+			Holders []string    `json:"holders"`
+		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil || answer.Error == "" {
+	if err := json.Unmarshal(body, &answer); err != nil || answer.Error.Message == "" {
 		return &APIError{Status: status, Code: models.CodeInternal, Message: fmt.Sprintf("the daemon answered %d: %q", status, body)}
 	}
 
-	return &APIError{Status: status, Code: answer.Code, Message: answer.Error, Holders: answer.Holders}
+	return &APIError{Status: status, Code: answer.Error.Code, Message: answer.Error.Message, Holders: answer.Error.Holders}
 }
 
 // EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's.

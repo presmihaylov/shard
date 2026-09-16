@@ -144,6 +144,31 @@ func get(t *testing.T, server *httptest.Server, path string) (int, map[string]an
 	return resp.StatusCode, body
 }
 
+// refused is the one object an error body carries.
+type refused struct {
+	code    string
+	message string
+	holders []any
+}
+
+// errorOf reads the error object of a refusal and fails on a body that is not the nested shape alone.
+func errorOf(t *testing.T, body map[string]any) refused {
+	t.Helper()
+
+	object, ok := body["error"].(map[string]any)
+	if !ok || len(body) != 1 {
+		t.Fatalf("the refusal is %v, want one error object at the root and nothing else", body)
+	}
+	code, _ := object["code"].(string)
+	message, _ := object["message"].(string)
+	if code == "" || message == "" {
+		t.Fatalf("the error object is %v, want a code and a message", object)
+	}
+	holders, _ := object["holders"].([]any)
+
+	return refused{code: code, message: message, holders: holders}
+}
+
 func ids(t *testing.T, body map[string]any) []string {
 	t.Helper()
 
@@ -206,7 +231,7 @@ func TestDaemonIs500WhenTheProviderCannotBeBuilt(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	status, body := get(t, server, "/v0/daemon")
-	if status != http.StatusInternalServerError || body["error"] != "find runsc: not on this host" {
+	if status != http.StatusInternalServerError || errorOf(t, body).message != "find runsc: not on this host" {
 		t.Errorf("GET /v0/daemon answered %d %v, want 500 and the provider's error", status, body)
 	}
 }
@@ -238,7 +263,7 @@ func TestListRefusesAnAllThatIsNotABoolean(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/sandboxes?all=yes")
-	if status != http.StatusBadRequest || !strings.Contains(body["error"].(string), "all=") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "all=") {
 		t.Errorf("GET /v0/sandboxes?all=yes answered %d %v, want 400 naming the query", status, body)
 	}
 }
@@ -279,7 +304,7 @@ func TestListFailsWhenTheTreeCannotBeRead(t *testing.T) {
 	}
 
 	status, body := get(t, s.server, "/v0/sandboxes")
-	if status != http.StatusInternalServerError || body["error"] == nil {
+	if status != http.StatusInternalServerError || errorOf(t, body).code != "internal" {
 		t.Errorf("GET /v0/sandboxes answered %d %v, want 500 with an error", status, body)
 	}
 }
@@ -332,7 +357,7 @@ func TestGetIs404WhenNothingHasTheReference(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/sandboxes/ghost")
-	if status != http.StatusNotFound || !strings.Contains(body["error"].(string), "ghost") {
+	if status != http.StatusNotFound || !strings.Contains(errorOf(t, body).message, "ghost") {
 		t.Errorf("GET /v0/sandboxes/ghost answered %d %v, want 404 naming ghost", status, body)
 	}
 }
@@ -341,7 +366,7 @@ func TestGetIs400WhenTheReferenceDoesNotValidate(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+strings.Repeat("a", 65))
-	if status != http.StatusBadRequest || !strings.Contains(body["error"].(string), "longer than") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "longer than") {
 		t.Errorf("a 65 character reference answered %d %v, want 400", status, body)
 	}
 }
@@ -355,7 +380,7 @@ func TestGetIs500WhenTheNameLinkIsBroken(t *testing.T) {
 	}
 
 	status, body := get(t, s.server, "/v0/sandboxes/broken")
-	if status != http.StatusInternalServerError || !strings.Contains(body["error"].(string), "not a sandbox id") {
+	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "not a sandbox id") {
 		t.Errorf("GET /v0/sandboxes/broken answered %d %v, want 500", status, body)
 	}
 }
@@ -369,7 +394,7 @@ func TestGetIs500WhenTheRecordIsUnreadable(t *testing.T) {
 	}
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID)
-	if status != http.StatusInternalServerError || !strings.Contains(body["error"].(string), "decode") {
+	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "decode") {
 		t.Errorf("GET of a corrupt record answered %d %v, want 500", status, body)
 	}
 }
@@ -378,7 +403,7 @@ func TestAnUnknownRouteIsAJSON404(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v1/nothing")
-	if status != http.StatusNotFound || body["code"] != "not_found" || !strings.Contains(body["error"].(string), "/v1/nothing") {
+	if refusal := errorOf(t, body); status != http.StatusNotFound || refusal.code != "not_found" || !strings.Contains(refusal.message, "/v1/nothing") {
 		t.Errorf("GET /v1/nothing answered %d %v, want a JSON 404 not_found", status, body)
 	}
 }

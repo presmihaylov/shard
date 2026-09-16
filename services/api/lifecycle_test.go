@@ -312,7 +312,7 @@ func TestCreateIs400ForABodyItCannotDecode(t *testing.T) {
 
 	for name, body := range map[string]string{"not json": "{not json", "an unknown field": `{"image":"alpine","imagee":"x"}`} {
 		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", body)
-		if status != http.StatusBadRequest || got["code"] != "invalid_request" || got["error"] == nil {
+		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
 			t.Errorf("POST with %s answered %d %v, want 400 invalid_request", name, status, got)
 		}
 	}
@@ -363,7 +363,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 				{http.MethodDelete, "/v0/sandboxes/sandbox1/policy", ""},
 			} {
 				status, got := send(t, s.server, route.method, route.path, route.body)
-				if status != c.status || got["code"] != c.code || !strings.Contains(got["error"].(string), c.text) {
+				if status != c.status || errorOf(t, got).code != c.code || !strings.Contains(errorOf(t, got).message, c.text) {
 					t.Errorf("%s %s answered %d %v, want %d %s with %q", route.method, route.path, status, got, c.status, c.code, c.text)
 				}
 			}
@@ -469,7 +469,7 @@ func TestForkAndCloneAre400ForABodyTheyCannotDecode(t *testing.T) {
 		s := seed(t)
 
 		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, `{"named":"web-2"}`)
-		if status != http.StatusBadRequest || got["error"] == nil {
+		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
 			t.Errorf("POST %s with an unknown field answered %d %v, want 400", verb, status, got)
 		}
 		if s.verbs.ref != "" {
@@ -499,7 +499,7 @@ func TestStopIs400ForANegativeGrace(t *testing.T) {
 	s := seed(t)
 
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", `{"grace":-1}`)
-	if status != http.StatusBadRequest || !strings.Contains(got["error"].(string), "negative") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, got).message, "negative") {
 		t.Errorf("a negative grace answered %d %v, want 400", status, got)
 	}
 	if s.verbs.ref != "" {
@@ -529,7 +529,7 @@ func TestDeleteIs400ForAQueryItCannotRead(t *testing.T) {
 
 	for _, query := range []string{"?force=yes", "?grace=soon", "?grace=-1"} {
 		status, got := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1"+query, "")
-		if status != http.StatusBadRequest || got["error"] == nil {
+		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
 			t.Errorf("DELETE %s answered %d %v, want 400", query, status, got)
 		}
 	}

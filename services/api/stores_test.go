@@ -151,7 +151,7 @@ func TestARuleTheDaemonRefusesIsABadRequest(t *testing.T) {
 	s.stores.err = &sandbox.RequestError{Err: errors.New("not a rule")}
 
 	status, body := send(t, s.server, http.MethodPut, "/v0/policies/web", `{"rules":[{"action":"allow","rule":"???"}]}`)
-	if status != http.StatusBadRequest || !strings.Contains(body["error"].(string), "not a rule") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "not a rule") {
 		t.Errorf("PUT of a bad rule answered %d %v, want 400", status, body)
 	}
 }
@@ -171,10 +171,10 @@ func TestRemovingAHeldPolicyIsAConflictThatNamesTheHolders(t *testing.T) {
 	s.stores.err = &sandbox.HeldError{Subject: "policy web", Verb: "held by", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/policies/web", "")
-	if status != http.StatusConflict || !strings.Contains(body["error"].(string), "quiet-heron-3f0a") {
+	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {
 		t.Errorf("DELETE of a held policy answered %d %v, want 409 naming the holder", status, body)
 	}
-	if body["code"] != "in_use" || !reflect.DeepEqual(body["holders"], []any{"quiet-heron-3f0a"}) {
+	if errorOf(t, body).code != "in_use" || !reflect.DeepEqual(errorOf(t, body).holders, []any{"quiet-heron-3f0a"}) {
 		t.Errorf("the body is %v, want in_use with the holder in holders", body)
 	}
 }
@@ -312,7 +312,7 @@ func TestRemovingAGrantedSecretIsAConflictUnlessForced(t *testing.T) {
 	s.stores.err = &sandbox.HeldError{Subject: "secret openai", Verb: "granted to", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/secrets/openai", "")
-	if status != http.StatusConflict || !strings.Contains(body["error"].(string), "quiet-heron-3f0a") {
+	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {
 		t.Fatalf("DELETE of a granted secret answered %d %v, want 409", status, body)
 	}
 
@@ -373,7 +373,7 @@ func TestRemovingAReferencedImageIsAConflict(t *testing.T) {
 	s.stores.err = &sandbox.HeldError{Subject: "image alpine:3.20", Verb: "referenced by", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/images/alpine:3.20", "")
-	if status != http.StatusConflict || !strings.Contains(body["error"].(string), "quiet-heron-3f0a") {
+	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {
 		t.Errorf("DELETE of a referenced image answered %d %v, want 409", status, body)
 	}
 }
