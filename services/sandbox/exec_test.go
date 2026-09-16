@@ -774,6 +774,9 @@ func TestManyExecsEvictTheOldestNotTheNewest(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, running())
 
+	// wantKept matches exitedExecCap in exec.go: the daemon retains this many exited execs per sandbox.
+	const wantKept = 32
+
 	const runs = 100
 	ids := make([]string, 0, runs)
 	for i := range runs {
@@ -787,17 +790,25 @@ func TestManyExecsEvictTheOldestNotTheNewest(t *testing.T) {
 		ids = append(ids, exec.ID)
 	}
 
-	held, err := svc.ListExecs(t.Context(), "sandbox1")
-	if err != nil {
-		t.Fatalf("ListExecs: %v", err)
+	// One more exec is the new exec that evicts the oldest exited one, so retention settles at the cap.
+	if _, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}); err != nil {
+		t.Fatalf("CreateExec after the loop: %v", err)
 	}
 
-	// The cap bounds retention well below one record per run.
-	if len(held) >= runs {
-		t.Fatalf("the sandbox holds %d execs after %d runs, want the cap to bound it", len(held), runs)
+	// held is the runs that still answer: the cap keeps exactly the most recent ones.
+	var held []string
+	for _, id := range ids {
+		_, err := svc.GetExec(t.Context(), "sandbox1", id)
+		if err == nil {
+			held = append(held, id)
+			continue
+		}
+		if !errors.Is(err, sandboxstate.ErrNotFound) {
+			t.Fatalf("GetExec %s: %v", id, err)
+		}
 	}
-	if len(held) > runs/2 {
-		t.Errorf("the sandbox holds %d execs, want the cap to keep it small", len(held))
+	if len(held) != wantKept {
+		t.Errorf("the sandbox holds %d of the %d runs, want the cap %d", len(held), runs, wantKept)
 	}
 
 	// The oldest run is evicted and answers not-found, the newest is kept: eviction drops the oldest.
