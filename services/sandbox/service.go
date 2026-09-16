@@ -131,6 +131,8 @@ type StateError struct {
 	ID    string
 	State models.State
 	Fix   string
+	// Code names the state the verb wanted, for the program that reads the API body.
+	Code models.Code
 }
 
 func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
@@ -439,7 +441,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if sb.State != models.StateStopped {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "start takes a stopped sandbox"}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "start takes a stopped sandbox", Code: models.CodeSandboxNotStopped}
 	}
 
 	// The lease survived the stop, so this hands back the same address over a namespace built again.
@@ -606,7 +608,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 	}
 
 	if !force {
-		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id)}
+		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
 	return s.stop(ctx, id, grace)

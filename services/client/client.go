@@ -62,13 +62,15 @@ type NotFoundError struct {
 
 func (e *NotFoundError) Error() string { return "no sandbox " + e.Ref }
 
-// apiError is any other status the daemon answered with, carrying its message.
-type apiError struct {
+// APIError is a refusal the daemon answered: its line, its code, and the holders an in_use names.
+type APIError struct {
 	Status  int
+	Code    models.Code
 	Message string
+	Holders []string
 }
 
-func (e *apiError) Error() string { return e.Message }
+func (e *APIError) Error() string { return e.Message }
 
 // New dials the socket under root on the first request.
 func New(root string) *Client {
@@ -272,10 +274,10 @@ func (c *Client) plus(grace time.Duration) time.Duration {
 	return c.Timeout + grace
 }
 
-// missing turns the daemon's 404 into the one error a verb prints as its own line.
+// missing turns the daemon's not_found into the one error a verb prints as its own line.
 func missing(ref string, err error) error {
-	var answer *apiError
-	if errors.As(err, &answer) && answer.Status == http.StatusNotFound {
+	var answer *APIError
+	if errors.As(err, &answer) && answer.Code == models.CodeNotFound {
 		return &NotFoundError{Ref: ref}
 	}
 
@@ -348,16 +350,18 @@ func (c *Client) wrap(caller context.Context, method, path string, bound time.Du
 	return fmt.Errorf("%s %s on %s: %w", method, path, c.path, err)
 }
 
-// decodeError reads the daemon's error object; a body that is not one is quoted as it came.
+// decodeError reads the daemon's error object; a body that is not one is quoted as it came, under internal.
 func decodeError(status int, body []byte) error {
 	var answer struct {
-		Error string `json:"error"`
+		Error   string      `json:"error"`
+		Code    models.Code `json:"code"`
+		Holders []string    `json:"holders"`
 	}
 	if err := json.Unmarshal(body, &answer); err != nil || answer.Error == "" {
-		return &apiError{Status: status, Message: fmt.Sprintf("the daemon answered %d: %q", status, body)}
+		return &APIError{Status: status, Code: models.CodeInternal, Message: fmt.Sprintf("the daemon answered %d: %q", status, body)}
 	}
 
-	return &apiError{Status: status, Message: answer.Error}
+	return &APIError{Status: status, Code: answer.Code, Message: answer.Error, Holders: answer.Holders}
 }
 
 // EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's.

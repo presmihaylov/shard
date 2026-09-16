@@ -176,7 +176,7 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 
 // Nothing is on the wire before the command runs, so a refusal is still a status and a JSON body.
 func TestExecReportsARefusalBeforeTheUpgrade(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is stopped: start it again with shard start sandbox1"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is stopped: start it again with shard start sandbox1","code":"sandbox_not_running"}`))
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 	if err == nil || !strings.Contains(err.Error(), "shard start sandbox1") {
@@ -185,7 +185,7 @@ func TestExecReportsARefusalBeforeTheUpgrade(t *testing.T) {
 }
 
 func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
 
 	_, err := c.Exec(t.Context(), "ghost", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 
@@ -299,7 +299,7 @@ func TestLogsWritesWhatTheDaemonStreams(t *testing.T) {
 }
 
 func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
 
 	var out bytes.Buffer
 
@@ -397,7 +397,7 @@ func TestFollowEgressLogReportsAFailureOfTheFollow(t *testing.T) {
 }
 
 func TestFollowEgressLogReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
 
 	var out, errOut bytes.Buffer
 

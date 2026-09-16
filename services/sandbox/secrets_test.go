@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -224,6 +225,29 @@ func TestSecretHoldersNamesEverySandboxThatGrantsIt(t *testing.T) {
 	}
 	if !slices.Equal(holders, []string{"sandbox1", "sandbox3"}) {
 		t.Errorf("SecretHolders = %v", holders)
+	}
+}
+
+// A placeholder change a guest still holds is refused as held, so the API answers in_use and names the holder.
+func TestSetSecretRefusesAHeldPlaceholderAsHeld(t *testing.T) {
+	root := t.TempDir()
+	secrets, err := secret.New(filepath.Join(root, "secrets"), func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Secrets: secrets})
+
+	if _, err := stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "old-value-1", Destinations: []string{"a.example.com"}, Placeholder: "sk_test_first001"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "new-value-2", Placeholder: "sk_test_second02"})
+
+	var held *sandbox.HeldError
+	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"sandbox1"}) {
+		t.Fatalf("a change of a held placeholder = %v, want a HeldError naming sandbox1", err)
+	}
+	if !strings.Contains(err.Error(), "secret TOKEN is granted to sandbox sandbox1") || !strings.Contains(err.Error(), "ungrant it first") {
+		t.Errorf("the refusal reads %q", err.Error())
 	}
 }
 

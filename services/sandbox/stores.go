@@ -216,6 +216,10 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 	}
 
 	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.Placeholder)
+	var held *secret.HeldError
+	if errors.As(err, &held) {
+		return secret.Secret{}, &HeldError{Subject: "secret " + name, Verb: "granted to", Users: held.Holders, Fix: "ungrant it first, its placeholder cannot change under a guest"}
+	}
 	if err != nil {
 		return secret.Secret{}, &RequestError{Err: err}
 	}

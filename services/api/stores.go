@@ -56,7 +56,7 @@ type pruneResponse struct {
 func (h *Handler) listPolicies(w http.ResponseWriter, _ *http.Request) {
 	policies, err := h.stores.Policies()
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -67,7 +67,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	policy, err := h.stores.Policy(r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -78,14 +78,14 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	policy, err := h.stores.SetPolicy(r.Context(), r.PathValue("name"), req)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -95,7 +95,7 @@ func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
 	if err := h.stores.RemovePolicy(r.PathValue("name")); err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -118,14 +118,14 @@ func (h *Handler) listSecrets(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.SecretRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sec, err := h.stores.SetSecret(r.PathValue("name"), req)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -136,13 +136,13 @@ func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	if err := h.stores.RemoveSecret(r.PathValue("name"), force); err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -153,7 +153,7 @@ func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listImages(w http.ResponseWriter, _ *http.Request) {
 	images, err := h.stores.Images()
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -164,14 +164,14 @@ func (h *Handler) listImages(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 	var req pullRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	img, err := h.stores.PullImage(r.Context(), req.Ref)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -182,14 +182,14 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	warnings, err := h.stores.RemoveImage(r.Context(), r.PathValue("ref"), force)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -200,7 +200,7 @@ func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pruneImages(w http.ResponseWriter, r *http.Request) {
 	removed, warnings, err := h.stores.PruneImages(r.Context())
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}

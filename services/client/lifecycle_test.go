@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -198,7 +199,7 @@ func TestTheSnapshotVerbsOutliveTheClientTimeout(t *testing.T) {
 }
 
 func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
 
 	calls := map[string]func() error{
 		"start":  func() error { _, err := c.StartSandbox(t.Context(), "ghost"); return err },
@@ -220,9 +221,27 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 	}
 }
 
+// A refusal is an APIError a caller can errors.As on: the code and the holders ride with the daemon's line.
+func TestARefusalDecodesIntoAnAPIErrorWithItsCode(t *testing.T) {
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"secret openai is granted to sandbox quiet-heron-3f0a: remove the sandbox first, or pass --force","code":"in_use","holders":["quiet-heron-3f0a"]}`))
+
+	err := c.RemoveSecret(t.Context(), "openai", false)
+
+	var refusal *client.APIError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("RemoveSecret = %v, want an APIError", err)
+	}
+	if refusal.Status != http.StatusConflict || refusal.Code != models.CodeInUse || !reflect.DeepEqual(refusal.Holders, []string{"quiet-heron-3f0a"}) {
+		t.Errorf("the refusal is %+v, want 409 in_use holding quiet-heron-3f0a", refusal)
+	}
+	if err.Error() != "secret openai is granted to sandbox quiet-heron-3f0a: remove the sandbox first, or pass --force" {
+		t.Errorf("the error reads %q, want the daemon's line as it came", err.Error())
+	}
+}
+
 // A 409 is the daemon's refusal in its own words, which the CLI prints as it came.
 func TestAConflictCarriesTheDaemonsMessage(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force","code":"sandbox_not_stopped"}`))
 
 	err := c.RemoveSandbox(t.Context(), "sandbox1", false, time.Second)
 	if err == nil || err.Error() != "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force" {

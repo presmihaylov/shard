@@ -108,12 +108,12 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 
 	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
 	if sb.State == models.StateStopped {
-		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id}
+		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
 	}
 
 	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
 	if sb.State == models.StatePaused {
-		return "", &StateError{ID: id, State: sb.State, Fix: "resume it with shard resume " + id}
+		return "", &StateError{ID: id, State: sb.State, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
 	}
 
 	status, err := s.cfg.Provider.Status(ctx, id)
@@ -134,7 +134,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard rm %s and create another", id)}
 	}
 
-	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + id}
+	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
 }
 
 // execOnPipes gives the guest process one pipe per stream, because the substrate hands it files.

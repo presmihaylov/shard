@@ -41,6 +41,16 @@ type Secret struct {
 // Holders names the sandboxes that hold a grant on a secret, so a placeholder change knows who still sees it.
 type Holders func(name string) ([]string, error)
 
+// HeldError is a placeholder change refused because the sandboxes in Holders still see the old one.
+type HeldError struct {
+	Name    string
+	Holders []string
+}
+
+func (e *HeldError) Error() string {
+	return fmt.Sprintf("secret %s changes its placeholder and sandbox %s still holds it: ungrant it first", e.Name, strings.Join(e.Holders, ", "))
+}
+
 // record is the file on disk. It is the only place the value is written.
 type record struct {
 	Value        string    `json:"value"`
@@ -221,7 +231,7 @@ func (s *Store) placeholderMoved(name string) error {
 		return fmt.Errorf("secret %s changes its placeholder and the sandboxes that hold it cannot be read: %w", name, err)
 	}
 	if len(holders) != 0 {
-		return fmt.Errorf("secret %s changes its placeholder and sandbox %s still holds it: ungrant it first", name, strings.Join(holders, ", "))
+		return &HeldError{Name: name, Holders: holders}
 	}
 
 	return nil

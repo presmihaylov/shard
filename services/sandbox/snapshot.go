@@ -42,7 +42,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if sb.State != models.StateRunning {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "pause takes a running sandbox"}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}
 	}
 
 	dir, err := s.cfg.Repo.SnapshotDir(id)
@@ -132,10 +132,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if sb.State != models.StatePaused {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox"}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
 	if sb.Snapshot == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no snapshot to resume from"}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.
@@ -174,7 +174,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	defer unlock()
 
 	if src.Snapshot == "" {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "pause it first, fork reads what the pause wrote"}
+		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "pause it first, fork reads what the pause wrote", Code: models.CodeNoSnapshot}
 	}
 
 	var td Teardown
@@ -242,7 +242,7 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 	defer unlock()
 
 	if src.State != models.StateStopped && src.State != models.StatePaused {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "stop it first, clone copies what a stop kept"}
+		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "stop it first, clone copies what a stop kept", Code: models.CodeSandboxNotStopped}
 	}
 
 	var td Teardown
