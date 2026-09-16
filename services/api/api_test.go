@@ -3,12 +3,14 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,10 +56,29 @@ func seed(t *testing.T) seeded {
 
 	verbs, stores := &fakeLifecycle{}, &fakeStores{}
 
-	server := httptest.NewServer(api.NewHandler("v-test", repo, enforcer, verbs, stores, fakeEgressLog{}, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, fakeEgressLog{}, io.Discard))
 	t.Cleanup(server.Close)
 
 	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, server: server}
+}
+
+// fakeProcess is a daemon that says it runs sysbox, or one whose provider cannot be built.
+type fakeProcess struct {
+	err error
+}
+
+func (f fakeProcess) Daemon() (api.Daemon, error) {
+	if f.err != nil {
+		return api.Daemon{}, f.err
+	}
+
+	return api.Daemon{
+		PID:       4123,
+		StartedAt: time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
+		Socket:    "/var/lib/shard/shard.sock",
+		Provider:  "sysbox",
+		Proxy:     api.Proxy{PlainPort: 30080, TLSPort: 30443},
+	}, nil
 }
 
 // fakeEgressLog answers with one line per sandbox, so the handler is what the test exercises.
@@ -153,6 +174,40 @@ func TestVersionIsWhatTheCLIPrints(t *testing.T) {
 	status, body := get(t, s.server, "/v0/version")
 	if status != http.StatusOK || body["version"] != "v-test" {
 		t.Errorf("GET /v0/version answered %d %v, want 200 and v-test", status, body)
+	}
+}
+
+func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
+	s := seed(t)
+
+	status, body := get(t, s.server, "/v0/daemon")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v0/daemon answered %d %v", status, body)
+	}
+
+	want := map[string]any{
+		"version":      "v-test",
+		"pid":          float64(4123),
+		"started_at":   "2026-09-16T08:00:00Z",
+		"socket":       "/var/lib/shard/shard.sock",
+		"provider":     "sysbox",
+		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false},
+		"proxy":        map[string]any{"plain_port": float64(30080), "tls_port": float64(30443)},
+	}
+	if !reflect.DeepEqual(body, want) {
+		t.Errorf("GET /v0/daemon answered %v, want %v", body, want)
+	}
+}
+
+func TestDaemonIs500WhenTheProviderCannotBeBuilt(t *testing.T) {
+	s := seed(t)
+
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, fakeEgressLog{}, io.Discard))
+	t.Cleanup(server.Close)
+
+	status, body := get(t, server, "/v0/daemon")
+	if status != http.StatusInternalServerError || body["error"] != "find runsc: not on this host" {
+		t.Errorf("GET /v0/daemon answered %d %v, want 500 and the provider's error", status, body)
 	}
 }
 

@@ -97,6 +97,7 @@ The routes:
 
 ```
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/daemon
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?all=true'
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>
@@ -124,6 +125,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/version` answers `{"version": "..."}`, which `shard version` prints as its `daemon` line
   under the `client` line of the binary that asked. `shard --version` prints the `client` line alone,
   touches no socket, and never fails, as `docker --version` does.
+- `GET /v0/daemon` answers what the daemon knows about itself: `version`, `pid`, `started_at`,
+  `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`)
+  and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
+  The provider is built on the first ask, so on a host without its runtime the route answers 500
+  and says what is missing.
 - `GET /v0/sandboxes` answers `{"sandboxes": [...]}` as `shard ls` lists them: stopped sandboxes
   hidden unless `all=true`. When some records are unreadable it still answers 200 with the readable
   sandboxes and a `warnings` array, one string per unreadable record; `ls` prints the table and then

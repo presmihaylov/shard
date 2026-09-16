@@ -46,9 +46,32 @@ type EgressLog interface {
 	Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error
 }
 
+// Daemon is what GET /v0/daemon answers: the process on this socket, its substrate and its proxy ports.
+type Daemon struct {
+	Version      string              `json:"version"`
+	PID          int                 `json:"pid"`
+	StartedAt    time.Time           `json:"started_at"`
+	Socket       string              `json:"socket"`
+	Provider     string              `json:"provider"`
+	Capabilities models.Capabilities `json:"capabilities"`
+	Proxy        Proxy               `json:"proxy"`
+}
+
+// Proxy is where the egress proxy listens on the bridge gateway.
+type Proxy struct {
+	PlainPort int `json:"plain_port"`
+	TLSPort   int `json:"tls_port"`
+}
+
+// Process is what the daemon says about itself, less the version the handler holds; it needs the provider.
+type Process interface {
+	Daemon() (Daemon, error)
+}
+
 // Handler answers the routes over one repository, the rules the host enforces, and the one orchestrator.
 type Handler struct {
 	version   string
+	process   Process
 	repo      sandbox.Reader
 	enforcer  sandbox.Enforcer
 	lifecycle Lifecycle
@@ -58,9 +81,10 @@ type Handler struct {
 }
 
 // NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, out io.Writer) http.Handler {
+func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, out io.Writer) http.Handler {
 	h := &Handler{
 		version:   version,
+		process:   process,
 		repo:      repo,
 		enforcer:  enforcer,
 		lifecycle: lifecycle,
@@ -71,6 +95,7 @@ func NewHandler(version string, repo sandbox.Reader, enforcer sandbox.Enforcer, 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v0/version", h.getVersion)
+	mux.HandleFunc("GET /v0/daemon", h.getDaemon)
 	mux.HandleFunc("GET /v0/sandboxes", h.listSandboxes)
 	mux.HandleFunc("GET /v0/sandboxes/{id}", h.getSandbox)
 	mux.HandleFunc("POST /v0/sandboxes", h.createSandbox)
@@ -125,6 +150,18 @@ type errorResponse struct {
 
 func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, versionResponse{Version: h.version})
+}
+
+func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
+	d, err := h.process.Daemon()
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+
+		return
+	}
+	d.Version = h.version
+
+	h.writeJSON(w, http.StatusOK, d)
 }
 
 func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
