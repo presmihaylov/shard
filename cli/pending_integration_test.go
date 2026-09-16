@@ -109,6 +109,12 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 		t.Errorf("start of a failed sandbox = %v, want 409 %s", err, models.CodeSandboxFailed)
 	}
 
+	// logs is the first command after a failed create, so it surfaces the reason, not a 500.
+	var sink strings.Builder
+	if err := daemonClient(app).Logs(t.Context(), sb.ID, false, &sink); !errors.As(err, &apiErr) || apiErr.Code != models.CodeSandboxFailed {
+		t.Errorf("logs of a failed sandbox = %v, want 409 %s", err, models.CodeSandboxFailed)
+	}
+
 	// rm frees it without force: a failed create holds no live process, so the record and everything under it goes.
 	if err := daemonClient(app).RemoveSandbox(t.Context(), sb.ID, false, stopGrace); err != nil {
 		t.Fatalf("rm of a failed sandbox: %v", err)

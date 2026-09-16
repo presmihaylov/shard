@@ -148,10 +148,9 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	}
 }
 
-// TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord is the point of the handshake. runsc
-// create and runsc start both succeed for an entrypoint that does not exist, because the root process
-// is the supervisor. The handshake catches it, so the create fails, prints no id, gives back the lease,
-// the namespace, the link and the mount, and leaves one failed record that rm then frees.
+// TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord: runsc create and start both succeed
+// for a missing entrypoint, because the root process is the supervisor. The handshake catches it, so
+// create fails, prints no id, frees the lease, namespace, link and mount, and leaves a failed record.
 func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) {
 	app, out := newCreateApp(t)
 
