@@ -59,7 +59,7 @@ func New(root string) (*Repository, error) {
 
 // Dir is the StateDir a provider owns. It validates: the caller hands the path to mount and RemoveAll.
 func (r *Repository) Dir(id string) (string, error) {
-	if err := validID(id); err != nil {
+	if err := ValidID(id); err != nil {
 		return "", err
 	}
 
@@ -68,7 +68,7 @@ func (r *Repository) Dir(id string) (string, error) {
 
 // SnapshotDir is where a pause writes and a fork reads. It is not created until one happens.
 func (r *Repository) SnapshotDir(id string) (string, error) {
-	if err := validID(id); err != nil {
+	if err := ValidID(id); err != nil {
 		return "", err
 	}
 
@@ -196,7 +196,7 @@ func (r *Repository) Resolve(ref string) (string, error) {
 
 	// A refused target is a broken link, never the operator's mistake, so it is no ValidationError.
 	id := filepath.Base(target)
-	if validID(id) != nil {
+	if ValidID(id) != nil {
 		return "", fmt.Errorf("the name %q points at %q, which is not a sandbox id", ref, target)
 	}
 
@@ -301,7 +301,7 @@ func (r *Repository) Delete(id string) error {
 // Get returns the record, or ErrNotFound. It takes no lock, so it never blocks and never blocks a
 // writer. A record arrives by rename, so a reader sees the whole old one or the whole new one.
 func (r *Repository) Get(id string) (models.Sandbox, error) {
-	if err := validID(id); err != nil {
+	if err := ValidID(id); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -357,7 +357,7 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
-		if !entry.IsDir() || validID(entry.Name()) != nil {
+		if !entry.IsDir() || ValidID(entry.Name()) != nil {
 			continue
 		}
 
@@ -398,11 +398,11 @@ func ValidName(name string) error {
 	return nil
 }
 
-// validReference is validID for what an operator typed, which may be either an id or a name.
+// validReference is ValidID for what an operator typed, which may be either an id or a name.
 func validReference(ref string) error { return plainComponent("id or name", ref) }
 
-// The id is a directory name under the root, so anything that is not one plain component is refused.
-func validID(id string) error { return plainComponent("id", id) }
+// ValidID refuses an id that is not one plain directory component under the root.
+func ValidID(id string) error { return plainComponent("id", id) }
 
 // UnreadableError is one record List could not read, so a caller can tell lost rows from a failed list.
 type UnreadableError struct {

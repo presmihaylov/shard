@@ -53,10 +53,30 @@ func TestListPagesThroughTheSandboxesOnTheLimitAndTheCursor(t *testing.T) {
 	}
 }
 
-func TestListRefusesALimitThatIsNoCountAndACursorThatNamesNothing(t *testing.T) {
+func TestListWalksPastASandboxRemovedBetweenTwoPages(t *testing.T) {
+	s := seed(t)
+	create(t, s.repo, "", models.StateRunning)
+	create(t, s.repo, "", models.StateRunning)
+
+	_, body := get(t, s.server, "/v0/sandboxes")
+	all := ids(t, body)
+
+	_, body = get(t, s.server, "/v0/sandboxes?limit=2")
+	cursor := next(t, body)
+	if err := s.repo.Delete(cursor); err != nil {
+		t.Fatalf("Delete %s: %v", cursor, err)
+	}
+
+	status, body := get(t, s.server, "/v0/sandboxes?limit=2&cursor="+cursor)
+	if status != http.StatusOK || !reflect.DeepEqual(ids(t, body), []string{all[2]}) || next(t, body) != "" {
+		t.Errorf("the page after a removed cursor answered %d %v, want the sandbox after it and a null next", status, body)
+	}
+}
+
+func TestListRefusesALimitThatIsNoCountAndACursorThatIsNoID(t *testing.T) {
 	s := seed(t)
 
-	for _, query := range []string{"limit=0", "limit=-1", "limit=ten", "cursor=nothing-here"} {
+	for _, query := range []string{"limit=0", "limit=-1", "limit=ten"} {
 		status, body := get(t, s.server, "/v0/sandboxes?"+query)
 		if status != http.StatusBadRequest {
 			t.Errorf("GET /v0/sandboxes?%s answered %d %v, want 400", query, status, body)
@@ -64,22 +84,27 @@ func TestListRefusesALimitThatIsNoCountAndACursorThatNamesNothing(t *testing.T) 
 			continue
 		}
 		refusal := errorOf(t, body)
-		if refusal.code != "invalid_request" || !strings.Contains(refusal.message, strings.SplitN(query, "=", 2)[1]) {
+		if refusal.code != "invalid_request" || !strings.Contains(refusal.message, strings.TrimPrefix(query, "limit=")) {
 			t.Errorf("GET /v0/sandboxes?%s refused with %v, want invalid_request naming the value", query, refusal)
 		}
+	}
+
+	status, body := get(t, s.server, "/v0/sandboxes?cursor=not/an-id")
+	if status != http.StatusBadRequest || errorOf(t, body).code != "invalid_request" {
+		t.Errorf("GET /v0/sandboxes?cursor=not/an-id answered %d %v, want 400 invalid_request", status, body)
 	}
 }
 
 func TestEveryStoreListPagesTheSameWay(t *testing.T) {
 	s := seed(t)
 	s.stores.policies = []models.Policy{{Name: "db"}, {Name: "web"}}
-	s.stores.secrets = []secret.Secret{{Name: "openai"}, {Name: "stripe"}}
-	s.stores.images = []image.Image{{Reference: "docker.io/library/alpine:3.20"}, {Reference: "docker.io/library/debian:13"}}
+	s.stores.secrets = []secret.Secret{{Name: "OPENAI_KEY"}, {Name: "STRIPE_KEY"}}
+	s.stores.images = []image.Image{{Reference: "index.docker.io/library/alpine:3.20"}, {Reference: "index.docker.io/library/debian:13"}}
 
-	for _, route := range []struct{ path, plural, key, first, second string }{
-		{"/v0/policies", "policies", "name", "db", "web"},
-		{"/v0/secrets", "secrets", "name", "openai", "stripe"},
-		{"/v0/images", "images", "reference", "docker.io/library/alpine:3.20", "docker.io/library/debian:13"},
+	for _, route := range []struct{ path, plural, key, first, between, second, malformed string }{
+		{"/v0/policies", "policies", "name", "db", "m", "web", "Not-Lower"},
+		{"/v0/secrets", "secrets", "name", "OPENAI_KEY", "P", "STRIPE_KEY", "lower"},
+		{"/v0/images", "images", "reference", "index.docker.io/library/alpine:3.20", "index.docker.io/library/busybox:1", "index.docker.io/library/debian:13", "Alpine:3.20"},
 	} {
 		status, body := get(t, s.server, route.path+"?limit=1")
 		if status != http.StatusOK || keys(t, body, route.plural, route.key)[0] != route.first || next(t, body) != route.first {
@@ -91,9 +116,14 @@ func TestEveryStoreListPagesTheSameWay(t *testing.T) {
 			t.Errorf("the second page of %s answered %d %v, want %s alone and a null next", route.path, status, body, route.second)
 		}
 
-		status, body = get(t, s.server, route.path+"?cursor=nothing-here")
+		status, body = get(t, s.server, route.path+"?cursor="+route.between)
+		if status != http.StatusOK || keys(t, body, route.plural, route.key)[0] != route.second || next(t, body) != "" {
+			t.Errorf("GET %s?cursor=%s answered %d %v, want what sorts after the cursor", route.path, route.between, status, body)
+		}
+
+		status, body = get(t, s.server, route.path+"?cursor="+route.malformed)
 		if status != http.StatusBadRequest || errorOf(t, body).code != "invalid_request" {
-			t.Errorf("GET %s?cursor=nothing-here answered %d %v, want 400 invalid_request", route.path, status, body)
+			t.Errorf("GET %s?cursor=%s answered %d %v, want 400 invalid_request", route.path, route.malformed, status, body)
 		}
 	}
 }

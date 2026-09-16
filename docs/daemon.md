@@ -211,12 +211,13 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   The provider is built on the first ask, so on a host without its runtime the route answers 500
   and says what is missing.
 - Every list answers `{"<plural>": [...], "next": null | "<cursor>"}`, plus `warnings` where the
-  route says so. `?limit=N` caps the page and `?cursor=<c>` starts it after the item the cursor
-  names, which is what `next` of the page before held: the id of a sandbox, the name of a policy or
-  a secret, the reference of an image. Without `limit` the list is whole and `next` is `null`; with
-  one, `next` is `null` only once nothing follows. A `limit` under 1 or a cursor that names nothing
-  in the list, one whose item was removed between two pages included, is 400 `invalid_request`. The
-  CLI never sets a limit, so `ls` and the store lists print everything.
+  route says so. `?limit=N` caps the page and `?cursor=<c>` serves the items whose key sorts after
+  the cursor, in the order of the list; `next` of the page before is the key of its last item: the id
+  of a sandbox, the name of a policy or a secret, the reference of an image. A cursor is a position,
+  not an item, so a sandbox removed between two pages does not break the walk. Without `limit` the
+  list is whole and `next` is `null`; with one, `next` is `null` only once nothing follows. A `limit`
+  under 1, or a cursor that could never be a key of the list, is 400 `invalid_request`. The CLI never
+  sets a limit, so `ls` and the store lists print everything.
 - `GET /v0/sandboxes` answers `{"sandboxes": [...], "next"}` as `shard ls` lists them: stopped
   sandboxes hidden unless `all=true`. When some records are unreadable it still answers 200 with the
   readable sandboxes and a `warnings` array, one string per unreadable record; `ls` prints the table

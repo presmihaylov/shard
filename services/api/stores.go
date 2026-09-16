@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/secret"
@@ -57,7 +58,7 @@ type pruneResponse struct {
 }
 
 func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r)
+	q, err := pageOf(r, egress.ValidName)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -71,12 +72,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, next, err := page(policies, q, func(p models.Policy) string { return p.Name })
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
+	policies, next := page(policies, q, func(p models.Policy) string { return p.Name })
 
 	h.writeJSON(w, http.StatusOK, policiesResponse{Policies: policies, Next: next})
 }
@@ -122,7 +118,7 @@ func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
 
 // listSecrets answers with names and destinations. A value never leaves the host on this route.
 func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r)
+	q, err := pageOf(r, secret.ValidName)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -136,12 +132,7 @@ func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 		warnings = []string{unreadable.Error()}
 	}
 
-	secrets, next, err := page(secrets, q, func(s secret.Secret) string { return s.Name })
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
+	secrets, next := page(secrets, q, func(s secret.Secret) string { return s.Name })
 
 	h.writeJSON(w, http.StatusOK, secretsResponse{Secrets: secrets, Next: next, Warnings: warnings})
 }
@@ -181,8 +172,15 @@ func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// imageShape is the cursor check of the image list: anything the registry could not name is malformed.
+func imageShape(cursor string) error {
+	_, err := image.Canonical(cursor)
+
+	return err
+}
+
 func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r)
+	q, err := pageOf(r, imageShape)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -196,12 +194,7 @@ func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	images, next, err := page(images, q, func(img image.Image) string { return img.Reference })
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
+	images, next := page(images, q, func(img image.Image) string { return img.Reference })
 
 	h.writeJSON(w, http.StatusOK, imagesResponse{Images: images, Next: next})
 }

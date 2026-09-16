@@ -185,7 +185,7 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q, err := pageOf(r)
+	q, err := pageOf(r, sandboxstate.ValidID)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -201,12 +201,7 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sandboxes, next, err := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
+	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
 
 	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: sandboxes, Next: next, Warnings: warnings})
 }

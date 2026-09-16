@@ -24,6 +24,25 @@ func newStore(t *testing.T) *Store {
 	return s
 }
 
+// SHARD-167: a list page walks the names in byte order, so a name that is a prefix of another comes first.
+func TestListSortsByNameNotByFileName(t *testing.T) {
+	s := newStore(t)
+
+	for _, name := range []string{"deny-all", "deny"} {
+		if err := s.Set(models.Policy{Name: name}); err != nil {
+			t.Fatalf("Set %s: %v", name, err)
+		}
+	}
+
+	all, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 2 || all[0].Name != "deny" || all[1].Name != "deny-all" {
+		t.Errorf("List = %+v, want deny before deny-all", all)
+	}
+}
+
 func mustRule(t *testing.T, action models.Action, text string) models.Rule {
 	t.Helper()
 
