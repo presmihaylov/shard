@@ -9,8 +9,7 @@ import (
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-// serve runs the TCP front of the daemon: TLS, a bearer token, and then the socket, byte for byte.
-// It is a process of its own, unprivileged, so the daemon never binds TCP itself.
+// serve runs the TCP front as its own unprivileged process, so the daemon never binds TCP itself.
 func (a App) serve(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

@@ -23,8 +23,7 @@ import (
 
 const frontToken = "cli-token-value"
 
-// newFrontApp puts a fake daemon up, a shard serve front over its socket, and answers the flags a
-// verb needs to reach the daemon through that front rather than through the socket.
+// newFrontApp puts a fake daemon and a front over it up, and answers the flags that reach the front.
 func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 	t.Helper()
 

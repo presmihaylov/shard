@@ -96,8 +96,7 @@ func New(root string) *Client {
 	return c
 }
 
-// NewRemote dials a shard serve front over TLS instead, with the token every request to it carries.
-// The routes and the framing are the same: the front is a byte proxy onto that same socket.
+// NewRemote dials a shard serve front over TLS, a byte proxy onto the socket, with its bearer token.
 func NewRemote(host, token string, ca []byte) (*Client, error) {
 	parsed, err := url.Parse(host)
 	if err != nil {
@@ -140,7 +139,7 @@ func (c *Client) transport() {
 	}}}
 }
 
-// dial opens the connection. An exec dials it itself, because it takes the connection over from HTTP.
+// dial opens the connection of a plain call. A WebSocket dials through the same dialer, in stream.go.
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	conn, err := c.dialer(ctx)
 

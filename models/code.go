@@ -14,5 +14,6 @@ const (
 	CodeUnsupported       Code = "unsupported"
 	CodeInUse             Code = "in_use"
 	CodeWebSocketRequired Code = "websocket_required"
+	CodeUnauthorized      Code = "unauthorized"
 	CodeInternal          Code = "internal"
 )

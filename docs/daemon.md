@@ -257,6 +257,7 @@ Every error body is `{"error": "<message>", "code": "<code>"}`: `error` is the l
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; the body adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `websocket_required` | 400 | `?follow=true` or an exec attach without the WebSocket handshake |
+| `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes the body into `*client.APIError`, with `Status`, `Code`, `Message` and
@@ -290,15 +291,20 @@ shard --root /var/lib/shard serve --listen :2376 \
 
 It is a byte proxy and not an API. It reads the request line and the headers of a connection only as
 far as the auth header, replays those bytes onto the socket and then splices the two connections, so
-an exec upgrade and a `logs` follow pass through untouched and every route above works unchanged. A
-bad or missing token is a `401` written before anything is dialed, so an unauthenticated client
-never reaches the daemon. The token is compared in constant time, and neither the front nor the CLI
-ever logs its value. Without `--cert` and `--key` the front refuses to start: there is no plain TCP
-mode to fall back to. The token file must not be readable by everyone on the host, and the front
-refuses one that is.
+the WebSocket handshake of an exec, a `logs` follow or an `egress-log` follow, and every message
+after it, pass through untouched and every route above works unchanged. A bad or missing token is a
+`401` with the code `unauthorized`, written before anything is dialed, so an unauthenticated client
+never reaches the daemon. A socket that does not answer is a `502` with the code `internal`. The
+token is compared in constant time, and neither the front nor the CLI ever logs its value. Without
+`--cert` and `--key` the front refuses to start: there is no plain TCP mode to fall back to. The
+token file must not be readable by everyone on the host, and the front refuses one that is.
+
+That is the whole of the access control: TLS on the wire and one bearer token in a file. There is no
+user, no role and no client certificate, and a client that holds the token holds every verb.
 
 The check is per connection, as a TLS client certificate would be: the token is read once, at the
-head of the first request, and the rest of that connection is bytes.
+head of the first request, and the rest of that connection is bytes. A WebSocket is a connection of
+its own, so the CLI sends the token on that handshake too.
 
 The front reads the token file once, at start, so a rotation needs a `shard serve` restart, and that
 restart ends no connection that is already spliced.
@@ -331,7 +337,7 @@ SHARD_HOST=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
 `--host` must be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate
 that signed the front's own, which a private CA or a self-signed certificate needs; without it the
 host's own trust store decides. This is one transport switch inside `services/client` and nothing
-else changes: the same typed calls, the same frames, the same errors. It is also the one way a
+else changes: the same typed calls, the same messages, the same errors. It is also the one way a
 client off Linux drives sandboxes, because the daemon itself runs on Linux alone.
 
 ## One daemon per root

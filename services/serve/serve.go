@@ -35,7 +35,7 @@ const (
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
-const unauthorized = `{"error":"the request carries no valid bearer token"}`
+const unauthorized = `{"error":"the request carries no valid bearer token","code":"unauthorized"}`
 
 // Config is the wiring one front needs.
 type Config struct {
@@ -98,8 +98,7 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// ReadToken reads the token a front checks and a client sends. It refuses a file others can read,
-// because the token is the whole of the authentication, and it never reports the value.
+// ReadToken refuses a file others can read, because the token is the whole of the authentication.
 func ReadToken(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("shard needs --token-file: every request to a shard serve front carries a bearer token")
@@ -199,8 +198,7 @@ func (s *Server) accept(ctx context.Context, listener net.Listener) error {
 	}
 }
 
-// handle checks the token of one connection and then stops reading it: the rest is bytes both ways,
-// so an exec upgrade and a logs follow pass through untouched.
+// handle checks the token, then stops reading: the rest is bytes both ways, WebSocket included.
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	closeConn := func() {
 		if err := conn.Close(); !quiet(err) {
@@ -228,7 +226,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socket)
 	if err != nil {
 		s.log.Printf("dial the daemon socket %s for %s: %v", s.socket, conn.RemoteAddr(), err)
-		s.answer(conn, "502 Bad Gateway", `{"error":"the shard daemon does not answer on its socket"}`)
+		s.answer(conn, "502 Bad Gateway", `{"error":"the shard daemon does not answer on its socket","code":"internal"}`)
 
 		return
 	}
