@@ -41,6 +41,10 @@ type Sandbox struct {
 	OOMRestarts    int       `json:"oom_restarts,omitempty"`
 	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
 
+	// HealthCheck is the probe the daemon runs while the sandbox runs, and Health what it found, both nil without one.
+	HealthCheck *HealthCheck `json:"health_check,omitempty"`
+	Health      *Health      `json:"health,omitempty"`
+
 	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
 	// reach a request only at the proxy, so this list is a grant and never a value.
 	Secrets []string `json:"secrets,omitempty"`

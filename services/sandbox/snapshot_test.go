@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -223,6 +224,8 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	source.Image = "docker.io/library/alpine:3.20"
 	source.Resources = models.Resources{MemoryMiB: 256}
 	source.RestartOnOOM = true
+	source.HealthCheck = &models.HealthCheck{Command: []string{"/bin/true"}, Interval: 30, Timeout: 10, Retries: 3}
+	source.Health = &models.Health{Status: models.HealthHealthy, CheckedAt: time.Now()}
 	svc, l := newService(t, r, source)
 
 	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
@@ -251,6 +254,10 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 
 	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
 		t.Errorf("the fork's record is %+v, want the source's image, bound and restart policy", sb)
+	}
+	// The fork carries the process the probes had passed on, so it keeps what they found.
+	if !reflect.DeepEqual(sb.HealthCheck, source.HealthCheck) || !reflect.DeepEqual(sb.Health, source.Health) {
+		t.Errorf("the fork's record holds the health %+v, want the source's %+v", sb.Health, source.Health)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the fork's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -403,6 +410,8 @@ func cloneSource() models.Sandbox {
 	sb.Image = "docker.io/library/alpine:3.20"
 	sb.Resources = models.Resources{MemoryMiB: 256}
 	sb.RestartOnOOM = true
+	sb.HealthCheck = &models.HealthCheck{Command: []string{"/bin/true"}, Interval: 30, Timeout: 10, Retries: 3}
+	sb.Health = &models.Health{Status: models.HealthUnhealthy, Failures: 3}
 
 	return sb
 }
@@ -438,6 +447,9 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 
 	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
 		t.Errorf("the clone's record is %+v, want the source's image, bound and restart policy", sb)
+	}
+	if !reflect.DeepEqual(sb.HealthCheck, source.HealthCheck) || sb.Health == nil || sb.Health.Status != models.HealthStarting {
+		t.Errorf("the clone's record holds the health %+v, want the source's probe with nothing found yet", sb.Health)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the clone's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)

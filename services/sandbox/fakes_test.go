@@ -276,7 +276,7 @@ func (f *fakeProvider) LogPath(string) (string, error) {
 	return f.logPath, nil
 }
 
-func (f *fakeProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
+func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
 	if err := f.r.record("provider.Exec"); err != nil {
 		return models.ExitStatus{}, err
 	}
@@ -285,8 +285,13 @@ func (f *fakeProvider) Exec(_ context.Context, id string, spec models.ExecSpec) 
 	if f.execBegan != nil {
 		close(f.execBegan)
 	}
+	// A held command still ends when the caller gives up on it, as runsc exec does.
 	if f.execWaits != nil {
-		<-f.execWaits
+		select {
+		case <-f.execWaits:
+		case <-ctx.Done():
+			return models.ExitStatus{}, ctx.Err()
+		}
 	}
 
 	if spec.Stdin != nil {

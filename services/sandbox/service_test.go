@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -193,6 +194,25 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 	}
 }
 
+func TestCreateFillsTheProbeSettingsItWasNotGiven(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{})
+	req := alpine()
+	req.Health = &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080}}
+
+	sb, err := svc.Create(t.Context(), req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	want := &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080, Path: "/"}, Interval: 30, Timeout: 10, Retries: 3}
+	if !reflect.DeepEqual(sb.HealthCheck, want) || !reflect.DeepEqual(l.repo.sb.HealthCheck, want) {
+		t.Errorf("the record holds the probe %+v, want %+v with the defaults filled", sb.HealthCheck, want)
+	}
+	if sb.Health == nil || sb.Health.Status != models.HealthStarting {
+		t.Errorf("the record holds the health %+v, want starting", sb.Health)
+	}
+}
+
 // The pool is the one thing nothing frees on a timer, so its refusal names the verbs that do.
 func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
@@ -212,6 +232,11 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 		"a memory that overflows": {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
 		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
 		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
+		"a probe of no kind":      {Image: "alpine", Health: &models.HealthCheck{}},
+		"a probe of both kinds":   {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, HTTP: &models.HTTPProbe{Port: 80}}},
+		"a probe on no port":      {Image: "alpine", Health: &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 0}}},
+		"a probe off a path":      {Image: "alpine", Health: &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 80, Path: "healthz"}}},
+		"a negative probe count":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
 		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
 		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
 		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},

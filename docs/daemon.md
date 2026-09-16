@@ -27,6 +27,8 @@ systemctl enable --now shard
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
   bring it back. The `oom-restart` task does, every 5 s, for a sandbox created with
   `--restart-on-oom` (`restart_on_oom` in the create body, which needs a memory bound). See below.
+- **The health check**: the `health-check` task runs the probe a sandbox was created with, on the
+  interval it named, and keeps the result on the record. See below.
 
 - **The stores**: the images under `${root}/images`, the policies, the secrets and the sandbox
   records. One writer owns them, so they need no lock between processes: the daemon serializes its
@@ -99,6 +101,34 @@ the reason adds `the 5 starts again the cap allows are spent`. A `shard start` b
 and clears the reason. A sandbox the record says `stopped` is never started again by the daemon,
 so a `stop` in the window is final. A `fork` or `clone` inherits the policy with a fresh count.
 
+## Health check
+
+A sandbox created with a probe is probed by the daemon while it runs, and the record says what the
+probes found. There are two kinds. `--health-command <cmd>` (`"health": {"command": [...]}` in the
+create body, where the flag wraps its string as `/bin/sh -c`) runs the argv in the sandbox through
+the provider's `exec` and passes on exit 0; a signal or a command that could not start fails.
+`--health-http PORT[/PATH]` (`"health": {"http": {"port", "path"}}`) is one GET from the host to the
+sandbox's address, which passes on a 2xx or a 3xx answer and does not follow the redirect. A sandbox
+gets one kind. `--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
+`retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3.
+
+The record carries the probe in `health_check`, with every default filled in, and the result in
+`health`: `{"status", "checked_at", "failures"}`. The status is `starting` until the first probe
+passes, `healthy` from then on, and `unhealthy` once `retries` probes in a row have failed; one that
+passes sets it back to `healthy` and clears the count. `checked_at` is the last probe. Both are
+absent on a sandbox that has no probe. `shard ls` shows the status in its `HEALTH` column, with the
+count beside it while it is above zero, as `unhealthy 3/3`; each change of status is one line in
+the daemon log, with the reason for a failure.
+
+The task ticks every second, probes every due sandbox side by side and waits for the slowest, so a
+probe runs at most one timeout late. A command probe that outruns its timeout is ended inside the
+sandbox. There is no start period: the first probe runs on the first tick after the
+create, and a slow entrypoint counts its failures from the start, so set `retries` and `interval`
+for it. Every new run starts over at `starting`: a `start`, a start again after an OOM, a `clone`
+and a daemon that finds the sandbox running at reconcile. A `resume` and a `fork` keep the result,
+as they keep the process. Nothing acts on `unhealthy` yet; the status is for the operator and the
+API, and a later task set may restart on it.
+
 ## The API socket
 
 The daemon listens on `${root}/shard.sock`, so `/var/lib/shard/shard.sock` by default. It never
@@ -163,7 +193,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom"}`, pulls the image, builds and
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "health": {"command" or
+  "http": {"port", "path"}, "interval", "timeout", "retries"}}`, pulls the image, builds and
   starts the sandbox, and answers 201 with the record. 400 when the body does not decode or a field does not validate,
   or when it names a secret or a policy the host does not hold; 500 when a claim fails, and the
   daemon has then given back everything it built.
