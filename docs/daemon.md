@@ -178,6 +178,7 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/daemon
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?all=true'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20&cursor=<id>'
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"image":"alpine:3.20","command":["sleep","600"]}' http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/start
@@ -209,10 +210,18 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
   The provider is built on the first ask, so on a host without its runtime the route answers 500
   and says what is missing.
-- `GET /v0/sandboxes` answers `{"sandboxes": [...]}` as `shard ls` lists them: stopped sandboxes
-  hidden unless `all=true`. When some records are unreadable it still answers 200 with the readable
-  sandboxes and a `warnings` array, one string per unreadable record; `ls` prints the table and then
-  the warnings on stderr, and exits non-zero. It answers 500 only when the list itself failed.
+- Every list answers `{"<plural>": [...], "next": null | "<cursor>"}`, plus `warnings` where the
+  route says so. `?limit=N` caps the page and `?cursor=<c>` starts it after the item the cursor
+  names, which is what `next` of the page before held: the id of a sandbox, the name of a policy or
+  a secret, the reference of an image. Without `limit` the list is whole and `next` is `null`; with
+  one, `next` is `null` only once nothing follows. A `limit` under 1 or a cursor that names nothing
+  in the list, one whose item was removed between two pages included, is 400 `invalid_request`. The
+  CLI never sets a limit, so `ls` and the store lists print everything.
+- `GET /v0/sandboxes` answers `{"sandboxes": [...], "next"}` as `shard ls` lists them: stopped
+  sandboxes hidden unless `all=true`. When some records are unreadable it still answers 200 with the
+  readable sandboxes and a `warnings` array, one string per unreadable record; `ls` prints the table
+  and then the warnings on stderr, and exits non-zero. It answers 500 only when the list itself
+  failed.
 - `GET /v0/sandboxes/{id}` takes an id or a name and answers the record, with an `egress` object
   beside it when the record names a policy: what the host enforces, as `shard inspect` prints it.
   404 when nothing has it, which `inspect` prints as `no sandbox <ref>`; 400 when the reference
@@ -279,7 +288,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `DELETE /v0/sandboxes/{id}/policy` leaves the sandbox with no policy and answers 200 with the record.
   The secrets it holds and the proxy CA stay. 404; 409 when the sandbox runs or is paused.
 
-- `GET /v0/policies` answers `{"policies": [...]}`, and `GET /v0/policies/{name}` one policy with
+- `GET /v0/policies` answers `{"policies": [...], "next"}`, and `GET /v0/policies/{name}` one policy with
   `holders`, the sandboxes whose record names it, omitted when none does. That is what `shard policy
   ls` and `shard policy show` print. 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
@@ -289,7 +298,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   rules and the host still enforces the old ones, which the message says.
 - `DELETE /v0/policies/{name}` answers 204. 404; 409 naming every sandbox that holds it, and there is
   no force: a sandbox with no policy would have no egress rules at all.
-- `GET /v0/secrets` answers `{"secrets": [...]}` with the name, the destinations, the placeholder and
+- `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the placeholder and
   the times, and never a value. Unreadable files come back in `warnings` beside the readable ones,
   which `secret ls` prints on stderr before it exits non-zero.
 - `PUT /v0/secrets/{name}` takes `{"value", "destinations", "mock"}` and answers 200 with the record,
@@ -297,7 +306,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   host refuses; 409 naming every sandbox that holds the placeholder a new `mock` would change.
 - `DELETE /v0/secrets/{name}` answers 204. 404; 409 naming every sandbox that was granted it, unless
   `?force=true`.
-- `GET /v0/images` answers `{"images": [...]}` as `shard image ls` prints them; an entry the daemon
+- `GET /v0/images` answers `{"images": [...], "next"}` as `shard image ls` prints them; an entry the daemon
   could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls it and answers 200 with the image. 400 for a
   reference that does not parse; 500 when the registry or the unpack failed.

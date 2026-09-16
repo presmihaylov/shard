@@ -27,16 +27,19 @@ type Stores interface {
 
 type policiesResponse struct {
 	Policies []models.Policy `json:"policies"`
+	Next     *string         `json:"next"`
 }
 
 type secretsResponse struct {
 	Secrets []secret.Secret `json:"secrets"`
+	Next    *string         `json:"next"`
 	// Warnings names the secret files the daemon could not read, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
 type imagesResponse struct {
 	Images []image.Image `json:"images"`
+	Next   *string       `json:"next"`
 }
 
 type pullRequest struct {
@@ -53,7 +56,14 @@ type pruneResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-func (h *Handler) listPolicies(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
+	q, err := pageOf(r)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	policies, err := h.stores.Policies()
 	if err != nil {
 		h.writeError(w, err)
@@ -61,7 +71,14 @@ func (h *Handler) listPolicies(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, policiesResponse{Policies: policies})
+	policies, next, err := page(policies, q, func(p models.Policy) string { return p.Name })
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, policiesResponse{Policies: policies, Next: next})
 }
 
 func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +121,14 @@ func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 // listSecrets answers with names and destinations. A value never leaves the host on this route.
-func (h *Handler) listSecrets(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
+	q, err := pageOf(r)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	secrets, unreadable := h.stores.Secrets()
 
 	var warnings []string
@@ -112,7 +136,14 @@ func (h *Handler) listSecrets(w http.ResponseWriter, _ *http.Request) {
 		warnings = []string{unreadable.Error()}
 	}
 
-	h.writeJSON(w, http.StatusOK, secretsResponse{Secrets: secrets, Warnings: warnings})
+	secrets, next, err := page(secrets, q, func(s secret.Secret) string { return s.Name })
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, secretsResponse{Secrets: secrets, Next: next, Warnings: warnings})
 }
 
 func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +181,14 @@ func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) listImages(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
+	q, err := pageOf(r)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	images, err := h.stores.Images()
 	if err != nil {
 		h.writeError(w, err)
@@ -158,7 +196,14 @@ func (h *Handler) listImages(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, imagesResponse{Images: images})
+	images, next, err := page(images, q, func(img image.Image) string { return img.Reference })
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, imagesResponse{Images: images, Next: next})
 }
 
 func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
