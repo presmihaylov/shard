@@ -12,11 +12,11 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// oomBomb doubles a string in anonymous memory until the host ends the sandbox; a tmpfs fill only throttles.
-const oomBomb = `awk 'BEGIN { s = "x"; while (1) s = s s }'`
+// oomBomb doubles strings in anonymous memory in 32 tasks, because memory.high throttles each one to ~128 KiB/s past the bound.
+const oomBomb = `i=0; while [ $i -lt 32 ]; do awk 'BEGIN { s = "x"; while (1) s = s s }' & i=$((i+1)); done; wait`
 
-// oomBudget covers five starts again with their backoff, at one tick every 5 s.
-const oomBudget = 3 * time.Minute
+// oomBudget covers six kills of ~30 s each with their backoff, at one tick every 5 s, three sandboxes at once.
+const oomBudget = 6 * time.Minute
 
 // The three tests share the daemon and run side by side, because each one waits on the 5 s tick.
 func TestTheDaemonBringsBackAnOOMKilledSandboxThatAskedForIt(t *testing.T) {
