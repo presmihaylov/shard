@@ -273,11 +273,10 @@ func TestLogsProtocolFollowsThenSaysWhyItEnded(t *testing.T) {
 	id := create(t, app, out, "/bin/sh", "-c", "echo up; sleep 600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	conn, resp, err := websocket.Dial(t.Context(), "ws://shard/v0/sandboxes/"+id+"/logs?follow=true", &websocket.DialOptions{HTTPClient: c.http})
+	conn, _, err := websocket.Dial(t.Context(), "ws://shard/v0/sandboxes/"+id+"/logs?follow=true", &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // a 101 has no body to close
 	if err != nil {
 		t.Fatalf("dial the follow: %v", err)
 	}
-	defer resp.Body.Close()
 	t.Cleanup(func() { conn.CloseNow() })
 
 	var logged strings.Builder
