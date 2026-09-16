@@ -232,20 +232,15 @@ func TestExecRefusesBeforeThe101(t *testing.T) {
 }
 
 // An attach without the handshake is a 400 with a code, not the plain-text refusal the library writes.
-func TestAStreamWithoutTheHandshakeIs400(t *testing.T) {
+func TestAnAttachWithoutTheHandshakeIs400(t *testing.T) {
 	s := seed(t)
 
-	for _, path := range []string{
-		"/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b",
-		"/v0/sandboxes/" + s.running.ID + "/logs?follow=true",
-		"/v0/sandboxes/" + s.running.ID + "/egress-log?follow=true",
-	} {
-		status, body := send(t, s.server, http.MethodGet, path, "")
-		if status != http.StatusBadRequest || errorOf(t, body).code != "websocket_required" {
-			t.Errorf("GET %s answered %d %v, want 400 websocket_required", path, status, body)
-		}
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b"
+	status, body := send(t, s.server, http.MethodGet, path, "")
+	if status != http.StatusBadRequest || errorOf(t, body).code != "websocket_required" {
+		t.Errorf("GET %s answered %d %v, want 400 websocket_required", path, status, body)
 	}
-	if s.verbs.attachedExec != "" || s.verbs.followed {
+	if s.verbs.attachedExec != "" {
 		t.Error("a request without the handshake still reached the orchestrator")
 	}
 }

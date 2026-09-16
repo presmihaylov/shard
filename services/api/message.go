@@ -23,7 +23,7 @@ const (
 // MaxPayload bounds one message, so a longer write goes as several and no reader allocates for more.
 const MaxPayload = 1 << 20
 
-// ErrWebSocketRequired is a follow or an attach asked for without the handshake that carries one.
+// ErrWebSocketRequired is an exec attach asked for without the handshake that carries one.
 var ErrWebSocketRequired = errors.New("this route streams over a WebSocket: open it with the handshake")
 
 // ExitMessage is the payload of StreamExit on an exec. Error is set when the sandbox could not start the command.

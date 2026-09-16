@@ -1031,6 +1031,29 @@ grep -q '"verdict":"deny"' "${FOLLOW_LOG}" || fail "the follow never printed the
 grep -q '"source":"host"' "${FOLLOW_LOG}" || fail "the follow never printed the host's drop: $(cat "${FOLLOW_LOG}")"
 say "logs -f --egress prints both halves as they happen"
 
+# The same follow without a WebSocket is one JSON record per line, so curl -N reads it live too.
+DENIES_BEFORE=$(shard logs --egress "${ID}" | grep -c '"verdict":"deny"' || true)
+NDJSON_LOG=$(mktemp)
+NDJSON_HEADERS=$(mktemp)
+curl -sN -D "${NDJSON_HEADERS}" --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/egress-log?follow=true" >"${NDJSON_LOG}" 2>&1 &
+NDJSON_PID=$!
+
+shard exec "${ID}" -- /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
+
+for _ in $(seq 1 30); do
+	[ "$(grep -c '"verdict":"deny"' "${NDJSON_LOG}" || true)" -gt "${DENIES_BEFORE}" ] && break
+	sleep 0.1
+done
+
+kill "${NDJSON_PID}" 2>/dev/null || true
+wait "${NDJSON_PID}" 2>/dev/null || true
+
+grep -qi '^content-type: application/x-ndjson' "${NDJSON_HEADERS}" || fail "curl -N on the egress log got '$(cat "${NDJSON_HEADERS}")', want application/x-ndjson"
+[ "$(grep -c '"verdict":"deny"' "${NDJSON_LOG}" || true)" -gt "${DENIES_BEFORE}" ] || fail "curl -N never printed the deny that landed after it opened: $(cat "${NDJSON_LOG}")"
+grep -q '"source":"host"' "${NDJSON_LOG}" || fail "curl -N never printed the host's drop: $(cat "${NDJSON_LOG}")"
+grep -qv '^{' "${NDJSON_LOG}" && fail "curl -N printed a line that is no JSON record: $(cat "${NDJSON_LOG}")"
+say "curl -N on egress-log?follow=true prints one JSON record per line as it lands"
+
 step "write a file into the writable layer"
 expect_exec "kept" "the file is in the image layer, which a start after a stop must keep" \
 	/bin/sh -c 'echo kept > /root/kept; cat /root/kept'
@@ -1215,10 +1238,30 @@ REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
 echo "${REFUSAL}" | grep -q "shard stop ${ID}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
 say "rm refused it and named the stop"
 
+# curl -N holds the log open through the stop, and the body must end on its own once the sandbox is stopped.
+PLAIN_LOG=$(mktemp)
+PLAIN_HEADERS=$(mktemp)
+curl -sN -D "${PLAIN_HEADERS}" --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/logs?follow=true" >"${PLAIN_LOG}" 2>&1 &
+PLAIN_PID=$!
+for _ in $(seq 1 50); do
+	grep -q "shard-e2e-entrypoint" "${PLAIN_LOG}" && break
+	sleep 0.1
+done
+grep -q "shard-e2e-entrypoint" "${PLAIN_LOG}" || fail "curl -N on logs?follow=true printed nothing while the sandbox ran"
+
 step "stop the sandbox"
 shard stop --time "${GRACE}" "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"
 say "the record says stopped"
+
+for _ in $(seq 1 100); do
+	kill -0 "${PLAIN_PID}" 2>/dev/null || break
+	sleep 0.1
+done
+kill -0 "${PLAIN_PID}" 2>/dev/null && fail "curl -N on logs?follow=true is still open 10 s after the stop"
+wait "${PLAIN_PID}" || fail "curl -N on logs?follow=true ended with a failure on the stop"
+grep -qi '^content-type: text/plain' "${PLAIN_HEADERS}" || fail "curl -N on the logs got '$(cat "${PLAIN_HEADERS}")', want text/plain"
+say "curl -N on logs?follow=true streams text/plain and ends on the stop"
 
 # This is the boundary the ticket names: a stop keeps everything a later start needs.
 grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the stop dropped the address"
@@ -1236,6 +1279,12 @@ say "ls hides the stopped sandbox and ls --all shows it stopped"
 # -f ends on its own once the sandbox is stopped, so a hang here is a failure, not a wait.
 timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs -f on a stopped sandbox did not print its output and end"
 say "logs still reads a stopped sandbox, and -f ends on its own"
+
+# The egress log outlives the stop, so a plain follow of a stopped sandbox prints it and ends by itself.
+STOPPED_NDJSON=$(mktemp)
+timeout 10 curl -sN --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/egress-log?follow=true" >"${STOPPED_NDJSON}" || fail "curl -N on egress-log?follow=true of a stopped sandbox did not end on its own"
+grep -q '"verdict":"deny"' "${STOPPED_NDJSON}" || fail "curl -N on the egress log of a stopped sandbox printed no record: $(cat "${STOPPED_NDJSON}")"
+say "curl -N on egress-log?follow=true of a stopped sandbox prints the log and ends on its own"
 
 step "stop the sandbox a second time"
 shard stop "${ID}" >/dev/null

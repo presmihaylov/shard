@@ -31,6 +31,7 @@ type seeded struct {
 	stopped  models.Sandbox
 	verbs    *fakeLifecycle
 	stores   *fakeStores
+	egress   *fakeEgressLog
 	server   *httptest.Server
 }
 
@@ -54,12 +55,12 @@ func seed(t *testing.T) seeded {
 
 	enforcer := egress.New(policies, repo, network.DefaultNameservers, nil)
 
-	verbs, stores := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}
+	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
 
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, fakeEgressLog{}, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, io.Discard))
 	t.Cleanup(server.Close)
 
-	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, server: server}
+	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, egress: egressLog, server: server}
 }
 
 // fakeProcess is a daemon that says it runs sysbox, or one whose provider cannot be built.
@@ -82,14 +83,17 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 }
 
 // fakeEgressLog answers with one line per sandbox, so the handler is what the test exercises.
-type fakeEgressLog struct{}
+type fakeEgressLog struct {
+	// holds keeps a follow open until its context ends, the way a live log does while the sandbox runs.
+	holds bool
+}
 
-func (fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
+func (*fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
 	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, nil
 }
 
 // Follow hands over the same line and then ends as a removed sandbox does, so a test needs no clock.
-func (f fakeEgressLog) Follow(_ context.Context, sb models.Sandbox, yield func(egress.Record) error) error {
+func (f *fakeEgressLog) Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error {
 	records, err := f.Read(sb)
 	if err != nil {
 		return err
@@ -99,6 +103,12 @@ func (f fakeEgressLog) Follow(_ context.Context, sb models.Sandbox, yield func(e
 		if err := yield(record); err != nil {
 			return err
 		}
+	}
+
+	if f.holds {
+		<-ctx.Done()
+
+		return ctx.Err()
 	}
 
 	return egress.ErrSandboxGone
@@ -227,7 +237,7 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 func TestDaemonIs500WhenTheProviderCannotBeBuilt(t *testing.T) {
 	s := seed(t)
 
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, fakeEgressLog{}, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, &fakeEgressLog{}, io.Discard))
 	t.Cleanup(server.Close)
 
 	status, body := get(t, server, "/v0/daemon")
