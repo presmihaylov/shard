@@ -279,7 +279,9 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 
 	// A sandbox that wrote nothing still answers, and an empty body is what it wrote.
 	if !out.wrote {
-		out.header()
+		if err := out.header(); err != nil {
+			h.log.Printf("api: logs of sandbox %s: %v", r.PathValue("id"), err)
+		}
 	}
 }
 
@@ -296,15 +298,24 @@ type logWriter struct {
 	wrote       bool
 }
 
-func (l *logWriter) header() {
+// header commits the 200 and flushes it, so curl -N sees the response before the first record.
+func (l *logWriter) header() error {
 	l.w.Header().Set("Content-Type", l.contentType)
 	l.w.WriteHeader(http.StatusOK)
 	l.wrote = true
+
+	if err := http.NewResponseController(l.w).Flush(); err != nil {
+		return fmt.Errorf("flush the header: %w", err)
+	}
+
+	return nil
 }
 
 func (l *logWriter) Write(p []byte) (int, error) {
 	if !l.wrote {
-		l.header()
+		if err := l.header(); err != nil {
+			return 0, err
+		}
 	}
 
 	n, err := l.w.Write(p)
@@ -372,6 +383,11 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 // followLogsPlain is the follow for curl -N: the bytes as they come, and the body ends when the sandbox stops or is removed.
 func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id string) {
 	out := &logWriter{w: w, contentType: plainText}
+	if err := out.header(); err != nil {
+		h.log.Printf("api: logs of sandbox %s: %v", id, err)
+
+		return
+	}
 
 	_, err := h.lifecycle.FollowLogs(r.Context(), id, out)
 
@@ -379,19 +395,8 @@ func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id str
 	if r.Context().Err() != nil {
 		err = nil
 	}
-	if err != nil && out.wrote {
-		h.log.Printf("api: logs of sandbox %s: %v", id, err)
-
-		return
-	}
 	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	if !out.wrote {
-		out.header()
+		h.log.Printf("api: logs of sandbox %s: %v", id, err)
 	}
 }
 
@@ -443,6 +448,11 @@ func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb mod
 // followEgressLogPlain is the follow for curl -N: one JSON record per line, flushed as it lands.
 func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
 	out := &logWriter{w: w, contentType: ndjson}
+	if err := out.header(); err != nil {
+		h.log.Printf("api: egress log of sandbox %s: %v", sb.ID, err)
+
+		return
+	}
 
 	ctx, done := h.untilStopped(r.Context(), sb.ID)
 	defer done()
@@ -466,19 +476,8 @@ func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, s
 	if errors.Is(err, errStopped) || errors.Is(err, egress.ErrSandboxGone) || r.Context().Err() != nil {
 		err = nil
 	}
-	if err != nil && out.wrote {
-		h.log.Printf("api: egress log of sandbox %s: %v", sb.ID, err)
-
-		return
-	}
 	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	if !out.wrote {
-		out.header()
+		h.log.Printf("api: egress log of sandbox %s: %v", sb.ID, err)
 	}
 }
 
