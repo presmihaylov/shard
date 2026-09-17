@@ -62,6 +62,8 @@ GRANT_LINK=""
 # The sandbox the sysbox docker step runs dockerd in (SHARD-90).
 DIND_ID=""
 DIND_LINK=""
+# The sandboxes the stack-feature steps hold right now, so a step that fails mid-flight still gives them back.
+FEATURE_IDS=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
@@ -452,11 +454,11 @@ shard_front() {
 teardown() {
 	local id link
 	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}" ]; then
 		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
-	for id in ${CLONE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
+	for id in ${CLONE_IDS} ${FEATURE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard rm --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
@@ -1118,6 +1120,400 @@ expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
 step "carry stdin into a command"
 GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" -- /bin/cat)
 expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
+
+# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, health, the policy and a live follow.
+# Each is one function that makes its own sandboxes over the socket, asserts, and removes them.
+
+# track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
+track_sandbox() { FEATURE_IDS="${FEATURE_IDS} $1"; }
+untrack_sandbox() {
+	local kept="" held
+	for held in ${FEATURE_IDS}; do [ "${held}" = "$1" ] || kept="${kept} ${held}"; done
+	FEATURE_IDS="${kept}"
+}
+
+# drop_sandbox removes a sandbox a step made and stops tracking it, so the next step starts from a clean host.
+drop_sandbox() {
+	shard rm --force "$1" >/dev/null 2>&1 || fail "rm did not free the feature sandbox $1"
+	untrack_sandbox "$1"
+}
+
+# api_create posts a create body and prints the new record; the query is empty for at once, or ?wait=true.
+api_create() {
+	curl -sS --unix-socket "${SOCKET}" -X POST -H 'Content-Type: application/json' -d "$2" "http://shard/v0/sandboxes$1"
+}
+
+# api_call runs one request and sets REPLY_CODE and REPLY_BODY, so a refusal step reads its status and its body.
+api_call() {
+	local reply
+	reply=$(curl -sS -w $'\n%{http_code}' --unix-socket "${SOCKET}" -X "$1" -H 'Content-Type: application/json' -d "$3" "http://shard$2")
+	REPLY_CODE="${reply##*$'\n'}"
+	REPLY_BODY="${reply%$'\n'*}"
+}
+
+# json_field prints the first value of a top-level JSON string field read from stdin.
+json_field() { grep -om1 "\"$1\": *\"[^\"]*\"" | cut -d'"' -f4; }
+
+# rec_of names the record file of a sandbox, which the daemon tasks write and a step reads.
+rec_of() { printf '%s\n' "${SHARD_ROOT}/sandboxes/$1/sandbox.json"; }
+
+# pending_and_failed_steps drives the async create: a record that is pending before it runs, and a failed one (SHARD-166).
+pending_and_failed_steps() {
+	local body id
+
+	step "create over the API and see it pending, then running"
+	# An uncached image makes the create async, so the record is pending before the pull and the start run.
+	body=$(api_create "" "{\"image\":\"alpine:3.19\",\"command\":[\"/bin/sleep\",\"600\"]}")
+	id=$(json_field id <<<"${body}")
+	[ -n "${id}" ] || fail "the create over the API named no sandbox: ${body}"
+	track_sandbox "${id}"
+	grep -q '"state": *"pending"' <<<"${body}" || fail "an uncached create did not answer pending: ${body}"
+	say "an uncached create answers 201 with a pending record ${id}"
+	body=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}?wait=true")
+	grep -q '"state": *"running"' <<<"${body}" || fail "the pending sandbox never reached running: ${body}"
+	say "a get with wait=true blocks until the pending sandbox is running"
+	drop_sandbox "${id}"
+
+	step "wait on a pending create with wait=true"
+	# A second uncached tag makes the create block through its own pull, so wait=true answers running, not pending.
+	body=$(api_create "?wait=true" "{\"image\":\"alpine:3.18\",\"command\":[\"/bin/sleep\",\"600\"]}")
+	id=$(json_field id <<<"${body}")
+	[ -n "${id}" ] || fail "the create with wait=true named no sandbox: ${body}"
+	track_sandbox "${id}"
+	grep -q '"state": *"running"' <<<"${body}" || fail "a create with wait=true did not answer running: ${body}"
+	say "a create with wait=true blocks through the pull and answers running ${id}"
+	drop_sandbox "${id}"
+
+	step "a bad image lands the sandbox failed with a reason"
+	body=$(api_create "" "{\"image\":\"alpine:e2e-no-such-tag\"}")
+	id=$(json_field id <<<"${body}")
+	[ -n "${id}" ] || fail "the bad-image create named no sandbox: ${body}"
+	track_sandbox "${id}"
+	body=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}?wait=true")
+	grep -q '"state": *"failed"' <<<"${body}" || fail "a bad image did not land the sandbox failed: ${body}"
+	grep -q '"failed_reason": *"[^"]' <<<"${body}" || fail "the failed sandbox carries no reason: ${body}"
+	say "a bad image lands the sandbox failed with a reason"
+
+	step "refuse every verb on a failed sandbox with 409 sandbox_failed"
+	api_call POST "/v0/sandboxes/${id}/start" '{}'
+	[ "${REPLY_CODE}" = "409" ] || fail "start on a failed sandbox answered ${REPLY_CODE}, want 409"
+	grep -q '"code": *"sandbox_failed"' <<<"${REPLY_BODY}" || fail "start on a failed sandbox gave no sandbox_failed: ${REPLY_BODY}"
+	api_call POST "/v0/sandboxes/${id}/exec" '{"command":["/bin/true"]}'
+	[ "${REPLY_CODE}" = "409" ] || fail "exec on a failed sandbox answered ${REPLY_CODE}, want 409"
+	grep -q '"code": *"sandbox_failed"' <<<"${REPLY_BODY}" || fail "exec on a failed sandbox gave no sandbox_failed: ${REPLY_BODY}"
+	say "a failed sandbox refuses start and exec with 409 sandbox_failed"
+
+	step "remove a failed sandbox"
+	shard rm "${id}" >/dev/null || fail "rm did not remove the failed sandbox ${id}"
+	untrack_sandbox "${id}"
+	[ ! -e "${SHARD_ROOT}/sandboxes/${id}" ] || fail "the failed sandbox's record survived the rm"
+	say "rm removes a failed sandbox and its record is gone"
+}
+
+# exec_cap_steps proves the sandbox keeps at most 32 exited execs and never evicts a running one (SHARD-163).
+exec_cap_steps() {
+	local body id long first exec_id n code
+
+	body=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"]}")
+	id=$(json_field id <<<"${body}")
+	[ -n "${id}" ] || fail "the exec-cap sandbox was not created: ${body}"
+	track_sandbox "${id}"
+
+	step "cap the retained execs at 32 and evict the oldest"
+	# A long exec is created first, so the cap that evicts the exited ones must keep this running one.
+	body=$(curl -sS --unix-socket "${SOCKET}" -X POST -H 'Content-Type: application/json' -d '{"command":["/bin/sleep","600"]}' "http://shard/v0/sandboxes/${id}/exec")
+	long=$(json_field exec <<<"${body}")
+	[ -n "${long}" ] || fail "the long exec was not created: ${body}"
+	first=""
+	for _ in $(seq 1 33); do
+		body=$(curl -sS --unix-socket "${SOCKET}" -X POST -H 'Content-Type: application/json' -d '{"command":["/bin/true"]}' "http://shard/v0/sandboxes/${id}/exec")
+		exec_id=$(json_field exec <<<"${body}")
+		[ -n "${exec_id}" ] || fail "one of the short execs was not created: ${body}"
+		[ -n "${first}" ] || first="${exec_id}"
+		curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/exec/${exec_id}?wait=true" >/dev/null
+	done
+	# The cap runs when the last exec exits, so the count settles at 33 a moment after the wait returns.
+	n=0
+	for _ in $(seq 1 50); do
+		n=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/exec" | grep -o '"exec": *"[^"]*"' | wc -l | tr -d ' ')
+		[ "${n}" = "33" ] && break
+		sleep 0.1
+	done
+	# 32 exited plus the one still running is 33, and the oldest exited is the one the cap evicted.
+	expect "${n}" "33" "the sandbox retains 32 exited execs and the one still running"
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/exec/${first}")
+	expect "${code}" "404" "the oldest exited exec was evicted and answers 404"
+	say "the exec cap keeps 32 exited execs and evicts the oldest"
+
+	step "a running exec survives the cap"
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/exec/${long}")
+	expect "${code}" "200" "the running exec is still held after the cap evicted an exited one"
+	body=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/exec/${long}")
+	grep -q '"state": *"running"' <<<"${body}" || fail "the surviving exec is not running: ${body}"
+	say "a running exec is never evicted by the cap"
+	drop_sandbox "${id}"
+}
+
+# health_steps drives the health probe to healthy, to unhealthy, through a flap, and refuses one with no command (SHARD-54).
+health_steps() {
+	local id rec
+
+	step "a command health check reaches healthy"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/true\"],\"interval\":1,\"retries\":2}}" | json_field id)
+	[ -n "${id}" ] || fail "the healthy-probe sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"status": *"healthy"' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"status": *"healthy"' "${rec}" || fail "a passing probe never reached healthy: $(cat "${rec}")"
+	say "a command health check reaches healthy"
+	drop_sandbox "${id}"
+
+	step "a failing probe reaches unhealthy after the retries"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/false\"],\"interval\":1,\"retries\":2}}" | json_field id)
+	[ -n "${id}" ] || fail "the failing-probe sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"status": *"unhealthy"' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"status": *"unhealthy"' "${rec}" || fail "a failing probe never reached unhealthy: $(cat "${rec}")"
+	grep -q '"failures": *[2-9]' "${rec}" || fail "the unhealthy record counts fewer than the 2 retries: $(cat "${rec}")"
+	say "a failing probe reaches unhealthy after the retries it allows"
+	drop_sandbox "${id}"
+
+	step "a flapping probe stays healthy and resets its failures"
+	# The probe fails once and then passes, so the one failure it counted folds back to zero at the next pass.
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/sh\",\"-c\",\"if [ -e /tmp/probed ]; then exit 0; fi; touch /tmp/probed; exit 1\"],\"interval\":1,\"retries\":3}}" | json_field id)
+	[ -n "${id}" ] || fail "the flapping-probe sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"status": *"healthy"' "${rec}" && grep -q '"failures": *0' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"status": *"healthy"' "${rec}" || fail "the flapping probe did not settle healthy: $(cat "${rec}")"
+	grep -q '"failures": *0' "${rec}" || fail "the flapping probe did not reset its failures: $(cat "${rec}")"
+	grep -q '"status": *"unhealthy"' "${rec}" && fail "the flapping probe reached unhealthy on one failure: $(cat "${rec}")"
+	say "a flapping probe stays healthy and resets its failures"
+	drop_sandbox "${id}"
+
+	step "refuse a health check with no command"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"interval\":1}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a health check with no command answered ${REPLY_CODE}, want 400"
+	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
+	grep -q 'health names no command' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing command: ${REPLY_BODY}"
+	say "the API refuses a health check with no command, 400 invalid_request"
+}
+
+# restart_policy_steps drives the supervisor policy: on-failure, always, a clean exit, a bare outlive, and refusals (SHARD-55).
+restart_policy_steps() {
+	local id rec
+
+	step "on-failure restarts on a nonzero exit"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sh\",\"-c\",\"exit 1\"],\"restart\":{\"policy\":\"on-failure\",\"retries\":2}}" | json_field id)
+	[ -n "${id}" ] || fail "the on-failure sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"count": *2' "${rec}" && grep -q '"gave_up": *true' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"count": *2' "${rec}" || fail "on-failure did not restart the entrypoint to its 2 retries: $(cat "${rec}")"
+	grep -q '"gave_up": *true' "${rec}" || fail "on-failure did not give up after its retries: $(cat "${rec}")"
+	say "on-failure restarts the entrypoint on a nonzero exit and gives up at the retries"
+	drop_sandbox "${id}"
+
+	step "always restarts on a clean exit"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sh\",\"-c\",\"exit 0\"],\"restart\":{\"policy\":\"always\"}}" | json_field id)
+	[ -n "${id}" ] || fail "the always sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"count": *[2-9]' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"count": *[2-9]' "${rec}" || fail "always did not restart the entrypoint on a clean exit: $(cat "${rec}")"
+	grep -q '"gave_up": *true' "${rec}" && fail "always gave up, but it never does: $(cat "${rec}")"
+	say "always restarts the entrypoint on a clean exit and never gives up"
+	drop_sandbox "${id}"
+
+	step "on-failure ignores a clean exit"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sh\",\"-c\",\"exit 0\"],\"restart\":{\"policy\":\"on-failure\",\"retries\":2}}" | json_field id)
+	[ -n "${id}" ] || fail "the clean-exit sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	sleep 3
+	grep -q '"count": *0' "${rec}" || fail "on-failure restarted a clean exit: $(cat "${rec}")"
+	grep -q '"state": *"running"' "${rec}" || fail "the sandbox did not outlive its clean entrypoint: $(cat "${rec}")"
+	expect_exec_in "${id}" "alive" "an exec answers after the clean exit" /bin/echo alive
+	say "on-failure ignores a clean exit and the sandbox outlives its entrypoint"
+	drop_sandbox "${id}"
+
+	step "a sandbox outlives its entrypoint"
+	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sh\",\"-c\",\"echo done\"]}" | json_field id)
+	[ -n "${id}" ] || fail "the short-entrypoint sandbox was not created"
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 100); do
+		grep -q '"exit_status"' "${rec}" && break
+		sleep 0.2
+	done
+	grep -q '"state": *"running"' "${rec}" || fail "the sandbox did not stay running after its entrypoint exited: $(cat "${rec}")"
+	grep -q '"exit_status"' "${rec}" || fail "the record noted no exit for the entrypoint that ended: $(cat "${rec}")"
+	expect_exec_in "${id}" "alive" "an exec answers after the entrypoint exited" /bin/echo alive
+	say "a sandbox outlives its entrypoint and still runs an exec"
+	drop_sandbox "${id}"
+
+	step "refuse an unknown policy or retries with policy no"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"sometimes\"}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "an unknown restart policy answered ${REPLY_CODE}, want 400"
+	grep -q 'restart.policy is no, on-failure or always' <<<"${REPLY_BODY}" || fail "the refusal does not name the policies: ${REPLY_BODY}"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"no\",\"retries\":2}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "retries under policy no answered ${REPLY_CODE}, want 400"
+	grep -q 'need a policy that starts again' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing policy: ${REPLY_BODY}"
+	say "the API refuses an unknown policy and retries under policy no, 400 each"
+}
+
+# http_follow_steps proves a live log follow over plain HTTP, and that a dropped follow client is no failure (SHARD-164).
+http_follow_steps() {
+	local id body follow_log follow_headers second_log follow_pid second_pid base target
+
+	step "follow the entrypoint logs live over HTTP"
+	# A looping entrypoint prints a new line several times a second, so a later line proves a live stream, not a replay.
+	body='{"image":"IMAGEREF","command":["/bin/sh","-c","i=0; while true; do echo tick-$i; i=$((i+1)); sleep 0.3; done"]}'
+	id=$(api_create "?wait=true" "${body/IMAGEREF/${IMAGE}}" | json_field id)
+	[ -n "${id}" ] || fail "the log-follow sandbox was not created"
+	track_sandbox "${id}"
+	follow_log=$(mktemp)
+	follow_headers=$(mktemp)
+	curl -sN -D "${follow_headers}" --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/logs?follow=true" >"${follow_log}" 2>&1 &
+	follow_pid=$!
+	# Read a tick that is already out, then wait for one five ticks later, which only a live stream delivers.
+	base=""
+	for _ in $(seq 1 50); do
+		base=$(grep -om1 'tick-[0-9]*' "${follow_log}" 2>/dev/null | cut -d- -f2 || true)
+		[ -n "${base}" ] && break
+		sleep 0.1
+	done
+	[ -n "${base}" ] || fail "the log follow printed no tick while the sandbox ran: $(cat "${follow_log}")"
+	target=$((base + 5))
+	for _ in $(seq 1 50); do
+		grep -q "tick-${target}" "${follow_log}" && break
+		sleep 0.1
+	done
+	kill "${follow_pid}" 2>/dev/null || true
+	wait "${follow_pid}" 2>/dev/null || true
+	grep -q "tick-${target}" "${follow_log}" || fail "the log follow did not stream past tick-${base}: $(cat "${follow_log}")"
+	grep -qi '^content-type: text/plain' "${follow_headers}" || fail "the log follow got '$(cat "${follow_headers}")', want text/plain"
+	say "logs?follow=true streams the entrypoint output live over HTTP"
+	drop_sandbox "${id}"
+
+	step "a dropped follow client is not a failure"
+	# A client that hangs up mid-follow ends its own read and nothing else, so the daemon logs no failure for it.
+	body='{"image":"IMAGEREF","command":["/bin/sh","-c","echo dropped-client-alive; exec /bin/sleep 600"]}'
+	id=$(api_create "?wait=true" "${body/IMAGEREF/${IMAGE}}" | json_field id)
+	[ -n "${id}" ] || fail "the dropped-client sandbox was not created"
+	track_sandbox "${id}"
+	follow_log=$(mktemp)
+	curl -sN --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/logs?follow=true" >"${follow_log}" 2>&1 &
+	follow_pid=$!
+	for _ in $(seq 1 50); do
+		grep -q 'dropped-client-alive' "${follow_log}" && break
+		sleep 0.1
+	done
+	grep -q 'dropped-client-alive' "${follow_log}" || fail "the follow printed nothing before the client dropped: $(cat "${follow_log}")"
+	kill -9 "${follow_pid}" 2>/dev/null || true
+	wait "${follow_pid}" 2>/dev/null || true
+	# Give the daemon a tick to notice the hangup, then prove it logged no failure for this follow.
+	sleep 1
+	grep -q "logs of sandbox ${id}" "${DAEMON_LOG}" && fail "the daemon logged a failure for a client that only hung up: $(grep "logs of sandbox ${id}" "${DAEMON_LOG}")"
+	# A second follow still reads the sandbox, so the dropped client left it whole.
+	second_log=$(mktemp)
+	curl -sN --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${id}/logs?follow=true" >"${second_log}" 2>&1 &
+	second_pid=$!
+	for _ in $(seq 1 50); do
+		grep -q 'dropped-client-alive' "${second_log}" && break
+		sleep 0.1
+	done
+	kill "${second_pid}" 2>/dev/null || true
+	wait "${second_pid}" 2>/dev/null || true
+	grep -q 'dropped-client-alive' "${second_log}" || fail "a second follow after the drop read nothing: $(cat "${second_log}")"
+	say "a dropped follow client is not a failure and the sandbox stays whole"
+	drop_sandbox "${id}"
+}
+
+# OOM_BOMB overruns a 64 MiB bound in 32 tasks, which OOMs a run past the 10 s reset window; memory.high throttles each task to ~128 KiB/s.
+OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s s }'\'' & i=$((i+1)); done; wait'
+# OOM_POLLS bounds the wait for several kills at one 5 s tick each, with their backoff, like the integration test's budget.
+OOM_POLLS="${OOM_POLLS:-360}"
+
+# oom_restart_steps refuses an OOM restart with no bound, brings one back, and asserts the restart cap per provider (SHARD-56). It runs on both providers (SHARD-191).
+oom_restart_steps() {
+	local id rec
+
+	step "refuse restart_on_oom without a memory bound"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart_on_oom\":true}"
+	[ "${REPLY_CODE}" = "400" ] || fail "restart_on_oom with no bound answered ${REPLY_CODE}, want 400"
+	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
+	grep -q 'restart_on_oom needs a memory bound' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing bound: ${REPLY_BODY}"
+	say "the API refuses restart_on_oom with no memory bound, 400 invalid_request"
+
+	step "an OOM-killed sandbox that asked for restart comes back"
+	# The bomb overruns the bound on the first run only, so the sandbox it comes back as sleeps and can be used.
+	id=$(shard create --memory 64 --restart-on-oom "${IMAGE}" -- /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	for _ in $(seq 1 "${OOM_POLLS}"); do
+		grep -q '"oom_restarts": *1' "${rec}" && grep -q '"state": *"running"' "${rec}" && break
+		sleep 1
+	done
+	grep -q '"oom_restarts": *1' "${rec}" || fail "the OOM sandbox never came back once: $(cat "${rec}")"
+	grep -q '"state": *"running"' "${rec}" || fail "the OOM sandbox did not settle running: $(cat "${rec}")"
+	expect_exec_in "${id}" "alive" "the sandbox that came back runs an exec" /bin/echo alive
+	say "an OOM-killed sandbox that asked for restart comes back and runs"
+	drop_sandbox "${id}"
+
+	step "the OOM restart cap: reset on gvisor, spent on sysbox"
+	# The cap outcome differs by death speed, so each provider asserts its own (Pres rules memory.high in tasks.md; that PR changes this step).
+	# gvisor deaths take ~30s under memory.high, past the 10s reset, so the count resets and the cap never spends.
+	# sysbox deaths take ~5s, inside the 10s reset, so the count never resets and the cap spends.
+	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" -- /bin/sh -c "${OOM_BOMB}")
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	if [ "${PROVIDER}" = "gvisor" ]; then
+		marker="sandbox ${id} ran out of memory and the host ended it: started again, 1 of 2"
+		for _ in $(seq 1 "${OOM_POLLS}"); do
+			[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] && break
+			sleep 1
+		done
+		[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] || fail "the capped OOM loop did not come back three times on gvisor: $(cat "${rec}")"
+		grep -q 'are spent' "${rec}" && fail "the capped OOM loop gave up on gvisor, but the reset must keep it unspent: $(cat "${rec}")"
+		grep -q '"state": *"running"' "${rec}" || fail "the capped OOM loop did not settle running on gvisor: $(cat "${rec}")"
+		say "on gvisor the capped OOM loop resets across healthy runs and never spends the limit"
+		drop_sandbox "${id}"
+		return
+	fi
+	for _ in $(seq 1 "${OOM_POLLS}"); do
+		grep -q '"state": *"stopped"' "${rec}" && grep -q 'the 2 starts again the limit allows are spent' "${rec}" && break
+		sleep 1
+	done
+	[ "$(grep -c "sandbox ${id} ran out of memory and the host ended it: started again, 2 of 2" "${DAEMON_LOG}" || true)" -ge 1 ] || fail "the capped OOM loop never reached 2 of 2 on sysbox: $(cat "${rec}")"
+	grep -q '"state": *"stopped"' "${rec}" || fail "the capped OOM sandbox never stopped on sysbox: $(cat "${rec}")"
+	grep -q 'the 2 starts again the limit allows are spent' "${rec}" || fail "the stop names no spent limit on sysbox: $(cat "${rec}")"
+	say "on sysbox the capped OOM loop climbs to 2 of 2, spends the limit, and stops with the reason"
+	drop_sandbox "${id}"
+}
+
+pending_and_failed_steps
+exec_cap_steps
+health_steps
+restart_policy_steps
+http_follow_steps
+oom_restart_steps
 
 # snapshot_steps pause, resume and fork the sandbox, which only a provider that holds snapshots can do.
 snapshot_steps() {
