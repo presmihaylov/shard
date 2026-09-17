@@ -334,6 +334,27 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 	}
 }
 
+// A command the substrate refuses to start writes its own diagnostic to the guest's stderr, but that raw
+// line duplicates the wrapped error, so an attach drops it and answers with the error alone. (SHARD-183)
+func TestAnExecThatCannotStartDropsTheRawError(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	// A start-failure reports no pid, so the buffer never opens and the raw line is held then dropped.
+	l.provider.execNoPID = true
+	l.provider.execErrOut = "executing command /bin/nope: no such file or directory\n"
+	l.provider.execErr = &models.CommandNotStartedError{Sandbox: "sandbox1", Reason: "no such file or directory", Code: 127}
+
+	_, out, errOut, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"/bin/nope"}}, "")
+
+	var notStarted *models.CommandNotStartedError
+	if !errors.As(err, &notStarted) {
+		t.Fatalf("Exec returned %v, want a command that never ran", err)
+	}
+	if out.Len() != 0 || errOut.Len() != 0 {
+		t.Errorf("the client saw stdout %q and stderr %q, want the raw substrate error dropped", out, errOut)
+	}
+}
+
 // The attach names the exec to the client before it replays anything, so a resize reaches the pty by it.
 func TestAttachNamesTheExecBeforeTheReplay(t *testing.T) {
 	r := &recorder{}
