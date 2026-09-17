@@ -55,7 +55,7 @@ func (s *Service) openLogs(ref string) (string, *os.File, error) {
 		return "", nil, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return "", nil, err
 	}
 

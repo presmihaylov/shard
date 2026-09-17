@@ -23,6 +23,8 @@ type fakeLifecycle struct {
 	err error
 
 	created sandbox.CreateRequest
+	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
+	createdID string
 	// copied is the body a fork or a clone sent.
 	copied sandbox.CopyRequest
 	ref    string
@@ -72,7 +74,12 @@ type fakeLifecycle struct {
 func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
 
-	return models.Sandbox{ID: "sandbox1", Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
+	id := f.createdID
+	if id == "" {
+		id = "sandbox1"
+	}
+
+	return models.Sandbox{ID: id, Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
 }
 
 // WaitState records the ref a get with ?wait blocked on, and refuses like any verb.
@@ -375,6 +382,46 @@ func TestCreateAnswers201WithTheRecord(t *testing.T) {
 	}
 	if !bytes.Equal(mustJSON(t, s.verbs.created), mustJSON(t, want)) {
 		t.Errorf("the orchestrator got %+v, want %+v", s.verbs.created, want)
+	}
+}
+
+// A create with ?wait=true blocks until the sandbox leaves pending, then answers the record it settled into.
+func TestCreateWithWaitAnswersTheSettledRecord(t *testing.T) {
+	s := seed(t)
+	settled := create(t, s.repo, "cold", models.StateRunning)
+	s.verbs.createdID = settled.ID
+
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes?wait=true", `{"image":"alpine"}`)
+	if status != http.StatusCreated || got["state"] != "running" {
+		t.Fatalf("POST ?wait answered %d %v, want 201 with the settled record", status, got)
+	}
+	if s.verbs.waited != settled.ID {
+		t.Errorf("the create waited on %q, want the new id %s", s.verbs.waited, settled.ID)
+	}
+}
+
+// A create that never reaches running settles failed, and ?wait answers that, never the pending record.
+func TestCreateWithWaitSurfacesAFailedCreate(t *testing.T) {
+	s := seed(t)
+	settled := create(t, s.repo, "broken", models.StateFailed)
+	s.verbs.createdID = settled.ID
+
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes?wait=true", `{"image":"alpine"}`)
+	if status != http.StatusCreated || got["state"] != "failed" {
+		t.Fatalf("POST ?wait on a failing create answered %d %v, want 201 with the failed record", status, got)
+	}
+}
+
+// The plain create answers at once with the pending record and never blocks on the state leaving pending.
+func TestCreateWithoutWaitDoesNotBlock(t *testing.T) {
+	s := seed(t)
+
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", `{"image":"alpine"}`)
+	if status != http.StatusCreated || got["state"] != "pending" {
+		t.Fatalf("POST answered %d %v, want 201 with the pending record", status, got)
+	}
+	if s.verbs.waited != "" {
+		t.Errorf("a create with no ?wait blocked on %q, want it to answer at once", s.verbs.waited)
 	}
 }
 

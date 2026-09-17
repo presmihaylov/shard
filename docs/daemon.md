@@ -256,8 +256,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   gives everything back and answers 500. An uncached image makes the record `pending` and answers
   before the download: the daemon pulls, builds and starts behind it, and the record lands `running`
   or `failed` with a one-line `failed_reason`, so a background pull or start that fails is read from
-  the record, not an error. 400 when the body does not decode or a field does not validate, or when
-  it names a secret or a policy the host does not hold.
+  the record, not an error. With `?wait=true` the create holds until the record leaves `pending` and
+  answers the `running` or `failed` it reached, so a caller reads the settled record without a poll;
+  the plain create answers at once. 400 when the body does not decode or a field does not validate, or
+  when it names a secret or a policy the host does not hold.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   ran again. 404 when nothing has the reference; 409 when the sandbox is not stopped.
 - `POST /v0/sandboxes/{id}/stop` takes `{"grace": <seconds>}`, the default being 10, waits the grace
