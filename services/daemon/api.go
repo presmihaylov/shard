@@ -277,13 +277,22 @@ func (l *lifecycle) Clone(ctx context.Context, ref string, req sandbox.CopyReque
 	return svc.Clone(ctx, ref, req)
 }
 
-func (l *lifecycle) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error) {
+func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error) {
+	svc, err := l.service()
+	if err != nil {
+		return sandbox.ExecTicket{}, err
+	}
+
+	return svc.CreateExec(ctx, ref, req)
+}
+
+func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
 
-	return svc.Exec(ctx, ref, req, streams)
+	return svc.Attach(ctx, ref, execID, streams)
 }
 
 func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error {
@@ -295,13 +304,22 @@ func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size san
 	return svc.ResizeExec(ctx, ref, execID, size)
 }
 
-func (l *lifecycle) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
+func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.Logs(ctx, ref, follow, w)
+	return svc.Logs(ctx, ref, w)
+}
+
+func (l *lifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error) {
+	svc, err := l.service()
+	if err != nil {
+		return "", err
+	}
+
+	return svc.FollowLogs(ctx, ref, w)
 }
 
 // proxyTask runs the egress proxy every fronted sandbox's web traffic is turned to, on the bridge gateway.

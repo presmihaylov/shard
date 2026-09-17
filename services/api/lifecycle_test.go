@@ -37,6 +37,8 @@ type fakeLifecycle struct {
 	exec   sandbox.ExecRequest
 	input  string
 	execID string
+	// attachedExec is the exec the client attached to, and resizedExec the one it resized.
+	attachedExec string
 	// out and errOut are what the command writes on each stream, and exit how it ended.
 	out    string
 	errOut string
@@ -46,10 +48,13 @@ type fakeLifecycle struct {
 	resizedExec string
 	size        sandbox.TerminalSize
 
-	// lines is what the output holds, and stops is what ends a follow.
+	// lines is what the output holds, and stops is what ends a follow, with reason as why.
 	lines    []string
 	followed bool
 	stops    chan struct{}
+	reason   string
+	// ended is closed when a verb that waited on stops or on the client returns.
+	ended chan struct{}
 }
 
 func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
@@ -124,16 +129,27 @@ func (f *fakeLifecycle) Clone(_ context.Context, ref string, req sandbox.CopyReq
 	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
 }
 
-// Exec answers the client the way the orchestrator does: it names the exec, writes, and then exits.
-func (f *fakeLifecycle) Exec(_ context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error) {
+// CreateExec names the exec the way the orchestrator does, and refuses like any verb.
+func (f *fakeLifecycle) CreateExec(_ context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error) {
 	f.ref, f.exec = ref, req
+
+	if f.err != nil {
+		return sandbox.ExecTicket{}, f.err
+	}
+
+	return sandbox.ExecTicket{ID: f.execID, ExpiresAt: time.Date(2026, 9, 16, 8, 1, 0, 0, time.UTC)}, nil
+}
+
+// Attach answers the client the way the orchestrator does: it starts the session, writes, and then exits.
+func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+	f.ref, f.attachedExec = ref, execID
 
 	if f.err != nil {
 		return models.ExitStatus{}, f.err
 	}
 
 	if streams.Started != nil {
-		if err := streams.Started(f.execID); err != nil {
+		if err := streams.Started(execID); err != nil {
 			return models.ExitStatus{}, err
 		}
 	}
@@ -154,7 +170,19 @@ func (f *fakeLifecycle) Exec(_ context.Context, ref string, req sandbox.ExecRequ
 		}
 	}
 
-	if streams.Stdin != nil {
+	// A command that waits ends the way a cancelled exec does: when the client goes away.
+	if f.stops != nil {
+		defer close(f.ended)
+
+		select {
+		case <-f.stops:
+		case <-ctx.Done():
+			return models.ExitStatus{}, ctx.Err()
+		}
+	}
+
+	// A command with no stdin reads none, the way the orchestrator drains what such a client types.
+	if f.exec.Stdin && streams.Stdin != nil {
 		read, err := io.ReadAll(streams.Stdin)
 		if err != nil {
 			return models.ExitStatus{}, err
@@ -171,24 +199,44 @@ func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size s
 	return f.err
 }
 
-func (f *fakeLifecycle) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
-	f.ref, f.followed = ref, follow
+func (f *fakeLifecycle) Logs(_ context.Context, ref string, w io.Writer) error {
+	f.ref = ref
 
 	if f.err != nil {
 		return f.err
 	}
 
-	for _, line := range f.lines {
-		if _, err := io.WriteString(w, line); err != nil {
-			return err
-		}
+	return f.write(w)
+}
+
+// FollowLogs ends when the sandbox stops; this one ends when the test says the sandbox has, or the client left.
+func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error) {
+	f.ref, f.followed = ref, true
+
+	if f.err != nil {
+		return "", f.err
+	}
+	if err := f.write(w); err != nil {
+		return "", err
 	}
 
-	// A follow ends when the sandbox stops; this one ends when the test says the sandbox has.
-	if follow && f.stops != nil {
+	if f.stops != nil {
+		defer close(f.ended)
+
 		select {
 		case <-f.stops:
 		case <-ctx.Done():
+			return "", nil
+		}
+	}
+
+	return f.reason, nil
+}
+
+func (f *fakeLifecycle) write(w io.Writer) error {
+	for _, line := range f.lines {
+		if _, err := io.WriteString(w, line); err != nil {
+			return err
 		}
 	}
 

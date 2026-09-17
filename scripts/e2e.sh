@@ -911,6 +911,10 @@ CODE=0
 shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
 
+step "carry stdin into a command"
+GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" -- /bin/cat)
+expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
+
 # snapshot_steps pause, resume and fork the sandbox, which only a provider that holds snapshots can do.
 snapshot_steps() {
 	step "pause the sandbox"

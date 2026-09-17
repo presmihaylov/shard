@@ -3,6 +3,7 @@ module github.com/presmihaylov/shard
 go 1.26.6
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/v2 v2.3.4
 	github.com/google/go-containerregistry v0.21.9
 	github.com/opencontainers/runtime-spec v1.3.0

@@ -30,9 +30,11 @@ type Lifecycle interface {
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams sandbox.Streams) (models.ExitStatus, error)
+	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (sandbox.ExecTicket, error)
+	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error)
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
-	Logs(ctx context.Context, ref string, follow bool, w io.Writer) error
+	Logs(ctx context.Context, ref string, w io.Writer) error
+	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -106,7 +108,8 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	mux.HandleFunc("POST /v0/sandboxes/{id}/resume", h.resumeSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/fork", h.forkSandbox)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/clone", h.cloneSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.execSandbox)
+	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.createExec)
+	mux.HandleFunc("GET /v0/sandboxes/{id}/exec/{exec}", h.attachExec)
 	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
 	mux.HandleFunc("GET /v0/sandboxes/{id}/egress-log", h.sandboxEgressLog)
@@ -426,10 +429,13 @@ func classify(err error) (int, models.Code) {
 	var state *sandbox.StateError
 	var unavailable *sandbox.UnavailableError
 	var held *sandbox.HeldError
+	var attached *sandbox.AttachedError
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request):
 		return http.StatusBadRequest, models.CodeInvalidRequest
+	case errors.Is(err, ErrWebSocketRequired):
+		return http.StatusBadRequest, models.CodeWebSocketRequired
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
 		return http.StatusNotFound, models.CodeNotFound
@@ -437,7 +443,7 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, state.Code
 	case errors.As(err, &unavailable):
 		return http.StatusConflict, models.CodeSandboxNotRunning
-	case errors.As(err, &held):
+	case errors.As(err, &held), errors.As(err, &attached):
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported

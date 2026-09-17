@@ -108,7 +108,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sand
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/pause
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/resume
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web-2"}' http://localhost/v0/sandboxes/<id or name>/fork
-curl --unix-socket /var/lib/shard/shard.sock -N 'http://localhost/v0/sandboxes/<id or name>/logs?follow=true'
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/logs
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/egress-log
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -163,22 +164,29 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   copy of the source's files. 400 as fork; 404; 409 when the source is still up.
 
 - `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
-  "size": {"rows", "cols"}}` with `Connection: Upgrade` and `Upgrade: tcp`, and answers 101 with
-  `X-Shard-Exec-Id: <exec id>`. Everything after the 101 is frames, both ways. 400 for a body that
-  does not decode or a request that names no command; 404; 409 when no command can run in the
-  sandbox. Every refusal comes before the 101, so it is a status and a JSON body like any other.
+  "size": {"rows", "cols"}}`, validates it and answers 201 with `{"exec": "<exec id>", "expires_at"}`.
+  Nothing runs yet. 400 for a body that does not decode or a request that names no command; 404; 409
+  when no command can run in the sandbox. An exec nobody attaches within 60 s is dropped.
+- `GET /v0/sandboxes/{id}/exec/{exec-id}` with the WebSocket handshake answers 101 and starts the
+  command; the messages are the streams below. 400 `websocket_required` without the handshake; 404
+  when the exec expired, ended or belongs to another sandbox; 409 `in_use` for a second attach.
+  Every refusal comes before the 101, so it is a status and a JSON body like any other.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
-  that exec has ended or belongs to another sandbox. Only a `tty` exec has a terminal to resize.
+  that exec is not attached, has ended or belongs to another sandbox. Only a `tty` exec has a
+  terminal to resize.
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
-  entrypoint wrote. With `?follow=true` it streams and flushes every write, and ends when the
-  sandbox stops or the client goes away. 404; 400 for a `follow` that is not a boolean.
+  entrypoint wrote. 404; 400 for a `follow` that is not a boolean.
+- `GET /v0/sandboxes/{id}/logs?follow=true` is a WebSocket: binary messages, the log bytes on stream 1,
+  then `{"reason": "stopped"|"removed"}` on stream 3 when the sandbox is gone and the daemon closes
+  with 1000, or the failure on stream 5. 404 before the 101; 400 `websocket_required` without the
+  handshake. `curl -N` no longer follows a log; `shard logs -f` does.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
   array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
   404. `shard logs --egress` prints one record per line.
-- `GET /v0/sandboxes/{id}/egress-log?follow=true` answers 101 and takes the connection over, like an
-  exec: one record per stdout frame, and the reason the follow ended on the exit frame. A removed
-  sandbox ends it that way; a failure of the follow goes on the error frame. 404 before the 101; 400
-  for a `follow` that is not a boolean.
+- `GET /v0/sandboxes/{id}/egress-log?follow=true` is a WebSocket: text messages, one JSON record each,
+  live. A removed sandbox ends it with close 1000 and the reason as the close text; a failure of the
+  follow is close 1011 with the error. 404 before the 101; 400 `websocket_required` without the
+  handshake.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -221,12 +229,15 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `{"removed": [...], "warnings": [...]}`. It refuses with 500 rather than guess when a record is
   unreadable, because an image a sandbox needs would be gone.
 
-A frame is an 8-byte header and its payload: one byte of stream, three zero bytes, then the payload
-length as a 4-byte big-endian number. A payload is at most 1 MiB, and a longer write goes as several
-frames. The client sends stream 0 (stdin) and 4 (stdin closed); the daemon sends 1 (stdout), 2
-(stderr), 5 (a failure of the daemon's own) and 3 (exit), whose payload is the exit code in decimal.
-The exit frame ends the session, with a terminal or without one. A `tty` exec carries the guest's
-terminal on stream 1 alone, because a terminal has no second stream to keep apart.
+A stream is a WebSocket (RFC 6455) on the same route, opened with the standard handshake. Every
+refusal comes before the 101 as a status and a JSON body. An exec carries binary messages whose
+first byte is the stream and the rest the payload: the client sends 0 (stdin) and 4 (stdin closed,
+empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"error"` when
+the command never ran) and 5 (a failure of the daemon's own, `{"error", "code"}` like an error
+body). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
+session and the daemon closes with 1000; a client that closes first kills the command. A `tty` exec
+carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
+apart. Ping and pong are the standard ones.
 
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb the
 provider does not claim is a 409 too: `provider <name> does not support <verb> on this host`.
@@ -244,7 +255,8 @@ Every error body is `{"error": "<message>", "code": "<code>"}`: `error` is the l
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_snapshot` | 409 | resume or fork when the record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
-| `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; the body adds `"holders": [ids]` |
+| `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; the body adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
+| `websocket_required` | 400 | `?follow=true` or an exec attach without the WebSocket handshake |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes the body into `*client.APIError`, with `Status`, `Code`, `Message` and
@@ -256,9 +268,9 @@ The typed side of these routes is `services/client`: `Version`, `ListSandboxes`,
 `CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`, `PauseSandbox`, `ResumeSandbox`,
 `ForkSandbox`, `CloneSandbox`, `Exec`, `ResizeExec`, `Logs`, `ListPolicies`, `GetPolicy`,
 `SetPolicy`, `RemovePolicy`, `ListSecrets`, `SetSecret`, `RemoveSecret`, `ListImages`, `PullImage`,
-`RemoveImage` and `PruneImages`, hand-written over the socket. `Exec` dials the socket, writes the request itself and reads the 101,
-because `net/http` gives no connection back; `Logs` holds its stream open for as long as the follow
-lasts. Neither takes the 30 s deadline the answered-in-full calls take.
+`RemoveImage` and `PruneImages`, hand-written over the socket. `Exec` creates the exec and then
+opens the WebSocket over the same socket; `Logs` with follow and `FollowEgressLog` hold theirs open
+for as long as the follow lasts. A stream takes no deadline; the create before it does.
 The CLI verbs call it and nothing else. Each call that answers in full gets 30 s, per request and
 not on the `http.Client`; a daemon that accepts and never answers fails as `GET <route> on <socket>:
 no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside it has none the

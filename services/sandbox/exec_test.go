@@ -6,13 +6,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// execOf is one exec over the fakes, with the streams a test reads back.
+// execOf is one exec over the fakes, created and then attached, with the streams a test reads back.
 func execOf(t *testing.T, l layers, svc *sandbox.Service, ref string, req sandbox.ExecRequest, stdin string) (models.ExitStatus, *bytes.Buffer, *bytes.Buffer, error) {
 	t.Helper()
 
@@ -21,11 +22,129 @@ func execOf(t *testing.T, l layers, svc *sandbox.Service, ref string, req sandbo
 	streams := sandbox.Streams{Stdout: &out, Stderr: &errOut}
 	if stdin != "" {
 		streams.Stdin = strings.NewReader(stdin)
+		req.Stdin = true
 	}
 
-	status, err := svc.Exec(t.Context(), ref, req, streams)
+	ticket, err := svc.CreateExec(t.Context(), ref, req)
+	if err != nil {
+		return models.ExitStatus{}, &out, &errOut, err
+	}
+
+	status, err := svc.Attach(t.Context(), ref, ticket.ID, streams)
 
 	return status, &out, &errOut, err
+}
+
+// attach is the second step alone, for a test that holds the ticket itself.
+func attach(t *testing.T, svc *sandbox.Service, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+	t.Helper()
+
+	return svc.Attach(t.Context(), ref, execID, streams)
+}
+
+func TestCreateExecNamesTheExecAndWhenItExpires(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	before := time.Now()
+
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	if ticket.ID == "" {
+		t.Fatal("the exec was never named")
+	}
+	if ticket.ExpiresAt.Location() != time.UTC || ticket.ExpiresAt.Nanosecond() != 0 {
+		t.Errorf("expires_at = %v, want a whole second in UTC", ticket.ExpiresAt)
+	}
+	if got := ticket.ExpiresAt.Sub(before); got < sandbox.DefaultExecExpiry-2*time.Second || got > sandbox.DefaultExecExpiry+time.Second {
+		t.Errorf("the exec expires in %s, want about %s", got, sandbox.DefaultExecExpiry)
+	}
+	if slices.Contains(r.calls, "provider.Exec") {
+		t.Error("the create reached the provider, and nothing runs before the attach")
+	}
+}
+
+// Nobody attached in time, so the exec is gone and the attach finds nothing.
+func TestAnExecNobodyAttachesExpires(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.ExecExpiry = 20 * time.Millisecond })
+
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
+		if errors.Is(err, sandboxstate.ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the exec never expired: the attach returned %v", err)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := svc.ResizeExec(t.Context(), "sandbox1", ticket.ID, sandbox.TerminalSize{Rows: 24, Cols: 80}); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("a resize of the expired exec returned %v, want an exec that is not found", err)
+	}
+}
+
+func TestAttachRefusesAnExecNobodyCreated(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+
+	_, err := attach(t, svc, "sandbox1", "1a2b3c4d5e6f7a8b", sandbox.Streams{})
+	if !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("Attach returned %v, want an exec that is not found", err)
+	}
+	if slices.Contains(r.calls, "provider.Exec") {
+		t.Error("the attach reached the provider for an exec nobody created")
+	}
+}
+
+// One attach per exec: the second finds it taken and is told to create another.
+func TestAttachRefusesASecondAttach(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execBegan = make(chan struct{})
+	l.provider.execWaits = make(chan struct{})
+
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
+		first <- err
+	}()
+
+	<-l.provider.execBegan
+
+	_, err = attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{})
+
+	var attached *sandbox.AttachedError
+	if !errors.As(err, &attached) || attached.ID != ticket.ID {
+		t.Errorf("the second attach returned %v, want the exec named as attached", err)
+	}
+
+	close(l.provider.execWaits)
+
+	if err := <-first; err != nil {
+		t.Errorf("the first attach returned %v", err)
+	}
+
+	// The exec is over, so a third attach finds nothing and not a session in use.
+	if _, err := attach(t, svc, "sandbox1", ticket.ID, sandbox.Streams{}); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Errorf("an attach after the end returned %v, want an exec that is not found", err)
+	}
 }
 
 func TestExecRunsTheCommandAndReportsItsExitStatus(t *testing.T) {
@@ -194,6 +313,11 @@ func TestExecNamesTheSessionBeforeItRuns(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
 
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
 	var named string
 	streams := sandbox.Streams{Started: func(execID string) error {
 		named = execID
@@ -201,11 +325,11 @@ func TestExecNamesTheSessionBeforeItRuns(t *testing.T) {
 		return nil
 	}}
 
-	if _, err := svc.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, streams); err != nil {
-		t.Fatalf("Exec: %v", err)
+	if _, err := attach(t, svc, "sandbox1", ticket.ID, streams); err != nil {
+		t.Fatalf("Attach: %v", err)
 	}
-	if named == "" {
-		t.Fatal("the exec was never named")
+	if named != ticket.ID {
+		t.Fatalf("the exec was named %q, want %s", named, ticket.ID)
 	}
 	if l.provider.execID != "sandbox1" {
 		t.Errorf("the provider was given id %q, want sandbox1", l.provider.execID)
@@ -217,17 +341,22 @@ func TestExecEndsWhenTheClientCannotBeAnswered(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, running())
 
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
 	streams := sandbox.Streams{Started: func(string) error { return errors.New("the client is gone") }}
 
-	if _, err := svc.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, streams); err == nil {
-		t.Fatal("Exec ran a command nobody was left to answer")
+	if _, err := attach(t, svc, "sandbox1", ticket.ID, streams); err == nil {
+		t.Fatal("Attach ran a command nobody was left to answer")
 	}
 	if slices.Contains(r.calls, "provider.Exec") {
 		t.Error("exec reached the provider for a client that had gone")
 	}
 }
 
-// A resize of an exec that has ended is a resize of nothing, and it says so rather than pretending.
+// A resize of an exec that has ended, or has no terminal yet, is a resize of nothing, and it says so.
 func TestResizeExecRefusesAnExecNobodyIsRunning(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, running())
@@ -235,5 +364,15 @@ func TestResizeExecRefusesAnExecNobodyIsRunning(t *testing.T) {
 	err := svc.ResizeExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b", sandbox.TerminalSize{Rows: 24, Cols: 80})
 	if !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Fatalf("ResizeExec returned %v, want an exec that is not found", err)
+	}
+
+	ticket, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}, TTY: true})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	err = svc.ResizeExec(t.Context(), "sandbox1", ticket.ID, sandbox.TerminalSize{Rows: 24, Cols: 80})
+	if !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("ResizeExec before the attach returned %v, want an exec that is not found", err)
 	}
 }

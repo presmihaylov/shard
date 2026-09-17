@@ -48,7 +48,7 @@ func TestLogsPrintsWhatTheEntrypointWrote(t *testing.T) {
 
 	svc, _, _ := logsOf(t, &recorder{}, running(), "hello\nworld\n")
 
-	if err := svc.Logs(t.Context(), "sandbox1", false, &out); err != nil {
+	if err := svc.Logs(t.Context(), "sandbox1", &out); err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 	if out.String() != "hello\nworld\n" {
@@ -64,7 +64,7 @@ func TestLogsReadsAStoppedSandbox(t *testing.T) {
 	sb.State = models.StateStopped
 	svc, _, _ := logsOf(t, &recorder{}, sb, "done\n")
 
-	if err := svc.Logs(t.Context(), "sandbox1", false, &out); err != nil {
+	if err := svc.Logs(t.Context(), "sandbox1", &out); err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 	if out.String() != "done\n" {
@@ -80,7 +80,7 @@ func TestLogsTakesAName(t *testing.T) {
 	sb.Name = "web"
 	svc, _, _ := logsOf(t, r, sb, "named\n")
 
-	if err := svc.Logs(t.Context(), "web", false, &out); err != nil {
+	if err := svc.Logs(t.Context(), "web", &out); err != nil {
 		t.Fatalf("Logs of a name: %v", err)
 	}
 	if out.String() != "named\n" {
@@ -97,25 +97,46 @@ func TestLogsRefusesAnIDThatNeverExisted(t *testing.T) {
 	svc, l, _ := logsOf(t, &recorder{}, running(), "")
 	l.repo.missing = true
 
-	err := svc.Logs(t.Context(), "sandbox1", false, &out)
+	err := svc.Logs(t.Context(), "sandbox1", &out)
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
 		t.Errorf("Logs returned %v, want the id named", err)
 	}
 }
 
-// A follow drains what arrives after it started, and ends on its own once the sandbox is gone.
-func TestFollowDrainsThenEndsWhenTheSandboxIsGone(t *testing.T) {
+// A follow drains what arrives after it started, and ends on its own once the sandbox has stopped.
+func TestFollowDrainsThenEndsWhenTheSandboxStops(t *testing.T) {
 	var out bytes.Buffer
 
 	r := &recorder{}
 	svc, l, path := logsOf(t, r, running(), "first\n")
 	l.provider.exits = func() { appendTo(t, path, "second\n") }
 
-	if err := svc.Logs(t.Context(), "sandbox1", true, &out); err != nil {
-		t.Fatalf("Logs -f: %v", err)
+	reason, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	if err != nil {
+		t.Fatalf("FollowLogs: %v", err)
 	}
 	if out.String() != "first\nsecond\n" {
-		t.Errorf("Logs -f printed %q, want both lines", out.String())
+		t.Errorf("FollowLogs printed %q, want both lines", out.String())
+	}
+	if reason != sandbox.LogsStopped {
+		t.Errorf("the follow ended with %q, want %s", reason, sandbox.LogsStopped)
+	}
+}
+
+// A sandbox removed under the follow ends it too, and the reason tells the client which it was.
+func TestFollowSaysWhenTheSandboxWasRemoved(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	svc, l, _ := logsOf(t, r, running(), "gone\n")
+	l.provider.exits = func() { l.repo.missing = true }
+
+	reason, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	if err != nil {
+		t.Fatalf("FollowLogs: %v", err)
+	}
+	if reason != sandbox.LogsRemoved {
+		t.Errorf("the follow ended with %q, want %s", reason, sandbox.LogsRemoved)
 	}
 }
 
@@ -128,11 +149,12 @@ func TestFollowLeavesOnAnInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := svc.Logs(ctx, "sandbox1", true, &out); err != nil {
-		t.Fatalf("Logs -f: %v", err)
+	reason, err := svc.FollowLogs(ctx, "sandbox1", &out)
+	if err != nil {
+		t.Fatalf("FollowLogs: %v", err)
 	}
-	if out.String() != "up\n" {
-		t.Errorf("Logs -f printed %q", out.String())
+	if out.String() != "up\n" || reason != "" {
+		t.Errorf("FollowLogs printed %q and ended with %q, want the line and no reason", out.String(), reason)
 	}
 }
 
@@ -142,7 +164,7 @@ func TestFollowReportsASubstrateItCannotAsk(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Status"}}
 	svc, _, _ := logsOf(t, r, running(), "")
 
-	if err := svc.Logs(t.Context(), "sandbox1", true, &out); err == nil {
-		t.Fatal("Logs -f returned no error for a substrate it could not ask")
+	if _, err := svc.FollowLogs(t.Context(), "sandbox1", &out); err == nil {
+		t.Fatal("FollowLogs returned no error for a substrate it could not ask")
 	}
 }
