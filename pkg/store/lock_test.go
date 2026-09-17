@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func lockPath(t *testing.T) string {
@@ -61,6 +62,60 @@ func TestTryAcquireReportsAHeldLock(t *testing.T) {
 	}
 
 	if err := third.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+}
+
+func TestAcquireWaitsForARelease(t *testing.T) {
+	path := lockPath(t)
+
+	first, err := TryAcquire(path, 0o600)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+
+	won := make(chan *Lock, 1)
+	go func() {
+		l, err := Acquire(path, 0o600, 2*time.Second)
+		if err != nil {
+			t.Errorf("Acquire: %v", err)
+		}
+		won <- l
+	}()
+
+	// The waiter must not win while the first holder still holds the lock.
+	select {
+	case <-won:
+		t.Fatal("Acquire won a lock another holder still held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	second := <-won
+	if second == nil {
+		t.Fatal("Acquire never won the lock after the release")
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("Release the second lock: %v", err)
+	}
+}
+
+func TestAcquireTimesOutOnAHeldLock(t *testing.T) {
+	path := lockPath(t)
+
+	first, err := TryAcquire(path, 0o600)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+
+	if _, err := Acquire(path, 0o600, 20*time.Millisecond); err == nil {
+		t.Fatal("Acquire won a lock that was held for its whole timeout")
+	}
+
+	if err := first.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 }

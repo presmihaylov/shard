@@ -540,6 +540,10 @@ The front reloads the ledger when its size or its modification time changes, so 
 effect on the next request with no restart. A ledger the front cannot read at start stops it from
 starting, and a ledger that vanishes while the front runs turns every request into a `401`.
 
+`mint` and `revoke` take an advisory lock on the ledger, at `serve.tokens.lock` beside it, so
+parallel revokes and a mint that races a revoke never lose a record. The front only reads, so it
+takes no lock.
+
 **This is a deliberate deviation from dockerd and hypeman, which bind TCP themselves.** The shard
 daemon is root and owns the sandboxes, so the network-facing process is a separate and unprivileged
 one. It runs from its own unit, `packaging/systemd/shard-serve.service`, off unless it is installed

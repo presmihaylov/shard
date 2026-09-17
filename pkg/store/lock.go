@@ -7,7 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
+
+// lockRetry is how long Acquire waits between two attempts on a held lock.
+const lockRetry = 5 * time.Millisecond
 
 // Lock is an advisory flock. The kernel holds it against the open file, so a crash always drops it.
 type Lock struct {
@@ -35,6 +39,26 @@ func TryAcquire(path string, perm fs.FileMode) (*Lock, error) {
 	}
 
 	return &Lock{f: f}, nil
+}
+
+// Acquire takes path exclusively, retrying until it wins the lock or timeout elapses.
+// It reports a clear error when the wait expires, so a stuck holder never blocks a caller forever.
+func Acquire(path string, perm fs.FileMode, timeout time.Duration) (*Lock, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		l, err := TryAcquire(path, perm)
+		if err != nil {
+			return nil, err
+		}
+		if l != nil {
+			return l, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("lock %s: still held after %s", path, timeout)
+		}
+
+		time.Sleep(lockRetry)
+	}
 }
 
 // Release drops the lock. Call it once; a second call reports the closed file.

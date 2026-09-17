@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -894,6 +895,88 @@ func TestRevokeMarksTokensInTheLedger(t *testing.T) {
 
 	if found, err := RevokeToken(path, "no-such-id"); err != nil || found != 0 {
 		t.Errorf("RevokeToken on an unknown id matched %d (err %v), want 0 and no error", found, err)
+	}
+}
+
+// Two concurrent revokes of different tokens both persist; without the ledger lock the later rewrite drops the earlier flip.
+func TestConcurrentRevokesBothPersist(t *testing.T) {
+	for iteration := range 50 {
+		path := filepath.Join(t.TempDir(), TokensFileName)
+		for _, sub := range []string{"alice", "bob"} {
+			if _, err := IssueToken([]byte(testSecret), path, sub, nil, time.Hour); err != nil {
+				t.Fatalf("IssueToken: %v", err)
+			}
+		}
+
+		infos, err := ListTokens(path)
+		if err != nil {
+			t.Fatalf("ListTokens: %v", err)
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for _, info := range infos {
+			id := info.ID
+			wg.Go(func() {
+				<-start
+				if _, err := RevokeToken(path, id); err != nil {
+					t.Errorf("RevokeToken: %v", err)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		after, err := ListTokens(path)
+		if err != nil {
+			t.Fatalf("ListTokens after the revokes: %v", err)
+		}
+		for _, info := range after {
+			if info.Status != StatusRevoked {
+				t.Fatalf("iteration %d: token %s of %s lists as %s, want revoked", iteration, info.ID, info.Subject, info.Status)
+			}
+		}
+	}
+}
+
+// A mint concurrent with a revoke keeps both records; without the ledger lock the revoke's rewrite drops the appended token.
+func TestConcurrentMintAndRevokeLoseNoRecord(t *testing.T) {
+	for iteration := range 50 {
+		path := filepath.Join(t.TempDir(), TokensFileName)
+		if _, err := IssueToken([]byte(testSecret), path, "alice", nil, time.Hour); err != nil {
+			t.Fatalf("IssueToken: %v", err)
+		}
+
+		infos, err := ListTokens(path)
+		if err != nil {
+			t.Fatalf("ListTokens: %v", err)
+		}
+		alice := infos[0].ID
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			<-start
+			if _, err := RevokeToken(path, alice); err != nil {
+				t.Errorf("RevokeToken: %v", err)
+			}
+		})
+		wg.Go(func() {
+			<-start
+			if _, err := IssueToken([]byte(testSecret), path, "bob", nil, time.Hour); err != nil {
+				t.Errorf("IssueToken: %v", err)
+			}
+		})
+		close(start)
+		wg.Wait()
+
+		after, err := ListTokens(path)
+		if err != nil {
+			t.Fatalf("ListTokens after the mint and revoke: %v", err)
+		}
+		if len(after) != 2 {
+			t.Fatalf("iteration %d: the ledger holds %d tokens, want 2; the mint was lost", iteration, len(after))
+		}
 	}
 }
 

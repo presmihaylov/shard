@@ -19,6 +19,9 @@ import (
 // TokensFileName is the ledger the front reads and mint appends to, beside the secret file.
 const TokensFileName = "serve.tokens"
 
+// ledgerLockWait bounds how long mint or revoke waits for the ledger lock before it gives up with an error.
+const ledgerLockWait = 5 * time.Second
+
 // ledgerEntry is one minted token's record: the front matches a request's jti against it, and revoke flips Revoked.
 type ledgerEntry struct {
 	JTI       string     `json:"jti"`
@@ -118,32 +121,52 @@ func RevokeSubject(path, sub string) (int, error) {
 }
 
 // revoke flips every record match reports and not yet revoked, then rewrites the ledger, and answers the match count.
+// The ledger lock serializes the read-modify-write against a concurrent mint or revoke, so no record is lost.
 func revoke(path string, match func(ledgerEntry) bool) (int, error) {
-	entries, err := readEntries(path)
+	found := 0
+	err := underLedgerLock(path, func() error {
+		entries, err := readEntries(path)
+		if err != nil {
+			return err
+		}
+
+		flipped := 0
+		for i := range entries {
+			if !match(entries[i]) {
+				continue
+			}
+			found++
+			if !entries[i].Revoked {
+				entries[i].Revoked = true
+				flipped++
+			}
+		}
+		if flipped == 0 {
+			return nil
+		}
+
+		return writeEntries(path, entries)
+	})
+
+	return found, err
+}
+
+// ledgerLockPath is the advisory lock beside the ledger; it survives revoke's atomic rewrite, which the ledger file does not.
+func ledgerLockPath(path string) string {
+	return path + ".lock"
+}
+
+// underLedgerLock runs fn while holding the ledger's advisory lock, so a mint and a revoke never interleave their read-modify-write.
+func underLedgerLock(path string, fn func() error) (err error) {
+	lock, err := store.Acquire(ledgerLockPath(path), 0o600, ledgerLockWait)
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("lock the ledger %s: %w", path, err)
 	}
+	defer func() {
+		err = errors.Join(err, lock.Release())
+	}()
 
-	found, flipped := 0, 0
-	for i := range entries {
-		if !match(entries[i]) {
-			continue
-		}
-		found++
-		if !entries[i].Revoked {
-			entries[i].Revoked = true
-			flipped++
-		}
-	}
-	if flipped == 0 {
-		return found, nil
-	}
-
-	if err := writeEntries(path, entries); err != nil {
-		return found, err
-	}
-
-	return found, nil
+	return fn()
 }
 
 func statusOf(e ledgerEntry, now time.Time) TokenStatus {
@@ -168,31 +191,34 @@ func newJTI() (string, error) {
 }
 
 // appendEntry adds one record to the ledger, and creates it 0640 when absent, so every minted token is recorded.
+// It holds the ledger lock, so a concurrent revoke's rewrite never drops the appended record.
 func appendEntry(path string, e ledgerEntry) error {
-	if err := checkTokensMode(path); err != nil {
-		return err
-	}
+	return underLedgerLock(path, func() error {
+		if err := checkTokensMode(path); err != nil {
+			return err
+		}
 
-	line, err := json.Marshal(e)
-	if err != nil {
-		return fmt.Errorf("encode the ledger record: %w", err)
-	}
+		line, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("encode the ledger record: %w", err)
+		}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640) // #nosec G302: the front runs as another user and needs the group read; checkTokensMode refuses world read
-	if err != nil {
-		return fmt.Errorf("open the ledger %s: %w", path, err)
-	}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640) // #nosec G302: the front runs as another user and needs the group read; checkTokensMode refuses world read
+		if err != nil {
+			return fmt.Errorf("open the ledger %s: %w", path, err)
+		}
 
-	// Chmod defeats a umask that would trim the group read the front needs.
-	if err := f.Chmod(0o640); err != nil {
-		return errors.Join(fmt.Errorf("set the mode of the ledger %s: %w", path, err), f.Close())
-	}
+		// Chmod defeats a umask that would trim the group read the front needs.
+		if err := f.Chmod(0o640); err != nil {
+			return errors.Join(fmt.Errorf("set the mode of the ledger %s: %w", path, err), f.Close())
+		}
 
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return errors.Join(fmt.Errorf("append to the ledger %s: %w", path, err), f.Close())
-	}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return errors.Join(fmt.Errorf("append to the ledger %s: %w", path, err), f.Close())
+		}
 
-	return f.Close()
+		return f.Close()
+	})
 }
 
 // readEntries reads every record from the ledger; a missing file is an empty ledger, not an error.
