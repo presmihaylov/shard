@@ -41,6 +41,9 @@ type Provider interface {
 	// Under a restart policy it returns the first exit of the run; once the sandbox is stopped, the last.
 	// It reports ErrNoExitStatus for a sandbox a stop had to kill, which recorded no exit.
 	Wait(ctx context.Context, id string) (ExitStatus, error)
+	// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a file read, not
+	// a substrate call, like Restarts, so the liveness task polls it every tick; Wait would block.
+	ExitStatus(ctx context.Context, id string) (*ExitStatus, error)
 	// Status asks the substrate, because a record saying running can outlive a shard restart.
 	Status(ctx context.Context, id string) (Status, error)
 	// Restarts reads what the supervisor keeps beside the exit file: how often it started the

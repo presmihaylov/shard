@@ -24,9 +24,9 @@ systemctl enable --now shard
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
 - **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
   passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
-- **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
-  bring it back. The `oom-restart` task does, every 5 s, for a sandbox created with
-  `--restart-on-oom` (`restart_on_oom` in the create body, which needs a memory bound). See below.
+- **The liveness loop**: the `liveness` task asks the substrate about every record that says
+  `running`, every 5 s, and makes the record agree. It records an entrypoint that exited, stops a
+  sandbox whose process is gone, and brings back one the host ended for its memory. See below.
 - **The health check**: the `health-check` task runs the probe a sandbox was created with, on the
   interval it named, and keeps the result on the record. See below.
 - **The restart policy**: `shard-init` starts the entrypoint again under the policy a sandbox was
@@ -95,13 +95,30 @@ cannot read is named in the log and left as it is, because a record shard cannot
 cannot correct either. A root with no records needs no substrate, so a host without `runsc` still
 gets a daemon that answers the reads and the store verbs.
 
-## Bring back an OOM-killed sandbox
+## Liveness
 
-A sandbox that overruns its `--memory` bound is ended by the host, whole: the kernel kills every
-process in its cgroup, `shard-init` included, and `runsc` still holds the dead container. Every 5 s
-the `oom-restart` task asks the substrate about every record that says `running`. One the host
-ended for its memory becomes `stopped`, and its `stopped_reason` says `ran out of memory and the
-host ended it`; an `exec` on it answers 409 with the same words until a tick acts on it. A sandbox
+Every 5 s the `liveness` task asks the substrate about every record that says `running` and makes
+the record agree with it, under the same per-sandbox lock the verbs take. It reads the record again
+after the lock, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
+One tick has three outcomes.
+
+The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
+stays `running` and the tick writes the exit into `exit_status`. `shard ls` then shows `running
+(exited 7)`, and `shard inspect` shows the code and the signal, so an operator tells a clean exit
+from a crash without a `stop`. The exit comes from the file `shard-init` writes, the same one a
+`stop` reads (SHARD-168 replaces the channel underneath, not the value). A `stop` that follows uses
+the recorded exit and does not wait for it again.
+
+The sandbox process is gone. Nothing but the host or a crash ends a running sandbox behind the
+daemon's back, so the tick makes the record `stopped` with `pid` 0 and `stopped_reason` `the sandbox
+process died`. A `start` brings it back. The daemon does not start it again on its own; a restart
+policy for a process that died is SHARD-188.
+
+The host ended it for its memory. A sandbox that overruns its `--memory` bound is ended by the host,
+whole: the kernel kills every process in its cgroup, `shard-init` included, and `runsc` still holds
+the dead container. One the host ended for its memory becomes `stopped`, and its `stopped_reason`
+says `ran out of memory and the host ended it`; an `exec` on it answers 409 with the same words
+until a tick acts on it. A sandbox
 created with `--restart-on-oom` is started again instead, as `shard start` would do it: the dead
 cgroup is removed, so the bound holds on the next run, the namespace is built again over the same
 address, and the entrypoint runs from the beginning. Its memory, its processes and its sockets are

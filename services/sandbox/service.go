@@ -616,9 +616,13 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 	// A stop takes the sandbox's execs with it: their buffers go and their commands end.
 	s.dropExecs(id)
 
-	exit, err := s.lastExit(ctx, id)
-	if err != nil {
-		return err
+	// The liveness task may have recorded the exit already; only a still-running entrypoint needs a wait.
+	exit := sb.ExitStatus
+	if exit == nil {
+		exit, err = s.lastExit(ctx, id)
+		if err != nil {
+			return err
+		}
 	}
 	// The count is read once the run is over, so a start again between two ticks never goes unrecorded.
 	restarts, err := s.lastRestarts(ctx, sb)

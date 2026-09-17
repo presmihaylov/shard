@@ -218,6 +218,8 @@ type fakeProvider struct {
 	r      *recorder
 	status models.Status
 	exit   models.ExitStatus
+	// entrypointExit is what the non-blocking ExitStatus reads: nil while the entrypoint still runs.
+	entrypointExit *models.ExitStatus
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
 	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
@@ -483,6 +485,14 @@ func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) 
 	}
 
 	return f.exit, nil
+}
+
+func (f *fakeProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
+	if err := f.r.record("provider.ExitStatus"); err != nil {
+		return nil, err
+	}
+
+	return f.entrypointExit, nil
 }
 
 // fakeSubstrate stands in for the runtime root, which off Linux has no mount to give back.

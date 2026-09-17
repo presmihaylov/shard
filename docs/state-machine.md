@@ -53,8 +53,9 @@ finished.
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
 the sandbox is up, not that a workload executes in it. When the entrypoint finishes the sandbox stays
 `running` and you can still `exec`, `pause` or `fork` it. This is what E2B, Modal, Vercel and Daytona
-all do. There is no fifth state for it: the record keeps the last exit status instead, so `shard ps`
-can print `running (exited 0)`. **`stop` is the only thing that ends a sandbox.**
+all do. There is no fifth state for it: the liveness task writes the exit into `exit_status` on the
+still-`running` record instead, so `shard ls` prints `running (exited 0)`. **`stop` is the only
+thing that ends a sandbox.**
 
 **`stop` returns once the sandbox has stopped.** The substrate can report one alive for a moment after
 a clean stop, so `stop` waits for it to be gone before it writes the record, and fails without changing

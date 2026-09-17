@@ -600,6 +600,25 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 }
 
+// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a file read, so the
+// liveness task polls it every tick, where Wait would block on an entrypoint that never exited.
+func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
+	b, err := p.open(id)
+	if err != nil {
+		return nil, err
+	}
+
+	exit, found, err := readExitStatus(b.ExitFile)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	return &exit, nil
+}
+
 // Status asks the substrate, because a record saying running can outlive a shard restart. runc reads
 // the init process itself and calls a reaped or zombie one stopped, so nothing here second-guesses it.
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {

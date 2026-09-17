@@ -15,17 +15,17 @@ func oomKilled() models.Status {
 	return models.Status{Exists: true, State: models.StateStopped, OOMKilled: true}
 }
 
-type oomLab struct {
+type livenessLab struct {
 	svc     *sandbox.Service
 	l       layers
 	r       *recorder
 	reports []string
 }
 
-func newOOMLab(t *testing.T, sb models.Sandbox, status models.Status) *oomLab {
+func newLivenessLab(t *testing.T, sb models.Sandbox, status models.Status) *livenessLab {
 	t.Helper()
 
-	lab := &oomLab{r: &recorder{}}
+	lab := &livenessLab{r: &recorder{}}
 	lab.svc, lab.l = newService(t, lab.r, sb)
 	lab.l.provider.status = status
 
@@ -33,10 +33,10 @@ func newOOMLab(t *testing.T, sb models.Sandbox, status models.Status) *oomLab {
 }
 
 // tick runs one pass over the record as the daemon lists it, which may be older than what the store holds.
-func (l *oomLab) tick(t *testing.T, listed models.Sandbox, now time.Time) error {
+func (l *livenessLab) tick(t *testing.T, listed models.Sandbox, now time.Time) error {
 	t.Helper()
 
-	return l.svc.RestartOOMKilled(t.Context(), []models.Sandbox{listed}, now, func(line string) { l.reports = append(l.reports, line) })
+	return l.svc.Liveness(t.Context(), []models.Sandbox{listed}, now, func(line string) { l.reports = append(l.reports, line) })
 }
 
 func optedIn() models.Sandbox {
@@ -47,12 +47,75 @@ func optedIn() models.Sandbox {
 	return sb
 }
 
-func TestOOMRestartStartsASandboxThatAskedForIt(t *testing.T) {
+func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 7}) {
+		t.Errorf("the record says %s with exit %+v, want running with {code:7}", got.State, got.ExitStatus)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "entrypoint exited") {
+		t.Errorf("the pass reported %v, want one line on the exit", lab.reports)
+	}
+}
+
+func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.ExitStatus != nil || len(lab.reports) != 0 {
+		t.Errorf("a running entrypoint was touched: %+v, reports %v", got, lab.reports)
+	}
+}
+
+func TestLivenessNeverRewritesARecordedExit(t *testing.T) {
+	sb := running()
+	sb.ExitStatus = &models.ExitStatus{Code: 7}
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if len(lab.reports) != 0 {
+		t.Errorf("the pass reported %v over an exit it already knew", lab.reports)
+	}
+}
+
+func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
+	lab := newLivenessLab(t, running(), gone())
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.DiedReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, sandbox.DiedReason)
+	}
+	if lab.l.provider.started {
+		t.Error("a sandbox that only died was started again")
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.DiedReason) {
+		t.Errorf("the pass reported %v, want one line on the death", lab.reports)
+	}
+}
+
+func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
-	lab := newOOMLab(t, optedIn(), oomKilled())
+	lab := newLivenessLab(t, optedIn(), oomKilled())
 
 	if err := lab.tick(t, optedIn(), now); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 
 	got := lab.l.repo.sb
@@ -72,13 +135,13 @@ func TestOOMRestartStartsASandboxThatAskedForIt(t *testing.T) {
 	}
 }
 
-func TestOOMRestartStopsTheRecordOfASandboxThatDidNotAsk(t *testing.T) {
+func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 	sb := running()
 	sb.Resources = models.Resources{MemoryMiB: 64}
-	lab := newOOMLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, oomKilled())
 
 	if err := lab.tick(t, sb, time.Now()); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 
 	got := lab.l.repo.sb
@@ -93,13 +156,13 @@ func TestOOMRestartStopsTheRecordOfASandboxThatDidNotAsk(t *testing.T) {
 	}
 }
 
-func TestOOMRestartGivesUpAtTheCap(t *testing.T) {
+func TestLivenessGivesUpAtTheOOMCap(t *testing.T) {
 	sb := optedIn()
 	sb.OOMRestarts = sandbox.OOMRestartCap
-	lab := newOOMLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, oomKilled())
 
 	if err := lab.tick(t, sb, time.Now()); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 
 	got := lab.l.repo.sb
@@ -111,16 +174,16 @@ func TestOOMRestartGivesUpAtTheCap(t *testing.T) {
 	}
 }
 
-func TestOOMRestartWaitsOutTheBackoff(t *testing.T) {
+func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	sb := optedIn()
 	sb.OOMRestarts = 2
 	sb.OOMRestartedAt = now.Add(-time.Second)
-	lab := newOOMLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, oomKilled())
 
 	// Two starts again put the wait at 2 s, and only one has passed.
 	if err := lab.tick(t, sb, now); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 2 || lab.l.provider.started {
 		t.Errorf("the record says %s with %d starts again inside the wait, want it untouched", got.State, got.OOMRestarts)
@@ -130,34 +193,22 @@ func TestOOMRestartWaitsOutTheBackoff(t *testing.T) {
 	}
 
 	if err := lab.tick(t, sb, now.Add(time.Second)); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 3 || !lab.l.provider.started {
 		t.Errorf("the record says %s with %d starts again once the wait passed, want running with 3", got.State, got.OOMRestarts)
 	}
 }
 
-func TestOOMRestartLeavesALiveSandboxAlone(t *testing.T) {
-	lab := newOOMLab(t, optedIn(), alive(42))
-
-	if err := lab.tick(t, optedIn(), time.Now()); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
-	}
-
-	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 0 || len(lab.reports) != 0 {
-		t.Errorf("a live sandbox was touched: %+v, reports %v", got, lab.reports)
-	}
-}
-
 // The list may be a tick old, so a stop that landed since is read from the store before anything is asked.
-func TestOOMRestartNeverStartsASandboxTheRecordSaysStopped(t *testing.T) {
+func TestLivenessNeverTouchesASandboxTheRecordSaysStopped(t *testing.T) {
 	sb := optedIn()
 	sb.State = models.StateStopped
 	sb.PID = 0
-	lab := newOOMLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, oomKilled())
 
 	if err := lab.tick(t, optedIn(), time.Now()); err != nil {
-		t.Fatalf("RestartOOMKilled: %v", err)
+		t.Fatalf("Liveness: %v", err)
 	}
 
 	if lab.l.provider.started || slices.Contains(lab.r.calls, "provider.Status") {
@@ -165,13 +216,13 @@ func TestOOMRestartNeverStartsASandboxTheRecordSaysStopped(t *testing.T) {
 	}
 }
 
-func TestOOMRestartCountsAStartThatFailed(t *testing.T) {
-	lab := newOOMLab(t, optedIn(), oomKilled())
+func TestLivenessCountsAnOOMStartThatFailed(t *testing.T) {
+	lab := newLivenessLab(t, optedIn(), oomKilled())
 	lab.r.fail = []string{"provider.Start"}
 
 	err := lab.tick(t, optedIn(), time.Now())
 	if err == nil || !strings.Contains(err.Error(), "start sandbox sandbox1 again") {
-		t.Fatalf("RestartOOMKilled = %v, want the start's failure", err)
+		t.Fatalf("Liveness = %v, want the start's failure", err)
 	}
 
 	// The next tick sees the same kill and must not spend the cap on a substrate that refuses.

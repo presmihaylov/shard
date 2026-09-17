@@ -11,7 +11,7 @@ import (
 )
 
 // The tick builds the substrate only once a record says running, so a host without runsc keeps its daemon.
-func TestOOMRestartAsksForNoSubstrateWhileNothingRuns(t *testing.T) {
+func TestLivenessAsksForNoSubstrateWhileNothingRuns(t *testing.T) {
 	d := noRunscDeps(t)
 	if _, err := d.repoSvc.Create(models.Sandbox{Image: "alpine", State: models.StateStopped}); err != nil {
 		t.Fatalf("create the record: %v", err)
@@ -20,13 +20,13 @@ func TestOOMRestartAsksForNoSubstrateWhileNothingRuns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 
-	task := oomRestart{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
+	task := liveness{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
 	if err := task.Run(ctx); err != nil {
 		t.Fatalf("Run = %v, want a quiet end over a root with nothing running", err)
 	}
 }
 
-func TestOOMRestartFailsLoudWhenTheSubstrateIsGone(t *testing.T) {
+func TestLivenessFailsLoudWhenTheSubstrateIsGone(t *testing.T) {
 	d := noRunscDeps(t)
 	if _, err := d.repoSvc.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, PID: 42}); err != nil {
 		t.Fatalf("create the record: %v", err)
@@ -37,7 +37,7 @@ func TestOOMRestartFailsLoudWhenTheSubstrateIsGone(t *testing.T) {
 		t.Skip("this host holds a substrate")
 	}
 
-	task := oomRestart{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
+	task := liveness{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
 	err := task.Run(t.Context())
 	if err == nil || err.Error() != want.Error() {
 		t.Fatalf("Run = %v, want the layers' own refusal %v, so the supervisor logs it", err, want)
