@@ -268,6 +268,8 @@ type fakeProvider struct {
 	execSpec   models.ExecSpec
 	// execPID is the guest pid the fake reports, so a kill has a process to wait for and to signal.
 	execPID int
+	// execNoPID makes Exec report no pid, the way a command the substrate never started reports none.
+	execNoPID bool
 	// execBegan is closed when a command starts, and execWaits holds it there until the test closes it.
 	execBegan chan struct{}
 	execWaits chan struct{}
@@ -291,7 +293,7 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 	}
 	f.execID, f.execSpec = id, spec
 
-	if spec.Report != nil {
+	if spec.Report != nil && !f.execNoPID {
 		spec.Report(f.execPID)
 	}
 

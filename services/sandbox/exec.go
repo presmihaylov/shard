@@ -113,6 +113,9 @@ type execBuffer struct {
 	truncated bool
 	closed    bool
 	changed   chan struct{}
+	// released opens the buffer to a stream; discarded drops a not-started command's output before then.
+	released  bool
+	discarded bool
 }
 
 func newExecBuffer() *execBuffer {
@@ -156,6 +159,32 @@ func (b *execBuffer) isTruncated() bool {
 	return b.truncated
 }
 
+// release opens the buffer to a stream, so the output a running command made becomes visible.
+func (b *execBuffer) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.discarded {
+		return
+	}
+	b.released = true
+	b.wake()
+}
+
+// discard drops the output of a command that never started, so its raw substrate error never streams.
+func (b *execBuffer) discard() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.released {
+		return
+	}
+	b.discarded = true
+	b.chunks = nil
+	b.size = 0
+	b.wake()
+}
+
 // wake replaces the change channel so every waiter unblocks. The caller holds the lock.
 func (b *execBuffer) wake() {
 	close(b.changed)
@@ -168,13 +197,16 @@ func (b *execBuffer) stream(ctx context.Context, emit func(chunk) error) error {
 	next := 0
 	for {
 		b.mu.Lock()
-		if next < b.dropped {
-			next = b.dropped
+		var batch []chunk
+		if b.released {
+			if next < b.dropped {
+				next = b.dropped
+			}
+			pending := b.chunks[next-b.dropped:]
+			batch = make([]chunk, len(pending))
+			copy(batch, pending)
+			next += len(batch)
 		}
-		pending := b.chunks[next-b.dropped:]
-		batch := make([]chunk, len(pending))
-		copy(batch, pending)
-		next += len(batch)
 		closed := b.closed
 		changed := b.changed
 		b.mu.Unlock()
@@ -289,6 +321,8 @@ func (e *execSession) setPID(pid int) {
 	e.pid = pid
 	e.pidMu.Unlock()
 
+	// A reported pid means the command runs, so its output may stream.
+	e.buf.release()
 	e.pidOnce.Do(func() { close(e.pidSet) })
 }
 
@@ -330,6 +364,19 @@ func (e *execSession) setResult(exit models.ExitStatus, err error) {
 	e.mu.Unlock()
 
 	close(e.done)
+}
+
+// settleBuffer opens the buffer on a command that ran, or discards a start-failure's held output.
+func (e *execSession) settleBuffer(err error) {
+	var notStarted *models.CommandNotStartedError
+	if errors.As(err, &notStarted) {
+		e.buf.discard()
+		e.buf.close()
+		return
+	}
+
+	e.buf.release()
+	e.buf.close()
 }
 
 // result is how the command ended, for the attach that answers a live client with it.
@@ -509,8 +556,9 @@ func (s *Service) endPipes(session *execSession, stdin *os.File, exit models.Exi
 		stdinErr = errors.Join(session.closeStdin(), stdin.Close())
 	}
 
-	session.buf.close()
-	session.setResult(exit, errors.Join(err, stdinErr))
+	combined := errors.Join(err, stdinErr)
+	session.settleBuffer(combined)
+	session.setResult(exit, combined)
 	// Cap on exit too, so execs that exit with no following create still settle at the retained cap.
 	s.capExitedExecs(session.sandboxID)
 }
@@ -540,8 +588,9 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 
 	masterErr := pair.Master.Close()
 
-	session.buf.close()
-	session.setResult(exit, errors.Join(execErr, closeErr, drainErr, masterErr))
+	combined := errors.Join(execErr, closeErr, drainErr, masterErr)
+	session.settleBuffer(combined)
+	session.setResult(exit, combined)
 	s.capExitedExecs(id)
 }
 
