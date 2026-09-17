@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -99,7 +100,7 @@ func TestListSandboxesAsksForAllOnlyWhenTold(t *testing.T) {
 func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v0/sandboxes/web" {
-			answer(http.StatusNotFound, `{"error":"no route","code":"not_found"}`)(w, r)
+			answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"no route"}}`)(w, r)
 
 			return
 		}
@@ -116,7 +117,7 @@ func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 }
 
 func TestGetSandboxTurnsNotFoundIntoItsOwnError(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
 
 	_, err := c.GetSandbox(t.Context(), "ghost")
 
@@ -130,18 +131,21 @@ func TestGetSandboxTurnsNotFoundIntoItsOwnError(t *testing.T) {
 }
 
 func TestAnyOtherStatusCarriesTheDaemonsMessage(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusInternalServerError, `{"error":"read the tree: permission denied","code":"internal"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusInternalServerError, `{"error":{"code":"internal","message":"read the tree: permission denied"}}`))
 
 	_, err := c.ListSandboxes(t.Context(), false)
 	if err == nil || err.Error() != "read the tree: permission denied" {
 		t.Errorf("ListSandboxes = %v, want the daemon's message as it came", err)
 	}
 
-	c = serve(t, shortRoot(t), answer(http.StatusBadGateway, `not json`))
+	// The flat shape of an older daemon is not read: the message and the code are quoted like any other body.
+	for _, body := range []string{`not json`, `{"error":"read the tree: permission denied","code":"internal"}`} {
+		c = serve(t, shortRoot(t), answer(http.StatusBadGateway, body))
 
-	_, err = c.Version(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "502") || !strings.Contains(err.Error(), "not json") {
-		t.Errorf("Version = %v, want the status and the body quoted", err)
+		_, err = c.Version(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "502") || !strings.Contains(err.Error(), fmt.Sprintf("%q", body)) {
+			t.Errorf("Version = %v, want the status and the body %q quoted", err, body)
+		}
 	}
 }
 

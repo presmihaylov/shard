@@ -234,7 +234,7 @@ func TestExecReportsAFailureAfterThe101(t *testing.T) {
 
 // Nothing is on the wire before the command runs, so a refusal is still a status and a JSON body.
 func TestExecReportsARefusalOfTheCreate(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":"sandbox sandbox1 is stopped: start it again with shard start sandbox1","code":"sandbox_not_running"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":{"code":"sandbox_not_running","message":"sandbox sandbox1 is stopped: start it again with shard start sandbox1"}}`))
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 
@@ -253,7 +253,7 @@ func TestExecReportsARefusalOfTheAttach(t *testing.T) {
 			return
 		}
 
-		answer(http.StatusConflict, `{"error":"exec 1a2b3c4d5e6f7a8b is already attached: create another","code":"in_use"}`)(w, r)
+		answer(http.StatusConflict, `{"error":{"code":"in_use","message":"exec 1a2b3c4d5e6f7a8b is already attached: create another"}}`)(w, r)
 	})
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
@@ -265,7 +265,7 @@ func TestExecReportsARefusalOfTheAttach(t *testing.T) {
 }
 
 func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
 
 	_, err := c.Exec(t.Context(), "ghost", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 
@@ -393,7 +393,7 @@ func TestLogsWritesWhatTheDaemonAnswers(t *testing.T) {
 }
 
 func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
 
 	var out bytes.Buffer
 
@@ -529,7 +529,7 @@ func TestFollowEgressLogReportsAFailureOfTheFollow(t *testing.T) {
 }
 
 func TestFollowEgressLogReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
 
 	var out, errOut bytes.Buffer
 

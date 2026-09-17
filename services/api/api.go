@@ -131,7 +131,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	mux.HandleFunc("DELETE /v0/images/{ref...}", h.removeImage)
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path), Code: models.CodeNotFound})
+		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: errorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
 	})
 
 	return mux
@@ -147,10 +147,15 @@ type listResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// errorResponse is every refusal: a line for a human, a code for a program, and the holders an in_use names.
+// errorResponse is every refusal, one object under error and nothing else at the root.
 type errorResponse struct {
-	Error   string      `json:"error"`
+	Error errorObject `json:"error"`
+}
+
+// errorObject is a code for a program, a line for a human, and the holders an in_use names.
+type errorObject struct {
 	Code    models.Code `json:"code"`
+	Message string      `json:"message"`
 	Holders []string    `json:"holders,omitempty"`
 }
 
@@ -535,11 +540,11 @@ func partial(err error) ([]string, error) {
 // writeError answers err with the status and the code its type says, and the holders when a store entry is held.
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	status, code := classify(err)
-	body := errorResponse{Error: err.Error(), Code: code}
+	body := errorResponse{Error: errorObject{Code: code, Message: err.Error()}}
 
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
-		body.Holders = held.Users
+		body.Error.Holders = held.Users
 	}
 
 	h.writeJSON(w, status, body)
@@ -549,7 +554,7 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {
 	body, err := json.Marshal(value)
 	if err != nil {
-		body = fmt.Appendf(nil, `{"error":%q,"code":%q}`, "encode the response: "+err.Error(), models.CodeInternal)
+		body = fmt.Appendf(nil, `{"error":{"code":%q,"message":%q}}`, models.CodeInternal, "encode the response: "+err.Error())
 		status = http.StatusInternalServerError
 	}
 

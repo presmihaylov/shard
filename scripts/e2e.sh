@@ -776,7 +776,7 @@ expect "${OVER_TCP}" "${OVER_SOCKET}" "the front answers a request byte for byte
 CODE=$(front_curl "${SERVE_PORT}" "wrong-${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "a wrong token is refused"
 BODY=$(front_curl "${SERVE_PORT}" "wrong-${TOKEN}" /v0/sandboxes)
-expect "${BODY}" '{"error":"the request carries no valid bearer token","code":"unauthorized"}' \
+expect "${BODY}" '{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}' \
 	"the refusal carries a code like every other error body"
 CODE=$(front_curl "${SERVE_PORT}" "" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "no token at all is refused"

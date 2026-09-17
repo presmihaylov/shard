@@ -201,10 +201,10 @@ func TestExecRefusesBeforeThe101(t *testing.T) {
 	s.verbs.err = &sandbox.StateError{ID: s.stopped.ID, State: models.StateStopped, Fix: "start it again with shard start " + s.stopped.ID, Code: models.CodeSandboxNotRunning}
 
 	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.stopped.ID+"/exec", `{"command":["true"]}`)
-	if status != http.StatusConflict || body["code"] != "sandbox_not_running" {
+	if status != http.StatusConflict || errorOf(t, body).code != "sandbox_not_running" {
 		t.Fatalf("the create answered %d %v, want 409 sandbox_not_running", status, body)
 	}
-	if answer, _ := body["error"].(string); !strings.Contains(answer, "shard start") {
+	if answer := errorOf(t, body).message; !strings.Contains(answer, "shard start") {
 		t.Errorf("the refusal is %q, and it must say what to do", answer)
 	}
 
@@ -225,7 +225,7 @@ func TestExecRefusesBeforeThe101(t *testing.T) {
 		}
 
 		status, body := decodeRefusal(t, resp)
-		if status != c.status || body["code"] != c.code {
+		if status != c.status || errorOf(t, body).code != c.code {
 			t.Errorf("%s answered %d %v, want %d %s", name, status, body, c.status, c.code)
 		}
 	}
@@ -241,7 +241,7 @@ func TestAStreamWithoutTheHandshakeIs400(t *testing.T) {
 		"/v0/sandboxes/" + s.running.ID + "/egress-log?follow=true",
 	} {
 		status, body := send(t, s.server, http.MethodGet, path, "")
-		if status != http.StatusBadRequest || body["code"] != "websocket_required" {
+		if status != http.StatusBadRequest || errorOf(t, body).code != "websocket_required" {
 			t.Errorf("GET %s answered %d %v, want 400 websocket_required", path, status, body)
 		}
 	}
@@ -418,7 +418,7 @@ func TestLogsFollowRefusesAnIDTheDaemonDoesNotHold(t *testing.T) {
 	}
 
 	status, body := decodeRefusal(t, resp)
-	if status != http.StatusNotFound || body["code"] != "not_found" {
+	if status != http.StatusNotFound || errorOf(t, body).code != "not_found" {
 		t.Errorf("the daemon answered %d %v, want 404 not_found", status, body)
 	}
 	if s.verbs.followed {
@@ -487,7 +487,7 @@ func TestEgressLogFollowRefusesAnIDTheDaemonDoesNotHold(t *testing.T) {
 	}
 
 	status, body := decodeRefusal(t, resp)
-	if status != http.StatusNotFound || body["code"] != "not_found" {
+	if status != http.StatusNotFound || errorOf(t, body).code != "not_found" {
 		t.Errorf("the daemon answered %d %v, want 404 not_found", status, body)
 	}
 }
