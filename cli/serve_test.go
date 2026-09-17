@@ -35,7 +35,7 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 		t.Fatalf("write the secret file: %v", err)
 	}
 
-	minted, err := serve.Mint([]byte(frontSecret), "cli", time.Hour)
+	minted, err := serve.Mint([]byte(frontSecret), "cli", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}

@@ -10,8 +10,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Mint signs an HS256 token for sub, valid for ttl from now. The secret is the raw bytes of the file.
-func Mint(secret []byte, sub string, ttl time.Duration) (string, error) {
+// claims is the token payload: the standard fields, plus the scopes the front checks each request against.
+type claims struct {
+	Scopes []string `json:"scopes,omitempty"`
+	jwt.RegisteredClaims
+}
+
+// Mint signs an HS256 token for sub, valid for ttl from now, carrying scopes; no scopes means every verb.
+func Mint(secret []byte, sub string, scopes []string, ttl time.Duration) (string, error) {
 	if sub == "" {
 		return "", errors.New("a token needs a subject")
 	}
@@ -20,13 +26,16 @@ func Mint(secret []byte, sub string, ttl time.Duration) (string, error) {
 	}
 
 	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Subject:   sub,
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+	c := claims{
+		Scopes: scopes,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   sub,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
 	}
 
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
 	if err != nil {
 		return "", fmt.Errorf("sign the token: %w", err)
 	}
@@ -34,25 +43,25 @@ func Mint(secret []byte, sub string, ttl time.Duration) (string, error) {
 	return signed, nil
 }
 
-// verify checks the token is HS256 over the secret, carries a subject and an issued-at, and has not expired.
-func verify(secret []byte, token string) (string, error) {
-	var claims jwt.RegisteredClaims
+// verify checks the token is HS256 over the secret, carries a subject and an issued-at, and has not expired, then answers the subject and the scopes it carries.
+func verify(secret []byte, token string) (string, []string, error) {
+	var c claims
 
 	keyFunc := func(*jwt.Token) (any, error) { return secret, nil }
-	if _, err := jwt.ParseWithClaims(token, &claims, keyFunc,
+	if _, err := jwt.ParseWithClaims(token, &c, keyFunc,
 		jwt.WithValidMethods([]string{"HS256"}),
 		jwt.WithExpirationRequired()); err != nil {
-		return "", fmt.Errorf("verify the token: %w", err)
+		return "", nil, fmt.Errorf("verify the token: %w", err)
 	}
 
-	if claims.Subject == "" {
-		return "", errors.New("the token carries no subject")
+	if c.Subject == "" {
+		return "", nil, errors.New("the token carries no subject")
 	}
-	if claims.IssuedAt == nil {
-		return "", errors.New("the token carries no issued-at")
+	if c.IssuedAt == nil {
+		return "", nil, errors.New("the token carries no issued-at")
 	}
 
-	return claims.Subject, nil
+	return c.Subject, c.Scopes, nil
 }
 
 // ReadSecret refuses a file others can read, because the secret signs and checks every token.

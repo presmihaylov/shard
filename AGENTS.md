@@ -182,7 +182,9 @@ or a sandbox.
   the image entrypoint is its child.
 - **The daemon never binds TCP.** A network address is `shard serve`, a separate
   and unprivileged process that checks a bearer token and then passes the bytes
-  to the daemon's socket. It is a byte proxy, never a second API.
+  to the daemon's socket. It is a byte proxy, never a second API. It maps the
+  request line to one coarse capability over the daemon's own route patterns and
+  checks the token's scopes cover it, and it parses nothing else.
 - **The daemon is the single writer of the state.** Every verb goes over the
   socket, so nothing else opens the stores and nothing needs a lock between
   processes. The one lock left is `daemon.lock`, which keeps a second daemon off
