@@ -48,8 +48,8 @@ func TestParseCreateFlags(t *testing.T) {
 	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 {
 		t.Errorf("resources = %+v, want 512 MiB and 2 vcpus", req.Resources)
 	}
-	if !req.RestartOnOOM {
-		t.Error("the restart policy was not asked for")
+	if !req.RestartOnOOM || req.MaxOOMRestarts != 0 {
+		t.Errorf("oom restart = %v with a limit of %d, want asked-for and unlimited", req.RestartOnOOM, req.MaxOOMRestarts)
 	}
 
 	if len(req.Command) != 0 {
@@ -139,6 +139,15 @@ func TestParseCreateRestartFlags(t *testing.T) {
 	if req.Restart != nil {
 		t.Errorf("restart = %+v, want none when no flag asked for a policy", req.Restart)
 	}
+
+	// A count on --restart-on-oom caps the starts in a row; the bare flag left it unlimited above.
+	req, err = parseCreate([]string{"--memory", "64", "--restart-on-oom=3", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if !req.RestartOnOOM || req.MaxOOMRestarts != 3 {
+		t.Errorf("oom restart = %v with a limit of %d, want asked-for with a limit of 3", req.RestartOnOOM, req.MaxOOMRestarts)
+	}
 }
 
 func TestParseCreateRejections(t *testing.T) {
@@ -154,19 +163,22 @@ func TestParseCreateRejections(t *testing.T) {
 		"an env with no name":    {"--env", "=1", "alpine:3.20"},
 		"a negative memory":      {"--memory", "-512", "alpine:3.20"},
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
-		"a memory that overflows": {"--memory", "17592186044416", "alpine:3.20"},
-		"a negative cpu bound":    {"--cpus", "-2", "alpine:3.20"},
-		"a restart with no bound": {"--restart-on-oom", "alpine:3.20"},
-		"two probes":              {"--health-command", "true", "--health-http", "80", "alpine:3.20"},
-		"a probe setting alone":   {"--health-retries", "2", "alpine:3.20"},
-		"a probe on no port":      {"--health-http", "/healthz", "alpine:3.20"},
-		"a probe on a bad port":   {"--health-http", "70000", "alpine:3.20"},
-		"a sub-second interval":   {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
-		"a negative timeout":      {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
-		"a negative retry count":  {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},
-		"a policy setting alone":  {"--restart-retries", "2", "alpine:3.20"},
-		"a negative start count":  {"--restart", "always", "--restart-retries", "-1", "alpine:3.20"},
-		"a sub-second backoff":    {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20"},
+		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
+		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
+		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
+		"two probes":                {"--health-command", "true", "--health-http", "80", "alpine:3.20"},
+		"a probe setting alone":     {"--health-retries", "2", "alpine:3.20"},
+		"a probe on no port":        {"--health-http", "/healthz", "alpine:3.20"},
+		"a probe on a bad port":     {"--health-http", "70000", "alpine:3.20"},
+		"a sub-second interval":     {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
+		"a negative timeout":        {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
+		"a negative retry count":    {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},
+		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20"},
+		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20"},
+		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20"},
+		"a sub-second backoff":      {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20"},
+		"a negative oom limit":      {"--memory", "64", "--restart-on-oom=-1", "alpine:3.20"},
+		"a non-number oom limit":    {"--memory", "64", "--restart-on-oom=lots", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

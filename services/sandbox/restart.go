@@ -8,11 +8,8 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// DefaultRestartRetries and DefaultRestartBackoff are what a policy that names neither gets.
-const (
-	DefaultRestartRetries = 5
-	DefaultRestartBackoff = 1
-)
+// DefaultRestartBackoff is the first wait a policy that names none gets; retries default to unlimited.
+const DefaultRestartBackoff = 1
 
 // validRestart refuses a policy that is not one of the three, and settings for a policy that never starts again.
 func validRestart(r models.RestartSpec) error {
@@ -26,6 +23,9 @@ func validRestart(r models.RestartSpec) error {
 	}
 	if r.Backoff > models.RestartBackoffCap {
 		return fmt.Errorf("restart.backoff is in seconds and never grows past %d, got %d", models.RestartBackoffCap, r.Backoff)
+	}
+	if r.Policy == models.RestartAlways && r.Retries != 0 {
+		return errors.New("restart.policy always never gives up, so it takes no retries")
 	}
 	if !r.Set() && (r.Retries != 0 || r.Backoff != 0) {
 		return errors.New("restart.retries and backoff need a policy that starts again, and the request names none")
@@ -41,9 +41,6 @@ func withRestartDefaults(r *models.RestartSpec) *models.Restart {
 	}
 
 	filled := *r
-	if filled.Retries == 0 {
-		filled.Retries = DefaultRestartRetries
-	}
 	if filled.Backoff == 0 {
 		filled.Backoff = DefaultRestartBackoff
 	}
@@ -122,13 +119,22 @@ func (s *Service) recordRestarts(ctx context.Context, id string, report func(str
 	}
 
 	if count.Count != before.Count {
-		report(fmt.Sprintf("sandbox %s: the entrypoint was started again, %d of %d", id, count.Count, retries))
+		report(entrypointRestartReport(id, count.Count, retries))
 	}
 	if count.GaveUp && !before.GaveUp {
 		report(fmt.Sprintf("sandbox %s: the entrypoint exited again and the %d starts again the policy allows are spent", id, retries))
 	}
 
 	return nil
+}
+
+// entrypointRestartReport names the limit when the policy has one and leaves it off when the starts again are unlimited.
+func entrypointRestartReport(id string, count, retries int) string {
+	if retries > 0 {
+		return fmt.Sprintf("sandbox %s: the entrypoint was started again, %d of %d", id, count, retries)
+	}
+
+	return fmt.Sprintf("sandbox %s: the entrypoint was started again, %d", id, count)
 }
 
 // lastRestarts asks the supervisor's count for a record that has a policy, and is zero for one that has none.

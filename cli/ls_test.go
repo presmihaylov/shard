@@ -186,6 +186,7 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	sandboxes := listed()
 	sandboxes[0].RestartOnOOM = true
 	sandboxes[0].OOMRestarts = 2
+	sandboxes[0].MaxOOMRestarts = 5
 
 	app := newLsApp(t, &out, sandboxes, nil)
 
@@ -202,6 +203,26 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	}
 	if strings.Contains(lines[2], "on-oom") {
 		t.Errorf("the line %q shows a policy the sandbox never asked for", lines[2])
+	}
+}
+
+// An unlimited on-oom restart shows the count with no limit beside it.
+func TestLsPrintsAnUnlimitedOOMRestartWithoutALimit(t *testing.T) {
+	var out bytes.Buffer
+
+	sandboxes := listed()
+	sandboxes[0].RestartOnOOM = true
+	sandboxes[0].OOMRestarts = 3
+
+	app := newLsApp(t, &out, sandboxes, nil)
+
+	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if !strings.Contains(lines[1], "on-oom 3") || strings.Contains(lines[1], "on-oom 3/") {
+		t.Errorf("the line %q does not show the count with no limit", lines[1])
 	}
 }
 

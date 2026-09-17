@@ -9,8 +9,8 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// OOMRestartCap is how many times the daemon starts one sandbox again after the host ended it for its memory.
-const OOMRestartCap = 5
+// OOMHealthyRun is how long a sandbox must run after a start before the next OOM resets its count (Docker's number).
+const OOMHealthyRun = 10 * time.Second
 
 // OOMRestartBackoff is the wait before the second start again; it doubles after each one, up to a minute.
 const OOMRestartBackoff = time.Second
@@ -111,16 +111,22 @@ func (s *Service) recordDied(id string, report func(string)) error {
 	return nil
 }
 
-// handleOOMKilled runs the memory decision: start the sandbox again when its record asks and the cap allows,
+// handleOOMKilled runs the memory decision: start the sandbox again when its record asks and the limit allows,
 // else stop it with the reason. The record counts the start before the run, so one that fails leaves no loop.
 func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sandbox, now time.Time, report func(string)) error {
-	restart := sb.RestartOnOOM && sb.OOMRestarts < OOMRestartCap
+	// A run that lasted the healthy window since its last start begins the count over, so a rare OOM never spends the limit.
+	restarts := sb.OOMRestarts
+	if !sb.StartedAt.IsZero() && now.Sub(sb.StartedAt) >= OOMHealthyRun {
+		restarts = 0
+	}
+
+	restart := sb.RestartOnOOM && (sb.MaxOOMRestarts == 0 || restarts < sb.MaxOOMRestarts)
 	reason := OOMKilledReason
 	if sb.RestartOnOOM && !restart {
-		reason = fmt.Sprintf("%s; the %d starts again the cap allows are spent", OOMKilledReason, OOMRestartCap)
+		reason = fmt.Sprintf("%s; the %d starts again the limit allows are spent", OOMKilledReason, sb.MaxOOMRestarts)
 	}
-	// A sandbox that dies right after every start would otherwise come back on every tick until the cap.
-	if restart && now.Before(sb.OOMRestartedAt.Add(oomBackoff(sb.OOMRestarts))) {
+	// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
+	if restart && now.Before(sb.OOMRestartedAt.Add(oomBackoff(restarts))) {
 		return nil
 	}
 
@@ -129,7 +135,7 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 		rec.PID = 0
 		rec.StoppedReason = reason
 		if restart {
-			rec.OOMRestarts++
+			rec.OOMRestarts = restarts + 1
 			rec.OOMRestartedAt = now
 		}
 
@@ -147,9 +153,18 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 	if err := s.start(ctx, id); err != nil {
 		return fmt.Errorf("start sandbox %s again after it %s: %w", id, OOMKilledReason, err)
 	}
-	report(fmt.Sprintf("sandbox %s %s: started again, %d of %d", id, OOMKilledReason, sb.OOMRestarts+1, OOMRestartCap))
+	report(oomRestartReport(id, restarts+1, sb.MaxOOMRestarts))
 
 	return nil
+}
+
+// oomRestartReport names the limit when the sandbox has one and leaves it off when the starts again are unlimited.
+func oomRestartReport(id string, count, limit int) string {
+	if limit > 0 {
+		return fmt.Sprintf("sandbox %s %s: started again, %d of %d", id, OOMKilledReason, count, limit)
+	}
+
+	return fmt.Sprintf("sandbox %s %s: started again, %d", id, OOMKilledReason, count)
 }
 
 // oomBackoff is the wait after the given number of starts again: nothing before the first, then doubling.

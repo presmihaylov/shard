@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 // oomBomb doubles strings in anonymous memory in 32 tasks, because memory.high throttles each one to ~128 KiB/s past the bound.
 const oomBomb = `i=0; while [ $i -lt 32 ]; do awk 'BEGIN { s = "x"; while (1) s = s s }' & i=$((i+1)); done; wait`
 
-// oomBudget covers six kills of ~30 s each with their backoff, at one tick every 5 s, three sandboxes at once.
+// oomBudget covers several kills of ~30 s each with their backoff, at one tick every 5 s, three sandboxes at once.
 const oomBudget = 6 * time.Minute
 
 // The three tests share the daemon and run side by side, because each one waits on the 5 s tick.
@@ -34,7 +35,7 @@ func TestTheDaemonBringsBackAnOOMKilledSandboxThatAskedForIt(t *testing.T) {
 	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
 		t.Errorf("exec in the sandbox that came back = %q, %v", got, err)
 	}
-	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+" "+sandbox.OOMKilledReason+": started again, 1 of 5") {
+	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+" "+sandbox.OOMKilledReason+": started again, 1") {
 		t.Error("the daemon logged no line for the start again")
 	}
 }
@@ -51,18 +52,20 @@ func TestTheDaemonLeavesAnOOMKilledSandboxThatDidNotAsk(t *testing.T) {
 	}
 }
 
-func TestTheDaemonGivesUpOnASandboxThatOverrunsEveryTime(t *testing.T) {
+// A slow OOM loop runs well past the reset window each time, so a finite limit clears before it is spent.
+func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	id := createBound(t, app, out, true, oomBomb)
+	id := createBoundMax(t, app, out, 2, oomBomb)
 
-	// The fifth start again also reads stopped at the cap for a moment, so only the reason marks the give-up.
-	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool {
-		return sb.State == models.StateStopped && strings.Contains(sb.StoppedReason, "the cap allows are spent")
-	})
-	if sb.OOMRestarts != sandbox.OOMRestartCap || !strings.Contains(sb.StoppedReason, "the 5 starts again") {
-		t.Errorf("the record says %q after %d starts again, want the cap named and spent", sb.StoppedReason, sb.OOMRestarts)
+	// A limit of 2 with no reset would give up on the third kill, so a third start again proves the reset.
+	marker := "sandbox " + id + " " + sandbox.OOMKilledReason + ": started again, 1 of 2"
+	awaitLog(t, func() bool { return strings.Count(daemonUnderTest.logged(), marker) >= 3 })
+
+	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateRunning })
+	if strings.Contains(sb.StoppedReason, "are spent") {
+		t.Errorf("the record gave up with %q, want the reset to keep the limit unspent", sb.StoppedReason)
 	}
 }
 
@@ -84,6 +87,39 @@ func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script 
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	return id
+}
+
+// createBoundMax makes a bounded sandbox whose OOM restart is capped at max starts in a row.
+func createBoundMax(t *testing.T, app App, out *bytes.Buffer, max int, script string) string {
+	t.Helper()
+
+	args := []string{"create", "--memory", "64", fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script}
+	if err := app.Run(t.Context(), args); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	id := strings.TrimSpace(out.String())
+	out.Reset()
+	t.Cleanup(func() { cleanUp(t, app, id) })
+
+	return id
+}
+
+// awaitLog polls the daemon log until the condition holds, within the same budget as awaitRecord.
+func awaitLog(t *testing.T, ready func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(oomBudget)
+	for {
+		if ready() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon log never read as wanted in %s; last log:\n%s", oomBudget, daemonUnderTest.logged())
+		}
+
+		time.Sleep(time.Second)
+	}
 }
 
 // awaitRecord polls the daemon until the record reads as wanted, and names the record it last saw if never.

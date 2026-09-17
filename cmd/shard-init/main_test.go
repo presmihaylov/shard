@@ -96,6 +96,11 @@ func runChild(spec string) int {
 	case "sleep":
 		time.Sleep(time.Duration(atoi(arg)) * time.Millisecond)
 		return 0
+	case "run":
+		// A run of MS milliseconds then exit CODE, so a test can make a run outlast the reset window.
+		ms, code, _ := strings.Cut(arg, ":")
+		time.Sleep(time.Duration(atoi(ms)) * time.Millisecond)
+		return atoi(code)
 	}
 
 	fmt.Fprintln(os.Stderr, "unknown child role:", spec)
@@ -335,12 +340,39 @@ func TestOnFailureStartsTheEntrypointAgainUntilTheRetriesAreSpent(t *testing.T) 
 	}
 }
 
-func TestAlwaysStartsTheEntrypointAgainAfterACleanExit(t *testing.T) {
-	super := startSupervisor(t, roleSupervisor, "exit:0", "-restart", "always", "-retries", "1", "-backoff", "20ms")
+// always never gives up, so a clean exit starts the entrypoint again without end.
+func TestAlwaysNeverGivesUpAfterACleanExit(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:0", "-restart", "always", "-backoff", "1ms")
 
-	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.GaveUp })
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Count >= 10 })
+	if count.GaveUp {
+		t.Errorf("the count is %+v, want no give-up under always", count)
+	}
+}
+
+// on-failure with no retries is unlimited, so a failing entrypoint starts again without end.
+func TestOnFailureIsUnlimitedByDefault(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:1", "-restart", "on-failure", "-backoff", "1ms")
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Count >= 10 })
+	if count.GaveUp {
+		t.Errorf("the count is %+v, want no give-up while the retries are unlimited", count)
+	}
+}
+
+// A run that lasts the reset window clears the count, so a slow crash loop never spends a finite cap.
+func TestAHealthyRunClearsTheRestartCount(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "run:60:1", "-restart", "on-failure", "-retries", "1", "-backoff", "1ms", "-restart-reset", "40ms")
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Count >= 1 })
+	first := count.LastAt
+	// A give-up here would mean the reset did nothing, so a start again past the cap is the proof.
+	count = super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.GaveUp || c.LastAt.After(first) })
+	if count.GaveUp {
+		t.Fatalf("the supervisor gave up at %+v, want a healthy run to clear the count first", count)
+	}
 	if count.Count != 1 {
-		t.Errorf("the count is %+v, want 1 start again", count)
+		t.Errorf("the count is %+v, want it reset to 0 then back to 1 on each start again", count)
 	}
 }
 
@@ -542,7 +574,7 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		"unknown policy":      {exitFlag, exitPath, readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
 		"policy with no file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
 		"relative count file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
-		"zero retries":        {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-retries", "0", "--", "/bin/true"},
+		"negative retries":    {exitFlag, exitPath, readyFlag, readyPath, "-restart", "on-failure", "-restart-file", "/tmp/r.json", "-retries", "-1", "--", "/bin/true"},
 		"zero backoff":        {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},
 	}
 

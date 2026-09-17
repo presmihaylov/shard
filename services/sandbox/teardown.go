@@ -77,6 +77,8 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.State = models.StateRunning
 		sb.PID = status.PID
 		sb.StoppedReason = ""
+		// The OOM reset measures a healthy run from here, so every start refreshes it.
+		sb.StartedAt = time.Now().UTC()
 		if !keepExit {
 			// The old exit is what the previous run did, and this run has not ended.
 			sb.ExitStatus = nil

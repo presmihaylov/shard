@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // lsOptions is one parsed shard ls invocation.
@@ -79,7 +78,7 @@ func restart(sb models.Sandbox) string {
 		policies = append(policies, spent(string(sb.Restart.Policy), sb.Restart.Count, sb.Restart.Retries, sb.Restart.GaveUp))
 	}
 	if sb.RestartOnOOM {
-		policies = append(policies, spent("on-oom", sb.OOMRestarts, sandbox.OOMRestartCap, false))
+		policies = append(policies, spent("on-oom", sb.OOMRestarts, sb.MaxOOMRestarts, false))
 	}
 	if len(policies) == 0 {
 		return "-"
@@ -88,10 +87,13 @@ func restart(sb models.Sandbox) string {
 	return strings.Join(policies, ", ")
 }
 
-// spent is a policy with its count beside it once a start again happened, and the give-up when it did.
-func spent(policy string, count, retries int, gaveUp bool) string {
-	if count != 0 {
-		policy = fmt.Sprintf("%s %d/%d", policy, count, retries)
+// spent is a policy with its count beside it once a start again happened, its limit when it has one, and the give-up.
+func spent(policy string, count, limit int, gaveUp bool) string {
+	if count != 0 && limit != 0 {
+		policy = fmt.Sprintf("%s %d/%d", policy, count, limit)
+	}
+	if count != 0 && limit == 0 {
+		policy = fmt.Sprintf("%s %d", policy, count)
 	}
 	if gaveUp {
 		return policy + " gave up"

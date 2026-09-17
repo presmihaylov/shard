@@ -63,8 +63,9 @@ func run(args []string) error {
 	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
 	policy := flags.String("restart", string(models.RestartNo), "when the entrypoint is started again: no, on-failure or always")
 	restartFile := flags.String("restart-file", "", "file the count of starts again is written to, as JSON")
-	retries := flags.Int("retries", defaultRetries, "how many starts again before the supervisor gives up")
+	retries := flags.Int("retries", 0, "how many starts again before the supervisor gives up, 0 for unlimited")
 	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
+	reset := flags.Duration("restart-reset", defaultReset, "how long the entrypoint must run since its last start before an exit clears the count")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -91,7 +92,7 @@ func run(args []string) error {
 		return err
 	}
 
-	restart, err := parseRestart(*policy, *restartFile, *retries, *backoff)
+	restart, err := parseRestart(*policy, *restartFile, *retries, *backoff, *reset)
 	if err != nil {
 		return err
 	}
@@ -120,6 +121,7 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
+	runStartedAt := time.Now()
 
 	// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
 	if err := store.WriteFile(readyFile, nil, 0o600); err != nil {
@@ -144,10 +146,15 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 			if stopping {
 				return nil
 			}
+			// A run that lasted the reset window starts the count over, so a rare crash never spends the retries.
+			if time.Since(runStartedAt) >= restart.reset {
+				count.Count = 0
+			}
 			startAgain = restart.schedule(exit, &count)
 		case <-startAgain:
 			startAgain = nil
 			entrypointPID = restart.startAgain(entrypointArgv, credential, &count)
+			runStartedAt = time.Now()
 		case received := <-stopSignals:
 			stopping = true
 			// Nothing is left to forward to, and a stop that had to wait out its grace is a stop that failed.

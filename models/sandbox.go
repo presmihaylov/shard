@@ -39,6 +39,8 @@ type Sandbox struct {
 
 	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
+	// MaxOOMRestarts caps those starts in a row, 0 for unlimited; a healthy run of ten seconds resets the count.
+	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
 	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
 	OOMRestarts    int       `json:"oom_restarts,omitempty"`
 	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
@@ -58,5 +60,7 @@ type Sandbox struct {
 	// the internet and nothing private.
 	Policy string `json:"policy,omitempty"`
 
+	// StartedAt is when the daemon last started the sandbox, which the OOM reset measures a healthy run from.
+	StartedAt time.Time `json:"started_at,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 }

@@ -114,6 +114,8 @@ type CreateRequest struct {
 	Resources models.Resources `json:"resources"`
 	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
+	// MaxOOMRestarts caps those starts in a row, 0 for unlimited.
+	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
 	// Health is the probe the daemon runs while the sandbox runs, nil for none.
 	Health *models.HealthCheck `json:"health,omitempty"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
@@ -199,18 +201,19 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
-		Name:         req.Name,
-		Image:        ref,
-		Provider:     s.cfg.Provider.Name(),
-		State:        models.StatePending,
-		Resources:    req.Resources,
-		Secrets:      req.Secrets,
-		Policy:       req.Policy,
-		RestartOnOOM: req.RestartOnOOM,
-		HealthCheck:  withHealthDefaults(req.Health),
-		Health:       startingHealth(req.Health),
-		Restart:      withRestartDefaults(req.Restart),
-		CreatedAt:    time.Now().UTC(),
+		Name:           req.Name,
+		Image:          ref,
+		Provider:       s.cfg.Provider.Name(),
+		State:          models.StatePending,
+		Resources:      req.Resources,
+		Secrets:        req.Secrets,
+		Policy:         req.Policy,
+		RestartOnOOM:   req.RestartOnOOM,
+		MaxOOMRestarts: req.MaxOOMRestarts,
+		HealthCheck:    withHealthDefaults(req.Health),
+		Health:         startingHealth(req.Health),
+		Restart:        withRestartDefaults(req.Restart),
+		CreatedAt:      time.Now().UTC(),
 	})
 	if err != nil {
 		return models.Sandbox{}, err
@@ -405,6 +408,9 @@ func validate(req CreateRequest) error {
 	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
 	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
 		return &RequestError{Err: errors.New("restart_on_oom needs a memory bound, and the request sets none")}
+	}
+	if req.MaxOOMRestarts < 0 {
+		return &RequestError{Err: fmt.Errorf("max_oom_restarts is a count and cannot be negative, got %d", req.MaxOOMRestarts)}
 	}
 	if req.Health != nil {
 		if err := validHealthCheck(*req.Health); err != nil {

@@ -27,7 +27,7 @@ func TestCreateHandsTheRestartPolicyToTheProviderWithTheDefaultsFilled(t *testin
 		t.Fatalf("create: %v", err)
 	}
 
-	want := &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1}}
+	want := &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Backoff: 1}}
 	if !reflect.DeepEqual(sb.Restart, want) || !reflect.DeepEqual(l.repo.sb.Restart, want) {
 		t.Errorf("the record holds the policy %+v, want %+v with the defaults filled and nothing counted", sb.Restart, want)
 	}
@@ -56,7 +56,8 @@ func TestCreateRefusesARestartPolicyNoSupervisorTakes(t *testing.T) {
 		"an unknown policy":      {Policy: "unless-stopped"},
 		"no policy but settings": {Retries: 3},
 		"never but settings":     {Policy: models.RestartNo, Backoff: 2},
-		"negative retries":       {Policy: models.RestartAlways, Retries: -1},
+		"always with retries":    {Policy: models.RestartAlways, Retries: 3},
+		"negative retries":       {Policy: models.RestartOnFailure, Retries: -1},
 		"negative backoff":       {Policy: models.RestartAlways, Backoff: -1},
 		"a backoff past the cap": {Policy: models.RestartAlways, Backoff: models.RestartBackoffCap + 1},
 	}
