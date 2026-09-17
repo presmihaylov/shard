@@ -264,8 +264,8 @@ func TestCreateIs400ForABodyItCannotDecode(t *testing.T) {
 
 	for name, body := range map[string]string{"not json": "{not json", "an unknown field": `{"image":"alpine","imagee":"x"}`} {
 		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", body)
-		if status != http.StatusBadRequest || got["error"] == nil {
-			t.Errorf("POST with %s answered %d %v, want 400", name, status, got)
+		if status != http.StatusBadRequest || got["code"] != "invalid_request" || got["error"] == nil {
+			t.Errorf("POST with %s answered %d %v, want 400 invalid_request", name, status, got)
 		}
 	}
 	if s.verbs.created.Image != "" {
@@ -273,20 +273,26 @@ func TestCreateIs400ForABodyItCannotDecode(t *testing.T) {
 	}
 }
 
-// 400 for the request, 404 for the reference, 409 for the state, 500 for the host.
-func TestTheStatusFollowsTheError(t *testing.T) {
+// 400 for the request, 404 for the reference, 409 for the state, 500 for the host; the code says which refusal.
+func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 	cases := []struct {
 		name   string
 		err    error
 		status int
+		code   string
 		text   string
 	}{
-		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "secret NOPE"},
-		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "slash"},
-		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "ghost"},
-		{"a state error", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force"}, http.StatusConflict, "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
-		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "provider gvisor does not support fork on this host"},
-		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "boom"},
+		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "invalid_request", "secret NOPE"},
+		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
+		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
+		{"not running", &sandbox.StateError{ID: "sandbox1", State: models.StateStopped, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}, http.StatusConflict, "sandbox_not_running", "sandbox sandbox1 is stopped: pause takes a running sandbox"},
+		{"not stopped", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force", Code: models.CodeSandboxNotStopped}, http.StatusConflict, "sandbox_not_stopped", "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
+		{"not paused", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}, http.StatusConflict, "sandbox_not_paused", "resume takes a paused sandbox"},
+		{"live", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first", Code: models.CodeSandboxLive}, http.StatusConflict, "sandbox_live", "stop it first"},
+		{"no snapshot", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}, http.StatusConflict, "no_snapshot", "no snapshot"},
+		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard rm sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
+		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
+		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "boom"},
 	}
 
 	for _, c := range cases {
@@ -309,8 +315,8 @@ func TestTheStatusFollowsTheError(t *testing.T) {
 				{http.MethodDelete, "/v0/sandboxes/sandbox1/policy", ""},
 			} {
 				status, got := send(t, s.server, route.method, route.path, route.body)
-				if status != c.status || !strings.Contains(got["error"].(string), c.text) {
-					t.Errorf("%s %s answered %d %v, want %d with %q", route.method, route.path, status, got, c.status, c.text)
+				if status != c.status || got["code"] != c.code || !strings.Contains(got["error"].(string), c.text) {
+					t.Errorf("%s %s answered %d %v, want %d %s with %q", route.method, route.path, status, got, c.status, c.code, c.text)
 				}
 			}
 		})

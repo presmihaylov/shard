@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -187,6 +188,10 @@ func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	_, err = held.Set("TOKEN", "new-value-2", nil, "sk_test_second02")
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "ungrant") {
 		t.Errorf("a change of a held placeholder = %v, want a refusal naming sandbox1", err)
+	}
+	var holders *HeldError
+	if !errors.As(err, &holders) || !slices.Equal(holders.Holders, []string{"sandbox1"}) {
+		t.Errorf("the refusal is %T, want a HeldError naming sandbox1", err)
 	}
 
 	value, err := held.Value("TOKEN")

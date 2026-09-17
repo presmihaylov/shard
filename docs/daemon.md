@@ -207,7 +207,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   which `secret ls` prints on stderr before it exits non-zero.
 - `PUT /v0/secrets/{name}` takes `{"value", "destinations", "mock"}` and answers 200 with the record,
   which carries the placeholder and no value. 400 for a name, a destination or an empty value the
-  host refuses; 409 when a sandbox holds the placeholder that a new `mock` would change.
+  host refuses; 409 naming every sandbox that holds the placeholder a new `mock` would change.
 - `DELETE /v0/secrets/{name}` answers 204. 404; 409 naming every sandbox that was granted it, unless
   `?force=true`.
 - `GET /v0/images` answers `{"images": [...]}` as `shard image ls` prints them; an entry the daemon
@@ -231,7 +231,26 @@ terminal on stream 1 alone, because a terminal has no second stream to keep apar
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb the
 provider does not claim is a 409 too: `provider <name> does not support <verb> on this host`.
 
-Every error body is `{"error": "<message>"}`.
+Every error body is `{"error": "<message>", "code": "<code>"}`: `error` is the line the CLI prints,
+`code` is what a program matches on, and nothing else is ever in the table.
+
+| code | status | when |
+|---|---|---|
+| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown |
+| `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
+| `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
+| `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
+| `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
+| `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
+| `no_snapshot` | 409 | resume or fork when the record names no snapshot |
+| `unsupported` | 409 | the provider does not claim the verb |
+| `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; the body adds `"holders": [ids]` |
+| `internal` | 500 | anything else, and the message says what the daemon got back |
+
+`services/client` decodes the body into `*client.APIError`, with `Status`, `Code`, `Message` and
+`Holders`, so a caller matches on the code with `errors.As` and never on the text.
+
+The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes the contract as `/v1`.
 
 The typed side of these routes is `services/client`: `Version`, `ListSandboxes`, `GetSandbox`,
 `CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`, `PauseSandbox`, `ResumeSandbox`,

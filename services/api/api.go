@@ -128,7 +128,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	mux.HandleFunc("DELETE /v0/images/{ref...}", h.removeImage)
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.writeError(w, http.StatusNotFound, fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path))
+		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path), Code: models.CodeNotFound})
 	})
 
 	return mux
@@ -144,8 +144,11 @@ type listResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// errorResponse is every refusal: a line for a human, a code for a program, and the holders an in_use names.
 type errorResponse struct {
-	Error string `json:"error"`
+	Error   string      `json:"error"`
+	Code    models.Code `json:"code"`
+	Holders []string    `json:"holders,omitempty"`
 }
 
 func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
@@ -155,7 +158,7 @@ func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
 	d, err := h.process.Daemon()
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -167,7 +170,7 @@ func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 	all, err := boolQuery(r, "all")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -176,7 +179,7 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 
 	warnings, err := partial(unreadable)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -187,7 +190,7 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := sandbox.Inspect(h.repo, h.enforcer, r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -198,21 +201,21 @@ func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	id, err := h.repo.Resolve(r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sb, err := h.repo.Get(id)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -225,7 +228,7 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 
 	records, err := h.egressLog.Read(sb)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -236,7 +239,7 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.GrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -247,7 +250,7 @@ func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.UngrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -258,14 +261,14 @@ func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyAttachRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.AttachPolicy(r.Context(), r.PathValue("id"), req.Policy)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -276,7 +279,7 @@ func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.DetachPolicy(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -287,14 +290,14 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.CreateRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.Create(r.Context(), req)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -305,7 +308,7 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Start(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -321,21 +324,21 @@ type stopRequest struct {
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	var req stopRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	grace, err := graceOf(req.Grace)
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"), grace)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -346,20 +349,20 @@ func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	grace, err := graceQuery(r)
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force, grace); err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -370,7 +373,7 @@ func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Pause(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -381,7 +384,7 @@ func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Resume(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -401,14 +404,14 @@ func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
 	var req sandbox.CopyRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	sb, err := verb(r.Context(), r.PathValue("id"), req)
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -416,8 +419,8 @@ func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(
 	h.writeJSON(w, http.StatusCreated, sb)
 }
 
-// status maps what the orchestrator refused to the one code that says so; anything else broke.
-func status(err error) int {
+// classify maps what a typed error refused to the status and the code that say so; anything untyped broke.
+func classify(err error) (int, models.Code) {
 	var invalid *sandboxstate.ValidationError
 	var request *sandbox.RequestError
 	var state *sandbox.StateError
@@ -426,15 +429,20 @@ func status(err error) int {
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request):
-		return http.StatusBadRequest
+		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &state), errors.As(err, &unavailable), errors.As(err, &held),
-		errors.Is(err, models.ErrUnsupported):
-		return http.StatusConflict
+		return http.StatusNotFound, models.CodeNotFound
+	case errors.As(err, &state):
+		return http.StatusConflict, state.Code
+	case errors.As(err, &unavailable):
+		return http.StatusConflict, models.CodeSandboxNotRunning
+	case errors.As(err, &held):
+		return http.StatusConflict, models.CodeInUse
+	case errors.Is(err, models.ErrUnsupported):
+		return http.StatusConflict, models.CodeUnsupported
 	default:
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError, models.CodeInternal
 	}
 }
 
@@ -448,7 +456,7 @@ func decode(r *http.Request, out any) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("decode the request body: %w", err)
+		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
 	}
 
 	return nil
@@ -463,7 +471,7 @@ func graceQuery(r *http.Request) (time.Duration, error) {
 
 	seconds, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, fmt.Errorf("the query grace=%q is not a number of seconds", raw)
+		return 0, &sandbox.RequestError{Err: fmt.Errorf("the query grace=%q is not a number of seconds", raw)}
 	}
 
 	return graceOf(&seconds)
@@ -474,7 +482,7 @@ func graceOf(seconds *float64) (time.Duration, error) {
 		return sandbox.DefaultStopGrace, nil
 	}
 	if *seconds < 0 {
-		return 0, fmt.Errorf("the grace is how long the entrypoint gets and cannot be negative, got %v", *seconds)
+		return 0, &sandbox.RequestError{Err: fmt.Errorf("the grace is how long the entrypoint gets and cannot be negative, got %v", *seconds)}
 	}
 
 	return time.Duration(*seconds * float64(time.Second)), nil
@@ -489,7 +497,7 @@ func boolQuery(r *http.Request, name string) (bool, error) {
 
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("the query %s=%q is not a boolean", name, raw)
+		return false, &sandbox.RequestError{Err: fmt.Errorf("the query %s=%q is not a boolean", name, raw)}
 	}
 
 	return value, nil
@@ -518,15 +526,24 @@ func partial(err error) ([]string, error) {
 	return warnings, nil
 }
 
-func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
-	h.writeJSON(w, status, errorResponse{Error: message})
+// writeError answers err with the status and the code its type says, and the holders when a store entry is held.
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
+	status, code := classify(err)
+	body := errorResponse{Error: err.Error(), Code: code}
+
+	var held *sandbox.HeldError
+	if errors.As(err, &held) {
+		body.Holders = held.Users
+	}
+
+	h.writeJSON(w, status, body)
 }
 
 // writeJSON encodes first, so a value that cannot be encoded never leaves a 200 with half a body.
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {
 	body, err := json.Marshal(value)
 	if err != nil {
-		body = fmt.Appendf(nil, `{"error":%q}`, "encode the response: "+err.Error())
+		body = fmt.Appendf(nil, `{"error":%q,"code":%q}`, "encode the response: "+err.Error(), models.CodeInternal)
 		status = http.StatusInternalServerError
 	}
 

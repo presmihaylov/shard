@@ -1,9 +1,16 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"maps"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +174,9 @@ func TestRemovingAHeldPolicyIsAConflictThatNamesTheHolders(t *testing.T) {
 	if status != http.StatusConflict || !strings.Contains(body["error"].(string), "quiet-heron-3f0a") {
 		t.Errorf("DELETE of a held policy answered %d %v, want 409 naming the holder", status, body)
 	}
+	if body["code"] != "in_use" || !reflect.DeepEqual(body["holders"], []any{"quiet-heron-3f0a"}) {
+		t.Errorf("the body is %v, want in_use with the holder in holders", body)
+	}
 }
 
 func TestRemovingAPolicyAnswers204(t *testing.T) {
@@ -229,6 +239,72 @@ func TestPutSecretCarriesTheValueOnceAndAnswersWithout(t *testing.T) {
 	if answer["name"] != "openai" {
 		t.Errorf("the answer is %v", answer)
 	}
+}
+
+// The bytes of every secret answer are what a leak would show up in, so the decoded map is not what is checked.
+func TestNoSecretRouteAnswersWithTheValue(t *testing.T) {
+	s := seed(t)
+	value := "sk-synthetic-7f3a9c1e5b2d4e6f8a0b1c2d3e4f5a6b"
+
+	status, answer := raw(t, s.server, http.MethodPut, "/v0/secrets/openai", `{"value":"`+value+`","destinations":["api.example.com"]}`)
+	if status != http.StatusOK || s.stores.value != value {
+		t.Fatalf("PUT /v0/secrets/openai answered %d %s and the store got %q", status, answer, s.stores.value)
+	}
+	if bytes.Contains(answer, []byte(value)) {
+		t.Errorf("PUT /v0/secrets/openai answered with the value: %s", answer)
+	}
+
+	s.stores.secrets = []secret.Secret{{Name: "openai", Destinations: []string{"api.example.com"}, Placeholder: "sk_test_shaped01", UpdatedAt: time.Now()}}
+	status, answer = raw(t, s.server, http.MethodGet, "/v0/secrets", "")
+	if status != http.StatusOK || !bytes.Contains(answer, []byte("openai")) {
+		t.Fatalf("GET /v0/secrets answered %d %s", status, answer)
+	}
+	if bytes.Contains(answer, []byte(value)) {
+		t.Errorf("GET /v0/secrets answered with the value: %s", answer)
+	}
+}
+
+// The record has no field a value could ride in, so a route cannot answer with one by mistake.
+func TestTheSecretRecordHasNoValueInItsJSONForm(t *testing.T) {
+	encoded, err := json.Marshal(secret.Secret{Name: "openai", Destinations: []string{"api.example.com"}, Placeholder: "sk_test_shaped01", UpdatedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("marshal the record: %v", err)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("decode the record: %v", err)
+	}
+	keys := slices.Sorted(maps.Keys(fields))
+	if want := []string{"destinations", "name", "placeholder", "updated_at"}; !slices.Equal(keys, want) {
+		t.Errorf("the record encodes %v, want exactly %v", keys, want)
+	}
+}
+
+// raw sends a request and hands the answer back as it came, for a test that greps the bytes.
+func raw(t *testing.T, server *httptest.Server, method, path, body string) (int, []byte) {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), method, server.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+
+	answer, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer to %s %s: %v", method, path, err)
+	}
+
+	return resp.StatusCode, answer
 }
 
 func TestRemovingAGrantedSecretIsAConflictUnlessForced(t *testing.T) {

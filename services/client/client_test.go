@@ -99,7 +99,7 @@ func TestListSandboxesAsksForAllOnlyWhenTold(t *testing.T) {
 func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v0/sandboxes/web" {
-			answer(http.StatusNotFound, `{"error":"no route"}`)(w, r)
+			answer(http.StatusNotFound, `{"error":"no route","code":"not_found"}`)(w, r)
 
 			return
 		}
@@ -115,8 +115,8 @@ func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	}
 }
 
-func TestGetSandboxTurnsA404IntoNotFound(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found"}`))
+func TestGetSandboxTurnsNotFoundIntoItsOwnError(t *testing.T) {
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":"sandbox ghost: sandbox not found","code":"not_found"}`))
 
 	_, err := c.GetSandbox(t.Context(), "ghost")
 
@@ -130,7 +130,7 @@ func TestGetSandboxTurnsA404IntoNotFound(t *testing.T) {
 }
 
 func TestAnyOtherStatusCarriesTheDaemonsMessage(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusInternalServerError, `{"error":"read the tree: permission denied"}`))
+	c := serve(t, shortRoot(t), answer(http.StatusInternalServerError, `{"error":"read the tree: permission denied","code":"internal"}`))
 
 	_, err := c.ListSandboxes(t.Context(), false)
 	if err == nil || err.Error() != "read the tree: permission denied" {

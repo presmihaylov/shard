@@ -23,7 +23,7 @@ const upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: tcp\r\nConnection:
 func (h *Handler) execSandbox(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.ExecRequest
 	if err := decode(r, &req); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -53,7 +53,7 @@ func (h *Handler) execSandbox(w http.ResponseWriter, r *http.Request) {
 
 	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
 	if !session.upgraded {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -190,13 +190,13 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 func (h *Handler) resizeExec(w http.ResponseWriter, r *http.Request) {
 	var size sandbox.TerminalSize
 	if err := decode(r, &size); err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
 
 	if err := h.lifecycle.ResizeExec(r.Context(), r.PathValue("id"), r.PathValue("exec"), size); err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -207,7 +207,7 @@ func (h *Handler) resizeExec(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -223,7 +223,7 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.writeError(w, status(err), err.Error())
+		h.writeError(w, err)
 
 		return
 	}
@@ -269,7 +269,7 @@ func (l *logWriter) Write(p []byte) (int, error) {
 func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
 	conn, buffered, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("take over the connection of the egress log of sandbox %s: %v", sb.ID, err))
+		h.writeError(w, fmt.Errorf("take over the connection of the egress log of sandbox %s: %w", sb.ID, err))
 
 		return
 	}

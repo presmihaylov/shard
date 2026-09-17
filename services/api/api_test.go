@@ -378,8 +378,8 @@ func TestAnUnknownRouteIsAJSON404(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v1/nothing")
-	if status != http.StatusNotFound || !strings.Contains(body["error"].(string), "/v1/nothing") {
-		t.Errorf("GET /v1/nothing answered %d %v, want a JSON 404", status, body)
+	if status != http.StatusNotFound || body["code"] != "not_found" || !strings.Contains(body["error"].(string), "/v1/nothing") {
+		t.Errorf("GET /v1/nothing answered %d %v, want a JSON 404 not_found", status, body)
 	}
 }
 
