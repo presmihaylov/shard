@@ -51,11 +51,18 @@ A sandbox outlives the daemon. runsc runs in its own session, so a daemon that s
 leaves every sandbox up, and the next daemon lists and serves them from the same root. The unit
 sets `KillMode=process` for the same reason: systemd ends the daemon alone, never its sandboxes.
 
-An exec outlives the daemon too, on the guest side alone. `shard-init` holds the guest process, and
-the daemon holds only the host end of the stream, so a restart cuts the client off and the command
-keeps running inside the sandbox. The client sees its stream end and its exit code is lost; it
-cannot attach to that exec again, because reattaching by exec id is not built. A new `shard exec`
-answers as soon as the daemon is back.
+An exec is a resource the daemon owns for the life of the sandbox. It starts the command at once and
+keeps the last 8 MiB of its output, so a client that drops re-attaches by exec id, replays what it
+missed and streams the rest. One client attaches at a time. The record holds the exit once the
+command ends, `kill` signals it while it runs, and only an `rm` of the exec or a `stop` of the
+sandbox frees it. The daemon keeps at most 32 exited execs per sandbox, so a new exec evicts the
+oldest exited one and the retained output stays bounded; a running exec never counts. An evicted
+exec answers 404, the same as a deleted one.
+
+An exec does not outlive the daemon. The daemon holds the record and the buffer in memory, and
+`shard-init` holds the guest process, so a restart cuts every client off and loses the record while
+the command keeps running inside the sandbox. A new `shard exec` answers as soon as the daemon is
+back.
 
 ## Reconcile at start
 
@@ -187,6 +194,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sand
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/pause
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/resume
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web-2"}' http://localhost/v0/sandboxes/<id or name>/fork
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"command":["/bin/echo","hi"]}' http://localhost/v0/sandboxes/<id or name>/exec
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/exec
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"signal":"TERM"}' http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>/kill
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/logs
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/egress-log
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
@@ -253,16 +265,24 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   copy of the source's files. 400 as fork; 404; 409 when the source is still up.
 
 - `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
-  "size": {"rows", "cols"}}`, validates it and answers 201 with `{"exec": "<exec id>", "expires_at"}`.
-  Nothing runs yet. 400 for a body that does not decode or a request that names no command; 404; 409
-  when no command can run in the sandbox. An exec nobody attaches within 60 s is dropped.
-- `GET /v0/sandboxes/{id}/exec/{exec-id}` with the WebSocket handshake answers 101 and starts the
-  command; the messages are the streams below. 400 `websocket_required` without the handshake; 404
-  when the exec expired, ended or belongs to another sandbox; 409 `in_use` for a second attach.
-  Every refusal comes before the 101, so it is a status and a JSON body like any other.
+  "size": {"rows", "cols"}}`, validates it, starts the command at once and answers 201 with the exec
+  record: `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
+  "signal"} or null, "started_at", "exited_at", "truncated"}`. 400 for a body that does not decode or
+  a request that names no command; 404; 409 when no command can run in the sandbox.
+- `GET /v0/sandboxes/{id}/exec` answers `{"execs": [...], "next"}` with every exec the sandbox holds.
+- `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
+  answer until the command ends, then answers the ended record. With the WebSocket handshake it
+  answers 101 instead and attaches: it replays the buffered output, then streams live to the exit on
+  stream 3. 404 when the exec ended with the sandbox, was evicted by the 32-exec cap, or belongs to
+  another; 409 `in_use` for a second attach. A drop leaves the command running, so a later attach
+  replays it again.
+- `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
+  TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
+- `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;
+  409 `exec_running` while the command still runs.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
-  that exec is not attached, has ended or belongs to another sandbox. Only a `tty` exec has a
-  terminal to resize.
+  the exec has no terminal, has ended or belongs to another sandbox. Only a `tty` exec has a terminal
+  to resize.
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
   entrypoint wrote. 404; 400 for a `follow` that is not a boolean.
 - `GET /v0/sandboxes/{id}/logs?follow=true` with the WebSocket handshake is binary messages, the log

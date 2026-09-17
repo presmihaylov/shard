@@ -62,7 +62,7 @@ func refusal(t *testing.T, resp *http.Response) string {
 	return fmt.Sprintf("%d %s", resp.StatusCode, body)
 }
 
-// createExec asks for the exec and hands back its id, which is what the attach names.
+// createExec starts the exec and hands back its id, which is what an attach names.
 func createExec(t *testing.T, s seeded, ref, body string) string {
 	t.Helper()
 
@@ -72,8 +72,8 @@ func createExec(t *testing.T, s seeded, ref, body string) string {
 	}
 
 	id, _ := got["exec"].(string)
-	if id == "" || got["expires_at"] == nil {
-		t.Fatalf("the 201 carried %v, want the exec id and when it expires", got)
+	if id == "" || got["state"] != "running" {
+		t.Fatalf("the 201 carried %v, want the exec id and a running state", got)
 	}
 
 	return id
@@ -214,7 +214,7 @@ func TestExecRefusesBeforeThe101(t *testing.T) {
 		code   string
 	}{
 		"a second attach":      {&sandbox.AttachedError{ID: "1a2b3c4d5e6f7a8b"}, http.StatusConflict, "in_use"},
-		"an exec that expired": {fmt.Errorf("exec 1a2b3c4d5e6f7a8b of sandbox %s: %w", s.running.ID, sandboxstate.ErrNotFound), http.StatusNotFound, "not_found"},
+		"an exec that is gone": {fmt.Errorf("exec 1a2b3c4d5e6f7a8b of sandbox %s: %w", s.running.ID, sandboxstate.ErrNotFound), http.StatusNotFound, "not_found"},
 	}
 	for name, c := range cases {
 		s.verbs.err = c.err
@@ -231,17 +231,103 @@ func TestExecRefusesBeforeThe101(t *testing.T) {
 	}
 }
 
-// An attach without the handshake is a 400 with a code, not the plain-text refusal the library writes.
-func TestAnAttachWithoutTheHandshakeIs400(t *testing.T) {
+// A plain GET, with no WebSocket handshake, is the exec record as it stands now.
+func TestGetExecAnswersTheRecord(t *testing.T) {
+	s := seed(t)
+	s.verbs.execState = models.ExecRunning
+
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b"
+	status, got := send(t, s.server, http.MethodGet, path, "")
+	if status != http.StatusOK {
+		t.Fatalf("GET %s answered %d %v, want 200", path, status, got)
+	}
+	if got["exec"] != "1a2b3c4d5e6f7a8b" || got["state"] != "running" {
+		t.Errorf("the record is %v, want the exec running", got)
+	}
+}
+
+// A GET with ?wait=true blocks until the exec ends, so the record it answers is exited.
+func TestGetExecWaitsForTheExit(t *testing.T) {
+	s := seed(t)
+	s.verbs.execStatus = &models.ExitStatus{Code: 3}
+
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b?wait=true"
+	status, got := send(t, s.server, http.MethodGet, path, "")
+	if status != http.StatusOK {
+		t.Fatalf("GET %s answered %d %v, want 200", path, status, got)
+	}
+	if got["state"] != "exited" {
+		t.Errorf("the record is %v, want the exec exited", got)
+	}
+}
+
+// A list answers a page of the sandbox's execs, with a null cursor when nothing is held back.
+func TestListExecsAnswersThePage(t *testing.T) {
+	s := seed(t)
+	s.verbs.execs = []models.Exec{
+		{ID: "1a2b3c4d5e6f7a8b", Sandbox: s.running.ID, State: models.ExecRunning},
+		{ID: "2b3c4d5e6f7a8b9c", Sandbox: s.running.ID, State: models.ExecExited},
+	}
+
+	status, got := send(t, s.server, http.MethodGet, "/v0/sandboxes/"+s.running.ID+"/exec", "")
+	if status != http.StatusOK {
+		t.Fatalf("the list answered %d %v, want 200", status, got)
+	}
+	execs, _ := got["execs"].([]any)
+	if len(execs) != 2 || got["next"] != nil {
+		t.Errorf("the page is %v, want two execs and a null cursor", got)
+	}
+}
+
+// A kill names the exec and the signal, and answers 204 with no body.
+func TestKillExecSignalsAndAnswers204(t *testing.T) {
+	s := seed(t)
+
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b/kill"
+	code, _ := send(t, s.server, http.MethodPost, path, `{"signal":"KILL"}`)
+	if code != http.StatusNoContent {
+		t.Fatalf("the kill answered %d, want 204", code)
+	}
+	if s.verbs.killedExec != "1a2b3c4d5e6f7a8b" || s.verbs.killSignal != "KILL" {
+		t.Errorf("the kill named exec %q and signal %q, want the exec and KILL", s.verbs.killedExec, s.verbs.killSignal)
+	}
+}
+
+// A kill of an exec that already ended is a 409 exec_exited.
+func TestKillExecRefusesAnExitedExec(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = &sandbox.ExecExitedError{ID: "1a2b3c4d5e6f7a8b"}
+
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b/kill"
+	code, body := send(t, s.server, http.MethodPost, path, `{"signal":"TERM"}`)
+	if code != http.StatusConflict || errorOf(t, body).code != "exec_exited" {
+		t.Errorf("the kill answered %d %v, want 409 exec_exited", code, body)
+	}
+}
+
+// A delete frees an exec that has ended and answers 204 with no body.
+func TestDeleteExecAnswers204(t *testing.T) {
 	s := seed(t)
 
 	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b"
-	status, body := send(t, s.server, http.MethodGet, path, "")
-	if status != http.StatusBadRequest || errorOf(t, body).code != "websocket_required" {
-		t.Errorf("GET %s answered %d %v, want 400 websocket_required", path, status, body)
+	code, _ := send(t, s.server, http.MethodDelete, path, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("the delete answered %d, want 204", code)
 	}
-	if s.verbs.attachedExec != "" {
-		t.Error("a request without the handshake still reached the orchestrator")
+	if s.verbs.deletedExec != "1a2b3c4d5e6f7a8b" {
+		t.Errorf("the delete named exec %q", s.verbs.deletedExec)
+	}
+}
+
+// A delete of an exec still running is a 409 exec_running, because its buffer must stay.
+func TestDeleteExecRefusesARunningExec(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = &sandbox.ExecRunningError{ID: "1a2b3c4d5e6f7a8b"}
+
+	path := "/v0/sandboxes/" + s.running.ID + "/exec/1a2b3c4d5e6f7a8b"
+	code, body := send(t, s.server, http.MethodDelete, path, "")
+	if code != http.StatusConflict || errorOf(t, body).code != "exec_running" {
+		t.Errorf("the delete answered %d %v, want 409 exec_running", code, body)
 	}
 }
 

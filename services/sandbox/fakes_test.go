@@ -266,9 +266,15 @@ type fakeProvider struct {
 	execErr    error
 	execID     string
 	execSpec   models.ExecSpec
+	// execPID is the guest pid the fake reports, so a kill has a process to wait for and to signal.
+	execPID int
 	// execBegan is closed when a command starts, and execWaits holds it there until the test closes it.
 	execBegan chan struct{}
 	execWaits chan struct{}
+	// signaled is closed by Signal, so a held command ends the way a real signal ends one.
+	signaled  chan struct{}
+	signalPID int
+	signalGot string
 }
 
 func (f *fakeProvider) LogPath(string) (string, error) {
@@ -285,19 +291,17 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 	}
 	f.execID, f.execSpec = id, spec
 
+	if spec.Report != nil {
+		spec.Report(f.execPID)
+	}
+
 	if f.execBegan != nil {
 		close(f.execBegan)
 	}
-	// A held command still ends when the caller gives up on it, as runsc exec does.
-	if f.execWaits != nil {
-		select {
-		case <-f.execWaits:
-		case <-ctx.Done():
-			return models.ExitStatus{}, ctx.Err()
-		}
-	}
 
-	if spec.Stdin != nil {
+	// A terminal's replica never reaches EOF until the master closes, which the daemon does only once
+	// this call returns, so a tty command reads nothing here.
+	if spec.Stdin != nil && !spec.TTY {
 		read, err := io.ReadAll(spec.Stdin)
 		if err != nil {
 			return models.ExitStatus{}, err
@@ -305,6 +309,8 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 		f.execInput = string(read)
 	}
 
+	// The command emits its output, then runs on until the test releases or signals it, so a client
+	// that drops mid-command and re-attaches sees the same bytes replayed.
 	if f.execOut != "" {
 		if _, err := spec.Stdout.WriteString(f.execOut); err != nil {
 			return models.ExitStatus{}, err
@@ -316,7 +322,30 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 		}
 	}
 
+	// A held command ends when the caller gives up, when the test releases it, or when a signal reaches it.
+	if f.execWaits != nil || f.signaled != nil {
+		select {
+		case <-f.execWaits:
+		case <-f.signaled:
+		case <-ctx.Done():
+			return models.ExitStatus{}, ctx.Err()
+		}
+	}
+
 	return f.execExit, f.execErr
+}
+
+func (f *fakeProvider) Signal(_ context.Context, _ string, pid int, signal string) error {
+	if err := f.r.record("provider.Signal"); err != nil {
+		return err
+	}
+	f.signalPID, f.signalGot = pid, signal
+
+	if f.signaled != nil {
+		close(f.signaled)
+	}
+
+	return nil
 }
 
 func (f *fakeProvider) Name() string { return "fake" }

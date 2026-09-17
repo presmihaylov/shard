@@ -28,6 +28,9 @@ var ErrNotRunning = errors.New("the container is not running")
 // waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
 const waitDelay = 2 * time.Second
 
+// pidPoll is how often reportPID looks for the pid file the guest process writes as it forks.
+const pidPoll = 10 * time.Millisecond
+
 // diagnosticTail bounds what a failed create quotes back, because the guest shares that file with it.
 const diagnosticTail = 4 << 10
 
@@ -150,6 +153,8 @@ type ExecOptions struct {
 	Stdin  *os.File
 	Stdout *os.File
 	Stderr *os.File
+	// Report is called once with the host pid, which is the pid Signal takes to reach this exec.
+	Report func(pid int)
 }
 
 // Exec runs a command in a running container and returns its exit code, which is no driver failure.
@@ -184,6 +189,13 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 	// Killing sysbox-runc exec leaves the guest process running, so a cancellation has to reach into the container.
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }
+
+	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
+	if opts.Report != nil {
+		reportCtx, stop := context.WithCancel(ctx)
+		defer stop()
+		go reportPID(reportCtx, pidFile, opts.Report)
+	}
 
 	if err := cmd.Run(); err != nil {
 		// A cancelled call says nothing about how the command would have ended.
@@ -260,6 +272,50 @@ func (r *Runner) interrupt(cmd *exec.Cmd, id, pidFile string) error {
 	}
 
 	return nil
+}
+
+// Signal sends one signal to a running exec by its host pid, which runc wrote as the pid file.
+func (r *Runner) Signal(_ context.Context, id string, pid int, signal string) error {
+	sig, err := signalOf(signal)
+	if err != nil {
+		return err
+	}
+
+	if err := syscall.Kill(pid, sig); err != nil {
+		return fmt.Errorf("send %s to the exec %d of %s: %w", signal, pid, id, err)
+	}
+
+	return nil
+}
+
+// signalOf maps the two names the API sends to the guest signals they mean.
+func signalOf(name string) (syscall.Signal, error) {
+	switch name {
+	case "TERM":
+		return syscall.SIGTERM, nil
+	case "KILL":
+		return syscall.SIGKILL, nil
+	}
+
+	return 0, fmt.Errorf("signal %q is not one this driver sends", name)
+}
+
+// reportPID hands the caller the host pid as soon as the process forks, and gives up if the command
+// ends without one, which is how a command that never ran looks.
+func reportPID(ctx context.Context, pidFile string, report func(int)) {
+	for {
+		if pid, err := readPID(pidFile); err == nil {
+			report(pid)
+
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pidPoll):
+		}
+	}
 }
 
 // readPID reads the guest pid sysbox-runc wrote, which is the only handle a signal into the container has.

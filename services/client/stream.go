@@ -34,32 +34,117 @@ type ExecStreams struct {
 	Warn func(message string)
 }
 
-// Exec creates the exec, then attaches over a WebSocket, which starts it; a command that never ran is a CommandNotStartedError.
-func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams ExecStreams) (exit models.ExitStatus, err error) {
+// execsResult is a page of one sandbox's execs. A list with no limit is the whole set in one page.
+type execsResult struct {
+	Execs []models.Exec `json:"execs"`
+}
+
+// Exec starts the command, then attaches over a WebSocket; a command that never ran is a CommandNotStartedError.
+func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams ExecStreams) (models.ExitStatus, error) {
 	// The daemon gives the command no stdin unless this client has one to type into it.
 	req.Stdin = streams.Stdin != nil
 
-	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec"
-
-	var ticket sandbox.ExecTicket
-	if err := c.call(ctx, http.MethodPost, path, req, &ticket, c.Timeout); err != nil {
-		return models.ExitStatus{}, missing(ref, err)
+	exec, err := c.CreateExec(ctx, ref, req)
+	if err != nil {
+		return models.ExitStatus{}, err
 	}
 
-	conn, err := c.open(ctx, path+"/"+url.PathEscape(ticket.ID), "the exec of sandbox "+ref)
+	return c.AttachExec(ctx, ref, exec.ID, streams)
+}
+
+// CreateExec starts one command at once and answers the record the daemon named for it.
+func (c *Client) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec"
+
+	var exec models.Exec
+	if err := c.call(ctx, http.MethodPost, path, req, &exec, c.Timeout); err != nil {
+		return models.Exec{}, missing(ref, err)
+	}
+
+	return exec, nil
+}
+
+// AttachExec replays the exec's buffer, then streams it live until the command ends. A dropped attach
+// leaves the command running: only stop ends a sandbox, and a kill ends one command.
+func (c *Client) AttachExec(ctx context.Context, ref, execID string, streams ExecStreams) (exit models.ExitStatus, err error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec/" + url.PathEscape(execID)
+
+	conn, err := c.open(ctx, path, "the exec of sandbox "+ref)
 	if err != nil {
 		return models.ExitStatus{}, missing(ref, err)
 	}
 	defer func() { err = errors.Join(err, closeStream(conn)) }()
 
 	if streams.Started != nil {
-		streams.Started(ticket.ID)
+		streams.Started(execID)
 	}
 
 	// Nothing waits for this copier: it blocks on a terminal this process does not own.
 	go sendInput(ctx, conn, streams)
 
 	return readExec(ctx, conn, ref, streams)
+}
+
+// ListExecs answers every exec the sandbox holds, oldest id first.
+func (c *Client) ListExecs(ctx context.Context, ref string) ([]models.Exec, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec"
+
+	var out execsResult
+	if err := c.call(ctx, http.MethodGet, path, nil, &out, c.Timeout); err != nil {
+		return nil, missing(ref, err)
+	}
+
+	return out.Execs, nil
+}
+
+// GetExec answers the exec's record as it stands now.
+func (c *Client) GetExec(ctx context.Context, ref, execID string) (models.Exec, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec/" + url.PathEscape(execID)
+
+	var exec models.Exec
+	if err := c.call(ctx, http.MethodGet, path, nil, &exec, c.Timeout); err != nil {
+		return models.Exec{}, missing(ref, err)
+	}
+
+	return exec, nil
+}
+
+// WaitExec blocks until the exec ends, then answers its record. A wait has no bound of its own.
+func (c *Client) WaitExec(ctx context.Context, ref, execID string) (models.Exec, error) {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec/" + url.PathEscape(execID) + "?wait=true"
+
+	var exec models.Exec
+	if err := c.call(ctx, http.MethodGet, path, nil, &exec, 0); err != nil {
+		return models.Exec{}, missing(ref, err)
+	}
+
+	return exec, nil
+}
+
+// KillExec sends one signal to a running exec. An empty signal is TERM.
+func (c *Client) KillExec(ctx context.Context, ref, execID, signal string) error {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec/" + url.PathEscape(execID) + "/kill"
+
+	req := struct {
+		Signal string `json:"signal,omitempty"`
+	}{Signal: signal}
+
+	if err := c.call(ctx, http.MethodPost, path, req, nil, c.Timeout); err != nil {
+		return missing(ref, err)
+	}
+
+	return nil
+}
+
+// DeleteExec forgets an exec that has ended and frees its buffer.
+func (c *Client) DeleteExec(ctx context.Context, ref, execID string) error {
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/exec/" + url.PathEscape(execID)
+
+	if err := c.call(ctx, http.MethodDelete, path, nil, nil, c.Timeout); err != nil {
+		return missing(ref, err)
+	}
+
+	return nil
 }
 
 // open dials one streaming route. A refusal comes before the 101, as the status and the body any call gets.

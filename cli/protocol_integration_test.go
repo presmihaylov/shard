@@ -21,9 +21,6 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// expiryMargin is how long past expires_at an attach may still find the exec before the test calls it kept.
-const expiryMargin = 20 * time.Second
-
 // rawClient speaks the wire protocol to the daemon of the package, with no services/client in between.
 type rawClient struct {
 	t    *testing.T
@@ -43,8 +40,8 @@ func newRawClient(t *testing.T, app App) rawClient {
 	return rawClient{t: t, http: &http.Client{Transport: transport}}
 }
 
-// createExec posts the request and answers the ticket of the 201.
-func (c rawClient) createExec(id string, req sandbox.ExecRequest) sandbox.ExecTicket {
+// createExec posts the request and answers the exec record of the 201, which is already running.
+func (c rawClient) createExec(id string, req sandbox.ExecRequest) models.Exec {
 	c.t.Helper()
 
 	body, err := json.Marshal(req)
@@ -62,15 +59,18 @@ func (c rawClient) createExec(id string, req sandbox.ExecRequest) sandbox.ExecTi
 		c.t.Fatalf("POST the exec answered %d, want 201", resp.StatusCode)
 	}
 
-	var ticket sandbox.ExecTicket
-	if err := json.NewDecoder(resp.Body).Decode(&ticket); err != nil {
-		c.t.Fatalf("decode the ticket: %v", err)
+	var exec models.Exec
+	if err := json.NewDecoder(resp.Body).Decode(&exec); err != nil {
+		c.t.Fatalf("decode the exec: %v", err)
 	}
-	if ticket.ID == "" {
-		c.t.Fatal("the ticket names no exec")
+	if exec.ID == "" {
+		c.t.Fatal("the record names no exec")
+	}
+	if exec.State != models.ExecRunning {
+		c.t.Fatalf("the exec is %q, want running", exec.State)
 	}
 
-	return ticket
+	return exec
 }
 
 // dial opens the attach, or answers the status and code of the refusal that came before the 101.
@@ -103,7 +103,25 @@ func (c rawClient) dial(id, execID string) (*websocket.Conn, int, models.Code) {
 	return nil, resp.StatusCode, refusal.Error.Code
 }
 
-// plainGet asks the attach without the handshake, which is a JSON refusal and no exec.
+// getRecord asks for the exec record without a handshake, which is the record as it stands now.
+func (c rawClient) getRecord(id, execID string) (int, models.Exec) {
+	c.t.Helper()
+
+	resp, err := c.http.Get("http://shard/v0/sandboxes/" + id + "/exec/" + execID)
+	if err != nil {
+		c.t.Fatalf("GET the record: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var exec models.Exec
+	if err := json.NewDecoder(resp.Body).Decode(&exec); err != nil {
+		c.t.Fatalf("decode the record: %v", err)
+	}
+
+	return resp.StatusCode, exec
+}
+
+// plainGet does a GET with no handshake and answers the status and the refusal code of a non-2xx body.
 func (c rawClient) plainGet(path string) (int, models.Code) {
 	c.t.Helper()
 
@@ -183,24 +201,76 @@ func (c rawClient) closed(conn *websocket.Conn) websocket.StatusCode {
 	return websocket.CloseStatus(err)
 }
 
+// reattachBudget bounds the wait for the daemon to free the slot a dropped client held.
+const reattachBudget = 5 * time.Second
+
+// readUntil collects the output until stdout holds want, so a test can drop a client mid-command.
+func (c rawClient) readUntil(conn *websocket.Conn, want string) {
+	c.t.Helper()
+
+	var out bytes.Buffer
+	for !strings.Contains(out.String(), want) {
+		stream, payload, err := api.Receive(c.t.Context(), conn)
+		if err != nil {
+			c.t.Fatalf("receive before %q: %v", want, err)
+		}
+		if stream == api.StreamStdout {
+			out.Write(payload)
+		}
+	}
+}
+
+// reattach dials until the daemon frees the slot the dropped client held, because it lets go a moment later.
+func (c rawClient) reattach(id, execID string) *websocket.Conn {
+	c.t.Helper()
+
+	deadline := time.After(reattachBudget)
+	for {
+		conn, status, code := c.dial(id, execID)
+		if status == http.StatusSwitchingProtocols {
+			return conn
+		}
+		if status != http.StatusConflict || code != models.CodeInUse {
+			c.t.Fatalf("the re-attach answered %d %s, want 101", status, code)
+		}
+
+		select {
+		case <-deadline:
+			c.t.Fatalf("the daemon held the attach slot past %s after the drop", reattachBudget)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// kill posts one signal to the exec and proves the daemon answered 204.
+func (c rawClient) kill(id, execID, signal string) {
+	c.t.Helper()
+
+	body := bytes.NewReader([]byte(`{"signal":"` + signal + `"}`))
+	resp, err := c.http.Post("http://shard/v0/sandboxes/"+id+"/exec/"+execID+"/kill", "application/json", body)
+	if err != nil {
+		c.t.Fatalf("POST the kill: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		c.t.Fatalf("the kill answered %d, want 204", resp.StatusCode)
+	}
+}
+
 // The wire is the contract: stream bytes both ways, the exit as JSON, and a close of 1000 after it.
 func TestExecProtocolCarriesTheStreamsAndTheExitJSON(t *testing.T) {
 	app, id := runningSandbox(t)
 	c := newRawClient(t, app)
 
-	before := time.Now()
-	ticket := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/sh", "-c", "cat; echo err >&2; exit 3"}, Stdin: true})
+	exec := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/sh", "-c", "cat; echo err >&2; exit 3"}, Stdin: true})
 
-	if until := ticket.ExpiresAt.Sub(before); until < sandbox.DefaultExecExpiry-5*time.Second || until > sandbox.DefaultExecExpiry+5*time.Second {
-		t.Errorf("the exec expires in %s, want about %s", until, sandbox.DefaultExecExpiry)
+	// The command runs from the create, so a plain GET is the record, and the handshake is what attaches.
+	if status, got := c.getRecord(id, exec.ID); status != http.StatusOK || got.State != models.ExecRunning {
+		t.Errorf("a GET without the handshake answered %d and state %q, want 200 running", status, got.State)
 	}
 
-	// The handshake is the whole difference between a refusal and a session, and the refusal keeps the exec.
-	if status, code := c.plainGet("/v0/sandboxes/" + id + "/exec/" + ticket.ID); status != http.StatusBadRequest || code != models.CodeWebSocketRequired {
-		t.Errorf("an attach without the handshake answered %d %s, want 400 %s", status, code, models.CodeWebSocketRequired)
-	}
-
-	conn, status, _ := c.dial(id, ticket.ID)
+	conn, status, _ := c.dial(id, exec.ID)
 	if status != http.StatusSwitchingProtocols {
 		t.Fatalf("the attach answered %d, want 101", status)
 	}
@@ -225,14 +295,14 @@ func TestExecProtocolRefusesASecondAttach(t *testing.T) {
 	app, id := runningSandbox(t)
 	c := newRawClient(t, app)
 
-	ticket := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/cat"}, Stdin: true})
+	exec := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/cat"}, Stdin: true})
 
-	conn, status, _ := c.dial(id, ticket.ID)
+	conn, status, _ := c.dial(id, exec.ID)
 	if status != http.StatusSwitchingProtocols {
 		t.Fatalf("the attach answered %d, want 101", status)
 	}
 
-	if _, status, code := c.dial(id, ticket.ID); status != http.StatusConflict || code != models.CodeInUse {
+	if _, status, code := c.dial(id, exec.ID); status != http.StatusConflict || code != models.CodeInUse {
 		t.Errorf("the second attach answered %d %s, want 409 %s", status, code, models.CodeInUse)
 	}
 
@@ -241,31 +311,75 @@ func TestExecProtocolRefusesASecondAttach(t *testing.T) {
 		t.Errorf("the exit was %+v, want code 0", s.exit)
 	}
 
-	if _, status, code := c.dial(id, ticket.ID); status != http.StatusNotFound || code != models.CodeNotFound {
-		t.Errorf("an attach after the end answered %d %s, want 404 %s", status, code, models.CodeNotFound)
+	// The record outlives the command, so an attach after the end replays it and answers the exit again.
+	after, status, _ := c.dial(id, exec.ID)
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("an attach after the end answered %d, want 101", status)
+	}
+	if s := c.read(after); s.exit != (api.ExitMessage{}) {
+		t.Errorf("the replay after the end ended with %+v, want code 0", s.exit)
 	}
 }
 
-// An exec nobody attaches is dropped at expires_at, and the attach that comes late is a 404.
-func TestExecProtocolForgetsAnExecNobodyAttached(t *testing.T) {
+// An exec the sandbox stop takes with it is gone, so an attach after the stop is a 404.
+func TestExecProtocolForgetsAnExecWhenTheSandboxStops(t *testing.T) {
 	app, id := runningSandbox(t)
 	c := newRawClient(t, app)
 
-	ticket := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/true"}})
+	exec := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/cat"}, Stdin: true})
 
-	time.Sleep(time.Until(ticket.ExpiresAt))
+	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
+		t.Fatalf("stop the sandbox: %v", err)
+	}
 
-	deadline := ticket.ExpiresAt.Add(expiryMargin)
-	for {
-		_, status, code := c.dial(id, ticket.ID)
-		if status == http.StatusNotFound && code == models.CodeNotFound {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the attach answered %d %s at %s past expires_at, want 404", status, code, expiryMargin)
-		}
+	if _, status, code := c.dial(id, exec.ID); status != http.StatusNotFound || code != models.CodeNotFound {
+		t.Errorf("an attach after the stop answered %d %s, want 404 %s", status, code, models.CodeNotFound)
+	}
+}
 
-		time.Sleep(time.Second)
+// A client that drops mid-command does not end it: the exec runs on, and a re-attach replays the bytes
+// from before the drop, then carries the rest to the exit.
+func TestExecProtocolReplaysAfterAMidCommandDrop(t *testing.T) {
+	app, id := runningSandbox(t)
+	c := newRawClient(t, app)
+
+	exec := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/sh", "-c", "echo mark; cat"}, Stdin: true})
+
+	first, status, _ := c.dial(id, exec.ID)
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("the attach answered %d, want 101", status)
+	}
+	c.readUntil(first, "mark\n")
+	first.CloseNow()
+
+	second := c.reattach(id, exec.ID)
+	c.send(second, api.StreamStdinClose, "")
+
+	s := c.read(second)
+	if !strings.Contains(s.out.String(), "mark\n") {
+		t.Errorf("the re-attach replayed %q, want the mark from before the drop", s.out.String())
+	}
+	if s.exit != (api.ExitMessage{}) {
+		t.Errorf("the exit was %+v, want code 0", s.exit)
+	}
+}
+
+// A kill ends a running command with the signal's code: TERM makes a sleep exit 143, which is 128 and 15.
+func TestExecProtocolKillEndsACommandWithTheSignalCode(t *testing.T) {
+	app, id := runningSandbox(t)
+	c := newRawClient(t, app)
+
+	exec := c.createExec(id, sandbox.ExecRequest{Command: []string{"/bin/sh", "-c", "sleep 30"}})
+
+	conn, status, _ := c.dial(id, exec.ID)
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("the attach answered %d, want 101", status)
+	}
+
+	c.kill(id, exec.ID, "TERM")
+
+	if s := c.read(conn); s.exit != (api.ExitMessage{Code: 143}) {
+		t.Errorf("the exit was %+v, want code 143 from the TERM", s.exit)
 	}
 }
 
