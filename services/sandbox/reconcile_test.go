@@ -242,6 +242,49 @@ func TestReconcileLeavesACreatedRecordAlone(t *testing.T) {
 	}
 }
 
+func TestReconcileFailsAPendingRecordWithNoProcess(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, PID: 13}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateFailed || got.PID != 0 {
+		t.Errorf("the record says %s with pid %d, want failed with no pid", got.State, got.PID)
+	}
+	if got.FailedReason != sandbox.InterruptedReason {
+		t.Errorf("the record gives the reason %q, want %q", got.FailedReason, sandbox.InterruptedReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") {
+		t.Errorf("the reconcile reported %v, want one line naming the sandbox", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateRunning || got.PID != 51 {
+		t.Errorf("the record says %s with pid %d, want running with pid 51: the start took before the daemon stopped", got.State, got.PID)
+	}
+	if got.FailedReason != "" {
+		t.Errorf("the record kept the reason %q of a create that reached running", got.FailedReason)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)
+	}
+}
+
 func TestReconcileReportsEveryRecordItCorrected(t *testing.T) {
 	status := map[string]models.Status{"sandbox1": gone(), "sandbox2": gone(), "sandbox3": alive(7)}
 	lab := newReconcileLab(t, &recProvider{status: status},

@@ -1,10 +1,12 @@
 # The sandbox state machine
 
-Four states, seven legal moves. `models/state.go` is the code; this page is the picture.
+Six states, nine legal moves. `models/state.go` is the code; this page is the picture.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> created: shard create
+    [*] --> pending: shard create
+    pending --> running: image ready, entrypoint started
+    pending --> failed: pull or start failed
     created --> running: start
     created --> stopped: stop before start
     running --> paused: pause (snapshot to disk, memory freed)
@@ -15,10 +17,13 @@ stateDiagram-v2
     stopped --> [*]: rm
     paused --> [*]: rm
     created --> [*]: rm
+    failed --> [*]: rm
 ```
 
 | From | To | Verb | Reachable today |
 |---|---|---|---|
+| `pending` | `running` | the daemon finished the pull and the start | yes |
+| `pending` | `failed` | the pull or the start failed | yes |
 | `created` | `running` | `start` | yes |
 | `created` | `stopped` | `stop` before the entrypoint runs | yes |
 | `running` | `paused` | `pause` | yes: gVisor |
@@ -28,6 +33,22 @@ stateDiagram-v2
 | `stopped` | `running` | `start` | yes |
 
 ## What the picture does not say
+
+**A create begins `pending`, and the daemon finishes it in the background.** `shard create` writes
+the record `pending` and answers at once, unless the image is already pulled: a cached image needs
+no download, so the create runs to `running` before it answers. An uncached one pulls and starts
+behind the record, which lands `running` or, when the pull or the start failed, `failed` with a
+one-line `failed_reason`. `GET ?wait=true` holds until the record leaves `pending`, so `shard create`
+blocks and prints a ready sandbox or the reason it failed. `created` is not where a create lands: it
+is the state a fork or clone's copy passes through, and the status a provider reports for a sandbox
+it holds but has not started.
+
+**`failed` is terminal, and only `rm` frees it.** A create that never reached `running` refuses every
+verb but `get` and `rm`, with `409 sandbox_failed` and the reason, so an operator reads why and then
+removes it. A daemon that restarted while a create was still in flight finds the `pending` record
+with nothing behind it and moves it to `failed` too, because a create the daemon dropped never
+finished.
+
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
 the sandbox is up, not that a workload executes in it. When the entrypoint finishes the sandbox stays

@@ -820,3 +820,31 @@ func waitForExecCount(t *testing.T, svc *sandbox.Service, ref string, want int) 
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A failed sandbox accepts only a delete of the sandbox itself, so every exec verb answers
+// sandbox_failed. The guard runs before the exec lookup, so a made-up exec id still gets refused.
+func TestExecVerbsRefuseAFailedSandbox(t *testing.T) {
+	sb := running()
+	sb.State = models.StateFailed
+	sb.FailedReason = "the image pull failed"
+	svc, _ := newService(t, &recorder{}, sb)
+
+	var size sandbox.TerminalSize
+	var streams sandbox.Streams
+	verbs := map[string]func() error{
+		"GetExec":    func() error { _, err := svc.GetExec(t.Context(), "sandbox1", "exec1"); return err },
+		"WaitExec":   func() error { _, err := svc.WaitExec(t.Context(), "sandbox1", "exec1"); return err },
+		"ListExecs":  func() error { _, err := svc.ListExecs(t.Context(), "sandbox1"); return err },
+		"KillExec":   func() error { return svc.KillExec(t.Context(), "sandbox1", "exec1", "TERM") },
+		"DeleteExec": func() error { return svc.DeleteExec(t.Context(), "sandbox1", "exec1") },
+		"ResizeExec": func() error { return svc.ResizeExec(t.Context(), "sandbox1", "exec1", size) },
+		"Attach":     func() error { _, err := svc.Attach(t.Context(), "sandbox1", "exec1", streams); return err },
+	}
+
+	for name, call := range verbs {
+		var refused *sandbox.StateError
+		if err := call(); !errors.As(err, &refused) || refused.Code != models.CodeSandboxFailed {
+			t.Errorf("%s of a failed sandbox = %v, want %s", name, err, models.CodeSandboxFailed)
+		}
+	}
+}

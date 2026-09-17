@@ -39,7 +39,7 @@ type Repository interface {
 
 // Images is the part of image.Service a create drives.
 type Images interface {
-	Claim(ctx context.Context, ref string, record func(image.Image) error) (image.Image, error)
+	Pull(ctx context.Context, ref string) (image.Image, error)
 }
 
 // Network is the part of network.Service the lifecycle verbs drive.
@@ -143,6 +143,16 @@ type StateError struct {
 
 func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
 
+// failedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
+// A create that never reached running is terminal, so an operator reads the reason and then removes it.
+func failedGuard(id string, sb models.Sandbox) error {
+	if sb.State != models.StateFailed {
+		return nil
+	}
+
+	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard rm %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
+}
+
 // lock serializes the verbs on one sandbox; a mutex outlives its id, which is small and never contended.
 func (s *Service) lock(id string) func() {
 	s.mu.Lock()
@@ -158,30 +168,84 @@ func (s *Service) lock(id string) func() {
 	return m.Unlock
 }
 
-// Create pushes every claim before the commit point onto the teardown stack: half-built state is a bug.
-func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sandbox, err error) {
+// Prepare writes the pending record and answers at once. The pull and the start run later, in Complete,
+// so a create returns before the download and the sandbox reaches running or failed in the background.
+func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbox, error) {
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
 
-	// Before the pull: a secret that does not exist should cost no download.
-	env, err := s.grantSecrets(req)
+	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
+	// the pull: a prune between the record and the pull would otherwise delete the rootfs the create needs.
+	ref, err := image.Canonical(req.Image)
 	if err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, &RequestError{Err: err}
 	}
 
-	// Before the pull too: a policy that does not exist would drop everything, and should cost no download.
+	// Before the pull: a secret or a policy that does not exist should cost no create, and a fronted
+	// sandbox with no proxy CA has no bundle to build.
+	if _, err := s.grantSecrets(req); err != nil {
+		return models.Sandbox{}, err
+	}
 	if req.Policy != "" {
 		if _, err := s.cfg.Policies.Get(req.Policy); err != nil {
 			return models.Sandbox{}, &RequestError{Err: err}
 		}
 	}
+	if req.fronted() {
+		if _, err := s.proxyCA(); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
 
-	// Before the pull too: a fronted sandbox is built to trust the proxy, and no CA means no bundle to build.
+	sb, err := s.cfg.Repo.Create(models.Sandbox{
+		Name:         req.Name,
+		Image:        ref,
+		Provider:     s.cfg.Provider.Name(),
+		State:        models.StatePending,
+		Resources:    req.Resources,
+		Secrets:      req.Secrets,
+		Policy:       req.Policy,
+		RestartOnOOM: req.RestartOnOOM,
+		HealthCheck:  withHealthDefaults(req.Health),
+		Health:       startingHealth(req.Health),
+		Restart:      withRestartDefaults(req.Restart),
+		CreatedAt:    time.Now().UTC(),
+	})
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return sb, nil
+}
+
+// Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
+// running. A failure that is not a shutdown leaves the record failed with the reason, so a get reads why
+// and rm still frees it. It pushes every claim before the commit point onto the teardown stack.
+func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (err error) {
+	unlock := s.lock(id)
+	defer unlock()
+
+	// Past the commit point the sandbox is live, so a later error names it and never marks it failed.
+	committed := false
+
+	// A shutdown cancels the work rather than fails the create: the next daemon reconciles the pending
+	// record against the substrate, so an interrupted start that took is found running, not lost.
+	defer func() {
+		if err != nil && ctx.Err() == nil && !committed {
+			err = s.fail(ctx, id, err)
+		}
+	}()
+
+	env, err := s.grantSecrets(req)
+	if err != nil {
+		return err
+	}
+
 	var proxyCA []byte
 	if req.fronted() {
 		if proxyCA, err = s.proxyCA(); err != nil {
-			return models.Sandbox{}, err
+			return err
 		}
 	}
 
@@ -193,14 +257,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		}
 	}()
 
-	img, id, dir, err := s.claim(ctx, &td, req)
+	img, dir, err := s.claim(ctx, id, req)
 	if err != nil {
-		return models.Sandbox{}, err
+		return err
 	}
-
-	// The id exists now, so a stop or an rm can name it: they wait here until the create is done.
-	unlock := s.lock(id)
-	defer unlock()
 
 	// Allocate rolls back its own attach only: a failure between the lease claim and the attach leaks
 	// the lease file, so the push goes above the call. Release tolerates a lease that was never taken.
@@ -209,7 +269,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 	// The id names the netns, the lease holder and the runsc container, so it must exist first.
 	netSpec, err := AllocateNetwork(ctx, s.cfg.Network, id)
 	if err != nil {
-		return models.Sandbox{}, err
+		return err
 	}
 
 	spec := runspec.Resolve(models.SandboxSpec{
@@ -232,17 +292,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return models.Sandbox{}, err
+		return err
 	}
 
 	if err := s.recordCreated(ctx, spec); err != nil {
-		return models.Sandbox{}, err
+		return err
 	}
 
 	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
 	if req.fronted() {
 		if err := s.cfg.Network.Reapply(ctx, id); err != nil {
-			return models.Sandbox{}, err
+			return err
 		}
 	}
 
@@ -252,15 +312,16 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		if ctx.Err() != nil {
 			td.Discard()
 
-			return models.Sandbox{}, fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
+			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return models.Sandbox{}, err
+		return err
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
 	// stop ends a sandbox.
 	td.Discard()
+	committed = true
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
@@ -268,10 +329,47 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		return nil
 	})
 	if err != nil {
-		return models.Sandbox{}, fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
+		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
 	}
 
-	return s.record(id)
+	return nil
+}
+
+// Create is Prepare then Complete, for a caller that wants the sandbox running before it returns. The
+// daemon splits the two for an uncached image, so a create over the API can answer pending and finish
+// in the background.
+func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox, error) {
+	sb, err := s.Prepare(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	if err := s.Complete(ctx, sb.ID, req); err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return s.record(sb.ID)
+}
+
+// WaitState answers at once: this service's Create is synchronous, so a sandbox it holds never sits in pending.
+// The daemon composes Prepare and Complete in the background and overrides this with a wait that blocks.
+func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
+
+// fail records why a create never reached running. It keeps the record so a get reads the reason and rm
+// frees it, and it returns the cause so the synchronous caller still sees the failure.
+func (s *Service) fail(ctx context.Context, id string, cause error) error {
+	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+		sb.State = models.StateFailed
+		sb.FailedReason = cause.Error()
+		sb.PID = 0
+
+		return nil
+	})
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
+	}
+
+	return cause
 }
 
 // ValidName, ValidSecretName and ValidPolicyName let a client refuse a spelling before it asks the daemon.
@@ -375,59 +473,27 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// claim pulls the image and writes the record that says the rootfs is in use, both under the image
-// lock: a prune that swept between the two would delete the rootfs this create is about to run.
-func (s *Service) claim(ctx context.Context, td *Teardown, req CreateRequest) (image.Image, string, string, error) {
-	// A registry that accepts the connection and then stalls would otherwise pin the daemon forever.
+// claim pulls the image the pending record already references and answers the state dir. The record
+// exists before the pull, so a prune keyed on that reference cannot delete the rootfs the create runs.
+func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (image.Image, string, error) {
+	// A registry that accepts the connection and then stalls would otherwise pin the create forever.
 	if s.cfg.PullTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.PullTimeout)
 		defer cancel()
 	}
 
-	var id, dir string
-	img, err := s.cfg.Images.Claim(ctx, req.Image, func(img image.Image) error {
-		var err error
-		id, dir, err = s.claimRecord(td, img, req)
-
-		return err
-	})
+	img, err := s.cfg.Images.Pull(ctx, req.Image)
 	if err != nil {
-		return image.Image{}, "", "", err
+		return image.Image{}, "", err
 	}
 
-	return img, id, dir, nil
-}
-
-// claimRecord takes the id, which is the only handle every later step is named by.
-func (s *Service) claimRecord(td *Teardown, img image.Image, req CreateRequest) (string, string, error) {
-	sb, err := s.cfg.Repo.Create(models.Sandbox{
-		Name:         req.Name,
-		Image:        img.Reference,
-		Provider:     s.cfg.Provider.Name(),
-		State:        models.StateCreated,
-		Resources:    req.Resources,
-		Secrets:      req.Secrets,
-		Policy:       req.Policy,
-		RestartOnOOM: req.RestartOnOOM,
-		HealthCheck:  withHealthDefaults(req.Health),
-		Health:       startingHealth(req.Health),
-		Restart:      withRestartDefaults(req.Restart),
-		CreatedAt:    time.Now().UTC(),
-	})
+	dir, err := s.cfg.Repo.Dir(id)
 	if err != nil {
-		return "", "", err
+		return image.Image{}, "", err
 	}
 
-	// Create is atomic, so there is nothing to give back until it returns; a failed Dir still deletes.
-	td.Push(func(context.Context) error { return s.cfg.Repo.Delete(sb.ID) })
-
-	dir, err := s.cfg.Repo.Dir(sb.ID)
-	if err != nil {
-		return "", "", err
-	}
-
-	return sb.ID, dir, nil
+	return img, dir, nil
 }
 
 // recordCreated copies what the substrate decided into the record, so a later process can reach the
@@ -462,6 +528,10 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -500,6 +570,15 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 
 	unlock := s.lock(id)
 	defer unlock()
+
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
+		return models.Sandbox{}, err
+	}
 
 	if err := s.stop(ctx, id, grace); err != nil {
 		return models.Sandbox{}, err

@@ -330,6 +330,37 @@ func TestGetAnswersForAnIDAndForAName(t *testing.T) {
 	}
 }
 
+// A get with ?wait=true blocks on the daemon until the create leaves pending, so it calls WaitState
+// before it reads the record; the default get reads at once.
+func TestGetWithWaitBlocksOnTheCreate(t *testing.T) {
+	s := seed(t)
+
+	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID+"?wait=true")
+	if status != http.StatusOK || body["id"] != s.running.ID {
+		t.Fatalf("GET ?wait answered %d %v, want the record of %s", status, body, s.running.ID)
+	}
+	if s.verbs.waited != s.running.ID {
+		t.Errorf("the get waited on %q, want the ref %s", s.verbs.waited, s.running.ID)
+	}
+
+	s.verbs.waited = ""
+	get(t, s.server, "/v0/sandboxes/"+s.running.ID)
+	if s.verbs.waited != "" {
+		t.Errorf("a get with no ?wait blocked on %q, want it to read the record at once", s.verbs.waited)
+	}
+}
+
+// A wait the daemon fails is the get's answer, and the record read never runs behind it.
+func TestGetWithWaitAnswersTheWaitFailure(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = errors.New("the wait broke")
+
+	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID+"?wait=true")
+	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "the wait broke") {
+		t.Errorf("GET ?wait with a failing wait answered %d %v, want 500 carrying the reason", status, body)
+	}
+}
+
 // The record only names its policy; what the host enforces for it is compiled on the daemon, never on the client.
 func TestGetCarriesWhatTheHostEnforces(t *testing.T) {
 	s := seed(t)

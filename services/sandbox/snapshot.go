@@ -41,6 +41,10 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
+	if err := failedGuard(id, sb); err != nil {
+		return models.Sandbox{}, err
+	}
+
 	if sb.State != models.StateRunning {
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}
 	}
@@ -128,6 +132,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -316,6 +324,12 @@ func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
+		unlock()
+
+		return "", models.Sandbox{}, nil, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
 		unlock()
 
 		return "", models.Sandbox{}, nil, err

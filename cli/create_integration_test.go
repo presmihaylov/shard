@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // TestCreateLeavesTheSandboxRunning is the SHARD-16 acceptance criterion, in process. The command
@@ -119,27 +120,38 @@ func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 	}
 }
 
-// TestCreateLeaksNothingWhenItFails is the other half: half-built state is a bug, so a failure at
-// any claim gives back the record, the lease, the namespace, the link and the mount.
-func TestCreateLeaksNothingWhenItFails(t *testing.T) {
-	// A supervisor that is not there fails the bind mount, which is the last claim before the start.
+// TestCreateThatFailsLeavesOnlyAFailedRecord: a failure at any claim gives back the lease, the
+// namespace, the link and the mount, and leaves one failed record that rm then frees.
+func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
+	// A supervisor that is not there fails the bind mount, the last claim before the start.
 	app, _ := ownDaemon(t, InitPathEnv+"="+filepath.Join(t.TempDir(), "absent"))
 
 	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/true"}); err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}
 
-	if held := holdings(t, app); len(held) != 0 {
-		t.Errorf("the failed create left %v", held)
+	held := holdings(t, app)
+	if len(held) != 1 || !strings.HasPrefix(held[0], "record:") {
+		t.Fatalf("the failed create left %v, want a single failed record", held)
 	}
 	assertNoSandboxMounts(t, app.Root)
+
+	id := strings.TrimPrefix(held[0], "record:")
+	if got := record(t, app, id); got.State != models.StateFailed {
+		t.Errorf("the leftover record is %q, want failed", got.State)
+	}
+
+	// rm frees the failed record: it holds no live process, so the record and everything under it goes.
+	cleanUp(t, app, id)
+	if held := holdings(t, app); len(held) != 0 {
+		t.Errorf("after rm the host holds %v, want nothing", held)
+	}
 }
 
-// TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart is the whole point of the handshake.
-// runsc create and runsc start both succeed for an entrypoint that does not exist, because the root
-// process is the supervisor. Without the handshake create printed an id, wrote running and exited 0,
-// and the record, the lease, the namespace, the link and the mount all outlived the sandbox.
-func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
+// TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord: runsc create and start both succeed
+// for a missing entrypoint, because the root process is the supervisor. The handshake catches it, so
+// create fails, prints no id, frees the lease, namespace, link and mount, and leaves a failed record.
+func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	before := holdings(t, app)
@@ -152,53 +164,66 @@ func TestCreateGivesEverythingBackWhenTheEntrypointDoesNotStart(t *testing.T) {
 		t.Errorf("create failed with %v, want it to say the entrypoint did not start", err)
 	}
 
-	// A create that failed prints no id: nothing reachable was left behind to name.
+	// A create that failed prints no id.
 	if got := strings.TrimSpace(out.String()); got != "" {
 		t.Errorf("the failed create printed %q, want nothing", got)
 	}
 
-	if after := holdings(t, app); !slices.Equal(after, before) {
-		t.Errorf("the failed create left %v, want the %v the host held before it", after, before)
+	added := addedHoldings(before, holdings(t, app))
+	if len(added) != 1 || !strings.HasPrefix(added[0], "record:") {
+		t.Fatalf("the failed create left %v beyond a single failed record", added)
 	}
 	assertNoSandboxMounts(t, app.Root)
+
+	id := strings.TrimPrefix(added[0], "record:")
+	if got := record(t, app, id); got.State != models.StateFailed {
+		t.Errorf("the leftover record is %q, want failed", got.State)
+	}
+
+	// rm frees the failed record and the host is back to what it held before the create.
+	cleanUp(t, app, id)
+	if got := holdings(t, app); !slices.Equal(got, before) {
+		t.Errorf("after rm the host holds %v, want the %v it held before", got, before)
+	}
 }
 
-// TestCreateLeaksNothingWhenItIsInterrupted: Ctrl-C ends the client's request, which cancels the
-// daemon's, so the give-back has to run on a context the client cannot have cancelled.
-func TestCreateLeaksNothingWhenItIsInterrupted(t *testing.T) {
-	app, _ := newCreateApp(t)
+// TestCreateFinishesWhenTheClientGivesUpWaiting: an uncached create runs in the daemon under its own run
+// context, not the caller's, so a client that cancels its wait cannot abort the create or leave
+// half-built state. The sandbox still reaches running.
+func TestCreateFinishesWhenTheClientGivesUpWaiting(t *testing.T) {
+	// A daemon of this test's own has an empty image tree, so the image is uncached and the create goes async.
+	app, _ := ownDaemon(t)
 
-	// The image is pulled first, so the cancellation lands on a create that has claims to give back.
-	if err := app.Run(t.Context(), []string{"pull", testImage}); err != nil {
-		t.Fatalf("pull: %v", err)
+	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
+		Image:   testImage,
+		Command: []string{"/bin/sleep", "600"},
+	})
+	if err != nil {
+		t.Fatalf("create from an uncached image: %v", err)
+	}
+	if sb.State != models.StatePending {
+		t.Fatalf("the create answered %q, want pending", sb.State)
 	}
 
-	before := holdings(t, app)
-
-	// The interrupt lands once the lease is claimed: the create is then inside the substrate.
+	// The client gives up on the wait at once; the daemon keeps building behind the record.
 	ctx, cancel := context.WithCancel(t.Context())
-	go func() {
-		for ctx.Err() == nil {
-			if len(leases(t, app.Root)) > len(before) {
-				cancel()
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	if err := app.Run(ctx, []string{"create", testImage, "--", "/bin/sleep", "600"}); err == nil {
-		t.Fatal("an interrupted create returned no error")
+	cancel()
+	if _, err := daemonClient(app).WaitSandbox(ctx, sb.ID); err == nil {
+		t.Fatal("a cancelled wait returned no error")
 	}
 
-	// The daemon gives everything back after the client is gone, so the check waits for it.
+	// The sandbox still reaches running, with nothing half-built left behind.
 	deadline := time.Now().Add(waitBudget)
 	for {
-		after := holdings(t, app)
-		if slices.Equal(after, before) {
+		got := record(t, app, sb.ID)
+		if got.State == models.StateRunning {
 			return
 		}
+		if got.State == models.StateFailed {
+			t.Fatalf("the sandbox failed after the client left: %s", got.FailedReason)
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the interrupted create left %v, want the %v the host held before it", after, before)
+			t.Fatalf("the sandbox stayed %q after the client left", got.State)
 		}
 
 		time.Sleep(10 * time.Millisecond)

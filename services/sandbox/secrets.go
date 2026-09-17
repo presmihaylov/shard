@@ -156,6 +156,12 @@ func (s *Service) holdCreatedOrStopped(ref, fix string) (string, models.Sandbox,
 		return "", models.Sandbox{}, nil, err
 	}
 
+	if err := failedGuard(id, sb); err != nil {
+		unlock()
+
+		return "", models.Sandbox{}, nil, err
+	}
+
 	if sb.State != models.StateCreated && sb.State != models.StateStopped {
 		unlock()
 

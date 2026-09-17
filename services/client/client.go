@@ -207,11 +207,21 @@ func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection
 	return out, nil
 }
 
-// CreateSandbox pulls the image inside the daemon, so the call has no bound of its own: only the caller's context ends it.
+// CreateSandbox records the sandbox pending and answers at once; the daemon pulls and starts it in the background.
 func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	var out models.Sandbox
-	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes", req, &out, 0); err != nil {
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes", req, &out, c.Timeout); err != nil {
 		return models.Sandbox{}, err
+	}
+
+	return out, nil
+}
+
+// WaitSandbox blocks until the sandbox leaves pending, then answers its record. The pull runs in the daemon, so it has no bound of its own.
+func (c *Client) WaitSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
+	var out sandbox.Inspection
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
+		return sandbox.Inspection{}, missing(ref, err)
 	}
 
 	return out, nil

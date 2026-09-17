@@ -81,6 +81,11 @@ one:
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` is left alone: it never ran.
+- A record that says `pending` becomes `running` when the substrate holds its process, because a
+  start that took before the daemon stopped did reach `running`. With no process behind it the record
+  becomes `failed`, and its `failed_reason` says `the daemon restarted before the create finished`: a
+  create the daemon was still running when it stopped never reached `running`, so the record is
+  terminal and only `rm` frees it.
 - Host netfilter is the policy of record and nothing re-applied it while the daemon was down, so
   the whole table goes back on once when any sandbox runs.
 
@@ -237,16 +242,22 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   failed.
 - `GET /v0/sandboxes/{id}` takes an id or a name and answers the record, with an `egress` object
   beside it when the record names a policy: what the host enforces, as `shard inspect` prints it.
-  404 when nothing has it, which `inspect` prints as `no sandbox <ref>`; 400 when the reference
-  does not validate; 500 for anything else: an unreadable record, a name link at something that is
-  not a sandbox, or a policy that cannot be compiled.
+  With `?wait=true` it holds until the record leaves `pending`, so a caller reads the `running` or
+  `failed` a background create reached rather than the `pending` it started; a record that is not
+  pending answers at once. 404 when nothing has it, which `inspect` prints as `no sandbox <ref>`;
+  400 when the reference does not validate; 500 for anything else: an unreadable record, a name link
+  at something that is not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
   "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "health": {"command" or
   "http": {"port", "path"}, "interval", "timeout", "retries"}, "restart": {"policy", "retries",
-  "backoff"}}`, pulls the image, builds and starts the sandbox, and answers 201 with the record. 400 when the body does not decode or a field does not validate,
-  or when it names a secret or a policy the host does not hold; 500 when a claim fails, and the
-  daemon has then given back everything it built.
+  "backoff"}}` and answers 201 with the record. A cached image needs no pull, so the create builds
+  and starts the sandbox before it answers and the record says `running`; a claim that fails then
+  gives everything back and answers 500. An uncached image makes the record `pending` and answers
+  before the download: the daemon pulls, builds and starts behind it, and the record lands `running`
+  or `failed` with a one-line `failed_reason`, so a background pull or start that fails is read from
+  the record, not an error. 400 when the body does not decode or a field does not validate, or when
+  it names a secret or a policy the host does not hold.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   ran again. 404 when nothing has the reference; 409 when the sandbox is not stopped.
 - `POST /v0/sandboxes/{id}/stop` takes `{"grace": <seconds>}`, the default being 10, waits the grace
@@ -367,6 +378,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
+| `sandbox_failed` | 409 | any verb but a get or an `rm` on a create that ended `failed`; the message carries the `failed_reason`, and `rm` frees it |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_snapshot` | 409 | resume or fork when the record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |

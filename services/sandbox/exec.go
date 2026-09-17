@@ -548,7 +548,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 // Attach replays the buffer so far to one client, then streams live until the command ends. A client that
 // drops returns its own context error and leaves the command running, so a later attach replays it again.
 func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (models.ExitStatus, error) {
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
@@ -643,13 +643,8 @@ func (s *Service) WaitExec(ctx context.Context, ref, execID string) (models.Exec
 
 // ListExecs answers every exec of one sandbox, sorted by id so a page cursor is a stable position.
 func (s *Service) ListExecs(_ context.Context, ref string) ([]models.Exec, error) {
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
-		return nil, err
-	}
-
-	// The sandbox must exist, so a list of an id nobody holds is a 404, not an empty page.
-	if _, err := s.cfg.Repo.Get(id); err != nil {
 		return nil, err
 	}
 
@@ -663,7 +658,7 @@ func (s *Service) KillExec(ctx context.Context, ref, execID, signal string) erro
 		return err
 	}
 
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
@@ -689,7 +684,7 @@ func (s *Service) KillExec(ctx context.Context, ref, execID, signal string) erro
 
 // DeleteExec forgets an exec that has ended and frees its buffer. An exec still running is refused.
 func (s *Service) DeleteExec(_ context.Context, ref, execID string) error {
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
@@ -713,7 +708,7 @@ func (s *Service) DeleteExec(_ context.Context, ref, execID string) error {
 
 // ResizeExec sets the window of one exec that runs on a terminal, which is what a SIGWINCH forwards.
 func (s *Service) ResizeExec(_ context.Context, ref, execID string, size TerminalSize) error {
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
@@ -753,7 +748,7 @@ func (s *Service) dropExecs(id string) {
 
 // execFor resolves a reference and finds one of its execs, the path a get and a wait share.
 func (s *Service) execFor(ref, execID string) (*execSession, error) {
-	id, err := s.cfg.Repo.Resolve(ref)
+	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -838,16 +833,31 @@ func (s *Service) capExitedExecs(sandboxID string) {
 	}
 }
 
+// resolveForExec resolves the reference and refuses a failed sandbox, so every exec verb answers 409
+// sandbox_failed on one, the same as the contract gives every verb but a delete of the sandbox itself.
+func (s *Service) resolveForExec(ref string) (string, models.Sandbox, error) {
+	id, err := s.cfg.Repo.Resolve(ref)
+	if err != nil {
+		return "", models.Sandbox{}, err
+	}
+
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return "", models.Sandbox{}, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
+		return "", models.Sandbox{}, err
+	}
+
+	return id, sb, nil
+}
+
 // readyForExec resolves the reference and refuses a sandbox no command can run in. The record
 // answers for an id nobody created, and the substrate for the state, because a record saying
 // running outlives a host restart.
 func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) {
-	id, err := s.cfg.Repo.Resolve(ref)
-	if err != nil {
-		return "", err
-	}
-
-	sb, err := s.cfg.Repo.Get(id)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return "", err
 	}

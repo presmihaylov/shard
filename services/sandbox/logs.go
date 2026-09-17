@@ -50,7 +50,12 @@ func (s *Service) openLogs(ref string) (string, *os.File, error) {
 		return "", nil, err
 	}
 
-	if _, err := s.cfg.Repo.Get(id); err != nil {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if err := failedGuard(id, sb); err != nil {
 		return "", nil, err
 	}
 

@@ -15,7 +15,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// create asks the daemon for a sandbox and prints the id; the pull happens there, so the call has no bound.
+// create asks the daemon for a sandbox and prints the id; the pull and start happen there, so the wait has no bound.
 func (a App) create(ctx context.Context, args []string) error {
 	req, err := parseCreate(args)
 	if err != nil {
@@ -25,6 +25,15 @@ func (a App) create(ctx context.Context, args []string) error {
 	sb, err := a.client().CreateSandbox(ctx, req)
 	if err != nil {
 		return err
+	}
+
+	// The daemon creates in the background; the CLI blocks, so an operator sees a ready sandbox or the reason it failed.
+	final, err := a.client().WaitSandbox(ctx, sb.ID)
+	if err != nil {
+		return err
+	}
+	if final.State == models.StateFailed {
+		return fmt.Errorf("sandbox %s failed to start: %s", final.ID, final.FailedReason)
 	}
 
 	return a.print(sb.ID)
