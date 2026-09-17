@@ -413,32 +413,46 @@ the memory and the disk it writes; `StopSandbox` and `RemoveSandbox` add the gra
 ## The TCP front
 
 `shard serve` is how a client on another host reaches the daemon. It accepts TCP, terminates TLS,
-checks `Authorization: Bearer <token>` against the token file, and then dials `${root}/shard.sock`
-and copies bytes both ways:
+verifies the JWT in `Authorization: Bearer <jwt>` against a signing secret, and then dials
+`${root}/shard.sock` and copies bytes both ways:
 
 ```
 shard --root /var/lib/shard serve --listen :2376 \
-  --cert /etc/shard/serve.crt --key /etc/shard/serve.key --token-file /etc/shard/serve.token
+  --cert /etc/shard/serve.crt --key /etc/shard/serve.key --secret-file /etc/shard/serve.secret
 ```
 
-It is a byte proxy and not an API. It reads the request line and the headers of a connection only as
+It is a byte proxy and not an API. It reads the request line and the headers of a request only as
 far as the auth header, replays those bytes onto the socket and then splices the two connections, so
 the WebSocket handshake of an exec, a `logs` follow or an `egress-log` follow, and every message
 after it, pass through untouched and every route above works unchanged. A bad or missing token is a
 `401` with the code `unauthorized`, written before anything is dialed, so an unauthenticated client
 never reaches the daemon. A socket that does not answer is a `502` with the code `internal`. The
-token is compared in constant time, and neither the front nor the CLI ever logs its value. Without
-`--cert` and `--key` the front refuses to start: there is no plain TCP mode to fall back to. The
-token file must not be readable by everyone on the host, and the front refuses one that is.
+front verifies HS256 alone: a token signed by another algorithm, a token signed by another secret, a
+token with no subject, a token with no expiry and an expired token are each the same `401`. Neither
+the front nor the CLI ever logs a token or the secret, and the front logs the subject of every
+request it lets through. Without `--cert` and `--key` the front refuses to start: there is no plain
+TCP mode to fall back to. The secret file must not be readable by everyone on the host, and the front
+refuses one that is.
 
-That is the whole of the access control: TLS on the wire and one bearer token in a file. There is no
-user, no role and no client certificate, and a client that holds the token holds every verb.
+That is the whole of the access control: TLS on the wire and one signing secret in a file. There is
+no user and no role yet, and a client that holds a token holds every verb.
 
-The check is per connection, as a TLS client certificate would be: the token is read once, at the
-head of the first request, and the rest of that connection is bytes. A WebSocket is a connection of
-its own, so the CLI sends the token on that handshake too.
+The check is per request, not per connection: the front forces `Connection: close` on every request
+it forwards, so a kept-alive connection cannot carry a second request past the one it verified. A
+WebSocket upgrade is the one exception, because its `Connection: Upgrade` is what makes the handshake
+work, and the daemon owns the lifetime of that connection once the front splices it.
 
-The front reads the token file once, at start, so a rotation needs a `shard serve` restart, and that
+A token is minted on the server, from the same secret, and never over the API:
+
+```
+shard serve mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
+```
+
+`mint` prints one token to stdout and exits. It is a local verb like `daemon` and `serve`: it never
+reaches the daemon, and the daemon never sees the secret. `--name` is the subject the front logs, and
+`--duration` defaults to 24h. Rotate the secret and every token it signed stops verifying at once.
+
+The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that
 restart ends no connection that is already spliced.
 
 **This is a deliberate deviation from dockerd and hypeman, which bind TCP themselves.** The shard
@@ -449,13 +463,13 @@ on purpose:
 ```
 useradd --system --no-create-home --gid shard shard
 install -d -m0750 /etc/shard
-openssl rand -hex 32 > /etc/shard/serve.token
-chown root:shard /etc/shard/serve.token && chmod 0640 /etc/shard/serve.token
+openssl rand -hex 32 > /etc/shard/serve.secret
+chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
 cp packaging/systemd/shard-serve.service /etc/systemd/system/
 systemctl enable --now shard-serve
 ```
 
-The unit runs as `shard:shard`, which is the group the socket is given, and reads the token from a
+The unit runs as `shard:shard`, which is the group the socket is given, and reads the secret from a
 root-owned `0640` file that the group can read. The account has no other privilege: it cannot read
 a state file, and the daemon still applies every rule of every verb.
 

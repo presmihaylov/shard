@@ -8,7 +8,7 @@ BindsTo=shard.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/shard --root /var/lib/shard serve --listen :2376 --cert /etc/shard/serve.crt --key /etc/shard/serve.key --token-file /etc/shard/serve.token
+ExecStart=/usr/local/bin/shard --root /var/lib/shard serve --listen :2376 --cert /etc/shard/serve.crt --key /etc/shard/serve.key --secret-file /etc/shard/serve.secret
 # The unprivileged account of the front. Its only privilege is the group that may reach the socket.
 User=shard
 Group=shard

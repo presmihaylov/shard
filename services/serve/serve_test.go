@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -24,11 +25,12 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/presmihaylov/shard/models"
 )
 
-const testToken = "e2e-token-value"
+const testSecret = "e2e-secret-value-0000000000000000"
 
 // upstream is a fake daemon on a socket under a root, which counts what reached it.
 type upstream struct {
@@ -106,12 +108,12 @@ func echo(t *testing.T, w http.ResponseWriter, r *http.Request) {
 }
 
 // front starts a server over the fake daemon and answers the address it bound.
-func front(t *testing.T, root, tokenFile string) string {
+func front(t *testing.T, root, secret string) string {
 	t.Helper()
 
 	cert, key := keyPair(t)
 
-	server, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, TokenFile: tokenFile, Root: root, Out: io.Discard})
+	server, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: secret, Root: root, Out: io.Discard})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -167,8 +169,9 @@ func ask(t *testing.T, address, token string) *http.Response {
 
 func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
 	up := fakeDaemon(t)
+	token := mint(t, "ci")
 
-	resp := ask(t, front(t, up.root, tokenFile(t, testToken)), testToken) //nolint:bodyclose // ask closes the body in a cleanup
+	resp := ask(t, front(t, up.root, secretFile(t, testSecret)), token) //nolint:bodyclose // ask closes the body in a cleanup
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the front answered %d, want 200", resp.StatusCode)
@@ -184,8 +187,8 @@ func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
 
 	select {
 	case got := <-up.requests:
-		// The head is replayed byte for byte, so the daemon sees the request the client wrote.
-		if want := "GET /v0/sandboxes auth=Bearer " + testToken; got != want {
+		// The front rewrites only the Connection header, so the method, the path and the token reach the daemon.
+		if want := "GET /v0/sandboxes auth=Bearer " + token; got != want {
 			t.Errorf("the daemon saw %q, want %q", got, want)
 		}
 	default:
@@ -196,9 +199,10 @@ func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
 // The front carries every message of a WebSocket both ways, because it stops parsing at the head.
 func TestTheFrontSplicesAWebSocket(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, tokenFile(t, testToken))
+	address := front(t, up.root, secretFile(t, testSecret))
+	token := mint(t, "ci")
 
-	header := http.Header{"Authorization": {"Bearer " + testToken}}
+	header := http.Header{"Authorization": {"Bearer " + token}}
 	conn, _, err := websocket.Dial(t.Context(), "wss://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPClient: trusting(), HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
 	if err != nil {
 		t.Fatalf("dial through the front: %v", err)
@@ -230,12 +234,31 @@ func TestTheFrontSplicesAWebSocket(t *testing.T) {
 
 func TestABadTokenIs401AndNothingIsDialed(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, tokenFile(t, testToken))
+	address := front(t, up.root, secretFile(t, testSecret))
 
-	for _, token := range []string{"", "wrong-token-value", testToken + "x"} {
+	now := time.Now()
+	valid := jwt.RegisteredClaims{Subject: "ci", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))}
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate an rsa key: %v", err)
+	}
+
+	tokens := map[string]string{
+		"empty":        "",
+		"not a jwt":    "not-a-jwt",
+		"wrong secret": signed(t, jwt.SigningMethodHS256, []byte("another-secret-value-000000000000"), valid),
+		"alg none":     signed(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, valid),
+		"alg rs256":    signed(t, jwt.SigningMethodRS256, rsaKey, valid),
+		"expired":      signed(t, jwt.SigningMethodHS256, []byte(testSecret), jwt.RegisteredClaims{Subject: "ci", IssuedAt: jwt.NewNumericDate(now.Add(-2 * time.Hour)), ExpiresAt: jwt.NewNumericDate(now.Add(-time.Hour))}),
+		"no subject":   signed(t, jwt.SigningMethodHS256, []byte(testSecret), jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))}),
+		"no expiry":    signed(t, jwt.SigningMethodHS256, []byte(testSecret), jwt.RegisteredClaims{Subject: "ci", IssuedAt: jwt.NewNumericDate(now)}),
+	}
+
+	for name, token := range tokens {
 		resp := ask(t, address, token) //nolint:bodyclose // ask closes the body in a cleanup
 		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("the token %q answered %d, want 401", token, resp.StatusCode)
+			t.Errorf("%s: the front answered %d, want 401", name, resp.StatusCode)
 		}
 
 		var body struct {
@@ -245,27 +268,27 @@ func TestABadTokenIs401AndNothingIsDialed(t *testing.T) {
 			} `json:"error"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			t.Fatalf("decode the refusal: %v", err)
+			t.Fatalf("%s: decode the refusal: %v", name, err)
 		}
 		if body.Error.Code != models.CodeUnauthorized || body.Error.Message == "" {
-			t.Errorf("the refusal reads %+v, want a line and the code unauthorized", body)
+			t.Errorf("%s: the refusal reads %+v, want a line and the code unauthorized", name, body)
 		}
 	}
 
 	if dialed := up.dialed.Load(); dialed != 0 {
-		t.Errorf("the front dialed the socket %d times for a request it refused, want none", dialed)
+		t.Errorf("the front dialed the socket %d times for requests it refused, want none", dialed)
 	}
 }
 
 func TestTheFrontRefusesToStartWithoutATLSPair(t *testing.T) {
 	cert, key := keyPair(t)
-	token := tokenFile(t, testToken)
+	secret := secretFile(t, testSecret)
 	root := shortRoot(t)
 
 	for name, cfg := range map[string]Config{
-		"no certificate": {KeyFile: key, TokenFile: token, Root: root},
-		"no key":         {CertFile: cert, TokenFile: token, Root: root},
-		"neither":        {TokenFile: token, Root: root},
+		"no certificate": {KeyFile: key, SecretFile: secret, Root: root},
+		"no key":         {CertFile: cert, SecretFile: secret, Root: root},
+		"neither":        {SecretFile: secret, Root: root},
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("%s: the front started, want a refusal", name)
@@ -273,38 +296,144 @@ func TestTheFrontRefusesToStartWithoutATLSPair(t *testing.T) {
 	}
 }
 
-func TestReadTokenRefusesAFileTheHostCanRead(t *testing.T) {
-	path := tokenFile(t, testToken)
+func TestTheFrontRefusesToStartWithoutASecret(t *testing.T) {
+	cert, key := keyPair(t)
+	if _, err := New(Config{CertFile: cert, KeyFile: key, Root: shortRoot(t)}); err == nil {
+		t.Error("the front started with no secret file, want a refusal")
+	}
+}
+
+func TestMintAndVerifyRoundTrip(t *testing.T) {
+	token, err := Mint([]byte(testSecret), "ci", time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	sub, err := verify([]byte(testSecret), token)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if sub != "ci" {
+		t.Errorf("verify answered %q, want the subject the token names", sub)
+	}
+}
+
+func TestMintRefusesAnEmptySubjectAndAPastDuration(t *testing.T) {
+	if _, err := Mint([]byte(testSecret), "", time.Hour); err == nil {
+		t.Error("Mint signed a token with no subject")
+	}
+	if _, err := Mint([]byte(testSecret), "ci", 0); err == nil {
+		t.Error("Mint signed a token that is already expired")
+	}
+}
+
+func TestForwardHeadForcesConnectionClose(t *testing.T) {
+	head := []byte("GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nConnection: keep-alive\r\n\r\n")
+
+	got := string(forwardHead(head))
+	if strings.Count(strings.ToLower(got), "connection:") != 1 {
+		t.Errorf("the forwarded head is %q, want exactly one Connection header", got)
+	}
+	if !strings.Contains(got, "Connection: close\r\n") {
+		t.Errorf("the forwarded head is %q, want Connection: close", got)
+	}
+	if strings.Contains(strings.ToLower(got), "keep-alive") {
+		t.Errorf("the forwarded head is %q, want the client's Connection dropped", got)
+	}
+	if !strings.HasPrefix(got, "GET /v0/sandboxes HTTP/1.1\r\n") {
+		t.Errorf("the forwarded head lost the request line: %q", got)
+	}
+	if !strings.HasSuffix(got, "\r\n\r\n") {
+		t.Errorf("the forwarded head does not end the headers: %q", got)
+	}
+}
+
+func TestForwardHeadKeepsAWebSocketUpgrade(t *testing.T) {
+	head := []byte("GET /v0/sandboxes/s1/logs?follow=true HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+
+	if got := forwardHead(head); string(got) != string(head) {
+		t.Errorf("the forwarded head changed a WebSocket upgrade to %q", got)
+	}
+}
+
+func TestReadSecretRefusesAFileTheHostCanRead(t *testing.T) {
+	path := secretFile(t, testSecret)
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 
-	_, err := ReadToken(path)
+	_, err := ReadSecret(path)
 	if err == nil {
-		t.Fatal("a world-readable token file was accepted")
+		t.Fatal("a world-readable secret file was accepted")
 	}
-	if strings.Contains(err.Error(), testToken) {
-		t.Error("the refusal carries the token value")
+	if strings.Contains(err.Error(), testSecret) {
+		t.Error("the refusal carries the secret value")
 	}
 }
 
-func TestReadTokenRefusesAnEmptyFileAndNoFile(t *testing.T) {
-	if _, err := ReadToken(tokenFile(t, "  \n")); err == nil {
-		t.Error("an empty token file was accepted")
+func TestReadSecretRefusesAnEmptyFileAndNoFile(t *testing.T) {
+	if _, err := ReadSecret(secretFile(t, "  \n")); err == nil {
+		t.Error("an empty secret file was accepted")
 	}
-	if _, err := ReadToken(""); err == nil {
-		t.Error("no token file at all was accepted")
+	if _, err := ReadSecret(""); err == nil {
+		t.Error("no secret file at all was accepted")
+	}
+}
+
+func TestReadTokenRefusesAFileTheHostCanRead(t *testing.T) {
+	path := tokenFile(t, "cli-token")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, err := ReadToken(path); err == nil {
+		t.Fatal("a world-readable token file was accepted")
 	}
 }
 
 func TestReadTokenTrimsTheFile(t *testing.T) {
-	token, err := ReadToken(tokenFile(t, testToken+"\n"))
+	token, err := ReadToken(tokenFile(t, "cli-token\n"))
 	if err != nil {
 		t.Fatalf("ReadToken: %v", err)
 	}
-	if token != testToken {
+	if token != "cli-token" {
 		t.Errorf("ReadToken answered %q, want the trimmed token", token)
 	}
+}
+
+// mint signs a valid token for sub over the test secret.
+func mint(t *testing.T, sub string) string {
+	t.Helper()
+
+	token, err := Mint([]byte(testSecret), sub, time.Hour)
+	if err != nil {
+		t.Fatalf("mint a token: %v", err)
+	}
+
+	return token
+}
+
+// signed builds a token of method over key, for the refusal cases the front must reject.
+func signed(t *testing.T, method jwt.SigningMethod, key any, claims jwt.Claims) string {
+	t.Helper()
+
+	token, err := jwt.NewWithClaims(method, claims).SignedString(key)
+	if err != nil {
+		t.Fatalf("sign a test token: %v", err)
+	}
+
+	return token
+}
+
+func secretFile(t *testing.T, value string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	return path
 }
 
 func tokenFile(t *testing.T, value string) string {
