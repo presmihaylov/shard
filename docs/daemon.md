@@ -265,17 +265,20 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   terminal to resize.
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
   entrypoint wrote. 404; 400 for a `follow` that is not a boolean.
-- `GET /v0/sandboxes/{id}/logs?follow=true` is a WebSocket: binary messages, the log bytes on stream 1,
-  then `{"reason": "stopped"|"removed"}` on stream 3 when the sandbox is gone and the daemon closes
-  with 1000, or the failure on stream 5. 404 before the 101; 400 `websocket_required` without the
-  handshake. `curl -N` no longer follows a log; `shard logs -f` does.
+- `GET /v0/sandboxes/{id}/logs?follow=true` with the WebSocket handshake is binary messages, the log
+  bytes on stream 1, then `{"reason": "stopped"|"removed"}` on stream 3 when the sandbox is gone and
+  the daemon closes with 1000, or the failure on stream 5. Without the handshake it is 200 chunked
+  `text/plain`, the bytes as they come, and the body ends when the sandbox stops or is removed, so
+  `curl -N` follows a log. 404 either way, before anything is on the wire. `shard logs -f` takes the
+  WebSocket.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
   array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
   404. `shard logs --egress` prints one record per line.
-- `GET /v0/sandboxes/{id}/egress-log?follow=true` is a WebSocket: text messages, one JSON record each,
-  live. A removed sandbox ends it with close 1000 and the reason as the close text; a failure of the
-  follow is close 1011 with the error. 404 before the 101; 400 `websocket_required` without the
-  handshake.
+- `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake is text messages, one JSON record
+  each, live. A stopped or removed sandbox ends it with close 1000 and the reason as the close text; a
+  failure of the follow is close 1011 with the error. Without the handshake it is 200 chunked
+  `application/x-ndjson`, one record per line as it lands, and the body ends on the same stop or rm.
+  404 either way, before anything is on the wire.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -326,7 +329,9 @@ the command never ran) and 5 (a failure of the daemon's own, `{"error", "code"}`
 stream predates the error object and keeps its shape). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
 session and the daemon closes with 1000; a client that closes first kills the command. A `tty` exec
 carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
-apart. Ping and pong are the standard ones.
+apart. Ping and pong are the standard ones. The two `?follow=true` routes also serve without the
+handshake, as a chunked body that ends with the sandbox, so `curl -N` follows either; an exec
+attach does not.
 
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb the
 provider does not claim is a 409 too: `provider <name> does not support <verb> on this host`.
@@ -346,7 +351,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `no_snapshot` | 409 | resume or fork when the record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
-| `websocket_required` | 400 | `?follow=true` or an exec attach without the WebSocket handshake |
+| `websocket_required` | 400 | an exec attach without the WebSocket handshake |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
