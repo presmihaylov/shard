@@ -137,6 +137,8 @@ func (s *Store) List() ([]models.Policy, error) {
 
 		policies = append(policies, policy)
 	}
+	// The files sort by name plus .json, and - sorts before ., so deny-all.json comes before deny.json.
+	slices.SortFunc(policies, func(a, b models.Policy) int { return strings.Compare(a.Name, b.Name) })
 
 	return policies, nil
 }

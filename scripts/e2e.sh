@@ -730,6 +730,16 @@ shard ls --all | grep "^${RECONCILE_ID}" | grep -q "daemon restarted and found n
 say "ls gives the reason: daemon restarted and found no process"
 grep -q "${RECONCILE_ID}" "${DAEMON_LOG}" || fail "the daemon logged no line for the record it corrected"
 say "the daemon logged the record it corrected"
+# Two records exist here, one running and one stopped, which is enough to page the list over the socket.
+PAGE=$(curl -sS --unix-socket "${SOCKET}" 'http://shard/v0/sandboxes?all=true&limit=1')
+NEXT=$(echo "${PAGE}" | grep -o '"next": *"[^"]*"' | cut -d'"' -f4)
+[ -n "${NEXT}" ] || fail "the first page of two sandboxes carries no next: ${PAGE}"
+expect "$(echo "${PAGE}" | grep -o '"id": *"[^"]*"' | wc -l | tr -d ' ')" "1" "limit=1 answers one sandbox and a next"
+PAGE=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes?all=true&limit=1&cursor=${NEXT}")
+expect "$(echo "${PAGE}" | grep -o '"id": *"[^"]*"' | wc -l | tr -d ' ')" "1" "the cursor answers the other sandbox"
+expect "$(echo "${PAGE}" | grep -c '"next": *null')" "1" "the last page carries a null next"
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' --unix-socket "${SOCKET}" 'http://shard/v0/sandboxes?cursor=not/an-id')
+expect "${CODE}" "400" "a malformed cursor is refused"
 shard rm --force "${RECONCILE_ID}" >/dev/null || fail "rm did not free the sandbox the host lost"
 ip link delete "${RECONCILE_LINK}" >/dev/null 2>&1 || true
 RECONCILE_ID=""

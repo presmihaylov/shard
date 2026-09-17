@@ -73,7 +73,7 @@ func TestGeneratedIDsReadAsWords(t *testing.T) {
 			t.Fatalf("the id %q does not read as adjective-noun-suffix", id)
 		}
 
-		if err := validID(id); err != nil {
+		if err := ValidID(id); err != nil {
 			t.Fatalf("the generated id %q is not a valid one: %v", id, err)
 		}
 	}

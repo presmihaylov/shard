@@ -141,8 +141,10 @@ type versionResponse struct {
 	Version string `json:"version"`
 }
 
+// listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
 type listResponse struct {
 	Sandboxes []models.Sandbox `json:"sandboxes"`
+	Next      *string          `json:"next"`
 	// Warnings names the records the daemon could not read, one string each, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -183,6 +185,13 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	q, err := pageOf(r, sandboxstate.ValidID)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	sandboxes, unreadable := sandbox.List(h.repo, all)
 
 	warnings, err := partial(unreadable)
@@ -192,7 +201,9 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: sandboxes, Warnings: warnings})
+	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
+
+	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: sandboxes, Next: next, Warnings: warnings})
 }
 
 func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
