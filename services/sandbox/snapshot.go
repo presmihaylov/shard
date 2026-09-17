@@ -41,7 +41,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -135,7 +135,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 		return models.Sandbox{}, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -329,7 +329,7 @@ func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (
 		return "", models.Sandbox{}, nil, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		unlock()
 
 		return "", models.Sandbox{}, nil, err

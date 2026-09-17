@@ -103,48 +103,82 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v0/version", h.getVersion)
-	mux.HandleFunc("GET /v0/daemon", h.getDaemon)
-	mux.HandleFunc("GET /v0/sandboxes", h.listSandboxes)
-	mux.HandleFunc("GET /v0/sandboxes/{id}", h.getSandbox)
-	mux.HandleFunc("POST /v0/sandboxes", h.createSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/start", h.startSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/stop", h.stopSandbox)
-	mux.HandleFunc("DELETE /v0/sandboxes/{id}", h.removeSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/pause", h.pauseSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/resume", h.resumeSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/fork", h.forkSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/clone", h.cloneSandbox)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/exec", h.createExec)
-	mux.HandleFunc("GET /v0/sandboxes/{id}/exec", h.listExecs)
-	mux.HandleFunc("GET /v0/sandboxes/{id}/exec/{exec}", h.getExec)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/kill", h.killExec)
-	mux.HandleFunc("DELETE /v0/sandboxes/{id}/exec/{exec}", h.deleteExec)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/exec/{exec}/resize", h.resizeExec)
-	mux.HandleFunc("GET /v0/sandboxes/{id}/logs", h.sandboxLogs)
-	mux.HandleFunc("GET /v0/sandboxes/{id}/egress-log", h.sandboxEgressLog)
-	mux.HandleFunc("POST /v0/sandboxes/{id}/secrets/{name}", h.grantSecret)
-	mux.HandleFunc("DELETE /v0/sandboxes/{id}/secrets/{name}", h.ungrantSecret)
-	mux.HandleFunc("PUT /v0/sandboxes/{id}/policy", h.attachPolicy)
-	mux.HandleFunc("DELETE /v0/sandboxes/{id}/policy", h.detachPolicy)
-	mux.HandleFunc("GET /v0/policies", h.listPolicies)
-	mux.HandleFunc("GET /v0/policies/{name}", h.getPolicy)
-	mux.HandleFunc("PUT /v0/policies/{name}", h.putPolicy)
-	mux.HandleFunc("DELETE /v0/policies/{name}", h.removePolicy)
-	mux.HandleFunc("GET /v0/secrets", h.listSecrets)
-	mux.HandleFunc("PUT /v0/secrets/{name}", h.putSecret)
-	mux.HandleFunc("DELETE /v0/secrets/{name}", h.removeSecret)
-	mux.HandleFunc("GET /v0/images", h.listImages)
-	mux.HandleFunc("POST /v0/images/pull", h.pullImage)
-	mux.HandleFunc("POST /v0/images/prune", h.pruneImages)
-	// An image reference carries slashes, so it is the rest of the path and not one segment of it.
-	mux.HandleFunc("DELETE /v0/images/{ref...}", h.removeImage)
+	for _, e := range h.routeTable() {
+		mux.HandleFunc(e.Method+" "+e.Pattern, e.handler)
+	}
 	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: errorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
 	})
 
 	return mux
+}
+
+// Route is one method and pattern the daemon serves. The front maps each to the capability it enforces.
+type Route struct {
+	Method  string
+	Pattern string
+}
+
+// routeEntry binds a route to its handler; routeTable is the one list NewHandler registers and Routes reports.
+type routeEntry struct {
+	Route
+	handler http.HandlerFunc
+}
+
+// routeTable is the single source of the daemon's routes, less the catch-all that answers an unknown path.
+func (h *Handler) routeTable() []routeEntry {
+	return []routeEntry{
+		{Route{"GET", "/v0/version"}, h.getVersion},
+		{Route{"GET", "/v0/daemon"}, h.getDaemon},
+		{Route{"GET", "/v0/sandboxes"}, h.listSandboxes},
+		{Route{"GET", "/v0/sandboxes/{id}"}, h.getSandbox},
+		{Route{"POST", "/v0/sandboxes"}, h.createSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/start"}, h.startSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/stop"}, h.stopSandbox},
+		{Route{"DELETE", "/v0/sandboxes/{id}"}, h.removeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/pause"}, h.pauseSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/resume"}, h.resumeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/fork"}, h.forkSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/clone"}, h.cloneSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/exec"}, h.createExec},
+		{Route{"GET", "/v0/sandboxes/{id}/exec"}, h.listExecs},
+		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}"}, h.getExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill"}, h.killExec},
+		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}"}, h.deleteExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize"}, h.resizeExec},
+		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
+		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
+		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
+		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}"}, h.ungrantSecret},
+		{Route{"PUT", "/v0/sandboxes/{id}/policy"}, h.attachPolicy},
+		{Route{"DELETE", "/v0/sandboxes/{id}/policy"}, h.detachPolicy},
+		{Route{"GET", "/v0/policies"}, h.listPolicies},
+		{Route{"GET", "/v0/policies/{name}"}, h.getPolicy},
+		{Route{"PUT", "/v0/policies/{name}"}, h.putPolicy},
+		{Route{"DELETE", "/v0/policies/{name}"}, h.removePolicy},
+		{Route{"GET", "/v0/secrets"}, h.listSecrets},
+		{Route{"PUT", "/v0/secrets/{name}"}, h.putSecret},
+		{Route{"DELETE", "/v0/secrets/{name}"}, h.removeSecret},
+		{Route{"GET", "/v0/images"}, h.listImages},
+		{Route{"POST", "/v0/images/pull"}, h.pullImage},
+		{Route{"POST", "/v0/images/prune"}, h.pruneImages},
+		// An image reference carries slashes, so it is the rest of the path and not one segment of it.
+		{Route{"DELETE", "/v0/images/{ref...}"}, h.removeImage},
+	}
+}
+
+// Routes lists every method and pattern the daemon serves. The front covers each with a capability.
+func Routes() []Route {
+	// The zero Handler is enough: Routes reads only each method and pattern, never a handler.
+	var h Handler
+	entries := h.routeTable()
+	routes := make([]Route, 0, len(entries))
+	for _, e := range entries {
+		routes = append(routes, e.Route)
+	}
+
+	return routes
 }
 
 type versionResponse struct {
@@ -259,6 +293,13 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This handler reads the log around the Service, so it repeats the guard the lifecycle verbs get for free.
+	if err := sandbox.FailedGuard(id, sb); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
 		h.writeError(w, err)
@@ -333,7 +374,15 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, sb)
 }
 
+// createSandbox answers the new record two ways: ?wait=true blocks until it leaves pending, the default at once.
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
+	wait, err := boolQuery(r, "wait")
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	var req sandbox.CreateRequest
 	if err := decode(r, &req); err != nil {
 		h.writeError(w, err)
@@ -346,6 +395,21 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 
 		return
+	}
+
+	if wait {
+		if err := h.lifecycle.WaitState(r.Context(), sb.ID); err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		sb, err = sandbox.Get(h.repo, sb.ID)
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
 	}
 
 	h.writeJSON(w, http.StatusCreated, sb)

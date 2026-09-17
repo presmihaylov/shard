@@ -143,9 +143,9 @@ type StateError struct {
 
 func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
 
-// failedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
+// FailedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
 // A create that never reached running is terminal, so an operator reads the reason and then removes it.
-func failedGuard(id string, sb models.Sandbox) error {
+func FailedGuard(id string, sb models.Sandbox) error {
 	if sb.State != models.StateFailed {
 		return nil
 	}
@@ -531,7 +531,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 
@@ -576,7 +576,7 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 		return models.Sandbox{}, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return models.Sandbox{}, err
 	}
 

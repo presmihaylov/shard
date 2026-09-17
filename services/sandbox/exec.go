@@ -846,7 +846,7 @@ func (s *Service) resolveForExec(ref string) (string, models.Sandbox, error) {
 		return "", models.Sandbox{}, err
 	}
 
-	if err := failedGuard(id, sb); err != nil {
+	if err := FailedGuard(id, sb); err != nil {
 		return "", models.Sandbox{}, err
 	}
 
