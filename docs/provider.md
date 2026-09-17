@@ -76,6 +76,14 @@ refused verb, so `bundle`'s overlay stub and `netns.ErrNotLinux` are plain error
 `Capabilities` is computed once, in the constructor, and the method is a cheap getter. A probe that
 needed a context and an error would be a fourth thing to get wrong.
 
+## What a memory bound means
+
+`--memory` bounds a sandbox the same way on both substrates: past the bound the whole sandbox dies,
+not one process inside it, and the daemon restarts it when the record set `restart_on_oom`. gVisor
+sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox sets the same pair.
+`sysbox-runc` applies `memory.max` from the bundle but neither knob, so without them the OOM killer
+took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
+
 ## What `Status` means
 
 `Status` asks the substrate and reports what it says now. It never reads the shard record, and the

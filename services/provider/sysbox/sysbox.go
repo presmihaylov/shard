@@ -115,8 +115,8 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	return nil
 }
 
-// create runs sysbox-runc create over the log the container inherits. The memory bound rides in
-// config.json and runc applies it to the cgroup itself, so nothing here touches the cgroup after.
+// create runs sysbox-runc create over the log the container inherits. runc applies the memory bound
+// from config.json; boundMemory then sets the two OOM knobs runc leaves alone.
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
 	// A create over a state directory that already ran must not let the previous run answer a wait,
 	// a start or a restart count, so the supervisor's files go before anything else runs.
@@ -133,7 +133,39 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	// The container keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	return p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
+	if err := p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
+		return err
+	}
+
+	if err := boundMemory(p.cgroupRoot, spec); err != nil {
+		// runc made the container, so a failed bound must delete it, or it dangles on the rootfs the caller drops.
+		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
+	}
+
+	return nil
+}
+
+// boundMemory makes a memory bound kill the whole sandbox, not one process. runc sets memory.max from
+// config.json but neither knob, so without them the OOM killer takes one guest process, the sandbox
+// lives, and restart_on_oom never fires. gvisor's provider sets the same pair.
+func boundMemory(root string, spec models.SandboxSpec) error {
+	if bundle.MemoryBound(spec.Resources) == 0 {
+		return nil
+	}
+
+	dir := cgroupDir(root, spec.ID)
+
+	// A cgroup that may swap reclaims to disk under pressure instead of dying at its ceiling.
+	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+		return fmt.Errorf("pin the swap of sandbox %s to none: %w", spec.ID, err)
+	}
+
+	// The OOM killer would take one guest process and leave the sandbox up, so group the whole kill.
+	if err := cgroup.SetOOMGroup(dir); err != nil {
+		return fmt.Errorf("group the OOM kill of sandbox %s: %w", spec.ID, err)
+	}
+
+	return nil
 }
 
 // Start runs the entrypoint. runc never starts a stopped container again, so a stopped sandbox is
