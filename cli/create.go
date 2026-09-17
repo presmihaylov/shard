@@ -54,7 +54,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
-	flags.BoolVar(&req.RestartOnOOM, "restart-on-oom", false, "start the sandbox again when the host ends it for its memory")
+	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "when the entrypoint is started again inside the sandbox: no, on-failure or always")
 	flags.IntVar(&restart.retries, "restart-retries", 0, "the starts again before the supervisor gives up")
@@ -182,6 +182,37 @@ func (h healthFlags) request() (*models.HealthCheck, error) {
 	return hc, nil
 }
 
+// oomRestartFlag reads --restart-on-oom as a bare bool, which is unlimited, or as =N, which caps the starts in a row.
+type oomRestartFlag struct {
+	enabled *bool
+	max     *int
+}
+
+func (o oomRestartFlag) String() string { return "" }
+
+// IsBoolFlag lets the bare flag parse with no value, which then means unlimited.
+func (o oomRestartFlag) IsBoolFlag() bool { return true }
+
+func (o oomRestartFlag) Set(value string) error {
+	*o.enabled = true
+	if value == "true" {
+		*o.max = 0
+
+		return nil
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("--restart-on-oom takes a count, got %q", value)
+	}
+	if n < 0 {
+		return fmt.Errorf("--restart-on-oom is a count and cannot be negative, got %d", n)
+	}
+	*o.max = n
+
+	return nil
+}
+
 // restartFlags is the policy as the flags spell it, before the daemon's seconds.
 type restartFlags struct {
 	policy  string
@@ -201,6 +232,9 @@ func (r restartFlags) request() (*models.RestartSpec, error) {
 
 	if r.retries < 0 {
 		return nil, fmt.Errorf("--restart-retries is a count and cannot be negative, got %d", r.retries)
+	}
+	if models.RestartPolicy(r.policy) == models.RestartAlways && r.retries != 0 {
+		return nil, errors.New("--restart always never gives up, so it takes no --restart-retries")
 	}
 
 	spec := &models.RestartSpec{Policy: models.RestartPolicy(r.policy), Retries: r.retries}

@@ -125,12 +125,16 @@ address, and the entrypoint runs from the beginning. Its memory, its processes a
 gone, which is why the policy is opt-in and needs a bound: the host never counts an OOM against a
 sandbox that has none.
 
-The record counts every start again in `oom_restarts`, with the last one in `oom_restarted_at`, and
-`shard ls` shows the policy and the count in its `RESTART` column as `on-oom 2/5`. The cap is 5; the
-second start waits 1 s from the last, then 2, 4 and 8 s. At the cap the sandbox stays `stopped` and
-the reason adds `the 5 starts again the cap allows are spent`. A `shard start` by hand still works,
-and clears the reason. A sandbox the record says `stopped` is never started again by the daemon,
-so a `stop` in the window is final. A `fork` or `clone` inherits the policy with a fresh count.
+`--restart-on-oom` alone starts it again without end; `--restart-on-oom=N` (`max_oom_restarts` in the
+create body, 0 for unlimited) caps the starts in a row at N. A run that lasts ten seconds since the
+daemon last started it clears the count first, so a sandbox that only overruns now and then never
+spends a finite cap. The record counts the starts in `oom_restarts`, with the last one in
+`oom_restarted_at`, and `shard ls` shows the policy in its `RESTART` column as `on-oom 2` when the
+count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from the last, then 2, 4
+and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds `the N starts again
+the limit allows are spent`. A `shard start` by hand still works, and clears the reason. A sandbox
+the record says `stopped` is never started again by the daemon, so a `stop` in the window is final.
+A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 
@@ -166,11 +170,13 @@ A sandbox outlives its entrypoint, and the policy does not change that: it start
 again inside the sandbox that is already up, and the sandbox stays `running` whatever the policy
 does. `--restart <policy>` (`"restart": {"policy"}` in the create body) is `no`, the default,
 `on-failure`, which starts the entrypoint again after an exit other than 0 or a signal, or
-`always`, which does so after every exit. `--restart-retries` (`retries`, 5) caps the starts again
-in one run, and `--restart-backoff` (`backoff`, whole seconds, 1) is the wait before the first one;
-it doubles each time, up to 60 s. Both need a policy. At the cap the policy gives up and the
-entrypoint stays exited, and a stop puts its last exit in `exit_status` as after any exit. A stop
-during the wait ends the sandbox at once and drops the start that was due.
+`always`, which does so after every exit. `--restart-retries` (`retries`) caps the starts again in
+one run; with no cap `on-failure` starts it again without end, and `always` never gives up and takes
+no retries at all. `--restart-backoff` (`backoff`, whole seconds, 1) is the wait before the first
+start again; it doubles each time, up to 60 s. Both need a policy. A run that lasts ten seconds since
+its last start clears the count, so a slow crash loop never spends a finite cap. At the cap
+`on-failure` gives up and the entrypoint stays exited, and a stop puts its last exit in `exit_status`
+as after any exit. A stop during the wait ends the sandbox at once and drops the start that was due.
 
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
 channel, so nothing changes it on a sandbox that runs. `shard-init` counts every start again in a
@@ -178,8 +184,9 @@ file beside the exit file, and the `restart-policy` task reads that file every s
 running sandbox that has a policy and copies it onto the record, so the record is at most a second
 behind, and a `stop` reads the count once more before it writes the stopped record. The record
 carries `restart`: `{"policy", "retries", "backoff", "count", "last_at", "gave_up"}`, absent on a
-sandbox without a policy. `shard ls` shows it in the `RESTART` column beside the OOM policy, as
-`on-failure 2/5`, then `on-failure 5/5 gave up`; each start again and the give-up are one line in
+sandbox without a policy, and `retries` is omitted when the count is unlimited. `shard ls` shows it in
+the `RESTART` column beside the OOM policy, as `on-failure 2` when unlimited, `on-failure 2/5` under a
+cap, then `on-failure 5/5 gave up`, and `always 7`; each start again and the give-up are one line in
 the daemon log. The count is for one run and `shard-init` never clears it: a `start` of a stopped
 sandbox begins a new run at zero, a `resume` and a `fork` keep the count with the process, and a
 `clone` inherits the policy alone. This is a convenience for a flaky entrypoint, not a lifetime
@@ -266,7 +273,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   at something that is not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "health": {"command" or
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "health": {"command" or
   "http": {"port", "path"}, "interval", "timeout", "retries"}, "restart": {"policy", "retries",
   "backoff"}}` and answers 201 with the record. A cached image needs no pull, so the create builds
   and starts the sandbox before it answers and the record says `running`; a claim that fails then

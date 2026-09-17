@@ -130,7 +130,7 @@ func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	if calls := keep(lab.r.calls, want...); !slices.Equal(calls, want) {
 		t.Errorf("the sandbox was driven as %v, want %v", calls, want)
 	}
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "started again, 1 of 5") {
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "started again, 1") {
 		t.Errorf("the pass reported %v, want one line counting the start", lab.reports)
 	}
 }
@@ -156,9 +156,10 @@ func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 	}
 }
 
-func TestLivenessGivesUpAtTheOOMCap(t *testing.T) {
+func TestLivenessGivesUpAtTheOOMLimit(t *testing.T) {
 	sb := optedIn()
-	sb.OOMRestarts = sandbox.OOMRestartCap
+	sb.MaxOOMRestarts = 5
+	sb.OOMRestarts = 5
 	lab := newLivenessLab(t, sb, oomKilled())
 
 	if err := lab.tick(t, sb, time.Now()); err != nil {
@@ -166,11 +167,34 @@ func TestLivenessGivesUpAtTheOOMCap(t *testing.T) {
 	}
 
 	got := lab.l.repo.sb
-	if got.State != models.StateStopped || !strings.Contains(got.StoppedReason, "the 5 starts again the cap allows are spent") {
-		t.Errorf("the record says %s with the reason %q, want stopped with the cap named", got.State, got.StoppedReason)
+	if got.State != models.StateStopped || !strings.Contains(got.StoppedReason, "the 5 starts again the limit allows are spent") {
+		t.Errorf("the record says %s with the reason %q, want stopped with the limit named", got.State, got.StoppedReason)
 	}
-	if lab.l.provider.started || got.OOMRestarts != sandbox.OOMRestartCap {
-		t.Error("a sandbox at the cap was started again")
+	if lab.l.provider.started || got.OOMRestarts != 5 {
+		t.Error("a sandbox at the limit was started again")
+	}
+}
+
+// A healthy run of the reset window clears the count, so a slow OOM loop never spends a finite limit.
+func TestLivenessResetsTheOOMCountAfterAHealthyRun(t *testing.T) {
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	sb := optedIn()
+	sb.MaxOOMRestarts = 3
+	sb.OOMRestarts = 3
+	sb.StartedAt = now.Add(-sandbox.OOMHealthyRun)
+	sb.OOMRestartedAt = now.Add(-time.Hour)
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	if err := lab.tick(t, sb, now); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.OOMRestarts != 1 {
+		t.Errorf("the record says %s with %d starts again, want running with the count reset then 1", got.State, got.OOMRestarts)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "started again, 1 of 3") {
+		t.Errorf("the pass reported %v, want the count reset to 1 of 3", lab.reports)
 	}
 }
 
