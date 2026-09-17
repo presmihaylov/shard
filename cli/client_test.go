@@ -39,6 +39,33 @@ func TestVersionPrintsBothLines(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusPrintsOneFieldPerLine(t *testing.T) {
+	var out bytes.Buffer
+
+	app, f := newClientApp(t, &out, models.Sandbox{})
+	f.providerSvc = &fakeLifecycleProvider{r: &recorder{}, noFork: true}
+
+	if err := app.Run(t.Context(), []string{"daemon", "status"}); err != nil {
+		t.Fatalf("daemon status: %v", err)
+	}
+
+	want := strings.Join([]string{
+		"version      v-daemon",
+		"pid          4123",
+		"started_at   2026-09-16T08:00:00Z",
+		"socket       " + filepath.Join(app.Root, api.SocketFile),
+		"provider     fake",
+		"pause        true",
+		"resume       true",
+		"fork         false",
+		"plain_port   30080",
+		"tls_port     30443",
+	}, "\n")
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Errorf("daemon status printed\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestVersionFlagPrintsTheClientLineWithNoDaemon(t *testing.T) {
 	var out bytes.Buffer
 

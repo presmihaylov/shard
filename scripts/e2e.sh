@@ -525,6 +525,21 @@ DAEMON_LINE=$(echo "${VERSION_OUT}" | sed -n 2p)
 [ "${CLIENT_LINE#client }" != "${CLIENT_LINE}" ] || fail "the first line of shard version is '${CLIENT_LINE}', want 'client <v>'"
 expect "${DAEMON_LINE}" "daemon ${CLIENT_LINE#client }" "version prints the client line and the daemon line, and both agree"
 
+step "read the daemon status"
+STATUS_OUT=$(shard daemon status)
+# The status is read as name value pairs, one per line, so a field is checked by name and not by row.
+status_field() { echo "${STATUS_OUT}" | awk -v name="$1" '$1 == name { print $2 }'; }
+expect "$(status_field pid)" "${DAEMON_PID}" "the status names the pid of the daemon this run started"
+expect "$(status_field socket)" "${SOCKET}" "the status names the socket the CLI speaks to"
+expect "$(status_field provider)" "${PROVIDER}" "the status names the provider the daemon was started with"
+expect "$(status_field version)" "${CLIENT_LINE#client }" "the status carries the version the daemon reports"
+expect "$(status_field plain_port) $(status_field tls_port)" "30080 30443" "the status names the proxy ports"
+if [ "${PROVIDER}" = "gvisor" ]; then
+	expect "$(status_field pause) $(status_field resume) $(status_field fork)" "true true true" "gvisor claims every optional verb"
+else
+	expect "$(status_field pause) $(status_field resume) $(status_field fork)" "false false false" "${PROVIDER} claims no optional verb"
+fi
+
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"

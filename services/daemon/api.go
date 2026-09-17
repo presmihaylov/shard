@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -38,8 +39,9 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
 	life := &lifecycle{deps: d}
+	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -76,6 +78,7 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 type apiTask struct {
 	deps      *deps
 	lifecycle *lifecycle
+	process   process
 }
 
 func (apiTask) Name() string { return "api" }
@@ -114,9 +117,31 @@ func (t apiTask) Run(ctx context.Context) error {
 	}
 	log.New(cfg.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	handler := api.NewHandler(cfg.Version, repo, enforcer, t.lifecycle, stores, decisions, cfg.Out)
+	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, cfg.Out)
 
 	return api.Serve(ctx, listener, handler)
+}
+
+// process answers GET /v0/daemon. The provider is built on the first ask, as every verb that needs it does.
+type process struct {
+	deps      *deps
+	startedAt time.Time
+}
+
+func (p process) Daemon() (api.Daemon, error) {
+	provider, err := p.deps.provider()
+	if err != nil {
+		return api.Daemon{}, err
+	}
+
+	return api.Daemon{
+		PID:          os.Getpid(),
+		StartedAt:    p.startedAt,
+		Socket:       filepath.Join(p.deps.cfg.Root, api.SocketFile),
+		Provider:     provider.Name(),
+		Capabilities: provider.Capabilities(),
+		Proxy:        api.Proxy{PlainPort: proxy.PlainPort, TLSPort: proxy.TLSPort},
+	}, nil
 }
 
 // lifecycle builds the orchestrator on the first verb, so a daemon on a host without runsc still answers reads.

@@ -111,6 +111,18 @@ func (f *fakeDaemon) build() {
 
 func (f *fakeDaemon) policies() (*egress.Store, error) { return f.policySvc, nil }
 
+// Daemon answers as the real process does, over the provider the test gave the daemon.
+func (f *fakeDaemon) Daemon() (api.Daemon, error) {
+	return api.Daemon{
+		PID:          4123,
+		StartedAt:    time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
+		Socket:       filepath.Join(f.app.Root, api.SocketFile),
+		Provider:     f.providerSvc.Name(),
+		Capabilities: f.providerSvc.Capabilities(),
+		Proxy:        api.Proxy{PlainPort: 30080, TLSPort: 30443},
+	}, nil
+}
+
 // fakeEgressLog stands in for the kernel ring, which no unit test on a developer host can read.
 type fakeEgressLog struct {
 	records []egress.Record
@@ -135,7 +147,7 @@ func (f *fakeDaemon) handler() http.Handler {
 		f.build()
 
 		enforcer := egress.New(f.policySvc, f.repoSvc, network.DefaultNameservers, nil)
-		api.NewHandler("v-daemon", f.repoSvc, enforcer, f.svc, f.stores, fakeEgressLog{records: f.egressLog}, io.Discard).ServeHTTP(w, r)
+		api.NewHandler("v-daemon", f, f.repoSvc, enforcer, f.svc, f.stores, fakeEgressLog{records: f.egressLog}, io.Discard).ServeHTTP(w, r)
 	})
 }
 

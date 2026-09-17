@@ -19,10 +19,29 @@ import (
 	"github.com/presmihaylov/shard/services/api"
 )
 
-func TestDaemonTakesNoArguments(t *testing.T) {
+func TestDaemonTakesNoArgumentButStatus(t *testing.T) {
 	err := App{Out: io.Discard}.Run(t.Context(), []string{"daemon", "extra"})
-	if err == nil || !strings.Contains(err.Error(), "daemon takes no arguments") {
-		t.Errorf("daemon with an argument got %v", err)
+	if want := "daemon takes no argument, or status, got extra"; err == nil || err.Error() != want {
+		t.Errorf("daemon with an argument got %v, want %q", err, want)
+	}
+}
+
+// The provider is built on the first ask, so the status is the one read that can say why there is none.
+func TestDaemonStatusSaysWhyTheProviderCannotBeBuilt(t *testing.T) {
+	root := shortRoot(t)
+	out := &syncBuffer{}
+
+	cancel, done := startDaemon(t, App{Version: "v-test", Root: root, Provider: "vmware"}, out)
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("daemon ended with %v", err)
+		}
+	}()
+
+	err := App{Version: "v-test", Root: root, Out: io.Discard}.Run(t.Context(), []string{"daemon", "status"})
+	if want := "unknown provider \"vmware\": shard knows gvisor and sysbox"; err == nil || err.Error() != want {
+		t.Errorf("daemon status returned %v, want %q", err, want)
 	}
 }
 

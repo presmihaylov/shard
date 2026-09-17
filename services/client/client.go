@@ -101,6 +101,16 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return out, nil
 }
 
+// Daemon is what the daemon reports about its process, its provider and its proxy.
+func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
+	var out api.Daemon
+	if err := c.call(ctx, http.MethodGet, "/v0/daemon", nil, &out, c.Timeout); err != nil {
+		return api.Daemon{}, err
+	}
+
+	return out, nil
+}
+
 func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error) {
 	path := "/v0/sandboxes"
 	if all {

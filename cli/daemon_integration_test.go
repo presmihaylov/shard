@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -64,5 +66,39 @@ func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	}
 	if one.StatusCode != http.StatusOK || sb.ID != id || sb.PID == 0 {
 		t.Errorf("GET /v0/sandboxes/%s answered %d %+v, want the live record", id, one.StatusCode, sb)
+	}
+}
+
+// The status is what the daemon knows about itself: its own pid, its socket and the gVisor verbs.
+func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
+	app, out := newCreateApp(t)
+
+	if err := app.Run(t.Context(), []string{"daemon", "status"}); err != nil {
+		t.Fatalf("daemon status: %v", err)
+	}
+
+	fields := map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		name, value, _ := strings.Cut(line, " ")
+		fields[name] = strings.TrimSpace(value)
+	}
+
+	want := map[string]string{
+		"pid":        strconv.Itoa(daemonUnderTest.cmd.Process.Pid),
+		"socket":     filepath.Join(app.Root, api.SocketFile),
+		"provider":   "gvisor",
+		"pause":      "true",
+		"resume":     "true",
+		"fork":       "true",
+		"plain_port": "30080",
+		"tls_port":   "30443",
+	}
+	for name, value := range want {
+		if fields[name] != value {
+			t.Errorf("daemon status printed %s %q, want %q", name, fields[name], value)
+		}
+	}
+	if fields["version"] == "" || fields["started_at"] == "" {
+		t.Errorf("daemon status printed no version or start time:\n%s", out.String())
 	}
 }
