@@ -409,7 +409,7 @@ func (s *Server) proxy(client, upstream net.Conn, head []byte) error {
 }
 
 // isHandshake reports whether the head is the WebSocket opening handshake, the one request the front
-// does not force closed. It mirrors handshake() in services/api, so the front and the daemon agree on
+// does not force closed. It mirrors isHandshake() in services/api, so the front and the daemon agree on
 // what an upgrade is: a lone Upgrade header is not enough to skip the Connection: close rewrite.
 func isHandshake(head []byte) bool {
 	fields, ok := headerFields(head)

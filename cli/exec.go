@@ -46,8 +46,8 @@ type execOptions struct {
 	tty         bool
 }
 
-// exec hands one command to the daemon and wears its exit code. Ctrl-C ends that command and nothing
-// else: the daemon sees the connection go and cancels the exec, and only stop ends a sandbox.
+// exec hands one command to the daemon and wears its exit code. Ctrl-C drops the connection and nothing
+// else: the command runs on, to re-attach by its exec id, and only stop ends a sandbox.
 func (a App) exec(ctx context.Context, args []string) error {
 	opts, err := parseExec(args)
 	if err != nil {

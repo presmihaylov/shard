@@ -25,7 +25,7 @@ stateDiagram-v2
 | `pending` | `running` | the daemon finished the pull and the start | yes |
 | `pending` | `failed` | the pull or the start failed | yes |
 | `created` | `running` | `start` | yes |
-| `created` | `stopped` | `stop` before the entrypoint runs | yes |
+| `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
 | `paused` | `running` | `resume` | yes: gVisor |
@@ -41,7 +41,9 @@ behind the record, which lands `running` or, when the pull or the start failed, 
 one-line `failed_reason`. `GET ?wait=true` holds until the record leaves `pending`, so `shard create`
 blocks and prints a ready sandbox or the reason it failed. `created` is not where a create lands: it
 is the state a fork or clone's copy passes through, and the status a provider reports for a sandbox
-it holds but has not started.
+it holds but has not started. No verb parks a sandbox in `created`: a fork or clone drives its copy
+on to `running` with nothing an operator can stop in between, which is why `created --> stopped` is
+in the machine but reachable by nothing.
 
 **`failed` is terminal, and only `rm` frees it.** A create that never reached `running` refuses every
 verb but `get` and `rm`, with `409 sandbox_failed` and the reason, so an operator reads why and then
@@ -68,9 +70,10 @@ files the last run wrote. Memory, pids and sockets are gone; files are not. The 
 that move: `Provider.Start` refuses a stopped sandbox, so `shard start` (SHARD-24) is `Remove` plus a
 second `Create` over the preserved writable layer.
 
-**`created --> stopped` leaves nothing at the substrate.** Stopping a sandbox whose entrypoint never
-ran is a delete there, because a runtime refuses to signal a container that never started. The record
-says `stopped` while `Provider.Status` reports `Exists: false`. That is the intended answer: the
+**`created --> stopped` is a legal move nothing reaches, and it would leave nothing at the substrate.**
+Stopping a sandbox whose entrypoint never ran is a delete there, because a runtime refuses to signal a
+container that never started. The record says `stopped` while `Provider.Status` reports `Exists: false`.
+That is the intended answer: the
 record is what survives, and `Status` is only ever what the substrate says now. A paused sandbox is
 the second case: the record says `paused` and `Status` reports `Exists: false`, because the pause
 deleted it from the substrate and only the snapshot holds it. A `pause` also kills any `exec` in flight.
