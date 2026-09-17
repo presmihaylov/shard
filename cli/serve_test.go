@@ -66,7 +66,24 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 		}
 	})
 
-	return app, []string{"--host", "https://" + listener.Addr().String(), "--token-file", token, "--ca-file", cert}
+	return app, []string{"--remote", "https://" + listener.Addr().String(), "--token-file", token, "--ca-file", cert}
+}
+
+// The remote front comes from SHARD_REMOTE too, so a shell exports it once. (SHARD-194)
+func TestTheRemoteEnvReachesTheFront(t *testing.T) {
+	var out bytes.Buffer
+
+	app, flags := newFrontApp(t, &out)
+	t.Setenv(RemoteEnv, flags[1])
+	t.Setenv(TokenFileEnv, flags[3])
+	t.Setenv(CAFileEnv, flags[5])
+
+	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
+		t.Fatalf("ls through the front from the env: %v", err)
+	}
+	if !strings.Contains(out.String(), "up-1") {
+		t.Errorf("ls from the env printed %q, want the sandbox the daemon holds", out.String())
+	}
 }
 
 func TestAVerbReachesTheDaemonThroughTheFront(t *testing.T) {
