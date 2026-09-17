@@ -383,7 +383,7 @@ first byte is the stream and the rest the payload: the client sends 0 (stdin) an
 empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"error"` when
 the command never ran) and 5 (a failure of the daemon's own, `{"error": {"code", "message"}}`, the
 same object every error body carries). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
-session and the daemon closes with 1000; a client that closes first kills the command. A `tty` exec
+session and the daemon closes with 1000; a client that closes first leaves the command running, to re-attach by its exec id. A `tty` exec
 carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
 apart. Ping and pong are the standard ones. The two `?follow=true` routes also serve without the
 handshake, as a chunked body that ends with the sandbox, so `curl -N` follows either; an exec
@@ -409,7 +409,6 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
-| `websocket_required` | 400 | an exec attach without the WebSocket handshake |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
@@ -503,8 +502,9 @@ equal to the token's `exp`), and the `scopes` it carries.
 
 It is a local verb like `daemon` and `serve`: it never reaches the daemon, and the daemon never sees
 the secret. `--name` is the subject the front logs, `--duration` defaults to 24h, and `--scopes` is a
-comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb.
-The client's `--token-file` takes this object whole or the bare token, so `shard serve mint ... >
+comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
+so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
+whole or the bare token, so `shard serve mint ... >
 ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that

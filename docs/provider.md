@@ -13,7 +13,8 @@ records exist: the other substrate has never heard of those sandboxes.
 |---|---|---|---|
 | Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | a microVM, needs `/dev/kvm` |
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native |
-| Docker or systemd inside | no | yes | yes |
+| Docker inside | no | yes | yes |
+| systemd as PID 1 | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | many tenants on one host |
 | Status | every verb | every required verb, no snapshot verb | does not exist yet |
 
@@ -26,6 +27,17 @@ reports and the CLI refuses on:
 | `pause` | yes | **no** | planned |
 | `resume` | yes | **no** | planned |
 | `fork` | yes | **no** | planned |
+
+### systemd is not a sandbox's init
+
+**systemd cannot run as a sandbox's PID 1, on any provider.** `shard-init` is PID 1 in every
+sandbox and starts the image entrypoint as its child (`cmd/shard-init` uses `ForkExec`), so the
+entrypoint is never PID 1. systemd refuses the system-manager role below PID 1: it prints "Explicit
+--user argument required to run as user manager." and exits, `systemctl is-system-running` reports
+`offline`, and the record stays `running` because a sandbox outlives its entrypoint. This is not a
+Sysbox limit. It holds on gVisor and Firecracker too, and it follows from `shard-init` being PID 1 in
+every sandbox. Docker inside a sandbox is unaffected and works end to end on Sysbox. To run
+systemd, run it inside a Docker container the sandbox starts, not as the sandbox's own init.
 
 ### What Sysbox does not do
 
@@ -83,6 +95,14 @@ not one process inside it, and the daemon restarts it when the record set `resta
 sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox sets the same pair.
 `sysbox-runc` applies `memory.max` from the bundle but neither knob, so without them the OOM killer
 took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
+
+## What a cpu bound means
+
+`--cpus` bounds a sandbox to a share of the host CPUs, the same way on both substrates. `--cpus 0`,
+the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
+`N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
+`shard create` refuses a negative value with an error, because a bound below zero is not a spelling
+of unbounded.
 
 ## What `Status` means
 
@@ -154,3 +174,7 @@ for Firecracker (SHARD-45).
 
 It does not prove anything about the network: both substrates join a namespace the network service
 built, so there is nothing to generalize yet.
+
+It does not prove systemd runs as a sandbox's own init, because no substrate allows it: `shard-init`
+is PID 1 on every provider and systemd refuses the system-manager role below PID 1. The suite has no
+systemd case to skip; the design forbids the case, so there is nothing to test.

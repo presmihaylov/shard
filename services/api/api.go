@@ -544,8 +544,6 @@ func classify(err error) (int, models.Code) {
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
-	case errors.Is(err, ErrWebSocketRequired):
-		return http.StatusBadRequest, models.CodeWebSocketRequired
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
 		return http.StatusNotFound, models.CodeNotFound

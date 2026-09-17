@@ -17,7 +17,6 @@ const (
 	CodeNameTaken         Code = "name_taken"
 	CodeExecExited        Code = "exec_exited"
 	CodeExecRunning       Code = "exec_running"
-	CodeWebSocketRequired Code = "websocket_required"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
 	CodeInternal          Code = "internal"

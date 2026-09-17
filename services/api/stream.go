@@ -69,7 +69,7 @@ func (h *Handler) listExecs(w http.ResponseWriter, r *http.Request) {
 // getExec answers one exec three ways: a WebSocket upgrade attaches, ?wait=true blocks until it ends,
 // and a plain GET is the record as it stands now.
 func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
-	if handshake(r) == nil {
+	if isHandshake(r) {
 		h.attachExec(w, r)
 
 		return
@@ -142,13 +142,7 @@ func (h *Handler) deleteExec(w http.ResponseWriter, r *http.Request) {
 // attachExec replays the exec's buffer to the client, then streams it live until the command ends. It is
 // reached over the WebSocket the client opens, and every refusal comes before the 101.
 func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
-	if err := handshake(r); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	// A client that hangs up ends the command it was running, and nothing else: only stop ends a sandbox.
+	// A client that hangs up drops the attach and nothing else: the command runs on to re-attach by exec id, and only stop ends a sandbox.
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -192,17 +186,17 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	session.finish(exit, err)
 }
 
-// handshake refuses a request that is not the WebSocket opening handshake, before the library answers in plain text.
-func handshake(r *http.Request) error {
+// isHandshake reports whether the request is the WebSocket opening handshake, so a route serves the plain body without it.
+func isHandshake(r *http.Request) bool {
 	switch {
 	case !hasToken(r.Header.Get("Connection"), "upgrade"),
 		!hasToken(r.Header.Get("Upgrade"), "websocket"),
 		r.Header.Get("Sec-WebSocket-Version") != "13",
 		r.Header.Get("Sec-WebSocket-Key") == "":
-		return ErrWebSocketRequired
+		return false
 	}
 
-	return nil
+	return true
 }
 
 // hasToken says whether a comma-separated header names token, in any case.
@@ -250,7 +244,7 @@ func (e *execSession) read() {
 	for {
 		stream, payload, err := Receive(context.Background(), e.conn)
 		if err != nil {
-			// The client is gone, so the command goes with it: an exec belongs to the connection that asked for it.
+			// The client is gone, so this attach ends; the command runs on and a later attach replays it.
 			e.closeStdin(err)
 			e.cancel()
 
@@ -318,7 +312,7 @@ func (e *execSession) stream(stream byte) io.Writer {
 	})
 }
 
-// close ends the connection this exec owned. A client that left first closed it, which is how it ends a command.
+// close ends the WebSocket of this attach. A client that left first closed it; the command it streamed runs on.
 func (e *execSession) close() {
 	e.closeStdin(io.EOF)
 
@@ -451,7 +445,7 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if handshake(r) != nil {
+	if !isHandshake(r) {
 		h.followLogsPlain(w, r, id)
 
 		return
@@ -508,7 +502,7 @@ func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id str
 
 // followEgressLog streams one decision per message, or per line without the handshake, until the sandbox stops or is removed.
 func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
-	if handshake(r) != nil {
+	if !isHandshake(r) {
 		h.followEgressLogPlain(w, r, sb)
 
 		return
@@ -638,12 +632,8 @@ type follower struct {
 	what string
 }
 
-// follow refuses a request without the handshake as JSON, then answers the 101 and starts reading for the close.
+// follow answers the 101 and starts reading for the close. Both callers gate the handshake, so it never sees a plain request.
 func (h *Handler) follow(w http.ResponseWriter, r *http.Request, what string) (*follower, error) {
-	if err := handshake(r); err != nil {
-		return nil, err
-	}
-
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open the WebSocket of the %s: %w", what, err)
