@@ -163,6 +163,23 @@ func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	}
 }
 
+func TestLsShowsTheEntrypointExitOfAStillRunningSandbox(t *testing.T) {
+	var out bytes.Buffer
+
+	sandboxes := []models.Sandbox{{ID: "up-7", Image: "alpine:3.20", State: models.StateRunning,
+		ExitStatus: &models.ExitStatus{Code: 7}, CreatedAt: time.Now()}}
+
+	app := newLsApp(t, &out, sandboxes, nil)
+
+	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "running (exited 7)") {
+		t.Errorf("ls printed %q, want the running state and the entrypoint exit beside it", out.String())
+	}
+}
+
 func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	var out bytes.Buffer
 

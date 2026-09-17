@@ -9,18 +9,19 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// oomRestart starts a sandbox the host ended for its memory again when its record asks: the kill skips runsc's cleanup.
-type oomRestart struct {
+// liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
+// stops a sandbox whose process is gone, and starts an OOM-killed one again when its record asks.
+type liveness struct {
 	deps      *deps
 	lifecycle *lifecycle
 	interval  time.Duration
 }
 
-const oomInterval = 5 * time.Second
+const livenessInterval = 5 * time.Second
 
-func (oomRestart) Name() string { return "oom-restart" }
+func (liveness) Name() string { return "liveness" }
 
-func (t oomRestart) Run(ctx context.Context) error {
+func (t liveness) Run(ctx context.Context) error {
 	repo, err := t.deps.repo()
 	if err != nil {
 		return err
@@ -51,7 +52,7 @@ func (t oomRestart) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := svc.RestartOOMKilled(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }); err != nil {
+		if err := svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }); err != nil {
 			return err
 		}
 	}

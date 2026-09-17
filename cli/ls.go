@@ -59,13 +59,17 @@ func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	return nil
 }
 
-// state carries the reason a sandbox nobody stopped is stopped, which is the one an operator asks about.
+// state carries the reason a sandbox nobody stopped is stopped, or the exit of an entrypoint whose
+// still-running sandbox outlived it, which is the one an operator asks about.
 func state(sb models.Sandbox) string {
-	if sb.StoppedReason == "" {
-		return string(sb.State)
+	if sb.State == models.StateRunning && sb.ExitStatus != nil {
+		return fmt.Sprintf("%s (exited %d)", sb.State, sb.ExitStatus.Code)
+	}
+	if sb.StoppedReason != "" {
+		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 	}
 
-	return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
+	return string(sb.State)
 }
 
 // restart is each policy the sandbox asked for, and how much of its cap has been spent on it.
