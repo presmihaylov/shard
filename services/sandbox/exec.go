@@ -511,6 +511,8 @@ func (s *Service) endPipes(session *execSession, stdin *os.File, exit models.Exi
 
 	session.buf.close()
 	session.setResult(exit, errors.Join(err, stdinErr))
+	// Cap on exit too, so execs that exit with no following create still settle at the retained cap.
+	s.capExitedExecs(session.sandboxID)
 }
 
 // runTerminal runs a tty command, merging its one stream into the buffer, and records its exit.
@@ -540,6 +542,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 
 	session.buf.close()
 	session.setResult(exit, errors.Join(execErr, closeErr, drainErr, masterErr))
+	s.capExitedExecs(id)
 }
 
 // Attach replays the buffer so far to one client, then streams live until the command ends. A client that
