@@ -117,11 +117,12 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 	signal.Notify(childDeaths, syscall.SIGCHLD)
 	signal.Notify(stopSignals, syscall.SIGTERM, syscall.SIGINT)
 
+	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
+	runStartedAt := time.Now()
 	entrypointPID, err := startProcess(entrypointArgv, credential)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
 	}
-	runStartedAt := time.Now()
 
 	// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
 	if err := store.WriteFile(readyFile, nil, 0o600); err != nil {
@@ -153,8 +154,8 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 			startAgain = restart.schedule(exit, &count)
 		case <-startAgain:
 			startAgain = nil
-			entrypointPID = restart.startAgain(entrypointArgv, credential, &count)
 			runStartedAt = time.Now()
+			entrypointPID = restart.startAgain(entrypointArgv, credential, &count)
 		case received := <-stopSignals:
 			stopping = true
 			// Nothing is left to forward to, and a stop that had to wait out its grace is a stop that failed.
