@@ -781,7 +781,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
 	fail "openssl did not make a self-signed pair"
 openssl rand -hex 32 >"${SERVE_SECRET}"
 chmod 0600 "${SERVE_SECRET}"
-# The front verifies a JWT the secret signs; the client carries a token minted from that same secret.
+# The front verifies a JWT; serve mint writes the JSON record to SERVE_TOKEN, read whole by --token-file.
 "${PREFIX}/shard" serve mint --name shard-e2e --secret-file "${SERVE_SECRET}" >"${SERVE_TOKEN}" ||
 	fail "serve mint did not print a token"
 chmod 0600 "${SERVE_TOKEN}"
@@ -791,7 +791,8 @@ SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SERVE
 	fail "the front did not come up: $(cat "${SERVE_LOG}")"
 say "shard serve is listening on 127.0.0.1:${SERVE_PORT}"
 
-TOKEN=$(cat "${SERVE_TOKEN}")
+# The bearer header and the log check need the bare jwt, so pull it from the record with jq.
+TOKEN=$(jq -r .token "${SERVE_TOKEN}")
 OVER_TCP=$(front_curl "${SERVE_PORT}" "${TOKEN}" /v0/sandboxes)
 OVER_SOCKET=$(curl -sS --unix-socket "${SHARD_ROOT}/shard.sock" http://shard/v0/sandboxes)
 expect "${OVER_TCP}" "${OVER_SOCKET}" "the front answers a request byte for byte as the socket does"
@@ -805,7 +806,7 @@ CODE=$(front_curl "${SERVE_PORT}" "" /v0/sandboxes -o /dev/null -w '%{http_code}
 expect "${CODE}" "401" "no token at all is refused"
 
 # A token the secret signed but whose lifetime has passed is refused, so the front checks expiry.
-EXPIRED=$("${PREFIX}/shard" serve mint --name shard-e2e --duration 1s --secret-file "${SERVE_SECRET}") ||
+EXPIRED=$("${PREFIX}/shard" serve mint --name shard-e2e --duration 1s --secret-file "${SERVE_SECRET}" | jq -r .token) ||
 	fail "serve mint did not print a short-lived token"
 sleep 2
 CODE=$(front_curl "${SERVE_PORT}" "${EXPIRED}" /v0/sandboxes -o /dev/null -w '%{http_code}')
@@ -815,7 +816,7 @@ expect "${CODE}" "401" "an expired token is refused"
 OTHER_SECRET="${SERVE_DIR}/other.secret"
 openssl rand -hex 32 >"${OTHER_SECRET}"
 chmod 0600 "${OTHER_SECRET}"
-OTHER_TOKEN=$("${PREFIX}/shard" serve mint --name shard-e2e --secret-file "${OTHER_SECRET}") ||
+OTHER_TOKEN=$("${PREFIX}/shard" serve mint --name shard-e2e --secret-file "${OTHER_SECRET}" | jq -r .token) ||
 	fail "serve mint did not print a token from the other secret"
 CODE=$(front_curl "${SERVE_PORT}" "${OTHER_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "a token signed with a different secret is refused"
@@ -852,7 +853,7 @@ expect "${GOT}" "over-tls" "the websocket of an exec passes through the front bo
 
 step "a read-only token reads through the front but is refused a write"
 # The front maps the request line to a capability and refuses a write the token's scopes do not reach.
-READONLY=$("${PREFIX}/shard" serve mint --name shard-e2e --scopes sandbox:read --secret-file "${SERVE_SECRET}") ||
+READONLY=$("${PREFIX}/shard" serve mint --name shard-e2e --scopes sandbox:read --secret-file "${SERVE_SECRET}" | jq -r .token) ||
 	fail "serve mint did not print a read-only token"
 CODE=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "200" "a sandbox:read token lists the sandboxes"

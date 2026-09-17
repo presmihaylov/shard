@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -130,6 +131,20 @@ func ReadToken(path string) (string, error) {
 	token := strings.TrimSpace(string(raw))
 	if token == "" {
 		return "", fmt.Errorf("the token file %s holds no token", path)
+	}
+
+	// serve mint writes a JSON record; --token-file takes it whole or the bare token.
+	if strings.HasPrefix(token, "{") {
+		var record struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal([]byte(token), &record); err != nil {
+			return "", fmt.Errorf("parse the mint record in the token file %s: %w", path, err)
+		}
+		token = strings.TrimSpace(record.Token)
+		if token == "" {
+			return "", fmt.Errorf("the mint record in the token file %s holds no token", path)
+		}
 	}
 
 	return token, nil
