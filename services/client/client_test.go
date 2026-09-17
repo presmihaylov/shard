@@ -1,6 +1,7 @@
 package client_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -187,4 +188,38 @@ func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	if _, err := c.ListSandboxes(ctx, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("ListSandboxes under the caller's deadline = %v, want context.DeadlineExceeded", err)
 	}
+}
+
+func TestEgressLogWritesEveryRecordInOneWrite(t *testing.T) {
+	body := `[{"time":"2026-01-01T00:00:00Z","source":"host","verdict":"deny","rule":"local"},` +
+		`{"time":"2026-01-01T00:00:01Z","source":"proxy","verdict":"allow","rule":"r-1"}]`
+	c := serve(t, shortRoot(t), answer(http.StatusOK, body))
+
+	var out countingWriter
+	if err := c.EgressLog(t.Context(), "web", &out); err != nil {
+		t.Fatalf("EgressLog: %v", err)
+	}
+
+	// One write, so grep -q closing the pipe early never leaves the CLI a partial write to SIGPIPE on.
+	if out.writes != 1 {
+		t.Errorf("EgressLog made %d writes, want exactly 1", out.writes)
+	}
+
+	want := `{"time":"2026-01-01T00:00:00Z","source":"host","verdict":"deny","rule":"local"}` + "\n" +
+		`{"time":"2026-01-01T00:00:01Z","source":"proxy","verdict":"allow","rule":"r-1"}` + "\n"
+	if got := out.buf.String(); got != want {
+		t.Errorf("EgressLog wrote\n%q\nwant\n%q", got, want)
+	}
+}
+
+// countingWriter counts Write calls so a test can prove EgressLog emits the whole log in one write.
+type countingWriter struct {
+	writes int
+	buf    bytes.Buffer
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.writes++
+
+	return w.buf.Write(p)
 }

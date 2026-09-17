@@ -1049,14 +1049,17 @@ for _ in 1 2; do
 done
 
 start_daemon || fail "the daemon did not come up"
-shard logs --egress "${ID}" | grep -q '"source":"host"' || fail "the host drop did not outlive the daemon that wrote it"
+EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed after the restart with status $?"
+echo "${EGRESS}" | grep -q '"source":"host"' || fail "the host drop did not outlive the daemon that wrote it: $(printf '%s' "${EGRESS}" | head -c 400)"
 say "the host drop is still in the log after a daemon restart"
 
+EGRESS=""
 for _ in $(seq 1 20); do
-	shard logs --egress "${ID}" | grep -q '"rule":"e2e-catchup"' && break
+	EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed at catch-up with status $?"
+	echo "${EGRESS}" | grep -q '"rule":"e2e-catchup"' && break
 	sleep 0.1
 done
-shard logs --egress "${ID}" | grep -q '"rule":"e2e-catchup"' || fail "the drop that landed while the daemon was down never reached the log"
+echo "${EGRESS}" | grep -q '"rule":"e2e-catchup"' || fail "the drop that landed while the daemon was down never reached the log: $(printf '%s' "${EGRESS}" | head -c 400)"
 say "a drop that landed while the daemon was down is written at catch-up"
 
 # A follow is a tail of the one file, so both halves of the log reach it live.

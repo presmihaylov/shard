@@ -454,11 +454,17 @@ func (c *Client) EgressLog(ctx context.Context, ref string, out io.Writer) error
 		return missing(ref, err)
 	}
 
-	encoder := json.NewEncoder(out)
+	// One write, so a reader that closes the pipe early (logs --egress | grep -q) never leaves the CLI a partial write to SIGPIPE on.
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
 	for _, record := range records {
 		if err := encoder.Encode(record); err != nil {
 			return fmt.Errorf("write the egress log of sandbox %s: %w", ref, err)
 		}
+	}
+
+	if _, err := out.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("write the egress log of sandbox %s: %w", ref, err)
 	}
 
 	return nil
