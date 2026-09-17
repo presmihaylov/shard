@@ -494,11 +494,18 @@ shard serve mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
 shard serve mint --name reader --scopes sandbox:read,exec --secret-file /etc/shard/serve.secret
 ```
 
-`mint` prints one token to stdout and exits. It is a local verb like `daemon` and `serve`: it never
-reaches the daemon, and the daemon never sees the secret. `--name` is the subject the front logs,
-`--duration` defaults to 24h, and `--scopes` is a comma-separated list of the scopes the token
-carries; an empty `--scopes` is every verb. Rotate the secret and every token it signed stops
-verifying at once.
+`mint` prints one JSON object to stdout and exits: the token, its `expires_at` (RFC 3339 in UTC,
+equal to the token's `exp`), and the `scopes` it carries.
+
+```
+{"token":"<jwt>","expires_at":"2026-09-18T15:40:00Z","scopes":["*"]}
+```
+
+It is a local verb like `daemon` and `serve`: it never reaches the daemon, and the daemon never sees
+the secret. `--name` is the subject the front logs, `--duration` defaults to 24h, and `--scopes` is a
+comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb.
+The client's `--token-file` takes this object whole or the bare token, so `shard serve mint ... >
+ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that
 restart ends no connection that is already spliced.

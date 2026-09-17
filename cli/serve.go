@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,7 +43,7 @@ func (a App) serve(ctx context.Context, args []string) error {
 	})
 }
 
-// serveMint prints one token for a subject, signed by the secret. The daemon never sees the secret.
+// serveMint prints one token record for a subject, signed by the secret. The daemon never sees the secret.
 func (a App) serveMint(args []string) error {
 	flags := flag.NewFlagSet("serve mint", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -69,12 +70,17 @@ func (a App) serveMint(args []string) error {
 		return err
 	}
 
-	token, err := serve.Mint(secret, *name, parseScopes(*scopes), *duration)
+	minted, err := serve.MintToken(secret, *name, parseScopes(*scopes), *duration)
 	if err != nil {
 		return err
 	}
 
-	return a.print(token)
+	record, err := json.Marshal(minted)
+	if err != nil {
+		return fmt.Errorf("encode the mint record: %w", err)
+	}
+
+	return a.print(string(record))
 }
 
 // parseScopes splits a comma-separated --scopes into the list Mint carries; empty is nil, which is every verb.

@@ -16,31 +16,55 @@ type claims struct {
 	jwt.RegisteredClaims
 }
 
+// Token is what serve mint prints and a client reads back: the signed token, its expiry and its scopes.
+type Token struct {
+	Token     string     `json:"token"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	Scopes    []string   `json:"scopes"`
+}
+
 // Mint signs an HS256 token for sub, valid for ttl from now, carrying scopes; no scopes means every verb.
 func Mint(secret []byte, sub string, scopes []string, ttl time.Duration) (string, error) {
+	minted, err := MintToken(secret, sub, scopes, ttl)
+	if err != nil {
+		return "", err
+	}
+
+	return minted.Token, nil
+}
+
+// MintToken signs the token and answers it with the expiry and scopes it carries; empty scopes mints ["*"], every verb.
+func MintToken(secret []byte, sub string, scopes []string, ttl time.Duration) (Token, error) {
 	if sub == "" {
-		return "", errors.New("a token needs a subject")
+		return Token{}, errors.New("a token needs a subject")
 	}
 	if ttl <= 0 {
-		return "", fmt.Errorf("a token needs a duration in the future, got %s", ttl)
+		return Token{}, fmt.Errorf("a token needs a duration in the future, got %s", ttl)
+	}
+	if len(scopes) == 0 {
+		scopes = []string{"*"}
 	}
 
 	now := time.Now()
+	exp := now.Add(ttl)
 	c := claims{
 		Scopes: scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   sub,
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			ExpiresAt: jwt.NewNumericDate(exp),
 		},
 	}
 
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
 	if err != nil {
-		return "", fmt.Errorf("sign the token: %w", err)
+		return Token{}, fmt.Errorf("sign the token: %w", err)
 	}
 
-	return signed, nil
+	// The record's expiry equals the token's exp to the second: both floor to whole seconds, in UTC.
+	expUTC := exp.UTC().Truncate(time.Second)
+
+	return Token{Token: signed, ExpiresAt: &expUTC, Scopes: scopes}, nil
 }
 
 // verify checks the token is HS256 over the secret, carries a subject and an issued-at, and has not expired, then answers the subject and the scopes it carries.

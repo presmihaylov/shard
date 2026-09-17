@@ -366,11 +366,26 @@ func TestMintAndVerifyRoundTrip(t *testing.T) {
 	}
 }
 
-func TestVerifyReadsNoScopesAsEveryVerb(t *testing.T) {
+func TestMintDefaultsToTheEveryVerbScope(t *testing.T) {
 	token, err := Mint([]byte(testSecret), "ci", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
+
+	_, scopes, err := verify([]byte(testSecret), token)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if strings.Join(scopes, ",") != "*" {
+		t.Errorf("verify answered scopes %v, want the default [\"*\"] Mint writes", scopes)
+	}
+}
+
+// A token minted before SHARD-195 carries no scopes claim; the front still reads it as every verb.
+func TestVerifyReadsAnAbsentScopesClaimAsEveryVerb(t *testing.T) {
+	now := time.Now()
+	token := signed(t, jwt.SigningMethodHS256, []byte(testSecret),
+		jwt.RegisteredClaims{Subject: "ci", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))})
 
 	_, scopes, err := verify([]byte(testSecret), token)
 	if err != nil {
@@ -387,6 +402,84 @@ func TestMintRefusesAnEmptySubjectAndAPastDuration(t *testing.T) {
 	}
 	if _, err := Mint([]byte(testSecret), "ci", nil, 0); err == nil {
 		t.Error("Mint signed a token that is already expired")
+	}
+}
+
+// MintToken's record carries the scopes asked and an expires_at equal to the token's exp, to the second.
+func TestMintTokenRecordAgreesWithTheToken(t *testing.T) {
+	minted, err := MintToken([]byte(testSecret), "ci", []string{"sandbox:read"}, time.Hour)
+	if err != nil {
+		t.Fatalf("MintToken: %v", err)
+	}
+	if strings.Join(minted.Scopes, ",") != "sandbox:read" {
+		t.Errorf("the record carries scopes %v, want the ones asked", minted.Scopes)
+	}
+	if minted.ExpiresAt == nil {
+		t.Fatal("the record carries no expires_at")
+	}
+	if minted.ExpiresAt.Location() != time.UTC {
+		t.Errorf("the record expires_at %s is not in UTC", minted.ExpiresAt)
+	}
+
+	var c claims
+	if _, err := jwt.ParseWithClaims(minted.Token, &c, func(*jwt.Token) (any, error) { return []byte(testSecret), nil },
+		jwt.WithValidMethods([]string{"HS256"})); err != nil {
+		t.Fatalf("parse the minted token: %v", err)
+	}
+	if minted.ExpiresAt.Unix() != c.ExpiresAt.Unix() {
+		t.Errorf("the record expires_at %d does not equal the token exp %d", minted.ExpiresAt.Unix(), c.ExpiresAt.Unix())
+	}
+}
+
+// With no scopes MintToken defaults to ["*"] and writes it into the token, so the record and token agree.
+func TestMintTokenDefaultsAndWritesTheScopesClaim(t *testing.T) {
+	minted, err := MintToken([]byte(testSecret), "ci", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("MintToken: %v", err)
+	}
+	if strings.Join(minted.Scopes, ",") != "*" {
+		t.Errorf("the record carries scopes %v, want [\"*\"] by default", minted.Scopes)
+	}
+
+	_, scopes, err := verify([]byte(testSecret), minted.Token)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if strings.Join(scopes, ",") != "*" {
+		t.Errorf("the token carries scopes %v, want the written default [\"*\"]", scopes)
+	}
+}
+
+// ReadToken takes the mint record whole or a bare token, and refuses a broken record.
+func TestReadTokenAcceptsTheRecordOrTheBareToken(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	for name, path := range map[string]string{
+		"a bare token": write("bare", "  the.jwt.value\n"),
+		"a record":     write("record", `{"token":"the.jwt.value","expires_at":null,"scopes":["*"]}`+"\n"),
+	} {
+		got, err := ReadToken(path)
+		if err != nil {
+			t.Fatalf("%s: ReadToken: %v", name, err)
+		}
+		if got != "the.jwt.value" {
+			t.Errorf("%s: ReadToken answered %q, want the token", name, got)
+		}
+	}
+
+	if _, err := ReadToken(write("broken", "{not json")); err == nil {
+		t.Error("ReadToken accepted a broken record")
+	}
+	if _, err := ReadToken(write("no token", `{"scopes":["*"]}`)); err == nil {
+		t.Error("ReadToken accepted a record with no token")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -154,12 +155,12 @@ func TestServeRefusesArgumentsAndAPairItLacks(t *testing.T) {
 	}
 }
 
-func TestServeMintPrintsATokenTheFrontAccepts(t *testing.T) {
+func TestServeMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	var out bytes.Buffer
 
 	app, flags := newFrontApp(t, &out)
 
-	// The front signs with frontSecret, so mint over the same secret prints a token the front accepts.
+	// The front signs with frontSecret, so mint over the same secret prints a record the front accepts.
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "secret")
 	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
@@ -169,23 +170,38 @@ func TestServeMintPrintsATokenTheFrontAccepts(t *testing.T) {
 	if err := app.serve(t.Context(), []string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	minted := strings.TrimSpace(out.String())
-	if minted == "" {
-		t.Fatal("mint printed no token")
+	printed := strings.TrimSpace(out.String())
+	if strings.Contains(printed, "\n") {
+		t.Errorf("mint printed %q, want one line", printed)
 	}
 
+	var record serve.Token
+	if err := json.Unmarshal([]byte(printed), &record); err != nil {
+		t.Fatalf("mint printed %q, not one JSON object: %v", printed, err)
+	}
+	if record.Token == "" {
+		t.Error("the record carries no token")
+	}
+	if record.ExpiresAt == nil || !record.ExpiresAt.After(time.Now()) {
+		t.Errorf("the record expires_at is %v, want a time in the future", record.ExpiresAt)
+	}
+	if strings.Join(record.Scopes, ",") != "*" {
+		t.Errorf("the record carries scopes %v, want [\"*\"] by default", record.Scopes)
+	}
+
+	// The client's --token-file takes the whole record; the bare-token form is covered by the other front tests.
 	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte(minted+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte(printed+"\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
 	flags[3] = tokenPath
 
 	out.Reset()
 	if err := app.Run(t.Context(), append(flags, "ls")); err != nil {
-		t.Fatalf("ls with the minted token: %v", err)
+		t.Fatalf("ls with the minted record: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls with the minted token printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("ls with the minted record printed %q, want the sandbox the daemon holds", out.String())
 	}
 }
 
