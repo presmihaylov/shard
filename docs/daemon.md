@@ -524,11 +524,11 @@ a state file, and the daemon still applies every rule of every verb.
 The CLI reaches a front instead of the socket with three flags, or the environment behind them:
 
 ```
-shard --host https://box.example.com:2376 --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
-SHARD_HOST=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
+shard --remote https://box.example.com:2376 --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
+SHARD_REMOTE=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
 ```
 
-`--host` must be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate
+`--remote` must be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate
 that signed the front's own, which a private CA or a self-signed certificate needs; without it the
 host's own trust store decides. This is one transport switch inside `services/client` and nothing
 else changes: the same typed calls, the same messages, the same errors. It is also the one way a

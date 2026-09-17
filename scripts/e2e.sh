@@ -441,9 +441,9 @@ front_curl() {
 	curl -sS --cacert "${SERVE_DIR}/serve.crt" "$@" "https://127.0.0.1:${port}${path}"
 }
 
-# shard_front drives a verb over the front rather than over the socket, which is what --host is for.
+# shard_front drives a verb over the front rather than over the socket, which is what --remote is for.
 shard_front() {
-	"${PREFIX}/shard" --host "https://127.0.0.1:${SERVE_PORT}" --token-file "${SERVE_TOKEN}" \
+	"${PREFIX}/shard" --remote "https://127.0.0.1:${SERVE_PORT}" --token-file "${SERVE_TOKEN}" \
 		--ca-file "${SERVE_DIR}/serve.crt" "$@"
 }
 

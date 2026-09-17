@@ -27,7 +27,7 @@ import (
 // DefaultTimeout bounds one call that answers in full. A call that streams passes zero.
 const DefaultTimeout = 30 * time.Second
 
-// remotePort is the port a --host with none named is dialed on, which is what shard serve binds.
+// remotePort is the port a --remote with none named is dialed on, which is what shard serve binds.
 const remotePort = "2376"
 
 // Client talks to one daemon. It is safe for concurrent use.
@@ -103,10 +103,10 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		return nil, fmt.Errorf("parse the host %q: %w", host, err)
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, fmt.Errorf("--host must be an https url, as https://box.example.com:2376, got %q", host)
+		return nil, fmt.Errorf("--remote must be an https url, as https://box.example.com:2376, got %q", host)
 	}
 	if token == "" {
-		return nil, errors.New("--host needs a token: a shard serve front answers 401 without one")
+		return nil, errors.New("--remote needs a token: a shard serve front answers 401 without one")
 	}
 
 	address := parsed.Host

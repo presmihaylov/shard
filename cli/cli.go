@@ -30,7 +30,7 @@ const InitPathEnv = "SHARD_INIT_PATH"
 
 // The environment behind the three flags that point a verb at a remote daemon, as docker's DOCKER_HOST does.
 const (
-	HostEnv      = "SHARD_HOST"
+	RemoteEnv    = "SHARD_REMOTE"
 	TokenFileEnv = "SHARD_TOKEN_FILE" //nolint:gosec // G101: this names a file, and holds no token
 	CAFileEnv    = "SHARD_CA_FILE"
 )
@@ -151,11 +151,11 @@ Flags:
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
   --provider <name>        the substrate the daemon runs sandboxes on: gvisor or sysbox (default gvisor)
-  --host <url>             speak to a shard serve front, as https://box:2376, instead of the socket
+  --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket
   --token-file <path>      the bearer token that front checks
   --ca-file <pem>          the certificate that signed the front's own
 
---host, --token-file and --ca-file also come from ` + HostEnv + `, ` + TokenFileEnv + ` and ` + CAFileEnv + `.
+--remote, --token-file and --ca-file also come from ` + RemoteEnv + `, ` + TokenFileEnv + ` and ` + CAFileEnv + `.
 
 Run shard <verb> --help to print the flags of one verb, and shard --version for the client version.`
 
@@ -175,13 +175,13 @@ type App struct {
 	InitPath string
 	// Provider names the substrate the daemon runs sandboxes on. Empty is gVisor.
 	Provider string
-	// Host is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
-	Host string
+	// Remote is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
+	Remote string
 	// TokenFile holds the bearer token that front checks, and CAFile the certificate that signed its own.
 	TokenFile string
 	CAFile    string
 
-	// remote is the client of Host, built once the globals are parsed and before any verb runs.
+	// remote is the client of Remote, built once the globals are parsed and before any verb runs.
 	remote *client.Client
 
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
@@ -315,7 +315,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
 	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
 	flags.StringVar(&a.Provider, "provider", a.Provider, "the substrate the daemon runs sandboxes on")
-	flags.StringVar(&a.Host, "host", a.Host, "the shard serve front to speak to, as https://box:2376")
+	flags.StringVar(&a.Remote, "remote", a.Remote, "the shard serve front to speak to, as https://box:2376")
 	flags.StringVar(&a.TokenFile, "token-file", a.TokenFile, "the file holding the bearer token that front checks")
 	flags.StringVar(&a.CAFile, "ca-file", a.CAFile, "the certificate that signed the front's own")
 
@@ -337,8 +337,8 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 		return nil, fmt.Errorf("--root must be an absolute path, got %q", a.Root)
 	}
 
-	if a.Host != "" {
-		remote, err := remoteClient(a.Host, a.TokenFile, a.CAFile)
+	if a.Remote != "" {
+		remote, err := remoteClient(a.Remote, a.TokenFile, a.CAFile)
 		if err != nil {
 			return nil, err
 		}
@@ -353,7 +353,7 @@ func (a *App) fromEnv() {
 	for _, pair := range []struct {
 		field *string
 		name  string
-	}{{&a.Host, HostEnv}, {&a.TokenFile, TokenFileEnv}, {&a.CAFile, CAFileEnv}} {
+	}{{&a.Remote, RemoteEnv}, {&a.TokenFile, TokenFileEnv}, {&a.CAFile, CAFileEnv}} {
 		if *pair.field == "" {
 			*pair.field = os.Getenv(pair.name)
 		}
@@ -398,7 +398,7 @@ func (h *hostList) Set(value string) error {
 	return nil
 }
 
-// client speaks to the daemon: on the socket under the root, or to the front --host names.
+// client speaks to the daemon: on the socket under the root, or to the front --remote names.
 func (a App) client() *client.Client {
 	if a.remote != nil {
 		return a.remote
