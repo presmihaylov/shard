@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -154,7 +155,9 @@ Flags:
   --token-file <path>      the bearer token that front checks
   --ca-file <pem>          the certificate that signed the front's own
 
---host, --token-file and --ca-file also come from ` + HostEnv + `, ` + TokenFileEnv + ` and ` + CAFileEnv + `.`
+--host, --token-file and --ca-file also come from ` + HostEnv + `, ` + TokenFileEnv + ` and ` + CAFileEnv + `.
+
+Run shard <verb> --help to print the flags of one verb, and shard --version for the client version.`
 
 // App is the wiring one shard process needs.
 type App struct {
@@ -199,16 +202,43 @@ func (a App) stdin() *os.File {
 
 // Run dispatches one command. A nil error means the command printed what it had to print.
 func (a App) Run(ctx context.Context, args []string) error {
-	// These read as flags, so they are answered before the flag parser can reject them.
-	if len(args) == 1 {
-		switch args[0] {
-		case "--version":
-			return a.print("client " + a.Version)
-		case "help", "--help", "-h":
-			return a.print(usage)
-		}
+	err := a.run(ctx, args)
+	// A --help or --version anywhere surfaces as a printExit: print its text and exit 0.
+	var exit printExit
+	if errors.As(err, &exit) {
+		return a.print(exit.text)
 	}
 
+	return err
+}
+
+// printExit carries the text a verb means to print before it exits 0, as --help and --version do.
+type printExit struct{ text string }
+
+func (p printExit) Error() string { return p.text }
+
+// parseVerb parses a verb's flags and turns a --help request into a printExit Run prints, exit 0.
+func parseVerb(flags *flag.FlagSet, args []string) error {
+	err := flags.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return printExit{text: usageOf(flags)}
+	}
+
+	return err
+}
+
+// usageOf renders a verb's own flags the way the flag package would, so no help text is hand-written.
+func usageOf(flags *flag.FlagSet) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Usage of %s:\n", flags.Name())
+	flags.SetOutput(&b)
+	flags.PrintDefaults()
+	flags.SetOutput(io.Discard)
+
+	return b.String()
+}
+
+func (a App) run(ctx context.Context, args []string) error {
 	args, err := a.parseGlobals(args)
 	if err != nil {
 		return err
@@ -279,6 +309,8 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	var showVersion bool
+	flags.BoolVar(&showVersion, "version", false, "print the client version and exit")
 	flags.StringVar(&a.Root, "root", a.Root, "where shard keeps its state")
 	flags.DurationVar(&a.Timeout, "timeout", a.Timeout, "how long a pull may take")
 	flags.Var((*hostList)(&a.Insecure), "insecure-registry", "allow plaintext http to this registry host")
@@ -288,7 +320,16 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.StringVar(&a.CAFile, "ca-file", a.CAFile, "the certificate that signed the front's own")
 
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, printExit{text: usage}
+		}
+
 		return nil, fmt.Errorf("parse the flags: %w", err)
+	}
+
+	// --version answers before the root is checked, so it never fails.
+	if showVersion {
+		return nil, printExit{text: "client " + a.Version}
 	}
 
 	// The fallback is the flag default, so an explicit empty or relative --root still lands here.

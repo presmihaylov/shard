@@ -32,7 +32,7 @@ func parseCopy(verb string, args []string) (string, sandbox.CopyRequest, error) 
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&req.Name, "name", "", "a handle every verb takes in place of the id")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return "", sandbox.CopyRequest{}, fmt.Errorf("parse the %s flags: %w", verb, err)
 	}
 	if named(flags) {

@@ -38,7 +38,7 @@ func parseStop(args []string) (stopOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long the entrypoint gets before it is killed")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return stopOptions{}, fmt.Errorf("parse the stop flags: %w", err)
 	}
 

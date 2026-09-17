@@ -146,7 +146,7 @@ func parseLs(args []string) (lsOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&opts.all, "all", false, "include the stopped sandboxes")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return lsOptions{}, fmt.Errorf("parse the ls flags: %w", err)
 	}
 

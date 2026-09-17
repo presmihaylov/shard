@@ -148,3 +148,39 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 		t.Fatal("a bad --timeout returned no error")
 	}
 }
+
+func TestVerbHelpPrintsItsFlagsAndExitsZero(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := newApp(t, &out).Run(t.Context(), []string{"create", "--help"}); err != nil {
+		t.Fatalf("create --help: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Usage of shard create:") || !strings.Contains(got, "-memory") {
+		t.Errorf("create --help printed %q, want the create usage and its flags", got)
+	}
+}
+
+func TestVersionFlagAfterGlobalsNeverFails(t *testing.T) {
+	var out bytes.Buffer
+
+	// A relative --root fails every other verb, but --version answers before that check.
+	if err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", "rel", "--version"}); err != nil {
+		t.Fatalf("--root rel --version: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "client test" {
+		t.Errorf("--version printed %q, want the client line alone", got)
+	}
+}
+
+func TestUsageListsVerbHelp(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := newApp(t, &out).Run(t.Context(), nil); err != nil {
+		t.Fatalf("Run(nil): %v", err)
+	}
+	if !strings.Contains(out.String(), "shard <verb> --help") {
+		t.Errorf("the top-level usage does not mention shard <verb> --help:\n%s", out.String())
+	}
+}

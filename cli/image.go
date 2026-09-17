@@ -125,7 +125,7 @@ func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&opts.force, "force", false, "remove the image even when a sandbox references it")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return imageRemoveOptions{}, fmt.Errorf("parse the image rm flags: %w", err)
 	}
 

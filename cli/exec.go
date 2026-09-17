@@ -220,7 +220,7 @@ func parseExec(args []string) (execOptions, error) {
 
 	head, argv, separated := splitAtSeparator(args)
 
-	if err := flags.Parse(expandBundles(head)); err != nil {
+	if err := parseVerb(flags, expandBundles(head)); err != nil {
 		return execOptions{}, fmt.Errorf("parse the exec flags: %w", err)
 	}
 

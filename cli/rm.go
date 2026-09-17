@@ -63,7 +63,7 @@ func parseRm(args []string) (rmOptions, error) {
 	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up")
 	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return rmOptions{}, fmt.Errorf("parse the rm flags: %w", err)
 	}
 

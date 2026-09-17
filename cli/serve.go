@@ -25,7 +25,7 @@ func (a App) serve(ctx context.Context, args []string) error {
 	key := flags.String("key", "", "the key of that certificate")
 	secret := flags.String("secret-file", "", "the file holding the secret that signs and checks every token")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the serve flags: %w", err)
 	}
 	if flags.NArg() != 0 {
@@ -51,7 +51,7 @@ func (a App) serveMint(args []string) error {
 	secretFile := flags.String("secret-file", "", "the file holding the secret that signs the token")
 	scopes := flags.String("scopes", "", "a comma-separated list of scopes the token carries; empty is every verb")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the mint flags: %w", err)
 	}
 	if flags.NArg() != 0 {

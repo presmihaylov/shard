@@ -141,7 +141,7 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
 	flags.StringVar(&opts.placeholder, "placeholder", "", "what the guest holds in place of the value, letters, digits, _, - and . only, default mock-NAME")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
 	}
 
@@ -224,7 +224,7 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&opts.force, "force", false, "remove the secret even when a sandbox holds it")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return secretRemoveOptions{}, fmt.Errorf("parse the secret rm flags: %w", err)
 	}
 
