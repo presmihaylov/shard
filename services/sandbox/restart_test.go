@@ -107,7 +107,7 @@ func TestRecordRestartsCopiesWhatTheSupervisorCounted(t *testing.T) {
 		t.Errorf("a tick with nothing new reported %v and wrote the record", reports)
 	}
 
-	l.provider.restarts = models.RestartCount{Count: 5, LastAt: at, GaveUp: true}
+	l.provider.restarts = models.RestartCount{Count: 5, LastAt: at.Add(time.Minute), GaveUp: true}
 	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{l.repo.sb}, report); err != nil {
 		t.Fatalf("RecordRestarts at the give-up: %v", err)
 	}
@@ -117,6 +117,29 @@ func TestRecordRestartsCopiesWhatTheSupervisorCounted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reports, want) || !l.repo.sb.Restart.GaveUp {
 		t.Errorf("the give-up reported %v and recorded %+v, want %v and the give-up", reports, l.repo.sb.Restart, want)
+	}
+}
+
+func TestRecordRestartsWritesAFreshStartTheCountDoesNotShow(t *testing.T) {
+	t1 := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)
+	sb := policied()
+	sb.Restart.RestartCount = models.RestartCount{Count: 1, LastAt: t1}
+	svc, l := newService(t, &recorder{}, sb)
+
+	t2 := t1.Add(time.Minute)
+	l.provider.restarts = models.RestartCount{Count: 1, LastAt: t2}
+
+	var reports []string
+	report := func(line string) { reports = append(reports, line) }
+	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{sb}, report); err != nil {
+		t.Fatalf("RecordRestarts: %v", err)
+	}
+
+	if got := l.repo.sb.Restart.RestartCount; got.Count != 1 || !got.LastAt.Equal(t2) {
+		t.Errorf("the record counts %+v, want the same 1 start again stamped at the fresh %v", got, t2)
+	}
+	if len(reports) != 1 || reports[0] != "sandbox sandbox1: the entrypoint was started again, 1 of 5" {
+		t.Errorf("a fresh start the count did not move reported %v, want one line for it", reports)
 	}
 }
 

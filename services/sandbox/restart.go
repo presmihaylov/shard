@@ -105,7 +105,7 @@ func (s *Service) recordRestarts(ctx context.Context, id string, report func(str
 	}
 	// The record's pointer may be the one the update writes through, so what it held is copied first.
 	before, retries := sb.Restart.RestartCount, sb.Restart.Retries
-	if count.Count == before.Count && count.GaveUp == before.GaveUp {
+	if count.Count == before.Count && count.GaveUp == before.GaveUp && count.LastAt.Equal(before.LastAt) {
 		return nil
 	}
 
@@ -118,7 +118,8 @@ func (s *Service) recordRestarts(ctx context.Context, id string, report func(str
 		return fmt.Errorf("sandbox %s was started again but its record was not updated: %w", id, err)
 	}
 
-	if count.Count != before.Count {
+	// A flapping entrypoint can start again without the count moving, so a fresh LastAt is what marks a real start.
+	if !count.LastAt.Equal(before.LastAt) {
 		report(entrypointRestartReport(id, count.Count, retries))
 	}
 	if count.GaveUp && !before.GaveUp {
