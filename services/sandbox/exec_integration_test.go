@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -121,6 +122,13 @@ func TestExecResizeReachesARunningTerminal(t *testing.T) {
 	}()
 
 	replica := <-holder.replica
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(holder.release) }) }
+	// One owner: close the file on every path so its finalizer never double-closes the fd, and let the holder go.
+	t.Cleanup(func() {
+		_ = replica.Close()
+		release()
+	})
 
 	want := pty.Size{Rows: 40, Cols: 120}
 	if err := svc.ResizeExec(context.Background(), "sandbox1", exec.ID, sandbox.TerminalSize{Rows: want.Rows, Cols: want.Cols}); err != nil {
@@ -135,11 +143,7 @@ func TestExecResizeReachesARunningTerminal(t *testing.T) {
 		t.Errorf("the running terminal reads %v, want %v after the resize", got, want)
 	}
 
-	// One owner: closing the file here clears its finalizer, so nothing closes the number a second time.
-	if err := replica.Close(); err != nil {
-		t.Fatalf("drop the kept replica: %v", err)
-	}
-	close(holder.release)
+	release()
 	if err := <-done; err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
