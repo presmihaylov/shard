@@ -505,10 +505,17 @@ func TestAnUnknownRouteIs403AndNothingIsDialed(t *testing.T) {
 
 // Every route the daemon serves has a capability, so no request reaches the front without one to check.
 func TestEveryDaemonRouteHasACapability(t *testing.T) {
+	covered := 0
 	for _, r := range api.Routes() {
+		covered++
 		if _, ok := capabilityOf(r); !ok {
 			t.Errorf("route %s %s has no capability", r.Method, r.Pattern)
 		}
+	}
+
+	// An empty route list would pass in silence, so the walk proves it covered the daemon surface.
+	if covered < 15 {
+		t.Fatalf("the walk covered %d daemon routes, want the full set", covered)
 	}
 }
 
