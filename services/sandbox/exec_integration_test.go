@@ -74,13 +74,12 @@ func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
 	}
 }
 
-// terminalHolder keeps the replica it was given and hands its fd out, so a test can resize the exec
-// while the command still runs and read the new window from the guest side.
+// terminalHolder keeps the replica it was given and hands it out as a file, so a test can resize the exec
+// while the command still runs and read the new window from the guest side. The test closes that file.
 type terminalHolder struct {
 	models.Provider
 
-	t       *testing.T
-	replica chan int
+	replica chan *os.File
 	release chan struct{}
 }
 
@@ -95,11 +94,9 @@ func (h *terminalHolder) Exec(_ context.Context, _ string, spec models.ExecSpec)
 	if err != nil {
 		return models.ExitStatus{}, fmt.Errorf("keep a copy of the replica: %w", err)
 	}
-	h.replica <- kept
+	// The os.File is the one owner of the dup; the test closes it, so nothing raw-closes the number here.
+	h.replica <- os.NewFile(uintptr(kept), "replica")
 	<-h.release
-	if err := syscall.Close(kept); err != nil {
-		h.t.Logf("drop the kept replica: %v", err)
-	}
 
 	return models.ExitStatus{}, nil
 }
@@ -108,7 +105,7 @@ func (h *terminalHolder) Exec(_ context.Context, _ string, spec models.ExecSpec)
 // terminal reads the new window at once.
 func TestExecResizeReachesARunningTerminal(t *testing.T) {
 	r := &recorder{live: map[string]bool{}}
-	holder := &terminalHolder{t: t, replica: make(chan int, 1), release: make(chan struct{})}
+	holder := &terminalHolder{replica: make(chan *os.File, 1), release: make(chan struct{})}
 	svc := sandbox.New(sandbox.Config{Repo: &fakeRepo{r: r, sb: running()}, Provider: holder})
 
 	req := sandbox.ExecRequest{Command: []string{"/bin/true"}, TTY: true}
@@ -123,8 +120,7 @@ func TestExecResizeReachesARunningTerminal(t *testing.T) {
 		done <- err
 	}()
 
-	kept := <-holder.replica
-	replica := os.NewFile(uintptr(kept), "replica")
+	replica := <-holder.replica
 
 	want := pty.Size{Rows: 40, Cols: 120}
 	if err := svc.ResizeExec(context.Background(), "sandbox1", exec.ID, sandbox.TerminalSize{Rows: want.Rows, Cols: want.Cols}); err != nil {
@@ -139,6 +135,10 @@ func TestExecResizeReachesARunningTerminal(t *testing.T) {
 		t.Errorf("the running terminal reads %v, want %v after the resize", got, want)
 	}
 
+	// One owner: closing the file here clears its finalizer, so nothing closes the number a second time.
+	if err := replica.Close(); err != nil {
+		t.Fatalf("drop the kept replica: %v", err)
+	}
 	close(holder.release)
 	if err := <-done; err != nil {
 		t.Fatalf("Attach: %v", err)
