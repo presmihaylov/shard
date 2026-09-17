@@ -24,6 +24,10 @@ const DefaultStopGrace = 10 * time.Second
 // DefaultStopSettle is how long past Provider.Stop a stop waits for the substrate to report the sandbox gone.
 const DefaultStopSettle = 5 * time.Second
 
+// DefaultProbeBudget bounds one daemon- or verb-initiated Provider.Status, so a wedged substrate call
+// cannot pin a sandbox's lock or run a verb past its own timeout.
+const DefaultProbeBudget = 10 * time.Second
+
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
@@ -81,6 +85,8 @@ type Config struct {
 	PullTimeout time.Duration
 	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
 	StopSettle time.Duration
+	// ProbeBudget overrides DefaultProbeBudget, which only a test has a reason to do.
+	ProbeBudget time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -155,6 +161,18 @@ func FailedGuard(id string, sb models.Sandbox) error {
 	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard rm %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
 }
 
+// SubstrateTimeoutError is our own deadline on a Provider.Status the substrate never answered, so a verb
+// fails fast within budget instead of pinning on a wedged runtime. Op names the verb the operator ran.
+type SubstrateTimeoutError struct {
+	ID     string
+	Op     string
+	Budget time.Duration
+}
+
+func (e *SubstrateTimeoutError) Error() string {
+	return fmt.Sprintf("the substrate did not answer within %s for sandbox %s", e.Budget, e.ID)
+}
+
 // lock serializes the verbs on one sandbox; a mutex outlives its id, which is small and never contended.
 func (s *Service) lock(id string) func() {
 	s.mu.Lock()
@@ -168,6 +186,33 @@ func (s *Service) lock(id string) func() {
 	m.Lock()
 
 	return m.Unlock
+}
+
+// probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.
+func (s *Service) probeBudget() time.Duration {
+	if s.cfg.ProbeBudget != 0 {
+		return s.cfg.ProbeBudget
+	}
+
+	return DefaultProbeBudget
+}
+
+// status asks the substrate about a sandbox on a bounded context, so a wedged runtime cannot pin a verb.
+// A deadline we set, not the caller's own cancel, becomes the SubstrateTimeoutError a verb fails fast on.
+func (s *Service) status(ctx context.Context, id, op string) (models.Status, error) {
+	budget := s.probeBudget()
+	bctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	status, err := s.cfg.Provider.Status(bctx, id)
+	if err == nil {
+		return status, nil
+	}
+	if bctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return models.Status{}, &SubstrateTimeoutError{ID: id, Op: op, Budget: budget}
+	}
+
+	return models.Status{}, err
 }
 
 // Prepare writes the pending record and answers at once. The pull and the start run later, in Complete,
@@ -602,11 +647,14 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 	// A second stop changes nothing: the exit status the first one recorded is the one that happened.
 	// Unless a start failed after the substrate came up, which is the one way a stopped record lies.
 	if sb.State == models.StateStopped {
-		status, err := s.cfg.Provider.Status(ctx, id)
-		if err != nil {
+		status, err := s.status(ctx, id, "stop")
+		var timeout *SubstrateTimeoutError
+		switch {
+		case errors.As(err, &timeout):
+			// A timed-out check cannot confirm the sandbox is gone, so fall through to the stop that kills it.
+		case err != nil:
 			return err
-		}
-		if !status.Alive() {
+		case !status.Alive():
 			return nil
 		}
 	}
@@ -660,9 +708,18 @@ func (s *Service) awaitStopped(ctx context.Context, id string) error {
 		bound = DefaultStopSettle
 	}
 	deadline := time.Now().Add(bound)
+	// The settle bounds the poll too, so a Status the substrate wedges cannot hold the stop past it.
+	sctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 
 	for {
-		status, err := s.cfg.Provider.Status(ctx, id)
+		status, err := s.cfg.Provider.Status(sctx, id)
+		if err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil && sctx.Err() != nil {
+			return fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
+		}
 		if err != nil {
 			return err
 		}
@@ -729,7 +786,16 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 // endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps.
 // force is the shorthand for the stop the operator would otherwise type first.
 func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace time.Duration) error {
-	status, err := s.cfg.Provider.Status(ctx, id)
+	status, err := s.status(ctx, id, "rm")
+	var timeout *SubstrateTimeoutError
+	wedged := errors.As(err, &timeout)
+	if wedged && !force {
+		return err
+	}
+	if wedged {
+		// force turns an unanswered rm into the stop that kills the wedged sandbox.
+		return s.stop(ctx, id, grace)
+	}
 	if err != nil {
 		return err
 	}
