@@ -21,7 +21,7 @@ import (
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-const frontToken = "cli-token-value"
+const frontSecret = "cli-front-secret-0000000000000000"
 
 // newFrontApp puts a fake daemon and a front over it up, and answers the flags that reach the front.
 func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
@@ -30,13 +30,23 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 	app := newLsApp(t, out, listed(), nil)
 
 	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	minted, err := serve.Mint([]byte(frontSecret), "cli", time.Hour)
+	if err != nil {
+		t.Fatalf("mint a token: %v", err)
+	}
 	token := filepath.Join(dir, "token")
-	if err := os.WriteFile(token, []byte(frontToken+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(token, []byte(minted+"\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
+
 	cert, key := selfSigned(t, dir)
 
-	front, err := serve.New(serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, TokenFile: token, Root: app.Root, Out: io.Discard})
+	front, err := serve.New(serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: secret, Root: app.Root, Out: io.Discard})
 	if err != nil {
 		t.Fatalf("serve.New: %v", err)
 	}
@@ -124,6 +134,54 @@ func TestServeRefusesArgumentsAndAPairItLacks(t *testing.T) {
 	}
 	if err := app.serve(t.Context(), []string{"--listen", "127.0.0.1:0"}); err == nil {
 		t.Error("serve started with no certificate and no key")
+	}
+}
+
+func TestServeMintPrintsATokenTheFrontAccepts(t *testing.T) {
+	var out bytes.Buffer
+
+	app, flags := newFrontApp(t, &out)
+
+	// The front signs with frontSecret, so mint over the same secret prints a token the front accepts.
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	if err := app.serve(t.Context(), []string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	minted := strings.TrimSpace(out.String())
+	if minted == "" {
+		t.Fatal("mint printed no token")
+	}
+
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte(minted+"\n"), 0o600); err != nil {
+		t.Fatalf("write the token file: %v", err)
+	}
+	flags[3] = tokenPath
+
+	out.Reset()
+	if err := app.Run(t.Context(), append(flags, "ls")); err != nil {
+		t.Fatalf("ls with the minted token: %v", err)
+	}
+	if !strings.Contains(out.String(), "up-1") {
+		t.Errorf("ls with the minted token printed %q, want the sandbox the daemon holds", out.String())
+	}
+}
+
+func TestServeMintRefusesNoName(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+	if err := app.serve(t.Context(), []string{"mint", "--secret-file", secret}); err == nil {
+		t.Error("mint signed a token with no name")
 	}
 }
 

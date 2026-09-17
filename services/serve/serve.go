@@ -1,12 +1,11 @@
-// Package serve is the TCP front of the daemon: it terminates TLS, checks the bearer token of a
-// connection and then splices it onto the daemon's unix socket, byte for byte.
+// Package serve is the TCP front of the daemon: it terminates TLS, verifies the JWT each request
+// carries and then splices it onto the daemon's unix socket, byte for byte.
 package serve
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -44,23 +43,23 @@ type Config struct {
 	// CertFile and KeyFile are the TLS pair. Without both the front refuses to start; it never serves plain tcp.
 	CertFile string
 	KeyFile  string
-	// TokenFile holds the bearer token every request carries. Its value is never logged.
-	TokenFile string
+	// SecretFile holds the HS256 secret that signs and checks every token. Its value is never logged.
+	SecretFile string
 	// Root is the daemon's state root, which is where the socket the front fronts sits.
 	Root string
 	Out  io.Writer
 }
 
-// Server is one front, over one token and one daemon socket.
+// Server is one front, over one secret and one daemon socket.
 type Server struct {
 	listen string
 	socket string
-	token  string
+	secret []byte
 	tls    *tls.Config
 	log    *log.Logger
 }
 
-// New reads the token and the TLS pair, so every reason to refuse is known before anything binds.
+// New reads the secret and the TLS pair, so every reason to refuse is known before anything binds.
 func New(cfg Config) (*Server, error) {
 	if cfg.CertFile == "" || cfg.KeyFile == "" {
 		return nil, errors.New("shard serve needs --cert and --key: it terminates tls and never accepts plain tcp")
@@ -69,7 +68,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("shard serve needs a root: the daemon socket it fronts sits under it")
 	}
 
-	token, err := ReadToken(cfg.TokenFile)
+	secret, err := ReadSecret(cfg.SecretFile)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +91,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		listen: listen,
 		socket: filepath.Join(cfg.Root, api.SocketFile),
-		token:  token,
+		secret: secret,
 		tls:    &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
 		log:    log.New(out, "", log.LstdFlags),
 	}, nil
@@ -217,11 +216,13 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	if !s.authorized(head) {
+	sub, ok := s.authorize(head)
+	if !ok {
 		s.refuse(conn)
 
 		return
 	}
+	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), sub)
 
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socket)
 	if err != nil {
@@ -236,7 +237,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	if err := splice(conn, upstream, head); err != nil {
+	if err := splice(conn, upstream, forwardHead(head)); err != nil {
 		s.log.Printf("proxy the connection from %s: %v", conn.RemoteAddr(), err)
 	}
 }
@@ -281,30 +282,29 @@ func readHead(r io.Reader) ([]byte, error) {
 	}
 }
 
-// authorized compares the bearer token in constant time, so no answer of this front times a guess.
-func (s *Server) authorized(head []byte) bool {
-	headers := textproto.NewReader(bufio.NewReader(bytes.NewReader(head)))
-
-	if _, err := headers.ReadLine(); err != nil {
-		return false
-	}
-
-	fields, err := headers.ReadMIMEHeader()
-	if err != nil {
-		return false
+// authorize verifies the JWT the request carries and returns its subject; nothing is dialed without one.
+func (s *Server) authorize(head []byte) (string, bool) {
+	fields, ok := headerFields(head)
+	if !ok {
+		return "", false
 	}
 
 	scheme, token, found := strings.Cut(fields.Get("Authorization"), " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {
-		return false
+		return "", false
 	}
 
-	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(s.token)) == 1
+	sub, err := verify(s.secret, strings.TrimSpace(token))
+	if err != nil {
+		return "", false
+	}
+
+	return sub, true
 }
 
 // refuse answers 401 and closes. Nothing is dialed, so a request with no token never reaches the daemon.
 func (s *Server) refuse(conn net.Conn) {
-	s.log.Printf("refused the connection from %s: the bearer token does not match", conn.RemoteAddr())
+	s.log.Printf("refused the connection from %s: no valid token", conn.RemoteAddr())
 	s.answer(conn, "401 Unauthorized", unauthorized)
 }
 
@@ -313,6 +313,69 @@ func (s *Server) answer(conn net.Conn, status, body string) {
 	if _, err := io.WriteString(conn, head+body+"\n"); !quiet(err) {
 		s.log.Printf("answer %s to %s: %v", status, conn.RemoteAddr(), err)
 	}
+}
+
+// headerFields parses the head into the request headers, so the front reads the ones it needs.
+func headerFields(head []byte) (textproto.MIMEHeader, bool) {
+	headers := textproto.NewReader(bufio.NewReader(bytes.NewReader(head)))
+	if _, err := headers.ReadLine(); err != nil {
+		return nil, false
+	}
+
+	fields, err := headers.ReadMIMEHeader()
+	if err != nil {
+		return nil, false
+	}
+
+	return fields, true
+}
+
+// forwardHead makes each request stand on its own: it forces Connection: close, so the front checks
+// every request, not only the first of a kept-alive connection. A WebSocket upgrade is the one exception.
+func forwardHead(head []byte) []byte {
+	if isWebSocketUpgrade(head) {
+		return head
+	}
+
+	return setConnectionClose(head)
+}
+
+// isWebSocketUpgrade reports whether the request asks to upgrade, which keeps its own Connection header.
+func isWebSocketUpgrade(head []byte) bool {
+	fields, ok := headerFields(head)
+	if !ok {
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(fields.Get("Upgrade")), "websocket")
+}
+
+// setConnectionClose drops any Connection header the client sent and appends Connection: close.
+func setConnectionClose(head []byte) []byte {
+	trimmed := bytes.TrimSuffix(head, []byte("\r\n\r\n"))
+	lines := bytes.Split(trimmed, []byte("\r\n"))
+
+	kept := lines[:1] // the request line carries no header name.
+	for _, line := range lines[1:] {
+		if hasHeaderName(line, "Connection") {
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+	kept = append(kept, []byte("Connection: close"))
+
+	return append(bytes.Join(kept, []byte("\r\n")), "\r\n\r\n"...)
+}
+
+// hasHeaderName reports whether a header line names field, whatever its case and whatever its value.
+func hasHeaderName(line []byte, field string) bool {
+	name, _, found := bytes.Cut(line, []byte(":"))
+	if !found {
+		return false
+	}
+
+	return strings.EqualFold(strings.TrimSpace(string(name)), field)
 }
 
 // splice replays the head the front read and then copies both ways until the daemon's answer ends.

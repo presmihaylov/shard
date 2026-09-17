@@ -85,7 +85,9 @@ Usage:
                            leave the sandbox with no policy, and with its secrets untouched
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
-  shard serve [flags]      accept TLS on a TCP address, check the bearer token and pass the bytes to the daemon socket; its own unit starts it
+  shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
+  shard serve mint --name <sub> [--duration <dur>] --secret-file <path>
+                           print one token for a subject, signed by the secret; a local verb, the daemon never sees the secret
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -136,7 +138,12 @@ Serve flags:
   --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)
   --cert <pem>             the tls certificate to serve; without a pair serve refuses to start
   --key <pem>              the key of that certificate
-  --token-file <path>      the file holding the bearer token every request carries
+  --secret-file <path>     the file holding the secret that signs and checks every token
+
+Serve mint flags:
+  --name <sub>             the subject the token names
+  --duration <dur>         how long the token is valid (default 24h)
+  --secret-file <path>     the file holding the secret that signs the token
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)

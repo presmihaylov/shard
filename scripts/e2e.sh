@@ -65,9 +65,10 @@ DIND_LINK=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
-# The TCP fronts this run started, by pid, and the directory holding their certificate and token.
+# The TCP fronts this run started, by pid, and the directory holding their certificate, secret and token.
 SERVE_PIDS=""
 SERVE_DIR=""
+SERVE_SECRET=""
 SERVE_TOKEN=""
 SERVE_LOG=""
 # The second front sits over a root no daemon owns, which is how a refusal is proved to dial nothing.
@@ -400,7 +401,7 @@ start_serve() {
 
 	"${PREFIX}/shard" --root "${root}" serve --listen "127.0.0.1:${port}" \
 		--cert "${SERVE_DIR}/serve.crt" --key "${SERVE_DIR}/serve.key" \
-		--token-file "${SERVE_TOKEN}" >"${log}" 2>&1 &
+		--secret-file "${SERVE_SECRET}" >"${log}" 2>&1 &
 	pid=$!
 
 	for _ in $(seq 1 50); do
@@ -771,15 +772,20 @@ expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat
 
 step "reach the daemon through the tcp front"
 SERVE_DIR=$(mktemp -d /tmp/shard-e2e-serve.XXXXXX)
+SERVE_SECRET="${SERVE_DIR}/serve.secret"
 SERVE_TOKEN="${SERVE_DIR}/serve.token"
 SERVE_LOG="${SERVE_DIR}/serve.log"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
 	-subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
 	-keyout "${SERVE_DIR}/serve.key" -out "${SERVE_DIR}/serve.crt" >/dev/null 2>&1 ||
 	fail "openssl did not make a self-signed pair"
-openssl rand -hex 32 >"${SERVE_TOKEN}"
+openssl rand -hex 32 >"${SERVE_SECRET}"
+chmod 0600 "${SERVE_SECRET}"
+# The front verifies a JWT the secret signs; the client carries a token minted from that same secret.
+"${PREFIX}/shard" serve mint --name shard-e2e --secret-file "${SERVE_SECRET}" >"${SERVE_TOKEN}" ||
+	fail "serve mint did not print a token"
 chmod 0600 "${SERVE_TOKEN}"
-say "the run made its own certificate and token"
+say "the run made its own certificate and secret, and minted a token"
 
 SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SERVE_LOG}")" ||
 	fail "the front did not come up: $(cat "${SERVE_LOG}")"
@@ -798,6 +804,22 @@ expect "${BODY}" '{"error":{"code":"unauthorized","message":"the request carries
 CODE=$(front_curl "${SERVE_PORT}" "" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "no token at all is refused"
 
+# A token the secret signed but whose lifetime has passed is refused, so the front checks expiry.
+EXPIRED=$("${PREFIX}/shard" serve mint --name shard-e2e --duration 1s --secret-file "${SERVE_SECRET}") ||
+	fail "serve mint did not print a short-lived token"
+sleep 2
+CODE=$(front_curl "${SERVE_PORT}" "${EXPIRED}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "an expired token is refused"
+
+# A token another secret signed is refused, so the front checks the signature against its own secret.
+OTHER_SECRET="${SERVE_DIR}/other.secret"
+openssl rand -hex 32 >"${OTHER_SECRET}"
+chmod 0600 "${OTHER_SECRET}"
+OTHER_TOKEN=$("${PREFIX}/shard" serve mint --name shard-e2e --secret-file "${OTHER_SECRET}") ||
+	fail "serve mint did not print a token from the other secret"
+CODE=$(front_curl "${SERVE_PORT}" "${OTHER_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "a token signed with a different secret is refused"
+
 # A front over a root no daemon owns cannot answer anything but the refusal, so a 401 here proves
 # the check runs before the dial: only the request that carried the token reached a socket at all.
 LONE_ROOT=$(mktemp -d /tmp/shard-e2e-lone.XXXXXX)
@@ -806,6 +828,10 @@ SERVE_PIDS="${SERVE_PIDS} $(start_serve "${LONE_ROOT}" "${LONE_PORT}" "${LONE_LO
 	fail "the second front did not come up: $(cat "${LONE_LOG}")"
 CODE=$(front_curl "${LONE_PORT}" "wrong-${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "a wrong token is refused by a front that fronts nothing"
+CODE=$(front_curl "${LONE_PORT}" "${EXPIRED}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "an expired token is refused by a front that fronts nothing"
+CODE=$(front_curl "${LONE_PORT}" "${OTHER_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "a token from a different secret is refused by a front that fronts nothing"
 CODE=$(front_curl "${LONE_PORT}" "${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "502" "the same front cannot reach a daemon that is not there"
 expect "$(grep -c 'dial the daemon socket' "${LONE_LOG}")" "1" \
