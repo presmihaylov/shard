@@ -109,6 +109,9 @@ Create flags, which must precede the image:
   --memory <MiB>           the memory bound, 0 for unbounded
   --cpus <n>               the vcpu bound, 0 for unbounded
   --restart-on-oom         start the sandbox again when the host ends it for its memory, 5 times at most; needs --memory
+  --restart <policy>       start the entrypoint again inside the sandbox when it exits: no, on-failure or always
+  --restart-retries <n>    the starts again before the supervisor gives up, 5 by default
+  --restart-backoff <dur>  the wait before the first start again, in whole seconds, 1s by default; it doubles each time, up to 60s
   --health-command <cmd>   a shell command the daemon runs in the sandbox every interval, which passes on exit 0
   --health-http PORT[/PATH] a GET the daemon sends from the host every interval, which passes on a 2xx or 3xx
   --health-interval <dur>  the time between two probes, in whole seconds, 30s by default

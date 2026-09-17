@@ -68,16 +68,32 @@ func state(sb models.Sandbox) string {
 	return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 }
 
-// restart is the policy the sandbox asked for, and how much of the cap the daemon has spent on it.
+// restart is each policy the sandbox asked for, and how much of its cap has been spent on it.
 func restart(sb models.Sandbox) string {
-	if !sb.RestartOnOOM {
+	var policies []string
+	if sb.Restart != nil {
+		policies = append(policies, spent(string(sb.Restart.Policy), sb.Restart.Count, sb.Restart.Retries, sb.Restart.GaveUp))
+	}
+	if sb.RestartOnOOM {
+		policies = append(policies, spent("on-oom", sb.OOMRestarts, sandbox.OOMRestartCap, false))
+	}
+	if len(policies) == 0 {
 		return "-"
 	}
-	if sb.OOMRestarts == 0 {
-		return "on-oom"
+
+	return strings.Join(policies, ", ")
+}
+
+// spent is a policy with its count beside it once a start again happened, and the give-up when it did.
+func spent(policy string, count, retries int, gaveUp bool) string {
+	if count != 0 {
+		policy = fmt.Sprintf("%s %d/%d", policy, count, retries)
+	}
+	if gaveUp {
+		return policy + " gave up"
 	}
 
-	return fmt.Sprintf("on-oom %d/%d", sb.OOMRestarts, sandbox.OOMRestartCap)
+	return policy
 }
 
 // health is what the probes found, and how many failed in a row out of the retries the sandbox allows.

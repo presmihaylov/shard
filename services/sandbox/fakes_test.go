@@ -222,6 +222,9 @@ type fakeProvider struct {
 	exit   models.ExitStatus
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
+	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
+	restarts    models.RestartCount
+	restartsErr error
 	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
 	onRemove func()
 	// gate, when set, holds Start until it is closed, so a test can put a second verb behind it.
@@ -431,6 +434,17 @@ func (f *fakeProvider) Status(context.Context, string) (models.Status, error) {
 	}
 
 	return f.status, nil
+}
+
+func (f *fakeProvider) Restarts(context.Context, string) (models.RestartCount, error) {
+	if err := f.r.record("provider.Restarts"); err != nil {
+		return models.RestartCount{}, err
+	}
+	if f.restartsErr != nil {
+		return models.RestartCount{}, f.restartsErr
+	}
+
+	return f.restarts, nil
 }
 
 func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) {

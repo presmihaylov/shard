@@ -29,6 +29,8 @@ systemctl enable --now shard
   `--restart-on-oom` (`restart_on_oom` in the create body, which needs a memory bound). See below.
 - **The health check**: the `health-check` task runs the probe a sandbox was created with, on the
   interval it named, and keeps the result on the record. See below.
+- **The restart policy**: `shard-init` starts the entrypoint again under the policy a sandbox was
+  created with, and the `restart-policy` task copies its count onto the record every second. See below.
 
 - **The stores**: the images under `${root}/images`, the policies, the secrets and the sandbox
   records. One writer owns them, so they need no lock between processes: the daemon serializes its
@@ -129,6 +131,31 @@ and a daemon that finds the sandbox running at reconcile. A `resume` and a `fork
 as they keep the process. Nothing acts on `unhealthy` yet; the status is for the operator and the
 API, and a later task set may restart on it.
 
+## Restart policy
+
+A sandbox outlives its entrypoint, and the policy does not change that: it starts the entrypoint
+again inside the sandbox that is already up, and the sandbox stays `running` whatever the policy
+does. `--restart <policy>` (`"restart": {"policy"}` in the create body) is `no`, the default,
+`on-failure`, which starts the entrypoint again after an exit other than 0 or a signal, or
+`always`, which does so after every exit. `--restart-retries` (`retries`, 5) caps the starts again
+in one run, and `--restart-backoff` (`backoff`, whole seconds, 1) is the wait before the first one;
+it doubles each time, up to 60 s. Both need a policy. At the cap the policy gives up and the
+entrypoint stays exited, and a stop puts its last exit in `exit_status` as after any exit. A stop
+during the wait ends the sandbox at once and drops the start that was due.
+
+The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
+channel, so nothing changes it on a sandbox that runs. `shard-init` counts every start again in a
+file beside the exit file, and the `restart-policy` task reads that file every second for every
+running sandbox that has a policy and copies it onto the record, so the record is at most a second
+behind, and a `stop` reads the count once more before it writes the stopped record. The record
+carries `restart`: `{"policy", "retries", "backoff", "count", "last_at", "gave_up"}`, absent on a
+sandbox without a policy. `shard ls` shows it in the `RESTART` column beside the OOM policy, as
+`on-failure 2/5`, then `on-failure 5/5 gave up`; each start again and the give-up are one line in
+the daemon log. The count is for one run and `shard-init` never clears it: a `start` of a stopped
+sandbox begins a new run at zero, a `resume` and a `fork` keep the count with the process, and a
+`clone` inherits the policy alone. This is a convenience for a flaky entrypoint, not a lifetime
+mechanism: `stop` stays the only thing that ends a sandbox.
+
 ## The API socket
 
 The daemon listens on `${root}/shard.sock`, so `/var/lib/shard/shard.sock` by default. It never
@@ -194,8 +221,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
   "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "health": {"command" or
-  "http": {"port", "path"}, "interval", "timeout", "retries"}}`, pulls the image, builds and
-  starts the sandbox, and answers 201 with the record. 400 when the body does not decode or a field does not validate,
+  "http": {"port", "path"}, "interval", "timeout", "retries"}, "restart": {"policy", "retries",
+  "backoff"}}`, pulls the image, builds and starts the sandbox, and answers 201 with the record. 400 when the body does not decode or a field does not validate,
   or when it names a secret or a policy the host does not hold; 500 when a claim fails, and the
   daemon has then given back everything it built.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it

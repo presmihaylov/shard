@@ -118,6 +118,8 @@ type CreateRequest struct {
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
 	// Health is the probe the daemon runs while the sandbox runs, nil for none.
 	Health *models.HealthCheck `json:"health,omitempty"`
+	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
+	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
 
 // fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
@@ -223,6 +225,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (sb models.Sand
 		User:       req.User,
 		Network:    netSpec,
 		Resources:  req.Resources,
+		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
 		ProxyCA:    proxyCA,
 	}, img.Config)
 
@@ -309,6 +312,11 @@ func validate(req CreateRequest) error {
 	}
 	if req.Health != nil {
 		if err := validHealthCheck(*req.Health); err != nil {
+			return &RequestError{Err: err}
+		}
+	}
+	if req.Restart != nil {
+		if err := validRestart(*req.Restart); err != nil {
 			return &RequestError{Err: err}
 		}
 	}
@@ -406,6 +414,7 @@ func (s *Service) claimRecord(td *Teardown, img image.Image, req CreateRequest) 
 		RestartOnOOM: req.RestartOnOOM,
 		HealthCheck:  withHealthDefaults(req.Health),
 		Health:       startingHealth(req.Health),
+		Restart:      withRestartDefaults(req.Restart),
 		CreatedAt:    time.Now().UTC(),
 	})
 	if err != nil {
@@ -531,12 +540,20 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration) erro
 	if err != nil {
 		return err
 	}
+	// The count is read once the run is over, so a start again between two ticks never goes unrecorded.
+	restarts, err := s.lastRestarts(ctx, sb)
+	if err != nil {
+		return err
+	}
 
 	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		if exit != nil {
 			sb.ExitStatus = exit
+		}
+		if sb.Restart != nil {
+			sb.Restart.RestartCount = restarts
 		}
 
 		return nil

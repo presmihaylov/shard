@@ -118,9 +118,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 // create runs sysbox-runc create over the log the container inherits. The memory bound rides in
 // config.json and runc applies it to the cgroup itself, so nothing here touches the cgroup after.
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
-	// A create over a state directory that already ran must not let the previous run answer a wait or
-	// a start, so both of the supervisor's files go before anything else runs.
-	for _, stale := range []string{b.ExitFile, b.ReadyFile} {
+	// A create over a state directory that already ran must not let the previous run answer a wait,
+	// a start or a restart count, so the supervisor's files go before anything else runs.
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -575,6 +575,16 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 
 	return status, nil
+}
+
+// Restarts is a file read, not a substrate call, so a task may poll it every second.
+func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, error) {
+	b, err := p.open(id)
+	if err != nil {
+		return models.RestartCount{}, err
+	}
+
+	return b.RestartCount()
 }
 
 // oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes a guest process without

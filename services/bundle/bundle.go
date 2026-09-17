@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -28,15 +29,19 @@ const exitFileName = "exit.json"
 // nothing back, so this file is the only proof the entrypoint ever ran.
 const readyFileName = "started"
 
+// restartFileName is the count of starts again shard-init keeps under a restart policy.
+const restartFileName = "restarts.json"
+
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ShardDir is bind mounted at guestShardDir, and shard-init writes both files below into it.
-	ShardDir  string
-	ExitFile  string
-	ReadyFile string
+	// ShardDir is bind mounted at guestShardDir, and shard-init writes the files below into it.
+	ShardDir    string
+	ExitFile    string
+	ReadyFile   string
+	RestartFile string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -179,14 +184,15 @@ func validate(spec models.SandboxSpec) error {
 func newBundle(stateDir string) (Bundle, error) {
 	shardDir := filepath.Join(stateDir, "shard")
 	b := Bundle{
-		Dir:       filepath.Join(stateDir, "bundle"),
-		RootFS:    filepath.Join(stateDir, "bundle", "rootfs"),
-		ShardDir:  shardDir,
-		ExitFile:  filepath.Join(shardDir, exitFileName),
-		ReadyFile: filepath.Join(shardDir, readyFileName),
-		Upper:     filepath.Join(stateDir, "overlay", "upper"),
-		Work:      filepath.Join(stateDir, "overlay", "work"),
-		Tmp:       filepath.Join(stateDir, "tmp"),
+		Dir:         filepath.Join(stateDir, "bundle"),
+		RootFS:      filepath.Join(stateDir, "bundle", "rootfs"),
+		ShardDir:    shardDir,
+		ExitFile:    filepath.Join(shardDir, exitFileName),
+		ReadyFile:   filepath.Join(shardDir, readyFileName),
+		RestartFile: filepath.Join(shardDir, restartFileName),
+		Upper:       filepath.Join(stateDir, "overlay", "upper"),
+		Work:        filepath.Join(stateDir, "overlay", "work"),
+		Tmp:         filepath.Join(stateDir, "tmp"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -300,6 +306,16 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
 		argv = append(argv, "-user", fmt.Sprintf("%d:%d", identity.UID, identity.GID))
 		argv = append(argv, "-groups", formatGroups(identity.Groups))
+	}
+
+	// The policy is fixed at create: shard-init has no control channel, so the flags are the whole of it.
+	if spec.Restart.Set() {
+		argv = append(argv,
+			"-restart", string(spec.Restart.Policy),
+			"-retries", strconv.Itoa(spec.Restart.Retries),
+			"-backoff", strconv.Itoa(spec.Restart.Backoff)+"s",
+			"-restart-file", path.Join(guestShardDir, restartFileName),
+		)
 	}
 
 	return append(append(argv, "--"), entrypoint...), nil

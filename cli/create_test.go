@@ -113,6 +113,34 @@ func TestParseCreateHealthFlags(t *testing.T) {
 	}
 }
 
+func TestParseCreateRestartFlags(t *testing.T) {
+	req, err := parseCreate([]string{"--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	want := &models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 3}
+	if !reflect.DeepEqual(req.Restart, want) {
+		t.Errorf("restart = %+v, want %+v", req.Restart, want)
+	}
+
+	req, err = parseCreate([]string{"--restart", "always", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	want = &models.RestartSpec{Policy: models.RestartAlways}
+	if !reflect.DeepEqual(req.Restart, want) {
+		t.Errorf("restart = %+v, want %+v with the settings left for the daemon's defaults", req.Restart, want)
+	}
+
+	req, err = parseCreate([]string{"alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Restart != nil {
+		t.Errorf("restart = %+v, want none when no flag asked for a policy", req.Restart)
+	}
+}
+
 func TestParseCreateRejections(t *testing.T) {
 	cases := map[string][]string{
 		"no image":               {},
@@ -136,6 +164,9 @@ func TestParseCreateRejections(t *testing.T) {
 		"a sub-second interval":   {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
 		"a negative timeout":      {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
 		"a negative retry count":  {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},
+		"a policy setting alone":  {"--restart-retries", "2", "alpine:3.20"},
+		"a negative start count":  {"--restart", "always", "--restart-retries", "-1", "alpine:3.20"},
+		"a sub-second backoff":    {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

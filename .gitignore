@@ -13,8 +13,9 @@ coverage.*
 .vscode/
 *.swp
 
-# Stray binary from `go build ./...` in the module root
+# Stray binaries from `go build ./...` in the module root
 /shard
+/shard-init
 
 # Local Claude Code worktrees, one per in-flight ticket
 /.claude/worktrees/
