@@ -349,6 +349,28 @@ func TestImageListAndPull(t *testing.T) {
 	}
 }
 
+// A reference the registry cannot parse is the caller's input, so the pull is a 400 and not a 500.
+func TestPullingABadReferenceIsABadRequest(t *testing.T) {
+	s := seed(t)
+	s.stores.err = image.ErrBadReference
+
+	status, body := send(t, s.server, http.MethodPost, "/v0/images/pull", `{"ref":":::not a ref:::"}`)
+	if status != http.StatusBadRequest || errorOf(t, body).code != "invalid_request" {
+		t.Errorf("POST of a bad reference answered %d %v, want 400 invalid_request", status, body)
+	}
+}
+
+// A registry that fails on a reference that parsed is the host's fault, so the pull stays a 500.
+func TestPullingThroughARegistryFailureIsInternal(t *testing.T) {
+	s := seed(t)
+	s.stores.err = errors.New("the registry hung up")
+
+	status, body := send(t, s.server, http.MethodPost, "/v0/images/pull", `{"ref":"docker.io/library/alpine:3.20"}`)
+	if status != http.StatusInternalServerError || errorOf(t, body).code != "internal" {
+		t.Errorf("POST through a registry failure answered %d %v, want 500 internal", status, body)
+	}
+}
+
 // A reference carries slashes, so the route must hand the store the whole of it and not one segment.
 func TestRemovingAnImageKeepsTheWholeReference(t *testing.T) {
 	s := seed(t)

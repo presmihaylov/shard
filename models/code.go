@@ -14,6 +14,7 @@ const (
 	CodeNoSnapshot        Code = "no_snapshot"
 	CodeUnsupported       Code = "unsupported"
 	CodeInUse             Code = "in_use"
+	CodeNameTaken         Code = "name_taken"
 	CodeExecExited        Code = "exec_exited"
 	CodeExecRunning       Code = "exec_running"
 	CodeWebSocketRequired Code = "websocket_required"

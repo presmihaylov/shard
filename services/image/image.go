@@ -21,6 +21,9 @@ import (
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
 var ErrNotFound = registry.ErrNotCached
 
+// ErrBadReference is what a pull or a create of a reference that does not parse returns. Match it with errors.Is.
+var ErrBadReference = registry.ErrBadReference
+
 // ErrNotReclaimed marks a removal that finished but could not free the blobs behind it.
 var ErrNotReclaimed = registry.ErrNotReclaimed
 

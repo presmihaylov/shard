@@ -684,5 +684,5 @@ func sendJSON(ctx context.Context, conn *websocket.Conn, stream byte, payload an
 func failureOf(err error) FailureMessage {
 	_, code := classify(err)
 
-	return FailureMessage{Error: err.Error(), Code: code}
+	return FailureMessage{Error: FailureError{Code: code, Message: err.Error()}}
 }

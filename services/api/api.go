@@ -533,6 +533,7 @@ func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(
 func classify(err error) (int, models.Code) {
 	var invalid *sandboxstate.ValidationError
 	var request *sandbox.RequestError
+	var nameTaken *sandboxstate.NameTakenError
 	var state *sandbox.StateError
 	var unavailable *sandbox.UnavailableError
 	var held *sandbox.HeldError
@@ -541,13 +542,15 @@ func classify(err error) (int, models.Code) {
 	var execRunning *sandbox.ExecRunningError
 
 	switch {
-	case errors.As(err, &invalid), errors.As(err, &request):
+	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, ErrWebSocketRequired):
 		return http.StatusBadRequest, models.CodeWebSocketRequired
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
 		return http.StatusNotFound, models.CodeNotFound
+	case errors.As(err, &nameTaken):
+		return http.StatusConflict, models.CodeNameTaken
 	case errors.As(err, &state):
 		return http.StatusConflict, state.Code
 	case errors.As(err, &unavailable):

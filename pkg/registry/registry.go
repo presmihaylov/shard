@@ -31,6 +31,9 @@ const refAnnotation = "org.opencontainers.image.ref.name"
 // ErrNotCached is what every read of an absent image returns. Match it with errors.Is.
 var ErrNotCached = errors.New("image not in the local store")
 
+// ErrBadReference is what parseRef returns for a reference that does not parse. Match it with errors.Is.
+var ErrBadReference = errors.New("bad image reference")
+
 // ErrNotReclaimed marks a removal that finished but could not free the blobs behind it.
 var ErrNotReclaimed = errors.New("the image was removed but its blobs were not reclaimed")
 
@@ -552,12 +555,12 @@ func Canonical(ref string) (string, error) {
 func parseRef(ref string) (name.Reference, error) {
 	parsed, err := name.ParseReference(ref)
 	if err != nil {
-		return nil, fmt.Errorf("parse the reference %q: %w", ref, err)
+		return nil, fmt.Errorf("%w: %w", ErrBadReference, err)
 	}
 
 	for segment := range strings.SplitSeq(parsed.Context().RepositoryStr(), "/") {
 		if segment == "." || segment == ".." {
-			return nil, fmt.Errorf("the reference %q has a %q path segment", ref, segment)
+			return nil, fmt.Errorf("%w: the reference %q has a %q path segment", ErrBadReference, ref, segment)
 		}
 	}
 
