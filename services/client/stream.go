@@ -287,11 +287,11 @@ func exitOf(payload []byte, ref string) (models.ExitStatus, error) {
 // failureOf reads a failure message into the error a refusal before the 101 would have been.
 func failureOf(payload []byte, ref string) error {
 	var failure api.FailureMessage
-	if err := json.Unmarshal(payload, &failure); err != nil || failure.Error == "" {
+	if err := json.Unmarshal(payload, &failure); err != nil || failure.Error.Message == "" {
 		return fmt.Errorf("the daemon answered %q as the failure of the exec in sandbox %s", payload, ref)
 	}
 
-	return &APIError{Code: failure.Code, Message: failure.Error}
+	return &APIError{Code: failure.Error.Code, Message: failure.Error.Message}
 }
 
 // ResizeExec sets the window of a running exec, which is what this terminal's SIGWINCH forwards.

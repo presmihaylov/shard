@@ -221,7 +221,7 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 
 // A failure after the 101 arrives as the last message, and rebuilds as the error a refusal would have been.
 func TestExecReportsAFailureAfterThe101(t *testing.T) {
-	daemon := &execDaemon{t: t, failure: &api.FailureMessage{Error: "runsc: boom", Code: models.CodeInternal}}
+	daemon := &execDaemon{t: t, failure: &api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "runsc: boom"}}}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
@@ -477,7 +477,7 @@ func TestLogsFollowWritesEveryMessageUntilTheEnd(t *testing.T) {
 
 func TestLogsFollowReportsAFailureOfTheFollow(t *testing.T) {
 	daemon := &followDaemon{t: t, messages: []message{
-		{stream: api.StreamFailure, payload: `{"error":"read the output: permission denied","code":"internal"}`},
+		{stream: api.StreamFailure, payload: `{"error":{"code":"internal","message":"read the output: permission denied"}}`},
 	}, code: websocket.StatusNormalClosure}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 

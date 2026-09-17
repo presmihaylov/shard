@@ -312,8 +312,19 @@ func TestPullRefusesADotDotSegment(t *testing.T) {
 	store := openStore(t, nil)
 
 	_, err := store.Pull(t.Context(), "127.0.0.1:5000/../v2/app:1.0")
-	if err == nil || !strings.Contains(err.Error(), "path segment") {
-		t.Fatalf("got %v, want a rejected .. segment", err)
+	if !errors.Is(err, registry.ErrBadReference) || !strings.Contains(err.Error(), "path segment") {
+		t.Fatalf("got %v, want a rejected .. segment as ErrBadReference", err)
+	}
+}
+
+func TestPullRefusesAReferenceThatDoesNotParse(t *testing.T) {
+	store := openStore(t, nil)
+
+	for _, ref := range []string{":::not a ref:::", "has space/x:y"} {
+		_, err := store.Pull(t.Context(), ref)
+		if !errors.Is(err, registry.ErrBadReference) {
+			t.Errorf("Pull(%q) got %v, want ErrBadReference", ref, err)
+		}
 	}
 }
 

@@ -259,7 +259,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   the record, not an error. With `?wait=true` the create holds until the record leaves `pending` and
   answers the `running` or `failed` it reached, so a caller reads the settled record without a poll;
   the plain create answers at once. 400 when the body does not decode or a field does not validate, or
-  when it names a secret or a policy the host does not hold.
+  when it names a secret or a policy the host does not hold; 409 `name_taken` when another sandbox
+  already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   ran again. 404 when nothing has the reference; 409 when the sandbox is not stopped.
 - `POST /v0/sandboxes/{id}/stop` takes `{"grace": <seconds>}`, the default being 10, waits the grace
@@ -358,8 +359,8 @@ A stream is a WebSocket (RFC 6455) on the same route, opened with the standard h
 refusal comes before the 101 as a status and a JSON body. An exec carries binary messages whose
 first byte is the stream and the rest the payload: the client sends 0 (stdin) and 4 (stdin closed,
 empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"error"` when
-the command never ran) and 5 (a failure of the daemon's own, `{"error", "code"}`, flat: the
-stream predates the error object and keeps its shape). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
+the command never ran) and 5 (a failure of the daemon's own, `{"error": {"code", "message"}}`, the
+same object every error body carries). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
 session and the daemon closes with 1000; a client that closes first kills the command. A `tty` exec
 carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
 apart. Ping and pong are the standard ones. The two `?follow=true` routes also serve without the
@@ -385,6 +386,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `no_snapshot` | 409 | resume or fork when the record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
+| `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `websocket_required` | 400 | an exec attach without the WebSocket handshake |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |

@@ -38,10 +38,15 @@ type EndMessage struct {
 	Reason string `json:"reason"`
 }
 
-// FailureMessage is the payload of StreamFailure, flat as the contract spells the stream, unlike an error body.
+// FailureMessage is the payload of StreamFailure, nested under error like every other error body.
 type FailureMessage struct {
-	Error string      `json:"error"`
-	Code  models.Code `json:"code"`
+	Error FailureError `json:"error"`
+}
+
+// FailureError is the code and the message a StreamFailure carries.
+type FailureError struct {
+	Code    models.Code `json:"code"`
+	Message string      `json:"message"`
 }
 
 // Send writes payload on stream, as several messages when it is longer than MaxPayload.

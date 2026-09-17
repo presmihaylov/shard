@@ -127,7 +127,7 @@ func (r *Repository) claimName(name, id string) error {
 
 	err := os.Symlink(filepath.Join("..", sandboxesDir, id), r.namePath(name))
 	if errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("the name %q is taken by sandbox %s", name, r.nameHolder(name))
+		return &NameTakenError{Name: name, Holder: r.nameHolder(name)}
 	}
 	if err != nil {
 		return fmt.Errorf("claim the name %q: %w", name, err)
@@ -420,6 +420,16 @@ type ValidationError struct {
 }
 
 func (e *ValidationError) Error() string { return e.Reason }
+
+// NameTakenError is a create whose name another sandbox already holds: the caller's input, not a host fault.
+type NameTakenError struct {
+	Name   string
+	Holder string
+}
+
+func (e *NameTakenError) Error() string {
+	return fmt.Sprintf("the name %q is taken by sandbox %s", e.Name, e.Holder)
+}
 
 // plainComponent carries the noun, so a refused name never reads as a refused id.
 func plainComponent(kind, s string) error {

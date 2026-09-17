@@ -85,8 +85,10 @@ func TestCreateRefusesANameThatIsTaken(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create took the same name twice")
 	}
-	if !strings.Contains(err.Error(), first.ID) {
-		t.Fatalf("the collision error does not name the holder %s: %v", first.ID, err)
+
+	var taken *sandboxstate.NameTakenError
+	if !errors.As(err, &taken) || taken.Holder != first.ID {
+		t.Fatalf("the collision is %v, want a NameTakenError held by %s", err, first.ID)
 	}
 }
 

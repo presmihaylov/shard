@@ -369,11 +369,22 @@ func TestExecReportsAFailureAfterThe101(t *testing.T) {
 	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/exec/1a2b3c4d5e6f7a8b")
 
 	got := read(t, conn)
-	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: "runsc: boom", Code: models.CodeInternal}) {
+	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "runsc: boom"}}) {
 		t.Errorf("the session ended with stream %d and %+v, want the failure with the code internal", got.ended, got.failure)
 	}
 	if status := closed(t, conn); status != websocket.StatusNormalClosure {
 		t.Errorf("the daemon closed with %d, want 1000", status)
+	}
+}
+
+// A failure body nests its code and message under error, like every other error body the daemon answers.
+func TestAFailureMessageNestsUnderError(t *testing.T) {
+	encoded, err := json.Marshal(api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "runsc: boom"}})
+	if err != nil {
+		t.Fatalf("marshal the failure: %v", err)
+	}
+	if want := `{"error":{"code":"internal","message":"runsc: boom"}}`; string(encoded) != want {
+		t.Errorf("the failure encodes to %s, want %s", encoded, want)
 	}
 }
 
@@ -481,7 +492,7 @@ func TestLogsFollowReportsAFailureAfterThe101(t *testing.T) {
 	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
 
 	got := read(t, conn)
-	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: "open the output: boom", Code: models.CodeInternal}) {
+	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "open the output: boom"}}) {
 		t.Errorf("the follow ended with stream %d and %+v, want the failure with the code internal", got.ended, got.failure)
 	}
 	if status := closed(t, conn); status != websocket.StatusNormalClosure {
