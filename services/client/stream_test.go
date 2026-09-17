@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +169,34 @@ func TestExecCreatesThenAttachesAndReportsTheExitStatus(t *testing.T) {
 	}
 	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin {
 		t.Errorf("the daemon was asked for %+v", daemon.req)
+	}
+}
+
+// A front checks the token per connection, and the attach is a connection of its own.
+func TestExecCarriesTheTokenOfAFrontOnEveryConnection(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", exit: &api.ExitMessage{}, skipInput: true}
+
+	seen := make(chan string, 2)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("Authorization")
+		daemon.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	c, err := client.NewRemote(server.URL, "front-token-value", ca)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	if _, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{}); err != nil {
+		t.Fatalf("Exec through a front: %v", err)
+	}
+
+	for _, step := range []string{"the create", "the attach"} {
+		if got := <-seen; got != "Bearer front-token-value" {
+			t.Errorf("%s carried %q, want the bearer token", step, got)
+		}
 	}
 }
 
