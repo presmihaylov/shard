@@ -1,11 +1,6 @@
 package sandbox_test
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"net/netip"
-	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -134,40 +129,6 @@ func TestHealthCheckLeavesASandboxThatIsNotRunning(t *testing.T) {
 	}
 }
 
-func TestHealthCheckProbesOverHTTP(t *testing.T) {
-	answer := http.StatusNoContent
-	var path string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path = r.URL.Path
-		w.WriteHeader(answer)
-	}))
-	defer server.Close()
-
-	sb := probed()
-	sb.Address = addressOf(t, server.URL)
-	sb.HealthCheck = &models.HealthCheck{HTTP: &models.HTTPProbe{Port: portOf(t, server.URL), Path: "/healthz"}, Interval: 1, Timeout: 10, Retries: 1}
-	lab := newHealthLab(t, sb)
-
-	now := time.Now()
-	if err := lab.tick(t, sb, now); err != nil {
-		t.Fatalf("CheckHealth: %v", err)
-	}
-	if got := lab.l.repo.sb.Health; got.Status != models.HealthHealthy || path != "/healthz" {
-		t.Errorf("a 204 on %s left the record %+v, want healthy", path, got)
-	}
-
-	answer = http.StatusServiceUnavailable
-	if err := lab.tick(t, lab.l.repo.sb, now.Add(time.Second)); err != nil {
-		t.Fatalf("CheckHealth: %v", err)
-	}
-	if got := lab.l.repo.sb.Health; got.Status != models.HealthUnhealthy {
-		t.Errorf("a 503 left the record %+v, want unhealthy", got)
-	}
-	if len(lab.reports) != 2 || !strings.HasSuffix(lab.reports[1], "/healthz answered 503") {
-		t.Errorf("the passes reported %v, want the 503 named", lab.reports)
-	}
-}
-
 func TestHealthCheckFailsAProbeThatDoesNotAnswerInTime(t *testing.T) {
 	sb := probed()
 	sb.HealthCheck.Timeout, sb.HealthCheck.Retries = 1, 1
@@ -205,30 +166,4 @@ func TestHealthCheckDropsTheResultOfARunThatEnded(t *testing.T) {
 	if got := lab.l.repo.sb.Health; got.Status != models.HealthStarting || !got.CheckedAt.IsZero() {
 		t.Errorf("a probe of the old run wrote %+v onto the new one", got)
 	}
-}
-
-func addressOf(t *testing.T, serverURL string) netip.Prefix {
-	t.Helper()
-
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", serverURL, err)
-	}
-
-	return netip.PrefixFrom(netip.MustParseAddr(u.Hostname()), 32)
-}
-
-func portOf(t *testing.T, serverURL string) int {
-	t.Helper()
-
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", serverURL, err)
-	}
-	port, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("port of %s: %v", serverURL, err)
-	}
-
-	return port
 }

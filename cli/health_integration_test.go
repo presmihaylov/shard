@@ -13,9 +13,6 @@ import (
 // healthBudget covers a 1 s interval, a probe of a few seconds and the retries, with room for a slow box.
 const healthBudget = 90 * time.Second
 
-// httpdImage has the httpd applet that the alpine build of busybox leaves out.
-const httpdImage = "busybox:1.36"
-
 func TestTheDaemonProbesASandboxWithACommand(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
@@ -50,32 +47,6 @@ func TestTheDaemonProbesASandboxWithACommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "unhealthy 2/2") {
 		t.Errorf("ls printed %q, want the health column", out.String())
-	}
-}
-
-func TestTheDaemonProbesASandboxOverHTTP(t *testing.T) {
-	app, out := newCreateApp(t)
-	t.Parallel()
-
-	// httpd serves /www in the foreground; alpine leaves it out of its busybox, so this is the docker one.
-	script := "mkdir -p /www && echo ok > /www/healthz && httpd -f -p 8080 -h /www"
-	args := []string{"create", "--health-http", "8080/healthz", "--health-interval", "1s", "--health-retries", "1", httpdImage, "--", "/bin/sh", "-c", script}
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	id := strings.TrimSpace(out.String())
-	out.Reset()
-	t.Cleanup(func() { cleanUp(t, app, id) })
-
-	awaitHealth(t, app, id, models.HealthHealthy)
-
-	if _, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "pkill httpd"); err != nil {
-		t.Fatalf("exec pkill: %v", err)
-	}
-
-	awaitHealth(t, app, id, models.HealthUnhealthy)
-	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+" is unhealthy: GET http://") {
-		t.Error("the daemon logged no line naming the request that failed")
 	}
 }
 

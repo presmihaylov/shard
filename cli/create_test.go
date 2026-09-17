@@ -95,15 +95,6 @@ func TestParseCreateHealthFlags(t *testing.T) {
 		t.Errorf("health = %+v, want %+v", req.Health, want)
 	}
 
-	req, err = parseCreate([]string{"--health-http", "8080/healthz", "alpine:3.20"})
-	if err != nil {
-		t.Fatalf("parseCreate: %v", err)
-	}
-	want = &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080, Path: "/healthz"}}
-	if !reflect.DeepEqual(req.Health, want) {
-		t.Errorf("health = %+v, want %+v with the settings left for the daemon's defaults", req.Health, want)
-	}
-
 	req, err = parseCreate([]string{"alpine:3.20"})
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
@@ -158,6 +149,7 @@ func TestParseCreateRejections(t *testing.T) {
 		"an empty argv":          {"alpine:3.20", "--"},
 		"an unknown flag":        {"--forever", "alpine:3.20"},
 		"the old init flag":      {"--shard-init", "/opt/shard-init", "alpine:3.20"},
+		"the dropped http probe": {"--health-http", "8080/healthz", "alpine:3.20"},
 		"an env with no value":   {"--env", "DEBUG", "alpine:3.20"},
 		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":    {"--env", "=1", "alpine:3.20"},
@@ -166,10 +158,7 @@ func TestParseCreateRejections(t *testing.T) {
 		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
 		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
-		"two probes":                {"--health-command", "true", "--health-http", "80", "alpine:3.20"},
 		"a probe setting alone":     {"--health-retries", "2", "alpine:3.20"},
-		"a probe on no port":        {"--health-http", "/healthz", "alpine:3.20"},
-		"a probe on a bad port":     {"--health-http", "70000", "alpine:3.20"},
 		"a sub-second interval":     {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
 		"a negative timeout":        {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
 		"a negative retry count":    {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},

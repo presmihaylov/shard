@@ -4,20 +4,13 @@ import "time"
 
 // HealthCheck is the probe the daemon runs against a running sandbox, fixed at create.
 type HealthCheck struct {
-	// Command is an argv the provider runs in the sandbox, which passes on exit 0. HTTP is the other kind.
-	Command []string   `json:"command,omitempty"`
-	HTTP    *HTTPProbe `json:"http,omitempty"`
+	// Command is an argv the provider runs in the sandbox, which passes on exit 0.
+	Command []string `json:"command,omitempty"`
 	// Interval and Timeout are whole seconds, like the grace of a stop.
 	Interval int `json:"interval"`
 	Timeout  int `json:"timeout"`
 	// Retries is how many probes in a row must fail before the sandbox reads unhealthy.
 	Retries int `json:"retries"`
-}
-
-// HTTPProbe is a GET from the host to the sandbox's address, which passes on a 2xx or 3xx answer.
-type HTTPProbe struct {
-	Port int    `json:"port"`
-	Path string `json:"path"`
 }
 
 // HealthStatus is what the probes found so far.

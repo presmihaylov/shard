@@ -139,12 +139,10 @@ A `fork` or `clone` inherits the policy with a fresh count.
 ## Health check
 
 A sandbox created with a probe is probed by the daemon while it runs, and the record says what the
-probes found. There are two kinds. `--health-command <cmd>` (`"health": {"command": [...]}` in the
+probes found. `--health-command <cmd>` (`"health": {"command": [...]}` in the
 create body, where the flag wraps its string as `/bin/sh -c`) runs the argv in the sandbox through
 the provider's `exec` and passes on exit 0; a signal or a command that could not start fails.
-`--health-http PORT[/PATH]` (`"health": {"http": {"port", "path"}}`) is one GET from the host to the
-sandbox's address, which passes on a 2xx or a 3xx answer and does not follow the redirect. A sandbox
-gets one kind. `--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
+`--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
 `retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3.
 
 The record carries the probe in `health_check`, with every default filled in, and the result in
@@ -273,8 +271,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   at something that is not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "health": {"command" or
-  "http": {"port", "path"}, "interval", "timeout", "retries"}, "restart": {"policy", "retries",
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "health": {"command",
+  "interval", "timeout", "retries"}, "restart": {"policy", "retries",
   "backoff"}}` and answers 201 with the record. A cached image needs no pull, so the create builds
   and starts the sandbox before it answers and the record says `running`; a claim that fails then
   gives everything back and answers 500. An uncached image makes the record `pending` and answers
