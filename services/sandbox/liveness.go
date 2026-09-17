@@ -41,7 +41,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 // other sandbox must not wait on it. It takes the lock only to write, and bails if the run has since changed.
 func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
-	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID {
+	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
 		return err
 	}
 
@@ -58,12 +58,12 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	unlock := s.lock(sb.ID)
 	defer unlock()
 
-	// A stop, or a stop and a start, landed while the probe ran: the result is about a run that is over.
+	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: StartedAt catches it.
 	current, err := s.cfg.Repo.Get(sb.ID)
 	if err != nil {
 		return err
 	}
-	if current.State != models.StateRunning || current.PID != sb.PID {
+	if current.State != models.StateRunning || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
 		return nil
 	}
 

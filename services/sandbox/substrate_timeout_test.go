@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,49 @@ func TestRemoveForceKillsAWedgedSandbox(t *testing.T) {
 
 	if !l.provider.stopped || !l.provider.removed || !l.repo.deleted {
 		t.Errorf("rm --force left work undone: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
+	}
+}
+
+// A stop and a start that reused the PID during the tick changes StartedAt, so PID alone would miss the new
+// run: the guard catches it on StartedAt and never applies the old run's status to the new one.
+func TestLivenessBailsWhenAReusedPidHidesANewRun(t *testing.T) {
+	r := &recorder{}
+	old := running()
+	old.StartedAt = time.Now().Add(-time.Minute)
+	svc, l := newService(t, r, old, fastBudget)
+	// The record now holds a fresh run behind the same PID 42: a later StartedAt.
+	l.repo.sb.StartedAt = time.Now()
+
+	if err := svc.Liveness(t.Context(), []models.Sandbox{old}, time.Now(), func(string) {}); err != nil {
+		t.Fatalf("Liveness returned %v, want nil", err)
+	}
+	if slices.Contains(r.calls, "provider.Status") {
+		t.Error("the tick probed a run the record had already replaced")
+	}
+	if got := l.repo.sb; got.State != models.StateRunning || got.PID != 42 {
+		t.Errorf("the record is now %s pid %d, want the fresh run left running with pid 42", got.State, got.PID)
+	}
+}
+
+// Startup reconcile is daemon-initiated, so a wedged Status must not hang boot: it leaves the record for the tick.
+func TestReconcileLeavesTheRecordWhenTheSubstrateDoesNotAnswer(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), fastBudget)
+	l.provider.statusGate = make(chan struct{})
+
+	var reports []string
+	start := time.Now()
+	err := svc.ReconcileAll(t.Context(), []models.Sandbox{running()}, func(line string) { reports = append(reports, line) })
+	if err != nil {
+		t.Fatalf("ReconcileAll returned %v, want nil so a wedged substrate does not fail boot", err)
+	}
+	bounded(t, start, "reconcile")
+
+	if len(reports) != 1 || !strings.Contains(reports[0], "did not answer within") {
+		t.Errorf("reconcile reported %v, want one line on the wedged substrate", reports)
+	}
+	if got := l.repo.sb; got.State != models.StateRunning || got.PID != 42 {
+		t.Errorf("the record is now %s pid %d, want it left running with pid 42", got.State, got.PID)
 	}
 }
 
