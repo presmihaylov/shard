@@ -71,3 +71,30 @@ func TestEgressLogOnAFailedSandboxIs409(t *testing.T) {
 		}
 	}
 }
+
+// The follow log streams around the Service too, so both follow paths refuse a failed sandbox before the 200 or the 101.
+func TestLogsFollowOnAFailedSandboxIs409(t *testing.T) {
+	s := seed(t)
+	failed := create(t, s.repo, "broken", models.StateFailed)
+	path := "/v0/sandboxes/" + failed.ID + "/logs?follow=true"
+
+	// The plain follow (no WebSocket handshake) is refused before the 200.
+	status, body := get(t, s.server, path)
+	if status != http.StatusConflict || errorOf(t, body).code != string(models.CodeSandboxFailed) {
+		t.Errorf("plain follow answered %d %v, want 409 sandbox_failed", status, body)
+	}
+
+	// The WebSocket follow is refused before the 101, not with a failure frame after it.
+	conn, resp, err := dial(t, s, path)
+	if err == nil || conn != nil {
+		t.Fatal("a failed sandbox got the 101")
+	}
+	status, body = decodeRefusal(t, resp)
+	if status != http.StatusConflict || errorOf(t, body).code != string(models.CodeSandboxFailed) {
+		t.Errorf("websocket follow answered %d %v, want 409 sandbox_failed", status, body)
+	}
+
+	if s.verbs.followed {
+		t.Error("the refusal still reached the orchestrator")
+	}
+}
