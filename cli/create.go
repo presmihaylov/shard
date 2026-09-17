@@ -61,7 +61,6 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "the wait before the first start again, in whole seconds; it doubles each time")
 	var health healthFlags
 	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox, which passes on exit 0")
-	flags.StringVar(&health.http, "health-http", "", "a PORT[/PATH] the daemon GETs from the host, which passes on a 2xx or 3xx")
 	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds")
 	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds")
 	flags.IntVar(&health.retries, "health-retries", 0, "the failed probes in a row that make the sandbox unhealthy")
@@ -138,36 +137,22 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 
 // healthFlags is the probe as the flags spell it, before the daemon's seconds and argv.
 type healthFlags struct {
-	command, http     string
+	command           string
 	interval, timeout time.Duration
 	retries           int
 }
 
-// request turns the flags into the create body's probe, or nil when none names a kind.
+// request turns the flags into the create body's probe, or nil when no command names one.
 func (h healthFlags) request() (*models.HealthCheck, error) {
-	if h.command == "" && h.http == "" {
+	if h.command == "" {
 		if h.interval != 0 || h.timeout != 0 || h.retries != 0 {
-			return nil, errors.New("--health-interval, --health-timeout and --health-retries tune a probe, set --health-command or --health-http")
+			return nil, errors.New("--health-interval, --health-timeout and --health-retries tune a probe, set --health-command")
 		}
 
 		return nil, nil
 	}
-	if h.command != "" && h.http != "" {
-		return nil, errors.New("--health-command and --health-http are two probes, and a sandbox gets one")
-	}
 
-	hc := &models.HealthCheck{Retries: h.retries}
-	if h.command != "" {
-		hc.Command = []string{"/bin/sh", "-c", h.command}
-	}
-	if h.http != "" {
-		probe, err := parseHTTPProbe(h.http)
-		if err != nil {
-			return nil, err
-		}
-		hc.HTTP = &probe
-	}
-
+	hc := &models.HealthCheck{Command: []string{"/bin/sh", "-c", h.command}, Retries: h.retries}
 	var err error
 	if hc.Interval, err = wholeSeconds("--health-interval", h.interval); err != nil {
 		return nil, err
@@ -244,17 +229,6 @@ func (r restartFlags) request() (*models.RestartSpec, error) {
 	}
 
 	return spec, nil
-}
-
-// parseHTTPProbe reads PORT or PORT/PATH, as in 8080/healthz.
-func parseHTTPProbe(spec string) (models.HTTPProbe, error) {
-	port, path, _ := strings.Cut(spec, "/")
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
-		return models.HTTPProbe{}, fmt.Errorf("--health-http takes PORT[/PATH] with a tcp port, got %q", spec)
-	}
-
-	return models.HTTPProbe{Port: n, Path: "/" + path}, nil
 }
 
 // wholeSeconds refuses what the daemon's seconds cannot carry; zero stays zero and takes the default.

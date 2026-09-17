@@ -187,14 +187,14 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 func TestCreateFillsTheProbeSettingsItWasNotGiven(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
 	req := alpine()
-	req.Health = &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080}}
+	req.Health = &models.HealthCheck{Command: []string{"true"}}
 
 	sb, err := svc.Create(t.Context(), req)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	want := &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080, Path: "/"}, Interval: 30, Timeout: 10, Retries: 3}
+	want := &models.HealthCheck{Command: []string{"true"}, Interval: 30, Timeout: 10, Retries: 3}
 	if !reflect.DeepEqual(sb.HealthCheck, want) || !reflect.DeepEqual(l.repo.sb.HealthCheck, want) {
 		t.Errorf("the record holds the probe %+v, want %+v with the defaults filled", sb.HealthCheck, want)
 	}
@@ -223,10 +223,7 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
 		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
 		"a negative oom limit":    {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
-		"a probe of no kind":      {Image: "alpine", Health: &models.HealthCheck{}},
-		"a probe of both kinds":   {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, HTTP: &models.HTTPProbe{Port: 80}}},
-		"a probe on no port":      {Image: "alpine", Health: &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 0}}},
-		"a probe off a path":      {Image: "alpine", Health: &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 80, Path: "healthz"}}},
+		"a probe with no command": {Image: "alpine", Health: &models.HealthCheck{}},
 		"a negative probe count":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
 		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
 		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},

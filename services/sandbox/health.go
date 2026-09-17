@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,21 +18,10 @@ const (
 	DefaultHealthRetries  = 3
 )
 
-// validHealthCheck refuses a probe that names no kind, both kinds, or a setting below what one probe needs.
+// validHealthCheck refuses a probe that names no command, or a setting below what the probe needs.
 func validHealthCheck(hc models.HealthCheck) error {
-	if len(hc.Command) == 0 && hc.HTTP == nil {
-		return errors.New("health names neither a command nor an http probe")
-	}
-	if len(hc.Command) != 0 && hc.HTTP != nil {
-		return errors.New("health names both a command and an http probe, and a sandbox gets one")
-	}
-	if hc.HTTP != nil {
-		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
-			return fmt.Errorf("health.http.port is a tcp port, got %d", hc.HTTP.Port)
-		}
-		if hc.HTTP.Path != "" && !strings.HasPrefix(hc.HTTP.Path, "/") {
-			return fmt.Errorf("health.http.path starts with /, got %q", hc.HTTP.Path)
-		}
+	if len(hc.Command) == 0 {
+		return errors.New("health names no command")
 	}
 	if hc.Interval < 0 || hc.Timeout < 0 || hc.Retries < 0 {
 		return errors.New("health.interval, timeout and retries are counts and cannot be negative")
@@ -60,11 +45,6 @@ func withHealthDefaults(hc *models.HealthCheck) *models.HealthCheck {
 	}
 	if filled.Retries == 0 {
 		filled.Retries = DefaultHealthRetries
-	}
-	if filled.HTTP != nil && filled.HTTP.Path == "" {
-		http := *filled.HTTP
-		http.Path = "/"
-		filled.HTTP = &http
 	}
 
 	return &filled
@@ -164,13 +144,7 @@ func (s *Service) probe(ctx context.Context, sb models.Sandbox) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var err error
-	if sb.HealthCheck.HTTP != nil {
-		err = probeHTTP(ctx, sb.Address.Addr().String(), *sb.HealthCheck.HTTP)
-	}
-	if sb.HealthCheck.HTTP == nil {
-		err = s.probeCommand(ctx, sb.ID, sb.HealthCheck.Command)
-	}
+	err := s.probeCommand(ctx, sb.ID, sb.HealthCheck.Command)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("the probe did not answer within %s", timeout)
 	}
@@ -189,33 +163,6 @@ func (s *Service) probeCommand(ctx context.Context, id string, argv []string) er
 	}
 	if exit.Code != 0 {
 		return fmt.Errorf("%s exited %d", strings.Join(argv, " "), exit.Code)
-	}
-
-	return nil
-}
-
-// probeHTTP is one GET from the host. A redirect is an answer, so it counts as a pass and is not followed.
-func probeHTTP(ctx context.Context, host string, p models.HTTPProbe) error {
-	url := "http://" + net.JoinHostPort(host, strconv.Itoa(p.Port)) + p.Path
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build GET %s: %w", url, err)
-	}
-
-	client := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req) //nolint:gosec // G704: the host is the sandbox's own address, off the record
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	// The body is drained so the connection goes back to the pool instead of staying half open.
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		return fmt.Errorf("GET %s: read the answer: %w", url, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return fmt.Errorf("GET %s answered %d", url, resp.StatusCode)
 	}
 
 	return nil
