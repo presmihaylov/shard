@@ -24,8 +24,9 @@ import (
 
 const frontSecret = "cli-front-secret-0000000000000000"
 
-// newFrontApp puts a fake daemon and a front over it up, and answers the flags that reach the front.
-func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
+// newFrontApp puts a fake daemon and a front over it up, records a token in the front's ledger, and answers
+// the flags that reach the front and the secret file the front signs and checks with.
+func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string, string) {
 	t.Helper()
 
 	app := newLsApp(t, out, listed(), nil)
@@ -36,12 +37,12 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 		t.Fatalf("write the secret file: %v", err)
 	}
 
-	minted, err := serve.Mint([]byte(frontSecret), "cli", nil, time.Hour)
+	minted, err := serve.IssueToken([]byte(frontSecret), serve.TokensPath(secret, ""), "cli", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}
 	token := filepath.Join(dir, "token")
-	if err := os.WriteFile(token, []byte(minted+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(token, []byte(minted.Token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
 
@@ -67,14 +68,14 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string) {
 		}
 	})
 
-	return app, []string{"--remote", "https://" + listener.Addr().String(), "--token-file", token, "--ca-file", cert}
+	return app, []string{"--remote", "https://" + listener.Addr().String(), "--token-file", token, "--ca-file", cert}, secret
 }
 
 // The remote front comes from SHARD_REMOTE too, so a shell exports it once. (SHARD-194)
 func TestTheRemoteEnvReachesTheFront(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, _ := newFrontApp(t, &out)
 	t.Setenv(RemoteEnv, flags[1])
 	t.Setenv(TokenFileEnv, flags[3])
 	t.Setenv(CAFileEnv, flags[5])
@@ -90,7 +91,7 @@ func TestTheRemoteEnvReachesTheFront(t *testing.T) {
 func TestAVerbReachesTheDaemonThroughTheFront(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, _ := newFrontApp(t, &out)
 
 	if err := app.Run(t.Context(), append(flags, "ls")); err != nil {
 		t.Fatalf("ls through the front: %v", err)
@@ -104,7 +105,7 @@ func TestAVerbReachesTheDaemonThroughTheFront(t *testing.T) {
 func TestAVerbWithTheWrongTokenIsRefusedByTheFront(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, _ := newFrontApp(t, &out)
 
 	wrong := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(wrong, []byte("not-the-token"), 0o600); err != nil {
@@ -124,7 +125,7 @@ func TestAVerbWithTheWrongTokenIsRefusedByTheFront(t *testing.T) {
 func TestAHostThatIsNotHTTPSIsRefused(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, _ := newFrontApp(t, &out)
 	flags[1] = "http://127.0.0.1:2376"
 
 	err := app.Run(t.Context(), append(flags, "ls"))
@@ -136,7 +137,7 @@ func TestAHostThatIsNotHTTPSIsRefused(t *testing.T) {
 func TestAHostWithNoTokenFileIsRefused(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, _ := newFrontApp(t, &out)
 
 	err := app.Run(t.Context(), []string{flags[0], flags[1], "ls"})
 	if err == nil || !strings.Contains(err.Error(), "--token-file") {
@@ -158,15 +159,9 @@ func TestServeRefusesArgumentsAndAPairItLacks(t *testing.T) {
 func TestServeMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags := newFrontApp(t, &out)
+	app, flags, secret := newFrontApp(t, &out)
 
-	// The front signs with frontSecret, so mint over the same secret prints a record the front accepts.
-	dir := t.TempDir()
-	secret := filepath.Join(dir, "secret")
-	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
-		t.Fatalf("write the secret file: %v", err)
-	}
-
+	// Mint over the front's own secret, so the record lands in the ledger the front reads and the front accepts it.
 	if err := app.serve(t.Context(), []string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -182,15 +177,16 @@ func TestServeMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	if record.Token == "" {
 		t.Error("the record carries no token")
 	}
-	if record.ExpiresAt == nil || !record.ExpiresAt.After(time.Now()) {
-		t.Errorf("the record expires_at is %v, want a time in the future", record.ExpiresAt)
+	// No --duration means the token never expires, so the record carries no expiry.
+	if record.ExpiresAt != nil {
+		t.Errorf("the record expires_at is %v, want none by default", record.ExpiresAt)
 	}
 	if strings.Join(record.Scopes, ",") != "*" {
 		t.Errorf("the record carries scopes %v, want [\"*\"] by default", record.Scopes)
 	}
 
 	// The client's --token-file takes the whole record; the bare-token form is covered by the other front tests.
-	tokenPath := filepath.Join(dir, "token")
+	tokenPath := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenPath, []byte(printed+"\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
@@ -203,6 +199,78 @@ func TestServeMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	if !strings.Contains(out.String(), "up-1") {
 		t.Errorf("ls with the minted record printed %q, want the sandbox the daemon holds", out.String())
 	}
+}
+
+// serve tokens lists a minted token as active and never-expiring, and serve revoke by id flips it to revoked.
+func TestServeTokensListsAndRevokesByID(t *testing.T) {
+	var out bytes.Buffer
+
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+	app := App{Version: "test", Root: dir, Out: &out}
+
+	if err := app.serve(t.Context(), []string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	out.Reset()
+	if err := app.serve(t.Context(), []string{"tokens", "--secret-file", secret}); err != nil {
+		t.Fatalf("tokens: %v", err)
+	}
+	listing := out.String()
+	if !strings.Contains(listing, "active") || !strings.Contains(listing, "never") {
+		t.Errorf("tokens listed %q, want the ci token as active and never-expiring", listing)
+	}
+
+	// Pull the id from the listing, then revoke that one id; the flags come before the id.
+	id := tokenID(t, listing, "ci")
+	out.Reset()
+	if err := app.serve(t.Context(), []string{"revoke", "--secret-file", secret, id}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	out.Reset()
+	if err := app.serve(t.Context(), []string{"tokens", "--secret-file", secret}); err != nil {
+		t.Fatalf("tokens after revoke: %v", err)
+	}
+	if !strings.Contains(out.String(), "revoked") {
+		t.Errorf("tokens after revoke listed %q, want the ci token as revoked", out.String())
+	}
+}
+
+// serve revoke refuses with no ledger flag, and reports an id the ledger does not hold rather than a silent success.
+func TestServeRevokeRefusesNoLedgerAndAnUnknownID(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+
+	if err := app.serve(t.Context(), []string{"revoke", "some-id"}); err == nil {
+		t.Error("revoke ran with no --secret-file or --tokens-file")
+	}
+	if err := app.serve(t.Context(), []string{"revoke", "--secret-file", secret, "no-such-id"}); err == nil {
+		t.Error("revoke reported success for an id the ledger does not hold")
+	}
+}
+
+// tokenID pulls the id column out of a serve tokens listing for the row whose name matches.
+func tokenID(t *testing.T, listing, name string) string {
+	t.Helper()
+
+	for line := range strings.SplitSeq(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == name {
+			return fields[0]
+		}
+	}
+	t.Fatalf("no token named %q in the listing %q", name, listing)
+
+	return ""
 }
 
 func TestServeMintRefusesNoName(t *testing.T) {

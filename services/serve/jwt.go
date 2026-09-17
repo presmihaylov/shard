@@ -35,57 +35,90 @@ func Mint(secret []byte, sub string, scopes []string, ttl time.Duration) (string
 
 // MintToken signs the token and answers it with the expiry and scopes it carries; empty scopes mints ["*"], every verb.
 func MintToken(secret []byte, sub string, scopes []string, ttl time.Duration) (Token, error) {
-	if sub == "" {
-		return Token{}, errors.New("a token needs a subject")
+	c, err := newClaims(sub, scopes, ttl)
+	if err != nil {
+		return Token{}, err
 	}
-	if ttl <= 0 {
-		return Token{}, fmt.Errorf("a token needs a duration in the future, got %s", ttl)
+
+	return signClaims(secret, c)
+}
+
+// newClaims builds the payload: a random jti, the subject, an issued-at, the scopes, and an exp only when ttl is positive.
+func newClaims(sub string, scopes []string, ttl time.Duration) (claims, error) {
+	if sub == "" {
+		return claims{}, errors.New("a token needs a subject")
+	}
+	if ttl < 0 {
+		return claims{}, fmt.Errorf("a token needs a duration in the future, got %s", ttl)
 	}
 	if len(scopes) == 0 {
 		scopes = []string{"*"}
 	}
 
+	jti, err := newJTI()
+	if err != nil {
+		return claims{}, err
+	}
+
 	now := time.Now()
-	exp := now.Add(ttl)
 	c := claims{
 		Scopes: scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   sub,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(exp),
+			ID:       jti,
+			Subject:  sub,
+			IssuedAt: jwt.NewNumericDate(now),
 		},
 	}
+	// A zero ttl leaves off the exp claim, so the token never expires and the front stops enforcing exp on it.
+	if ttl > 0 {
+		c.ExpiresAt = jwt.NewNumericDate(now.Add(ttl))
+	}
 
+	return c, nil
+}
+
+// signClaims signs the claims and answers the printable record, whose expiry mirrors the token's exp to the second.
+func signClaims(secret []byte, c claims) (Token, error) {
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
 	if err != nil {
 		return Token{}, fmt.Errorf("sign the token: %w", err)
 	}
 
-	// The record's expiry equals the token's exp to the second: both floor to whole seconds, in UTC.
-	expUTC := exp.UTC().Truncate(time.Second)
-
-	return Token{Token: signed, ExpiresAt: &expUTC, Scopes: scopes}, nil
+	return Token{Token: signed, ExpiresAt: recordExpiry(c), Scopes: c.Scopes}, nil
 }
 
-// verify checks the token is HS256 over the secret, carries a subject and an issued-at, and has not expired, then answers the subject and the scopes it carries.
-func verify(secret []byte, token string) (string, []string, error) {
+// recordExpiry is the claims' exp floored to the second in UTC, or nil when the token never expires.
+func recordExpiry(c claims) *time.Time {
+	if c.ExpiresAt == nil {
+		return nil
+	}
+
+	exp := c.ExpiresAt.Time.UTC().Truncate(time.Second)
+
+	return &exp
+}
+
+// verify checks the token is HS256 over the secret, carries a subject, an issued-at and a jti, and enforces an exp when present, then answers the subject, the scopes and the jti.
+func verify(secret []byte, token string) (string, []string, string, error) {
 	var c claims
 
 	keyFunc := func(*jwt.Token) (any, error) { return secret, nil }
 	if _, err := jwt.ParseWithClaims(token, &c, keyFunc,
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired()); err != nil {
-		return "", nil, fmt.Errorf("verify the token: %w", err)
+		jwt.WithValidMethods([]string{"HS256"})); err != nil {
+		return "", nil, "", fmt.Errorf("verify the token: %w", err)
 	}
 
 	if c.Subject == "" {
-		return "", nil, errors.New("the token carries no subject")
+		return "", nil, "", errors.New("the token carries no subject")
 	}
 	if c.IssuedAt == nil {
-		return "", nil, errors.New("the token carries no issued-at")
+		return "", nil, "", errors.New("the token carries no issued-at")
+	}
+	if c.ID == "" {
+		return "", nil, "", errors.New("the token carries no id")
 	}
 
-	return c.Subject, c.Scopes, nil
+	return c.Subject, c.Scopes, c.ID, nil
 }
 
 // ReadSecret refuses a file others can read, because the secret signs and checks every token.

@@ -214,9 +214,10 @@ func drain(ch chan string) []string {
 
 func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
 	up := fakeDaemon(t)
-	token := mint(t, "ci")
+	env := newTokenEnv(t)
+	token := mint(t, env, "ci")
 
-	resp := ask(t, front(t, up.root, secretFile(t, testSecret)), token) //nolint:bodyclose // ask closes the body in a cleanup
+	resp := ask(t, front(t, up.root, env.secret), token) //nolint:bodyclose // ask closes the body in a cleanup
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the front answered %d, want 200", resp.StatusCode)
@@ -244,8 +245,9 @@ func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
 // The front carries every message of a WebSocket both ways, because it stops parsing at the head.
 func TestTheFrontSplicesAWebSocket(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, secretFile(t, testSecret))
-	token := mint(t, "ci")
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mint(t, env, "ci")
 
 	header := http.Header{"Authorization": {"Bearer " + token}}
 	conn, _, err := websocket.Dial(t.Context(), "wss://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPClient: trusting(), HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
@@ -354,7 +356,7 @@ func TestMintAndVerifyRoundTrip(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	sub, scopes, err := verify([]byte(testSecret), token)
+	sub, scopes, _, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -372,7 +374,7 @@ func TestMintDefaultsToTheEveryVerbScope(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	_, scopes, err := verify([]byte(testSecret), token)
+	_, scopes, _, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -385,9 +387,9 @@ func TestMintDefaultsToTheEveryVerbScope(t *testing.T) {
 func TestVerifyReadsAnAbsentScopesClaimAsEveryVerb(t *testing.T) {
 	now := time.Now()
 	token := signed(t, jwt.SigningMethodHS256, []byte(testSecret),
-		jwt.RegisteredClaims{Subject: "ci", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))})
+		jwt.RegisteredClaims{ID: "a-token-id", Subject: "ci", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))})
 
-	_, scopes, err := verify([]byte(testSecret), token)
+	_, scopes, _, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -396,12 +398,16 @@ func TestVerifyReadsAnAbsentScopesClaimAsEveryVerb(t *testing.T) {
 	}
 }
 
-func TestMintRefusesAnEmptySubjectAndAPastDuration(t *testing.T) {
+func TestMintRefusesAnEmptySubjectAndANegativeDuration(t *testing.T) {
 	if _, err := Mint([]byte(testSecret), "", nil, time.Hour); err == nil {
 		t.Error("Mint signed a token with no subject")
 	}
-	if _, err := Mint([]byte(testSecret), "ci", nil, 0); err == nil {
-		t.Error("Mint signed a token that is already expired")
+	if _, err := Mint([]byte(testSecret), "ci", nil, -time.Hour); err == nil {
+		t.Error("Mint signed a token with a negative duration")
+	}
+	// A duration of zero is valid now: it mints a token that never expires.
+	if _, err := Mint([]byte(testSecret), "ci", nil, 0); err != nil {
+		t.Errorf("Mint refused a zero duration, which should mint a token that never expires: %v", err)
 	}
 }
 
@@ -441,7 +447,7 @@ func TestMintTokenDefaultsAndWritesTheScopesClaim(t *testing.T) {
 		t.Errorf("the record carries scopes %v, want [\"*\"] by default", minted.Scopes)
 	}
 
-	_, scopes, err := verify([]byte(testSecret), minted.Token)
+	_, scopes, _, err := verify([]byte(testSecret), minted.Token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -528,8 +534,9 @@ func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
 // A sandbox:read token lists and inspects, and is 403 on every route it does not name; a forbidden route is never dialed.
 func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, secretFile(t, testSecret))
-	token := mintScoped(t, "reader", "sandbox:read")
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mintScoped(t, env, "reader", "sandbox:read")
 
 	if resp := askRoute(t, address, token, http.MethodGet, "/v0/sandboxes"); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
 		t.Errorf("a sandbox:read token got %d on a read, want 200", resp.StatusCode)
@@ -570,11 +577,12 @@ func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 // A token with no scopes and a token with a "*" scope both reach a write route.
 func TestAFullTokenReachesAWriteRoute(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, secretFile(t, testSecret))
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
 
 	for name, token := range map[string]string{
-		"no scopes": mint(t, "root"),
-		"star":      mintScoped(t, "root", "*"),
+		"no scopes": mint(t, env, "root"),
+		"star":      mintScoped(t, env, "root", "*"),
 	} {
 		if resp := askRoute(t, address, token, http.MethodPost, "/v0/sandboxes"); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
 			t.Errorf("%s: a full token got %d on a write, want 200", name, resp.StatusCode)
@@ -585,9 +593,10 @@ func TestAFullTokenReachesAWriteRoute(t *testing.T) {
 // An unknown route is 403 for any token, and the front never dials the daemon for it.
 func TestAnUnknownRouteIs403AndNothingIsDialed(t *testing.T) {
 	up := fakeDaemon(t)
-	address := front(t, up.root, secretFile(t, testSecret))
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
 
-	resp := askRoute(t, address, mint(t, "root"), http.MethodGet, "/v0/nonesuch") //nolint:bodyclose // askRoute closes the body in a cleanup
+	resp := askRoute(t, address, mint(t, env, "root"), http.MethodGet, "/v0/nonesuch") //nolint:bodyclose // askRoute closes the body in a cleanup
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("an unknown route got %d, want 403", resp.StatusCode)
 	}
@@ -615,8 +624,9 @@ func TestEveryDaemonRouteHasACapability(t *testing.T) {
 // A non-101 answer to a handshake ends after one response, so a pipelined second request never reaches the daemon.
 func TestANonUpgradeAnswerDoesNotForwardAPipelinedRequest(t *testing.T) {
 	up := plainDaemon(t)
-	address := front(t, up.root, secretFile(t, testSecret))
-	token := mint(t, "root")
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mint(t, env, "root")
 
 	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // G402: the certificate is generated by this test
 	if err != nil {
@@ -704,23 +714,253 @@ func TestReadTokenTrimsTheFile(t *testing.T) {
 	}
 }
 
-// mint signs a valid token for sub over the test secret, carrying every verb.
-func mint(t *testing.T, sub string) string {
-	t.Helper()
+// A token minted with no duration carries no exp, still verifies, and lists as active.
+func TestMintWithNoDurationHasNoExpiry(t *testing.T) {
+	env := newTokenEnv(t)
 
-	return mintScoped(t, sub)
+	minted, err := IssueToken([]byte(testSecret), env.tokens, "ci", nil, 0)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if minted.ExpiresAt != nil {
+		t.Errorf("the record carries expires_at %s, want none for a token that never expires", minted.ExpiresAt)
+	}
+
+	if _, _, _, err := verify([]byte(testSecret), minted.Token); err != nil {
+		t.Fatalf("verify a token with no expiry: %v", err)
+	}
+
+	infos, err := ListTokens(env.tokens)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+	if len(infos) != 1 || infos[0].Status != StatusActive || infos[0].ExpiresAt != nil {
+		t.Errorf("the ledger lists %+v, want one active token with no expiry", infos)
+	}
 }
 
-// mintScoped signs a valid token for sub over the test secret, carrying the scopes named.
-func mintScoped(t *testing.T, sub string, scopes ...string) string {
+// A token whose signature is valid but whose id the ledger does not hold is 401, and nothing is dialed.
+func TestATokenNotInTheLedgerIs401(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+
+	// Mint signs without recording, so the token is well-formed but absent from the front's ledger.
+	token, err := Mint([]byte(testSecret), "ghost", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	resp := ask(t, address, token) //nolint:bodyclose // ask closes the body in a cleanup
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a token not in the ledger got %d, want 401", resp.StatusCode)
+	}
+	if dialed := up.dialed.Load(); dialed != 0 {
+		t.Errorf("the front dialed the socket %d times for a token not in the ledger, want none", dialed)
+	}
+}
+
+// A token works, then a revoke marks it in the ledger, and the very next request with it is 401, no restart.
+func TestARevokedTokenIs401OnTheNextRequest(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mint(t, env, "ci")
+
+	if resp := ask(t, address, token); resp.StatusCode != http.StatusOK { //nolint:bodyclose // ask closes the body in a cleanup
+		t.Fatalf("the token got %d before the revoke, want 200", resp.StatusCode)
+	}
+
+	found, err := RevokeSubject(env.tokens, "ci")
+	if err != nil {
+		t.Fatalf("RevokeSubject: %v", err)
+	}
+	if found != 1 {
+		t.Fatalf("revoke matched %d tokens, want 1", found)
+	}
+
+	if resp := ask(t, address, token); resp.StatusCode != http.StatusUnauthorized { //nolint:bodyclose // ask closes the body in a cleanup
+		t.Errorf("the token got %d after the revoke, want 401", resp.StatusCode)
+	}
+}
+
+// A ledger that was there and then vanishes refuses every request; the front never downgrades to no ledger.
+func TestAVanishedLedgerRefusesEveryRequest(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mint(t, env, "ci")
+
+	if resp := ask(t, address, token); resp.StatusCode != http.StatusOK { //nolint:bodyclose // ask closes the body in a cleanup
+		t.Fatalf("the token got %d before the ledger vanished, want 200", resp.StatusCode)
+	}
+
+	if err := os.Remove(env.tokens); err != nil {
+		t.Fatalf("remove the ledger: %v", err)
+	}
+
+	if resp := ask(t, address, token); resp.StatusCode != http.StatusUnauthorized { //nolint:bodyclose // ask closes the body in a cleanup
+		t.Errorf("the token got %d after the ledger vanished, want 401", resp.StatusCode)
+	}
+}
+
+// The front refuses to start when a ledger others can read is there, because it names every valid token.
+func TestTheFrontRefusesAWorldReadableLedger(t *testing.T) {
+	env := newTokenEnv(t)
+	if _, err := IssueToken([]byte(testSecret), env.tokens, "ci", nil, time.Hour); err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := os.Chmod(env.tokens, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	cert, key := keyPair(t)
+	_, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: env.secret, Root: shortRoot(t), Out: io.Discard})
+	if err == nil {
+		t.Error("the front started with a world-readable ledger, want a refusal")
+	}
+}
+
+// ListTokens reads active, revoked and expired straight from the ledger records.
+func TestListTokensReadsEachStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), TokensFileName)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-time.Hour)
+	entries := []ledgerEntry{
+		{JTI: "active-id", Sub: "a", IssuedAt: now, Scopes: []string{"*"}},
+		{JTI: "revoked-id", Sub: "b", IssuedAt: now, Scopes: []string{"*"}, Revoked: true},
+		{JTI: "expired-id", Sub: "c", IssuedAt: past, ExpiresAt: &past, Scopes: []string{"*"}},
+	}
+	for _, e := range entries {
+		if err := appendEntry(path, e); err != nil {
+			t.Fatalf("appendEntry: %v", err)
+		}
+	}
+
+	infos, err := ListTokens(path)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+
+	want := map[string]TokenStatus{"active-id": StatusActive, "revoked-id": StatusRevoked, "expired-id": StatusExpired}
+	if len(infos) != len(want) {
+		t.Fatalf("ListTokens read %d tokens, want %d", len(infos), len(want))
+	}
+	for _, info := range infos {
+		if info.Status != want[info.ID] {
+			t.Errorf("token %s lists as %s, want %s", info.ID, info.Status, want[info.ID])
+		}
+	}
+}
+
+// Revoke by id flips one token; revoke by subject flips every token that subject holds; an unknown id matches none.
+func TestRevokeMarksTokensInTheLedger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), TokensFileName)
+
+	for _, sub := range []string{"alice", "alice", "bob"} {
+		if _, err := IssueToken([]byte(testSecret), path, sub, nil, time.Hour); err != nil {
+			t.Fatalf("IssueToken: %v", err)
+		}
+	}
+
+	infos, err := ListTokens(path)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+	var bob string
+	for _, info := range infos {
+		if info.Subject == "bob" {
+			bob = info.ID
+		}
+	}
+
+	if found, err := RevokeToken(path, bob); err != nil || found != 1 {
+		t.Fatalf("RevokeToken matched %d (err %v), want 1", found, err)
+	}
+	if found, err := RevokeSubject(path, "alice"); err != nil || found != 2 {
+		t.Fatalf("RevokeSubject matched %d (err %v), want 2", found, err)
+	}
+
+	infos, err = ListTokens(path)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+	for _, info := range infos {
+		if info.Status != StatusRevoked {
+			t.Errorf("token %s of %s lists as %s, want revoked", info.ID, info.Subject, info.Status)
+		}
+	}
+
+	if found, err := RevokeToken(path, "no-such-id"); err != nil || found != 0 {
+		t.Errorf("RevokeToken on an unknown id matched %d (err %v), want 0 and no error", found, err)
+	}
+}
+
+// IssueToken creates the ledger at 0640 when it is absent, so the group reads it and others do not.
+func TestIssueTokenCreatesTheLedger0640(t *testing.T) {
+	path := filepath.Join(t.TempDir(), TokensFileName)
+
+	if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat the ledger: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("the ledger is at mode %04o, want 0640", info.Mode().Perm())
+	}
+}
+
+// IssueToken refuses to append to a ledger others can read, so a minted token never lands in an exposed file.
+func TestIssueTokenRefusesAWorldReadableLedger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), TokensFileName)
+
+	if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err == nil {
+		t.Error("IssueToken appended to a world-readable ledger, want a refusal")
+	}
+}
+
+// tokenEnv is a secret file and the ledger beside it, so a token minted here lands where the front reads it.
+type tokenEnv struct {
+	secret string
+	tokens string
+}
+
+func newTokenEnv(t *testing.T) tokenEnv {
 	t.Helper()
 
-	token, err := Mint([]byte(testSecret), sub, scopes, time.Hour)
+	secret := secretFile(t, testSecret)
+
+	return tokenEnv{secret: secret, tokens: TokensPath(secret, "")}
+}
+
+// mint issues a valid token for sub over the test secret, records it in env's ledger, and answers it.
+func mint(t *testing.T, env tokenEnv, sub string) string {
+	t.Helper()
+
+	return mintScoped(t, env, sub)
+}
+
+// mintScoped issues a valid token for sub over the test secret, recording it in env's ledger with the scopes named.
+func mintScoped(t *testing.T, env tokenEnv, sub string, scopes ...string) string {
+	t.Helper()
+
+	minted, err := IssueToken([]byte(testSecret), env.tokens, sub, scopes, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}
 
-	return token
+	return minted.Token
 }
 
 // signed builds a token of method over key, for the refusal cases the front must reject.
