@@ -41,7 +41,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	return New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, oomRestart{deps: d, lifecycle: life, interval: oomInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a

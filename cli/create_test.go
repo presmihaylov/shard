@@ -25,7 +25,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512", "--cpus", "2",
+		"--memory", "512", "--cpus", "2", "--restart-on-oom",
 		"alpine:3.20",
 	}
 
@@ -44,6 +44,9 @@ func TestParseCreateFlags(t *testing.T) {
 
 	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 {
 		t.Errorf("resources = %+v, want 512 MiB and 2 vcpus", req.Resources)
+	}
+	if !req.RestartOnOOM {
+		t.Error("the restart policy was not asked for")
 	}
 
 	if len(req.Command) != 0 {
@@ -94,6 +97,7 @@ func TestParseCreateRejections(t *testing.T) {
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
 		"a memory that overflows": {"--memory", "17592186044416", "alpine:3.20"},
 		"a negative cpu bound":    {"--cpus", "-2", "alpine:3.20"},
+		"a restart with no bound": {"--restart-on-oom", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // lsOptions is one parsed shard ls invocation.
@@ -45,10 +46,10 @@ func (a App) ls(ctx context.Context, args []string) error {
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tPOLICY")
+	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tRESTART\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), restart(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -65,6 +66,18 @@ func state(sb models.Sandbox) string {
 	}
 
 	return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
+}
+
+// restart is the policy the sandbox asked for, and how much of the cap the daemon has spent on it.
+func restart(sb models.Sandbox) string {
+	if !sb.RestartOnOOM {
+		return "-"
+	}
+	if sb.OOMRestarts == 0 {
+		return "on-oom"
+	}
+
+	return fmt.Sprintf("on-oom %d/%d", sb.OOMRestarts, sandbox.OOMRestartCap)
 }
 
 // uptime is how long the sandbox has been up. A stopped or paused one is not, whatever its record was created.

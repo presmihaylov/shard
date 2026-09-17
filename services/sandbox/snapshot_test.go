@@ -222,6 +222,7 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	source := pausedSandbox()
 	source.Image = "docker.io/library/alpine:3.20"
 	source.Resources = models.Resources{MemoryMiB: 256}
+	source.RestartOnOOM = true
 	svc, l := newService(t, r, source)
 
 	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
@@ -248,8 +249,8 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 		t.Errorf("the network was driven as %v, want %v", got, want)
 	}
 
-	if sb.Image != source.Image || sb.Resources != source.Resources {
-		t.Errorf("the fork's record is %+v, want the source's image and bound", sb)
+	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
+		t.Errorf("the fork's record is %+v, want the source's image, bound and restart policy", sb)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the fork's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -401,6 +402,7 @@ func cloneSource() models.Sandbox {
 	sb := stopped()
 	sb.Image = "docker.io/library/alpine:3.20"
 	sb.Resources = models.Resources{MemoryMiB: 256}
+	sb.RestartOnOOM = true
 
 	return sb
 }
@@ -434,8 +436,8 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 		t.Errorf("the network was driven as %v, want %v", got, want)
 	}
 
-	if sb.Image != source.Image || sb.Resources != source.Resources {
-		t.Errorf("the clone's record is %+v, want the source's image and bound", sb)
+	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
+		t.Errorf("the clone's record is %+v, want the source's image, bound and restart policy", sb)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the clone's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)

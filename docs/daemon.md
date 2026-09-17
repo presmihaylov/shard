@@ -25,7 +25,8 @@ systemctl enable --now shard
 - **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
   passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
 - **The OOM watchdog**: a host OOM kill takes a sandbox's sentry, and only a resident process can
-  bring it back.
+  bring it back. The `oom-restart` task does, every 5 s, for a sandbox created with
+  `--restart-on-oom` (`restart_on_oom` in the create body, which needs a memory bound). See below.
 
 - **The stores**: the images under `${root}/images`, the policies, the secrets and the sandbox
   records. One writer owns them, so they need no lock between processes: the daemon serializes its
@@ -77,6 +78,26 @@ start rather than serve verbs over state it has not seen; systemd restarts it. A
 cannot read is named in the log and left as it is, because a record shard cannot read is one it
 cannot correct either. A root with no records needs no substrate, so a host without `runsc` still
 gets a daemon that answers the reads and the store verbs.
+
+## Bring back an OOM-killed sandbox
+
+A sandbox that overruns its `--memory` bound is ended by the host, whole: the kernel kills every
+process in its cgroup, `shard-init` included, and `runsc` still holds the dead container. Every 5 s
+the `oom-restart` task asks the substrate about every record that says `running`. One the host
+ended for its memory becomes `stopped`, and its `stopped_reason` says `ran out of memory and the
+host ended it`; an `exec` on it answers 409 with the same words until a tick acts on it. A sandbox
+created with `--restart-on-oom` is started again instead, as `shard start` would do it: the dead
+cgroup is removed, so the bound holds on the next run, the namespace is built again over the same
+address, and the entrypoint runs from the beginning. Its memory, its processes and its sockets are
+gone, which is why the policy is opt-in and needs a bound: the host never counts an OOM against a
+sandbox that has none.
+
+The record counts every start again in `oom_restarts`, with the last one in `oom_restarted_at`, and
+`shard ls` shows the policy and the count in its `RESTART` column as `on-oom 2/5`. The cap is 5; the
+second start waits 1 s from the last, then 2, 4 and 8 s. At the cap the sandbox stays `stopped` and
+the reason adds `the 5 starts again the cap allows are spent`. A `shard start` by hand still works,
+and clears the reason. A sandbox the record says `stopped` is never started again by the daemon,
+so a `stop` in the window is final. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## The API socket
 
@@ -142,8 +163,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}}`, pulls the image, builds and starts the sandbox,
-  and answers 201 with the record. 400 when the body does not decode or a field does not validate,
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom"}`, pulls the image, builds and
+  starts the sandbox, and answers 201 with the record. 400 when the body does not decode or a field does not validate,
   or when it names a secret or a policy the host does not hold; 500 when a claim fails, and the
   daemon has then given back everything it built.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
