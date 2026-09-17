@@ -40,7 +40,7 @@ func parseLogs(args []string) (logsOptions, error) {
 	flags.BoolVar(&opts.follow, "f", false, "keep printing until the sandbox stops")
 	flags.BoolVar(&opts.egress, "egress", false, "print the egress decisions instead of the entrypoint output")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return logsOptions{}, fmt.Errorf("parse the logs flags: %w", err)
 	}
 

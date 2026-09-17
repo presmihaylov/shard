@@ -85,7 +85,7 @@ func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 	flags.Var(ruleList{action: models.ActionAllow, rules: &rules}, "allow", "a rule to allow, repeatable")
 	flags.Var(ruleList{action: models.ActionDeny, rules: &rules}, "deny", "a rule to deny, repeatable")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return "", nil, fmt.Errorf("parse the policy create flags: %w", err)
 	}
 

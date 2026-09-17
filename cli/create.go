@@ -65,7 +65,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds")
 	flags.IntVar(&health.retries, "health-retries", 0, "the failed probes in a row that make the sandbox unhealthy")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseVerb(flags, args); err != nil {
 		return sandbox.CreateRequest{}, fmt.Errorf("parse the create flags: %w", err)
 	}
 
