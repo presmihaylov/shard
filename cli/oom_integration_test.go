@@ -57,11 +57,12 @@ func TestTheDaemonGivesUpOnASandboxThatOverrunsEveryTime(t *testing.T) {
 
 	id := createBound(t, app, out, true, oomBomb)
 
+	// The fifth start again also reads stopped at the cap for a moment, so only the reason marks the give-up.
 	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool {
-		return sb.State == models.StateStopped && sb.OOMRestarts == sandbox.OOMRestartCap
+		return sb.State == models.StateStopped && strings.Contains(sb.StoppedReason, "the cap allows are spent")
 	})
-	if !strings.Contains(sb.StoppedReason, "the 5 starts again the cap allows are spent") {
-		t.Errorf("the record says %q, want the cap named", sb.StoppedReason)
+	if sb.OOMRestarts != sandbox.OOMRestartCap || !strings.Contains(sb.StoppedReason, "the 5 starts again") {
+		t.Errorf("the record says %q after %d starts again, want the cap named and spent", sb.StoppedReason, sb.OOMRestarts)
 	}
 }
 

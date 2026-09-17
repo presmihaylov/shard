@@ -2,8 +2,11 @@ package cli
 
 import (
 	"os"
+	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/presmihaylov/shard/models"
 )
 
 func TestParseCreateTheGoalCommand(t *testing.T) {
@@ -82,6 +85,34 @@ func TestInitPathFromEnv(t *testing.T) {
 	}
 }
 
+func TestParseCreateHealthFlags(t *testing.T) {
+	req, err := parseCreate([]string{"--health-command", "test -e /ready", "--health-interval", "5s", "--health-timeout", "2s", "--health-retries", "2", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	want := &models.HealthCheck{Command: []string{"/bin/sh", "-c", "test -e /ready"}, Interval: 5, Timeout: 2, Retries: 2}
+	if !reflect.DeepEqual(req.Health, want) {
+		t.Errorf("health = %+v, want %+v", req.Health, want)
+	}
+
+	req, err = parseCreate([]string{"--health-http", "8080/healthz", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	want = &models.HealthCheck{HTTP: &models.HTTPProbe{Port: 8080, Path: "/healthz"}}
+	if !reflect.DeepEqual(req.Health, want) {
+		t.Errorf("health = %+v, want %+v with the settings left for the daemon's defaults", req.Health, want)
+	}
+
+	req, err = parseCreate([]string{"alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Health != nil {
+		t.Errorf("health = %+v, want none when no flag asked for a probe", req.Health)
+	}
+}
+
 func TestParseCreateRejections(t *testing.T) {
 	cases := map[string][]string{
 		"no image":               {},
@@ -98,6 +129,13 @@ func TestParseCreateRejections(t *testing.T) {
 		"a memory that overflows": {"--memory", "17592186044416", "alpine:3.20"},
 		"a negative cpu bound":    {"--cpus", "-2", "alpine:3.20"},
 		"a restart with no bound": {"--restart-on-oom", "alpine:3.20"},
+		"two probes":              {"--health-command", "true", "--health-http", "80", "alpine:3.20"},
+		"a probe setting alone":   {"--health-retries", "2", "alpine:3.20"},
+		"a probe on no port":      {"--health-http", "/healthz", "alpine:3.20"},
+		"a probe on a bad port":   {"--health-http", "70000", "alpine:3.20"},
+		"a sub-second interval":   {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
+		"a negative timeout":      {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
+		"a negative retry count":  {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

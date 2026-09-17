@@ -116,6 +116,8 @@ type CreateRequest struct {
 	Resources models.Resources `json:"resources"`
 	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
+	// Health is the probe the daemon runs while the sandbox runs, nil for none.
+	Health *models.HealthCheck `json:"health,omitempty"`
 }
 
 // fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
@@ -305,6 +307,11 @@ func validate(req CreateRequest) error {
 	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
 		return &RequestError{Err: errors.New("restart_on_oom needs a memory bound, and the request sets none")}
 	}
+	if req.Health != nil {
+		if err := validHealthCheck(*req.Health); err != nil {
+			return &RequestError{Err: err}
+		}
+	}
 
 	if req.Policy != "" {
 		if err := egress.ValidName(req.Policy); err != nil {
@@ -397,6 +404,8 @@ func (s *Service) claimRecord(td *Teardown, img image.Image, req CreateRequest) 
 		Secrets:      req.Secrets,
 		Policy:       req.Policy,
 		RestartOnOOM: req.RestartOnOOM,
+		HealthCheck:  withHealthDefaults(req.Health),
+		Health:       startingHealth(req.Health),
 		CreatedAt:    time.Now().UTC(),
 	})
 	if err != nil {

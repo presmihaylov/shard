@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -30,6 +33,7 @@ func (a App) create(ctx context.Context, args []string) error {
 // parseCreate splits the flags, the image and the argv, and refuses a typo before the daemon is asked.
 func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	var req sandbox.CreateRequest
+	var err error
 
 	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -42,9 +46,19 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
 	flags.BoolVar(&req.RestartOnOOM, "restart-on-oom", false, "start the sandbox again when the host ends it for its memory")
+	var health healthFlags
+	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox, which passes on exit 0")
+	flags.StringVar(&health.http, "health-http", "", "a PORT[/PATH] the daemon GETs from the host, which passes on a 2xx or 3xx")
+	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds")
+	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds")
+	flags.IntVar(&health.retries, "health-retries", 0, "the failed probes in a row that make the sandbox unhealthy")
 
 	if err := flags.Parse(args); err != nil {
 		return sandbox.CreateRequest{}, fmt.Errorf("parse the create flags: %w", err)
+	}
+
+	if req.Health, err = health.request(); err != nil {
+		return sandbox.CreateRequest{}, err
 	}
 
 	// The spelling is checked here, so a name no verb could take back never costs the operator a pull.
@@ -104,6 +118,72 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 
 	return req, nil
+}
+
+// healthFlags is the probe as the flags spell it, before the daemon's seconds and argv.
+type healthFlags struct {
+	command, http     string
+	interval, timeout time.Duration
+	retries           int
+}
+
+// request turns the flags into the create body's probe, or nil when none names a kind.
+func (h healthFlags) request() (*models.HealthCheck, error) {
+	if h.command == "" && h.http == "" {
+		if h.interval != 0 || h.timeout != 0 || h.retries != 0 {
+			return nil, errors.New("--health-interval, --health-timeout and --health-retries tune a probe, set --health-command or --health-http")
+		}
+
+		return nil, nil
+	}
+	if h.command != "" && h.http != "" {
+		return nil, errors.New("--health-command and --health-http are two probes, and a sandbox gets one")
+	}
+
+	hc := &models.HealthCheck{Retries: h.retries}
+	if h.command != "" {
+		hc.Command = []string{"/bin/sh", "-c", h.command}
+	}
+	if h.http != "" {
+		probe, err := parseHTTPProbe(h.http)
+		if err != nil {
+			return nil, err
+		}
+		hc.HTTP = &probe
+	}
+
+	var err error
+	if hc.Interval, err = wholeSeconds("--health-interval", h.interval); err != nil {
+		return nil, err
+	}
+	if hc.Timeout, err = wholeSeconds("--health-timeout", h.timeout); err != nil {
+		return nil, err
+	}
+	if h.retries < 0 {
+		return nil, fmt.Errorf("--health-retries is a count and cannot be negative, got %d", h.retries)
+	}
+
+	return hc, nil
+}
+
+// parseHTTPProbe reads PORT or PORT/PATH, as in 8080/healthz.
+func parseHTTPProbe(spec string) (models.HTTPProbe, error) {
+	port, path, _ := strings.Cut(spec, "/")
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return models.HTTPProbe{}, fmt.Errorf("--health-http takes PORT[/PATH] with a tcp port, got %q", spec)
+	}
+
+	return models.HTTPProbe{Port: n, Path: "/" + path}, nil
+}
+
+// wholeSeconds refuses what the daemon's seconds cannot carry; zero stays zero and takes the default.
+func wholeSeconds(name string, d time.Duration) (int, error) {
+	if d < 0 || d%time.Second != 0 {
+		return 0, fmt.Errorf("%s is in whole seconds, got %s", name, d)
+	}
+
+	return int(d / time.Second), nil
 }
 
 // named says --name was given, so an explicit empty one is refused rather than read as no name.
