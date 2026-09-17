@@ -19,5 +19,6 @@ const (
 	CodeExecRunning       Code = "exec_running"
 	CodeWebSocketRequired Code = "websocket_required"
 	CodeUnauthorized      Code = "unauthorized"
+	CodeForbidden         Code = "forbidden"
 	CodeInternal          Code = "internal"
 )

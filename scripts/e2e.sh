@@ -850,6 +850,18 @@ expect "${GOT}" "shard-e2e" "exec over the front read what the first exec wrote"
 GOT=$(printf 'over-tls\n' | shard_front exec -i "${ID}" -- /bin/cat) || fail "exec with stdin over the front failed"
 expect "${GOT}" "over-tls" "the websocket of an exec passes through the front both ways"
 
+step "a read-only token reads through the front but is refused a write"
+# The front maps the request line to a capability and refuses a write the token's scopes do not reach.
+READONLY=$("${PREFIX}/shard" serve mint --name shard-e2e --scopes sandbox:read --secret-file "${SERVE_SECRET}") ||
+	fail "serve mint did not print a read-only token"
+CODE=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "200" "a sandbox:read token lists the sandboxes"
+CODE=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -X POST -o /dev/null -w '%{http_code}')
+expect "${CODE}" "403" "a sandbox:read token is refused a create"
+BODY=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -X POST)
+expect "${BODY}" '{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}' \
+	"the refusal carries the forbidden code"
+
 stop_serve
 rm -rf "${LONE_ROOT}"
 LONE_ROOT=""

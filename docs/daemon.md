@@ -389,6 +389,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `websocket_required` | 400 | an exec attach without the WebSocket handshake |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes that object alone into `*client.APIError`, with `Status`, `Code`, `Message`
@@ -434,23 +435,48 @@ request it lets through. Without `--cert` and `--key` the front refuses to start
 TCP mode to fall back to. The secret file must not be readable by everyone on the host, and the front
 refuses one that is.
 
-That is the whole of the access control: TLS on the wire and one signing secret in a file. There is
-no user and no role yet, and a client that holds a token holds every verb.
+The access control is TLS on the wire, one signing secret in a file, and a coarse scope on each
+token. There is no user and no role yet.
+
+A token carries a list of scopes, and the front maps each request's route to one capability and lets
+the request through only when a scope covers it. A token with no scopes, or one that carries `*`,
+holds every verb; a token that names scopes reaches only the routes those scopes cover, and every
+other route is a `403` with the code `forbidden`, written before anything is dialed. The front maps
+the request line to the capability over the daemon's own route patterns, so the front and the daemon
+agree on what each request is, and an unknown route is a `403` too. The eight capabilities are:
+
+| capability | routes |
+| --- | --- |
+| `daemon:read` | `GET /v0/version`, `GET /v0/daemon` |
+| `sandbox:read` | list, get, `logs` and `egress-log` |
+| `sandbox:write` | create, start, stop, pause, resume, fork and clone |
+| `sandbox:delete` | `rm` |
+| `exec` | every `exec` route |
+| `image:*` | every `images` route |
+| `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
+| `policy:*` | every `policies` route, and the policy of a sandbox |
 
 The check is per request, not per connection: the front forces `Connection: close` on every request
 it forwards, so a kept-alive connection cannot carry a second request past the one it verified. A
 WebSocket upgrade is the one exception, because its `Connection: Upgrade` is what makes the handshake
-work, and the daemon owns the lifetime of that connection once the front splices it.
+work, and the daemon owns the lifetime of that connection once the front splices it. The exception is
+narrow: the front skips the `Connection: close` rewrite only when all four handshake headers are
+present, and it reads the daemon's status line first. A `101` is the connection the WebSocket needs; a
+non-101 answer ends after that one response, so a request pipelined behind a handshake the daemon does
+not upgrade never reaches the daemon.
 
 A token is minted on the server, from the same secret, and never over the API:
 
 ```
 shard serve mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
+shard serve mint --name reader --scopes sandbox:read,exec --secret-file /etc/shard/serve.secret
 ```
 
 `mint` prints one token to stdout and exits. It is a local verb like `daemon` and `serve`: it never
-reaches the daemon, and the daemon never sees the secret. `--name` is the subject the front logs, and
-`--duration` defaults to 24h. Rotate the secret and every token it signed stops verifying at once.
+reaches the daemon, and the daemon never sees the secret. `--name` is the subject the front logs,
+`--duration` defaults to 24h, and `--scopes` is a comma-separated list of the scopes the token
+carries; an empty `--scopes` is every verb. Rotate the secret and every token it signed stops
+verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that
 restart ends no connection that is already spliced.

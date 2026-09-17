@@ -28,6 +28,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/api"
 )
 
 const testSecret = "e2e-secret-value-0000000000000000"
@@ -41,6 +42,16 @@ type upstream struct {
 
 // fakeDaemon answers every request with 200 and its own body, echoes on a WebSocket, and counts the connections it accepted.
 func fakeDaemon(t *testing.T) *upstream {
+	return daemon(t, true)
+}
+
+// plainDaemon answers every request with 200, even a WebSocket handshake, so the front's non-101 path is exercised.
+func plainDaemon(t *testing.T) *upstream {
+	return daemon(t, false)
+}
+
+// daemon starts a fake daemon on a socket under a root and counts what reaches it. When upgrade is true it answers a WebSocket handshake with 101 and echoes; when false it answers every request with 200.
+func daemon(t *testing.T, upgrade bool) *upstream {
 	t.Helper()
 
 	root := shortRoot(t)
@@ -59,7 +70,7 @@ func fakeDaemon(t *testing.T) *upstream {
 			case up.requests <- r.Method + " " + r.URL.Path + " auth=" + r.Header.Get("Authorization"):
 			default:
 			}
-			if r.Header.Get("Upgrade") == "websocket" {
+			if upgrade && r.Header.Get("Upgrade") == "websocket" {
 				echo(t, w, r)
 
 				return
@@ -165,6 +176,40 @@ func ask(t *testing.T, address, token string) *http.Response {
 	t.Cleanup(func() { resp.Body.Close() })
 
 	return resp
+}
+
+// askRoute sends one request of method to path on the front over TLS, with the bearer token when it is not empty.
+func askRoute(t *testing.T, address, token, method, path string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), method, "https://"+address+path, nil)
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := trusting().Do(req)
+	if err != nil {
+		t.Fatalf("ask the front: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	return resp
+}
+
+// drain collects what a channel holds, gives a late sender a short moment, and answers the list.
+func drain(ch chan string) []string {
+	var got []string
+	for {
+		select {
+		case s := <-ch:
+			got = append(got, s)
+		case <-time.After(200 * time.Millisecond):
+			return got
+		}
+	}
 }
 
 func TestTheFrontSplicesAnAuthorizedRequestOntoTheSocket(t *testing.T) {
@@ -304,33 +349,51 @@ func TestTheFrontRefusesToStartWithoutASecret(t *testing.T) {
 }
 
 func TestMintAndVerifyRoundTrip(t *testing.T) {
-	token, err := Mint([]byte(testSecret), "ci", time.Hour)
+	token, err := Mint([]byte(testSecret), "ci", []string{"sandbox:read", "exec"}, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	sub, err := verify([]byte(testSecret), token)
+	sub, scopes, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	if sub != "ci" {
 		t.Errorf("verify answered %q, want the subject the token names", sub)
 	}
+	if strings.Join(scopes, ",") != "sandbox:read,exec" {
+		t.Errorf("verify answered scopes %v, want the ones the token carries", scopes)
+	}
+}
+
+func TestVerifyReadsNoScopesAsEveryVerb(t *testing.T) {
+	token, err := Mint([]byte(testSecret), "ci", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	_, scopes, err := verify([]byte(testSecret), token)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(scopes) != 0 {
+		t.Errorf("verify answered scopes %v, want none, which is every verb", scopes)
+	}
 }
 
 func TestMintRefusesAnEmptySubjectAndAPastDuration(t *testing.T) {
-	if _, err := Mint([]byte(testSecret), "", time.Hour); err == nil {
+	if _, err := Mint([]byte(testSecret), "", nil, time.Hour); err == nil {
 		t.Error("Mint signed a token with no subject")
 	}
-	if _, err := Mint([]byte(testSecret), "ci", 0); err == nil {
+	if _, err := Mint([]byte(testSecret), "ci", nil, 0); err == nil {
 		t.Error("Mint signed a token that is already expired")
 	}
 }
 
-func TestForwardHeadForcesConnectionClose(t *testing.T) {
+func TestSetConnectionCloseForcesConnectionClose(t *testing.T) {
 	head := []byte("GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nConnection: keep-alive\r\n\r\n")
 
-	got := string(forwardHead(head))
+	got := string(setConnectionClose(head))
 	if strings.Count(strings.ToLower(got), "connection:") != 1 {
 		t.Errorf("the forwarded head is %q, want exactly one Connection header", got)
 	}
@@ -348,11 +411,140 @@ func TestForwardHeadForcesConnectionClose(t *testing.T) {
 	}
 }
 
-func TestForwardHeadKeepsAWebSocketUpgrade(t *testing.T) {
-	head := []byte("GET /v0/sandboxes/s1/logs?follow=true HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+// A lone Upgrade header is not a handshake: without all four headers the front must force Connection: close.
+func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
+	full := "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+	if !isHandshake([]byte(full)) {
+		t.Error("a full four-header handshake was not recognized")
+	}
 
-	if got := forwardHead(head); string(got) != string(head) {
-		t.Errorf("the forwarded head changed a WebSocket upgrade to %q", got)
+	for name, head := range map[string]string{
+		"no key":        "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		"no version":    "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"no upgrade":    "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"no connection": "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"wrong version": "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 8\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"plain request": "GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\n\r\n",
+	} {
+		if isHandshake([]byte(head)) {
+			t.Errorf("%s: a partial upgrade was treated as a handshake", name)
+		}
+	}
+}
+
+// A sandbox:read token lists and inspects, and is 403 on every route it does not name; a forbidden route is never dialed.
+func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
+	up := fakeDaemon(t)
+	address := front(t, up.root, secretFile(t, testSecret))
+	token := mintScoped(t, "reader", "sandbox:read")
+
+	if resp := askRoute(t, address, token, http.MethodGet, "/v0/sandboxes"); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+		t.Errorf("a sandbox:read token got %d on a read, want 200", resp.StatusCode)
+	}
+
+	denied := []struct{ method, path string }{
+		{http.MethodPost, "/v0/sandboxes"},
+		{http.MethodDelete, "/v0/sandboxes/s1"},
+		{http.MethodPost, "/v0/sandboxes/s1/exec"},
+		{http.MethodGet, "/v0/secrets"},
+	}
+	for _, d := range denied {
+		resp := askRoute(t, address, token, d.method, d.path) //nolint:bodyclose // askRoute closes the body in a cleanup
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("a sandbox:read token got %d on %s %s, want 403", resp.StatusCode, d.method, d.path)
+		}
+
+		var body struct {
+			Error struct {
+				Code    models.Code `json:"code"`
+				Message string      `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("%s %s: decode the refusal: %v", d.method, d.path, err)
+		}
+		if body.Error.Code != models.CodeForbidden || body.Error.Message == "" {
+			t.Errorf("%s %s: the refusal reads %+v, want a line and the code forbidden", d.method, d.path, body)
+		}
+	}
+
+	// The one read dialed the socket; every forbidden route was answered without a dial.
+	if dialed := up.dialed.Load(); dialed != 1 {
+		t.Errorf("the front dialed the socket %d times, want 1 for the single read it allowed", dialed)
+	}
+}
+
+// A token with no scopes and a token with a "*" scope both reach a write route.
+func TestAFullTokenReachesAWriteRoute(t *testing.T) {
+	up := fakeDaemon(t)
+	address := front(t, up.root, secretFile(t, testSecret))
+
+	for name, token := range map[string]string{
+		"no scopes": mint(t, "root"),
+		"star":      mintScoped(t, "root", "*"),
+	} {
+		if resp := askRoute(t, address, token, http.MethodPost, "/v0/sandboxes"); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("%s: a full token got %d on a write, want 200", name, resp.StatusCode)
+		}
+	}
+}
+
+// An unknown route is 403 for any token, and the front never dials the daemon for it.
+func TestAnUnknownRouteIs403AndNothingIsDialed(t *testing.T) {
+	up := fakeDaemon(t)
+	address := front(t, up.root, secretFile(t, testSecret))
+
+	resp := askRoute(t, address, mint(t, "root"), http.MethodGet, "/v0/nonesuch") //nolint:bodyclose // askRoute closes the body in a cleanup
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("an unknown route got %d, want 403", resp.StatusCode)
+	}
+	if dialed := up.dialed.Load(); dialed != 0 {
+		t.Errorf("the front dialed the socket %d times for an unknown route, want none", dialed)
+	}
+}
+
+// Every route the daemon serves has a capability, so no request reaches the front without one to check.
+func TestEveryDaemonRouteHasACapability(t *testing.T) {
+	covered := 0
+	for _, r := range api.Routes() {
+		covered++
+		if _, ok := capabilityOf(r); !ok {
+			t.Errorf("route %s %s has no capability", r.Method, r.Pattern)
+		}
+	}
+
+	// An empty route list would pass in silence, so the walk proves it covered the daemon surface.
+	if covered < 15 {
+		t.Fatalf("the walk covered %d daemon routes, want the full set", covered)
+	}
+}
+
+// A non-101 answer to a handshake ends after one response, so a pipelined second request never reaches the daemon.
+func TestANonUpgradeAnswerDoesNotForwardAPipelinedRequest(t *testing.T) {
+	up := plainDaemon(t)
+	address := front(t, up.root, secretFile(t, testSecret))
+	token := mint(t, "root")
+
+	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // G402: the certificate is generated by this test
+	if err != nil {
+		t.Fatalf("dial the front: %v", err)
+	}
+	defer conn.Close()
+
+	handshake := "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token +
+		"\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+	pipelined := "GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
+	if _, err := io.WriteString(conn, handshake+pipelined); err != nil {
+		t.Fatalf("write the pipelined requests: %v", err)
+	}
+
+	// The front relays the daemon's one non-101 response and closes; ReadAll ends when it does.
+	if _, err := io.ReadAll(conn); err != nil {
+		t.Fatalf("read the front's answer: %v", err)
+	}
+
+	if got := drain(up.requests); len(got) != 1 {
+		t.Errorf("the daemon saw %d requests, want only the handshake, never the pipelined one: %v", len(got), got)
 	}
 }
 
@@ -401,11 +593,18 @@ func TestReadTokenTrimsTheFile(t *testing.T) {
 	}
 }
 
-// mint signs a valid token for sub over the test secret.
+// mint signs a valid token for sub over the test secret, carrying every verb.
 func mint(t *testing.T, sub string) string {
 	t.Helper()
 
-	token, err := Mint([]byte(testSecret), sub, time.Hour)
+	return mintScoped(t, sub)
+}
+
+// mintScoped signs a valid token for sub over the test secret, carrying the scopes named.
+func mintScoped(t *testing.T, sub string, scopes ...string) string {
+	t.Helper()
+
+	token, err := Mint([]byte(testSecret), sub, scopes, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}

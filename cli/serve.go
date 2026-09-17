@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/services/serve"
@@ -48,6 +49,7 @@ func (a App) serveMint(args []string) error {
 	name := flags.String("name", "", "the subject the token names")
 	duration := flags.Duration("duration", 24*time.Hour, "how long the token is valid")
 	secretFile := flags.String("secret-file", "", "the file holding the secret that signs the token")
+	scopes := flags.String("scopes", "", "a comma-separated list of scopes the token carries; empty is every verb")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse the mint flags: %w", err)
@@ -67,10 +69,23 @@ func (a App) serveMint(args []string) error {
 		return err
 	}
 
-	token, err := serve.Mint(secret, *name, *duration)
+	token, err := serve.Mint(secret, *name, parseScopes(*scopes), *duration)
 	if err != nil {
 		return err
 	}
 
 	return a.print(token)
+}
+
+// parseScopes splits a comma-separated --scopes into the list Mint carries; empty is nil, which is every verb.
+func parseScopes(raw string) []string {
+	var scopes []string
+	for part := range strings.SplitSeq(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			scopes = append(scopes, part)
+		}
+	}
+
+	return scopes
 }
