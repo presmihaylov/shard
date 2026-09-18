@@ -32,7 +32,7 @@ type ledgerEntry struct {
 	Revoked   bool       `json:"revoked"`
 }
 
-// TokenStatus is how serve tokens reads a record now: active, revoked or past its expiry.
+// TokenStatus is how tokens ls reads a record now: active, revoked or past its expiry.
 type TokenStatus string
 
 const (
@@ -41,7 +41,7 @@ const (
 	StatusExpired TokenStatus = "expired"
 )
 
-// TokenInfo is one ledger record as serve tokens prints it.
+// TokenInfo is one ledger record as tokens ls prints it.
 type TokenInfo struct {
 	ID        string
 	Subject   string

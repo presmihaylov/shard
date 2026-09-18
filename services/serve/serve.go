@@ -142,7 +142,7 @@ func ReadToken(path string) (string, error) {
 		return "", fmt.Errorf("the token file %s holds no token", path)
 	}
 
-	// serve mint writes a JSON record; --token-file takes it whole or the bare token.
+	// tokens mint writes a JSON record; --token-file takes it whole or the bare token.
 	if strings.HasPrefix(token, "{") {
 		var record struct {
 			Token string `json:"token"`

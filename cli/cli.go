@@ -87,11 +87,11 @@ Usage:
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
-  shard serve mint --name <sub> [--duration <dur>] --secret-file <path>
+  shard tokens mint --name <sub> [--duration <dur>] --secret-file <path>
                            sign one token for a subject, record it in the ledger, and print it; no --duration means it never expires; a local verb, the daemon never sees the secret
-  shard serve tokens --secret-file <path>
+  shard tokens ls --secret-file <path>
                            list every token the ledger records, with its id, subject, issued and expiry times, scopes and status
-  shard serve revoke [--name <sub>] --secret-file <path> <id>
+  shard tokens revoke [--name <sub>] --secret-file <path> <id>
                            mark a token revoked so the next request with it fails; --name revokes every token of a subject; a local verb
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
@@ -144,7 +144,7 @@ Serve flags:
   --key <pem>              the key of that certificate
   --secret-file <path>     the file holding the secret that signs and checks every token
 
-Serve mint flags:
+Tokens mint flags:
   --name <sub>             the subject the token names
   --duration <dur>         how long the token is valid (default 24h)
   --secret-file <path>     the file holding the secret that signs the token
@@ -291,6 +291,8 @@ func (a App) run(ctx context.Context, args []string) error {
 		return a.daemon(ctx, args[1:])
 	case "serve":
 		return a.serve(ctx, args[1:])
+	case "tokens":
+		return a.tokens(args[1:])
 	case "help":
 		return a.print(usage)
 	}

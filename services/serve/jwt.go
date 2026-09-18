@@ -16,7 +16,7 @@ type claims struct {
 	jwt.RegisteredClaims
 }
 
-// Token is what serve mint prints and a client reads back: the signed token, its expiry and its scopes.
+// Token is what tokens mint prints and a client reads back: the signed token, its expiry and its scopes.
 type Token struct {
 	Token     string     `json:"token"`
 	ExpiresAt *time.Time `json:"expires_at"`
