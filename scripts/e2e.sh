@@ -16,13 +16,14 @@
 #   PREFIX     where the binaries are installed, and where the daemon loads shard-init from (default /usr/local/bin)
 #   SHARD_ROOT where this run keeps its state          (default /var/lib/shard-e2e)
 #   IMAGE      the image the sandbox is built from     (default alpine:3.20)
-#   PROVIDER   the substrate the daemon runs on: gvisor or sysbox (default gvisor)
+#   PROVIDER   the substrate the daemon runs on: gvisor, sysbox or runc (default gvisor)
 #   DIND_IMAGE the image the sysbox docker step runs dockerd from (default docker:27-dind)
 #   SKIP_INSTALL=1 to run against the binaries already on the box
 #
 # On sysbox the snapshot steps become their refusals: the provider claims no pause, resume or fork,
 # and the run proves each one says so by name while the sandbox runs on. Sysbox then earns its slot:
 # a second sandbox runs dockerd and a docker build inside it, which no other substrate here can.
+# On runc the snapshot steps are the same refusals, and the docker step is skipped: bare runc holds no dockerd.
 
 set -euo pipefail
 
@@ -539,7 +540,8 @@ runtime_binary() {
 	case "$1" in
 	gvisor) printf 'runsc\n' ;;
 	sysbox) printf 'sysbox-runc\n' ;;
-	*) fail "PROVIDER must be gvisor or sysbox, got '$1'" ;;
+	runc) printf 'runc\n' ;;
+	*) fail "PROVIDER must be gvisor, sysbox or runc, got '$1'" ;;
 	esac
 }
 
@@ -746,7 +748,7 @@ expect "$(find /tmp -maxdepth 1 -name 'shard-exec-*' | wc -l)" "${TMP_EXECS_BEFO
 expect "$(find "${SHARD_ROOT}/exec" -mindepth 1 -maxdepth 1 | wc -l)" "0" "the new daemon swept the exec scratch under its root"
 # The driver of the exec in flight dies with the daemon, so no runsc exec of this root is left on init.
 for _ in $(seq 1 20); do
-	ORPHANS=$(ps -eo ppid=,args= | awk -v root="${SHARD_ROOT}" '$1 == 1 && $2 ~ /(runsc|sysbox-runc)$/ && index($0, root) && / exec /' | wc -l)
+	ORPHANS=$(ps -eo ppid=,args= | awk -v root="${SHARD_ROOT}" '$1 == 1 && $2 ~ /(runsc|sysbox-runc|runc)$/ && index($0, root) && / exec /' | wc -l)
 	[ "${ORPHANS}" = "0" ] && break
 	sleep 0.1
 done
@@ -1526,7 +1528,7 @@ OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s 
 # OOM_POLLS bounds the wait for several kills at one 5 s tick each, with their backoff, like the integration test's budget.
 OOM_POLLS="${OOM_POLLS:-360}"
 
-# oom_restart_steps refuses an OOM restart with no bound, brings one back, and asserts the restart cap per provider (SHARD-56). It runs on both providers (SHARD-191).
+# oom_restart_steps refuses an OOM restart with no bound, brings one back, and asserts the restart cap per provider (SHARD-56). It runs on every provider (SHARD-191).
 oom_restart_steps() {
 	local id rec
 
@@ -1552,10 +1554,10 @@ oom_restart_steps() {
 	say "an OOM-killed sandbox that asked for restart comes back and runs"
 	drop_sandbox "${id}"
 
-	step "the OOM restart cap: reset on gvisor, spent on sysbox"
+	step "the OOM restart cap: reset on gvisor, spent on sysbox and runc"
 	# The cap outcome differs by death speed, so each provider asserts its own (Pres rules memory.high in tasks.md; that PR changes this step).
 	# gvisor deaths take ~30s under memory.high, past the 10s reset, so the count resets and the cap never spends.
-	# sysbox deaths take ~5s, inside the 10s reset, so the count never resets and the cap spends.
+	# sysbox and runc deaths take ~5s, inside the 10s reset, so the count never resets and the cap spends.
 	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" -- /bin/sh -c "${OOM_BOMB}")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
@@ -1576,10 +1578,10 @@ oom_restart_steps() {
 		grep -q '"state": *"stopped"' "${rec}" && grep -q 'the 2 starts again the limit allows are spent' "${rec}" && break
 		sleep 1
 	done
-	[ "$(grep -c "sandbox ${id} ran out of memory and the host ended it: started again, 2 of 2" "${DAEMON_LOG}" || true)" -ge 1 ] || fail "the capped OOM loop never reached 2 of 2 on sysbox: $(cat "${rec}")"
-	grep -q '"state": *"stopped"' "${rec}" || fail "the capped OOM sandbox never stopped on sysbox: $(cat "${rec}")"
-	grep -q 'the 2 starts again the limit allows are spent' "${rec}" || fail "the stop names no spent limit on sysbox: $(cat "${rec}")"
-	say "on sysbox the capped OOM loop climbs to 2 of 2, spends the limit, and stops with the reason"
+	[ "$(grep -c "sandbox ${id} ran out of memory and the host ended it: started again, 2 of 2" "${DAEMON_LOG}" || true)" -ge 1 ] || fail "the capped OOM loop never reached 2 of 2 on ${PROVIDER}: $(cat "${rec}")"
+	grep -q '"state": *"stopped"' "${rec}" || fail "the capped OOM sandbox never stopped on ${PROVIDER}: $(cat "${rec}")"
+	grep -q 'the 2 starts again the limit allows are spent' "${rec}" || fail "the stop names no spent limit on ${PROVIDER}: $(cat "${rec}")"
+	say "on ${PROVIDER} the capped OOM loop climbs to 2 of 2, spends the limit, and stops with the reason"
 	drop_sandbox "${id}"
 }
 
@@ -1618,7 +1620,7 @@ disk_bound_steps() {
 	# sysbox-runc holds a stopped sandbox, and sysbox-mgr chowns its upper layer back at delete, so the disk stays up until then.
 	disk_mount=$(mount | grep " on ${SHARD_ROOT}/sandboxes/${id}/disk " || true)
 	case "${PROVIDER}" in
-	gvisor) absent "the disk mount of the stopped sandbox" "${disk_mount}" ;;
+	gvisor | runc) absent "the disk mount of the stopped sandbox" "${disk_mount}" ;;
 	sysbox) [ -n "${disk_mount}" ] || fail "the disk of the stopped sandbox is not mounted, and sysbox-mgr walks its upper layer at the next start" ;;
 	esac
 	shard start "${id}" >/dev/null
@@ -1795,12 +1797,12 @@ docker_steps() {
 	expect_exec "still-running" "the first sandbox runs on beside the docker steps" /bin/echo still-running
 }
 
-if [ "${PROVIDER}" = "gvisor" ]; then
-	snapshot_steps
-else
-	snapshot_refusals
-	docker_steps
-fi
+# The docker step is Sysbox's alone: bare runc holds no dockerd.
+case "${PROVIDER}" in
+gvisor) snapshot_steps ;;
+sysbox) snapshot_refusals; docker_steps ;;
+runc) snapshot_refusals ;;
+esac
 
 step "refuse to remove a sandbox that is still up"
 CODE=0
@@ -2118,9 +2120,9 @@ say "the run's own root is gone"
 
 trap - EXIT
 echo
-if [ "${PROVIDER}" = "gvisor" ]; then
-	SNAPSHOT_STEPS="pause, resume, fork"
-else
-	SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside"
-fi
+case "${PROVIDER}" in
+gvisor) SNAPSHOT_STEPS="pause, resume, fork" ;;
+sysbox) SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside" ;;
+runc) SNAPSHOT_STEPS="refused pause, resume and fork" ;;
+esac
 echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"

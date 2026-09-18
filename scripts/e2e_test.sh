@@ -78,6 +78,7 @@ echo
 echo "== runtime_binary names the runtime of each provider and refuses the rest"
 check "gvisor drives runsc" "$(runtime_binary gvisor 2>/dev/null)" "runsc"
 check "sysbox drives sysbox-runc" "$(runtime_binary sysbox 2>/dev/null)" "sysbox-runc"
+check "runc drives runc" "$(runtime_binary runc 2>/dev/null)" "runc"
 (runtime_binary firecracker) >/dev/null 2>&1
 check "a provider the daemon does not know" "$?" "1"
 (runtime_binary "") >/dev/null 2>&1
