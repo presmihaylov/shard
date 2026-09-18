@@ -14,7 +14,7 @@ See `docs/daemon.md`.
 
 ## Providers
 
-`shard daemon --provider gvisor|sysbox` picks the substrate for the host. `docs/provider.md` has the
+`shard daemon --provider gvisor|sysbox|runc` picks the substrate for the host. `docs/provider.md` has the
 full matrix; the short form:
 
 | | gVisor (default) | Sysbox |

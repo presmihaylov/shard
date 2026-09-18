@@ -9,24 +9,24 @@ code; this page says what the signatures cannot.
 host runs on it. A record names the substrate that made it. Do not switch a host's provider while
 records exist: the other substrate has never heard of those sandboxes.
 
-| | gVisor (`gvisor`, the default) | Sysbox (`sysbox`) | Firecracker |
-|---|---|---|---|
-| Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | a microVM, needs `/dev/kvm` |
-| Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native |
-| Docker inside | no | yes | yes |
-| systemd as PID 1 | no | no | no |
-| Tenancy | many tenants on one host | **one tenant per host**, see below | many tenants on one host |
-| Status | every verb | every required verb, no snapshot verb | does not exist yet |
+| | gVisor (`gvisor`, the default) | Sysbox (`sysbox`) | runc (`runc`) | Firecracker |
+|---|---|---|---|---|
+| Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a microVM, needs `/dev/kvm` |
+| Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native |
+| Docker inside | no | yes | no | yes |
+| systemd as PID 1 | no | no | no | no |
+| Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one host |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | does not exist yet |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
 
-| Verb | gVisor | Sysbox | Firecracker |
-|---|---|---|---|
-| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | planned |
-| `pause` | yes | **no** | planned |
-| `resume` | yes | **no** | planned |
-| `fork` | yes | **no** | planned |
+| Verb | gVisor | Sysbox | runc | Firecracker |
+|---|---|---|---|---|
+| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | planned |
+| `pause` | yes | **no** | **no** | planned |
+| `resume` | yes | **no** | **no** | planned |
+| `fork` | yes | **no** | **no** | planned |
 
 ### systemd is not a sandbox's init
 
@@ -61,6 +61,15 @@ and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sy
 daemon that answers the reads and refuses every sandbox verb, the same as a gVisor host without
 `runsc`.
 
+### What runc does not do
+
+**runc isolates nothing.** The guest shares the host kernel with only namespaces and cgroups between
+them, and root in the guest is root on the host: use it for code you trust or a box you can lose. It
+is never picked by default; `--provider runc` is the only way onto it. It has no pause, no resume and
+no fork, because shard drives no checkpoint on it, and each verb refuses by name: `provider runc does
+not support pause on this host`. It runs where the `runc` package is installed, root, and there is no
+fallback to gVisor.
+
 ## Required verbs against optional verbs
 
 Ten verbs are required. Every substrate must do all of them, and none of them has a capability
@@ -90,7 +99,7 @@ needed a context and an error would be a fourth thing to get wrong.
 
 ## What a memory bound means
 
-`--memory` bounds a sandbox the same way on both substrates: past the bound the whole sandbox dies,
+`--memory` bounds a sandbox the same way on every substrate: past the bound the whole sandbox dies,
 not one process inside it, and the daemon restarts it when the record set `restart_on_oom`. gVisor
 sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox sets the same pair.
 `sysbox-runc` applies `memory.max` from the bundle but neither knob, so without them the OOM killer
@@ -98,7 +107,7 @@ took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
 
 ## What a cpu bound means
 
-`--cpus` bounds a sandbox to a share of the host CPUs, the same way on both substrates. `--cpus 0`,
+`--cpus` bounds a sandbox to a share of the host CPUs, the same way on every substrate. `--cpus 0`,
 the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
@@ -116,7 +125,7 @@ first, but the same bound applies.
 
 ## What a disk bound means
 
-`--disk` bounds everything a sandbox can write, the same way on both substrates. The writable layer
+`--disk` bounds everything a sandbox can write, the same way on every substrate. The writable layer
 over the image, `/tmp` and the supervisor's files under `/.shard` all sit on one ext4 image per sandbox,
 `disk.img` in its state directory, which the daemon loop-mounts at `disk/` before the overlay stacks on
 it. The bound is never off: `--disk 0`, the default, is `10240` MiB, and a positive `N` overrides
@@ -178,7 +187,7 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 
 ## What the conformance suite proves
 
-`services/provider/conformance` is the suite both substrates import from their own tests. It proves:
+`services/provider/conformance` is the suite every substrate imports from its own tests. It proves:
 
 - a sandbox outlives its entrypoint, and only `Stop` ends one;
 - `Stop` signals first and kills only when the grace runs out, against an entrypoint that ignores
@@ -196,12 +205,12 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
   refuses a source that is running, naming both the sandbox and its state;
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
-Both substrates run it from their own `*_integration_test.go` under `make itest`. On Sysbox every
-snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves the
-refuse path there and the snapshot path only on gVisor. The snapshot-shaped interface questions wait
+Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
+every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
+the refuse path there and the snapshot path only on gVisor. The snapshot-shaped interface questions wait
 for Firecracker (SHARD-45).
 
-It does not prove anything about the network: both substrates join a namespace the network service
+It does not prove anything about the network: every substrate joins a namespace the network service
 built, so there is nothing to generalize yet.
 
 It does not prove systemd runs as a sandbox's own init, because no substrate allows it: `shard-init`

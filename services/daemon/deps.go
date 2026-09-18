@@ -9,13 +9,14 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
-	"github.com/presmihaylov/shard/pkg/runc"
+	runccli "github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/provider/runc"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
@@ -129,14 +130,21 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 
 		return gvisor.New(runner, bundles, dirs)
 	case sysbox.Name:
-		runner, err := runc.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runc.WithBinary(sysbox.Binary), runc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+		runner, err := runccli.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runccli.WithBinary(sysbox.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
 
 		return sysbox.New(runner, bundles, dirs)
+	case runc.Name:
+		runner, err := runccli.New(filepath.Join(d.cfg.Root, "runc"), runccli.WithBinary(runc.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+		if err != nil {
+			return nil, err
+		}
+
+		return runc.New(runner, bundles, dirs)
 	default:
-		return nil, fmt.Errorf("unknown provider %q: shard knows %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name)
+		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name)
 	}
 }
 

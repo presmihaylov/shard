@@ -114,7 +114,8 @@ out and the placeholder is never substituted.
 It stops theft: the value cannot leave through the sandbox because the sandbox never had it. The
 guest can read its environment, dump its memory and search its disk, and find the placeholder. The
 one way in is a granted host that echoes the credential back, which is why a grant names only hosts
-that never do.
+that never do. On the `runc` provider the guarantee is the proxy's alone: nothing isolates the guest
+from the host, root in the guest is root on the host, and an escape reads the store as the host does.
 
 It does not stop misuse. A sandbox that may talk to `api.openai.com` with the key may make any call
 that key allows, and a compromised agent can run up a bill or read what the key can read. Scope the
