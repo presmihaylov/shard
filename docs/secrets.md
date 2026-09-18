@@ -3,7 +3,8 @@
 A sandbox never holds a secret value. It holds a placeholder, and the value is put into a request on
 the host, on its way to the one destination the secret is granted to. Whatever runs in the sandbox,
 a prompt-injected agent included, can read its environment, dump its memory and post every byte of it
-anywhere it likes, and what it posts is the placeholder.
+anywhere it likes, and what it posts is the placeholder. That holds as long as the granted host never
+sends the value back: see the caution under the grant.
 
 ## The three parts
 
@@ -23,6 +24,12 @@ hosts the value may go to, and a request to any other host never carries it. `sh
 NAME` hands the guest the placeholder as `$NAME` and records the grant in the sandbox record, which
 `shard inspect` prints as `secrets`. A fork and a clone carry the grant of their source, because the
 copied bundle already hands the guest the placeholder.
+
+**Caution: grant only to hosts that never echo the credential.** The proxy puts the value into the
+request and reads nothing out of the response. A granted host that reflects what it received, an echo
+endpoint or a debug page that prints its request headers, returns the raw value in the body, and the
+guest reads it there. Stripping the value from every response is not practical, so the grant is the
+control: name only hosts that consume the credential and never return it.
 
 A grant does not open the host and does not close anything. The sandbox's policy decides what it may
 reach; the grant decides only where the value may be put in. A sandbox with a policy needs an allow
@@ -105,7 +112,9 @@ out and the placeholder is never substituted.
 ## What it stops, and what it does not
 
 It stops theft: the value cannot leave through the sandbox because the sandbox never had it. The
-guest can read its environment, dump its memory and search its disk, and find the placeholder.
+guest can read its environment, dump its memory and search its disk, and find the placeholder. The
+one way in is a granted host that echoes the credential back, which is why a grant names only hosts
+that never do.
 
 It does not stop misuse. A sandbox that may talk to `api.openai.com` with the key may make any call
 that key allows, and a compromised agent can run up a bill or read what the key can read. Scope the
