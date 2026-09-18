@@ -909,22 +909,29 @@ echo "${GUEST_BUNDLE}" | grep -q "${CA_LINE}" || fail "the guest's \$SSL_CERT_FI
 say "the guest trusts the proxy CA and still trusts the image's roots"
 
 step "a grant opens nothing: the policy alone decides the host"
-# The policy so far names 1.1.1.1 and the other host, so the granted host falls to the catch-all.
+# The policy so far names 1.1.1.1 and the other host, so the granted host falls to the catch-all at the resolver.
 DENIED=$(shard exec "${ID}" -- /bin/sh -c "wget -S -O - --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1" || true)
-grep -q "403 Forbidden" <<<"${DENIED}" || fail "the granted host the policy does not allow answered '${DENIED}'"
-grep -q "authorization=" <<<"${DENIED}" && fail "the echo answered a request the proxy should have denied"
-say "a granted host the policy does not allow gets a 403, and the echo never sees the request"
+grep -q "bad address" <<<"${DENIED}" || fail "the granted host the policy does not allow answered '${DENIED}'"
+grep -q "authorization=" <<<"${DENIED}" && fail "the echo answered a request the resolver should have refused"
+say "a granted host the policy does not allow does not resolve, and the echo never sees the request"
 
-DECISIONS=$(shard logs --egress "${ID}")
-PROXY_DENIES=$(grep '"source":"proxy"' <<<"${DECISIONS}" | grep '"verdict":"deny"' || true)
-grep -q "\"host\":\"${ECHO_HOST}\"" <<<"${PROXY_DENIES}" || fail "the egress log holds no proxy deny for ${ECHO_HOST}"
-grep -qE '"rule_text":"deny (any|0\.0\.0\.0/0)"' <<<"${PROXY_DENIES}" || fail "the deny does not name the catch-all: ${PROXY_DENIES}"
-say "the egress log names the catch-all that denied it, with source proxy"
+# The answer and the log line are two writes, so the log is read until the line lands.
+DNS_DENY=""
+for _ in $(seq 1 20); do
+	DNS_DENY=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep "\"host\":\"${ECHO_HOST}\"" || true)
+	[ -n "${DNS_DENY}" ] && break
+	sleep 0.1
+done
+[ -n "${DNS_DENY}" ] || fail "the egress log holds no dns deny for ${ECHO_HOST}"
+grep -qE '"rule_text":"deny (any|0\.0\.0\.0/0)"' <<<"${DNS_DENY}" || fail "the deny does not name the catch-all: ${DNS_DENY}"
+say "the egress log names the catch-all that denied it, with source dns"
 
 step "a secret opens no DNS either"
 # Only address rules, so nothing implies port 53. The address is not a nameserver: allowing one would
 # open DNS by address and prove nothing.
 shard policy create --allow 1.0.0.1 --deny any e2e-policy >/dev/null
+# The grant step already logged a deny for the name, so only a line past that count proves this lookup.
+DNS_DENIES_BEFORE=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
 expect_exec "unresolved" "a policy of addresses only leaves the granted host unresolvable" \
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
 
@@ -934,13 +941,13 @@ shard policy rm e2e-note >/dev/null
 say "policy create notes a policy that opens no DNS, and exits 0"
 
 # The lookup the address-only policy refused is in the log, as a dns deny for the name the guest asked.
-DNS_DENY=""
+DNS_DENIES=0
 for _ in $(seq 1 20); do
-	DNS_DENY=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep "\"host\":\"${ECHO_HOST}\"" || true)
-	[ -n "${DNS_DENY}" ] && break
+	DNS_DENIES=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
+	[ "${DNS_DENIES}" -gt "${DNS_DENIES_BEFORE}" ] && break
 	sleep 0.1
 done
-[ -n "${DNS_DENY}" ] || fail "the egress log holds no dns deny for the lookup of ${ECHO_HOST} the policy closed"
+[ "${DNS_DENIES}" -gt "${DNS_DENIES_BEFORE}" ] || fail "the egress log holds no dns deny for the lookup of ${ECHO_HOST} the policy closed"
 say "the refused lookup is in the egress log, as a dns deny for ${ECHO_HOST}"
 
 step "allow dns opens the lookup the address rules left shut"
@@ -974,11 +981,11 @@ step "a client that encodes the placeholder still gets the value"
 expect "$(basic_of "${ID}" "${ECHO_HOST}")" "api:${SECRET_VALUE}" "basic auth to the granted host carries the value, decoded and re-encoded"
 expect "$(basic_of "${ID}" "${OTHER_HOST}")" "api:mock-E2E_TOKEN" "basic auth to an ungranted host keeps the placeholder"
 
-expect_exec "403 Forbidden" "a request to a host no rule allows gets a 403 from the proxy" \
-	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
+expect_exec "bad address" "a request to a host no rule allows is refused at the resolver" \
+	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o 'bad address' | head -1"
 step "a policy deny closes a granted host"
-# The three names share the host's address, so 80 and 443 go to the proxy and the proxy is the only judge.
-shard policy create --deny "${ECHO_HOST}" --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
+# allow dns first, so the name resolves and the deny is the proxy's: the grant does not open what the policy closes.
+shard policy create --allow dns --deny "${ECHO_HOST}" --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "403 Forbidden" "a request to the granted host the policy denies gets a 403" \
 	/bin/sh -c "wget -S -O /dev/null --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
 shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
@@ -1043,7 +1050,7 @@ named_rule() {
 }
 
 named_rule "\"host\":\"${ECHO_HOST}\"" '"verdict":"allow"' "the proxy's allow"
-named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the proxy's deny"
+named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the resolver's deny"
 named_rule '"source":"host"' '"verdict":"deny"' "the host's drop"
 echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"local"' || fail "the egress log holds no drop of a packet aimed at the host's own address"
 say "the egress log holds the drop of a packet aimed at the host's own address, on rule local"
@@ -1092,7 +1099,7 @@ done
 kill "${FOLLOW_PID}" 2>/dev/null || true
 wait "${FOLLOW_PID}" 2>/dev/null || true
 
-grep -q '"verdict":"deny"' "${FOLLOW_LOG}" || fail "the follow never printed the proxy's deny: $(cat "${FOLLOW_LOG}")"
+grep -q '"verdict":"deny"' "${FOLLOW_LOG}" || fail "the follow never printed the resolver's deny: $(cat "${FOLLOW_LOG}")"
 grep -q '"source":"host"' "${FOLLOW_LOG}" || fail "the follow never printed the host's drop: $(cat "${FOLLOW_LOG}")"
 say "logs -f --egress prints both halves as they happen"
 
@@ -1895,8 +1902,8 @@ step "attach a policy to a sandbox that was created without one"
 fronted "${GRANT_ID}" && fail "an unfronted sandbox holds a dnat to the proxy"
 say "a sandbox with no policy and no secret is not fronted"
 
-# The policy names a host, which is what opens DNS: a deny-all would stop the lookup before the proxy.
-shard policy create --deny "${ECHO_HOST}" --deny any e2e-attach >/dev/null
+# allow dns first, so the name resolves and the deny is the proxy's, which is what proves the attach fronts the sandbox.
+shard policy create --allow dns --deny "${ECHO_HOST}" --deny any e2e-attach >/dev/null
 
 CODE=0
 REFUSAL=$(shard policy attach "${GRANT_ID}" e2e-attach 2>&1) || CODE=$?
