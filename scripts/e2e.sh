@@ -696,6 +696,8 @@ say "ls shows the sandbox running on its address"
 step "restart the daemon and prove the sandbox and an exec in flight outlive it"
 SANDBOX_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
 [ -n "${SANDBOX_PID}" ] || fail "the record holds no pid"
+# The driver's scratch lives under the root and the driver dies with the daemon, so /tmp must stay as it was.
+TMP_EXECS_BEFORE=$(find /tmp -maxdepth 1 -name 'shard-exec-*' | wc -l)
 # The exec is in flight when the daemon goes: its client dies with the stream, its guest process must not.
 (shard exec "${ID}" -- /bin/sleep 313 >/dev/null 2>&1 || true) &
 EXEC_CLIENT_PID=$!
@@ -711,6 +713,15 @@ say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon did not come up"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
+expect "$(find /tmp -maxdepth 1 -name 'shard-exec-*' | wc -l)" "${TMP_EXECS_BEFORE}" "the restart left no shard-exec directory under /tmp"
+expect "$(find "${SHARD_ROOT}/exec" -mindepth 1 -maxdepth 1 | wc -l)" "0" "the new daemon swept the exec scratch under its root"
+# The driver of the exec in flight dies with the daemon, so no runsc exec of this root is left on init.
+for _ in $(seq 1 20); do
+	ORPHANS=$(ps -eo ppid=,args= | awk -v root="${SHARD_ROOT}" '$1 == 1 && $2 ~ /(runsc|sysbox-runc)$/ && index($0, root) && / exec /' | wc -l)
+	[ "${ORPHANS}" = "0" ] && break
+	sleep 0.1
+done
+expect "${ORPHANS}" "0" "no exec driver of this root is orphaned on init"
 # An exec is a record now, so a curl GET names it and its exit after the shard exec that ran it returns.
 EXECS=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/exec")
 EXEC_ID=$(echo "${EXECS}" | grep -o '"exec": *"[^"]*"' | head -1 | cut -d'"' -f4)

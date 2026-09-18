@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -61,8 +62,9 @@ type State struct {
 // Runner runs one sysbox-runc root. Every container under it is reachable from any shard process,
 // so nothing here is held in memory between commands.
 type Runner struct {
-	binary string
-	root   string
+	binary  string
+	root    string
+	execDir string
 }
 
 // Option configures a Runner.
@@ -71,6 +73,11 @@ type Option func(*Runner)
 // WithBinary points at a sysbox-runc other than the one on PATH.
 func WithBinary(path string) Option {
 	return func(r *Runner) { r.binary = path }
+}
+
+// WithExecDir keeps each exec's scratch under dir, off the sysbox-runc root that it scans, so a restarted daemon can sweep it.
+func WithExecDir(dir string) Option {
+	return func(r *Runner) { r.execDir = dir }
 }
 
 // New prepares the sysbox-runc root, which is /var/lib/shard/sysbox-runc on the box.
@@ -90,6 +97,12 @@ func New(root string, opts ...Option) (*Runner, error) {
 
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create the sysbox-runc root %s: %w", root, err)
+	}
+
+	if r.execDir != "" {
+		if err := os.MkdirAll(r.execDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create the exec directory %s: %w", r.execDir, err)
+		}
 	}
 
 	return r, nil
@@ -174,7 +187,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		}
 	}
 
-	dir, err := os.MkdirTemp("", "shard-exec-")
+	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
 	if err != nil {
 		return 0, fmt.Errorf("create a directory for the exec pid file: %w", err)
 	}
@@ -185,10 +198,12 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
-	if opts.TTY {
-		// runc gives the guest a terminal only when its own stdio is one it controls.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	}
+	// The driver dies with the daemon, so a restart orphans no sysbox-runc exec; the guest process is reparented inside the container and outlives both.
+	cmd.SysProcAttr = execAttr(opts.TTY)
+
+	// The parent-death signal watches the thread that forked, so this goroutine keeps that thread until the driver ends.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	// Killing sysbox-runc exec leaves the guest process running, so a cancellation has to reach into the container.
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -60,6 +61,11 @@ type reconciler struct {
 }
 
 func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
+	// Under the lock every exec scratch under the root is the last daemon's, and its drivers died with it.
+	if err := sweepExecs(filepath.Join(r.deps.cfg.Root, execDir), report); err != nil {
+		return err
+	}
+
 	repo, err := r.deps.repo()
 	if err != nil {
 		return err
@@ -80,6 +86,32 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	}
 
 	return svc.ReconcileAll(ctx, sandboxes, report)
+}
+
+// sweepExecs removes the exec scratch a daemon that is gone left under dir, and reports how much there was.
+func sweepExecs(dir string, report func(string)) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the exec directory %s: %w", dir, err)
+	}
+
+	var errs []error
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("sweep the exec directory %s: %w", dir, err)
+	}
+	if len(entries) > 0 {
+		report(fmt.Sprintf("swept %d exec scratch directories the last daemon left under %s", len(entries), dir))
+	}
+
+	return nil
 }
 
 // apiTask serves the REST API on the socket under the root. The daemon restarts it when the listener dies.
