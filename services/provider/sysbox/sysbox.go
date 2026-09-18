@@ -149,6 +149,20 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
 	}
 
+	if err := boundPids(p.cgroupRoot, spec); err != nil {
+		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
+	}
+
+	return nil
+}
+
+// boundPids caps the host cgroup at PidsBound on every launch. On Sysbox a guest process is a host
+// process, so this cap alone stops a fork bomb from exhausting host PIDs, whatever config.json holds.
+func boundPids(root string, spec models.SandboxSpec) error {
+	if err := cgroup.SetPidsMax(cgroupDir(root, spec.ID), bundle.PidsBound(spec.Resources)); err != nil {
+		return fmt.Errorf("bound the pids of sandbox %s: %w", spec.ID, err)
+	}
+
 	return nil
 }
 

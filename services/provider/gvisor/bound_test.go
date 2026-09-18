@@ -65,6 +65,37 @@ func TestTheHostBoundsEndUpAboveTheGuestBound(t *testing.T) {
 	}
 }
 
+// TestThePidsCgroupIsBoundedWithNoRequest is the SHARD-171 residual fix: boundPids caps the host
+// cgroup on every launch, so a config.json that names no pids bound is capped at the default too.
+func TestThePidsCgroupIsBoundedWithNoRequest(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	root := fakeCgroup(t, id, "134217728")
+
+	if err := gvisor.BoundPids(root, models.SandboxSpec{ID: id}); err != nil {
+		t.Fatalf("BoundPids: %v", err)
+	}
+
+	if got, want := read(t, root, id, "pids.max"), itoa(bundle.DefaultPidsMax); got != want {
+		t.Errorf("pids.max = %s, want the default %s", got, want)
+	}
+}
+
+// TestAPidsBoundReachesTheCgroupVerbatim covers the operator's own number reaching the controller.
+func TestAPidsBoundReachesTheCgroupVerbatim(t *testing.T) {
+	const id = "amber-otter-3c4d"
+
+	root := fakeCgroup(t, id, "134217728")
+
+	if err := gvisor.BoundPids(root, models.SandboxSpec{ID: id, Resources: models.Resources{PidsMax: 256}}); err != nil {
+		t.Fatalf("BoundPids: %v", err)
+	}
+
+	if got := read(t, root, id, "pids.max"); got != "256" {
+		t.Errorf("pids.max = %s, want 256", got)
+	}
+}
+
 // TestACgroupThatRunscDidNotBoundIsRefused covers the one that bites: runsc applies nothing at all
 // when the directory is already there, and the sandbox would run with the whole host's memory.
 func TestACgroupThatRunscDidNotBoundIsRefused(t *testing.T) {

@@ -11,6 +11,11 @@ func BoundMemory(root string, spec models.SandboxSpec) error {
 	return boundMemory(root, spec)
 }
 
+// BoundPids drives the pids cap create writes on the cgroup, reachable without runsc or root.
+func BoundPids(root string, spec models.SandboxSpec) error {
+	return boundPids(root, spec)
+}
+
 // SetCgroupRoot points a provider at a directory a test owns, so the reason a dead sandbox died can
 // be read without a real cgroup hierarchy and without root.
 func (p *Provider) SetCgroupRoot(root string) {
