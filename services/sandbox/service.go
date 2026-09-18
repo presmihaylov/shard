@@ -631,30 +631,34 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 		return models.Sandbox{}, err
 	}
 
-	if err := s.stop(ctx, id, grace); err != nil {
+	if err := s.stop(ctx, id, grace, false); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(id)
 }
 
-func (s *Service) stop(ctx context.Context, id string, grace time.Duration) error {
+func (s *Service) stop(ctx context.Context, id string, grace time.Duration, force bool) error {
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
 		return err
 	}
 
-	// A second stop changes nothing: the exit status the first one recorded is the one that happened.
-	// Unless a start failed after the substrate came up, which is the one way a stopped record lies.
-	if sb.State == models.StateStopped {
+	// force reclaims through a wedge, so it skips the probe for the kill; only a plain stop is bounded by it.
+	if !force {
+		// The opening probe is bounded like rm's, so a plain stop of a wedged sandbox fails fast and typed, not at the client timeout.
 		status, err := s.status(ctx, id, "stop")
 		var timeout *SubstrateTimeoutError
+		wedged := errors.As(err, &timeout)
 		switch {
-		case errors.As(err, &timeout):
-			// A timed-out check cannot confirm the sandbox is gone, so fall through to the stop that kills it.
+		case wedged && sb.State != models.StateStopped:
+			return err
+		case wedged:
+			// A stopped record cannot confirm it is gone under a wedge, so it falls through to the kill.
 		case err != nil:
 			return err
-		case !status.Alive():
+		case sb.State == models.StateStopped && !status.Alive():
+			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
 			return nil
 		}
 	}
@@ -794,7 +798,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 	}
 	if wedged {
 		// force turns an unanswered rm into the stop that kills the wedged sandbox.
-		return s.stop(ctx, id, grace)
+		return s.stop(ctx, id, grace, force)
 	}
 	if err != nil {
 		return err
@@ -807,7 +811,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
-	return s.stop(ctx, id, grace)
+	return s.stop(ctx, id, grace, force)
 }
 
 // holding is one of the things a stopped sandbox still holds on the host.
