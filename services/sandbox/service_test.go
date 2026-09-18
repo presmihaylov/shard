@@ -221,7 +221,6 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 		"a negative memory":       {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
 		"a memory that overflows": {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
 		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
-		"a negative pids bound":   {Image: "alpine", Resources: models.Resources{PidsMax: -1}},
 		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
 		"a negative oom limit":    {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
 		"a probe with no command": {Image: "alpine", Health: &models.HealthCheck{}},

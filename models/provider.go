@@ -168,8 +168,6 @@ type NetworkSpec struct {
 type Resources struct {
 	MemoryMiB int64 `json:"memory_mib"`
 	VCPUs     int   `json:"vcpus"`
-	// PidsMax caps the processes in the sandbox cgroup so a fork bomb cannot exhaust host PIDs; 0 takes the default.
-	PidsMax int64 `json:"pids_max"`
 }
 
 // ExitStatus is how the entrypoint ended. A sandbox outlives it and has no exit status of its own.

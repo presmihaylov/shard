@@ -104,15 +104,15 @@ the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every 
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
 of unbounded.
 
-## What a pids bound means
+## What the pids bound means
 
-`--pids` caps the processes in the sandbox cgroup. Unlike memory and cpu, a pids bound is never off:
-`--pids 0`, the default, is not unbounded but `4096`, and a positive `N` overrides it. `4096` runs
+Every sandbox cgroup holds at most `4096` processes. Unlike memory and cpu, the bound is never off
+and not adjustable: there is no flag and no field, and `pids.max` is written at create and again on
+every launch, so a sandbox created before the bound existed is capped when it runs again. `4096` runs
 systemd, Docker and nested containers with headroom, yet stops a fork bomb far below the host PID
-count. The default is mandatory because on Sysbox a guest process is a host process, so an unbounded
-fork bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits
-`memory.max` first, but the same bound applies. The record carries the resolved bound, so `inspect`
-shows the value the cgroup enforces, not a bare `0`. `shard create` refuses a negative value.
+count. The bound is fixed because on Sysbox a guest process is a host process, so an unbounded fork
+bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits `memory.max`
+first, but the same bound applies.
 
 ## What `Status` means
 

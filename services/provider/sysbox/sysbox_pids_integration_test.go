@@ -4,6 +4,7 @@ package sysbox_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,12 +18,9 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
-// pidsBound is small so the fork storm hits it fast and the sandbox never holds many host processes.
-const pidsBound = 64
-
-// TestEverySandboxGetsADefaultPidsBound is the first half of SHARD-171: a sandbox that names no bound
-// still runs under DefaultPidsMax, so an unbounded fork bomb cannot exhaust host PIDs.
-func TestEverySandboxGetsADefaultPidsBound(t *testing.T) {
+// TestEverySandboxGetsThePidsBound is the first half of SHARD-171: every sandbox runs under PidsMax,
+// so an unbounded fork bomb cannot exhaust host PIDs.
+func TestEverySandboxGetsThePidsBound(t *testing.T) {
 	h := newHarness(t)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
@@ -35,20 +33,19 @@ func TestEverySandboxGetsADefaultPidsBound(t *testing.T) {
 	}
 
 	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
-	want := strconv.Itoa(bundle.DefaultPidsMax)
+	want := strconv.Itoa(bundle.PidsMax)
 	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "pids.max"))); got != want {
-		t.Errorf("pids.max is %s, want the default %s", got, want)
+		t.Errorf("pids.max is %s, want the fixed %s", got, want)
 	}
 }
 
-// TestAPidsBoundStopsAForkStorm is the SHARD-171 acceptance: a fork storm inside a bounded sandbox is
-// denied at the bound. pids.events counts every fork the controller refused, so a positive count is
-// the kernel's own proof that the bound stopped the storm, and the host stayed whole.
-func TestAPidsBoundStopsAForkStorm(t *testing.T) {
+// TestThePidsBoundStopsAForkStorm is the SHARD-171 acceptance: a fork storm inside a sandbox is denied
+// at the bound. pids.events counts every fork the controller refused, so a positive count is the
+// kernel's own proof that the bound stopped the storm, and the host stayed whole.
+func TestThePidsBoundStopsAForkStorm(t *testing.T) {
 	h := newHarness(t)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
-	spec.Resources = models.Resources{PidsMax: pidsBound}
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -58,12 +55,12 @@ func TestAPidsBoundStopsAForkStorm(t *testing.T) {
 	}
 
 	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
-	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "pids.max"))); got != strconv.Itoa(pidsBound) {
-		t.Fatalf("pids.max is %s, want %d", got, pidsBound)
+	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "pids.max"))); got != strconv.Itoa(bundle.PidsMax) {
+		t.Fatalf("pids.max is %s, want %d", got, bundle.PidsMax)
 	}
 
-	// Each sleep runs long enough to hold its slot, so the storm reaches the bound before any of them exits.
-	storm := "i=0; while [ $i -lt 400 ]; do sleep 30 & i=$((i+1)); done"
+	// Each sleep holds its slot until the storm has forked past the bound, and sh carries on past a refused fork.
+	storm := fmt.Sprintf("i=0; while [ $i -lt %d ]; do sleep 120 & i=$((i+1)); done", bundle.PidsMax+256)
 	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{
 		Argv:   []string{"/bin/sh", "-c", storm},
 		Report: func(int) {},
@@ -103,9 +100,9 @@ func TestAPreFixConfigStillGetsThePidsBoundOnRestart(t *testing.T) {
 	}
 
 	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
-	want := strconv.Itoa(bundle.DefaultPidsMax)
+	want := strconv.Itoa(bundle.PidsMax)
 	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "pids.max"))); got != want {
-		t.Errorf("pids.max is %s after a restart over a pre-fix config, want the default %s", got, want)
+		t.Errorf("pids.max is %s after a restart over a pre-fix config, want the fixed %s", got, want)
 	}
 }
 

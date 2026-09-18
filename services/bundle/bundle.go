@@ -344,12 +344,12 @@ func resourcesOf(l *specs.Linux) models.Resources {
 		// The quota is vcpus times the period, so the vcpu count can never overflow an int here.
 		r.VCPUs = int(*c.Quota / int64(*c.Period)) //nolint:gosec
 	}
-	if p := l.Resources.Pids; p != nil && p.Limit != nil {
-		r.PidsMax = *p.Limit
-	}
 
 	return r
 }
+
+// PidsMax is the pids.max every sandbox cgroup gets, fixed because on Sysbox a guest fork bomb is a host one.
+const PidsMax = 4096
 
 // resources bind on gVisor, as a host cgroup and again in the sentry's argv, and Firecracker needs them to boot.
 func resources(r models.Resources) *specs.LinuxResources {
@@ -367,8 +367,7 @@ func resources(r models.Resources) *specs.LinuxResources {
 		out.CPU = &specs.LinuxCPU{Quota: &quota, Period: &period}
 	}
 
-	// Every sandbox is bounded on PIDs, even one that named no bound, so an old record cannot fork-bomb the host.
-	pids := PidsBound(r)
+	pids := int64(PidsMax)
 	out.Pids = &specs.LinuxPids{Limit: &pids}
 
 	return out

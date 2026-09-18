@@ -316,8 +316,8 @@ func TestBuildCarriesTheResourceLimits(t *testing.T) {
 	if got.Linux.Resources.CPU == nil || *got.Linux.Resources.CPU.Quota != 200000 {
 		t.Errorf("got cpu %v, want a quota of 200000", got.Linux.Resources.CPU)
 	}
-	if got.Linux.Resources.Pids == nil || *got.Linux.Resources.Pids.Limit != bundle.DefaultPidsMax {
-		t.Errorf("got pids %v, want the default %d", got.Linux.Resources.Pids, bundle.DefaultPidsMax)
+	if got.Linux.Resources.Pids == nil || *got.Linux.Resources.Pids.Limit != bundle.PidsMax {
+		t.Errorf("got pids %v, want the fixed %d", got.Linux.Resources.Pids, bundle.PidsMax)
 	}
 }
 
@@ -540,8 +540,7 @@ func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
 	if rt.RootFS != "/var/lib/shard/rootfs/sha256-abc" {
 		t.Errorf("RootFS is %q", rt.RootFS)
 	}
-	// Every sandbox carries a pids bound, so a restart reads back the default one the spec never named.
-	if want := (models.Resources{MemoryMiB: 256, VCPUs: 2, PidsMax: bundle.DefaultPidsMax}); rt.Resources != want {
+	if want := (models.Resources{MemoryMiB: 256, VCPUs: 2}); rt.Resources != want {
 		t.Errorf("Resources are %+v, want %+v", rt.Resources, want)
 	}
 }
