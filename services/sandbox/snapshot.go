@@ -378,6 +378,7 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	if err != nil {
 		return claim, err
 	}
+	claim.net = resolvedThrough(claim.net, from.Policy)
 
 	// The network lands in the record before the restore, so a copy that fails after it can be given back.
 	err = s.cfg.Repo.Update(claim.id, func(sb *models.Sandbox) error {

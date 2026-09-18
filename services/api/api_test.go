@@ -53,7 +53,7 @@ func seed(t *testing.T) seeded {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	enforcer := egress.New(policies, repo, network.DefaultNameservers, nil)
+	enforcer := egress.New(policies, repo, netip.MustParseAddr("10.87.0.1"), network.DefaultNameservers, nil)
 
 	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
 

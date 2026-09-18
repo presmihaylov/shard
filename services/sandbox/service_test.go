@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -386,6 +387,44 @@ func TestCreateWithoutAPolicyNeverReappliesTheRules(t *testing.T) {
 	}
 	if slices.Contains(r.calls, "net.Reapply") {
 		t.Errorf("a create with no policy reapplied the rules: %v", r.calls)
+	}
+}
+
+// A policy sandbox may ask only shard's resolver, and one without keeps the public nameservers, secret or not.
+func TestCreateTurnsAPolicySandboxsLookupsToTheGateway(t *testing.T) {
+	gateway := []netip.Addr{netip.MustParseAddr("10.0.0.1")}
+	public := []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+
+	for name, tc := range map[string]struct {
+		policy string
+		secret string
+		want   []netip.Addr
+	}{
+		"a policy":      {policy: "locked", want: gateway},
+		"no policy":     {want: public},
+		"a secret only": {secret: "API_KEY", want: public},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, models.Sandbox{})
+			if err := l.policies.Set(models.Policy{Name: "locked"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l.secrets.Set("API_KEY", "sk-live-1234567890", []string{"api.example.com"}, ""); err != nil {
+				t.Fatal(err)
+			}
+
+			req := alpine()
+			req.Policy = tc.policy
+			if tc.secret != "" {
+				req.Secrets = []string{tc.secret}
+			}
+			if _, err := svc.Create(t.Context(), req); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if got := l.provider.spec.Network.Nameservers; !slices.Equal(got, tc.want) {
+				t.Errorf("the guest resolves through %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

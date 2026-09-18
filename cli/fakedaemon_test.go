@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -146,7 +147,7 @@ func (f *fakeDaemon) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.build()
 
-		enforcer := egress.New(f.policySvc, f.repoSvc, network.DefaultNameservers, nil)
+		enforcer := egress.New(f.policySvc, f.repoSvc, netip.MustParseAddr("10.87.0.1"), network.DefaultNameservers, nil)
 		api.NewHandler("v-daemon", f, f.repoSvc, enforcer, f.svc, f.stores, fakeEgressLog{records: f.egressLog}, io.Discard).ServeHTTP(w, r)
 	})
 }

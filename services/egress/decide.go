@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/services/network"
 )
 
@@ -50,6 +51,66 @@ func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Ad
 	}
 
 	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + host}, nil
+}
+
+// DecideName judges a question by its name alone, so a name the policy never allows is refused unresolved and carries nothing out or in.
+func (s *Service) DecideName(sb models.Sandbox, name string) (Decision, error) {
+	if sb.Policy == "" {
+		return Decision{Action: models.ActionAllow, ID: network.RuleNone, Reason: "sandbox " + sb.ID + " has no policy"}, nil
+	}
+
+	effective, err := s.Effective(sb)
+	if err != nil {
+		return Decision{}, fmt.Errorf("sandbox %s: %w", sb.ID, err)
+	}
+	if effective.Missing {
+		return Decision{Action: models.ActionDeny, ID: network.RuleMissing, Reason: "policy " + sb.Policy + " does not exist"}, nil
+	}
+
+	for _, rule := range effective.Rules {
+		if matchesName(rule.Rule, name) {
+			return Decision{Action: rule.Action, Rule: rule, ID: rule.ID, Reason: "the first matching rule of policy " + sb.Policy}, nil
+		}
+	}
+
+	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + name}, nil
+}
+
+// matchesName says whether a rule speaks for a name alone: an address rule cannot, and only a deny that closes both web ports refuses a lookup.
+func matchesName(rule models.Rule, name string) bool {
+	if rule.Action == models.ActionDeny && !closesName(rule) {
+		return false
+	}
+
+	switch rule.Destination.Kind {
+	case models.DestinationGroup:
+		// An any rule speaks for a name when it leaves port 53 open, which is what let a guest resolve before the resolver.
+		return rule.Destination.Value == GroupDNS || (rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port)))
+	case models.DestinationDomain:
+		return MatchHost(rule.Destination.Value, name)
+	case models.DestinationDomainSuffix:
+		return name == rule.Destination.Value || strings.HasSuffix(name, "."+rule.Destination.Value)
+	}
+
+	return false
+}
+
+// closesName is a deny no name rule survives: a name rule is tcp on the web ports, so a deny that leaves one open leaves the name in use.
+func closesName(rule models.Rule) bool {
+	if rule.Protocol != "" && rule.Protocol != "tcp" {
+		return false
+	}
+	if len(rule.Ports) == 0 {
+		return true
+	}
+
+	for _, port := range webPorts {
+		if !slices.Contains(rule.Ports, port) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func matches(rule models.Rule, host string, port int, addr netip.Addr) bool {

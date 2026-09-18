@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
@@ -72,6 +73,7 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 var (
 	source   = netip.MustParseAddr("10.87.0.2")
 	upstream = netip.MustParseAddr("93.184.216.34")
+	gateway  = netip.MustParseAddr("10.87.0.1")
 )
 
 // fakeLog keeps what the broker decided, so a test can read the line instead of a file.
@@ -114,7 +116,7 @@ func newBrokerLog(t *testing.T, records Records, secrets Secrets, policies ...mo
 	}
 
 	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}}
-	svc := egress.New(store, records, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
+	svc := egress.New(store, records, gateway, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
 
 	log := &fakeLog{}
 
@@ -509,5 +511,71 @@ func TestDecideRefusesWhenTheLogRefuses(t *testing.T) {
 
 	if _, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}); err == nil {
 		t.Fatal("Decide answered with no log")
+	}
+	if _, err := b.Resolve(t.Context(), dns.Question{Source: source, Name: "api.example.com"}); err == nil {
+		t.Fatal("Resolve answered with no log")
+	}
+}
+
+func TestResolveJudgesTheNameAloneAndLogsIt(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+	}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, web)
+
+	allowed, err := b.Resolve(t.Context(), dns.Question{Source: source, Name: "api.example.com"})
+	if err != nil || !allowed {
+		t.Fatalf("Resolve = %v, %v, want the name the policy allows", allowed, err)
+	}
+	// The name is refused before any lookup, so the resolver never learns whether it exists.
+	allowed, err = b.Resolve(t.Context(), dns.Question{Source: source, Name: "evil.example.net"})
+	if err != nil || allowed {
+		t.Fatalf("Resolve = %v, %v, want a name the policy never allows refused", allowed, err)
+	}
+
+	if len(log.records) != 2 || log.ids[0] != "locked" || log.ids[1] != "locked" {
+		t.Fatalf("the log holds %+v for %v", log.records, log.ids)
+	}
+
+	allow := log.records[0]
+	if allow.Source != egress.SourceDNS || allow.Verdict != string(models.ActionAllow) || allow.Time.IsZero() {
+		t.Errorf("the allow became %+v", allow)
+	}
+	if allow.Host != "api.example.com" || allow.Port != 0 || allow.Address != "" || allow.Rule != "3" || allow.RuleText != "allow api.example.com tcp:80,443" {
+		t.Errorf("the allow became %+v", allow)
+	}
+
+	deny := log.records[1]
+	if deny.Source != egress.SourceDNS || deny.Verdict != string(models.ActionDeny) || deny.Host != "evil.example.net" || deny.Rule != network.RuleDefault {
+		t.Errorf("the deny became %+v", deny)
+	}
+}
+
+// An address alone gives a guest nothing to resolve, and a sandbox with no policy is never refused a name.
+func TestResolveReadsThePolicyOfTheSandboxThatAsked(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{
+		{ID: "locked", Policy: "addresses", Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "open", Address: netip.MustParsePrefix("10.87.0.3/16")},
+	}}
+	addresses := models.Policy{Name: "addresses", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "203.0.113.7/32"}},
+	}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, addresses)
+
+	allowed, err := b.Resolve(t.Context(), dns.Question{Source: source, Name: "api.example.com"})
+	if err != nil || allowed {
+		t.Errorf("Resolve = %v, %v under a policy of addresses only, want refused", allowed, err)
+	}
+	allowed, err = b.Resolve(t.Context(), dns.Question{Source: netip.MustParseAddr("10.87.0.3"), Name: "api.example.com"})
+	if err != nil || !allowed {
+		t.Errorf("Resolve = %v, %v with no policy, want allowed", allowed, err)
+	}
+	if len(log.records) != 2 || log.records[0].Rule != network.RuleDefault || log.records[1].Rule != network.RuleNone {
+		t.Errorf("the log holds %+v", log.records)
+	}
+
+	if _, err := b.Resolve(t.Context(), dns.Question{Source: netip.MustParseAddr("10.87.0.9"), Name: "api.example.com"}); err == nil {
+		t.Error("Resolve answered a question from an address no sandbox holds")
 	}
 }

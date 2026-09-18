@@ -35,8 +35,11 @@ const (
 // webPorts is what a domain rule may name: the proxy speaks HTTP and TLS and nothing else.
 var webPorts = []int{80, 443}
 
-// GroupDNS is the destination that asks for DNS outright, for a policy that names no host to imply it.
-const GroupDNS = "dns"
+// GroupAny is every address, and GroupDNS asks for DNS outright, for a policy that names no host to imply it.
+const (
+	GroupAny = "any"
+	GroupDNS = "dns"
+)
 
 // OpensDNS says whether the policy lets the guest resolve: a name needs one, and a rule may ask outright.
 func OpensDNS(policy models.Policy) bool {
@@ -327,7 +330,7 @@ func named(kind models.DestinationKind) bool {
 // parseDestination reads the kind from the shape: an address or a prefix is a cidr, any is the
 // group, suffix: names a suffix, and everything else is a domain.
 func parseDestination(text string) (models.Destination, error) {
-	if text == "any" || text == GroupDNS {
+	if text == GroupAny || text == GroupDNS {
 		return models.Destination{Kind: models.DestinationGroup, Value: text}, nil
 	}
 	if text == "private" || text == "group:private" {

@@ -245,7 +245,13 @@ func (d *deps) egressLocked() (*egress.Service, error) {
 		return nil, err
 	}
 
-	return egress.New(policies, repo, network.DefaultNameservers, nil), nil
+	// The free function keeps the compiler off the network service, which is built over the compiler.
+	gateway, err := network.Gateway(network.Config{Root: d.cfg.Root})
+	if err != nil {
+		return nil, err
+	}
+
+	return egress.New(policies, repo, gateway, network.DefaultNameservers, nil), nil
 }
 
 // egressLog is the decision log every fronted sandbox gets one file of, under its own state directory.

@@ -8,8 +8,9 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.9
 	github.com/opencontainers/runtime-spec v1.3.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.44.0
+	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 )
 
 require (

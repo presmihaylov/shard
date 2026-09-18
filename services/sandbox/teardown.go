@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -37,6 +38,16 @@ func (t *Teardown) Unwind(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// resolvedThrough turns a policy sandbox's lookups to shard's resolver, the one place its policy lets a name be asked.
+func resolvedThrough(spec models.NetworkSpec, policy string) models.NetworkSpec {
+	if policy == "" {
+		return spec
+	}
+	spec.Nameservers = []netip.Addr{spec.Gateway}
+
+	return spec
 }
 
 // AllocateNetwork names the way out, because nothing expires on its own: only an rm frees an address.
