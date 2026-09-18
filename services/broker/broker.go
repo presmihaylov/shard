@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
@@ -88,6 +89,39 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		Rule:     rule,
 		Reason:   decision.Reason,
 	}, nil
+}
+
+// Resolve judges one DNS question by its name alone, before any resolver is asked, and logs it under source dns.
+func (b *Broker) Resolve(_ context.Context, q dns.Question) (bool, error) {
+	sb, err := b.sandbox(q.Source)
+	if err != nil {
+		return false, err
+	}
+
+	decision, err := b.egress.DecideName(sb, q.Name)
+	if err != nil {
+		return false, err
+	}
+
+	rule := ""
+	if decision.Rule.Destination.Kind != "" {
+		rule = egress.FormatRule(decision.Rule.Rule)
+	}
+
+	record := egress.Record{
+		Time:     time.Now().UTC(),
+		Source:   egress.SourceDNS,
+		Verdict:  string(decision.Action),
+		Host:     q.Name,
+		Rule:     decision.ID,
+		RuleText: rule,
+		Reason:   decision.Reason,
+	}
+	if err := b.log.Append(sb.ID, record); err != nil {
+		return false, fmt.Errorf("log the egress decision of sandbox %s: %w", sb.ID, err)
+	}
+
+	return decision.Action == models.ActionAllow, nil
 }
 
 // record fills in what every line shares and appends it. Its error is returned, never swallowed: an

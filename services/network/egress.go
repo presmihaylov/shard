@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
@@ -73,6 +74,12 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 80 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort)
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 443 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.TLSPort)
+		if !chain.Policy {
+			continue
+		}
+		// A policy attached after the create finds a resolv.conf that still names a public resolver, so :53 is caught.
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s udp dport %d dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, dns.Port, s.gateway, dns.Port)
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport %d dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, dns.Port, s.gateway, dns.Port)
 	}
 	b.WriteString("\t}\n\n")
 
@@ -81,6 +88,9 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
 	}
+	// Every sandbox may ask the resolver, so one whose policy was detached keeps resolving; the resolver judges by source.
+	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s udp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
+	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s tcp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
 	// The guest reaching the host's own address is a drop like any other, so it says so in the log too.
 	fmt.Fprintf(&b, "\t\tiifname %q %s\n", s.cfg.Bridge, logStatement(RuleLocal))
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n\t}\n\n", s.cfg.Bridge)

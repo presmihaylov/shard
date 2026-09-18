@@ -344,7 +344,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		Env:        env,
 		WorkDir:    req.WorkDir,
 		User:       req.User,
-		Network:    netSpec,
+		Network:    resolvedThrough(netSpec, req.Policy),
 		Resources:  req.Resources,
 		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
 		ProxyCA:    proxyCA,

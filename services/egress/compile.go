@@ -26,19 +26,20 @@ type Resolver interface {
 
 // Service compiles every sandbox's policy into the chains the network service renders.
 type Service struct {
-	policies    *Store
-	records     Records
-	resolver    Resolver
-	nameservers []netip.Addr
+	policies *Store
+	records  Records
+	resolver Resolver
+	// gateway is where shard's resolver listens: the one DNS destination a policy sandbox may reach.
+	gateway netip.Addr
 }
 
 // New wires a compiler over the stores. A nil resolver resolves through the nameservers.
-func New(policies *Store, records Records, nameservers []netip.Addr, resolver Resolver) *Service {
+func New(policies *Store, records Records, gateway netip.Addr, nameservers []netip.Addr, resolver Resolver) *Service {
 	if resolver == nil {
 		resolver = &net.Resolver{PreferGo: true, Dial: dialNameservers(nameservers)}
 	}
 
-	return &Service{policies: policies, records: records, resolver: resolver, nameservers: nameservers}
+	return &Service{policies: policies, records: records, resolver: resolver, gateway: gateway}
 }
 
 // dialNameservers sends every lookup to the sandbox nameservers, and not to whatever the host resolves through.
@@ -100,21 +101,19 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
 
-	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to the nameservers.
+	// A name is no use to a guest that cannot resolve it, so a policy that names one opens DNS to shard's resolver.
 	if OpensDNS(policy) {
 		var dns []EffectiveRule
-		for _, ns := range s.nameservers {
-			for _, proto := range []string{"udp", "tcp"} {
-				dns = append(dns, EffectiveRule{
-					Rule: models.Rule{
-						Action:      models.ActionAllow,
-						Destination: models.Destination{Kind: models.DestinationCIDR, Value: ns.String()},
-						Protocol:    proto,
-						Ports:       []int{53},
-					},
-					Implied: implied,
-				})
-			}
+		for _, proto := range []string{"udp", "tcp"} {
+			dns = append(dns, EffectiveRule{
+				Rule: models.Rule{
+					Action:      models.ActionAllow,
+					Destination: models.Destination{Kind: models.DestinationCIDR, Value: s.gateway.String()},
+					Protocol:    proto,
+					Ports:       []int{53},
+				},
+				Implied: implied,
+			})
 		}
 		rules = append(dns, rules...)
 	}

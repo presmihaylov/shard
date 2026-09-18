@@ -20,10 +20,11 @@ const (
 	logPerm = 0o640
 )
 
-// Source says which half of the enforcement wrote a record: the proxy judges a request, the host drops a packet.
+// Source says which part of the enforcement wrote a record: the proxy judges a request, the host drops a packet, the resolver judges a question.
 const (
 	SourceProxy = "proxy"
 	SourceHost  = "host"
+	SourceDNS   = "dns"
 )
 
 // Record is one egress decision, as a line of the log. It never carries a header, a body or a secret value.

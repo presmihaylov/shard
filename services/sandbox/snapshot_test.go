@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -402,6 +403,9 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 	if sb.Policy != "locked" || l.repo.created.Policy != "locked" {
 		t.Errorf("the fork names policy %q, want the source's", sb.Policy)
 	}
+	if got := l.provider.spec.Network.Nameservers; !slices.Equal(got, []netip.Addr{netip.MustParseAddr("10.0.0.1")}) {
+		t.Errorf("the fork resolves through %v, want the gateway", got)
+	}
 }
 
 // cloneSource is a stopped sandbox with the image and the bound a clone must carry over.
@@ -540,7 +544,7 @@ func TestCloneCarriesThePolicyAndTellsTheHostBeforeTheStart(t *testing.T) {
 	r := &recorder{}
 	source := cloneSource()
 	source.Policy = "locked"
-	svc, _ := newService(t, r, source)
+	svc, l := newService(t, r, source)
 
 	sb, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{})
 	if err != nil {
@@ -553,5 +557,8 @@ func TestCloneCarriesThePolicyAndTellsTheHostBeforeTheStart(t *testing.T) {
 	}
 	if sb.Policy != "locked" {
 		t.Errorf("the clone names policy %q, want the source's", sb.Policy)
+	}
+	if got := l.provider.spec.Network.Nameservers; !slices.Equal(got, []netip.Addr{netip.MustParseAddr("10.0.0.1")}) {
+		t.Errorf("the clone resolves through %v, want the gateway", got)
 	}
 }

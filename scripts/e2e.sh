@@ -573,6 +573,7 @@ start_daemon || fail "the daemon did not come up"
 LISTEN_LINE=$(grep "api listening on" "${DAEMON_LOG}")
 say "the daemon logged: ${LISTEN_LINE#* api }"
 say "the daemon logged: $(grep 'proxy listening on' "${DAEMON_LOG}" | sed 's/.*proxy/proxy/')"
+say "the daemon logged: $(grep 'dns resolver listening on' "${DAEMON_LOG}" | sed 's/.*dns resolver/dns resolver/')"
 
 step "prove the socket mode is what the daemon claims"
 if getent group shard >/dev/null; then
@@ -932,15 +933,15 @@ echo "${NOTE}" | grep -q "this policy opens no DNS" || fail "policy create said 
 shard policy rm e2e-note >/dev/null
 say "policy create notes a policy that opens no DNS, and exits 0"
 
-# The lookup the address-only policy dropped is in the log, as a host drop on port 53 to a nameserver.
-DNS_DROP=""
+# The lookup the address-only policy refused is in the log, as a dns deny for the name the guest asked.
+DNS_DENY=""
 for _ in $(seq 1 20); do
-	DNS_DROP=$(shard logs --egress "${ID}" | grep '"source":"host"' | grep '"port":53' || true)
-	[ -n "${DNS_DROP}" ] && break
+	DNS_DENY=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep "\"host\":\"${ECHO_HOST}\"" || true)
+	[ -n "${DNS_DENY}" ] && break
 	sleep 0.1
 done
-[ -n "${DNS_DROP}" ] || fail "the egress log holds no host drop on port 53 for the lookup the policy closed"
-say "the dropped lookup is in the egress log, as a host drop on port 53"
+[ -n "${DNS_DENY}" ] || fail "the egress log holds no dns deny for the lookup of ${ECHO_HOST} the policy closed"
+say "the refused lookup is in the egress log, as a dns deny for ${ECHO_HOST}"
 
 step "allow dns opens the lookup the address rules left shut"
 shard policy create --allow 1.0.0.1 --allow dns --allow "${ECHO_HOST}" --deny any e2e-policy >/dev/null

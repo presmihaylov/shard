@@ -5,17 +5,20 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -41,7 +44,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	err := New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	err := New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -508,6 +511,66 @@ func (t proxyTask) Run(ctx context.Context) error {
 	}
 
 	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
+
+	return server.Run(ctx)
+}
+
+// dnsTask runs the resolver every policy sandbox's lookups are turned to, on the bridge gateway beside the proxy.
+type dnsTask struct {
+	deps *deps
+}
+
+func (dnsTask) Name() string { return "dns" }
+
+func (t dnsTask) Run(ctx context.Context) error {
+	cfg := t.deps.cfg
+
+	repo, err := t.deps.repo()
+	if err != nil {
+		return err
+	}
+
+	secrets, err := t.deps.secrets()
+	if err != nil {
+		return err
+	}
+
+	source, err := t.deps.egress()
+	if err != nil {
+		return err
+	}
+
+	decisions, err := t.deps.egressLog()
+	if err != nil {
+		return err
+	}
+
+	hostNet, err := t.deps.net()
+	if err != nil {
+		return err
+	}
+	if err := hostNet.ReapplyAll(ctx); err != nil {
+		return err
+	}
+
+	// The resolver forwards to the nameservers the host compiles a name rule through, so guest and host agree.
+	upstreams := make([]netip.AddrPort, 0, len(network.DefaultNameservers))
+	for _, nameserver := range network.DefaultNameservers {
+		upstreams = append(upstreams, netip.AddrPortFrom(nameserver, dns.Port))
+	}
+
+	logger := log.New(cfg.Out, "", log.LstdFlags)
+	server, err := dns.New(dns.Config{
+		Address:   hostNet.Gateway(),
+		Upstreams: upstreams,
+		Director:  broker.New(repo, source, secrets, decisions),
+		Log:       logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	logger.Printf("dns resolver listening on %s, udp and tcp %d", hostNet.Gateway(), dns.Port)
 
 	return server.Run(ctx)
 }

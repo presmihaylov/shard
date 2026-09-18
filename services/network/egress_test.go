@@ -42,10 +42,10 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		`iifname "shard0" jump egress`,
 		`oifname "shard0" drop`,
 		"ip saddr 10.87.0.2 jump egress_shardv2",
-		"type nat hook prerouting priority dstnat; policy accept;\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 80 dnat ip to 10.87.0.1:30080\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 443 dnat ip to 10.87.0.1:30443",
+		"type nat hook prerouting priority dstnat; policy accept;\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 80 dnat ip to 10.87.0.1:30080\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 443 dnat ip to 10.87.0.1:30443\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 udp dport 53 dnat ip to 10.87.0.1:53\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 tcp dport 53 dnat ip to 10.87.0.1:53",
 		"iifname \"shard0\" ip saddr 10.87.0.3 tcp dport 80 dnat ip to 10.87.0.1:30080",
 		"oifname \"shard0\" drop\n\t\tmeta nfproto ipv6 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=ipv6 \"\n\t\tmeta nfproto ipv6 drop",
-		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" drop",
+		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 udp dport 53 accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 tcp dport 53 accept\n\t\tiifname \"shard0\" limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" drop",
 		"table bridge shard\ndelete table bridge shard",
 		"table bridge shard {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tmeta ibrname \"shard0\" drop\n\t}",
 		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip6 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=ipv6 \"\n\t\tiifname \"shardv2\" ether type ip6 drop\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop\n\t\tiifname \"shardv2\" arp saddr ip != 10.87.0.2 drop",
@@ -58,9 +58,12 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		}
 	}
 
-	// A sandbox fronted by a secret alone keeps the internet, so it gets no chain and no jump.
+	// A sandbox fronted by a secret alone keeps the internet, so it gets no chain, no jump and no resolver.
 	if strings.Contains(got, "egress_shardv3") {
 		t.Errorf("the secret-only sandbox got a chain:\n%s", got)
+	}
+	if strings.Contains(got, "ip saddr 10.87.0.3 udp dport 53") || strings.Contains(got, "ip saddr 10.87.0.3 tcp dport 53") {
+		t.Errorf("the secret-only sandbox had its DNS caught:\n%s", got)
 	}
 }
 

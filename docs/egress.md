@@ -127,28 +127,36 @@ host that refuses the rules puts the record back as it was.
 sandbox, each addition marked `implied`:
 
 - **`dns`**: a policy that names a domain or a suffix, or says `allow dns`, allows `udp` and `tcp` 53
-  to the sandbox nameservers. A name is no use to a guest that cannot resolve it. A policy of only
-  address and `any` rules opens no DNS, and a secret does not open it either: name the host in the
-  policy, or say `allow dns`, if the guest must resolve it. When an explicit rule opened it, the
-  implied rule reads `dns rule` in place of `dns`.
+  to shard's resolver on the bridge gateway, and to nothing else. A name is no use to a guest that
+  cannot resolve it. A policy of only address and `any` rules opens no DNS, and a secret does not
+  open it either: name the host in the policy, or say `allow dns`, if the guest must resolve it. When
+  an explicit rule opened it, the implied rule reads `dns rule` in place of `dns`.
+
+A sandbox with a policy resolves through shard's resolver alone: its `resolv.conf` names the gateway,
+and port 53 to anywhere else is turned to the gateway on the host, so a policy attached after the
+create is enforced too. The resolver answers a question only when the policy allows the name, by a
+name or suffix rule that matches it, by `allow any` or by `allow dns`, and forwards it to the public
+nameservers then. Every other name is answered NXDOMAIN, unresolved, so a lookup cannot carry a query
+out or an answer in past the policy. Every question is in the egress log, with source `dns`. A
+sandbox with no policy keeps direct public DNS, whether or not a secret fronts it.
 
 A policy of only address rules is the case to watch. `allow 203.0.113.7` gives the guest an address
 it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
-lookup. It is in the egress log, as a host record on port 53 to the nameserver, and what never
-appears is a request to the host the tool was after: a port 53 drop under no request for that host is
-this case. `shard policy create` says so at the moment you store such a policy. Add a name rule for
-the host, or a rule that names the nameservers, or add `--allow dns`, and the implied `dns` opens
-with it.
+lookup. It is in the egress log, as a `dns` record that denies the name the tool asked for, and what
+never appears is a request to that host: a denied lookup under no request for that host is this
+case. `shard policy create` says so at the moment you store such a policy. Add a name rule for the
+host, or add `--allow dns`, and the implied `dns` opens with it.
 
 A rule id is its position in the effective order, so an edit that opens DNS on a policy that had none
-puts four implied rules in front and moves every rule down by four. `shard inspect` and the `rule`
+puts two implied rules in front and moves every rule down by two. `shard inspect` and the `rule`
 field of the egress log both name that position, so a line written before the edit names a different
 rule after it. Any inserted rule does this; `allow dns` is the one that reads as purely additive.
 
 ## Names are resolved on the host
 
 A name rule compiles to the IPv4 addresses the name resolves to at apply time, through the same
-nameservers the guest uses, so a guest that answers its own lookups changes nothing. What that means:
+public nameservers shard's resolver forwards to, so a guest that answers its own lookups changes
+nothing. What that means:
 
 - A host whose addresses rotate can drift from the rule until the next apply. Store the policy again
   to apply it again.
@@ -184,14 +192,16 @@ so a new record appears within about a second of the decision. The follow ends a
 the sandbox is removed, and it says which on stderr. A record names the time, the source, the verdict, the host, the port,
 the address, the rule that decided and its text. It never carries a header, a body or a secret value.
 
-There are two sources, and the daemon writes both into the one file,
+There are three sources, and the daemon writes all of them into the one file,
 `${root}/sandboxes/<id>/egress.jsonl`:
 
 - **`proxy`**: one record per request the proxy judged, allowed or denied. A decision that cannot be
   written closes the door: the request is refused rather than let out unlogged.
-- **`host`**: one record per packet the host chains dropped, which is everything the proxy never saw.
-  The chains log into the kernel ring buffer, and the daemon tails the ring into the file, within a
-  second of the drop. A read never touches the ring.
+- **`dns`**: one record per question the resolver judged, allowed or denied, with the name under
+  `host` and no port or address. A question that cannot be written is refused the same way.
+- **`host`**: one record per packet the host chains dropped, which is everything the proxy and the
+  resolver never saw. The chains log into the kernel ring buffer, and the daemon tails the ring into
+  the file, within a second of the drop. A read never touches the ring.
 
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
 prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`, `missing` and

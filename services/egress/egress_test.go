@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 func newStore(t *testing.T) *Store {
@@ -241,7 +242,7 @@ func TestDecideWalksTheEffectiveRulesByName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := New(s, nil, nameservers, fakeResolver{})
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
 	sb := models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN"}}
 	public := netip.MustParseAddr("93.184.216.34")
 
@@ -282,6 +283,77 @@ func TestDecideWalksTheEffectiveRulesByName(t *testing.T) {
 	}
 }
 
+// A question carries a name and no address, so an address rule is silent and a deny on one port leaves the name in use.
+func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
+	s := newStore(t)
+	for _, policy := range []models.Policy{
+		{Name: "web", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "bad.example.com"),
+			mustRule(t, models.ActionDeny, "half.example.com tcp:443"),
+			mustRule(t, models.ActionAllow, "suffix:example.com"),
+			mustRule(t, models.ActionAllow, "*.example.org tcp:443"),
+			mustRule(t, models.ActionAllow, "93.184.216.0/24 tcp:80"),
+		}},
+		{Name: "addresses", Rules: []models.Rule{
+			mustRule(t, models.ActionAllow, "93.184.216.0/24"),
+			mustRule(t, models.ActionAllow, "any udp:123"),
+		}},
+		{Name: "open", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "any tcp:22"),
+			mustRule(t, models.ActionAllow, "dns"),
+			mustRule(t, models.ActionDeny, "any"),
+		}},
+		{Name: "shut", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "any tcp"),
+			mustRule(t, models.ActionAllow, "api.example.com"),
+		}},
+		{Name: "wide", Rules: []models.Rule{mustRule(t, models.ActionAllow, "any")}},
+	} {
+		if err := s.Set(policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
+
+	for _, tc := range []struct {
+		policy string
+		name   string
+		want   models.Action
+		rule   string
+	}{
+		{"web", "bad.example.com", models.ActionDeny, "deny bad.example.com tcp:80,443"},
+		{"web", "half.example.com", models.ActionAllow, "allow suffix:example.com tcp:80,443"},
+		{"web", "example.com", models.ActionAllow, "allow suffix:example.com tcp:80,443"},
+		{"web", "notexample.com", models.ActionDeny, ""},
+		{"web", "a.example.org", models.ActionAllow, "allow *.example.org tcp:443"},
+		{"web", "example.org", models.ActionDeny, ""},
+		{"addresses", "api.example.com", models.ActionDeny, ""},
+		{"open", "any.example.net", models.ActionAllow, "allow dns"},
+		{"shut", "api.example.com", models.ActionDeny, "deny any tcp"},
+		{"wide", "any.example.net", models.ActionAllow, "allow any"},
+	} {
+		got, err := svc.DecideName(models.Sandbox{ID: "sandbox1", Policy: tc.policy}, tc.name)
+		if err != nil {
+			t.Fatalf("DecideName(%s under %s): %v", tc.name, tc.policy, err)
+		}
+		rule := ""
+		if got.Rule.Destination.Kind != "" {
+			rule = FormatRule(got.Rule.Rule)
+		}
+		if got.Action != tc.want || rule != tc.rule {
+			t.Errorf("DecideName(%s under %s) = %s by %q (%s), want %s by %q", tc.name, tc.policy, got.Action, rule, got.Reason, tc.want, tc.rule)
+		}
+	}
+
+	if got, err := svc.DecideName(models.Sandbox{ID: "free"}, "any.example.net"); err != nil || got.Action != models.ActionAllow || got.ID != network.RuleNone {
+		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
+	}
+	if got, err := svc.DecideName(models.Sandbox{ID: "lost", Policy: "gone"}, "any.example.net"); err != nil || got.Action != models.ActionDeny || got.ID != network.RuleMissing {
+		t.Errorf("a sandbox whose policy is gone got %+v, %v", got, err)
+	}
+}
+
 type fakeRecords []models.Sandbox
 
 func (f fakeRecords) List() ([]models.Sandbox, error) { return f, nil }
@@ -297,7 +369,10 @@ func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 	return addrs, nil
 }
 
-var nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+var (
+	gateway     = netip.MustParseAddr("10.87.0.1")
+	nameservers = []netip.Addr{netip.MustParseAddr("1.1.1.1")}
+)
 
 func TestEffectiveIsThePolicysRulesAndTheDNSTheyNeed(t *testing.T) {
 	s := newStore(t)
@@ -309,7 +384,7 @@ func TestEffectiveIsThePolicysRulesAndTheDNSTheyNeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := New(s, nil, nameservers, fakeResolver{})
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
 	sb := models.Sandbox{ID: "sandbox1", Policy: "web", Secrets: []string{"TOKEN", "GONE"}}
 
 	got, err := svc.Effective(sb)
@@ -322,8 +397,8 @@ func TestEffectiveIsThePolicysRulesAndTheDNSTheyNeed(t *testing.T) {
 		shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
 	}
 	want := []string{
-		"allow cidr:1.1.1.1 udp dns",
-		"allow cidr:1.1.1.1 tcp dns",
+		"allow cidr:10.87.0.1 udp dns",
+		"allow cidr:10.87.0.1 tcp dns",
 		"allow domain:api.example.com tcp ",
 		"allow cidr:93.184.216.0/24 tcp ",
 		"deny group:any  ",
@@ -341,7 +416,7 @@ func TestEffectiveIsThePolicysRulesAndTheDNSTheyNeed(t *testing.T) {
 		t.Errorf("Effective gave the ids %v", ids)
 	}
 
-	svc = New(newStore(t), nil, nameservers, fakeResolver{})
+	svc = New(newStore(t), nil, gateway, nameservers, fakeResolver{})
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
 		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
 	}
@@ -359,7 +434,7 @@ func TestEffectiveOpensNoDNSForAPolicyThatNamesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := New(s, nil, nameservers, fakeResolver{}).Effective(models.Sandbox{ID: "sandbox1", Policy: "addresses", Secrets: []string{"TOKEN"}})
+	got, err := New(s, nil, gateway, nameservers, fakeResolver{}).Effective(models.Sandbox{ID: "sandbox1", Policy: "addresses", Secrets: []string{"TOKEN"}})
 	if err != nil {
 		t.Fatalf("Effective: %v", err)
 	}
@@ -378,7 +453,7 @@ func TestDecideDeniesAGrantedHostThePolicyDoesNotAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := New(s, nil, nameservers, fakeResolver{})
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
 	sb := models.Sandbox{ID: "sandbox1", Policy: "locked", Secrets: []string{"TOKEN"}}
 	public := netip.MustParseAddr("93.184.216.34")
 
@@ -408,7 +483,7 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	}
 	resolver := fakeResolver{"api.example.com": {netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("::1"), netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("23.1.1.1")}}
 
-	chains, err := New(s, records, nameservers, resolver).Chains(t.Context())
+	chains, err := New(s, records, gateway, nameservers, resolver).Chains(t.Context())
 	if err != nil {
 		t.Fatalf("Chains: %v", err)
 	}
@@ -427,7 +502,7 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	if got := rules[2].Prefixes; len(got) != 2 || got[0].String() != "23.1.1.1/32" || got[1].String() != "93.184.216.34/32" {
 		t.Errorf("the domain compiled to %v, want its IPv4 addresses once each, sorted", got)
 	}
-	if rules[0].Protocol != "udp" || !slices.Equal(rules[0].Ports, []int{53}) || rules[0].Prefixes[0].String() != "1.1.1.1/32" {
+	if rules[0].Protocol != "udp" || !slices.Equal(rules[0].Ports, []int{53}) || rules[0].Prefixes[0].String() != "10.87.0.1/32" {
 		t.Errorf("dns compiled to %+v", rules[0])
 	}
 }
@@ -441,7 +516,7 @@ func TestChainsKeepAStoppedSandboxesChain(t *testing.T) {
 
 	records := fakeRecords{{ID: "sandbox1", Policy: "web", State: models.StateStopped, Address: netip.MustParsePrefix("10.87.0.2/16")}}
 
-	chains, err := New(s, records, nameservers, fakeResolver{}).Chains(t.Context())
+	chains, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
 	if err != nil {
 		t.Fatalf("Chains: %v", err)
 	}
@@ -458,7 +533,7 @@ func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
 
 	records := fakeRecords{{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}
 
-	_, err := New(s, records, nameservers, fakeResolver{}).Chains(t.Context())
+	_, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "api.example.com") {
 		t.Errorf("Chains = %v, want the sandbox and the name", err)
 	}
@@ -532,7 +607,7 @@ func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := New(s, nil, nameservers, fakeResolver{}).Effective(models.Sandbox{ID: "sandbox1", Policy: "addr"})
+	got, err := New(s, nil, gateway, nameservers, fakeResolver{}).Effective(models.Sandbox{ID: "sandbox1", Policy: "addr"})
 	if err != nil {
 		t.Fatalf("Effective: %v", err)
 	}
@@ -542,8 +617,8 @@ func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
 		shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
 	}
 	want := []string{
-		"allow cidr:1.1.1.1 udp dns rule",
-		"allow cidr:1.1.1.1 tcp dns rule",
+		"allow cidr:10.87.0.1 udp dns rule",
+		"allow cidr:10.87.0.1 tcp dns rule",
 		"allow cidr:203.0.113.7 tcp ",
 		"allow group:dns  ",
 		"deny group:any  ",

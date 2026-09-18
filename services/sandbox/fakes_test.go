@@ -207,7 +207,13 @@ func (f *fakeNet) Allocate(_ context.Context, id string) (models.NetworkSpec, er
 	}
 	f.allocated = true
 
-	return models.NetworkSpec{NetnsPath: "/run/netns/" + id, Address: netip.MustParsePrefix("10.0.0.2/24"), HostInterface: "shardv2"}, nil
+	return models.NetworkSpec{
+		NetnsPath:     "/run/netns/" + id,
+		Address:       netip.MustParsePrefix("10.0.0.2/24"),
+		Gateway:       netip.MustParseAddr("10.0.0.1"),
+		HostInterface: "shardv2",
+		Nameservers:   []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+	}, nil
 }
 
 func (f *fakeNet) Release(ctx context.Context, _ string) error {
