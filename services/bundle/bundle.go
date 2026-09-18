@@ -48,8 +48,12 @@ type Bundle struct {
 	Upper string
 	Work  string
 
-	// Tmp is bind mounted at /tmp, so a guest that fills it fills the host disk and not its own bound.
+	// Tmp is bind mounted at /tmp, on the disk, so a guest that fills it hits its own bound and not the host's.
 	Tmp string
+
+	// Disk is where Image, a sparse ext4 file sized to the bound, mounts; Upper, Work, Tmp and ShardDir live on it, so one bound covers every guest write.
+	Disk  string
+	Image string
 }
 
 // Service builds bundles. One per shard process, because the supervisor path never changes.
@@ -132,9 +136,15 @@ func (b Bundle) Runtime() (Runtime, error) {
 		return Runtime{}, fmt.Errorf("read the entrypoint groups back from %s: %w", b.configPath(), err)
 	}
 
+	resources := resourcesOf(spec.Linux)
+	resources.DiskMiB, err = diskOf(spec.Annotations)
+	if err != nil {
+		return Runtime{}, fmt.Errorf("read the disk bound back from %s: %w", b.configPath(), err)
+	}
+
 	return Runtime{
 		RootFS:    spec.Annotations[rootfsAnnotation],
-		Resources: resourcesOf(spec.Linux),
+		Resources: resources,
 		Env:       spec.Process.Env,
 		WorkDir:   spec.Process.Cwd,
 		User:      supervisorFlag(spec.Process.Args, "-user"),
@@ -183,7 +193,8 @@ func validate(spec models.SandboxSpec) error {
 
 // newBundle derives every path this sandbox uses. It touches no disk, so the layout is testable anywhere.
 func newBundle(stateDir string) (Bundle, error) {
-	shardDir := filepath.Join(stateDir, "shard")
+	disk := filepath.Join(stateDir, "disk")
+	shardDir := filepath.Join(disk, "shard")
 	b := Bundle{
 		Dir:         filepath.Join(stateDir, "bundle"),
 		RootFS:      filepath.Join(stateDir, "bundle", "rootfs"),
@@ -191,9 +202,11 @@ func newBundle(stateDir string) (Bundle, error) {
 		ExitFile:    filepath.Join(stateDir, exitFileName),
 		ReadyFile:   filepath.Join(shardDir, readyFileName),
 		RestartFile: filepath.Join(shardDir, restartFileName),
-		Upper:       filepath.Join(stateDir, "overlay", "upper"),
-		Work:        filepath.Join(stateDir, "overlay", "work"),
-		Tmp:         filepath.Join(stateDir, "tmp"),
+		Upper:       filepath.Join(disk, "upper"),
+		Work:        filepath.Join(disk, "work"),
+		Tmp:         filepath.Join(disk, "tmp"),
+		Disk:        disk,
+		Image:       filepath.Join(stateDir, "disk.img"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -270,6 +283,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
 			rootfsAnnotation:      spec.RootFS,
 			cpuFeaturesAnnotation: cpuFeatures,
+			// The disk is no cgroup resource, so the bound rides here for inspect, fork and clone to read back.
+			diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
 		},
 		Linux: &specs.Linux{
 			CgroupsPath:       CgroupsPath(spec.ID),

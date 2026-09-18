@@ -54,6 +54,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, 0 for unbounded")
 	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound, 0 for unbounded")
+	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "the disk bound in MiB over the writable layer and /tmp, 0 for the default")
 	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "when the entrypoint is started again inside the sandbox: no, on-failure or always")
@@ -93,6 +94,12 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 	if req.Resources.VCPUs < 0 {
 		return sandbox.CreateRequest{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
+	}
+	if req.Resources.DiskMiB < 0 {
+		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and cannot be negative, got %d", req.Resources.DiskMiB)
+	}
+	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
+		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
 	}
 	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
 	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {

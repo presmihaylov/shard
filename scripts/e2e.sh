@@ -1536,12 +1536,60 @@ oom_restart_steps() {
 	drop_sandbox "${id}"
 }
 
+# disk_bound_steps prove SHARD-173: a guest write past --disk fails with ENOSPC and the host holds no more than the bound.
+disk_bound_steps() {
+	local id clone rec image_mib state_mib
+	# Each fill asks for three times the bound. A full disk takes no status file, so the count goes through a pipe and the fill is freed after.
+	local fill_tmp='dd if=/dev/zero of=/tmp/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /tmp/fill'
+	local fill_root='dd if=/dev/zero of=/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /fill'
+
+	step "refuse a negative disk bound"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"resources\":{\"disk_mib\":-1}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a negative disk bound answered ${REPLY_CODE}, want 400"
+	grep -q 'the disk bound is in MiB and cannot be negative' <<<"${REPLY_BODY}" || fail "the refusal does not name the bound: ${REPLY_BODY}"
+	say "the API refuses a negative disk bound, 400"
+
+	step "a write past the disk bound fails in the guest and stops on the host"
+	id=$(shard create --disk 64 "${IMAGE}" -- /bin/sleep 600)
+	track_sandbox "${id}"
+	rec=$(rec_of "${id}")
+	grep -q '"disk_mib": *64' "${rec}" || fail "the record does not carry the disk bound: $(cat "${rec}")"
+	say "the record carries disk_mib 64"
+	expect_exec_in "${id}" "1" "a fill of /tmp past the bound fails with ENOSPC" /bin/sh -c "${fill_tmp}"
+	expect_exec_in "${id}" "1" "a fill of the root past the bound fails with ENOSPC" /bin/sh -c "${fill_root}"
+	expect_exec_in "${id}" "alive" "the sandbox lives on after ENOSPC" /bin/echo alive
+	# -x keeps du off the loop and overlay mounts, so this is what the host directory itself holds.
+	image_mib=$(du -m "${SHARD_ROOT}/sandboxes/${id}/disk.img" | cut -f1)
+	state_mib=$(du -sxm "${SHARD_ROOT}/sandboxes/${id}" | cut -f1)
+	[ "${image_mib}" -le 65 ] || fail "the disk image holds ${image_mib} MiB on the host, want at most the bound"
+	[ "${state_mib}" -le 70 ] || fail "the state directory holds ${state_mib} MiB on the host, want at most the bound"
+	say "the host holds ${image_mib} MiB of image and ${state_mib} MiB of state, under the bound"
+
+	step "the disk survives a stop and a start"
+	shard exec "${id}" -- /bin/sh -c 'echo before-the-stop > /root/marker' >/dev/null
+	shard stop --time "${GRACE}" "${id}" >/dev/null
+	shard start "${id}" >/dev/null
+	expect_exec_in "${id}" "before-the-stop" "the marker survives the stop and start" /bin/cat /root/marker
+
+	step "a clone is bounded the way its source was"
+	shard stop --time "${GRACE}" "${id}" >/dev/null
+	clone=$(shard clone --name e2e-disk-clone "${id}")
+	track_sandbox "${clone}"
+	grep -q '"disk_mib": *64' "$(rec_of "${clone}")" || fail "the clone record does not carry the disk bound: $(cat "$(rec_of "${clone}")")"
+	expect_exec_in "${clone}" "before-the-stop" "the clone holds the source's layer" /bin/cat /root/marker
+	expect_exec_in "${clone}" "1" "a fill past the bound fails in the clone too" /bin/sh -c "${fill_root}"
+	say "the clone carries disk_mib 64 and its own disk bounds it"
+	drop_sandbox "${clone}"
+	drop_sandbox "${id}"
+}
+
 pending_and_failed_steps
 exec_cap_steps
 health_steps
 restart_policy_steps
 http_follow_steps
 oom_restart_steps
+disk_bound_steps
 
 # snapshot_steps pause, resume and fork the sandbox, which only a provider that holds snapshots can do.
 snapshot_steps() {
@@ -2022,4 +2070,4 @@ if [ "${PROVIDER}" = "gvisor" ]; then
 else
 	SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside"
 fi
-echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, create, daemon restart, proxy, exec, exec again, the tcp front, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
+echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"

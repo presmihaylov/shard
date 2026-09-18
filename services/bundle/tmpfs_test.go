@@ -39,8 +39,8 @@ func TestAnUnboundedSandboxKeepsTheDockerShmSize(t *testing.T) {
 
 // TestDevIsReadOnly is the same hole on the mount gVisor will not size: it drops our size= on /dev
 // and mounts its own devtmpfs, which reports half the host's memory to the guest.
-// Without a mount of its own, /tmp is a tmpfs runsc sizes to nothing, and tmpfs counts against the bound.
-func TestTmpIsOnTheHostDisk(t *testing.T) {
+// Without a mount of its own, /tmp is a tmpfs runsc sizes to nothing, charged to the memory bound; the bind charges the disk bound.
+func TestTmpIsABindOfTheSandboxDisk(t *testing.T) {
 	b, spec := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	m := mountAt(t, spec, "/tmp")

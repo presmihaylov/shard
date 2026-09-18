@@ -102,13 +102,18 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 
-	b, err := p.bundles.Build(spec)
-	if err != nil {
+	// Build writes the layers, so the disk they live on comes up first.
+	if err := existing.Provision(spec.Resources); err != nil {
 		return err
 	}
 
+	b, err := p.bundles.Build(spec)
+	if err != nil {
+		return errors.Join(err, existing.Unmount())
+	}
+
 	if err := b.Mount(spec.RootFS); err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	if err := p.create(ctx, spec, b); err != nil {
@@ -912,23 +917,28 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 		return err
 	}
 
+	// The fork's own disk, bounded the way the source's was, takes the layer copy.
+	if err := existing.Provision(spec.Resources); err != nil {
+		return err
+	}
+
 	b, err := p.bundles.Fork(dir, spec)
 	if err != nil {
-		return err
+		return errors.Join(err, existing.Unmount())
 	}
 
 	rt, err := imageOf(b, spec.ID)
 	if err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// A cgroup a removed sandbox of this id left behind would make the restore refuse the bound.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
+		return errors.Join(fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err), b.Unmount())
 	}
 
 	if err := b.Mount(rt.RootFS); err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// The sentry's budget is in the memory image, so the fork is bound the way the source was.
@@ -986,23 +996,28 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 
+	// The clone's own disk, bounded the way the source's was, takes the layer copy.
+	if err := existing.Provision(spec.Resources); err != nil {
+		return err
+	}
+
 	b, err := p.bundles.Clone(source, spec)
 	if err != nil {
-		return err
+		return errors.Join(err, existing.Unmount())
 	}
 
 	rt, err := imageOf(b, spec.ID)
 	if err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// A cgroup a removed sandbox of this id left behind would make the create refuse the bound.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
+		return errors.Join(fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err), b.Unmount())
 	}
 
 	if err := b.Mount(rt.RootFS); err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// config.json carries the source's bound, so the clone is bound the way the source was.
