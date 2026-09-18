@@ -67,7 +67,7 @@ func TestOneStoppedSandboxClonesIntoTwoIndependentSandboxes(t *testing.T) {
 		if booted := strings.Count(readFile(t, path), "booted"); booted != 1 {
 			t.Errorf("clone %s printed the banner %d times, want once from a fresh run", clone.ID, booted)
 		}
-		if _, err := os.Stat(filepath.Join(stateDirOf(t, h, clone.ID), "shard", "exit.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(stateDirOf(t, h, clone.ID), "exit.json")); err == nil {
 			t.Errorf("clone %s carries the source's exit status", clone.ID)
 		}
 	}

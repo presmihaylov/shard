@@ -2,7 +2,9 @@ package bundle
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +35,12 @@ func (b Bundle) Export(dir string) error {
 		}
 	}
 
+	// The exit record lives off the layers now, so a fork of an already-exited sandbox must carry it,
+	// or the fork's Wait would block on an exit its restored shard-init never re-reports.
+	if err := copyExitFile(b.ExitFile, filepath.Join(dir, exitFileName)); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -43,16 +51,19 @@ func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error)
 		layers[name] = filepath.Join(snapshot, layersDir, name)
 	}
 
-	return s.clone(filepath.Join(snapshot, "config.json"), layers, spec)
+	// A fork carries the source exit record, so a fork of an exited sandbox answers Wait at once.
+	return s.clone(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
 }
 
 // Clone lays out a new bundle over a copy of an unmounted sandbox's layers, so its entrypoint runs again over them.
 func (s *Service) Clone(source Bundle, spec models.SandboxSpec) (Bundle, error) {
-	return s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), spec)
+	// A clone re-runs the entrypoint from the start, so it carries no exit record: an empty source path.
+	return s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), "", spec)
 }
 
-// clone copies the layers and rewrites config.json under the new identity, and nothing else in it.
-func (s *Service) clone(configPath string, layers map[string]string, spec models.SandboxSpec) (Bundle, error) {
+// clone copies the layers and rewrites config.json under the new identity, and nothing else in it. A
+// non-empty sourceExit carries the source's exit record into the new bundle; an empty one carries none.
+func (s *Service) clone(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
 	if spec.ID == "" || spec.StateDir == "" {
 		return Bundle{}, fmt.Errorf("a clone needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
 	}
@@ -108,7 +119,30 @@ func (s *Service) clone(configPath string, layers map[string]string, spec models
 		return Bundle{}, fmt.Errorf("write %s: %w", target, err)
 	}
 
+	if sourceExit != "" {
+		if err := copyExitFile(sourceExit, b.ExitFile); err != nil {
+			return Bundle{}, err
+		}
+	}
+
 	return b, nil
+}
+
+// copyExitFile carries shard-init's exit record between a bundle and a snapshot; a missing source is not an error.
+func copyExitFile(src, dst string) error {
+	blob, err := os.ReadFile(src)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+
+	if err := store.WriteFile(dst, blob, 0o600); err != nil {
+		return fmt.Errorf("copy the exit record to %s: %w", dst, err)
+	}
+
+	return nil
 }
 
 // layers names what a snapshot carries. The overlay work directory is scratch and is never copied.

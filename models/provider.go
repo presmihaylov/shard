@@ -177,6 +177,16 @@ type ExitStatus struct {
 	Signal int `json:"signal"`
 }
 
+// ExitReport is shard-init's newline-framed exit record; Kind lets a reader reject a torn or foreign line.
+type ExitReport struct {
+	Kind   string `json:"kind"`
+	Code   int    `json:"code"`
+	Signal int    `json:"signal"`
+}
+
+// ExitReportKind is the only Kind an exit report carries, so a reader rejects anything else.
+const ExitReportKind = "exit"
+
 // SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
 const SupervisorFailedExitCode = 125
 

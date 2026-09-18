@@ -5,7 +5,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -506,24 +505,18 @@ func alive(t *testing.T, pid int) bool {
 	return fields[0] != "Z"
 }
 
-// awaitEntrypoint waits for the exit status the supervisor writes into the guest, which a root exec reads.
-// It is bounded, because a supervisor that lost the right to write it left a wait that never returned.
+// awaitEntrypoint waits for the entrypoint exit the daemon records on the host, off any guest-reachable path.
+// It is bounded, because a supervisor that lost the right to report it left a wait that never returned.
 func awaitEntrypoint(t *testing.T, app App, id string) models.ExitStatus {
 	t.Helper()
 
 	deadline := time.Now().Add(waitBudget)
 	for {
-		written, err := runExec(t, app, "exec", "--user", "root", id, "--", "/bin/cat", "/.shard/exit.json")
-		if err == nil {
-			var status models.ExitStatus
-			if err := json.Unmarshal([]byte(written), &status); err != nil {
-				t.Fatalf("the supervisor wrote the unreadable exit status %q: %v", written, err)
-			}
-
-			return status
+		if sb := record(t, app, id); sb.ExitStatus != nil {
+			return *sb.ExitStatus
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the entrypoint of %s wrote no exit status in %s: %v", id, waitBudget, err)
+			t.Fatalf("the entrypoint of %s recorded no exit status in %s", id, waitBudget)
 		}
 
 		time.Sleep(100 * time.Millisecond)

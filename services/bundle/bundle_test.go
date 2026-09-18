@@ -17,8 +17,6 @@ import (
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
-const guestExitFile = "/.shard/exit.json"
-
 const guestReadyFile = "/.shard/started"
 
 // Build only records the supervisor path, so the tests never need a real binary there.
@@ -27,7 +25,7 @@ const supervisorPath = "/usr/local/bin/shard-init"
 func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
 
-	want := []string{bundle.GuestInitPath, "-exit-file", guestExitFile, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
+	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
 	}
@@ -38,7 +36,7 @@ func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
 	b, got := build(t, models.SandboxSpec{Restart: restart}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	want := []string{
-		bundle.GuestInitPath, "-exit-file", guestExitFile, "-ready-file", guestReadyFile,
+		bundle.GuestInitPath, "-ready-file", guestReadyFile,
 		"-restart", "on-failure", "-retries", "3", "-backoff", "2s", "-restart-file", "/.shard/restarts.json",
 		"--", "/bin/sh",
 	}
@@ -86,10 +84,15 @@ func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
 		t.Error("/.shard is mounted after /.shard/init")
 	}
 
-	if want := filepath.Join(shard.Source, "exit.json"); b.ExitFile != want {
+	// The exit file sits at the state directory root, off the /.shard bind mount, so the guest cannot forge it.
+	stateDir := filepath.Dir(shard.Source)
+	if want := filepath.Join(stateDir, "exit.json"); b.ExitFile != want {
 		t.Errorf("got the exit file at %q, want %q", b.ExitFile, want)
 	}
-	// The handshake lands beside it, and the host reads it to learn the entrypoint ever ran.
+	if strings.HasPrefix(b.ExitFile, shard.Source+string(filepath.Separator)) {
+		t.Errorf("the exit file %q is under the /.shard bind mount %q, so the guest can reach it", b.ExitFile, shard.Source)
+	}
+	// The handshake lands inside the bind mount, and the host reads it to learn the entrypoint ever ran.
 	if want := filepath.Join(shard.Source, "started"); b.ReadyFile != want {
 		t.Errorf("got the ready file at %q, want %q", b.ReadyFile, want)
 	}

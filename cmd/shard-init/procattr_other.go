@@ -9,3 +9,6 @@ import "syscall"
 func sysProcAttr(credential *syscall.Credential, _ []uintptr) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Credential: credential}
 }
+
+// setUndumpable is a no-op off Linux, where no sandbox runs and the tests never fork a guest.
+func setUndumpable() error { return nil }

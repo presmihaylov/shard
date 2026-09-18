@@ -25,10 +25,17 @@ func TestTheEntrypointRunsAsTheGivenUser(t *testing.T) {
 	dir := t.TempDir()
 	exitFile := filepath.Join(dir, "exit.json")
 	// A real /bin/sh, not this test binary: the go build cache is not readable by another user.
-	cmd := exec.Command(exe, "-exit-file", exitFile, "-ready-file", filepath.Join(dir, "started"),
+	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"),
 		"-user", "65534:65534", "--", "/bin/sh", "-c", "id -u")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stderr = os.Stderr
+
+	// shard-init reports the exit on fd 0, so the harness holds the write end as the supervisor's stdin.
+	exitW, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the exit channel: %v", err)
+	}
+	cmd.Stdin = exitW
 
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -36,6 +43,10 @@ func TestTheEntrypointRunsAsTheGivenUser(t *testing.T) {
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the supervisor: %v", err)
+	}
+	// The supervisor holds its own copy of fd 0 now, so the harness drops its write end.
+	if err := exitW.Close(); err != nil {
+		t.Fatalf("close the exit channel write end: %v", err)
 	}
 
 	super := &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}

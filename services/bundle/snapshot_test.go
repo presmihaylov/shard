@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/netip"
 	"os"
@@ -120,6 +121,34 @@ func TestForkRefusesASnapshotWithNoConfig(t *testing.T) {
 	}
 }
 
+// A fork of an exited sandbox must answer Wait at once, so Export carries the exit record and Fork lays it back.
+func TestForkCarriesTheExitRecord(t *testing.T) {
+	source := newSpec(t)
+	b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	write(t, b.ExitFile, "{\"kind\":\"exit\",\"code\":7,\"signal\":0}\n")
+
+	snapshot := t.TempDir()
+	if err := b.Export(snapshot); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	fork := models.SandboxSpec{ID: "s-fork", Name: "web-2", StateDir: t.TempDir(),
+		Network: models.NetworkSpec{NetnsPath: "/run/netns/s-fork"}}
+	c, err := newService(t).Fork(snapshot, fork)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+
+	exit, found, err := bundle.ReadExitStatus(c.ExitFile)
+	if err != nil || !found {
+		t.Fatalf("ReadExitStatus(%q) = %+v, %v, %v, want the carried record", c.ExitFile, exit, found, err)
+	}
+	if exit.Code != 7 {
+		t.Errorf("the fork carried exit %+v, want code 7", exit)
+	}
+}
+
 // A clone of a bundle is the clone of its snapshot would be, read from the state directory instead.
 func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	source := newSpec(t)
@@ -129,7 +158,8 @@ func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
 
 	write(t, filepath.Join(b.Upper, "marker"), "written before the stop\n")
-	write(t, b.ExitFile, `{"code":3}`)
+	write(t, b.ReadyFile, "")
+	write(t, b.ExitFile, "{\"kind\":\"exit\",\"code\":3,\"signal\":0}\n")
 
 	opened, err := bundle.Open(source.StateDir)
 	if err != nil {
@@ -184,9 +214,12 @@ func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	if readFile(t, filepath.Join(c.Upper, "marker")) != "written before the stop\n" {
 		t.Error("the clone did not get the source's writable layer")
 	}
-	// The provider clears the exit before the clone runs, the way a create does: the copy carries it.
-	if _, err := os.Stat(c.ExitFile); err != nil {
+	// A clone re-runs the entrypoint, so it carries the source's shard layer but drops the exit record.
+	if _, err := os.Stat(c.ReadyFile); err != nil {
 		t.Errorf("the clone did not get the source's shard layer: %v", err)
+	}
+	if _, err := os.Stat(c.ExitFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the clone kept the source's exit record (stat: %v), want none on a fresh re-run", err)
 	}
 	if hosts := readFile(t, filepath.Join(c.Upper, "etc", "hosts")); !strings.Contains(hosts, "10.87.0.3\tweb-2") {
 		t.Errorf("the clone's hosts file is %q, want the clone's address and name", hosts)

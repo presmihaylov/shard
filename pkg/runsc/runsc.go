@@ -127,6 +127,8 @@ type CreateOptions struct {
 	Bundle string
 	Stdout *os.File
 	Stderr *os.File
+	// Stdin is the guest's fd 0. shard-init reports the entrypoint exit on it, a channel the guest cannot reach.
+	Stdin *os.File
 }
 
 // Create prepares the container. Nothing in the guest runs until Start.
@@ -143,6 +145,7 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 
 	cmd := r.command(ctx, "create", "--bundle", opts.Bundle, id)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
+	cmd.Stdin = opts.Stdin
 
 	if err := cmd.Run(); err != nil {
 		// Our own cancellation killed it, so what it did not print says nothing about why.
@@ -405,6 +408,8 @@ type RestoreOptions struct {
 	Image  string
 	Stdout *os.File
 	Stderr *os.File
+	// Stdin is the guest's fd 0, the exit channel. gVisor re-supplies stdio to the restored sentry.
+	Stdin *os.File
 }
 
 // Restore brings a container up from a checkpoint, running, as a new container over the bundle. It
@@ -421,6 +426,7 @@ func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) er
 
 	cmd := r.command(ctx, "restore", "--detach", "--bundle", opts.Bundle, "--image-path", opts.Image, id)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
+	cmd.Stdin = opts.Stdin
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
