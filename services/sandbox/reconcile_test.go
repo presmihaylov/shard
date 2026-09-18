@@ -3,10 +3,12 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -64,11 +66,18 @@ type recProvider struct {
 
 	status map[string]models.Status
 	err    error
+	// wedge makes every Status block until the probe budget cancels it, the way a frozen sandbox does.
+	wedge bool
 }
 
 func (p *recProvider) Name() string { return "fake" }
 
-func (p *recProvider) Status(_ context.Context, id string) (models.Status, error) {
+func (p *recProvider) Status(ctx context.Context, id string) (models.Status, error) {
+	if p.wedge {
+		<-ctx.Done()
+
+		return models.Status{}, ctx.Err()
+	}
 	if p.err != nil {
 		return models.Status{}, p.err
 	}
@@ -98,6 +107,11 @@ type reconcileLab struct {
 }
 
 func newReconcileLab(t *testing.T, provider *recProvider, records ...models.Sandbox) *reconcileLab {
+	return newTunedReconcileLab(t, provider, 0, records...)
+}
+
+// newTunedReconcileLab is newReconcileLab with a probe budget; a zero budget keeps the default.
+func newTunedReconcileLab(t *testing.T, provider *recProvider, budget time.Duration, records ...models.Sandbox) *reconcileLab {
 	t.Helper()
 
 	repo := &recRepo{t: t, records: map[string]*models.Sandbox{}}
@@ -106,7 +120,7 @@ func newReconcileLab(t *testing.T, provider *recProvider, records ...models.Sand
 	}
 
 	lab := &reconcileLab{repo: repo, net: &recNet{}}
-	lab.svc = sandbox.New(sandbox.Config{Repo: repo, Provider: provider, Network: lab.net})
+	lab.svc = sandbox.New(sandbox.Config{Repo: repo, Provider: provider, Network: lab.net, ProbeBudget: budget})
 
 	return lab
 }
@@ -325,6 +339,40 @@ func TestReconcileAnswersWhenTheHostRulesCannotGoBackOn(t *testing.T) {
 	err := lab.run(t)
 	if err == nil || !strings.Contains(err.Error(), "nft is not on this host") {
 		t.Fatalf("ReconcileAll = %v, want the failure of the re-apply", err)
+	}
+}
+
+func TestReconcileProbesFrozenSandboxesConcurrently(t *testing.T) {
+	const budget = 200 * time.Millisecond
+	const frozen = 5
+
+	records := make([]models.Sandbox, frozen)
+	for i := range records {
+		records[i] = models.Sandbox{ID: fmt.Sprintf("sandbox%d", i), State: models.StateRunning, PID: 42}
+	}
+	lab := newTunedReconcileLab(t, &recProvider{wedge: true}, budget, records...)
+
+	start := time.Now()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Serial probing costs frozen*budget; concurrent costs about one budget, so half the serial cost still fails serial.
+	if elapsed >= frozen*budget/2 {
+		t.Errorf("the sweep took %s for %d frozen sandboxes at a %s budget, want it probed them concurrently", elapsed, frozen, budget)
+	}
+	if len(lab.reports) != frozen {
+		t.Errorf("the reconcile reported %d lines, want one per timed-out sandbox", len(lab.reports))
+	}
+	for _, sb := range records {
+		if got := lab.repo.records[sb.ID]; got.State != models.StateRunning || got.PID != 42 {
+			t.Errorf("record %s says %s with pid %d, want it left running with pid 42 after a timed-out probe", sb.ID, got.State, got.PID)
+		}
+	}
+	// A timed-out probe leaves the record running, so the host rules re-apply once for the running set.
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once for records left running", lab.net.applied)
 	}
 }
 

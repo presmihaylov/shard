@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -16,14 +17,19 @@ const LostReason = "daemon restarted and found no process"
 // InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
 const InterruptedReason = "the daemon restarted before the create finished"
 
+// ReconcileConcurrency bounds the startup probes in flight, so N frozen sandboxes cost about one budget, not N.
+const ReconcileConcurrency = 16
+
 // ReconcileAll makes the records agree with the substrate, before the daemon serves its first verb.
 // It corrects a record and never deletes one, and it reports one line per record it corrected.
 func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
+	// The probe is the slow part, so run every probe concurrently, then apply the corrections one at a time.
+	probes := s.probeAll(ctx, sandboxes)
+
 	var errs []error
 	running := 0
-
-	for _, sb := range sandboxes {
-		state, err := s.reconcileOne(ctx, sb, report)
+	for i, sb := range sandboxes {
+		state, err := s.applyReconcile(ctx, sb, probes[i].status, probes[i].err, report)
 		if err != nil {
 			errs = append(errs, err)
 
@@ -44,18 +50,43 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 	return errors.Join(errs...)
 }
 
-// reconcileOne corrects one record against the substrate and answers the state it left it in.
-func (s *Service) reconcileOne(ctx context.Context, sb models.Sandbox, report func(string)) (models.State, error) {
-	status, err := s.status(ctx, sb.ID, "reconcile")
+// probeResult is one sandbox's Status and the error its probe answered, held by the sandbox's index.
+type probeResult struct {
+	status models.Status
+	err    error
+}
+
+// probeAll asks the substrate about every sandbox at once, up to ReconcileConcurrency, each under its own budget.
+func (s *Service) probeAll(ctx context.Context, sandboxes []models.Sandbox) []probeResult {
+	probes := make([]probeResult, len(sandboxes))
+	sem := make(chan struct{}, ReconcileConcurrency)
+	var wg sync.WaitGroup
+	for i := range sandboxes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			status, err := s.status(ctx, sandboxes[i].ID, "reconcile")
+			probes[i] = probeResult{status: status, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	return probes
+}
+
+// applyReconcile corrects one record from its probe result and answers the state it left it in.
+func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status models.Status, probeErr error, report func(string)) (models.State, error) {
 	var timeout *SubstrateTimeoutError
-	if errors.As(err, &timeout) {
-		// AC 1 bounds every daemon-initiated Status, so a wedge stalls no boot; the liveness tick reconciles it later.
+	if errors.As(probeErr, &timeout) {
+		// The probe budget bounds every Status, so a wedge stalls no boot; the liveness tick reconciles it later.
 		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the liveness tick reconciles it", sb.ID, timeout.Budget))
 
 		return sb.State, nil
 	}
-	if err != nil {
-		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
+	if probeErr != nil {
+		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
 
 	state, err := reconciled(sb, status)
