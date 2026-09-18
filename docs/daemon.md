@@ -496,8 +496,8 @@ not upgrade never reaches the daemon.
 A token is minted on the server, from the same secret, and never over the API:
 
 ```
-shard serve mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
-shard serve mint --name reader --scopes sandbox:read,exec --secret-file /etc/shard/serve.secret
+shard tokens mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
+shard tokens mint --name reader --scopes sandbox:read,exec --secret-file /etc/shard/serve.secret
 ```
 
 `mint` prints one JSON object to stdout and exits: the token, its `expires_at` (RFC 3339 in UTC,
@@ -512,7 +512,7 @@ the secret. `--name` is the subject the front logs, `--duration` defaults to 0, 
 with no `exp` that never expires, and `--scopes` is a
 comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
 so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
-whole or the bare token, so `shard serve mint ... >
+whole or the bare token, so `shard tokens mint ... >
 ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that
@@ -523,16 +523,16 @@ restart ends no connection that is already spliced.
 Every minted token carries a random 128-bit `jti`, and `mint` appends one record for it to a ledger:
 the id, the subject, when it was issued, when it expires, its scopes, and whether it is revoked. The
 ledger sits beside the secret file, at `serve.tokens` in the same directory, and `--tokens-file`
-overrides that path on `mint`, `tokens`, `revoke` and `serve`. `mint` creates it `0640` when it is
+overrides that path on `tokens mint`, `tokens ls`, `tokens revoke` and `serve`. `mint` creates it `0640` when it is
 absent, refuses one that everyone can read, and prints no token when it cannot write the record.
 
 ```
-shard serve tokens --secret-file /etc/shard/serve.secret
-shard serve revoke --secret-file /etc/shard/serve.secret <id>
-shard serve revoke --name ci --secret-file /etc/shard/serve.secret
+shard tokens ls --secret-file /etc/shard/serve.secret
+shard tokens revoke --secret-file /etc/shard/serve.secret <id>
+shard tokens revoke --name ci --secret-file /etc/shard/serve.secret
 ```
 
-`tokens` lists every record with the status a request would see now: `active`, `revoked` or
+`tokens ls` lists every record with the status a request would see now: `active`, `revoked` or
 `expired`. `revoke` marks one token by its id, or every token of a subject with `--name`, so the next
 request that carries it is a `401`. Both are local verbs, like `mint`: they never reach the daemon.
 
