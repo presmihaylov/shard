@@ -13,9 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -73,6 +73,7 @@ type Runner struct {
 	binary  string
 	root    string
 	network string
+	execDir string
 }
 
 // Option configures a Runner.
@@ -81,6 +82,11 @@ type Option func(*Runner)
 // WithBinary points at a runsc other than the one on PATH.
 func WithBinary(path string) Option {
 	return func(r *Runner) { r.binary = path }
+}
+
+// WithExecDir keeps each exec's scratch under dir, off the runsc root that runsc scans, so a restarted daemon can sweep it.
+func WithExecDir(dir string) Option {
+	return func(r *Runner) { r.execDir = dir }
 }
 
 // The network modes runsc accepts. Sandbox is netstack over the namespace's interfaces, which is
@@ -113,6 +119,12 @@ func New(root string, opts ...Option) (*Runner, error) {
 
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create the runsc root %s: %w", root, err)
+	}
+
+	if r.execDir != "" {
+		if err := os.MkdirAll(r.execDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create the exec directory %s: %w", r.execDir, err)
+		}
 	}
 
 	return r, nil
@@ -187,7 +199,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		return 0, errors.New("no command: runsc exec has nothing to run")
 	}
 
-	dir, err := os.MkdirTemp("", "shard-exec-")
+	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
 	if err != nil {
 		return 0, fmt.Errorf("create a directory for the exec pid file: %w", err)
 	}
@@ -200,10 +212,12 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	cmd := r.command(ctx, append([]string{"--log", logFile, "--log-format=json"}, execArgs(id, pidFile, opts)...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
-	if opts.TTY {
-		// runsc gives the guest a terminal only when its own stdio is one it controls.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	}
+	// The driver dies with the daemon, so a restart orphans no runsc exec; the guest process lives in the sentry and outlives both.
+	cmd.SysProcAttr = execAttr(opts.TTY)
+
+	// The parent-death signal watches the thread that forked, so this goroutine keeps that thread until the driver ends.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	// Killing runsc exec leaves the guest process running, so a cancellation has to reach into the sandbox.
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }

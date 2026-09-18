@@ -24,7 +24,7 @@ func fake(t *testing.T, stdout, stderr string, exitCode int) (*runsc.Runner, str
 }
 
 // fakeBinary writes a fake runsc that records its argv and then runs body. Body is what a test varies.
-func fakeBinary(t *testing.T, body string) (*runsc.Runner, string) {
+func fakeBinary(t *testing.T, body string, opts ...runsc.Option) (*runsc.Runner, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -38,7 +38,7 @@ func fakeBinary(t *testing.T, body string) (*runsc.Runner, string) {
 		t.Fatalf("write the fake runsc: %v", err)
 	}
 
-	r, err := runsc.New(filepath.Join(dir, "root"), runsc.WithBinary(binary))
+	r, err := runsc.New(filepath.Join(dir, "root"), append([]runsc.Option{runsc.WithBinary(binary)}, opts...)...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -355,6 +355,33 @@ func TestExecReturnsTheCommandExitCode(t *testing.T) {
 
 	if code != 7 {
 		t.Errorf("Exec returned %d, want 7", code)
+	}
+}
+
+// SHARD-158: a restarted daemon sweeps the scratch the last one left, and it looks under its own root alone.
+func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
+	execDir := filepath.Join(t.TempDir(), "exec")
+	r, argvFile := fakeBinary(t, "", runsc.WithExecDir(execDir))
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/true"}}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	got := argv(t, argvFile)
+	at := slices.Index(got, "--internal-pid-file")
+	if at < 0 || at+1 >= len(got) {
+		t.Fatalf("the argv %q names no pid file", got)
+	}
+	if pidFile := got[at+1]; filepath.Dir(filepath.Dir(pidFile)) != execDir {
+		t.Errorf("the pid file is %s, want it in a directory under %s", pidFile, execDir)
+	}
+
+	entries, err := os.ReadDir(execDir)
+	if err != nil {
+		t.Fatalf("read the exec directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Exec left %d entries under %s, want none", len(entries), execDir)
 	}
 }
 

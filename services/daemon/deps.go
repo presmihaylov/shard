@@ -129,7 +129,7 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 
 		return gvisor.New(runner, bundles, dirs)
 	case sysbox.Name:
-		runner, err := sysboxrunc.New(filepath.Join(d.cfg.Root, "sysbox-runc"))
+		runner, err := sysboxrunc.New(filepath.Join(d.cfg.Root, "sysbox-runc"), sysboxrunc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
@@ -140,6 +140,9 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 	}
 }
 
+// execDir is where under the root the driver keeps each exec's scratch, so a restart can sweep what the last daemon left.
+const execDir = "exec"
+
 // runner drives the runsc binary. The mode is fixed on it and must match the one the sandbox was
 // created with, so every verb builds it here and nowhere else.
 func (d *deps) runnerLocked() (*runsc.Runner, error) {
@@ -147,7 +150,7 @@ func (d *deps) runnerLocked() (*runsc.Runner, error) {
 		return d.runnerSvc, nil
 	}
 
-	runner, err := runsc.New(filepath.Join(d.cfg.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox))
+	runner, err := runsc.New(filepath.Join(d.cfg.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox), runsc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 	if err != nil {
 		return nil, err
 	}

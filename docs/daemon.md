@@ -61,8 +61,9 @@ exec answers 404, the same as a deleted one.
 
 An exec does not outlive the daemon. The daemon holds the record and the buffer in memory, and
 `shard-init` holds the guest process, so a restart cuts every client off and loses the record while
-the command keeps running inside the sandbox. A new `shard exec` answers as soon as the daemon is
-back.
+the command keeps running inside the sandbox. The `runsc exec` driver dies with the daemon, and the
+next daemon sweeps the scratch every exec keeps under `<root>/exec` before it serves. A new
+`shard exec` answers as soon as the daemon is back.
 
 ## Reconcile at start
 
