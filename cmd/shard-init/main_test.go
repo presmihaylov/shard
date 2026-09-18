@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,7 +141,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *super
 	exitFile := filepath.Join(dir, "exit.json")
 	readyFile := filepath.Join(dir, "started")
 	restartFile := filepath.Join(dir, "restarts.json")
-	args := []string{"-exit-file", exitFile, "-ready-file", readyFile}
+	args := []string{"-ready-file", readyFile}
 	if len(restart) > 0 {
 		args = append(append(args, restart...), "-restart-file", restartFile)
 	}
@@ -148,12 +149,23 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *super
 	cmd.Env = append(os.Environ(), roleEnv+"="+role)
 	cmd.Stderr = os.Stderr
 
+	// shard-init reports the exit on fd 0, so the harness holds the write end as the supervisor's stdin.
+	exitW, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the exit channel: %v", err)
+	}
+	cmd.Stdin = exitW
+
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("pipe the supervisor stdout: %v", err)
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the supervisor: %v", err)
+	}
+	// The supervisor holds its own copy of fd 0 now, so the harness drops its write end.
+	if err := exitW.Close(); err != nil {
+		t.Fatalf("close the exit channel write end: %v", err)
 	}
 
 	super := &supervisor{cmd: cmd, exitFile: exitFile, readyFile: readyFile, restartFile: restartFile, out: bufio.NewReader(pipe)}
@@ -191,20 +203,56 @@ func (s *supervisor) awaitExitStatus(t *testing.T) models.ExitStatus {
 	t.Helper()
 
 	var status models.ExitStatus
-	waitFor(t, 15*time.Second, "the exit status file", func() bool {
-		blob, err := os.ReadFile(s.exitFile)
-		if err != nil {
+	waitFor(t, 15*time.Second, "the exit status on fd 0", func() bool {
+		exit, found := readFramedExit(t, s.exitFile)
+		if !found {
 			return false
 		}
 
-		if err := json.Unmarshal(blob, &status); err != nil {
-			t.Fatalf("the exit status file is not valid JSON: %v", err)
-		}
+		status = exit
 
 		return true
 	})
 
 	return status
+}
+
+// readFramedExit reads the last complete record shard-init framed onto fd 0, mirroring the host reader.
+func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
+	t.Helper()
+
+	blob, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return models.ExitStatus{}, false
+	}
+	if err != nil {
+		t.Fatalf("read the exit channel: %v", err)
+	}
+
+	end := bytes.LastIndexByte(blob, '\n')
+	if end < 0 {
+		return models.ExitStatus{}, false
+	}
+
+	var line []byte
+	for candidate := range bytes.SplitSeq(blob[:end+1], []byte{'\n'}) {
+		if trimmed := bytes.TrimSpace(candidate); len(trimmed) > 0 {
+			line = trimmed
+		}
+	}
+	if line == nil {
+		return models.ExitStatus{}, false
+	}
+
+	var report models.ExitReport
+	if err := json.Unmarshal(line, &report); err != nil {
+		t.Fatalf("the exit record is not valid JSON: %v", err)
+	}
+	if report.Kind != models.ExitReportKind {
+		return models.ExitStatus{}, false
+	}
+
+	return models.ExitStatus{Code: report.Code, Signal: report.Signal}, true
 }
 
 // awaitRestartCount waits until the count file says what the test wants of it.
@@ -446,12 +494,21 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 		t.Fatalf("locate the test binary: %v", err)
 	}
 
-	// A missing parent directory is the lasting fault that no amount of retrying can get past.
+	// A read-only fd 0 is a write end the supervisor can never report on, the lasting fault under test.
 	dir := t.TempDir()
-	unwritable := filepath.Join(dir, "no-such-dir", "exit.json")
-	cmd := exec.Command(exe, "-exit-file", unwritable,
-		"-ready-file", filepath.Join(dir, "started"), "--", exe, childPrefix+"exit:0")
+	readOnly, err := os.OpenFile(filepath.Join(dir, "exit.json"), os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open the exit channel read-only: %v", err)
+	}
+	defer func() {
+		if err := readOnly.Close(); err != nil {
+			t.Errorf("close the exit channel: %v", err)
+		}
+	}()
+
+	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "--", exe, childPrefix+"exit:0")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
+	cmd.Stdin = readOnly
 
 	pipe, err := cmd.StderrPipe()
 	if err != nil {
@@ -474,8 +531,8 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 
 	// A sandbox outlives its entrypoint, so the lost status is reported and the supervisor stays up.
 	reported := readLine(t, pipe)
-	if !strings.Contains(reported, "write the exit status") {
-		t.Errorf("the supervisor reported %q, want it to name the failed write", reported)
+	if !strings.Contains(reported, "report the exit status on fd 0") {
+		t.Errorf("the supervisor reported %q, want it to name the failed report", reported)
 	}
 
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
@@ -490,9 +547,8 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	exitFile := filepath.Join(dir, "exit.json")
 	readyFile := filepath.Join(dir, "started")
-	cmd := exec.Command(exe, "-exit-file", exitFile, "-ready-file", readyFile, "--", "/no/such/entrypoint")
+	cmd := exec.Command(exe, "-ready-file", readyFile, "--", "/no/such/entrypoint")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
 	var exit *exec.ExitError
@@ -554,28 +610,24 @@ func readLine(t *testing.T, r io.Reader) string {
 }
 
 func TestRunRejectsBadArguments(t *testing.T) {
-	const exitFlag, exitPath = "-exit-file", "/tmp/exit.json"
 	const readyFlag, readyPath = "-ready-file", "/tmp/started"
 
 	cases := map[string][]string{
-		"no exit file":        {readyFlag, readyPath, "--", "/bin/true"},
-		"no ready file":       {exitFlag, exitPath, "--", "/bin/true"},
-		"no entrypoint":       {exitFlag, exitPath, readyFlag, readyPath},
-		"relative exit file":  {exitFlag, "exit.json", readyFlag, readyPath, "--", "/bin/true"},
-		"relative ready file": {exitFlag, exitPath, readyFlag, "started", "--", "/bin/true"},
-		"exit file eats --":   {exitFlag, "--", readyFlag, readyPath, "/bin/true"},
-		"ready file eats --":  {exitFlag, exitPath, readyFlag, "--", "/bin/true"},
-		"user with no gid":    {exitFlag, exitPath, readyFlag, readyPath, "-user", "1000", "--", "/bin/true"},
-		"user with a name":    {exitFlag, exitPath, readyFlag, readyPath, "-user", "nobody:nobody", "--", "/bin/true"},
-		"user with no ids":    {exitFlag, exitPath, readyFlag, readyPath, "-user", ":", "--", "/bin/true"},
-		"user with an extra":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "1000:1000:10", "--", "/bin/true"},
-		"an id past 32 bits":  {exitFlag, exitPath, readyFlag, readyPath, "-user", "4294967296:0", "--", "/bin/true"},
-		"a negative id":       {exitFlag, exitPath, readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
-		"unknown policy":      {exitFlag, exitPath, readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
-		"policy with no file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
-		"relative count file": {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
-		"negative retries":    {exitFlag, exitPath, readyFlag, readyPath, "-restart", "on-failure", "-restart-file", "/tmp/r.json", "-retries", "-1", "--", "/bin/true"},
-		"zero backoff":        {exitFlag, exitPath, readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},
+		"no ready file":       {"--", "/bin/true"},
+		"no entrypoint":       {readyFlag, readyPath},
+		"relative ready file": {readyFlag, "started", "--", "/bin/true"},
+		"ready file eats --":  {readyFlag, "--", "/bin/true"},
+		"user with no gid":    {readyFlag, readyPath, "-user", "1000", "--", "/bin/true"},
+		"user with a name":    {readyFlag, readyPath, "-user", "nobody:nobody", "--", "/bin/true"},
+		"user with no ids":    {readyFlag, readyPath, "-user", ":", "--", "/bin/true"},
+		"user with an extra":  {readyFlag, readyPath, "-user", "1000:1000:10", "--", "/bin/true"},
+		"an id past 32 bits":  {readyFlag, readyPath, "-user", "4294967296:0", "--", "/bin/true"},
+		"a negative id":       {readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
+		"unknown policy":      {readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
+		"policy with no file": {readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
+		"relative count file": {readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
+		"negative retries":    {readyFlag, readyPath, "-restart", "on-failure", "-restart-file", "/tmp/r.json", "-retries", "-1", "--", "/bin/true"},
+		"zero backoff":        {readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},
 	}
 
 	for name, args := range cases {

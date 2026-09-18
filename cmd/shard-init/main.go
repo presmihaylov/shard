@@ -23,8 +23,10 @@ import (
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
-  shard-init -exit-file <path> -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
-             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]`
+  shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
+             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]
+
+The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -55,9 +57,13 @@ func exitCodeFor(err error) int {
 }
 
 func run(args []string) error {
+	// Clear the dumpable flag first, so /proc/1/fd is root-owned before the entrypoint ever forks.
+	if err := setUndumpable(); err != nil {
+		return fmt.Errorf("%w: %w", errSupervisor, err)
+	}
+
 	flags := flag.NewFlagSet("shard-init", flag.ContinueOnError)
 	flags.Usage = func() { fmt.Fprintln(flags.Output(), usage) }
-	exitFile := flags.String("exit-file", "", "file the entrypoint exit status is written to, as JSON")
 	readyFile := flags.String("ready-file", "", "file written once the entrypoint is forked")
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
@@ -70,15 +76,8 @@ func run(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
-	if *exitFile == "" {
-		return errors.New("-exit-file is required")
-	}
 	if *readyFile == "" {
 		return errors.New("-ready-file is required")
-	}
-	// This also rejects -exit-file --, which the flag package otherwise takes as the value.
-	if !filepath.IsAbs(*exitFile) {
-		return fmt.Errorf("-exit-file must be an absolute path, got %q", *exitFile)
 	}
 	if !filepath.IsAbs(*readyFile) {
 		return fmt.Errorf("-ready-file must be an absolute path, got %q", *readyFile)
@@ -97,7 +96,7 @@ func run(args []string) error {
 		return err
 	}
 
-	err = supervise(flags.Args(), *exitFile, *readyFile, credential, restart)
+	err = supervise(flags.Args(), *readyFile, credential, restart)
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -110,7 +109,7 @@ func run(args []string) error {
 
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, exitFile, readyFile string, credential *syscall.Credential, restart restartPolicy) error {
+func supervise(entrypointArgv []string, readyFile string, credential *syscall.Credential, restart restartPolicy) error {
 	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths := make(chan os.Signal, 1)
 	stopSignals := make(chan os.Signal, 4)
@@ -138,7 +137,7 @@ func supervise(entrypointArgv []string, exitFile, readyFile string, credential *
 		select {
 		case <-childDeaths:
 			// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
-			exit, exited := collectDeadChildren(entrypointPID, exitFile)
+			exit, exited := collectDeadChildren(entrypointPID)
 			if !exited {
 				continue
 			}
@@ -186,7 +185,7 @@ func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.
 // It reports how the entrypoint ended when it was among them.
-func collectDeadChildren(entrypointPID int, exitFile string) (models.ExitStatus, bool) {
+func collectDeadChildren(entrypointPID int) (models.ExitStatus, bool) {
 	var exit models.ExitStatus
 	entrypointExited := false
 	for {
@@ -214,7 +213,7 @@ func collectDeadChildren(entrypointPID int, exitFile string) (models.ExitStatus,
 
 		exit = exitStatusFrom(waitStatus)
 		// A sandbox outlives its entrypoint, so a lost exit status is reported and never fatal (AGENTS.md).
-		if err := writeJSON(exitFile, "the exit status", exit); err != nil {
+		if err := reportExit(exit); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init:", err)
 		}
 		entrypointExited = true
@@ -230,10 +229,27 @@ func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
+// reportExit frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
+// The newlines let a reader take whole lines only; shard-init is the sole writer, so appends never interleave.
+func reportExit(exit models.ExitStatus) error {
+	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("marshal the exit report: %w", err)
+	}
+
+	framed := append(append([]byte{'\n'}, encoded...), '\n')
+	if _, err := os.Stdin.Write(framed); err != nil {
+		return fmt.Errorf("report the exit status on fd 0: %w", err)
+	}
+
+	return nil
+}
+
 // A full disk is usually transient, so the budget is tens of seconds and not the length of one hiccup.
 const (
-	exitFileAttempts = 60
-	exitFileBackoff  = 500 * time.Millisecond
+	writeAttempts = 60
+	writeBackoff  = 500 * time.Millisecond
 )
 
 // permanentErrnos names the faults no amount of waiting clears, so retrying them only delays the message.
@@ -241,7 +257,7 @@ var permanentErrnos = []syscall.Errno{
 	syscall.EROFS, syscall.EACCES, syscall.EPERM, syscall.ENOENT, syscall.ENOTDIR, syscall.ENOTEMPTY,
 }
 
-// Retry first: a transient full disk must not cost the exit status of an otherwise healthy sandbox.
+// Retry first: a transient full disk must not cost the restart count of an otherwise healthy sandbox.
 func writeJSON(path, what string, value any) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -249,9 +265,9 @@ func writeJSON(path, what string, value any) error {
 	}
 
 	var last error
-	for attempt := range exitFileAttempts {
+	for attempt := range writeAttempts {
 		if attempt > 0 {
-			time.Sleep(exitFileBackoff)
+			time.Sleep(writeBackoff)
 		}
 
 		// pkg/store lands it through a random temp name and an fsync, so no planted path and no lost write.
@@ -264,10 +280,10 @@ func writeJSON(path, what string, value any) error {
 		}
 	}
 
-	return fmt.Errorf("write %s after %d attempts: %w", what, exitFileAttempts, last)
+	return fmt.Errorf("write %s after %d attempts: %w", what, writeAttempts, last)
 }
 
-// PID 1 keeps its own ids, so it can always write the exit file into the root owned host directory.
+// PID 1 keeps its own ids, so it can always report the exit and write the restart count as root.
 // The host resolved the name against the image rootfs, so only numbers ever reach these flags.
 func parseCredential(user, groups string) (*syscall.Credential, error) {
 	if user == "" {
@@ -344,14 +360,27 @@ func startProcess(argv []string, credential *syscall.Credential) (int, error) {
 		return 0, err
 	}
 
-	// The child gets our own stdio fds: shard streams them through, it does not proxy them.
-	pid, err := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
+	// The entrypoint must not inherit our fd 0: that is shard-init's exit channel to the host. It gets
+	// an in-guest /dev/null instead, so a read returns EOF and the channel stays the supervisor's alone.
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open %s for the entrypoint stdin: %w", os.DevNull, err)
+	}
+
+	// The child keeps our own stdout and stderr, the output log: shard streams them through, not proxies.
+	pid, forkErr := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
-		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
+		Files: []uintptr{devNull.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
 		Sys:   sysProcAttr(credential, ambient),
 	})
-	if err != nil {
-		return 0, fmt.Errorf("fork and exec %q: %w", binary, err)
+	// The child holds its own copy of fd 0 now, so our template is spent whichever way the fork went.
+	closeErr := devNull.Close()
+	if forkErr != nil {
+		return 0, fmt.Errorf("fork and exec %q: %w", binary, forkErr)
+	}
+	// The fork succeeded, so a failed close of our own /dev/null copy must not end the sandbox (AGENTS.md).
+	if closeErr != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: close the entrypoint stdin template:", closeErr)
 	}
 
 	return pid, nil

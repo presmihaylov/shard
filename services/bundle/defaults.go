@@ -104,7 +104,7 @@ func mounts(shardDir, tmpDir, initPath string, r models.Resources) []specs.Mount
 		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
 		// runsc puts an unsized tmpfs on an empty /tmp, and tmpfs is guest memory: 200 MB of dd killed a sandbox.
 		{Destination: "/tmp", Type: "bind", Source: tmpDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
-		// The host side of this one is where shard-init writes the exit status the provider watches.
+		// The host side of this one holds the started and restart-count files shard-init writes.
 		{Destination: guestShardDir, Type: "bind", Source: shardDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
 		// Mounted after its parent, and read-only: the guest may run the supervisor and never replace it.
 		{Destination: GuestInitPath, Type: "bind", Source: initPath, Options: []string{"rbind", "ro", "nosuid", "nodev"}},

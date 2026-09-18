@@ -5,7 +5,6 @@ package sysbox
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -133,7 +132,15 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	// The container keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	if err := p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out}); err != nil {
+	// shard-init reports the entrypoint exit on its fd 0, the write end the host holds: create cleared
+	// the stale file above, so this append starts the record fresh.
+	exit, err := os.OpenFile(b.ExitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the exit channel %s: %w", b.ExitFile, err)
+	}
+	defer func() { err = errors.Join(err, exit.Close()) }()
+
+	if err := p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
 		return err
 	}
 
@@ -575,7 +582,7 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 
 	for {
-		exit, found, err := readExitStatus(b.ExitFile)
+		exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
@@ -608,7 +615,7 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 		return nil, err
 	}
 
-	exit, found, err := readExitStatus(b.ExitFile)
+	exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 	if err != nil {
 		return nil, err
 	}
@@ -826,27 +833,9 @@ func openLog(path string) (*os.File, error) {
 	return f, nil
 }
 
-// readExitStatus reads what shard-init wrote. The file arrives by rename, so it never reads half of one.
-func readExitStatus(path string) (models.ExitStatus, bool, error) {
-	blob, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return models.ExitStatus{}, false, nil
-	}
-	if err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("read %s: %w", path, err)
-	}
-
-	var status models.ExitStatus
-	if err := json.Unmarshal(blob, &status); err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("decode the exit status in %s: %w", path, err)
-	}
-
-	return status, true, nil
-}
-
 // lastExitStatus answers a wait on a sandbox that has already ended, which only Stop can have done.
 func lastExitStatus(path, id string) (models.ExitStatus, error) {
-	status, found, err := readExitStatus(path)
+	status, found, err := bundle.ReadExitStatus(path)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}

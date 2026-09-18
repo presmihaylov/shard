@@ -37,8 +37,9 @@ type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ShardDir is bind mounted at guestShardDir, and shard-init writes the files below into it.
-	ShardDir    string
+	// ShardDir is bind mounted at guestShardDir, and shard-init writes ReadyFile and RestartFile into it.
+	ShardDir string
+	// ExitFile sits at the state directory root, off every bind mount, so the guest cannot forge an exit.
 	ExitFile    string
 	ReadyFile   string
 	RestartFile string
@@ -187,7 +188,7 @@ func newBundle(stateDir string) (Bundle, error) {
 		Dir:         filepath.Join(stateDir, "bundle"),
 		RootFS:      filepath.Join(stateDir, "bundle", "rootfs"),
 		ShardDir:    shardDir,
-		ExitFile:    filepath.Join(shardDir, exitFileName),
+		ExitFile:    filepath.Join(stateDir, exitFileName),
 		ReadyFile:   filepath.Join(shardDir, readyFileName),
 		RestartFile: filepath.Join(shardDir, restartFileName),
 		Upper:       filepath.Join(stateDir, "overlay", "upper"),
@@ -247,7 +248,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			Readonly: false,
 		},
 		Hostname: firstNonEmpty(spec.Name, spec.ID),
-		// No User here: PID 1 stays root to write the exit file, and drops only the entrypoint.
+		// No User here: PID 1 stays root to reap and report the exit, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
 			Env:  environment(spec.Env),
@@ -292,7 +293,6 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 
 	argv := []string{
 		GuestInitPath,
-		"-exit-file", path.Join(guestShardDir, exitFileName),
 		"-ready-file", path.Join(guestShardDir, readyFileName),
 	}
 

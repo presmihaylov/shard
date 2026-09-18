@@ -3,7 +3,6 @@ package gvisor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -129,14 +128,14 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		}
 	}
 
-	return p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out})
+	return p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
+		return p.runsc.Create(ctx, spec.ID, runsc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 }
 
-// bringUp runs the runsc verb that forks the sandbox process, over the log it inherits and inside
-// the cgroup shard owns, and then moves the host bounds where create and restore both need them.
-func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, up func(out *os.File) error) (err error) {
+// bringUp runs the runsc verb that forks the sandbox process, over the log and exit channel it inherits
+// and inside the cgroup shard owns, and then moves the host bounds where create and restore both need them.
+func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFile string, up func(out, exit *os.File) error) (err error) {
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
 	if err != nil {
 		return err
@@ -144,12 +143,20 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, up func
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
+	// shard-init reports the entrypoint exit on its fd 0, the write end the host holds here: create
+	// cleared the stale file first, and fork or restore appends, so a carried or paused record survives.
+	exit, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the exit channel %s: %w", exitFile, err)
+	}
+	defer func() { err = errors.Join(err, exit.Close()) }()
+
 	// runsc rmdirs every cgroup it made on delete, the parent included, so the parent must be shard's.
 	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return err
 	}
 
-	if err := up(out); err != nil {
+	if err := up(out, exit); err != nil {
 		return err
 	}
 
@@ -627,7 +634,7 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 
 	for {
-		exit, found, err := readExitStatus(b.ExitFile)
+		exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
@@ -660,7 +667,7 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 		return nil, err
 	}
 
-	exit, found, err := readExitStatus(b.ExitFile)
+	exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 	if err != nil {
 		return nil, err
 	}
@@ -860,8 +867,8 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	err = p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
+	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
+		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())
@@ -914,8 +921,8 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	// The sentry's budget is in the memory image, so the fork is bound the way the source was.
 	spec.Resources = rt.Resources
 
-	err = p.bringUp(ctx, spec, func(out *os.File) error {
-		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out})
+	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
+		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())
@@ -1070,27 +1077,9 @@ func openLog(path string) (*os.File, error) {
 	return f, nil
 }
 
-// readExitStatus reads what shard-init wrote. The file arrives by rename, so it never reads half of one.
-func readExitStatus(path string) (models.ExitStatus, bool, error) {
-	blob, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return models.ExitStatus{}, false, nil
-	}
-	if err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("read %s: %w", path, err)
-	}
-
-	var status models.ExitStatus
-	if err := json.Unmarshal(blob, &status); err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("decode the exit status in %s: %w", path, err)
-	}
-
-	return status, true, nil
-}
-
 // lastExitStatus answers a wait on a sandbox that has already ended, which only Stop can have done.
 func lastExitStatus(path, id string) (models.ExitStatus, error) {
-	status, found, err := readExitStatus(path)
+	status, found, err := bundle.ReadExitStatus(path)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
