@@ -55,6 +55,11 @@ func SetOOMGroup(dir string) error {
 	return write(dir, "memory.oom.group", "1")
 }
 
+// SetPidsMax caps the processes a cgroup may hold. A cgroup at the cap refuses every new fork.
+func SetPidsMax(dir string, limit int64) error {
+	return write(dir, "pids.max", strconv.FormatInt(limit, 10))
+}
+
 // Events counts what the kernel did to a cgroup. It survives the death of every process in one, so
 // it is the only record of why a sandbox is gone once its own processes cannot be asked.
 type Events struct {

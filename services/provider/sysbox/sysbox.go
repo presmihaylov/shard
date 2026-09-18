@@ -149,6 +149,19 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
 	}
 
+	if err := boundPids(p.cgroupRoot, spec.ID); err != nil {
+		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
+	}
+
+	return nil
+}
+
+// boundPids caps the host cgroup on every launch, so a config.json written before pids were bounded is capped too.
+func boundPids(root, id string) error {
+	if err := cgroup.SetPidsMax(cgroupDir(root, id), bundle.PidsMax); err != nil {
+		return fmt.Errorf("bound the pids of sandbox %s: %w", id, err)
+	}
+
 	return nil
 }
 

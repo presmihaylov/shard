@@ -348,6 +348,9 @@ func resourcesOf(l *specs.Linux) models.Resources {
 	return r
 }
 
+// PidsMax is the pids.max every sandbox cgroup gets, fixed because on Sysbox a guest fork bomb is a host one.
+const PidsMax = 4096
+
 // resources bind on gVisor, as a host cgroup and again in the sentry's argv, and Firecracker needs them to boot.
 func resources(r models.Resources) *specs.LinuxResources {
 	out := &specs.LinuxResources{}
@@ -363,6 +366,9 @@ func resources(r models.Resources) *specs.LinuxResources {
 		quota := int64(r.VCPUs) * int64(period)
 		out.CPU = &specs.LinuxCPU{Quota: &quota, Period: &period}
 	}
+
+	pids := int64(PidsMax)
+	out.Pids = &specs.LinuxPids{Limit: &pids}
 
 	return out
 }

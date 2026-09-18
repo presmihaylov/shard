@@ -316,6 +316,9 @@ func TestBuildCarriesTheResourceLimits(t *testing.T) {
 	if got.Linux.Resources.CPU == nil || *got.Linux.Resources.CPU.Quota != 200000 {
 		t.Errorf("got cpu %v, want a quota of 200000", got.Linux.Resources.CPU)
 	}
+	if got.Linux.Resources.Pids == nil || *got.Linux.Resources.Pids.Limit != bundle.PidsMax {
+		t.Errorf("got pids %v, want the fixed %d", got.Linux.Resources.Pids, bundle.PidsMax)
+	}
 }
 
 func TestBuildIsAValidRuntimeSpec(t *testing.T) {

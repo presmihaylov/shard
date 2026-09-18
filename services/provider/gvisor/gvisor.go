@@ -165,6 +165,10 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
 	}
 
+	if err := boundPids(p.cgroupRoot, spec.ID); err != nil {
+		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
+	}
+
 	return nil
 }
 
@@ -208,6 +212,15 @@ func boundMemory(root string, spec models.SandboxSpec) error {
 	// Guest memory sits in systrap stubs, so the kernel alone would take one stub and leave the sentry.
 	if err := cgroup.SetOOMGroup(dir); err != nil {
 		return fmt.Errorf("group the OOM kill of sandbox %s: %w", spec.ID, err)
+	}
+
+	return nil
+}
+
+// boundPids caps the host cgroup on every launch, so a config.json written before pids were bounded is capped too.
+func boundPids(root, id string) error {
+	if err := cgroup.SetPidsMax(cgroupDir(root, id), bundle.PidsMax); err != nil {
+		return fmt.Errorf("bound the pids of sandbox %s: %w", id, err)
 	}
 
 	return nil

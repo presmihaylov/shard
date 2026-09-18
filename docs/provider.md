@@ -104,6 +104,16 @@ the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every 
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
 of unbounded.
 
+## What the pids bound means
+
+Every sandbox cgroup holds at most `4096` processes. Unlike memory and cpu, the bound is never off
+and not adjustable: there is no flag and no field, and `pids.max` is written at create and again on
+every launch, so a sandbox created before the bound existed is capped when it runs again. `4096` runs
+systemd, Docker and nested containers with headroom, yet stops a fork bomb far below the host PID
+count. The bound is fixed because on Sysbox a guest process is a host process, so an unbounded fork
+bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits `memory.max`
+first, but the same bound applies.
+
 ## What `Status` means
 
 `Status` asks the substrate and reports what it says now. It never reads the shard record, and the
