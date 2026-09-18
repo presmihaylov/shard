@@ -1,7 +1,6 @@
 // Package runc drives the runc command line: the flags, the subcommands and the state JSON, and
-// nothing about sandboxes. sysbox-runc shares that command line, so a provider names its binary
-// with WithBinary. There is no checkpoint and no restore here: sysbox-runc dropped both
-// (nestybox/sysbox#715), and every provider over this driver refuses what needs them.
+// nothing about sandboxes. sysbox-runc shares it, so a provider names its binary with WithBinary.
+// There is no checkpoint and no restore: sysbox-runc dropped both (nestybox/sysbox#715).
 package runc
 
 import (
