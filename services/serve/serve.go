@@ -50,6 +50,8 @@ type Config struct {
 	KeyFile  string
 	// SecretFile holds the HS256 secret that signs and checks every token. Its value is never logged.
 	SecretFile string
+	// TokensFile overrides the ledger path; empty means the ledger beside the secret file.
+	TokensFile string
 	// Root is the daemon's state root, which is where the socket the front fronts sits.
 	Root string
 	Out  io.Writer
@@ -60,6 +62,7 @@ type Server struct {
 	listen string
 	socket string
 	secret []byte
+	tokens *ledger
 	caps   *capMux
 	tls    *tls.Config
 	log    *log.Logger
@@ -75,6 +78,11 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	secret, err := ReadSecret(cfg.SecretFile)
+	if err != nil {
+		return nil, err
+	}
+
+	tokens, err := newLedger(TokensPath(cfg.SecretFile, cfg.TokensFile))
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +111,7 @@ func New(cfg Config) (*Server, error) {
 		listen: listen,
 		socket: filepath.Join(cfg.Root, api.SocketFile),
 		secret: secret,
+		tokens: tokens,
 		caps:   caps,
 		tls:    &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
 		log:    log.New(out, "", log.LstdFlags),
@@ -242,14 +251,14 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	sub, ok, forbid := s.authorize(head)
+	sub, ok, forbid, reason := s.authorize(head)
 	if !ok {
 		if forbid {
 			s.forbid(conn, sub)
 
 			return
 		}
-		s.refuse(conn)
+		s.refuse(conn, reason)
 
 		return
 	}
@@ -313,35 +322,49 @@ func readHead(r io.Reader) ([]byte, error) {
 	}
 }
 
-// authorize verifies the token and checks its scopes reach the route; nothing is dialed without both.
-// It answers the subject, whether the request is authorized, and, when it is not, whether that is a 403.
-func (s *Server) authorize(head []byte) (string, bool, bool) {
+// authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
+// reach the route; nothing is dialed without all three. It answers the subject, whether the request is
+// authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
+func (s *Server) authorize(head []byte) (string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
-		return "", false, false
+		return "", false, false, "no valid token"
 	}
 
 	scheme, token, found := strings.Cut(fields.Get("Authorization"), " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {
-		return "", false, false
+		return "", false, false, "no valid token"
 	}
 
-	sub, scopes, err := verify(s.secret, strings.TrimSpace(token))
+	sub, scopes, jti, err := verify(s.secret, strings.TrimSpace(token))
 	if err != nil {
-		return "", false, false
+		return "", false, false, "no valid token"
+	}
+
+	if err := s.tokens.refresh(); err != nil {
+		s.log.Printf("read the ledger: %v", err)
+
+		return sub, false, false, "the ledger is unavailable"
+	}
+	entry, known := s.tokens.lookup(jti)
+	if !known {
+		return sub, false, false, "the token id is not in the ledger"
+	}
+	if entry.Revoked {
+		return sub, false, false, "the token is revoked"
 	}
 
 	method, target, ok := requestLine(head)
 	if !ok {
-		return "", false, false
+		return "", false, false, "no valid token"
 	}
 
 	need, known := s.caps.capability(method, target)
 	if !known || !covers(scopes, need) {
-		return sub, false, true
+		return sub, false, true, ""
 	}
 
-	return sub, true, false
+	return sub, true, false, ""
 }
 
 // requestLine parses the method and the target of the head, so the front can find the route's capability.
@@ -364,9 +387,9 @@ func requestLine(head []byte) (string, *url.URL, bool) {
 	return string(parts[0]), target, true
 }
 
-// refuse answers 401 and closes. Nothing is dialed, so a request with no token never reaches the daemon.
-func (s *Server) refuse(conn net.Conn) {
-	s.log.Printf("refused the connection from %s: no valid token", conn.RemoteAddr())
+// refuse answers 401 and closes. Nothing is dialed, so a request with no valid token never reaches the daemon.
+func (s *Server) refuse(conn net.Conn, reason string) {
+	s.log.Printf("refused the connection from %s: %s", conn.RemoteAddr(), reason)
 	s.answer(conn, "401 Unauthorized", unauthorized)
 }
 

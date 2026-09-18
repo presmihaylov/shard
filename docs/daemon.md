@@ -454,7 +454,9 @@ after it, pass through untouched and every route above works unchanged. A bad or
 `401` with the code `unauthorized`, written before anything is dialed, so an unauthenticated client
 never reaches the daemon. A socket that does not answer is a `502` with the code `internal`. The
 front verifies HS256 alone: a token signed by another algorithm, a token signed by another secret, a
-token with no subject, a token with no expiry and an expired token are each the same `401`. Neither
+token with no subject, a token with no id, an expired token, a token whose id the ledger does not
+hold, and a revoked token are each the same `401`. A token with no `exp` never expires; the front
+enforces `exp` only when the token carries one. Neither
 the front nor the CLI ever logs a token or the secret, and the front logs the subject of every
 request it lets through. Without `--cert` and `--key` the front refuses to start: there is no plain
 TCP mode to fall back to. The secret file must not be readable by everyone on the host, and the front
@@ -499,14 +501,15 @@ shard serve mint --name reader --scopes sandbox:read,exec --secret-file /etc/sha
 ```
 
 `mint` prints one JSON object to stdout and exits: the token, its `expires_at` (RFC 3339 in UTC,
-equal to the token's `exp`), and the `scopes` it carries.
+equal to the token's `exp`, and `null` when the token never expires), and the `scopes` it carries.
 
 ```
 {"token":"<jwt>","expires_at":"2026-09-18T15:40:00Z","scopes":["*"]}
 ```
 
 It is a local verb like `daemon` and `serve`: it never reaches the daemon, and the daemon never sees
-the secret. `--name` is the subject the front logs, `--duration` defaults to 24h, and `--scopes` is a
+the secret. `--name` is the subject the front logs, `--duration` defaults to 0, which mints a token
+with no `exp` that never expires, and `--scopes` is a
 comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
 so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
 whole or the bare token, so `shard serve mint ... >
@@ -514,6 +517,32 @@ ci.token` needs no extra step. Rotate the secret and every token it signed stops
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that
 restart ends no connection that is already spliced.
+
+### Tokens
+
+Every minted token carries a random 128-bit `jti`, and `mint` appends one record for it to a ledger:
+the id, the subject, when it was issued, when it expires, its scopes, and whether it is revoked. The
+ledger sits beside the secret file, at `serve.tokens` in the same directory, and `--tokens-file`
+overrides that path on `mint`, `tokens`, `revoke` and `serve`. `mint` creates it `0640` when it is
+absent, refuses one that everyone can read, and prints no token when it cannot write the record.
+
+```
+shard serve tokens --secret-file /etc/shard/serve.secret
+shard serve revoke --secret-file /etc/shard/serve.secret <id>
+shard serve revoke --name ci --secret-file /etc/shard/serve.secret
+```
+
+`tokens` lists every record with the status a request would see now: `active`, `revoked` or
+`expired`. `revoke` marks one token by its id, or every token of a subject with `--name`, so the next
+request that carries it is a `401`. Both are local verbs, like `mint`: they never reach the daemon.
+
+The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
+effect on the next request with no restart. A ledger the front cannot read at start stops it from
+starting, and a ledger that vanishes while the front runs turns every request into a `401`.
+
+`mint` and `revoke` take an advisory lock on the ledger, at `serve.tokens.lock` beside it, so
+parallel revokes and a mint that races a revoke never lose a record. The front only reads, so it
+takes no lock.
 
 **This is a deliberate deviation from dockerd and hypeman, which bind TCP themselves.** The shard
 daemon is root and owns the sandboxes, so the network-facing process is a separate and unprivileged

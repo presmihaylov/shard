@@ -88,7 +88,11 @@ Usage:
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
   shard serve mint --name <sub> [--duration <dur>] --secret-file <path>
-                           print one token for a subject, signed by the secret; a local verb, the daemon never sees the secret
+                           sign one token for a subject, record it in the ledger, and print it; no --duration means it never expires; a local verb, the daemon never sees the secret
+  shard serve tokens --secret-file <path>
+                           list every token the ledger records, with its id, subject, issued and expiry times, scopes and status
+  shard serve revoke [--name <sub>] --secret-file <path> <id>
+                           mark a token revoked so the next request with it fails; --name revokes every token of a subject; a local verb
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.

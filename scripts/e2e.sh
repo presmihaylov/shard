@@ -865,6 +865,19 @@ BODY=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -X POST)
 expect "${BODY}" '{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}' \
 	"the refusal carries the forbidden code"
 
+step "a revoked token is refused on the next request, with no restart"
+# The front reloads the ledger per request, so revoke takes effect at once with no restart.
+REVOKE_TOKEN=$("${PREFIX}/shard" serve mint --name shard-e2e-revoke --secret-file "${SERVE_SECRET}" | jq -r .token) ||
+	fail "serve mint did not print a token to revoke"
+CODE=$(front_curl "${SERVE_PORT}" "${REVOKE_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "200" "the token reads before it is revoked"
+JTI=$("${PREFIX}/shard" serve tokens --secret-file "${SERVE_SECRET}" | awk '$2=="shard-e2e-revoke"{print $1}')
+[ -n "${JTI}" ] || fail "serve tokens did not list the minted token"
+"${PREFIX}/shard" serve revoke --secret-file "${SERVE_SECRET}" "${JTI}" || fail "serve revoke failed"
+CODE=$(front_curl "${SERVE_PORT}" "${REVOKE_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
+expect "${CODE}" "401" "the revoked token is refused on the next request"
+say "a revoked token is refused at once, with no restart"
+
 stop_serve
 rm -rf "${LONE_ROOT}"
 LONE_ROOT=""
