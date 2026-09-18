@@ -46,7 +46,14 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 
 // reconcileOne corrects one record against the substrate and answers the state it left it in.
 func (s *Service) reconcileOne(ctx context.Context, sb models.Sandbox, report func(string)) (models.State, error) {
-	status, err := s.cfg.Provider.Status(ctx, sb.ID)
+	status, err := s.status(ctx, sb.ID, "reconcile")
+	var timeout *SubstrateTimeoutError
+	if errors.As(err, &timeout) {
+		// AC 1 bounds every daemon-initiated Status, so a wedge stalls no boot; the liveness tick reconciles it later.
+		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the liveness tick reconciles it", sb.ID, timeout.Budget))
+
+		return sb.State, nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
 	}

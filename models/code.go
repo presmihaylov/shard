@@ -19,5 +19,6 @@ const (
 	CodeExecRunning       Code = "exec_running"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
+	CodeSubstrateTimeout  Code = "substrate_timeout"
 	CodeInternal          Code = "internal"
 )

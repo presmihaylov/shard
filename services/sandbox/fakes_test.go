@@ -231,6 +231,10 @@ type fakeProvider struct {
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
 	entered chan struct{}
+	// statusGate, when set, holds Status until it is closed or the context ends, so a test wedges the substrate.
+	statusGate chan struct{}
+	// stopUnwedges makes Stop close statusGate, the way a kill frees a substrate a Status call had wedged.
+	stopUnwedges bool
 
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
@@ -427,6 +431,10 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 	if f.aliveAfterStop == 0 {
 		f.status = models.Status{Exists: true, State: models.StateStopped}
 	}
+	if f.stopUnwedges && f.statusGate != nil {
+		close(f.statusGate)
+		f.statusGate = nil
+	}
 
 	return nil
 }
@@ -443,7 +451,14 @@ func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
 	return nil
 }
 
-func (f *fakeProvider) Status(context.Context, string) (models.Status, error) {
+func (f *fakeProvider) Status(ctx context.Context, _ string) (models.Status, error) {
+	if f.statusGate != nil {
+		select {
+		case <-f.statusGate:
+		case <-ctx.Done():
+			return models.Status{}, ctx.Err()
+		}
+	}
 	if err := f.r.record("provider.Status"); err != nil {
 		return models.Status{}, err
 	}

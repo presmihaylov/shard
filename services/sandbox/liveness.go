@@ -29,7 +29,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 		if sb.State != models.StateRunning {
 			continue
 		}
-		if err := s.reconcileLive(ctx, sb.ID, now, report); err != nil {
+		if err := s.reconcileLive(ctx, sb, now, report); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -37,33 +37,45 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 	return errors.Join(errs...)
 }
 
-// reconcileLive reads the record again under the lock, because a stop may have landed since the list.
-func (s *Service) reconcileLive(ctx context.Context, id string, now time.Time, report func(string)) error {
-	unlock := s.lock(id)
+// reconcileLive probes the substrate without the lock, because Status can wedge and a stop on this or any
+// other sandbox must not wait on it. It takes the lock only to write, and bails if the run has since changed.
+func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
+	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
+	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
+		return err
+	}
+
+	status, err := s.status(ctx, sb.ID, "liveness")
+	var timeout *SubstrateTimeoutError
+	if errors.As(err, &timeout) {
+		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the next tick asks again", sb.ID, timeout.Budget))
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
+	}
+
+	unlock := s.lock(sb.ID)
 	defer unlock()
 
-	sb, err := s.cfg.Repo.Get(id)
+	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: StartedAt catches it.
+	current, err := s.cfg.Repo.Get(sb.ID)
 	if err != nil {
 		return err
 	}
-	if sb.State != models.StateRunning {
+	if current.State != models.StateRunning || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
 		return nil
-	}
-
-	status, err := s.cfg.Provider.Status(ctx, id)
-	if err != nil {
-		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), id, err)
 	}
 
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
 	if status.Alive() {
-		return s.recordEntrypointExit(ctx, id, sb, report)
+		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
 	if status.OOMKilled {
-		return s.handleOOMKilled(ctx, id, sb, now, report)
+		return s.handleOOMKilled(ctx, sb.ID, current, now, report)
 	}
 
-	return s.recordDied(id, report)
+	return s.recordDied(sb.ID, report)
 }
 
 // recordEntrypointExit writes the entrypoint's exit onto a still-running record, so ls tells a crash from a

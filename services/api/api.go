@@ -540,6 +540,7 @@ func classify(err error) (int, models.Code) {
 	var attached *sandbox.AttachedError
 	var execExited *sandbox.ExecExitedError
 	var execRunning *sandbox.ExecRunningError
+	var substrateTimeout *sandbox.SubstrateTimeoutError
 
 	switch {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
@@ -561,6 +562,8 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported
+	case errors.As(err, &substrateTimeout):
+		return http.StatusGatewayTimeout, models.CodeSubstrateTimeout
 	default:
 		return http.StatusInternalServerError, models.CodeInternal
 	}

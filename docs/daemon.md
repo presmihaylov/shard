@@ -98,9 +98,12 @@ gets a daemon that answers the reads and the store verbs.
 ## Liveness
 
 Every 5 s the `liveness` task asks the substrate about every record that says `running` and makes
-the record agree with it, under the same per-sandbox lock the verbs take. It reads the record again
-after the lock, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
-One tick has three outcomes.
+the record agree with it. It asks under a 10 s deadline and outside the per-sandbox lock, so a
+substrate call that wedges never pins that lock: a `stop` or `rm` on that sandbox, or on any other,
+still runs. A tick the substrate does not answer within the deadline logs one line, leaves the record
+untouched, and asks again next tick. The tick takes the lock only to write, and reads the record
+again first, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
+One tick the substrate answers has three outcomes.
 
 The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
 stays `running` and the tick writes the exit into `exit_status`. `shard ls` then shows `running
@@ -411,6 +414,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
+| `substrate_timeout` | 504 | a stop or rm whose substrate status call did not answer within the probe budget; retry it, or rm --force to kill a wedged sandbox |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes that object alone into `*client.APIError`, with `Status`, `Code`, `Message`
