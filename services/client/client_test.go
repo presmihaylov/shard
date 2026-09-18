@@ -160,7 +160,7 @@ func TestNoDaemonIsOneConnectLine(t *testing.T) {
 	if !errors.As(err, &connect) {
 		t.Fatalf("Version = %v, want a ConnectError", err)
 	}
-	want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? systemctl status shard"
+	want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"
 	if err.Error() != want {
 		t.Errorf("the error reads %q, want %q", err.Error(), want)
 	}
