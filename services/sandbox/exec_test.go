@@ -627,7 +627,7 @@ func TestKillExecRefusesAnUnknownSignal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "TERM or KILL") {
 		t.Fatalf("the kill with an unknown signal returned %v, want a refusal", err)
 	}
-	if slices.Contains(r.calls, "provider.Signal") {
+	if slices.Contains(r.snapshot(), "provider.Signal") {
 		t.Error("an unknown signal still reached the provider")
 	}
 

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,13 +21,18 @@ import (
 )
 
 // recorder logs what the fakes were asked in order; a name in fail fails every call, a name#N the Nth only.
+// The exec tests drive the service concurrently, so mu guards every access to calls and live.
 type recorder struct {
+	mu    sync.Mutex
 	fail  []string
 	calls []string
 	live  map[string]bool
 }
 
 func (r *recorder) record(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	nth := 1
 	for _, call := range r.calls {
 		if call == name {
@@ -44,9 +50,19 @@ func (r *recorder) record(name string) error {
 
 // cleanup also notes whether the teardown got a context the interrupt had not already cancelled.
 func (r *recorder) cleanup(ctx context.Context, name string) error {
+	r.mu.Lock()
 	r.live[name] = ctx.Err() == nil
+	r.mu.Unlock()
 
 	return r.record(name)
+}
+
+// snapshot copies the recorded calls under the lock, for a reader that races a still-running goroutine.
+func (r *recorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.calls)
 }
 
 type fakeImages struct {
@@ -215,7 +231,9 @@ func (f *fakeNet) ReapplyAll(context.Context) error {
 type fakeProvider struct {
 	models.Provider
 
-	r      *recorder
+	r *recorder
+	// mu guards the fields Exec and Signal write, so two concurrent execs never race on them.
+	mu     sync.Mutex
 	status models.Status
 	exit   models.ExitStatus
 	// entrypointExit is what the non-blocking ExitStatus reads: nil while the entrypoint still runs.
@@ -295,7 +313,9 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 	if err := f.r.record("provider.Exec"); err != nil {
 		return models.ExitStatus{}, err
 	}
+	f.mu.Lock()
 	f.execID, f.execSpec = id, spec
+	f.mu.Unlock()
 
 	if spec.Report != nil && !f.execNoPID {
 		spec.Report(f.execPID)
@@ -312,7 +332,9 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
+		f.mu.Lock()
 		f.execInput = string(read)
+		f.mu.Unlock()
 	}
 
 	// The command emits its output, then runs on until the test releases or signals it, so a client
@@ -345,7 +367,9 @@ func (f *fakeProvider) Signal(_ context.Context, _ string, pid int, signal strin
 	if err := f.r.record("provider.Signal"); err != nil {
 		return err
 	}
+	f.mu.Lock()
 	f.signalPID, f.signalGot = pid, signal
+	f.mu.Unlock()
 
 	if f.signaled != nil {
 		close(f.signaled)
