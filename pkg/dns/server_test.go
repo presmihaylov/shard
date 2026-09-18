@@ -193,11 +193,19 @@ type resolver struct {
 func serve(t *testing.T, director Director, upstreams ...netip.AddrPort) resolver {
 	t.Helper()
 
-	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+
+	return serveOn(t, director, tcp, upstreams...)
+}
+
+// serveOn is serve over a tcp listener the test hands in, so the connections can come from any source it names.
+func serveOn(t *testing.T, director Director, tcp net.Listener, upstreams ...netip.AddrPort) resolver {
+	t.Helper()
+
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +233,96 @@ func serve(t *testing.T, director Director, upstreams ...netip.AddrPort) resolve
 		udp: netip.MustParseAddrPort(udp.LocalAddr().String()),
 		tcp: netip.MustParseAddrPort(tcp.Addr().String()),
 		log: sink,
+	}
+}
+
+// pipeListener hands the resolver the connections a test dials, each from the source address the test names.
+type pipeListener struct {
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr {
+	return net.TCPAddrFromAddrPort(netip.MustParseAddrPort("10.87.0.1:53"))
+}
+
+// dial gives the test the guest end of a connection the resolver has accepted as coming from source.
+func (l *pipeListener) dial(t *testing.T, source string) net.Conn {
+	t.Helper()
+
+	guest, server := net.Pipe()
+	select {
+	case l.conns <- sourced{Conn: server, remote: netip.MustParseAddrPort(source)}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the resolver did not accept a connection")
+	}
+
+	return guest
+}
+
+// sourced is a connection whose remote address is what the test says, so one test can speak as several sandboxes.
+type sourced struct {
+	net.Conn
+	remote netip.AddrPort
+}
+
+func (c sourced) RemoteAddr() net.Addr { return net.TCPAddrFromAddrPort(c.remote) }
+
+// ask sends one framed question on a tcp connection and returns the answer, or fails when none comes within the wait.
+func ask(t *testing.T, conn net.Conn, msg []byte, wait time.Duration) []byte {
+	t.Helper()
+
+	if err := conn.SetDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(framed(msg)); err != nil {
+		t.Fatalf("write the question: %v", err)
+	}
+
+	answer, err := readFramed(conn)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+
+	return answer
+}
+
+// stallingDirector never finishes judging one source's questions until released, so its handlers pile up and stay.
+type stallingDirector struct {
+	stalled netip.Addr
+	release chan struct{}
+}
+
+func (d *stallingDirector) Resolve(ctx context.Context, q Question) (bool, error) {
+	if q.Source != d.stalled {
+		return true, nil
+	}
+
+	select {
+	case <-d.release:
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
 	}
 }
 
@@ -457,6 +555,90 @@ func TestAMessageThatIsNoQuestionGetsNoAnswer(t *testing.T) {
 	}
 	if n := upstream.asked.Load(); n != 0 {
 		t.Errorf("the upstream was asked %d times", n)
+	}
+}
+
+// One sandbox that opens more connections than the whole pool holds, each with a question that never finishes, must
+// leave its siblings answered: the per-source bound admits maxPerSource of them and closes the rest at accept.
+func TestOneSourceCannotStarveItsSiblings(t *testing.T) {
+	upstream := newUpstream(t)
+	ln := newPipeListener()
+	// The stalled source is loopback, so its udp questions from the test count against the same bound as its tcp ones.
+	director := &stallingDirector{stalled: netip.MustParseAddr("127.0.0.1"), release: make(chan struct{})}
+	r := serveOn(t, director, ln, upstream.addr)
+
+	var held []net.Conn
+	refused := 0
+	for i := range maxInflight + 1 {
+		conn := ln.dial(t, "127.0.0.1:4000")
+		defer conn.Close()
+
+		// A pipe write returns once the resolver read the question, or fails once it closed the connection instead.
+		if _, err := conn.Write(framed(question(t, uint16(i), "api.example.com."))); err != nil {
+			refused++
+
+			continue
+		}
+		held = append(held, conn)
+	}
+	if len(held) != maxPerSource || refused != maxInflight+1-maxPerSource {
+		t.Fatalf("the source holds %d connections and was refused %d, want %d and %d", len(held), refused, maxPerSource, maxInflight+1-maxPerSource)
+	}
+
+	if got := askUDP(t, r.udp, question(t, 300, "api.example.com."), 300*time.Millisecond); got != nil {
+		t.Errorf("a udp question from the source at its bound was answered with %+v, want it dropped", parse(t, got))
+	}
+
+	sibling := ln.dial(t, "10.87.0.3:4000")
+	defer sibling.Close()
+	if got := parse(t, ask(t, sibling, question(t, 301, "api.example.com."), 2*time.Second)); got.header.ID != 301 || got.header.RCode != dnsmessage.RCodeSuccess {
+		t.Errorf("the sibling's tcp question got %+v, want an answer", got.header)
+	}
+
+	close(director.release)
+	for i, conn := range held {
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		answer, err := readFramed(conn)
+		if err != nil {
+			t.Fatalf("held connection %d: %v", i, err)
+		}
+		if got := parse(t, answer); got.header.RCode != dnsmessage.RCodeSuccess {
+			t.Errorf("held connection %d got %+v, want an answer once released", i, got.header)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The source's bound frees with its connections, so the same source resolves again.
+	if got := parse(t, askUDP(t, r.udp, question(t, 302, "api.example.com."), 2*time.Second)); got.header.RCode != dnsmessage.RCodeSuccess {
+		t.Errorf("a udp question after the release got %+v, want an answer", got.header)
+	}
+}
+
+// Enough idle connections to fill the whole pool, from enough sources to get past the per-source bound, must hold no
+// in-flight slot: a slot is taken per question, so one more source is answered at once over tcp and udp.
+func TestIdleConnectionsHoldNoSlot(t *testing.T) {
+	upstream := newUpstream(t)
+	ln := newPipeListener()
+	r := serveOn(t, &fakeDirector{allowed: []string{"api.example.com"}}, ln, upstream.addr)
+
+	for source := range maxInflight / maxPerSource {
+		for range maxPerSource {
+			conn := ln.dial(t, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 87, 1, byte(source + 2)}), 4000).String())
+			defer conn.Close()
+		}
+	}
+
+	late := ln.dial(t, "10.87.2.2:4000")
+	defer late.Close()
+	if got := parse(t, ask(t, late, question(t, 400, "api.example.com."), 2*time.Second)); got.header.RCode != dnsmessage.RCodeSuccess {
+		t.Errorf("the tcp question behind %d idle connections got %+v, want an answer", maxInflight, got.header)
+	}
+	if got := parse(t, askUDP(t, r.udp, question(t, 401, "api.example.com."), 2*time.Second)); got.header.RCode != dnsmessage.RCodeSuccess {
+		t.Errorf("the udp question behind %d idle connections got %+v, want an answer", maxInflight, got.header)
 	}
 }
 

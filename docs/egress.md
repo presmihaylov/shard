@@ -140,6 +140,11 @@ nameservers then. Every other name is answered NXDOMAIN, unresolved, so a lookup
 out or an answer in past the policy. Every question is in the egress log, with source `dns`. A
 sandbox with no policy keeps direct public DNS, whether or not a secret fronts it.
 
+The resolver is one process for every policy sandbox on the host, so it bounds each sandbox's share
+of it: 16 questions or tcp connections in flight per source at once, under 256 for the whole host. A
+udp question past the bound is dropped, so the stub asks again, and a tcp connection past it is
+closed at accept. A sandbox that floods port 53 stalls its own lookups and no sibling's.
+
 A policy of only address rules is the case to watch. `allow 203.0.113.7` gives the guest an address
 it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
 lookup. It is in the egress log, as a `dns` record that denies the name the tool asked for, and what

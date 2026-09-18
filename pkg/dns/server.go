@@ -27,6 +27,8 @@ const (
 	maxMessage = 65535
 	// maxInflight bounds the handlers at once, so a query storm cannot hold a goroutine and a buffer per packet.
 	maxInflight = 256
+	// maxPerSource bounds one sandbox's share of them, so no single guest can fill the pool for its siblings.
+	maxPerSource = 16
 
 	upstreamTimeout = 5 * time.Second
 	idleTimeout     = 5 * time.Second
@@ -59,6 +61,10 @@ type Server struct {
 	cfg      Config
 	inflight chan struct{}
 	timeout  time.Duration
+
+	mu sync.Mutex
+	// sources counts the udp handlers and tcp connections each source holds now.
+	sources map[netip.Addr]int
 }
 
 func New(cfg Config) (*Server, error) {
@@ -72,7 +78,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("the resolver needs an upstream to forward to")
 	}
 
-	return &Server{cfg: cfg, inflight: make(chan struct{}, maxInflight), timeout: upstreamTimeout}, nil
+	return &Server{cfg: cfg, inflight: make(chan struct{}, maxInflight), timeout: upstreamTimeout, sources: map[netip.Addr]int{}}, nil
 }
 
 // Run listens on the port at the address, over udp and tcp, and serves until ctx ends.
@@ -127,8 +133,21 @@ func (s *Server) serveUDP(ctx context.Context, wg *sync.WaitGroup, conn net.Pack
 		msg := make([]byte, n)
 		copy(msg, buf[:n])
 
+		source, err := sourceOf(from)
+		if err != nil {
+			s.cfg.Log.Printf("dns: %v", err)
+
+			continue
+		}
+		// A question past the source's bound is dropped, not refused: the stub asks again, and a reply would be one more write per flood packet.
+		if !s.admit(source) {
+			continue
+		}
+
 		if !s.spawn(ctx, wg, func() {
-			answer, err := s.answer(ctx, from, msg, "udp")
+			defer s.leave(source)
+
+			answer, err := s.answer(ctx, source, msg, "udp")
 			if err != nil {
 				s.cfg.Log.Printf("dns: %s: %v", from, err)
 			}
@@ -140,6 +159,8 @@ func (s *Server) serveUDP(ctx context.Context, wg *sync.WaitGroup, conn net.Pack
 				s.cfg.Log.Printf("dns: %s: write the answer: %v", from, err)
 			}
 		}) {
+			s.leave(source)
+
 			return nil
 		}
 	}
@@ -155,39 +176,87 @@ func (s *Server) serveTCP(ctx context.Context, wg *sync.WaitGroup, ln net.Listen
 			return fmt.Errorf("accept a tcp question: %w", err)
 		}
 
-		if !s.spawn(ctx, wg, func() { s.serveConn(ctx, conn) }) {
-			if err := conn.Close(); err != nil {
-				s.cfg.Log.Printf("dns: %s: close: %v", conn.RemoteAddr(), err)
-			}
+		source, err := sourceOf(conn.RemoteAddr())
+		if err != nil {
+			s.cfg.Log.Printf("dns: %v", err)
+			s.close(conn)
 
-			return nil
+			continue
 		}
+		// A connection past the source's bound is closed at accept, so a guest cannot hold the resolver open on its siblings.
+		if !s.admit(source) {
+			s.close(conn)
+
+			continue
+		}
+
+		wg.Go(func() {
+			defer s.leave(source)
+			s.serveConn(ctx, source, conn)
+		})
 	}
 }
 
 // spawn runs one handler under the in-flight bound, and says no once the context is done.
 func (s *Server) spawn(ctx context.Context, wg *sync.WaitGroup, handle func()) bool {
-	select {
-	case s.inflight <- struct{}{}:
-	case <-ctx.Done():
+	if !s.hold(ctx) {
 		return false
 	}
 
 	wg.Go(func() {
-		defer func() { <-s.inflight }()
+		defer s.free()
 		handle()
 	})
 
 	return true
 }
 
+// hold takes one in-flight slot, and says no once the context is done rather than wait on a full pool.
+func (s *Server) hold(ctx context.Context) bool {
+	select {
+	case s.inflight <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Server) free() {
+	<-s.inflight
+}
+
+// admit counts one more handler for a source, and says no at the bound so one guest never fills the pool for its siblings.
+func (s *Server) admit(source netip.Addr) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sources[source] >= maxPerSource {
+		return false
+	}
+	s.sources[source]++
+
+	return true
+}
+
+func (s *Server) leave(source netip.Addr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sources[source]--
+	if s.sources[source] == 0 {
+		delete(s.sources, source)
+	}
+}
+
+func (s *Server) close(conn net.Conn) {
+	if err := conn.Close(); err != nil {
+		s.cfg.Log.Printf("dns: %s: close: %v", conn.RemoteAddr(), err)
+	}
+}
+
 // serveConn answers every framed question on one tcp connection until the guest hangs up or goes quiet.
-func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
-	defer func() {
-		if err := conn.Close(); err != nil {
-			s.cfg.Log.Printf("dns: %s: close: %v", conn.RemoteAddr(), err)
-		}
-	}()
+func (s *Server) serveConn(ctx context.Context, source netip.Addr, conn net.Conn) {
+	defer s.close(conn)
 
 	for {
 		if err := conn.SetDeadline(time.Now().Add(idleTimeout)); err != nil {
@@ -207,7 +276,12 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 
-		answer, err := s.answer(ctx, conn.RemoteAddr(), msg, "tcp")
+		// The slot is held for one answer and not for the connection, so an idle connection keeps no sibling's question waiting.
+		if !s.hold(ctx) {
+			return
+		}
+		answer, err := s.answer(ctx, source, msg, "tcp")
+		s.free()
 		if err != nil {
 			s.cfg.Log.Printf("dns: %s: %v", conn.RemoteAddr(), err)
 		}
@@ -224,7 +298,7 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 }
 
 // answer judges one message: the reply to send, nil when it gets none, and the fault to log, which never names the question.
-func (s *Server) answer(ctx context.Context, from net.Addr, msg []byte, proto string) ([]byte, error) {
+func (s *Server) answer(ctx context.Context, source netip.Addr, msg []byte, proto string) ([]byte, error) {
 	var p dnsmessage.Parser
 
 	header, err := p.Start(msg)
@@ -246,11 +320,6 @@ func (s *Server) answer(ctx context.Context, from net.Addr, msg []byte, proto st
 	// One question per message is what every resolver sends, and a second one has no name to judge by.
 	if _, err := p.Question(); !errors.Is(err, dnsmessage.ErrSectionDone) {
 		return reply(header, &q, dnsmessage.RCodeFormatError)
-	}
-
-	source, err := sourceOf(from)
-	if err != nil {
-		return nil, err
 	}
 
 	allowed, err := s.cfg.Director.Resolve(ctx, Question{Source: source, Name: canonical(q.Name.String())})
