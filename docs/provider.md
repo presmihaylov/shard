@@ -101,9 +101,9 @@ needed a context and an error would be a fourth thing to get wrong.
 
 `--memory` bounds a sandbox the same way on every substrate: past the bound the whole sandbox dies,
 not one process inside it, and the daemon restarts it when the record set `restart_on_oom`. gVisor
-sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox sets the same pair.
-`sysbox-runc` applies `memory.max` from the bundle but neither knob, so without them the OOM killer
-took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
+sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
+pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
+the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
 
 ## What a cpu bound means
 
