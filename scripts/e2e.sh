@@ -13,7 +13,7 @@
 # one that has any, and a host whose 80 or 443 is taken.
 #
 # Environment:
-#   PREFIX     where the binaries are installed        (default /usr/local/bin)
+#   PREFIX     where the binaries are installed, and where the daemon loads shard-init from (default /usr/local/bin)
 #   SHARD_ROOT where this run keeps its state          (default /var/lib/shard-e2e)
 #   IMAGE      the image the sandbox is built from     (default alpine:3.20)
 #   PROVIDER   the substrate the daemon runs on: gvisor or sysbox (default gvisor)
@@ -352,7 +352,8 @@ start_daemon() {
 		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
 		trust="${ECHO_DIR}/trust.pem"
 	fi
-	SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" --provider "${PROVIDER}" daemon >"${DAEMON_LOG}" 2>&1 &
+	# The daemon binds the supervisor by this path into every sandbox, so a PREFIX run tests the shard-init it installed.
+	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" --provider "${PROVIDER}" daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
