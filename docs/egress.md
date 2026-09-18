@@ -217,8 +217,11 @@ proxy ports and drops the rest, so that drop is logged like any other. An IPv6 p
 Two limits are worth knowing:
 
 - **A drop the daemon was down for is lost once the ring drops it.** The daemon keeps the last
-  kernel sequence it wrote in `${root}/egress.cursor` and writes the ring's backlog when it starts,
-  so a restart loses only what the ring itself overwrote in the meantime. Each chain rule logs at 2
-  lines per second, with a burst of 10, so a probe storm cannot fill the ring.
+  kernel sequence it is past in `${root}/egress.cursor` and writes the ring's backlog when it starts,
+  so a restart loses only what the ring itself overwrote in the meantime. The ring is host-wide and
+  the cursor is per root, so a root with no cursor yet settles it at the ring's end: the drops before
+  its first start name no sandbox of its own, and its one summary line says so rather than blaming a
+  sandbox that no longer exists. Each chain rule logs at 2 lines per second, with a burst of 10, so a
+  probe storm cannot fill the ring.
 - **The log file is rotated at 8 MiB** and one file is kept behind it, so a sandbox holds 16 MiB at
   most. The daemon does the rotation once a minute.

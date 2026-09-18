@@ -133,7 +133,8 @@ func TestTailWritesTheRingWholeWhenTheCursorCannotBeRead(t *testing.T) {
 // once, never logged one by one: the ring rate-limits at 2 lines a second per rule and no more.
 func TestTailCountsTheDropsOfASandboxThatIsGone(t *testing.T) {
 	var out strings.Builder
-	tailer, _, decisions := newTailer(t, &out)
+	tailer, root, decisions := newTailer(t, &out)
+	writeCursor(t, root, "6")
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 120, "3")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -146,8 +147,84 @@ func TestTailCountsTheDropsOfASandboxThatIsGone(t *testing.T) {
 	if len(records) != 0 {
 		t.Fatalf("the log holds %+v", records)
 	}
-	if got := out.String(); !strings.Contains(got, "2 host drops") || strings.Count(got, "\n") != 1 {
+	if got := out.String(); !strings.Contains(got, "2 host drops named a sandbox that no longer exists") || strings.Count(got, "\n") != 1 {
 		t.Errorf("the tailer said %q", got)
+	}
+}
+
+// The ring is host-wide and the cursor is per root, so the backlog a root finds at its first start was
+// dropped for someone else's sandboxes. It is not blamed on this root, and the cursor starts past it.
+func TestTailStartsAFreshRootAtTheRingsEnd(t *testing.T) {
+	var out strings.Builder
+	tailer, root, decisions := newTailer(t, &out)
+
+	ring := &fakeRing{records: []kmsg.Record{
+		drops(7, 110, "2"),
+		drops(8, 120, "3"),
+		{Sequence: 9, Time: time.Unix(130, 0).UTC(), Message: "usb 1-1: new device"},
+	}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, err := decisions.Read("sb")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("the log holds %+v", records)
+	}
+	if cursor := readCursor(t, root); cursor != "9" {
+		t.Errorf("the cursor holds %q, not the ring's end", cursor)
+	}
+	got := out.String()
+	if !strings.Contains(got, "the cursor starts at the ring's end, sequence 9, past 2 host drops") || strings.Count(got, "\n") != 1 {
+		t.Errorf("the tailer said %q", got)
+	}
+	if strings.Contains(got, "no longer exists") {
+		t.Errorf("a fresh root blamed a sandbox it never held: %q", got)
+	}
+}
+
+// A restart reads the backlog past its cursor once: the strays it counts there must not be counted again.
+func TestTailSettlesTheCursorPastTheStrays(t *testing.T) {
+	sb := sandbox(t)
+	var out strings.Builder
+	tailer, root, decisions := newTailer(t, &out, sb)
+	writeCursor(t, root, "6")
+
+	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 90, "3")}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, err := decisions.Read(sb.ID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(records) != 1 || records[0].Rule != "2" {
+		t.Fatalf("the log holds %+v", records)
+	}
+	if cursor := readCursor(t, root); cursor != "8" {
+		t.Errorf("the cursor holds %q, so the stray would be counted again", cursor)
+	}
+	if got := out.String(); !strings.Contains(got, "1 host drops named a sandbox that no longer exists") {
+		t.Errorf("the tailer said %q", got)
+	}
+}
+
+// The ring's end is announced by a callback that returns nothing, and a cursor that cannot settle there
+// still has to end the run: the next start would read the backlog again.
+func TestTailFailsWhenTheCursorCannotSettle(t *testing.T) {
+	var out strings.Builder
+	tailer, root, _ := newTailer(t, &out)
+	// A directory where the file goes: the read is not a missing file, and the rename onto it fails.
+	if err := os.Mkdir(filepath.Join(root, CursorFile), 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2")}})
+	if err == nil || !strings.Contains(err.Error(), CursorFile) {
+		t.Fatalf("Run: %v", err)
 	}
 }
 
@@ -200,7 +277,8 @@ func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
 func TestTailCountsADropOlderThanTheSandbox(t *testing.T) {
 	sb := sandbox(t)
 	var out strings.Builder
-	tailer, _, decisions := newTailer(t, &out, sb)
+	tailer, root, decisions := newTailer(t, &out, sb)
+	writeCursor(t, root, "6")
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 90, "2")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -235,8 +313,9 @@ func TestTailLeavesTheLinesTheKernelWroteForSomethingElse(t *testing.T) {
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
 	}
-	if _, err := os.Stat(filepath.Join(root, CursorFile)); err == nil {
-		t.Error("a line that is not ours moved the cursor")
+	// Nothing was written, and the cursor still settles at the ring's end, so the line is not read twice.
+	if cursor := readCursor(t, root); cursor != "7" {
+		t.Errorf("the cursor holds %q", cursor)
 	}
 }
 
