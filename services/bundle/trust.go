@@ -122,7 +122,12 @@ func (b Bundle) TrustProxy(proxyCA []byte) error {
 		return fmt.Errorf("%s names no image rootfs, so the image roots cannot be read", b.configPath())
 	}
 
-	trust, err := plantTrust(b, rootfs, spec.Process.Env, proxyCA)
+	var trust []string
+	err = b.withDisk(func() error {
+		trust, err = plantTrust(b, rootfs, spec.Process.Env, proxyCA)
+
+		return err
+	})
 	if err != nil {
 		return err
 	}

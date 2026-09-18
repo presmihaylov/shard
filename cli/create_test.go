@@ -28,7 +28,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512", "--cpus", "2", "--restart-on-oom",
+		"--memory", "512", "--cpus", "2", "--disk", "64", "--restart-on-oom",
 		"alpine:3.20",
 	}
 
@@ -45,8 +45,8 @@ func TestParseCreateFlags(t *testing.T) {
 		t.Errorf("workdir = %q, user = %q", req.WorkDir, req.User)
 	}
 
-	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 {
-		t.Errorf("resources = %+v, want 512 MiB and 2 vcpus", req.Resources)
+	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
+		t.Errorf("resources = %+v, want 512 MiB, 2 vcpus and a 64 MiB disk", req.Resources)
 	}
 	if !req.RestartOnOOM || req.MaxOOMRestarts != 0 {
 		t.Errorf("oom restart = %v with a limit of %d, want asked-for and unlimited", req.RestartOnOOM, req.MaxOOMRestarts)
@@ -157,6 +157,8 @@ func TestParseCreateRejections(t *testing.T) {
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
 		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
+		"a negative disk bound":     {"--disk", "-1", "alpine:3.20"},
+		"a disk that overflows":     {"--disk", "17592186044416", "alpine:3.20"},
 		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
 		"a probe setting alone":     {"--health-retries", "2", "alpine:3.20"},
 		"a sub-second interval":     {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},

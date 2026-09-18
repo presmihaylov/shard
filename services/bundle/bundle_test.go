@@ -84,8 +84,8 @@ func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
 		t.Error("/.shard is mounted after /.shard/init")
 	}
 
-	// The exit file sits at the state directory root, off the /.shard bind mount, so the guest cannot forge it.
-	stateDir := filepath.Dir(shard.Source)
+	// The exit file sits at the state directory root, off the /.shard bind mount and off the disk, so the guest cannot forge or fill it.
+	stateDir := filepath.Dir(filepath.Dir(shard.Source))
 	if want := filepath.Join(stateDir, "exit.json"); b.ExitFile != want {
 		t.Errorf("got the exit file at %q, want %q", b.ExitFile, want)
 	}
@@ -540,7 +540,8 @@ func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
 	if rt.RootFS != "/var/lib/shard/rootfs/sha256-abc" {
 		t.Errorf("RootFS is %q", rt.RootFS)
 	}
-	if want := (models.Resources{MemoryMiB: 256, VCPUs: 2}); rt.Resources != want {
+	// Every sandbox carries a disk bound, so a restart reads back the default the spec never named.
+	if want := (models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: bundle.DefaultDiskMiB}); rt.Resources != want {
 		t.Errorf("Resources are %+v, want %+v", rt.Resources, want)
 	}
 }

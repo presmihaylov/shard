@@ -168,6 +168,8 @@ type NetworkSpec struct {
 type Resources struct {
 	MemoryMiB int64 `json:"memory_mib"`
 	VCPUs     int   `json:"vcpus"`
+	// DiskMiB bounds the writable layer and /tmp together, as one sparse image the guest fills before the host; 0 takes the default.
+	DiskMiB int64 `json:"disk_mib"`
 }
 
 // ExitStatus is how the entrypoint ended. A sandbox outlives it and has no exit status of its own.

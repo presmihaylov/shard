@@ -91,6 +91,13 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 func buildBundle(t *testing.T, stateDir string, entrypoint []string) (bundle.Bundle, string) {
 	t.Helper()
 
+	return buildBoundedBundle(t, stateDir, 0, entrypoint)
+}
+
+// buildBoundedBundle provisions the disk the way the provider does before Build, sized to diskMiB, then builds over it.
+func buildBoundedBundle(t *testing.T, stateDir string, diskMiB int64, entrypoint []string) (bundle.Bundle, string) {
+	t.Helper()
+
 	if _, err := os.Stat(hostInitPath); err != nil {
 		t.Skipf("no supervisor at %s: run make devbox-sync first", hostInitPath)
 	}
@@ -107,7 +114,18 @@ func buildBundle(t *testing.T, stateDir string, entrypoint []string) (bundle.Bun
 		StateDir:   stateDir,
 		RootFS:     img.RootFS,
 		Entrypoint: entrypoint,
+		Resources:  models.Resources{DiskMiB: diskMiB},
 	}
+
+	// Build writes the layers into the disk, so the disk is up first.
+	existing, err := bundle.Open(stateDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := existing.Provision(spec.Resources); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { existing.UnmountDisk() })
 
 	b, err := svc.Build(runspec.Resolve(spec, img.Config))
 	if err != nil {

@@ -12,4 +12,6 @@ func (b Bundle) Mount(lower string) error { return errNoOverlay }
 
 func (b Bundle) Unmount() error { return errNoOverlay }
 
+func (b Bundle) UnmountOverlay() error { return errNoOverlay }
+
 func (b Bundle) Mounted() (bool, error) { return false, errNoOverlay }

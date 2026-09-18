@@ -57,8 +57,19 @@ func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error)
 
 // Clone lays out a new bundle over a copy of an unmounted sandbox's layers, so its entrypoint runs again over them.
 func (s *Service) Clone(source Bundle, spec models.SandboxSpec) (Bundle, error) {
-	// A clone re-runs the entrypoint from the start, so it carries no exit record: an empty source path.
-	return s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), "", spec)
+	var b Bundle
+	// The layers sit on the source's disk, which its stop detached, and a clone re-runs the entrypoint, so it carries no exit record.
+	err := source.withDisk(func() error {
+		var err error
+		b, err = s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), "", spec)
+
+		return err
+	})
+	if err != nil {
+		return Bundle{}, err
+	}
+
+	return b, nil
 }
 
 // clone copies the layers and rewrites config.json under the new identity, and nothing else in it. A

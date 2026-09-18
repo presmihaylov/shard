@@ -97,13 +97,18 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 
-	b, err := p.bundles.Build(spec)
-	if err != nil {
+	// Build writes the layers, so the disk they live on comes up first.
+	if err := existing.Provision(spec.Resources); err != nil {
 		return err
 	}
 
+	b, err := p.bundles.Build(spec)
+	if err != nil {
+		return errors.Join(err, existing.Unmount())
+	}
+
 	if err := b.Mount(spec.RootFS); err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	if err := p.create(ctx, spec, b); err != nil {
@@ -398,7 +403,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 
 	// sysbox-runc still holds a sandbox it has stopped, so the status read above is what owns the mount.
-	return p.unmount(id, status.Exists)
+	b, err := p.openHeld(id, status.Exists)
+	if err != nil {
+		return err
+	}
+
+	// The disk stays up: sysbox-mgr chowns the upper layer back when the container is deleted, at the next start or at remove.
+	return b.UnmountOverlay()
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
@@ -442,16 +453,26 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
 // held says whether sysbox-runc knew the sandbox, because only that answers who owns the rootfs.
 func (p *Provider) unmount(id string, held bool) error {
-	b, err := p.open(id)
+	b, err := p.openHeld(id, held)
 	if err != nil {
 		return err
 	}
 
-	if err := orphaned(b, id, held); err != nil {
-		return err
+	return b.Unmount()
+}
+
+// openHeld is the bundle of a sandbox whose rootfs may be dropped: sysbox-runc held it, or nothing stands on it.
+func (p *Provider) openHeld(id string, held bool) (bundle.Bundle, error) {
+	b, err := p.open(id)
+	if err != nil {
+		return bundle.Bundle{}, err
 	}
 
-	return b.Unmount()
+	if err := orphaned(b, id, held); err != nil {
+		return bundle.Bundle{}, err
+	}
+
+	return b, nil
 }
 
 // orphaned refuses a rootfs that stands while sysbox-runc holds nothing: something deleted the
@@ -742,23 +763,28 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 
+	// The clone's own disk, bounded the way the source's was, takes the layer copy.
+	if err := existing.Provision(spec.Resources); err != nil {
+		return err
+	}
+
 	b, err := p.bundles.Clone(source, spec)
 	if err != nil {
-		return err
+		return errors.Join(err, existing.Unmount())
 	}
 
 	rt, err := imageOf(b, spec.ID)
 	if err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// A cgroup a removed sandbox of this id left behind would carry its counters into the clone.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err)
+		return errors.Join(fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err), b.Unmount())
 	}
 
 	if err := b.Mount(rt.RootFS); err != nil {
-		return err
+		return errors.Join(err, b.Unmount())
 	}
 
 	// config.json carries the source's bound, so the clone is bound the way the source was.

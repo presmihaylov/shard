@@ -35,6 +35,9 @@ const DefaultStartBudget = 60 * time.Second
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
+// MaxDiskMiB is the same 16 TiB, for the same reason: the image size is MiB times 2^20 in an int64.
+const MaxDiskMiB = MaxMemoryMiB
+
 // Repository is the part of sandboxstate.Repository the lifecycle verbs drive.
 type Repository interface {
 	Reader
@@ -236,6 +239,8 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
+	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
+	req.Resources.DiskMiB = bundle.DiskBound(req.Resources)
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
 	// the pull: a prune between the record and the pull would otherwise delete the rootfs the create needs.
@@ -464,6 +469,12 @@ func validate(req CreateRequest) error {
 	}
 	if req.Resources.VCPUs < 0 {
 		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
+	}
+	if req.Resources.DiskMiB < 0 {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and cannot be negative, got %d", req.Resources.DiskMiB)}
+	}
+	if req.Resources.DiskMiB > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
 	}
 	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
 	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {

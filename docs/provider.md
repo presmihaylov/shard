@@ -114,6 +114,25 @@ count. The bound is fixed because on Sysbox a guest process is a host process, s
 bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits `memory.max`
 first, but the same bound applies.
 
+## What a disk bound means
+
+`--disk` bounds everything a sandbox can write, the same way on both substrates. The writable layer
+over the image, `/tmp` and the supervisor's files under `/.shard` all sit on one ext4 image per sandbox,
+`disk.img` in its state directory, which the daemon loop-mounts at `disk/` before the overlay stacks on
+it. The bound is never off: `--disk 0`, the default, is `10240` MiB, and a positive `N` overrides
+it. The image is sparse, so an unwritten sandbox costs the host nothing, and it is truncated
+to the bound, so host usage stops there whatever the guest does. Inside the guest a write past the bound
+fails with `ENOSPC`, the sandbox lives on, and `df` shows the bound less what ext4 keeps for itself.
+
+A stop detaches the disk and a start mounts it again, so the layer survives the way it did before. On
+Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox: `sysbox-mgr` chowns the
+upper layer back when the container is deleted, at the next start or at `rm`, and it must find it. Fork
+and clone copy the layers into a disk of their own, bounded the way the source was; config.json carries
+the bound for that. The record carries the resolved bound, so `inspect` shows the value the image
+enforces, not a bare `0`. `shard create` refuses a negative value. The host needs `mkfs.ext4`, which
+`e2fsprogs` ships. On Sysbox the directories `sysbox-runc` backs from the host, `/var/lib/docker` among
+them, sit outside the image and so outside the bound.
+
 ## What `Status` means
 
 `Status` asks the substrate and reports what it says now. It never reads the shard record, and the
