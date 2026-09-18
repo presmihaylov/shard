@@ -439,7 +439,15 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	if _, err := h.repo.Get(id); err != nil {
+	sb, err := h.repo.Get(id)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	// A failed sandbox is refused here, before the 200 or the 101, so both follow paths answer 409 like the non-follow path.
+	if err := sandbox.FailedGuard(id, sb); err != nil {
 		h.writeError(w, err)
 
 		return

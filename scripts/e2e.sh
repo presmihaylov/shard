@@ -1217,7 +1217,11 @@ pending_and_failed_steps() {
 	api_call POST "/v0/sandboxes/${id}/exec" '{"command":["/bin/true"]}'
 	[ "${REPLY_CODE}" = "409" ] || fail "exec on a failed sandbox answered ${REPLY_CODE}, want 409"
 	grep -q '"code": *"sandbox_failed"' <<<"${REPLY_BODY}" || fail "exec on a failed sandbox gave no sandbox_failed: ${REPLY_BODY}"
-	say "a failed sandbox refuses start and exec with 409 sandbox_failed"
+	# A follow log used to answer 200 with an empty stream instead of the refusal (SHARD-205).
+	api_call GET "/v0/sandboxes/${id}/logs?follow=true" ''
+	[ "${REPLY_CODE}" = "409" ] || fail "logs?follow=true on a failed sandbox answered ${REPLY_CODE}, want 409"
+	grep -q '"code": *"sandbox_failed"' <<<"${REPLY_BODY}" || fail "logs?follow=true on a failed sandbox gave no sandbox_failed: ${REPLY_BODY}"
+	say "a failed sandbox refuses start, exec and a follow log with 409 sandbox_failed"
 
 	step "remove a failed sandbox"
 	shard rm "${id}" >/dev/null || fail "rm did not remove the failed sandbox ${id}"
