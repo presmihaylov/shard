@@ -141,6 +141,14 @@ expect_exec_in() {
 	expect "${got}" "${want}" "${note}"
 }
 
+# holds matches what a verb wrote, read through $(...): grep -q on a pipe closes it at the first match, and under pipefail the verb's SIGPIPE reads as a miss.
+holds() {
+	local want="$1" out
+	shift
+	out=$("$@") || return 1
+	grep -q -- "${want}" <<<"${out}"
+}
+
 # nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
 nap_alive() { shard exec "${ID}" -- /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
 
@@ -643,7 +651,7 @@ shard policy create --deny any e2e-deny-all >/dev/null
 shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
 echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
-shard policy show e2e-policy | grep -q '"kind": "cidr"' || fail "shard policy show does not print the rules"
+holds '"kind": "cidr"' shard policy show e2e-policy || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
 shard policy create --allow suffix:example.com --allow '*.example.com' e2e-web >/dev/null
 shard policy rm e2e-web >/dev/null
@@ -736,8 +744,7 @@ kill -0 "${RECONCILE_PID}" 2>/dev/null && fail "the sandbox process ${RECONCILE_
 say "the sandbox process ${RECONCILE_PID} is gone and the record still says running"
 start_daemon || fail "the daemon did not come up"
 expect "$(listed_state "${RECONCILE_ID}")" "stopped" "the daemon corrected the record of the sandbox it lost"
-shard ls --all | grep "^${RECONCILE_ID}" | grep -q "daemon restarted and found no process" \
-	|| fail "shard ls gives no reason for ${RECONCILE_ID}"
+holds "^${RECONCILE_ID}.*daemon restarted and found no process" shard ls --all || fail "shard ls gives no reason for ${RECONCILE_ID}"
 say "ls gives the reason: daemon restarted and found no process"
 grep -q "${RECONCILE_ID}" "${DAEMON_LOG}" || fail "the daemon logged no line for the record it corrected"
 say "the daemon logged the record it corrected"
@@ -760,10 +767,10 @@ say "rm freed what it left on the host"
 step "read the output of the entrypoint"
 # The line lands when the guest gets to it, which is after create returned.
 for _ in $(seq 1 50); do
-	shard logs "${ID}" | grep -q "shard-e2e-entrypoint" && break
+	holds "shard-e2e-entrypoint" shard logs "${ID}" && break
 	sleep 0.2
 done
-shard logs "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs does not show what the entrypoint wrote"
+holds "shard-e2e-entrypoint" shard logs "${ID}" || fail "shard logs does not show what the entrypoint wrote"
 say "logs shows what the entrypoint wrote"
 
 step "exec a command in the sandbox"
@@ -845,9 +852,9 @@ grep -q "${TOKEN}" "${SERVE_LOG}" "${LONE_LOG}" "${DAEMON_LOG}" && fail "a log h
 say "no log holds the token value"
 
 step "drive a verb and an exec through the front"
-shard_front ls --all | grep -q "${ID}" || fail "ls over the front does not list the sandbox"
+holds "${ID}" shard_front ls --all || fail "ls over the front does not list the sandbox"
 say "ls over the front lists the sandbox"
-shard_front version | grep -q "daemon" || fail "version over the front does not name the daemon"
+holds "daemon" shard_front version || fail "version over the front does not name the daemon"
 say "version over the front reaches the daemon"
 GOT=$(shard_front exec "${ID}" -- /bin/cat /tmp/marker) || fail "exec over the front failed"
 expect "${GOT}" "shard-e2e" "exec over the front read what the first exec wrote"
@@ -892,7 +899,7 @@ grep -q "${ID}" "${SHARD_ROOT}/moved.err" || fail "the refusal does not name the
 say "secret set refuses to move a placeholder the sandbox holds, and names it"
 # The store file is the one place the value is written; nothing under the sandbox tree or anywhere else holds it.
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
-shard inspect "${ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
+holds '"E2E_TOKEN"' shard inspect "${ID}" || fail "inspect does not name the grant"
 say "inspect names the secret and holds no value"
 shard secret rm E2E_TOKEN >/dev/null 2>&1 && fail "secret rm removed a secret a sandbox holds"
 say "secret rm refuses while the sandbox holds the secret"
@@ -954,8 +961,8 @@ step "allow dns opens the lookup the address rules left shut"
 shard policy create --allow 1.0.0.1 --allow dns --allow "${ECHO_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "resolved" "the same policy with --allow dns resolves the echo name" \
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
-shard policy show e2e-policy | grep -q '"dns": "open"' || fail "policy show does not say dns is open"
-shard inspect "${ID}" | grep -q '"implied": "dns rule"' || fail "inspect does not name the dns rule that opened 53"
+holds '"dns": "open"' shard policy show e2e-policy || fail "policy show does not say dns is open"
+holds '"implied": "dns rule"' shard inspect "${ID}" || fail "inspect does not name the dns rule that opened 53"
 say "policy show says dns is open and inspect names the rule that opened 53"
 
 CODE=0
@@ -1018,8 +1025,8 @@ expect_exec "blocked" "the floor holds under the policy: a non-web port on the h
 # IPv6 matches no rule in the forward path, so the port it came in on drops it and logs the drop.
 shard exec "${ID}" -- /bin/sh -c 'ping -6 -c 1 -W 2 ff02::1%eth0 || ping6 -c 1 -W 2 ff02::1%eth0' >/dev/null 2>&1 || true
 say "the guest sent an IPv6 packet, which the port must drop"
-shard inspect "${ID}" | grep -q '"policy": "e2e-policy"' || fail "inspect does not name the policy"
-shard inspect "${ID}" | grep -q '"egress"' || fail "inspect does not print what the host enforces"
+holds '"policy": "e2e-policy"' shard inspect "${ID}" || fail "inspect does not name the policy"
+holds '"egress"' shard inspect "${ID}" || fail "inspect does not print what the host enforces"
 say "inspect names the policy and what the host enforces"
 
 # A policy change reaches a live sandbox at once, and never waits for the next start.
@@ -1658,8 +1665,8 @@ snapshot_steps() {
 	[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls no longer lists the source running"
 	say "ls shows the source and the fork running side by side"
 
-	shard inspect "${FORK_ID}" | grep -q '"E2E_TOKEN"' || fail "the fork did not carry the grant"
-	shard inspect "${FORK_ID}" | grep -q '"policy": "e2e-policy"' || fail "the fork did not carry the policy"
+	holds '"E2E_TOKEN"' shard inspect "${FORK_ID}" || fail "the fork did not carry the grant"
+	holds '"policy": "e2e-policy"' shard inspect "${FORK_ID}" || fail "the fork did not carry the policy"
 	expect_blocked "${FORK_ID}" "the policy holds on the fork"
 	expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 	expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
@@ -1796,12 +1803,12 @@ LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
 grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record, the address, the lease, the namespace and the link all survived the stop"
 
-shard ls | grep -q "^${ID}" && fail "shard ls still lists the stopped sandbox"
-shard ls --all | grep "^${ID}" | grep -q "stopped" || fail "shard ls --all does not list the sandbox as stopped"
+holds "^${ID}" shard ls && fail "shard ls still lists the stopped sandbox"
+[ "$(listed_state "${ID}")" = "stopped" ] || fail "shard ls --all does not list the sandbox as stopped"
 say "ls hides the stopped sandbox and ls --all shows it stopped"
 
 # -f ends on its own once the sandbox is stopped, so a hang here is a failure, not a wait.
-timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" | grep -q "shard-e2e-entrypoint" || fail "shard logs -f on a stopped sandbox did not print its output and end"
+holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" || fail "shard logs -f on a stopped sandbox did not print its output and end"
 say "logs still reads a stopped sandbox, and -f ends on its own"
 
 # The egress log outlives the stop, so a plain follow of a stopped sandbox prints it and ends by itself.
@@ -1816,8 +1823,8 @@ grep -q '"state": *"stopped"' "${RECORD}" || fail "the second stop changed the s
 say "a second stop is idempotent"
 
 step "inspect the stopped sandbox"
-shard inspect "${ID}" | grep -q '"state": "stopped"' || fail "shard inspect does not say stopped"
-shard inspect "${ID}" | grep -q '"exit_status"' || fail "shard inspect holds no exit status after the stop"
+holds '"state": "stopped"' shard inspect "${ID}" || fail "shard inspect does not say stopped"
+holds '"exit_status"' shard inspect "${ID}" || fail "shard inspect holds no exit status after the stop"
 say "inspect prints the record with its state and its exit status"
 CODE=0
 REFUSAL=$(shard inspect no-such-sandbox 2>&1) || CODE=$?
@@ -1886,7 +1893,7 @@ CODE=0
 REFUSAL=$(shard image rm "${IMAGE}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "image rm removed the image under a stopped sandbox"
 echo "${REFUSAL}" | grep -q "${ID}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
-shard image ls | grep -q "${IMAGE%%:*}" || fail "image ls no longer lists the image"
+holds "${IMAGE%%:*}" shard image ls || fail "image ls no longer lists the image"
 say "image rm refused it and named the sandbox"
 
 step "start the sandbox again"
@@ -1930,7 +1937,7 @@ say "secret grant refuses a running sandbox"
 
 shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null
-shard inspect "${GRANT_ID}" | grep -q '"E2E_TOKEN"' || fail "inspect does not name the grant"
+holds '"E2E_TOKEN"' shard inspect "${GRANT_ID}" || fail "inspect does not name the grant"
 shard start "${GRANT_ID}" >/dev/null
 expect_exec_in "${GRANT_ID}" "mock-E2E_TOKEN" "the granted guest sees the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
@@ -1945,7 +1952,7 @@ expect_fronted "${GRANT_ID}" "the grant fronts the sandbox, and the proxy puts t
 step "ungrant the secret and prove the placeholder is gone"
 shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
 shard secret ungrant "${GRANT_ID}" E2E_TOKEN >/dev/null
-shard inspect "${GRANT_ID}" | grep -q '"E2E_TOKEN"' && fail "inspect still names the grant"
+holds '"E2E_TOKEN"' shard inspect "${GRANT_ID}" && fail "inspect still names the grant"
 shard start "${GRANT_ID}" >/dev/null
 expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder after the ungrant" /bin/sh -c 'echo "$E2E_TOKEN"'
 say "ungrant took the grant and the placeholder back"
@@ -1978,7 +1985,7 @@ PROXY_DECISIONS=$(grep '"source":"proxy"' <<<"${DECISIONS}" || true)
 grep -q '"verdict":"deny"' <<<"${PROXY_DECISIONS}" || fail "the egress log holds no proxy deny for ${GRANT_ID}"
 say "the deny is in the egress decision log with source proxy"
 
-shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }' | grep -qx "e2e-attach" || fail "shard ls does not show the attached policy"
+[ "$(shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "e2e-attach" ] || fail "shard ls does not show the attached policy"
 say "shard ls shows the attached policy"
 
 CODE=0
@@ -1992,7 +1999,7 @@ shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
 shard policy detach "${GRANT_ID}" >/dev/null
 shard start "${GRANT_ID}" >/dev/null
 fronted "${GRANT_ID}" && fail "the detached sandbox still holds a dnat to the proxy"
-shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }' | grep -qx "-" || fail "shard ls still shows a policy after the detach"
+[ "$(shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "-" ] || fail "shard ls still shows a policy after the detach"
 expect_exec_in "${GRANT_ID}" "reachable" "the detached guest still gets out through the NAT" \
 	/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 say "detach leaves the sandbox with no policy and takes the fronting with it"
@@ -2000,7 +2007,7 @@ say "detach leaves the sandbox with no policy and takes the fronting with it"
 CODE=0
 shard policy attach "${GRANT_ID}" e2e-missing >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy attach took a policy the host does not hold"
-shard inspect "${GRANT_ID}" | grep -q '"policy"' && fail "the refused attach wrote the record"
+holds '"policy"' shard inspect "${GRANT_ID}" && fail "the refused attach wrote the record"
 say "policy attach refuses a policy the host does not hold and writes nothing"
 
 
@@ -2048,8 +2055,8 @@ absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
 absent "the cgroup" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
 
 step "prune the image nothing references any more"
-shard image prune | grep -q "${IMAGE%%:*}" || fail "image prune did not remove the image"
-shard image ls | grep -q "${IMAGE%%:*}" && fail "image ls still lists the pruned image"
+holds "${IMAGE%%:*}" shard image prune || fail "image prune did not remove the image"
+holds "${IMAGE%%:*}" shard image ls && fail "image ls still lists the pruned image"
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
