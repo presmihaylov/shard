@@ -17,7 +17,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
-// CursorFile holds the last kernel sequence the tailer wrote, so a daemon that restarts writes the
+// CursorFile holds the last kernel sequence the tailer is past, so a daemon that restarts reads the
 // ring's backlog once and no more.
 const CursorFile = "egress.cursor"
 
@@ -46,7 +46,7 @@ type Tailer struct {
 	holders   map[string]models.Sandbox
 	refreshed time.Time
 
-	// unattributed counts the drops of one Run whose sandbox no longer exists, for the one line it prints.
+	// unattributed counts the drops of one Run that name no sandbox of this root, for the one line it prints.
 	unattributed int
 }
 
@@ -60,13 +60,22 @@ const refreshEvery = time.Second
 
 // Run writes every host drop the ring holds into the sandbox it belongs to, then follows the ring.
 func (t *Tailer) Run(ctx context.Context, ring Ring) error {
+	// The ring's end is handed to a callback that returns nothing, so the cancel cause carries its error out.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	cursor, seen := t.cursor()
+	// The ring is host-wide, and a root with no cursor wrote no drop before this run: the backlog's strays are not its own.
+	fresh := !seen
+	var last uint64
+	var read bool
 
 	t.unattributed = 0
 	err := ring.Follow(ctx, func(line kmsg.Record) error {
 		if seen && line.Sequence <= cursor {
 			return nil
 		}
+		last, read = line.Sequence, true
 
 		record, ok := hostDrop(line.Message)
 		if !ok {
@@ -86,15 +95,41 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 
 		return t.writeCursor(line.Sequence)
 	}, func() {
-		if t.unattributed > 0 {
-			t.out.Printf("egress log: %d host drops named a sandbox that no longer exists", t.unattributed)
+		if !read {
+			return
+		}
+		t.report(fresh, last)
+		// The cursor settles at the ring's end, so a restart reads none of the backlog again, strays included.
+		if seen && last == cursor {
+			return
+		}
+		if err := t.writeCursor(last); err != nil {
+			cancel(err)
 		}
 	})
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 
 	return err
+}
+
+// report prints the one line for the backlog's strays. A fresh root never held them, so its line names
+// where the cursor starts rather than a sandbox that never existed under this root.
+func (t *Tailer) report(fresh bool, end uint64) {
+	if t.unattributed == 0 {
+		return
+	}
+	if fresh {
+		t.out.Printf("egress log: the cursor starts at the ring's end, sequence %d, past %d host drops that name no sandbox of this root", end, t.unattributed)
+
+		return
+	}
+
+	t.out.Printf("egress log: %d host drops named a sandbox that no longer exists", t.unattributed)
 }
 
 // sandboxFor answers whose drop this is. A routed drop names the sandbox's address, and an IPv6 one
