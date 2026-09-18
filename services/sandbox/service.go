@@ -28,6 +28,10 @@ const DefaultStopSettle = 5 * time.Second
 // cannot pin a sandbox's lock or run a verb past its own timeout.
 const DefaultProbeBudget = 10 * time.Second
 
+// DefaultStartBudget bounds one start's substrate work, so a wedged runtime cannot pin the serial liveness
+// task. It exceeds gvisor's start grace, so a slow but live start is not cut short.
+const DefaultStartBudget = 60 * time.Second
+
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
@@ -87,6 +91,8 @@ type Config struct {
 	StopSettle time.Duration
 	// ProbeBudget overrides DefaultProbeBudget, which only a test has a reason to do.
 	ProbeBudget time.Duration
+	// StartBudget overrides DefaultStartBudget, which only a test has a reason to do.
+	StartBudget time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -195,6 +201,15 @@ func (s *Service) probeBudget() time.Duration {
 	}
 
 	return DefaultProbeBudget
+}
+
+// startBudget is how long one start's substrate work gets before we treat the runtime as wedged.
+func (s *Service) startBudget() time.Duration {
+	if s.cfg.StartBudget != 0 {
+		return s.cfg.StartBudget
+	}
+
+	return DefaultStartBudget
 }
 
 // status asks the substrate about a sandbox on a bounded context, so a wedged runtime cannot pin a verb.
@@ -597,8 +612,21 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	return s.record(id)
 }
 
-// start is the run itself, for a caller that holds the lock and checked the record says stopped.
+// start bounds the whole run so a wedged runtime fails fast and typed, never pinning the liveness task that walks the sandboxes one at a time.
 func (s *Service) start(ctx context.Context, id string) error {
+	budget := s.startBudget()
+	bctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	err := s.startWithin(bctx, id)
+	if bctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return &SubstrateTimeoutError{ID: id, Op: "start", Budget: budget}
+	}
+
+	return err
+}
+
+func (s *Service) startWithin(ctx context.Context, id string) error {
 	// The lease survived the stop, so this hands back the same address over a namespace built again.
 	if _, err := s.cfg.Network.Allocate(ctx, id); err != nil {
 		return err
@@ -644,7 +672,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	// force reclaims through a wedge, so it skips the probe for the kill; only a plain stop is bounded by it.
+	// force arrives only after rm already probed and got a live answer, so it skips the redundant probe.
 	if !force {
 		// The opening probe is bounded like rm's, so a plain stop of a wedged sandbox fails fast and typed, not at the client timeout.
 		status, err := s.status(ctx, id, "stop")
@@ -788,18 +816,11 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 }
 
 // endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps.
-// force is the shorthand for the stop the operator would otherwise type first.
+// force is the shorthand for the stop the operator would otherwise type first. A wedged runtime cannot be
+// reclaimed through even with force: Provider.Stop opens with the same runsc state and would hang too, so rm
+// fails fast and typed on the wedge and a raw kill is the only recovery (SHARD-207b).
 func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace time.Duration) error {
 	status, err := s.status(ctx, id, "rm")
-	var timeout *SubstrateTimeoutError
-	wedged := errors.As(err, &timeout)
-	if wedged && !force {
-		return err
-	}
-	if wedged {
-		// force turns an unanswered rm into the stop that kills the wedged sandbox.
-		return s.stop(ctx, id, grace, force)
-	}
 	if err != nil {
 		return err
 	}

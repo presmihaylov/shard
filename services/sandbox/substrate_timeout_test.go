@@ -14,6 +14,7 @@ import (
 // A short budget so a wedged Status resolves fast, and a settle short enough to keep the test quick.
 func fastBudget(c *sandbox.Config)  { c.ProbeBudget = 50 * time.Millisecond }
 func shortSettle(c *sandbox.Config) { c.StopSettle = 100 * time.Millisecond }
+func fastStart(c *sandbox.Config)   { c.StartBudget = 50 * time.Millisecond }
 
 // bounded fails a test whose verb ran past the point a wedged substrate should have been cut off.
 func bounded(t *testing.T, start time.Time, what string) {
@@ -85,21 +86,62 @@ func TestStopFallsThroughToTheKillWhenAStoppedRecordStillLies(t *testing.T) {
 	}
 }
 
-// rm --force turns an unreadable sandbox into a kill, and frees everything once the kill lands.
-func TestRemoveForceKillsAWedgedSandbox(t *testing.T) {
+// A wedged runtime cannot be reclaimed through: Provider.Stop would open with the same runsc state and hang
+// too. So rm --force fails fast and typed rather than burning the client bound, and a raw kill is the only
+// recovery (SHARD-207b). It must reclaim nothing.
+func TestRemoveForceFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 	r := &recorder{}
-	svc, l := newService(t, r, running(), fastBudget, shortSettle)
+	svc, l := newService(t, r, running(), fastBudget)
 	l.provider.statusGate = make(chan struct{})
-	l.provider.stopUnwedges = true
 
 	start := time.Now()
-	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
-		t.Fatalf("Remove --force returned %v, want it to kill and free the wedged sandbox", err)
-	}
+	err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace)
 	bounded(t, start, "rm --force")
 
-	if !l.provider.stopped || !l.provider.removed || !l.repo.deleted {
-		t.Errorf("rm --force left work undone: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("Remove --force returned %v, want a SubstrateTimeoutError", err)
+	}
+	if timeout.Op != "rm" {
+		t.Errorf("the error names op %q, want rm", timeout.Op)
+	}
+	if l.provider.stopped || l.provider.removed || l.repo.deleted {
+		t.Errorf("rm --force reclaimed a wedged sandbox it should have left for a raw kill: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
+	}
+}
+
+// A restart that meets a wedged runtime must not pin the serial liveness task: it fails fast and typed for
+// that sandbox and leaves its record stopped, while every other sandbox on the same tick still reconciles.
+func TestLivenessKeepsReconcilingWhenARestartWedges(t *testing.T) {
+	r := &recorder{}
+	wedged := optedIn()
+	svc, l := newService(t, r, wedged, fastStart)
+	l.provider.status = oomKilled()
+	l.provider.wedgeStartOf = wedged.ID
+
+	// A second OOM-killed sandbox that also asked for a restart; the wedge on the first must not starve it.
+	other := optedIn()
+	other.ID = "sandbox2"
+	l.repo.made = &other
+
+	var reports []string
+	start := time.Now()
+	err := svc.Liveness(t.Context(), []models.Sandbox{wedged, other}, time.Now(), func(line string) { reports = append(reports, line) })
+	if err != nil {
+		t.Fatalf("Liveness returned %v, want nil so the daemon task lives", err)
+	}
+	bounded(t, start, "the tick")
+
+	// The wedged sandbox spent its restart and stays stopped; a raw start or rm is the operator's move now.
+	if got := l.repo.sb; got.State != models.StateStopped || got.OOMRestarts != 1 {
+		t.Errorf("the wedged sandbox is %s with %d starts again, want stopped with 1 counted", got.State, got.OOMRestarts)
+	}
+	// The other sandbox reconciled straight through the wedge: it started again and its record proves it.
+	if got := *l.repo.made; got.State != models.StateRunning || got.PID != 7 || got.OOMRestarts != 1 {
+		t.Errorf("the other sandbox is %s with pid %d and %d starts again, want running pid 7 with 1", got.State, got.PID, got.OOMRestarts)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("the tick reported %v, want one line per sandbox", reports)
 	}
 }
 
