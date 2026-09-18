@@ -127,7 +127,7 @@ func TestLsWithNoDaemonFailsFast(t *testing.T) {
 	app := App{Version: "test", Root: root, Out: &out}
 
 	err := app.Run(t.Context(), []string{"ls"})
-	if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? systemctl status shard"; err == nil || err.Error() != want {
+	if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
 		t.Errorf("ls with no daemon returned %v, want %q", err, want)
 	}
 	if out.Len() != 0 {

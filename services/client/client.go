@@ -27,6 +27,9 @@ import (
 // DefaultTimeout bounds one call that answers in full. A call that streams passes zero.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultRoot is where shard keeps everything on the box, and the one root the systemd unit serves.
+const DefaultRoot = "/var/lib/shard"
+
 // remotePort is the port a --remote with none named is dialed on, which is what shard serve binds.
 const remotePort = "2376"
 
@@ -38,7 +41,9 @@ type Client struct {
 	dialer func(ctx context.Context) (net.Conn, error)
 	// token is the bearer token a front checks. The socket takes none: its mode is the check.
 	token string
-	http  *http.Client
+	// hint is what a connect error tells the operator to check for this target.
+	hint string
+	http *http.Client
 	// Timeout bounds one call. It is not http.Client.Timeout, which would cut a stream; zero is no bound.
 	Timeout time.Duration
 }
@@ -57,14 +62,25 @@ type ListResult struct {
 // ConnectError is a socket nothing answers on. Its text is the one line the operator needs.
 type ConnectError struct {
 	Path string
+	// Hint is what to check: the unit serves the default root only, so any other root names its own daemon.
+	Hint string
 	Err  error
 }
 
 func (e *ConnectError) Error() string {
-	return fmt.Sprintf("cannot connect to shard daemon at %s: is it running? systemctl status shard", e.Path)
+	return fmt.Sprintf("cannot connect to shard daemon at %s: is it running? %s", e.Path, e.Hint)
 }
 
 func (e *ConnectError) Unwrap() error { return e.Err }
+
+// hint is what to check when nothing answers under root: the unit, or the daemon someone starts by hand elsewhere.
+func hint(root string) string {
+	if root == DefaultRoot {
+		return "systemctl status shard"
+	}
+
+	return "shard --root " + root + " daemon"
+}
 
 // NotFoundError is the daemon's 404: nothing holds the reference.
 type NotFoundError struct {
@@ -87,7 +103,7 @@ func (e *APIError) Error() string { return e.Message }
 func New(root string) *Client {
 	socket := filepath.Join(root, api.SocketFile)
 
-	c := &Client{target: socket, Timeout: DefaultTimeout}
+	c := &Client{target: socket, hint: hint(root), Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}
@@ -123,7 +139,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		settings.RootCAs = pool
 	}
 
-	c := &Client{target: host, token: token, Timeout: DefaultTimeout}
+	c := &Client{target: host, token: token, hint: "shard serve on " + parsed.Host, Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&tls.Dialer{Config: settings}).DialContext(ctx, "tcp", address)
 	}
@@ -149,7 +165,7 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		return nil, fmt.Errorf("the tls certificate of %s is not trusted: %w", c.target, err)
 	}
 	if err != nil {
-		return nil, &ConnectError{Path: c.target, Err: err}
+		return nil, &ConnectError{Path: c.target, Hint: c.hint, Err: err}
 	}
 
 	return conn, nil

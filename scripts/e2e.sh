@@ -564,7 +564,7 @@ SOCKET="${SHARD_ROOT}/shard.sock"
 CODE=0
 REFUSAL=$(shard ls 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard ls answered with no daemon up"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls names the socket and the daemon, and nothing else"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "ls names the socket and this root's daemon, and nothing else"
 
 step "start the echo the fronted sandbox talks to"
 # The echo answers on this host's own address, and sslip.io turns that address into three names.
@@ -2081,7 +2081,7 @@ say "the socket is gone"
 CODE=0
 REFUSAL=$(shard ls 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard ls answered with the daemon stopped"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? systemctl status shard" "ls fails fast once the daemon is gone"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "ls fails fast once the daemon is gone"
 
 step "clean up"
 teardown

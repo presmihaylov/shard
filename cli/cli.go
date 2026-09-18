@@ -16,8 +16,8 @@ import (
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-// DefaultRoot is where shard keeps everything on the box.
-const DefaultRoot = "/var/lib/shard"
+// DefaultRoot is where shard keeps everything on the box. The client owns it: its connect hint names the unit there only.
+const DefaultRoot = client.DefaultRoot
 
 // DefaultTimeout bounds one pull inside the daemon. Without it a registry that accepts and stalls pins it.
 const DefaultTimeout = 30 * time.Minute

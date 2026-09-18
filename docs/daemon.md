@@ -8,6 +8,10 @@ without a daemon, with one line:
 shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
 ```
 
+The unit serves `/var/lib/shard` only, so under any other `--root` the hint names that root's own
+daemon instead, `is it running? shard --root /srv/shard-e2e daemon`, and under `--remote` it names
+the front, `shard serve on box.example.com:2376`.
+
 `shard daemon` itself is the one exception: it is the process, not a client of one. No verb starts
 the daemon: a resident root process is installed on purpose, through the systemd unit in
 `packaging/systemd/shard.service`:
