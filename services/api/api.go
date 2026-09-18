@@ -106,7 +106,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	for _, e := range h.routeTable() {
 		mux.HandleFunc(e.Method+" "+e.Pattern, e.handler)
 	}
-	// The mux answers an unknown path in plain text; every error body on this socket is JSON.
+	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: errorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
 	})
