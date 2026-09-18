@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,43 @@ func TestGetMissingImage(t *testing.T) {
 
 	if _, err := store.Get("app:1.0"); !errors.Is(err, registry.ErrNotCached) {
 		t.Fatalf("got %v, want ErrNotCached", err)
+	}
+}
+
+func TestPullPicksTheHostArchitectureOutOfAManifestList(t *testing.T) {
+	other := "arm64"
+	if runtime.GOARCH == "arm64" {
+		other = "amd64"
+	}
+
+	// The foreign entry goes first, so a pick by list order fails and only a pick by platform passes.
+	server, ref := servedIndex(t, "app:1.0", other, runtime.GOARCH)
+
+	pulled := pull(t, openStore(t, server), ref)
+
+	cfg, err := pulled.Config()
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+
+	if cfg.Architecture != runtime.GOARCH {
+		t.Errorf("got a %s image, want the %s one this host runs", cfg.Architecture, runtime.GOARCH)
+	}
+
+	// The same list through WithPlatform lands the other entry, so the pick is by platform and not by chance.
+	pinned, err := registry.Open(t.TempDir(), registry.WithTransport(server.Client().Transport),
+		registry.WithInsecureRegistries(hostOf(t, server)), registry.WithPlatform(v1.Platform{OS: "linux", Architecture: other}))
+	if err != nil {
+		t.Fatalf("Open with a platform: %v", err)
+	}
+
+	cfg, err = pull(t, pinned, ref).Config()
+	if err != nil {
+		t.Fatalf("Config of the pinned pull: %v", err)
+	}
+
+	if cfg.Architecture != other {
+		t.Errorf("got a %s image through WithPlatform, want %s", cfg.Architecture, other)
 	}
 }
 
@@ -235,6 +273,43 @@ func pushImage(t *testing.T, server *httptest.Server, tag string, files map[stri
 		t.Fatalf("parse the reference: %v", err)
 	}
 
+	if err := remote.Write(ref, imageFor(t, "amd64", files), remote.WithTransport(server.Client().Transport)); err != nil {
+		t.Fatalf("push %s: %v", ref, err)
+	}
+
+	return ref.Name()
+}
+
+// servedIndex starts an in-process registry and pushes one manifest list with an image per architecture, in that order.
+func servedIndex(t *testing.T, tag string, archs ...string) (*httptest.Server, string) {
+	t.Helper()
+
+	server := httptest.NewServer(ggcr.New())
+	t.Cleanup(server.Close)
+
+	ref, err := name.ParseReference(hostOf(t, server) + "/shard/" + tag)
+	if err != nil {
+		t.Fatalf("parse the reference: %v", err)
+	}
+
+	var index v1.ImageIndex = empty.Index
+	for _, arch := range archs {
+		index = mutate.AppendManifests(index, mutate.IndexAddendum{
+			Add:        imageFor(t, arch, map[string]string{"/arch": arch}),
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: arch}},
+		})
+	}
+
+	if err := remote.WriteIndex(ref, index, remote.WithTransport(server.Client().Transport)); err != nil {
+		t.Fatalf("push the index %s: %v", ref, err)
+	}
+
+	return server, ref.Name()
+}
+
+func imageFor(t *testing.T, arch string, files map[string]string) v1.Image {
+	t.Helper()
+
 	img, err := mutate.AppendLayers(empty.Image, tarLayer(t, files))
 	if err != nil {
 		t.Fatalf("append the layer: %v", err)
@@ -242,7 +317,7 @@ func pushImage(t *testing.T, server *httptest.Server, tag string, files map[stri
 
 	img, err = mutate.ConfigFile(img, &v1.ConfigFile{
 		OS:           "linux",
-		Architecture: "amd64",
+		Architecture: arch,
 		Created:      v1.Time{Time: time.Unix(1700000000, 0).UTC()},
 		Config:       v1.Config{Entrypoint: []string{"/bin/sh"}, Env: []string{"PATH=/usr/bin"}},
 	})
@@ -250,11 +325,7 @@ func pushImage(t *testing.T, server *httptest.Server, tag string, files map[stri
 		t.Fatalf("set the config: %v", err)
 	}
 
-	if err := remote.Write(ref, img, remote.WithTransport(server.Client().Transport)); err != nil {
-		t.Fatalf("push %s: %v", ref, err)
-	}
-
-	return ref.Name()
+	return img
 }
 
 // tarLayer builds a tar layer. A name that starts with .wh. is a whiteout, exactly as an image would carry it.

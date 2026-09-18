@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ type Store struct {
 
 type Option func(*Store)
 
-// WithPlatform picks the image out of a manifest list. The box is x86_64 and so is every benchmark.
+// WithPlatform picks the image out of a manifest list; the default is linux on the architecture of this host.
 func WithPlatform(p v1.Platform) Option {
 	return func(s *Store) { s.platform = p }
 }
@@ -86,7 +87,7 @@ func Open(dir string, opts ...Option) (*Store, error) {
 
 	s := &Store{
 		path:      path,
-		platform:  v1.Platform{OS: "linux", Architecture: "amd64"},
+		platform:  v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
 		keychain:  authn.DefaultKeychain,
 		transport: defaultTransport(),
 		insecure:  map[string]bool{},
