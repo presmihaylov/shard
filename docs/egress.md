@@ -40,7 +40,8 @@ host. A wildcard inside a label, as `api*.example.com`, is refused. `suffix:exam
 apex and every name under it, and is matched by the proxy only too.
 
 Ports are a comma list of numbers and ranges, `tcp:22,8000-8100`. A rule with no protocol matches
-every protocol, ping included.
+every protocol, ping included. An address or prefix rule with no ports opens every tcp and udp port
+to that destination, so name the ports when only some are wanted.
 
 A name rule is `tcp` to ports 80 and 443 only, and both when no port is named. A plain name is
 enforced twice: the host table holds the addresses it resolved to when the table was written, and

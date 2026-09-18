@@ -7,7 +7,7 @@ stateDiagram-v2
     [*] --> pending: shard create
     pending --> running: image ready, entrypoint started
     pending --> failed: pull or start failed
-    created --> running: start
+    created --> running: fork or clone
     created --> stopped: stop before start
     running --> paused: pause (snapshot to disk, memory freed)
     running --> stopped: stop, and nothing else
@@ -24,7 +24,7 @@ stateDiagram-v2
 |---|---|---|---|
 | `pending` | `running` | the daemon finished the pull and the start | yes |
 | `pending` | `failed` | the pull or the start failed | yes |
-| `created` | `running` | `start` | yes |
+| `created` | `running` | a fork or clone | yes |
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
