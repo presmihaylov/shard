@@ -111,6 +111,10 @@ func ReadSecret(path string) ([]byte, error) {
 	if secret == "" {
 		return nil, fmt.Errorf("the secret file %s holds no secret", path)
 	}
+	// RFC 7518 wants an HS256 key at least the hash width, 32 bytes, or an offline brute force breaks a short one.
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("the secret in %s is %d bytes; the front needs at least 32: openssl rand -hex 32 > %s", path, len(secret), path)
+	}
 
 	return []byte(secret), nil
 }

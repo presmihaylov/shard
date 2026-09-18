@@ -218,6 +218,19 @@ func TestServeMintRefusesNoName(t *testing.T) {
 	}
 }
 
+func TestServeMintRefusesAShortSecret(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(strings.Repeat("a", 31)), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+	if err := app.serve(t.Context(), []string{"mint", "--name", "ci", "--secret-file", secret}); err == nil {
+		t.Error("mint signed a token with a secret under 32 bytes")
+	}
+}
+
 // selfSigned writes a certificate for 127.0.0.1 and its key into dir, and answers the two paths.
 func selfSigned(t *testing.T, dir string) (string, string) {
 	t.Helper()

@@ -454,7 +454,8 @@ token with no subject, a token with no expiry and an expired token are each the 
 the front nor the CLI ever logs a token or the secret, and the front logs the subject of every
 request it lets through. Without `--cert` and `--key` the front refuses to start: there is no plain
 TCP mode to fall back to. The secret file must not be readable by everyone on the host, and the front
-refuses one that is.
+refuses one that is. The secret must be at least 32 bytes, the width an HS256 key needs, and the front
+refuses a shorter one; `openssl rand -hex 32` prints a secret that passes.
 
 The access control is TLS on the wire, one signing secret in a file, and a coarse scope on each
 token. There is no user and no role yet.

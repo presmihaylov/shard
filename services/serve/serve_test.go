@@ -665,6 +665,24 @@ func TestReadSecretRefusesAnEmptyFileAndNoFile(t *testing.T) {
 	}
 }
 
+func TestReadSecretRefusesASecretUnder32Bytes(t *testing.T) {
+	_, err := ReadSecret(secretFile(t, strings.Repeat("a", 31)))
+	if err == nil {
+		t.Fatal("a 31-byte secret was accepted")
+	}
+	if !strings.Contains(err.Error(), "31 bytes") || !strings.Contains(err.Error(), "openssl rand -hex 32") {
+		t.Errorf("the refusal is %q, want the byte count and the generation line", err.Error())
+	}
+
+	if _, err := ReadSecret(secretFile(t, strings.Repeat("a", 32))); err != nil {
+		t.Errorf("a 32-byte secret was refused: %v", err)
+	}
+	// openssl rand -hex 32 prints 64 hex characters, the documented way to make one.
+	if _, err := ReadSecret(secretFile(t, strings.Repeat("0123456789abcdef", 4))); err != nil {
+		t.Errorf("the openssl rand -hex 32 line was refused: %v", err)
+	}
+}
+
 func TestReadTokenRefusesAFileTheHostCanRead(t *testing.T) {
 	path := tokenFile(t, "cli-token")
 	if err := os.Chmod(path, 0o644); err != nil {
