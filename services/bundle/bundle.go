@@ -344,6 +344,9 @@ func resourcesOf(l *specs.Linux) models.Resources {
 		// The quota is vcpus times the period, so the vcpu count can never overflow an int here.
 		r.VCPUs = int(*c.Quota / int64(*c.Period)) //nolint:gosec
 	}
+	if p := l.Resources.Pids; p != nil && p.Limit != nil {
+		r.PidsMax = *p.Limit
+	}
 
 	return r
 }
@@ -363,6 +366,10 @@ func resources(r models.Resources) *specs.LinuxResources {
 		quota := int64(r.VCPUs) * int64(period)
 		out.CPU = &specs.LinuxCPU{Quota: &quota, Period: &period}
 	}
+
+	// Every sandbox is bounded on PIDs, even one that named no bound, so an old record cannot fork-bomb the host.
+	pids := PidsBound(r)
+	out.Pids = &specs.LinuxPids{Limit: &pids}
 
 	return out
 }

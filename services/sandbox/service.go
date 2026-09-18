@@ -236,6 +236,8 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
+	// Record the pids bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
+	req.Resources.PidsMax = bundle.PidsBound(req.Resources)
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
 	// the pull: a prune between the record and the pull would otherwise delete the rootfs the create needs.
@@ -464,6 +466,9 @@ func validate(req CreateRequest) error {
 	}
 	if req.Resources.VCPUs < 0 {
 		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
+	}
+	if req.Resources.PidsMax < 0 {
+		return &RequestError{Err: fmt.Errorf("the pids bound cannot be negative, got %d", req.Resources.PidsMax)}
 	}
 	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
 	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
