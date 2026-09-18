@@ -71,6 +71,7 @@ services/client/           the typed client of that API, which the thin CLI verb
 services/serve/            the TCP front: tls, a bearer token, and the bytes onto that socket
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/sysbox/       implements models.Provider on Sysbox
+services/provider/runc/         implements models.Provider on bare runc
 services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite every substrate must pass
 
@@ -99,7 +100,8 @@ docs/
 - **Name a `pkg` after the thing it drives, and a provider after the substrate.**
   So `pkg/runsc` drives the binary, `services/provider/gvisor` is the substrate.
   `pkg/firecracker` and `services/provider/firecracker` therefore collide: a file
-  importing both must alias the driver, as `fcapi`.
+  importing both must alias the driver, as `fcapi`. `pkg/runc` and
+  `services/provider/runc` collide the same way, and the driver's alias is `runccli`.
 - The module stays at `v0`. Expect the `Provider` interface to change as each
   substrate lands.
 
