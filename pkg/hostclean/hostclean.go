@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/netns"
 )
 
@@ -20,6 +21,12 @@ const (
 	sandboxDir = "sandboxes"
 	recordFile = "sandbox.json"
 )
+
+// cgroupParent is the one cgroup the daemon puts every sandbox under, by id.
+const cgroupParent = "shard"
+
+// runtimes maps the provider a record names to the binary whose state the daemon keeps under the root, by that name.
+var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc"}
 
 // mountinfo is where the kernel lists what is mounted, and the only account of a mount a run leaked.
 const mountinfo = "/proc/self/mountinfo"
@@ -155,41 +162,61 @@ func leftSandboxes(prefixes []string) ([]Leftover, error) {
 	return out, nil
 }
 
-// sandboxOf names what one record still holds on the host. A namespace or a link that is already
-// gone is named by no leftover, so a teardown that ran twice reports nothing the second time.
+// sandboxOf names what one record still holds on the host; anything already gone is named by no leftover.
 func sandboxOf(root, id string) []Leftover {
 	var out []Leftover
-	if _, err := os.Stat(netns.NamespacePath(id)); err == nil {
+	rec := readRecord(filepath.Join(root, sandboxDir, id, recordFile))
+
+	// The runtime's state sits under the root, so once the root is gone nothing can name the process or the cgroup.
+	if binary, ok := runtimes[rec.Provider]; ok {
+		state := filepath.Join(root, binary)
+		if _, err := os.Stat(filepath.Join(state, id)); err == nil {
+			out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
+		}
+	}
+	// A stop keeps the cgroup for the rm that never came.
+	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
+		out = append(out, Leftover{What: "the cgroup", Path: group, remove: func() error { return cgroup.Remove(group) }})
+	}
+	if exists(netns.NamespacePath(id)) {
 		out = append(out, Leftover{What: "the namespace", Path: id, remove: run("ip", "netns", "delete", id)})
 	}
 
-	link := hostInterface(filepath.Join(root, sandboxDir, id, recordFile))
-	if link == "" {
+	if rec.HostInterface == "" {
 		return out
 	}
-	if exec.Command("ip", "link", "show", link).Run() != nil {
+	if exec.Command("ip", "link", "show", rec.HostInterface).Run() != nil {
 		return out
 	}
 
-	return append(out, Leftover{What: "the sandbox link", Path: link, remove: run("ip", "link", "delete", link)})
+	return append(out, Leftover{What: "the sandbox link", Path: rec.HostInterface, remove: run("ip", "link", "delete", rec.HostInterface)})
 }
 
-// hostInterface reads the one field of a record this package needs, and answers "" for a record a
-// crashed run never finished writing.
-func hostInterface(record string) string {
-	blob, err := os.ReadFile(record)
+// record is the two fields of a sandbox record this package reads: who holds the sandbox, and its veth.
+type record struct {
+	Provider      string `json:"provider"`
+	HostInterface string `json:"host_interface"`
+}
+
+// readRecord answers an empty record for one a crashed run never finished writing.
+func readRecord(path string) record {
+	blob, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return record{}
 	}
 
-	var held struct {
-		HostInterface string `json:"host_interface"`
-	}
+	var held record
 	if json.Unmarshal(blob, &held) != nil {
-		return ""
+		return record{}
 	}
 
-	return held.HostInterface
+	return held
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
 }
 
 func leftRoots(prefixes []string) ([]Leftover, error) {

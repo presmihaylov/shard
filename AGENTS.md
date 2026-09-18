@@ -157,13 +157,16 @@ does the same in the shell. No run ever speaks to the daemon of the systemd unit
 and none of them uses the default root, so a box can run both at once.
 
 **An integration run gives the host back.** A run owns its temp roots and nothing
-else: a record under one of them is what names the namespace and the veth of a
-sandbox, so a sweep touches none of the systemd unit's. `TestMain` refuses a root
-an earlier run left, and names what it found. Its teardown removes every sandbox
-first, because only the daemon that holds the record can free what the record
-names, then stops the daemon and sweeps the mounts, the sandboxes those roots
-still record, and the roots. It runs on a pass, on a failure and on an interrupt,
-and `pkg/hostclean` is the one place that does it.
+else: a record under one of them is what names the process, the cgroup, the
+namespace and the veth of a sandbox, so a sweep touches none of the systemd
+unit's. `TestMain` refuses a root an earlier run left, and names what it found.
+Its teardown removes every sandbox first, because only the daemon that holds the
+record can free what the record names, then stops the daemon and sweeps the
+mounts, the sandboxes those roots still record, and the roots. The root also
+holds the runtime's own state, so a root removed before its sandboxes leaves
+their processes, cgroups and namespaces on the host with nothing left to name
+them (SHARD-162). It runs on a pass, on a failure and on an interrupt, and
+`pkg/hostclean` is the one place that does it.
 
 **Unit tests keep the daemon out of it.** A `services/` test calls `services/`, and
 an `api` handler test serves `httptest`, over a unix socket in a temp dir where the

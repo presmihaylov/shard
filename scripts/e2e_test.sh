@@ -195,6 +195,53 @@ rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 DAEMON_LOG=""
 
 echo
+echo "== teardown frees a sandbox the root records and no step tracked"
+SHARD_CALLS=$(mktemp)
+IP_CALLS=$(mktemp)
+SHARD_ROOT=$(mktemp -d)
+ID=""
+LINK=""
+mkdir -p "${SHARD_ROOT}/sandboxes/loose-heron-0910"
+echo '{"id":"loose-heron-0910","host_interface":"shardv9"}' >"${SHARD_ROOT}/sandboxes/loose-heron-0910/sandbox.json"
+
+teardown
+
+check "the sandbox it removed" "$(cat "${SHARD_CALLS}")" "rm --force loose-heron-0910"
+check "nothing else, because rm freed it" "$(cat "${IP_CALLS}")" ""
+check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo gone)" "gone"
+rm -f "${SHARD_CALLS}" "${IP_CALLS}"
+
+echo
+echo "== teardown asks the runtime and the host directly when rm cannot free a recorded sandbox"
+SHARD_CALLS=$(mktemp)
+IP_CALLS=$(mktemp)
+RUNTIME_CALLS=$(mktemp)
+RMDIR_CALLS=$(mktemp)
+ERR=$(mktemp)
+SHARD_ROOT=$(mktemp -d)
+RUNTIME=runsc
+mkdir -p "${SHARD_ROOT}/sandboxes/loose-heron-0910"
+echo '{"id":"loose-heron-0910","host_interface":"shardv9"}' >"${SHARD_ROOT}/sandboxes/loose-heron-0910/sandbox.json"
+
+shard() { printf '%s\n' "$*" >>"${SHARD_CALLS}"; return 1; }
+runsc() { printf '%s\n' "$*" >>"${RUNTIME_CALLS}"; }
+rmdir() { printf '%s\n' "$*" >>"${RMDIR_CALLS}"; }
+umount() { :; }
+
+teardown 2>"${ERR}"
+
+check "the rm it tried" "$(cat "${SHARD_CALLS}")" "rm --force loose-heron-0910"
+check "the runtime it asked, over the state under the root" "$(cat "${RUNTIME_CALLS}")" "--root ${SHARD_ROOT}/runsc delete --force loose-heron-0910"
+check "the cgroup it removed" "$(cat "${RMDIR_CALLS}")" "/sys/fs/cgroup/shard/loose-heron-0910"
+check "the namespace and the link off the record" "$(tr '\n' ',' <"${IP_CALLS}")" "netns delete loose-heron-0910,link delete shardv9,"
+check "what it said" "$(grep -c 'rm could not free sandbox loose-heron-0910' "${ERR}")" "1"
+check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo gone)" "gone"
+rm -f "${SHARD_CALLS}" "${IP_CALLS}" "${RUNTIME_CALLS}" "${RMDIR_CALLS}" "${ERR}"
+unset -f rmdir umount
+shard() { printf '%s\n' "$*" >>"${SHARD_CALLS}"; }
+RUNTIME=""
+
+echo
 echo "== wait_for_daemon waits for the socket and the proxy line, and names the cause on a miss"
 SHARD_ROOT=$(mktemp -d)
 DAEMON_LOG=$(mktemp)
