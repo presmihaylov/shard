@@ -458,12 +458,36 @@ shard_front() {
 		--ca-file "${SERVE_DIR}/serve.crt" "$@"
 }
 
+# recorded_sandboxes prints the id of every sandbox the root still records, whether a step tracked it or not.
+recorded_sandboxes() {
+	local dir
+	for dir in "${SHARD_ROOT}"/sandboxes/*/; do
+		[ -d "${dir}" ] || continue
+		basename "${dir}"
+	done
+}
+
+# free_sandbox gives back a sandbox rm did not, before wipe_root removes the runtime state that names it.
+free_sandbox() {
+	local id="$1" link
+	shard rm --force "${id}" >/dev/null 2>&1 && return 0
+
+	echo "teardown: rm could not free sandbox ${id}, so the runtime and the host are asked directly" >&2
+	[ -z "${RUNTIME:-}" ] || "${RUNTIME}" --root "${SHARD_ROOT}/${RUNTIME}" delete --force "${id}" >/dev/null 2>&1 || true
+	rmdir "/sys/fs/cgroup/shard/${id}" >/dev/null 2>&1 || true
+	ip netns delete "${id}" >/dev/null 2>&1 || true
+	umount "${USERNS_DIR}/${id}" >/dev/null 2>&1 || true
+	rm -f "${USERNS_DIR}/${id}"
+	link=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${id}/sandbox.json" 2>/dev/null | cut -d'"' -f4 || true)
+	[ -z "${link}" ] || ip link delete "${link}" >/dev/null 2>&1 || true
+}
+
 # teardown gives the host back. A run that failed halfway must not leave a sandbox behind: the
-# record is the only handle by which its mount and its namespace can be found again.
+# record is the only handle by which its mount, its namespace, its cgroup and its process can be found again.
 teardown() {
 	local id link
 	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}$(recorded_sandboxes)" ]; then
 		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
 	# shellcheck disable=SC2086 # the clone lists are meant to split
@@ -479,6 +503,10 @@ teardown() {
 	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
+	done
+	# What the loops above did not free still has a record: a sandbox no step tracked, or one rm refused.
+	for id in $(recorded_sandboxes); do
+		free_sandbox "${id}"
 	done
 
 	stop_serve
