@@ -72,3 +72,27 @@ func TestUnmountDetachesTheDisk(t *testing.T) {
 		}
 	}
 }
+
+// TestUnmountOverlayKeepsTheDisk pins what a Sysbox stop leaves: no overlay, and the disk up for sysbox-mgr to chown the upper layer back at delete.
+func TestUnmountOverlayKeepsTheDisk(t *testing.T) {
+	requireRunsc(t)
+
+	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB, []string{"/bin/true"})
+	if err := b.Mount(lower); err != nil {
+		t.Fatalf("mount the overlay: %v", err)
+	}
+	t.Cleanup(func() { b.Unmount() })
+
+	if err := b.UnmountOverlay(); err != nil {
+		t.Fatalf("unmount the overlay: %v", err)
+	}
+	if _, found, err := mountinfo.At(b.RootFS); err != nil || found {
+		t.Errorf("%s is still mounted after the overlay unmount (found %v, err %v)", b.RootFS, found, err)
+	}
+	if _, found, err := mountinfo.At(b.Disk); err != nil || !found {
+		t.Errorf("the disk is not mounted at %s after the overlay unmount (found %v, err %v)", b.Disk, found, err)
+	}
+	if _, err := os.Stat(b.Upper); err != nil {
+		t.Errorf("the upper layer is out of reach after the overlay unmount: %v", err)
+	}
+}

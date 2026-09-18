@@ -1538,7 +1538,7 @@ oom_restart_steps() {
 
 # disk_bound_steps prove SHARD-173: a guest write past --disk fails with ENOSPC and the host holds no more than the bound.
 disk_bound_steps() {
-	local id clone rec image_mib state_mib
+	local id clone rec image_mib state_mib disk_mount
 	# Each fill asks for three times the bound. A full disk takes no status file, so the count goes through a pipe and the fill is freed after.
 	local fill_tmp='dd if=/dev/zero of=/tmp/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /tmp/fill'
 	local fill_root='dd if=/dev/zero of=/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /fill'
@@ -1568,6 +1568,12 @@ disk_bound_steps() {
 	step "the disk survives a stop and a start"
 	shard exec "${id}" -- /bin/sh -c 'echo before-the-stop > /root/marker' >/dev/null
 	shard stop --time "${GRACE}" "${id}" >/dev/null
+	# sysbox-runc holds a stopped sandbox, and sysbox-mgr chowns its upper layer back at delete, so the disk stays up until then.
+	disk_mount=$(mount | grep " on ${SHARD_ROOT}/sandboxes/${id}/disk " || true)
+	case "${PROVIDER}" in
+	gvisor) absent "the disk mount of the stopped sandbox" "${disk_mount}" ;;
+	sysbox) [ -n "${disk_mount}" ] || fail "the disk of the stopped sandbox is not mounted, and sysbox-mgr walks its upper layer at the next start" ;;
+	esac
 	shard start "${id}" >/dev/null
 	expect_exec_in "${id}" "before-the-stop" "the marker survives the stop and start" /bin/cat /root/marker
 

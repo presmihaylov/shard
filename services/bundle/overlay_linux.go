@@ -36,19 +36,29 @@ func (b Bundle) Mount(lower string) error {
 
 // Unmount drops the merged view, then the disk under it; the layers stay in the image, which a stop and start relies on.
 func (b Bundle) Unmount() error {
+	if err := b.UnmountOverlay(); err != nil {
+		return err
+	}
+
+	return b.UnmountDisk()
+}
+
+// UnmountOverlay drops the merged view alone, for a substrate that still walks the layers under it after a stop.
+func (b Bundle) UnmountOverlay() error {
 	mounted, err := b.Mounted()
 	if err != nil {
 		return err
 	}
-
-	if mounted {
-		// MNT_DETACH, because a leftover open file in the guest must not make a stop fail.
-		if err := syscall.Unmount(b.RootFS, syscall.MNT_DETACH); err != nil {
-			return fmt.Errorf("unmount %s: %w", b.RootFS, err)
-		}
+	if !mounted {
+		return nil
 	}
 
-	return b.UnmountDisk()
+	// MNT_DETACH, because a leftover open file in the guest must not make a stop fail.
+	if err := syscall.Unmount(b.RootFS, syscall.MNT_DETACH); err != nil {
+		return fmt.Errorf("unmount %s: %w", b.RootFS, err)
+	}
+
+	return nil
 }
 
 // Mounted asks the kernel rather than a record, because a shard restart forgets what it mounted.

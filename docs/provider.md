@@ -124,7 +124,9 @@ it. The image is sparse, so an unwritten sandbox costs the host nothing, and it 
 to the bound, so host usage stops there whatever the guest does. Inside the guest a write past the bound
 fails with `ENOSPC`, the sandbox lives on, and `df` shows the bound less what ext4 keeps for itself.
 
-A stop detaches the disk and a start mounts it again, so the layer survives the way it did before. Fork
+A stop detaches the disk and a start mounts it again, so the layer survives the way it did before. On
+Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox: `sysbox-mgr` chowns the
+upper layer back when the container is deleted, at the next start or at `rm`, and it must find it. Fork
 and clone copy the layers into a disk of their own, bounded the way the source was; config.json carries
 the bound for that. The record carries the resolved bound, so `inspect` shows the value the image
 enforces, not a bare `0`. `shard create` refuses a negative value. The host needs `mkfs.ext4`, which

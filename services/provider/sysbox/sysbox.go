@@ -403,7 +403,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 
 	// sysbox-runc still holds a sandbox it has stopped, so the status read above is what owns the mount.
-	return p.unmount(id, status.Exists)
+	b, err := p.openHeld(id, status.Exists)
+	if err != nil {
+		return err
+	}
+
+	// The disk stays up: sysbox-mgr chowns the upper layer back when the container is deleted, at the next start or at remove.
+	return b.UnmountOverlay()
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
@@ -447,16 +453,26 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
 // held says whether sysbox-runc knew the sandbox, because only that answers who owns the rootfs.
 func (p *Provider) unmount(id string, held bool) error {
-	b, err := p.open(id)
+	b, err := p.openHeld(id, held)
 	if err != nil {
 		return err
 	}
 
-	if err := orphaned(b, id, held); err != nil {
-		return err
+	return b.Unmount()
+}
+
+// openHeld is the bundle of a sandbox whose rootfs may be dropped: sysbox-runc held it, or nothing stands on it.
+func (p *Provider) openHeld(id string, held bool) (bundle.Bundle, error) {
+	b, err := p.open(id)
+	if err != nil {
+		return bundle.Bundle{}, err
 	}
 
-	return b.Unmount()
+	if err := orphaned(b, id, held); err != nil {
+		return bundle.Bundle{}, err
+	}
+
+	return b, nil
 }
 
 // orphaned refuses a rootfs that stands while sysbox-runc holds nothing: something deleted the
