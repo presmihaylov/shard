@@ -1,4 +1,4 @@
-package sysboxrunc_test
+package runc_test
 
 import (
 	"context"
@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
+	"github.com/presmihaylov/shard/pkg/runc"
 )
 
 // fake stands in for the binary: it records the argv it was called with, then prints what a test asked for.
-func fake(t *testing.T, stdout, stderr string, exitCode int) (*sysboxrunc.Runner, string) {
+func fake(t *testing.T, stdout, stderr string, exitCode int) (*runc.Runner, string) {
 	t.Helper()
 
 	return fakeBinary(t, "printf '%s' '"+stdout+"'\n"+
@@ -23,22 +23,22 @@ func fake(t *testing.T, stdout, stderr string, exitCode int) (*sysboxrunc.Runner
 		"exit "+strconv.Itoa(exitCode)+"\n")
 }
 
-// fakeBinary writes a fake sysbox-runc that records its argv and then runs body. Body is what a test varies.
-func fakeBinary(t *testing.T, body string, opts ...sysboxrunc.Option) (*sysboxrunc.Runner, string) {
+// fakeBinary writes a fake runc that records its argv and then runs body. Body is what a test varies.
+func fakeBinary(t *testing.T, body string, opts ...runc.Option) (*runc.Runner, string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	argvFile := filepath.Join(dir, "argv")
-	binary := filepath.Join(dir, "sysbox-runc")
+	binary := filepath.Join(dir, "runc")
 
 	// A body that has to signal the test writes beside the argv file, so $argv is the path it needs.
 	script := "#!/bin/sh\nargv=" + argvFile + "\nprintf '%s\\n' \"$@\" > \"$argv\"\n" + body
 
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatalf("write the fake sysbox-runc: %v", err)
+		t.Fatalf("write the fake runc: %v", err)
 	}
 
-	r, err := sysboxrunc.New(filepath.Join(dir, "root"), append([]sysboxrunc.Option{sysboxrunc.WithBinary(binary)}, opts...)...)
+	r, err := runc.New(filepath.Join(dir, "root"), append([]runc.Option{runc.WithBinary(binary)}, opts...)...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -63,25 +63,25 @@ func argv(t *testing.T, path string) []string {
 
 	blob, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("the fake sysbox-runc recorded no argv: %v", err)
+		t.Fatalf("the fake runc recorded no argv: %v", err)
 	}
 
 	return strings.Split(strings.TrimSuffix(string(blob), "\n"), "\n")
 }
 
 func TestNewRefusesARelativeRoot(t *testing.T) {
-	if _, err := sysboxrunc.New("var/lib/shard/sysbox"); err == nil {
+	if _, err := runc.New("var/lib/shard/runc"); err == nil {
 		t.Fatal("New accepted a relative root")
 	}
 }
 
 func TestNewRefusesABinaryThatIsNotThere(t *testing.T) {
-	if _, err := sysboxrunc.New(t.TempDir(), sysboxrunc.WithBinary("sysbox-runc-that-does-not-exist")); err == nil {
+	if _, err := runc.New(t.TempDir(), runc.WithBinary("runc-that-does-not-exist")); err == nil {
 		t.Fatal("New accepted a binary it cannot find")
 	}
 }
 
-func TestStateParsesWhatSysboxRuncPrints(t *testing.T) {
+func TestStateParsesWhatRuncPrints(t *testing.T) {
 	r, _ := fake(t, `{"id":"amber-otter-1a2b","status":"running","pid":4242,"bundle":"/var/lib/shard/sandboxes/x/bundle"}`, "", 0)
 
 	state, err := r.State(t.Context(), "amber-otter-1a2b")
@@ -89,7 +89,7 @@ func TestStateParsesWhatSysboxRuncPrints(t *testing.T) {
 		t.Fatalf("State: %v", err)
 	}
 
-	if state.Status != sysboxrunc.StatusRunning {
+	if state.Status != runc.StatusRunning {
 		t.Errorf("got status %q, want running", state.Status)
 	}
 	if state.PID != 4242 {
@@ -97,7 +97,7 @@ func TestStateParsesWhatSysboxRuncPrints(t *testing.T) {
 	}
 }
 
-// The root is the one global flag: without it sysbox-runc keeps state under its own default and a
+// The root is the one global flag: without it runc keeps state under its own default and a
 // second daemon on the host would see, and could delete, containers that are not its own.
 func TestEveryCommandCarriesTheRoot(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
@@ -114,14 +114,14 @@ func TestEveryCommandCarriesTheRoot(t *testing.T) {
 func TestTheVerbsSpellTheirFlags(t *testing.T) {
 	cases := []struct {
 		verb string
-		call func(r *sysboxrunc.Runner) error
+		call func(r *runc.Runner) error
 		want []string
 	}{
-		{"pause", func(r *sysboxrunc.Runner) error { return r.Pause(t.Context(), "amber-otter-1a2b") }, []string{"pause", "amber-otter-1a2b"}},
-		{"resume", func(r *sysboxrunc.Runner) error { return r.Resume(t.Context(), "amber-otter-1a2b") }, []string{"resume", "amber-otter-1a2b"}},
-		{"delete", func(r *sysboxrunc.Runner) error { return r.Delete(t.Context(), "amber-otter-1a2b", true) }, []string{"delete", "--force", "amber-otter-1a2b"}},
-		{"kill", func(r *sysboxrunc.Runner) error { return r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false) }, []string{"kill", "amber-otter-1a2b", "TERM"}},
-		{"kill --all", func(r *sysboxrunc.Runner) error { return r.Kill(t.Context(), "amber-otter-1a2b", "KILL", true) }, []string{"kill", "--all", "amber-otter-1a2b", "KILL"}},
+		{"pause", func(r *runc.Runner) error { return r.Pause(t.Context(), "amber-otter-1a2b") }, []string{"pause", "amber-otter-1a2b"}},
+		{"resume", func(r *runc.Runner) error { return r.Resume(t.Context(), "amber-otter-1a2b") }, []string{"resume", "amber-otter-1a2b"}},
+		{"delete", func(r *runc.Runner) error { return r.Delete(t.Context(), "amber-otter-1a2b", true) }, []string{"delete", "--force", "amber-otter-1a2b"}},
+		{"kill", func(r *runc.Runner) error { return r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false) }, []string{"kill", "amber-otter-1a2b", "TERM"}},
+		{"kill --all", func(r *runc.Runner) error { return r.Kill(t.Context(), "amber-otter-1a2b", "KILL", true) }, []string{"kill", "--all", "amber-otter-1a2b", "KILL"}},
 	}
 
 	for _, tc := range cases {
@@ -137,10 +137,10 @@ func TestTheVerbsSpellTheirFlags(t *testing.T) {
 	}
 }
 
-func TestAContainerSysboxRuncDoesNotHoldIsNotFound(t *testing.T) {
+func TestAContainerRuncDoesNotHoldIsNotFound(t *testing.T) {
 	r, _ := fake(t, "", `container "amber-otter-1a2b" does not exist`, 1)
 
-	if _, err := r.State(t.Context(), "amber-otter-1a2b"); !errors.Is(err, sysboxrunc.ErrNotFound) {
+	if _, err := r.State(t.Context(), "amber-otter-1a2b"); !errors.Is(err, runc.ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
@@ -149,27 +149,27 @@ func TestAContainerSysboxRuncDoesNotHoldIsNotFound(t *testing.T) {
 func TestKillingADeadContainerIsNotRunning(t *testing.T) {
 	r, _ := fake(t, "", "container not running", 1)
 
-	if err := r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false); !errors.Is(err, sysboxrunc.ErrNotRunning) {
+	if err := r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false); !errors.Is(err, runc.ErrNotRunning) {
 		t.Fatalf("got %v, want ErrNotRunning", err)
 	}
 }
 
-func TestAFailureKeepsWhatSysboxRuncSaid(t *testing.T) {
-	r, _ := fake(t, "", "some new sysbox failure", 1)
+func TestAFailureKeepsWhatRuncSaid(t *testing.T) {
+	r, _ := fake(t, "", "some new runc failure", 1)
 
 	err := r.Delete(t.Context(), "amber-otter-1a2b", false)
 	if err == nil {
-		t.Fatal("Delete reported success on a failing sysbox-runc")
+		t.Fatal("Delete reported success on a failing runc")
 	}
-	if !strings.Contains(err.Error(), "some new sysbox failure") {
-		t.Errorf("got %q, want it to carry what sysbox-runc printed", err)
+	if !strings.Contains(err.Error(), "some new runc failure") {
+		t.Errorf("got %q, want it to carry what runc printed", err)
 	}
 }
 
 func TestCreateRefusesWithNoBundle(t *testing.T) {
 	r, _ := fake(t, "", "", 0)
 
-	if err := r.Create(t.Context(), "amber-otter-1a2b", sysboxrunc.CreateOptions{}); err == nil {
+	if err := r.Create(t.Context(), "amber-otter-1a2b", runc.CreateOptions{}); err == nil {
 		t.Fatal("Create accepted a container with no bundle")
 	}
 }
@@ -181,31 +181,31 @@ func TestCreateQuotesItsDiagnostics(t *testing.T) {
 
 	f := openLog(t, "output from an earlier run\n")
 
-	err := r.Create(t.Context(), "amber-otter-1a2b", sysboxrunc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	err := r.Create(t.Context(), "amber-otter-1a2b", runc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
 	if err == nil {
-		t.Fatal("Create reported success on a failing sysbox-runc")
+		t.Fatal("Create reported success on a failing runc")
 	}
 
 	if !strings.Contains(err.Error(), "mount /tmp/absent: no such file or directory") {
-		t.Errorf("got %q, want it to carry what sysbox-runc printed", err)
+		t.Errorf("got %q, want it to carry what runc printed", err)
 	}
 	if strings.Contains(err.Error(), "output from an earlier run") {
 		t.Errorf("got %q, want only this create's own output", err)
 	}
 }
 
-func TestCreateReportsThatSysboxRuncPrintedNothing(t *testing.T) {
+func TestCreateReportsThatRuncPrintedNothing(t *testing.T) {
 	r, _ := fake(t, "", "", 1)
 
 	f := openLog(t, "")
 
-	err := r.Create(t.Context(), "amber-otter-1a2b", sysboxrunc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	err := r.Create(t.Context(), "amber-otter-1a2b", runc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
 	if err == nil {
-		t.Fatal("Create reported success on a failing sysbox-runc")
+		t.Fatal("Create reported success on a failing runc")
 	}
 
 	if !strings.Contains(err.Error(), "printed nothing") {
-		t.Errorf("got %q, want it to say sysbox-runc left nothing behind", err)
+		t.Errorf("got %q, want it to say runc left nothing behind", err)
 	}
 }
 
@@ -217,7 +217,7 @@ func TestCreateNamesOurOwnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := r.Create(ctx, "amber-otter-1a2b", sysboxrunc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
+	err := r.Create(ctx, "amber-otter-1a2b", runc.CreateOptions{Bundle: t.TempDir(), Stdout: f, Stderr: f})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Create returned %v, want it to name the cancellation", err)
 	}
@@ -252,9 +252,9 @@ func openLog(t *testing.T, earlier string) *os.File {
 // SHARD-158: a restarted daemon sweeps the scratch the last one left, and it looks under its own root alone.
 func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 	execDir := filepath.Join(t.TempDir(), "exec")
-	r, argvFile := fakeBinary(t, "", sysboxrunc.WithExecDir(execDir))
+	r, argvFile := fakeBinary(t, "", runc.WithExecDir(execDir))
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{Argv: []string{"/bin/true"}}); err != nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
 	r, argvFile := fake(t, "", "", 0)
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
 		Argv:    []string{"/bin/sh", "-c", "echo hi"},
 		Env:     []string{"A=1", "B=2"},
 		WorkDir: "/srv",
@@ -296,7 +296,7 @@ func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
 		t.Fatalf("the argv %q names no container", got)
 	}
 
-	// Everything after the id is the guest's own command, and sysbox-runc reads no flag past it.
+	// Everything after the id is the guest's own command, and runc reads no flag past it.
 	if command := got[id+1:]; !slices.Equal(command, []string{"/bin/sh", "-c", "echo hi"}) {
 		t.Errorf("the command is %q, want the argv Exec was given", command)
 	}
@@ -332,7 +332,7 @@ func pairs(args []string) []string {
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
 	r, _ := fake(t, "", "", 7)
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{Argv: []string{"/bin/false"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/false"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -345,12 +345,12 @@ func TestExecReturnsTheCommandExitCode(t *testing.T) {
 func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{}); err == nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{}); err == nil {
 		t.Fatal("Exec accepted a spec with no command")
 	}
 
 	if _, err := os.Stat(recorded); err == nil {
-		t.Error("a refusal still ran sysbox-runc")
+		t.Error("a refusal still ran runc")
 	}
 }
 
@@ -358,7 +358,7 @@ func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
 func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
 	r, _ := fakeBinary(t, "kill -9 $$\n")
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{Argv: []string{"/bin/true"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}})
 	if err == nil {
 		t.Fatalf("Exec reported code %d and no error for a driver a signal ended", code)
 	}
@@ -386,7 +386,7 @@ echo survived > "$argv.survived"
 		waitFor(argvFile + ".ready")
 	}()
 
-	_, err := r.Exec(ctx, "amber-otter-1a2b", sysboxrunc.ExecOptions{Argv: []string{"/bin/sleep", "30"}})
+	_, err := r.Exec(ctx, "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/sleep", "30"}})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled Exec returned %v, want it to name the cancellation", err)
 	}
@@ -396,7 +396,7 @@ echo survived > "$argv.survived"
 	}
 }
 
-// sysbox-runc exec prints a command it cannot start only to the guest's stderr and exits 1, which is
+// runc exec prints a command it cannot start only to the guest's stderr and exits 1, which is
 // indistinguishable from the command's own 1. The host-side lookup against the rootfs is what tells them apart.
 func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
@@ -404,11 +404,11 @@ func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 	rootfs := t.TempDir()
 	writeExecutable(t, filepath.Join(rootfs, "bin", "true"))
 
-	_, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
 		Argv: []string{"nosuch"}, Env: []string{"PATH=/bin"}, RootFS: rootfs,
 	})
 
-	var lookup *sysboxrunc.LookupError
+	var lookup *runc.LookupError
 	if !errors.As(err, &lookup) {
 		t.Fatalf("Exec returned %v, want a LookupError", err)
 	}
@@ -416,17 +416,17 @@ func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 		t.Errorf("the reason is %q, want the shell's", lookup.Reason)
 	}
 	if _, err := os.Stat(recorded); err == nil {
-		t.Error("a command that is not there still ran sysbox-runc")
+		t.Error("a command that is not there still ran runc")
 	}
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
 		Argv: []string{"true"}, Env: []string{"PATH=/bin"}, RootFS: rootfs,
 	}); err != nil {
 		t.Fatalf("Exec refused a command that is on the guest's PATH: %v", err)
 	}
 
-	// No PATH in the env means the OCI default, which is what sysbox-runc would resolve against.
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", sysboxrunc.ExecOptions{
+	// No PATH in the env means the OCI default, which is what runc would resolve against.
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
 		Argv: []string{"true"}, RootFS: rootfs,
 	}); err != nil {
 		t.Fatalf("Exec refused a command on the default PATH when the env named none: %v", err)

@@ -1,10 +1,10 @@
 //go:build linux
 
-package sysboxrunc
+package runc
 
 import "syscall"
 
-// execAttr makes sysbox-runc exec die with the daemon: the kernel sends it SIGKILL when its parent thread ends.
+// execAttr makes runc exec die with the daemon: the kernel sends it SIGKILL when its parent thread ends.
 func execAttr(tty bool) *syscall.SysProcAttr {
 	attr := &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if tty {

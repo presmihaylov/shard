@@ -1,4 +1,4 @@
-package sysboxrunc
+package runc
 
 import (
 	"errors"

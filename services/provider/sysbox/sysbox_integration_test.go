@@ -18,7 +18,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/hostclean"
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/provider/conformance"
@@ -78,7 +78,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.image = img
 
-	runner, err := sysboxrunc.New(filepath.Join(t.TempDir(), "sysbox-runc"))
+	runner, err := runc.New(filepath.Join(t.TempDir(), "sysbox-runc"), runc.WithBinary(sysbox.Binary))
 	if err != nil {
 		t.Fatalf("open the sysbox-runc runner: %v", err)
 	}
@@ -143,7 +143,7 @@ func requireSysboxRunc(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("sysbox-runc needs root")
 	}
-	if _, err := exec.LookPath("sysbox-runc"); err != nil {
+	if _, err := exec.LookPath(sysbox.Binary); err != nil {
 		t.Skip("no sysbox-runc on this host")
 	}
 }

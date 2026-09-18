@@ -51,7 +51,7 @@ cli/                       command definitions and flag parsing
 models/                    Sandbox, states, Provider, Capabilities, Policy
 
 pkg/runsc/                 the runsc binary
-pkg/sysboxrunc/            the sysbox-runc binary
+pkg/runc/                  the runc command line, which sysbox-runc shares
 pkg/firecracker/           the firecracker binary and its API socket
 pkg/registry/              OCI registry transport
 pkg/netns/                 netns, veth, bridge, NAT rules
