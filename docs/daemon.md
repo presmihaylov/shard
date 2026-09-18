@@ -414,7 +414,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
-| `substrate_timeout` | 504 | a stop or rm whose substrate status call did not answer within the probe budget; retry it, or rm --force to kill a wedged sandbox |
+| `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. rm --force cannot reclaim through a wedge, since the kill opens with the same wedged call |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes that object alone into `*client.APIError`, with `Status`, `Code`, `Message`

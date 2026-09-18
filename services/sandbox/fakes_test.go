@@ -249,6 +249,8 @@ type fakeProvider struct {
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
 	entered chan struct{}
+	// wedgeStartOf is the id whose Start hangs until the caller's deadline, the way a wedged runtime does.
+	wedgeStartOf string
 	// statusGate, when set, holds Status until it is closed or the context ends, so a test wedges the substrate.
 	statusGate chan struct{}
 	// stopUnwedges makes Stop close statusGate, the way a kill frees a substrate a Status call had wedged.
@@ -430,13 +432,23 @@ func (f *fakeProvider) Create(_ context.Context, spec models.SandboxSpec) error 
 	return f.r.record("provider.Create")
 }
 
-func (f *fakeProvider) Start(context.Context, string) error {
+func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	if f.entered != nil {
 		close(f.entered)
 		f.entered = nil
 	}
+	// A wedged runtime's Start hangs on its own runsc state; only the caller's deadline ends it.
+	if f.wedgeStartOf != "" && id == f.wedgeStartOf {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
 	if f.gate != nil {
-		<-f.gate
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if err := f.r.record("provider.Start"); err != nil {
 		return err

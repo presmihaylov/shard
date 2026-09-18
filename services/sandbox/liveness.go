@@ -163,6 +163,14 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 	}
 
 	if err := s.start(ctx, id); err != nil {
+		var timeout *SubstrateTimeoutError
+		if errors.As(err, &timeout) {
+			// A wedged runtime must not pin the serial task; the record stays stopped with the start counted.
+			report(fmt.Sprintf("sandbox %s %s: the substrate did not answer within %s while starting it again, the record stays stopped", id, OOMKilledReason, timeout.Budget))
+
+			return nil
+		}
+
 		return fmt.Errorf("start sandbox %s again after it %s: %w", id, OOMKilledReason, err)
 	}
 	report(oomRestartReport(id, restarts+1, sb.MaxOOMRestarts))
