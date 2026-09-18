@@ -146,11 +146,11 @@ func TestReconcileLeavesTheRecordWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 	}
 }
 
-// A substrate that stays wedged past the kill still returns the stop inside the settle, never hanging.
-func TestStopIsBoundedWhenTheSubstrateStaysWedged(t *testing.T) {
+// A substrate that answers the opening probe but never confirms the kill still returns inside the settle.
+func TestStopIsBoundedWhenTheSubstrateNeverSettles(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running(), shortSettle)
-	l.provider.statusGate = make(chan struct{})
+	l.provider.aliveAfterStop = -1
 
 	start := time.Now()
 	_, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
@@ -161,5 +161,27 @@ func TestStopIsBoundedWhenTheSubstrateStaysWedged(t *testing.T) {
 	}
 	if !l.provider.stopped {
 		t.Error("the kill was never attempted")
+	}
+}
+
+// A plain stop of a running sandbox whose Status wedges fails fast and typed, not at the client timeout.
+func TestStopFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), fastBudget)
+	l.provider.statusGate = make(chan struct{})
+
+	start := time.Now()
+	_, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	bounded(t, start, "stop")
+
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("Stop returned %v, want a SubstrateTimeoutError", err)
+	}
+	if timeout.Op != "stop" {
+		t.Errorf("the error names op %q, want stop", timeout.Op)
+	}
+	if l.provider.stopped {
+		t.Error("stop killed a running sandbox it could not read")
 	}
 }
