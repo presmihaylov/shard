@@ -71,12 +71,14 @@ limactl shell shard sudo -i
 install -d -m0750 /etc/shard && cd /etc/shard
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
   -subj /CN=shard -addext subjectAltName=DNS:localhost -keyout serve.key -out serve.crt
-(umask 077 && openssl rand -hex 32 > serve.secret)
-shard tokens mint --name mac --secret-file serve.secret > /tmp/token
+umask 077
+openssl rand -hex 32 > serve.secret
+shard tokens mint --name mac --secret-file serve.secret > mac.token
 shard daemon --provider runc
 ```
 
-The front refuses a secret file that everyone can read, hence the `umask`. `--provider gvisor` or
+The front refuses a secret file that everyone can read, and a token is a secret too, hence the
+`umask` before both. `--provider gvisor` or
 `--provider sysbox` picks the other two. The daemon stays in the foreground, so the front takes a
 second shell:
 
@@ -94,7 +96,7 @@ The native `shard` binary reaches the front with three flags, or the environment
 
 ```
 install -d -m0700 ~/.shard
-(umask 077 && limactl shell shard sudo cat /tmp/token > ~/.shard/token)
+(umask 077 && limactl shell shard sudo cat /etc/shard/mac.token > ~/.shard/token)
 limactl shell shard sudo cat /etc/shard/serve.crt > ~/.shard/ca.pem
 export SHARD_REMOTE=https://localhost:2376
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
