@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/vz"
 )
@@ -99,9 +100,17 @@ func fakeShim() error {
 	// SIGUSR1 is a vsock reset, as a sleep of the host can cause: every open stream ends, the guest goes on.
 	resets := make(chan os.Signal, 1)
 	signal.Notify(resets, syscall.SIGUSR1)
+	// SIGUSR2 is the same reset on a transport that takes a while to settle: a dial answers, and ends at once.
+	holds := make(chan os.Signal, 1)
+	signal.Notify(holds, syscall.SIGUSR2)
 	for {
 		select {
 		case <-resets:
+			machine.dropStreams()
+		case <-holds:
+			machine.mu.Lock()
+			machine.holdUntil = time.Now().Add(resetHold)
+			machine.mu.Unlock()
 			machine.dropStreams()
 		case <-signals:
 			if err := machine.Stop(); err != nil {
@@ -126,7 +135,12 @@ type fakeMachine struct {
 	mu      sync.Mutex
 	state   vz.State
 	streams map[net.Conn]struct{}
+	// holdUntil is how long a dial answers with a stream that ends at once, after a reset SIGUSR2 asked for.
+	holdUntil time.Time
 }
+
+// resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
+const resetHold = 1500 * time.Millisecond
 
 func bootFake(cfg vz.Config) (*fakeMachine, error) {
 	id := cfg.MachineID
@@ -236,8 +250,11 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 		return nil, err
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if time.Now().Before(m.holdUntil) {
+		return conn, conn.Close()
+	}
 	m.streams[conn] = struct{}{}
-	m.mu.Unlock()
 
 	return &stream{Conn: conn, machine: m}, nil
 }

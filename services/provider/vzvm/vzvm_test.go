@@ -703,6 +703,41 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	}
 }
 
+// A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches Wait through the replayed state.
+func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLog(t, h.provider, spec.ID, 0)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR2); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), stopGrace)
+	defer cancel()
+	exit, err := h.provider.Wait(ctx, spec.ID)
+	if err != nil || exit.Code != 7 {
+		t.Fatalf("Wait across the reset = %+v, %v; want code 7", exit, err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the reset = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A daemon that starts over a root whose shim is gone finds the sandbox stopped, which the reconcile then records.
 func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	h := newHarness(t)

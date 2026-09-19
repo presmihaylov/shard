@@ -236,7 +236,9 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
-			if p.reconnect(m) {
+			again, err := p.reconnect(m)
+			p.keep(m, err)
+			if again {
 				continue
 			}
 			p.mu.Lock()
@@ -245,9 +247,19 @@ func (p *Provider) follow(m *machine) {
 
 			return
 		}
-		if err := p.record(m, event); err != nil {
-			p.markLost(m, err)
-		}
+		p.keep(m, p.record(m, event))
+	}
+}
+
+// keep holds the first error the event loop met, which is what a later verb reports.
+func (p *Provider) keep(m *machine, err error) {
+	if err == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m.lost == nil {
+		m.lost = err
 	}
 }
 
@@ -284,7 +296,7 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 }
 
 // reconnect dials the control stream again after a drop, which a sleep of the host can cause, while the shim says the VM runs.
-func (p *Provider) reconnect(m *machine) bool {
+func (p *Provider) reconnect(m *machine) (bool, error) {
 	deadline := time.Now().Add(startGrace)
 	for m.alive() && time.Now().Before(deadline) {
 		conn, err := m.dial(context.Background(), supervisor.ControlPort)
@@ -296,19 +308,45 @@ func (p *Provider) reconnect(m *machine) bool {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
-			_ = control.Close()
+			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
+			if err := control.Close(); err != nil {
+				return false, err
+			}
+			time.Sleep(pollInterval)
 
-			return false
+			continue
 		}
-		p.mu.Lock()
-		m.started = m.started || state.Ready
-		p.mu.Unlock()
-		m.control.Store(control)
+		err = p.reconcile(m, state)
+		dropped := m.control.Swap(control)
 
-		return true
+		return true, errors.Join(err, dropped.Close())
 	}
 
-	return false
+	return false, nil
+}
+
+// reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.
+func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
+	p.mu.Lock()
+	m.started = m.started || state.Ready
+	p.mu.Unlock()
+	if state.Exit != nil {
+		path := filepath.Join(m.dir, exitFile)
+		last, found, err := bundle.ReadExitStatus(path)
+		if err != nil {
+			return err
+		}
+		if !found || last != *state.Exit {
+			if err := supervisor.AppendExit(path, *state.Exit); err != nil {
+				return err
+			}
+		}
+	}
+	if state.Restarts != nil {
+		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *state.Restarts)
+	}
+
+	return nil
 }
 
 // alive says the shim still answers with a running VM and this process has not let it go.
@@ -339,15 +377,6 @@ func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
 		}
 		opened = m.dial
 		time.Sleep(pollInterval)
-	}
-}
-
-// markLost keeps the first failure the files cannot show, which every read of the sandbox then reports.
-func (p *Provider) markLost(m *machine, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if m.lost == nil {
-		m.lost = err
 	}
 }
 
