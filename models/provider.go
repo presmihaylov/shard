@@ -101,6 +101,8 @@ type SandboxSpec struct {
 
 	// RootFS is the shared read-only image tree; the provider derives its own writable form from it.
 	RootFS string
+	// RootDisk is the same image as one ext4 file, for a provider that boots a VM; empty when the image service keeps none.
+	RootDisk string
 	// StateDir is the per-sandbox directory whose whole layout belongs to the provider.
 	StateDir string
 
@@ -139,6 +141,14 @@ type ExecSpec struct {
 	Stderr *os.File
 	// Report is called once with the guest process id, so the caller can Signal the exec while it runs.
 	Report func(pid int)
+	// Resizes carries every later window of the terminal, for a provider whose guest has a pty of its own; nil for one that shares the replica.
+	Resizes <-chan TerminalSize
+}
+
+// TerminalSize is a terminal window in character cells.
+type TerminalSize struct {
+	Rows uint16
+	Cols uint16
 }
 
 // ImageConfig is the part of an OCI image config a sandbox is built from. The spec overrides it.

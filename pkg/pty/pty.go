@@ -9,9 +9,8 @@ import (
 	"golang.org/x/term"
 )
 
-// ErrNotLinux keeps a developer Mac honest. It is not models.ErrUnsupported: a missing kernel is not
-// a refused verb.
-var ErrNotLinux = errors.New("a pseudo terminal needs Linux")
+// ErrUnsupported names the hosts with a driver; it is not models.ErrUnsupported, since a missing kernel is not a refused verb.
+var ErrUnsupported = errors.New("a pseudo terminal needs Linux or macOS")
 
 // Size is a terminal window in character cells. A guest full-screen program draws to it.
 type Size struct {
