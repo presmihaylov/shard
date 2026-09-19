@@ -600,6 +600,11 @@ step "start the echo the fronted sandbox talks to"
 # The echo answers on this host's own address, and sslip.io turns that address into three names.
 HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
 [ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
+# The floor drops the host's private networks under every policy, so an echo there is denied by design and the suite fails late with nothing to learn (SHARD-229).
+case "${HOST_IPV4}" in
+	10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*|169.254.*|127.*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
+		fail "this host's address ${HOST_IPV4} is inside the egress floor, which every sandbox is denied: run the suite on a host with a public address" ;;
+esac
 ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
 OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
 DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
