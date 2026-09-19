@@ -48,8 +48,8 @@ func buildDisk(ctx context.Context, dst string, layers []v1.Layer) (err error) {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
 	defer func() {
-		if cerr := f.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("close %s: %w", dst, cerr)
+		if cerr := f.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", dst, cerr))
 		}
 	}()
 
@@ -271,8 +271,8 @@ func walkLayer(ctx context.Context, layer v1.Layer, fn func(seq int, hdr *tar.He
 		return fmt.Errorf("open the layer: %w", err)
 	}
 	defer func() {
-		if cerr := rc.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("close the layer: %w", cerr)
+		if cerr := rc.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close the layer: %w", cerr))
 		}
 	}()
 

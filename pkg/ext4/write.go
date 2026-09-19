@@ -11,10 +11,13 @@ import (
 // Write lays a tar stream down as an ext4 image the guest can mount read-write and Grow can extend to MaxDiskSize.
 func Write(r io.Reader, f *os.File) error {
 	if err := tar2ext4.Convert(r, f, tar2ext4.MaximumDiskSize(MaxDiskSize)); err != nil {
-		return err
+		return fmt.Errorf("ext4: convert the tar: %w", err)
+	}
+	if err := writable(f); err != nil {
+		return fmt.Errorf("ext4: make the image writable: %w", err)
 	}
 
-	return writable(f)
+	return nil
 }
 
 // writable undoes what tar2ext4 assumes of a read-only image: the flag that makes the kernel mount it so, and the inode bitmap tails e2fsck expects set.
