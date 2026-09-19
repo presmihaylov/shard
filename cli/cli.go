@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -22,10 +23,10 @@ const DefaultRoot = client.DefaultRoot
 // DefaultTimeout bounds one pull inside the daemon. Without it a registry that accepts and stalls pins it.
 const DefaultTimeout = 30 * time.Minute
 
-// DefaultInitPath is where make devbox-sync installs the guest supervisor on the box.
+// DefaultInitPath is where make devbox-sync installs the guest supervisor on a Linux box; a Mac daemon carries its own.
 const DefaultInitPath = "/usr/local/bin/shard-init"
 
-// InitPathEnv overrides DefaultInitPath. It is a property of the install, so it is no create flag.
+// InitPathEnv overrides the guest supervisor the daemon uses. It is a property of the install, so it is no create flag.
 const InitPathEnv = "SHARD_INIT_PATH"
 
 // The environment behind the three flags that point a verb at a remote daemon, as docker's DOCKER_HOST does.
@@ -154,7 +155,8 @@ Flags:
   --timeout <duration>     how long a pull may take, read by the daemon (default 30m)
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
-  --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox or runc (default gvisor)
+  --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox, runc or vz
+                           (default gvisor on Linux, vz on macOS)
   --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket
   --token-file <path>      the bearer token that front checks
   --ca-file <pem>          the certificate that signed the front's own
@@ -175,9 +177,9 @@ type App struct {
 	Insecure []string
 	// Timeout defaults to DefaultTimeout when zero.
 	Timeout time.Duration
-	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty.
+	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty, and stays empty on a Mac.
 	InitPath string
-	// Provider names the substrate the daemon runs sandboxes on. Empty is gVisor.
+	// Provider names the substrate the daemon runs sandboxes on. Empty is the platform's default: gvisor on Linux, vz on macOS.
 	Provider string
 	// Remote is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
 	Remote string
@@ -384,10 +386,13 @@ func remoteClient(host, tokenFile, caFile string) (*client.Client, error) {
 	return client.NewRemote(host, token, ca)
 }
 
-// initPathFromEnv resolves where the guest supervisor lives on this host.
+// initPathFromEnv resolves where the guest supervisor lives on this host; empty on a Mac, whose daemon installs the one it embeds.
 func initPathFromEnv() string {
 	if path := os.Getenv(InitPathEnv); path != "" {
 		return path
+	}
+	if runtime.GOOS == "darwin" {
+		return ""
 	}
 
 	return DefaultInitPath

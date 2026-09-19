@@ -105,7 +105,7 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 func runOf(rootfs string, argv, env []string, workDir, user string, restart models.RestartSpec) (supervisor.RunSpec, error) {
 	run := supervisor.RunSpec{
 		Argv:    argv,
-		Env:     env,
+		Env:     bundle.Environment(env),
 		WorkDir: workDir,
 		Restart: restart.Policy,
 		Retries: restart.Retries,

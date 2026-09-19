@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"runtime"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -158,28 +157,14 @@ func applyAddress(a supervisor.Address) error {
 
 // writeResolverFiles is what the bundle writes into an upper layer on Linux; a VM's disk is the guest's alone, so the guest writes it.
 func writeResolverFiles(a supervisor.Address) error {
-	if err := os.MkdirAll("/etc", 0o755); err != nil { //nolint:gosec // every process reads /etc
-		return fmt.Errorf("create /etc: %w", err)
-	}
-	var resolv strings.Builder
-	for _, server := range a.Nameservers {
-		fmt.Fprintf(&resolv, "nameserver %s\n", server)
-	}
-	hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n"
 	if a.Hostname != "" {
 		// runsc sets the hostname from the OCI spec; in a VM the kernel keeps its build-time default until the guest sets one.
 		if err := unix.Sethostname([]byte(a.Hostname)); err != nil {
 			return fmt.Errorf("set the hostname %q: %w", a.Hostname, err)
 		}
-		hosts += fmt.Sprintf("%s\t%s\n", a.IP, a.Hostname)
-	}
-	for name, content := range map[string]string{"/etc/resolv.conf": resolv.String(), "/etc/hosts": hosts} {
-		if err := os.WriteFile(name, []byte(content), 0o644); err != nil { //nolint:gosec // libc reads them as every process
-			return fmt.Errorf("write %s: %w", name, err)
-		}
 	}
 
-	return nil
+	return writeResolverFilesIn("/etc", a)
 }
 
 func ifreqAddr(fd int, name string, request uint, addr net.IP) error {

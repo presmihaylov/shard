@@ -8,8 +8,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Addresses is the network of a substrate whose frames end in the daemon's own stack: a lease per sandbox and no host side.
-// The stack answers for the gateway alone, so the guest resolves through it and has no rule to apply.
+// Addresses is the network of a substrate whose frames end in the daemon's own stack: a lease per sandbox, no host side and no rule to apply.
 type Addresses struct {
 	pool    *pool
 	subnet  netip.Prefix

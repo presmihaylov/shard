@@ -16,6 +16,8 @@ import (
 func (s *Stack) defaultRoute(gateway netip.Addr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A guest dials out on ephemeral ports, which no listener of its own serves.
+	s.open = true
 	for id := range s.links {
 		s.stack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, Gateway: tcpip.AddrFrom4(gateway.As4()), NIC: id})
 	}

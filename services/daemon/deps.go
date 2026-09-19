@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
@@ -156,12 +158,7 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	bundles, err := bundle.New(d.cfg.InitPath)
-	if err != nil {
-		return nil, err
-	}
-
-	provider, err := d.newProvider(bundles, repo.Dir)
+	provider, err := d.newProvider(repo.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -180,13 +177,41 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 	if err != nil {
 		return nil, err
 	}
-	stack, err := netstack.New(netstack.Config{Address: gateway})
+	repo, err := d.repoLocked()
+	if err != nil {
+		return nil, err
+	}
+	logger := log.New(d.cfg.Out, "", log.LstdFlags)
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
+	// The host chains dnat a guest's 80 and 443 onto the proxy, and the stack does the same with its own table.
+	stack, err := netstack.New(netstack.Config{
+		Address:   gateway,
+		Redirects: map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
+		Drops:     drops.report,
+	})
 	if err != nil {
 		return nil, err
 	}
 	d.stackSvc = stack
 
 	return d.stackSvc, nil
+}
+
+// stackDrops lands every frame the stack refused in the sandbox's decision log, which is what the tailer does with the kernel ring on Linux.
+type stackDrops struct {
+	mu      sync.Mutex
+	tailer  *egress.Tailer
+	gateway netip.Addr
+	out     *log.Logger
+}
+
+func (s *stackDrops) report(d netstack.Drop) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.tailer.Drop(d.Guest, egress.StackDrop(s.gateway, d)); err != nil {
+		// The frame is refused already, so a log that cannot be written closes no door; the daemon log carries it.
+		s.out.Printf("egress log: sandbox at %s: %v", d.Guest, err)
+	}
 }
 
 // frontLocked is what the proxy and the resolver listen through, so one task serves either host the same way.
@@ -217,7 +242,7 @@ func (f gatewayFront) ListenPacket(port uint16) (net.PacketConn, error) {
 }
 
 // newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default on Linux and vz on a Mac.
-func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, error)) (models.Provider, error) {
+func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, error) {
 	switch d.providerName() {
 	case gvisor.Name:
 		runner, err := d.runnerLocked()
@@ -225,21 +250,21 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 			return nil, err
 		}
 
-		return gvisor.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return gvisor.New(runner, bundles, dirs) })
 	case sysbox.Name:
 		runner, err := runccli.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runccli.WithBinary(sysbox.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
 
-		return sysbox.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return sysbox.New(runner, bundles, dirs) })
 	case runc.Name:
 		runner, err := runccli.New(filepath.Join(d.cfg.Root, "runc"), runccli.WithBinary(runc.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
 
-		return runc.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) })
 	case vzvm.Name:
 		return d.newVZ(dirs)
 	default:
@@ -247,8 +272,21 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 	}
 }
 
-// vzDir is where under the root the vz daemon keeps the signed shim and the initrd.
+// onBundles builds a Linux substrate over the OCI bundle service; a VM has an initrd and a disk instead, so vz never comes here.
+func (d *deps) onBundles(build func(*bundle.Service) (models.Provider, error)) (models.Provider, error) {
+	bundles, err := bundle.New(d.cfg.InitPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return build(bundles)
+}
+
+// vzDir is where under the root the vz daemon keeps the signed shim, the guest init and the initrd.
 const vzDir = "vz"
+
+// kernelFetchTimeout bounds the first-use download, which runs under deps.mu and would otherwise hold every verb on a dead release endpoint.
+const kernelFetchTimeout = 5 * time.Minute
 
 // newVZ builds the Virtualization.framework provider: the embedded shim signed under the root, the guest kernel fetched once, and the stack.
 func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
@@ -264,13 +302,22 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SHARD_INIT_PATH names a guest init of its own; without one the daemon installs the linux build it carries beside the shim.
+	init := d.cfg.InitPath
+	if init == "" {
+		if init, err = vzshim.InstallInit(dir); err != nil {
+			return nil, err
+		}
+	}
 
 	opts, err := kernel.FromEnv()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
+	defer cancel()
 	// The guest runs the host's arch: the framework virtualises, it never emulates.
-	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(context.Background(), runtime.GOARCH)
+	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +330,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	return vzvm.New(vzvm.Config{
 		Shim:        shim,
 		Kernel:      guest.Path,
-		Init:        d.cfg.InitPath,
+		Init:        init,
 		Dir:         dir,
 		Stack:       stack,
 		Dirs:        dirs,

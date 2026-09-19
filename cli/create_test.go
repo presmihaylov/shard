@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -58,14 +59,19 @@ func TestParseCreateFlags(t *testing.T) {
 }
 
 func TestInitPathFromEnv(t *testing.T) {
+	// A Mac daemon installs the guest init it embeds, so nothing on the host names one.
+	platformDefault := DefaultInitPath
+	if runtime.GOOS == "darwin" {
+		platformDefault = ""
+	}
 	cases := map[string]struct {
 		env   string
 		unset bool
 		want  string
 	}{
 		"set":   {env: "/opt/shard-init", want: "/opt/shard-init"},
-		"empty": {want: DefaultInitPath},
-		"unset": {unset: true, want: DefaultInitPath},
+		"empty": {want: platformDefault},
+		"unset": {unset: true, want: platformDefault},
 	}
 
 	for name, c := range cases {
