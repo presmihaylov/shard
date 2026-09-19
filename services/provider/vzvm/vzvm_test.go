@@ -570,3 +570,45 @@ func setJSON(t *testing.T, path, key string, value any) {
 		t.Fatal(err)
 	}
 }
+
+// A fronted VM gets the same trust store the bundle plants on Linux, handed to the guest to write, and the variables that point at it.
+func TestCreateHandsAFrontedGuestTheMergedTrustStore(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/true")
+	spec.RootFS = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), []byte("image-roots\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec.ProxyCA = []byte("proxy-ca\n")
+
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(filepath.Join(spec.StateDir, "vm.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Run struct {
+			Env   []string `json:"env"`
+			Trust struct {
+				Path  string `json:"path"`
+				Roots []byte `json:"roots"`
+			} `json:"trust"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(blob, &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Run.Trust.Path != "/etc/ssl/certs/ca-certificates.crt" || string(r.Run.Trust.Roots) != "image-roots\nproxy-ca\n" {
+		t.Errorf("the record's trust = %q at %q, want the image roots then the proxy CA at the image path", r.Run.Trust.Roots, r.Run.Trust.Path)
+	}
+	for _, key := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+		if !slices.Contains(r.Run.Env, key+"=/etc/ssl/certs/ca-certificates.crt") {
+			t.Errorf("the record's env lacks %s: %q", key, r.Run.Env)
+		}
+	}
+}

@@ -74,9 +74,10 @@ proxy: there is no path that fronts a sandbox and leaves the DNAT leading nowher
 The proxy terminates TLS with its own CA, minted once per root under `${root}/proxy/` with the key
 at mode 0600. A fronted sandbox is built to trust it: the bundle merges the image's own roots with
 the proxy CA at the path the image already reads, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`
-and `NODE_EXTRA_CA_CERTS` at it. An image with no CA bundle is refused, since a bundle holding the
-proxy CA alone would make the guest trust nothing else, and `--env` of any of those three names is
-refused on a fronted create. The proxy resolves each name once, on the host, and dials the address
+and `NODE_EXTRA_CA_CERTS` at it. On a VM host the guest writes that same merged bundle to that same
+path at first boot, since a VM has no upper layer, and a fork's disk carries it. An image with no CA
+bundle is refused, since a bundle holding the proxy CA alone would make the guest trust nothing else,
+and `--env` of any of those three names is refused on a fronted create. The proxy resolves each name once, on the host, and dials the address
 it judged. A TLS request without a server name is refused, and one whose `Host` header disagrees
 with it gets a 400.
 
