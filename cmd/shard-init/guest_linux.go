@@ -167,6 +167,10 @@ func writeResolverFiles(a supervisor.Address) error {
 	}
 	hosts := "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n"
 	if a.Hostname != "" {
+		// runsc sets the hostname from the OCI spec; in a VM the kernel keeps its build-time default until the guest sets one.
+		if err := unix.Sethostname([]byte(a.Hostname)); err != nil {
+			return fmt.Errorf("set the hostname %q: %w", a.Hostname, err)
+		}
 		hosts += fmt.Sprintf("%s\t%s\n", a.IP, a.Hostname)
 	}
 	for name, content := range map[string]string{"/etc/resolv.conf": resolv.String(), "/etc/hosts": hosts} {

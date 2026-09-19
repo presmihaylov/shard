@@ -20,6 +20,7 @@ import (
 	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -642,6 +643,11 @@ type egressLogTailer struct {
 func (egressLogTailer) Name() string { return "egress-log-tailer" }
 
 func (t egressLogTailer) Run(ctx context.Context) error {
+	// A VM host drops in the userspace stack, not in netfilter, so there is no kernel ring to tail and the task is done.
+	if t.deps.providerName() == vzvm.Name {
+		return nil
+	}
+
 	repo, err := t.deps.repo()
 	if err != nil {
 		return err

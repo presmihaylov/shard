@@ -544,7 +544,7 @@ func parseID(field string) (uint32, error) {
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
 // files are the child's fds, or nil for the entrypoint's: /dev/null and the log.
 func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
-	binary, err := exec.LookPath(ep.argv[0])
+	binary, err := lookPath(ep)
 	if err != nil {
 		return 0, fmt.Errorf("look up %q: %w", ep.argv[0], err)
 	}
@@ -587,6 +587,37 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	}
 
 	return pid, nil
+}
+
+// lookPath resolves argv[0] on the entrypoint's own PATH: in a VM shard-init's environ is the kernel's, which has none.
+func lookPath(ep entrypoint) (string, error) {
+	if strings.Contains(ep.argv[0], "/") {
+		return exec.LookPath(ep.argv[0])
+	}
+	for _, entry := range ep.env {
+		if path, found := strings.CutPrefix(entry, "PATH="); found {
+			return lookPathIn(ep.argv[0], path)
+		}
+	}
+
+	return exec.LookPath(ep.argv[0])
+}
+
+func lookPathIn(name, path string) (string, error) {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("%w in %q", exec.ErrNotFound, path)
 }
 
 // statusFile is where the kernel, and the sentry that emulates it, prints this process's own sets.
