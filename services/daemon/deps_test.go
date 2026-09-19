@@ -3,9 +3,13 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/presmihaylov/shard/pkg/vzshim"
+	"github.com/presmihaylov/shard/services/network"
 )
 
 // The daemon supervises its tasks at once over one deps, so two of them can ask for the same layer at
@@ -50,26 +54,86 @@ func TestTheProviderIsPickedByName(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	for _, name := range []string{"", "gvisor", "sysbox", "runc"} {
+	for _, name := range []string{"gvisor", "sysbox", "runc"} {
 		d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: name}}
 
 		provider, err := d.providerLocked()
 		if err != nil {
 			t.Fatalf("provider %q: %v", name, err)
 		}
-
-		want := name
-		if want == "" {
-			want = "gvisor"
-		}
-		if got := provider.Name(); got != want {
-			t.Errorf("--provider %q built %s, want %s", name, got, want)
+		if got := provider.Name(); got != name {
+			t.Errorf("--provider %q built %s, want %s", name, got, name)
 		}
 	}
 
 	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
 	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "firecracker"`) {
 		t.Errorf("an unknown provider built %v, want a refusal that names it", err)
+	}
+}
+
+// SHARD-239: an empty --provider is gVisor on Linux and vz on a Mac, and vz named anywhere else is refused, never downgraded.
+func TestTheDefaultProviderFollowsThePlatform(t *testing.T) {
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init"}}
+	want := "gvisor"
+	if runtime.GOOS == "darwin" {
+		want = "vz"
+	}
+	if got := d.providerName(); got != want {
+		t.Fatalf("the default provider on %s is %s, want %s", runtime.GOOS, got, want)
+	}
+
+	v := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "vz"}}
+	_, err := v.providerLocked()
+	if runtime.GOOS != "darwin" {
+		if err == nil || !strings.Contains(err.Error(), "macOS only") {
+			t.Fatalf("vz on %s built %v, want a refusal naming macOS", runtime.GOOS, err)
+		}
+
+		return
+	}
+	// A go build alone carries no shim, and the refusal says which make target does; a make build-darwin binary goes on to the kernel.
+	if !vzshim.Embedded() && (err == nil || !strings.Contains(err.Error(), "make build-darwin")) {
+		t.Fatalf("vz without the shim built %v, want a refusal naming make build-darwin", err)
+	}
+}
+
+// A vz daemon leases addresses from a pool with no bridge, and its proxy listens on the stack, not the host.
+func TestAVZDaemonLeasesAddressesAndFrontsOnTheStack(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("vz is a darwin provider")
+	}
+	d := &deps{cfg: Config{Root: t.TempDir(), Provider: "vz"}}
+
+	hostNet, err := d.net()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hostNet.(*network.Addresses); !ok {
+		t.Fatalf("a vz daemon built %T for its network, want the address pool", hostNet)
+	}
+	spec, err := hostNet.Allocate(t.Context(), "sb-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Gateway != hostNet.Gateway() || spec.NetnsPath != "" {
+		t.Errorf("leased %+v, want the gateway %s and no namespace", spec, hostNet.Gateway())
+	}
+
+	f, err := d.front()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != any(d.stackSvc) {
+		t.Fatalf("the front is %T, want the daemon's stack", f)
+	}
+	ln, err := f.ListenTCP(30080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if d.stackSvc.Address() != hostNet.Gateway() {
+		t.Errorf("the stack answers for %s, the pool hands out gateway %s", d.stackSvc.Address(), hostNet.Gateway())
 	}
 }
 

@@ -90,6 +90,13 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	if spec.Network.Address.IsValid() {
 		r.Address = spec.Network.Address.String()
 		r.Gateway = spec.Network.Gateway.String()
+		r.Hostname = spec.Name
+		if r.Hostname == "" {
+			r.Hostname = spec.ID
+		}
+		for _, server := range spec.Network.Nameservers {
+			r.Nameservers = append(r.Nameservers, server.String())
+		}
 	}
 
 	return r, nil
