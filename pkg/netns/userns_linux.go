@@ -24,11 +24,7 @@ func (m *Manager) addOwnedNamespace(ctx context.Context, name string, owner IDMa
 	}
 
 	child := exec.CommandContext(ctx, "cat")
-	child.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(owner.HostID), Size: int(owner.Size)}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(owner.HostID), Size: int(owner.Size)}},
-	}
+	child.SysProcAttr = holderAttr(owner)
 
 	stdin, err := child.StdinPipe()
 	if err != nil {
@@ -47,6 +43,19 @@ func (m *Manager) addOwnedNamespace(ctx context.Context, name string, owner IDMa
 
 	// The holder goes whether the pins landed or not; the pins keep the namespaces, not the process.
 	return errors.Join(pinned, release(stdin, child))
+}
+
+// holderAttr is the pair the holder is born into, with guest id 0 landing on the owner's range.
+func holderAttr(owner IDMapping) *syscall.SysProcAttr {
+	mapping := []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(owner.HostID), Size: int(owner.Size)}}
+
+	return &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		UidMappings: mapping,
+		GidMappings: mapping,
+		// Without this Go writes deny to the namespace's setgroups, which is final, and every setgroups(2) a guest makes, from shard-init's -user drop to su, fails with EPERM.
+		GidMappingsEnableSetgroups: true,
+	}
 }
 
 // pin binds the holder's netns to the iproute2 name and its userns to the shard pin, so both outlive it.
