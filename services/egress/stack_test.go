@@ -30,6 +30,13 @@ func TestStackDropReadsLikeAHostDrop(t *testing.T) {
 			t.Errorf("%s: got %+v, want %+v", tc.destination, got, want)
 		}
 	}
+
+	// A frame the stack could not read names no destination, and the record carries none rather than an invalid one.
+	got := StackDrop(stackGateway, netstack.Drop{Time: now, Guest: netip.MustParseAddr("10.87.0.2"), Protocol: "runt"})
+	want := Record{Time: now, Source: SourceHost, Verdict: string(models.ActionDeny), Rule: network.RuleStack, Reason: "the stack dropped a runt packet: a VM reaches nothing off the daemon except through the proxy"}
+	if got != want {
+		t.Errorf("runt: got %+v, want %+v", got, want)
+	}
 }
 
 // A stack drop lands in the sandbox that holds the guest address, and one from a guest no record holds lands nowhere.

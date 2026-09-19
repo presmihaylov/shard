@@ -18,12 +18,18 @@ func StackDrop(gateway netip.Addr, d netstack.Drop) Record {
 		rule = network.RulePrivate
 	}
 
+	// A refused frame may name no destination the stack could read, and the log then carries none.
+	address := ""
+	if d.Destination.IsValid() {
+		address = d.Destination.String()
+	}
+
 	return Record{
 		Time:    d.Time,
 		Source:  SourceHost,
 		Verdict: string(models.ActionDeny),
 		Port:    d.Port,
-		Address: d.Destination.String(),
+		Address: address,
 		Rule:    rule,
 		Reason:  stackReason(rule, d.Protocol),
 	}

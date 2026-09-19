@@ -11,7 +11,8 @@ import (
 // An image's resolv.conf is often a dangling symlink into /run; the guest replaces it with a regular file of its own.
 func TestResolverFilesReplaceADanglingSymlink(t *testing.T) {
 	etc := t.TempDir()
-	if err := os.Symlink("/run/systemd/resolve/stub-resolv.conf", filepath.Join(etc, "resolv.conf")); err != nil {
+	target := filepath.Join(t.TempDir(), "run/systemd/resolve/stub-resolv.conf")
+	if err := os.Symlink(target, filepath.Join(etc, "resolv.conf")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -31,7 +32,7 @@ func TestResolverFilesReplaceADanglingSymlink(t *testing.T) {
 	if string(hosts) != "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n10.200.0.2\tsb-1\n" {
 		t.Fatalf("hosts = %q", hosts)
 	}
-	if _, err := os.Stat("/run/systemd/resolve/stub-resolv.conf"); err == nil {
+	if _, err := os.Stat(target); err == nil {
 		t.Fatal("the write followed the symlink")
 	}
 }

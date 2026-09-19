@@ -452,3 +452,77 @@ func TestARefusedFrameIsReportedAsADrop(t *testing.T) {
 	default:
 	}
 }
+
+// A frame the guest could not have sent is refused on its link and charged to that guest: a forged source and IPv6 alike.
+func TestAFrameTheGuestDidNotSendIsReportedOnItsLink(t *testing.T) {
+	drops := make(chan Drop, 16)
+	host, err := New(Config{Address: gateway, Drops: func(d Drop) { drops <- d }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	await := func(t *testing.T, want Drop) {
+		t.Helper()
+		select {
+		case got := <-drops:
+			got.Time = time.Time{}
+			if got != want {
+				t.Errorf("reported %+v, want %+v", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no drop reported, want %+v", want)
+		}
+	}
+
+	t.Run("forged", func(t *testing.T) {
+		hostEnd, guestEnd := wire(t)
+		link, err := host.Attach(hostEnd, guestA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Close()
+		guest, err := New(Config{Address: guestB, MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 3}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer guest.Close()
+		if _, err := guest.Attach(guestEnd, gateway); err != nil {
+			t.Fatal(err)
+		}
+		guest.defaultRoute(gateway)
+		if err := guest.knows(gateway, host.cfg.MAC); err != nil {
+			t.Fatal(err)
+		}
+		remote := netip.MustParseAddrPort("1.1.1.1:53")
+		client, err := guest.dialUDP(remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.Write([]byte("forged")); err != nil {
+			t.Fatal(err)
+		}
+		await(t, Drop{Guest: guestA, Destination: remote.Addr(), Protocol: "forged udp", Port: int(remote.Port())})
+	})
+
+	t.Run("ipv6", func(t *testing.T) {
+		hostEnd, guestEnd := wire(t)
+		link, err := host.Attach(hostEnd, guestA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Close()
+		defer guestEnd.Close()
+		destination := netip.MustParseAddr("2001:db8::1")
+		frame := append([]byte(nil), host.cfg.MAC...)
+		frame = append(frame, 0x02, 0, 0, 0, 0, 2, 0x86, 0xdd)
+		frame = append(frame, 0x60, 0, 0, 0, 0, 0, 17, 64)
+		frame = append(frame, netip.MustParseAddr("fe80::2").AsSlice()...)
+		frame = append(frame, destination.AsSlice()...)
+		if _, err := guestEnd.Write(frame); err != nil {
+			t.Fatal(err)
+		}
+		await(t, Drop{Guest: guestA, Destination: destination, Protocol: "ipv6"})
+	})
+}
