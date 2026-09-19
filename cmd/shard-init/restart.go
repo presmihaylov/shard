@@ -3,9 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -25,23 +23,16 @@ type restartPolicy struct {
 	backoff time.Duration
 	// reset is how long the entrypoint must run since its last start before an exit clears the count.
 	reset time.Duration
-	file  string
 }
 
-func parseRestart(policy, file string, retries int, backoff, reset time.Duration) (restartPolicy, error) {
-	parsed := restartPolicy{policy: models.RestartPolicy(policy), retries: retries, backoff: backoff, reset: reset, file: file}
+func parseRestart(policy string, retries int, backoff, reset time.Duration) (restartPolicy, error) {
+	parsed := restartPolicy{policy: models.RestartPolicy(policy), retries: retries, backoff: backoff, reset: reset}
 	switch parsed.policy {
 	case models.RestartNo:
 		return parsed, nil
 	case models.RestartOnFailure, models.RestartAlways:
 	default:
 		return restartPolicy{}, fmt.Errorf("-restart must be no, on-failure or always, got %q", policy)
-	}
-	if file == "" {
-		return restartPolicy{}, errors.New("-restart-file is required with a restart policy")
-	}
-	if !filepath.IsAbs(file) {
-		return restartPolicy{}, fmt.Errorf("-restart-file must be an absolute path, got %q", file)
 	}
 	if retries < 0 {
 		return restartPolicy{}, fmt.Errorf("-retries cannot be negative, got %d", retries)
@@ -51,6 +42,21 @@ func parseRestart(policy, file string, retries int, backoff, reset time.Duration
 	}
 
 	return parsed, nil
+}
+
+// checkRestartFile is the file mode's half of the policy: the count needs a place to land.
+func checkRestartFile(policy restartPolicy, file string) error {
+	if policy.policy == models.RestartNo {
+		return nil
+	}
+	if file == "" {
+		return errors.New("-restart-file is required with a restart policy")
+	}
+	if !filepath.IsAbs(file) {
+		return fmt.Errorf("-restart-file must be an absolute path, got %q", file)
+	}
+
+	return nil
 }
 
 // limited says the policy gives up after a fixed number of starts again; always and a zero count never do.
@@ -76,7 +82,7 @@ func (r restartPolicy) schedule(exit models.ExitStatus, count *models.RestartCou
 		return nil
 	}
 	if r.limited() && count.Count >= r.retries {
-		r.giveUp(count)
+		count.GaveUp = true
 
 		return nil
 	}
@@ -95,32 +101,4 @@ func (r restartPolicy) wait(started int) time.Duration {
 	}
 
 	return min(wait, backoffCap)
-}
-
-// startAgain forks the entrypoint once more and records it; an image that no longer starts is a give-up.
-func (r restartPolicy) startAgain(argv []string, credential *syscall.Credential, count *models.RestartCount) int {
-	pid, err := startProcess(argv, credential)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", argv[0], err)
-		r.giveUp(count)
-
-		return 0
-	}
-	count.Count++
-	count.LastAt = time.Now().UTC()
-	r.write(count)
-
-	return pid
-}
-
-func (r restartPolicy) giveUp(count *models.RestartCount) {
-	count.GaveUp = true
-	r.write(count)
-}
-
-// A sandbox outlives its entrypoint, so a lost count is reported and never fatal (AGENTS.md).
-func (r restartPolicy) write(count *models.RestartCount) {
-	if err := writeJSON(r.file, "the restart count", count); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init:", err)
-	}
 }
