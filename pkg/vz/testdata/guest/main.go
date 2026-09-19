@@ -1,4 +1,4 @@
-// The fixture PID 1: it answers every vsock connection on the control port with its pid, then holds the line.
+// The fixture PID 1: it answers every vsock connection on the control port with its pid, echoes it on the console, then holds the line.
 package main
 
 import (
@@ -19,6 +19,10 @@ func main() {
 }
 
 func serve() error {
+	console, err := openConsole()
+	if err != nil {
+		return err
+	}
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return fmt.Errorf("socket: %w", err)
@@ -35,11 +39,31 @@ func serve() error {
 		if err != nil {
 			return fmt.Errorf("accept: %w", err)
 		}
-		if _, err := unix.Write(conn, []byte(fmt.Sprintf("pid=%d\n", os.Getpid()))); err != nil {
+		line := fmt.Appendf(nil, "pid=%d\n", os.Getpid())
+		if _, err := unix.Write(conn, line); err != nil {
 			return fmt.Errorf("write: %w", err)
+		}
+		if _, err := console.Write(line); err != nil {
+			return fmt.Errorf("console: %w", err)
 		}
 		if err := unix.Close(conn); err != nil {
 			return fmt.Errorf("close: %w", err)
 		}
 	}
+}
+
+// An initramfs has no /dev until someone mounts it; the console is how the host sees a write after the boot.
+func openConsole() (*os.File, error) {
+	if err := os.MkdirAll("/dev", 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir /dev: %w", err)
+	}
+	if err := unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
+		return nil, fmt.Errorf("mount /dev: %w", err)
+	}
+	console, err := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open the console: %w", err)
+	}
+
+	return console, nil
 }

@@ -16,6 +16,8 @@ import (
 // Client speaks to one shim over its socket. It holds no connection between verbs, so a daemon restart loses nothing.
 type Client struct {
 	socket string
+	// Zero means callTimeout; a test shortens it.
+	timeout time.Duration
 }
 
 // Info is what every verb reports back: the VM's state, the shim's pid and the identifier a restore must reuse.
@@ -27,6 +29,9 @@ type Info struct {
 
 // The shim answers on its socket once the VM is up; a boot that takes longer than this is a failure to report.
 const startTimeout = 30 * time.Second
+
+// Every verb, dial to reply, is bounded, so a shim that accepts and never answers cannot hold the daemon.
+const callTimeout = 30 * time.Second
 
 // Start launches one shim, detached in its own process group, and returns once its socket answers.
 // The shim's stdout and stderr go to cfg.Console's sibling shim.log, so a start that dies has its reason on disk.
@@ -59,6 +64,9 @@ func Start(ctx context.Context, shim string, cfg Config) (*Client, Info, error) 
 	deadline := time.After(startTimeout)
 	for {
 		info, err := client.State()
+		if err == nil && info.PID != cmd.Process.Pid {
+			return nil, Info{}, errors.Join(fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, cfg.Socket), client.end(cmd))
+		}
 		if err == nil {
 			return client, info, nil
 		}
@@ -115,18 +123,29 @@ func (c *Client) call(req request) (Info, error) {
 }
 
 func (c *Client) send(req request) (net.Conn, Info, error) {
-	conn, err := net.Dial("unix", c.socket)
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = callTimeout
+	}
+	conn, err := net.DialTimeout("unix", c.socket, timeout)
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("dial the shim: %w", err)
 	}
 
 	var reply response
-	err = writeFrame(conn, req)
+	err = conn.SetDeadline(time.Now().Add(timeout))
+	if err == nil {
+		err = writeFrame(conn, req)
+	}
 	if err == nil {
 		err = readFrame(conn, &reply)
 	}
 	if err == nil {
 		err = reply.err()
+	}
+	if err == nil {
+		// A connect stream lives as long as the guest side; the deadline covered the handshake only.
+		err = conn.SetDeadline(time.Time{})
 	}
 	if err != nil {
 		return nil, Info{}, errors.Join(fmt.Errorf("%s: %w", req.Verb, err), conn.Close())

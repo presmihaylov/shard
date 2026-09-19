@@ -5,6 +5,7 @@ package vz
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -88,14 +89,17 @@ func buildInitrd(t *testing.T) string {
 	return filepath.Join(dir, "initrd")
 }
 
-func run(t *testing.T, dir string, argv ...string) {
+func run(t *testing.T, dir string, argv ...string) string {
 	t.Helper()
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("%s: %v: %s", strings.Join(argv, " "), err, out)
 	}
+
+	return string(out)
 }
 
 func config(t *testing.T, f fixtures) Config {
@@ -153,7 +157,6 @@ func awaitExit(t *testing.T, pid int) {
 	t.Fatalf("the shim %d did not exit after the vm stopped", pid)
 }
 
-// guestPID asks PID 1 over vsock who it is, which is the whole proof that the boot reached it.
 // A locked screen withholds the Secure Enclave key the restore needs (docs/provider-vz.md, spike item 9).
 func sessionLocked(t *testing.T) bool {
 	t.Helper()
@@ -165,6 +168,7 @@ func sessionLocked(t *testing.T) bool {
 	return regexp.MustCompile(`CGSSessionScreenIsLocked</key>\s*<true/>`).Match(out)
 }
 
+// guestPID asks PID 1 over vsock who it is, which is the whole proof that the boot reached it.
 func guestPID(t *testing.T, client *Client) int {
 	t.Helper()
 
@@ -218,6 +222,111 @@ func TestABootReachesPID1OverVsock(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
+}
+
+func TestAZeroValuedConfigBootsOnTheDefaults(t *testing.T) {
+	f := prepare(t)
+	cfg := config(t, f)
+	cfg.CPUs = 0
+	cfg.Memory = 0
+	client, info := start(t, f.shim, cfg)
+
+	if pid := guestPID(t, client); pid != 1 {
+		t.Fatalf("the guest answered as pid %d", pid)
+	}
+	if _, err := client.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	awaitExit(t, info.PID)
+}
+
+func TestASecondStartOnTheSameSocketIsRefusedAndTheFirstVMStays(t *testing.T) {
+	f := prepare(t)
+	cfg := config(t, f)
+	client, info := start(t, f.shim, cfg)
+
+	_, _, err := Start(context.Background(), f.shim, cfg)
+	if !errors.Is(err, ErrSocketInUse) {
+		t.Fatalf("a second Start on the socket: %v", err)
+	}
+	_, again, err := Adopt(cfg.Socket)
+	if err != nil || again.PID != info.PID {
+		t.Fatalf("the first shim after the refused start: %+v, %v", again, err)
+	}
+	if pid := guestPID(t, client); pid != 1 {
+		t.Fatalf("the guest answered as pid %d", pid)
+	}
+	if _, err := client.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	awaitExit(t, info.PID)
+}
+
+// The framework keeps the descriptors and not the files, so a collection in the shim must not close a live device.
+func TestTheDeviceFilesOutliveACollectionInTheShim(t *testing.T) {
+	f := prepare(t)
+	cfg := config(t, f)
+	cfg.Network = true
+	client, info := start(t, f.shim, cfg)
+	if pid := guestPID(t, client); pid != 1 {
+		t.Fatalf("the guest answered as pid %d", pid)
+	}
+	before := openFiles(t, info.PID)
+
+	logPath := strings.TrimSuffix(cfg.Console, ".log") + ".shim.log"
+	for i := range 3 {
+		if err := syscall.Kill(info.PID, syscall.SIGUSR1); err != nil {
+			t.Fatal(err)
+		}
+		awaitLine(t, logPath, "collected", i+1)
+	}
+
+	if after := openFiles(t, info.PID); after != before {
+		t.Fatalf("the collection changed the shim's files:\nbefore: %s\nafter:  %s", before, after)
+	}
+	if pid := guestPID(t, client); pid != 1 {
+		t.Fatalf("the guest answered as pid %d after the collection", pid)
+	}
+	awaitLine(t, cfg.Console, "pid=1", 2)
+
+	if _, err := client.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	awaitExit(t, info.PID)
+}
+
+// openFiles is the shim's console log and its unix sockets, which is where every device file would go missing.
+func openFiles(t *testing.T, pid int) string {
+	t.Helper()
+
+	out := run(t, "", "lsof", "-p", strconv.Itoa(pid), "-Ftn")
+	sockets, console := 0, 0
+	for line := range strings.SplitSeq(out, "\n") {
+		if line == "tunix" {
+			sockets++
+		}
+		if strings.HasSuffix(line, "console.log") {
+			console++
+		}
+	}
+	if sockets == 0 || console == 0 {
+		t.Fatalf("lsof shows no unix socket or console log on the shim:\n%s", out)
+	}
+
+	return fmt.Sprintf("%d unix sockets, console open %d", sockets, console)
+}
+
+// awaitLine waits for the file to hold at least n lines with the text; the guest and the shim both write asynchronously.
+func awaitLine(t *testing.T, path, text string, n int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		b, err := os.ReadFile(path)
+		if err == nil && strings.Count(string(b), text) >= n {
+			return
+		}
+	}
+	t.Fatalf("%s never held %q %d times", path, text, n)
 }
 
 func TestAnOutOfRangeRequestIsRefusedByNameBeforeTheBoot(t *testing.T) {

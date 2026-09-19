@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSaveRestoreFailsClosedOnEveryRowOfTheMatrix(t *testing.T) {
@@ -38,13 +39,16 @@ func TestSaveRestoreFailsClosedOnEveryRowOfTheMatrix(t *testing.T) {
 
 func TestAnExplicitValueOutsideTheRangeIsRefusedAndNamesIt(t *testing.T) {
 	allowed := Range{Min: 128, Max: 4096}
-	for _, ok := range []uint64{0, 128, 4096, 1024} {
+	for _, ok := range []uint64{128, 4096, 1024} {
 		if err := CheckMemory(ok, allowed); err != nil {
 			t.Fatalf("CheckMemory(%d) = %v, want nil", ok, err)
 		}
 		if err := CheckCPUs(uint(ok), allowed); err != nil {
 			t.Fatalf("CheckCPUs(%d) = %v, want nil", ok, err)
 		}
+	}
+	if err := CheckCPUs(0, allowed); err != nil {
+		t.Fatalf("CheckCPUs(0) = %v, want nil", err)
 	}
 	for _, bad := range []uint64{127, 4097, 1} {
 		err := CheckMemory(bad, allowed)
@@ -55,6 +59,115 @@ func TestAnExplicitValueOutsideTheRangeIsRefusedAndNamesIt(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "128 to 4096") {
 			t.Fatalf("CheckCPUs(%d) = %v, want the range named", bad, err)
 		}
+	}
+}
+
+func TestAZeroMemoryRequestIsTheDefaultAndNotTheFrameworksMinimum(t *testing.T) {
+	if got := Memory(0); got != DefaultMemory || DefaultMemory != 512<<20 {
+		t.Fatalf("Memory(0) = %d, want 512 MiB", got)
+	}
+	if got := Memory(1 << 20); got != 1<<20 {
+		t.Fatalf("Memory(1 MiB) = %d", got)
+	}
+	if err := CheckMemory(0, Range{Min: 4 << 20, Max: 1 << 40}); err != nil {
+		t.Fatalf("CheckMemory(0) = %v, want the default to pass", err)
+	}
+	err := CheckMemory(0, Range{Min: 4 << 20, Max: 256 << 20})
+	if err == nil || !strings.Contains(err.Error(), "536870912 bytes") {
+		t.Fatalf("CheckMemory(0) = %v, want the default refused by name", err)
+	}
+}
+
+func TestListenRefusesALiveShimAndReplacesADeadOne(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Serve(listener, &fake{state: StateRunning}, log.New(io.Discard, "", 0)) }()
+
+	if _, err := Listen(socket); !errors.Is(err, ErrSocketInUse) {
+		t.Fatalf("Listen over a live shim = %v, want ErrSocketInUse", err)
+	}
+	if _, _, err := Adopt(socket); err != nil {
+		t.Fatalf("the first shim is no longer answering: %v", err)
+	}
+
+	// A dead shim leaves its path bound to nothing; that one is ours to take.
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := errors.Join(listener.Close(), <-done); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("the dead shim's path is gone: %v", err)
+	}
+	again, err := Listen(socket)
+	if err != nil {
+		t.Fatalf("Listen over a dead shim = %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAShimThatAcceptsAndNeverAnswersIsGivenUpOn(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			defer conn.Close()
+			<-t.Context().Done()
+		}
+	}()
+
+	client := &Client{socket: socket, timeout: 200 * time.Millisecond}
+	started := time.Now()
+	_, err = client.State()
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("State() = %v, want the deadline", err)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("the deadline did not bound the call")
+	}
+}
+
+func TestAnIdleConnectionDoesNotKeepServeFromReturning(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Serve(listener, &fake{state: StateRunning}, log.New(io.Discard, "", 0)) }()
+
+	idle, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idle.Close()
+	if _, _, err := Adopt(socket); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(handshakeTimeout):
+		t.Fatal("Serve waited on a connection that never sent a frame")
+	}
+	if _, err := idle.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("the idle connection was not closed: %v", err)
 	}
 }
 

@@ -61,13 +61,28 @@ func CheckCPUs(cpus uint, allowed Range) error {
 	return fmt.Errorf("vz: %d cpus is outside the host's range of %d to %d", cpus, allowed.Min, allowed.Max)
 }
 
-// CheckMemory refuses an explicit size outside the range; zero asks for the default.
+// DefaultMemory is what a zero request gets: the framework's own minimum is 4 MiB, which boots no guest.
+const DefaultMemory uint64 = 512 << 20
+
+// CheckMemory refuses a size outside the range; zero asks for DefaultMemory, which must fit too.
 func CheckMemory(bytes uint64, allowed Range) error {
-	if bytes == 0 || (bytes >= allowed.Min && bytes <= allowed.Max) {
+	if bytes == 0 {
+		bytes = DefaultMemory
+	}
+	if bytes >= allowed.Min && bytes <= allowed.Max {
 		return nil
 	}
 
 	return fmt.Errorf("vz: %d bytes of memory is outside the host's range of %d to %d", bytes, allowed.Min, allowed.Max)
+}
+
+// Memory is the size a request boots with: the request itself, or DefaultMemory for zero.
+func Memory(bytes uint64) uint64 {
+	if bytes == 0 {
+		return DefaultMemory
+	}
+
+	return bytes
 }
 
 // saveRestoreMinMajor is the first macOS whose framework saves and restores a VM.

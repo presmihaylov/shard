@@ -23,10 +23,26 @@ type Machine interface {
 	Connect(port uint32) (net.Conn, error)
 }
 
+// A client that connects and sends nothing within this is dropped, so it cannot keep the shim from exiting.
+const handshakeTimeout = 5 * time.Second
+
 // Serve answers on the shim socket until the listener closes. One request per connection.
 func Serve(listener net.Listener, machine Machine, logger *log.Logger) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+
+	// The connections still in their handshake, which a closing listener ends rather than waits for.
+	var mu sync.Mutex
+	pending := map[net.Conn]struct{}{}
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for conn := range pending {
+			if err := conn.Close(); err != nil {
+				logger.Printf("shim socket: close a pending connection: %v", err)
+			}
+		}
+	}()
 
 	for {
 		conn, err := listener.Accept()
@@ -36,21 +52,37 @@ func Serve(listener net.Listener, machine Machine, logger *log.Logger) error {
 		if err != nil {
 			return fmt.Errorf("accept on the shim socket: %w", err)
 		}
+		mu.Lock()
+		pending[conn] = struct{}{}
+		mu.Unlock()
 
 		wg.Go(func() {
-			if err := serveOne(conn, machine); err != nil {
+			settle := func() {
+				mu.Lock()
+				defer mu.Unlock()
+				delete(pending, conn)
+			}
+			if err := serveOne(conn, machine, settle); err != nil {
 				logger.Printf("shim socket: %v", err)
 			}
 		})
 	}
 }
 
-func serveOne(conn net.Conn, machine Machine) error {
+// settled runs once the request frame is in, so shutdown knows this connection is past its handshake.
+func serveOne(conn net.Conn, machine Machine, settled func()) error {
 	defer conn.Close()
 
 	var req request
+	if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return fmt.Errorf("bound the handshake: %w", err)
+	}
 	if err := readFrame(conn, &req); err != nil {
 		return err
+	}
+	settled()
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear the handshake deadline: %w", err)
 	}
 
 	guest, err := handle(req, machine)

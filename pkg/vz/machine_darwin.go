@@ -4,6 +4,7 @@ package vz
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,20 @@ type VM struct {
 	vm      *vz.VirtualMachine
 	id      string
 	netHost *os.File
+	// The framework keeps the descriptors, not the files, so these stay referenced or a finalizer closes a live device.
+	files []*os.File
+}
+
+// Close releases the files behind the devices, once the VM is gone.
+func (m *VM) Close() error {
+	var errs []error
+	for _, f := range m.files {
+		if err := f.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close %s: %w", f.Name(), err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // NewMachine builds the VM from cfg and validates it; nothing starts until Boot.
@@ -32,7 +47,7 @@ func NewMachine(cfg *Config) (*VM, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boot loader: %w", err)
 	}
-	vmc, err := vz.NewVirtualMachineConfiguration(loader, cpus(cfg.CPUs), memory(cfg.Memory))
+	vmc, err := vz.NewVirtualMachineConfiguration(loader, cpus(cfg.CPUs), Memory(cfg.Memory))
 	if err != nil {
 		return nil, fmt.Errorf("vm configuration: %w", err)
 	}
@@ -41,7 +56,7 @@ func NewMachine(cfg *Config) (*VM, error) {
 	if err := m.platform(vmc, cfg); err != nil {
 		return nil, err
 	}
-	if err := console(vmc, cfg.Console); err != nil {
+	if err := m.console(vmc, cfg.Console); err != nil {
 		return nil, err
 	}
 	if err := disk(vmc, cfg.Disk); err != nil {
@@ -173,18 +188,10 @@ func memoryRange() Range {
 	return Range{Min: vz.VirtualMachineConfigurationMinimumAllowedMemorySize(), Max: vz.VirtualMachineConfigurationMaximumAllowedMemorySize()}
 }
 
-// The defaults: one cpu, and the smallest memory the framework allows, so a zero never oversubscribes a laptop.
+// The cpu default is one, the smallest the framework allows.
 func cpus(n uint) uint {
 	if n == 0 {
 		return uint(cpuRange().Min)
-	}
-
-	return n
-}
-
-func memory(n uint64) uint64 {
-	if n == 0 {
-		return memoryRange().Min
 	}
 
 	return n
@@ -220,7 +227,7 @@ func (m *VM) platform(vmc *vz.VirtualMachineConfiguration, cfg *Config) error {
 }
 
 // The console is write-only into a log file; the guest's stdin is the vsock exec stream, never the serial line.
-func console(vmc *vz.VirtualMachineConfiguration, path string) error {
+func (m *VM) console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	in, err := os.Open(os.DevNull)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", os.DevNull, err)
@@ -229,6 +236,7 @@ func console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	if err != nil {
 		return fmt.Errorf("open the console log: %w", err)
 	}
+	m.files = append(m.files, in, out)
 
 	attachment, err := vz.NewFileHandleSerialPortAttachment(in, out)
 	if err != nil {
@@ -269,6 +277,7 @@ func (m *VM) network(vmc *vz.VirtualMachineConfiguration) error {
 	}
 	guest := os.NewFile(uintptr(fds[0]), "vmnet-guest")
 	m.netHost = os.NewFile(uintptr(fds[1]), "vmnet-host")
+	m.files = append(m.files, guest, m.netHost)
 
 	attachment, err := vz.NewFileHandleNetworkDeviceAttachment(guest)
 	if err != nil {

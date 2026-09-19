@@ -5,12 +5,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"syscall"
 
 	vzfw "github.com/Code-Hex/vz/v3"
@@ -34,21 +36,17 @@ func run() error {
 		return fmt.Errorf("decode -config: %w", err)
 	}
 
+	// The socket is claimed before the boot, so a second shim for the same VM refuses instead of orphaning the first.
+	listener, err := vz.Listen(cfg.Socket)
+	if err != nil {
+		return err
+	}
 	machine, err := vz.NewMachine(&cfg)
 	if err != nil {
-		return err
+		return errors.Join(err, listener.Close())
 	}
 	if err := machine.Boot(&cfg); err != nil {
-		return err
-	}
-
-	// A stale socket is a shim that died; the record's pid says whether it is ours to replace.
-	if err := os.Remove(cfg.Socket); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove the stale shim socket: %w", err)
-	}
-	listener, err := net.Listen("unix", cfg.Socket)
-	if err != nil {
-		return fmt.Errorf("listen on the shim socket: %w", err)
+		return errors.Join(err, listener.Close(), machine.Close())
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
@@ -56,11 +54,19 @@ func run() error {
 	go func() { served <- vz.Serve(listener, machine, logger) }()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	changed := machine.Changed()
 	for {
 		select {
 		case sig := <-signals:
+			// SIGUSR1 forces a collection, so a test can prove the device files outlive one.
+			if sig == syscall.SIGUSR1 {
+				runtime.GC()
+				debug.FreeOSMemory()
+				logger.Printf("%s: collected", sig)
+
+				continue
+			}
 			logger.Printf("%s: stopping the vm", sig)
 			if err := machine.Stop(); err != nil {
 				return err
@@ -74,7 +80,7 @@ func run() error {
 				return fmt.Errorf("close the shim socket: %w", err)
 			}
 
-			return <-served
+			return errors.Join(<-served, machine.Close())
 		}
 	}
 }
