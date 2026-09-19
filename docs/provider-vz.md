@@ -118,8 +118,12 @@ to reach the proxy anyway.
   takes an APFS clone of the quiescent disk as `<snapshot dir>/disk.img` beside it; the shim exits.
   The memory is freed, as the verb promises on gVisor; the live disk stays where it is. The two
   files are one snapshot: the memory and the disk of the same instant.
-- `resume` starts a new shim that restores the state file over the live disk and resumes. The
-  snapshot is not consumed.
+- `resume` first replaces the live disk with a fresh APFS clone of the snapshot's `disk.img`, by a
+  clone to a temporary name and a rename, then starts a new shim that restores the state file over it
+  and resumes. The snapshot is not consumed, and every resume from it starts from the same pair: a
+  resume whose shim died after the restore has written to the live disk, and the record still paused
+  over the same snapshot, gets the pause-time contents again on the next resume. The fork ticket
+  (SHARD-215) ships that repeated-resume case, with a write after round one.
 - `fork` clones the snapshot's `disk.img`, never the live disk, starts a new shim that restores the
   same state file over that clone, resumes, then sends one re-address message on the control port so
   the guest drops the source's address and takes its own (hypeman's issue 423 is a fork that answers
