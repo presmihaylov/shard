@@ -13,7 +13,13 @@ PROVIDER ?= gvisor
 # Which packages `make itest` runs on the box. Narrow it while you work on one ticket.
 ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/... ./services/provider/sysbox/... ./services/provider/runc/...
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo
+include packaging/kernel/version.mk
+# The guest kernel arch to build: arm64 or amd64.
+ARCH ?= arm64
+KERNEL_OUT := bin/kernel
+KERNEL_IMAGE := packaging-kernel-builder
+
+.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
 
 all: check build
 
@@ -101,3 +107,21 @@ check: fmt-check vet lint test e2e-test
 
 clean:
 	rm -rf bin
+
+# One guest kernel, built in the pinned amd64 image so the bytes match CI wherever it runs (SHARD-232).
+kernel:
+	docker build --platform linux/amd64 -q -t $(KERNEL_IMAGE) packaging/kernel >/dev/null
+	mkdir -p $(KERNEL_OUT)/$(ARCH) $(KERNEL_OUT)/cache
+	docker run --rm --platform linux/amd64 \
+		-e KERNEL_VERSION=$(KERNEL_VERSION) -e KERNEL_SHA256=$(KERNEL_SHA256) \
+		-v $(CURDIR)/packaging/kernel:/config:ro \
+		-v $(CURDIR)/$(KERNEL_OUT)/cache:/cache \
+		-v $(CURDIR)/$(KERNEL_OUT)/$(ARCH):/out \
+		$(KERNEL_IMAGE) $(ARCH)
+
+# Builds twice and refuses a hash that moved; the release workflow runs this before it publishes.
+kernel-reproducible:
+	$(MAKE) kernel ARCH=$(ARCH)
+	cp $(KERNEL_OUT)/$(ARCH)/*.sha256 $(KERNEL_OUT)/$(ARCH).first.sha256
+	$(MAKE) kernel ARCH=$(ARCH)
+	diff $(KERNEL_OUT)/$(ARCH).first.sha256 $(KERNEL_OUT)/$(ARCH)/*.sha256

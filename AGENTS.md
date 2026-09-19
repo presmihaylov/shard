@@ -25,6 +25,8 @@ make itest                   integration tests for ITEST_PKG, on the devbox
 make e2e                     the whole lifecycle on this host, as root, over a daemon it starts (SHARD-17)
 make devbox-e2e              the same script, on the devbox; PROVIDER=sysbox or PROVIDER=runc picks the substrate (SHARD-90, SHARD-224)
 make devbox-demo             record scripts/demo.sh on the devbox into docs/demo.cast (SHARD-36)
+make kernel ARCH=arm64       build the guest kernel for one arch in Docker, into bin/kernel (SHARD-232)
+make kernel-reproducible     the same twice, and fail if the two hashes differ
 make lint                    golangci-lint (v2: brew install golangci-lint)
 make lint-fix                apply the fixes golangci-lint can make
 make fmt                     apply formatting
@@ -76,6 +78,8 @@ services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite every substrate must pass
 
 packaging/systemd/         the unit for the daemon, and the one for the TCP front
+packaging/kernel/          the guest kernel build: pinned image, config per arch, release tag helper
+services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
 docs/
 ```
 

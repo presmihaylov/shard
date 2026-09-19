@@ -1,0 +1,76 @@
+name: kernel
+
+# Builds each guest kernel twice and proves the hashes match the ones shard was built with. A PR that
+# touches the build runs that much; a manual dispatch also publishes under the tag services/kernel names.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Makefile
+      - packaging/kernel/**
+      - services/kernel/**
+      - .github/workflows/kernel.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: kernel ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build twice and compare
+        run: make kernel-reproducible ARCH=${{ matrix.arch }}
+
+      - name: print the hash
+        run: cat bin/kernel/${{ matrix.arch }}/*.sha256
+
+      - name: check the hash shard expects
+        run: |
+          want=$(go run ./packaging/kernel/tag ${{ matrix.arch }})
+          got=$(cut -d' ' -f1 bin/kernel/${{ matrix.arch }}/*.sha256)
+          test "$want" = "$got" || { echo "services/kernel expects $want, built $got"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: bin/kernel/${{ matrix.arch }}/*
+
+  release:
+    name: release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(go run ./packaging/kernel/tag)
+          cat dist/*.sha256 > dist/SHA256SUMS
+          gh release create "$tag" --target "$GITHUB_SHA" --title "guest kernel $tag" --notes "Built by the kernel workflow from packaging/kernel. Reproducible: each file was built twice." dist/Image-arm64 dist/vmlinux-amd64 dist/SHA256SUMS
