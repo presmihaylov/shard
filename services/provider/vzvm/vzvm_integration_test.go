@@ -5,7 +5,16 @@ package vzvm_test
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -33,7 +42,10 @@ const testImage = "alpine:3.20"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
 
-const redirectPort = 30080
+const (
+	redirectPort = 30080
+	tlsPort      = 30443
+)
 
 // vmHarness is the provider over real VMs: the shim, the kernel, a linux/arm64 shard-init and the image's disk.
 type vmHarness struct {
@@ -77,7 +89,7 @@ func newVMHarness(t *testing.T) *vmHarness {
 	h := &vmHarness{root: root, image: img, drops: make(chan netstack.Drop, 64)}
 	h.stack, err = netstack.New(netstack.Config{
 		Address:   gateway,
-		Redirects: map[uint16]uint16{80: redirectPort},
+		Redirects: map[uint16]uint16{80: redirectPort, 443: tlsPort},
 		Drops:     func(d netstack.Drop) { h.drops <- d },
 	})
 	if err != nil {
@@ -207,6 +219,87 @@ func TestAGuestReachesTheRedirectedPortAndNothingElse(t *testing.T) {
 			t.Fatal("no drop reported for the guest's dial of 8080")
 		}
 	}
+}
+
+// A fronted guest trusts the proxy CA: its TLS client verifies a leaf the CA signed, read through the 443 redirect.
+func TestAFrontedGuestTrustsTheProxyCA(t *testing.T) {
+	h := newVMHarness(t)
+
+	caPEM, leaf := testCA(t, net.ParseIP("93.184.216.34"))
+	inner, err := h.stack.ListenTCP(tlsPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := tls.NewListener(inner, &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12})
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+			return
+		}
+		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\ntrusted\n")
+	}()
+
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	spec.ProxyCA = caPEM
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "wget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"wget", "-qO-", "-T", "15", "https://93.184.216.34/"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if !strings.HasPrefix(string(read), "trusted") {
+		t.Fatalf("the guest read %q over TLS, want the listener's body", read)
+	}
+}
+
+// testCA mints a CA and a leaf for ip it signed, the shape the proxy presents to a guest.
+func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "shard test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: ip.String()}, IPAddresses: []net.IP{ip},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), leaf
 }
 
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.

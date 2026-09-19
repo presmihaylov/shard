@@ -34,17 +34,18 @@ func TrustsUser(env []string) error {
 	return nil
 }
 
-// plantTrust writes the image roots plus the proxy CA to the path the guest already reads, and says
-// which variables to set so every client reads that path. It never writes the proxy CA alone.
-func plantTrust(b Bundle, rootfs string, env []string, proxyCA []byte) ([]string, error) {
+// Store is the trust store of a fronted sandbox: the merged roots, the guest path the image reads them from, and the variables that point there.
+type Store struct {
+	Path  string
+	Roots []byte
+	Env   []string
+}
+
+// Trust merges the proxy CA into the image's own roots; a substrate with no upper layer hands it to the guest to write.
+func Trust(rootfs string, env []string, proxyCA []byte) (Store, error) {
 	rel, roots, err := imageRoots(rootfs, env)
 	if err != nil {
-		return nil, err
-	}
-
-	target := filepath.Join(b.Upper, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(target), etcDirPerm); err != nil {
-		return nil, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+		return Store{}, err
 	}
 
 	merged := append(slices.Clone(roots), '\n')
@@ -53,16 +54,30 @@ func plantTrust(b Bundle, rootfs string, env []string, proxyCA []byte) ([]string
 	}
 	merged = append(merged, proxyCA...)
 
-	if err := store.WriteFile(target, merged, etcFilePerm); err != nil { // #nosec G306
-		return nil, fmt.Errorf("write %s: %w", target, err)
-	}
-
 	trust := make([]string, 0, len(TrustEnv))
 	for _, key := range TrustEnv {
 		trust = append(trust, key+"=/"+rel)
 	}
 
-	return trust, nil
+	return Store{Path: "/" + rel, Roots: merged, Env: trust}, nil
+}
+
+// plantTrust writes the merged store into the upper layer, and says which variables point every client at it.
+func plantTrust(b Bundle, rootfs string, env []string, proxyCA []byte) ([]string, error) {
+	trust, err := Trust(rootfs, env, proxyCA)
+	if err != nil {
+		return nil, err
+	}
+
+	target := filepath.Join(b.Upper, filepath.FromSlash(trust.Path))
+	if err := os.MkdirAll(filepath.Dir(target), etcDirPerm); err != nil {
+		return nil, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+	}
+	if err := store.WriteFile(target, trust.Roots, etcFilePerm); err != nil { // #nosec G306
+		return nil, fmt.Errorf("write %s: %w", target, err)
+	}
+
+	return trust.Env, nil
 }
 
 // imageRoots reads the image's own CA bundle from the first path that holds one, inside the rootfs only.
