@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -196,7 +195,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if err != nil || !found {
 		return err
 	}
-	// A save stays where the pause put it; only the record says paused, and a shim still holding the VM frozen is cut below.
+	// A save stays where the pause put it; only the record says paused, and no shim holds a saved VM.
 	if r.Paused {
 		r.Paused = false
 		if err := writeRecord(dir, r); err != nil {
@@ -211,15 +210,6 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
-	info, err := m.client.State()
-	if err != nil && !absent(err) {
-		return fmt.Errorf("sandbox %s: %w", id, err)
-	}
-	// A frozen guest cannot take a stop, and nothing in it runs to owe a grace to.
-	if info.State == vz.StatePaused {
-		return p.end(ctx, m)
-	}
-
 	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
 	if err := m.control.Stop(); err != nil && !m.status(p).Alive() {
 		return p.release(ctx, m)
@@ -318,6 +308,9 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	path := filepath.Join(dir, exitFile)
 
 	for {
+		if err := p.lost(id); err != nil {
+			return models.ExitStatus{}, err
+		}
 		exit, found, err := bundle.ReadExitStatus(path)
 		if err != nil {
 			return models.ExitStatus{}, err
@@ -362,6 +355,9 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 	if err != nil {
 		return nil, err
 	}
+	if err := p.lost(id); err != nil {
+		return nil, err
+	}
 
 	exit, found, err := bundle.ReadExitStatus(filepath.Join(dir, exitFile))
 	if err != nil {
@@ -380,11 +376,26 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	if err != nil {
 		return models.RestartCount{}, err
 	}
+	if err := p.lost(id); err != nil {
+		return models.RestartCount{}, err
+	}
 
 	return bundle.Bundle{RestartFile: filepath.Join(dir, restartsFile)}.RestartCount()
 }
 
-// Status asks the shim, because a record saying running can outlive a restart of the daemon.
+// lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.
+func (p *Provider) lost(id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	m, held := p.machines[id]
+	if !held || m.lost == nil {
+		return nil
+	}
+
+	return fmt.Errorf("sandbox %s lost its lifecycle state: %w", id, m.lost)
+}
+
+// Status asks the shim, because a record saying running or paused can outlive a restart of the daemon.
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	dir, err := p.dir(id)
 	if err != nil {
@@ -396,9 +407,6 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 	if !found {
 		return models.Status{}, nil
-	}
-	if r.Paused {
-		return models.Status{Exists: true, State: models.StatePaused}, nil
 	}
 
 	m, err := p.lookup(ctx, id, dir, r)

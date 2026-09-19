@@ -38,6 +38,8 @@ type machine struct {
 	started bool
 	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
 	gone bool
+	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
+	lost error
 }
 
 // dial is the supervisor's Dialer over the shim: one vsock connection per call.
@@ -45,8 +47,7 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 	return m.client.Connect(port)
 }
 
-// lookup finds the sandbox's shim: the one in memory, gone or not, or else the one whose socket answers, adopted.
-// It returns nil for a sandbox no shim of this process held and none answers for.
+// lookup finds the sandbox's shim, held or adopted by its socket, and returns nil when none answers.
 func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
@@ -168,11 +169,15 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: open the logs connection: %w", id, err), m.close())
 	}
+	out, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: open the log: %w", id, err), logs.Close(), m.close())
+	}
 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go m.followLogs(pumpCtx, logs)
+	go m.followLogs(pumpCtx, logs, out)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -228,8 +233,11 @@ func (p *Provider) follow(m *machine) {
 			return
 		}
 		if err := p.record(m, event); err != nil {
-			// A sandbox outlives its entrypoint, so a lost record is reported and never fatal (AGENTS.md).
-			fmt.Fprintf(os.Stderr, "vz: sandbox %s: %v\n", m.id, err)
+			p.mu.Lock()
+			if m.lost == nil {
+				m.lost = err
+			}
+			p.mu.Unlock()
 		}
 	}
 }
@@ -258,13 +266,7 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 }
 
 // followLogs appends what the open logs connection carries to the log file, until the guest ends it.
-func (m *machine) followLogs(ctx context.Context, logs net.Conn) {
-	out, err := os.OpenFile(filepath.Join(m.dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "vz: sandbox %s: open the log: %v\n", m.id, errors.Join(err, logs.Close()))
-
-		return
-	}
+func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
 	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	if err := supervisor.Logs(ctx, opened, out); err != nil && !errors.Is(err, io.EOF) {

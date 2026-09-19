@@ -1,6 +1,4 @@
-// Package vzvm runs sandboxes as Virtualization.framework VMs on macOS: one shard-vz-shim per sandbox
-// holds the VM behind a unix socket, shard-init is PID 1 in it over vsock, and the disk is one ext4
-// file cloned from the image. Pause saves the VM and stops it; Resume and Fork restore the save.
+// Package vzvm runs sandboxes as Virtualization.framework VMs on macOS, one shard-vz-shim per sandbox.
 package vzvm
 
 import (
@@ -44,6 +42,8 @@ const (
 	snapshotFile     = "snapshot.json"
 	snapshotState    = "vm.vzvmstate"
 	snapshotDiskFile = "disk.img"
+	// checkpointFile is the completion marker the sandbox service reads, the name gVisor's own checkpoint has.
+	checkpointFile = "checkpoint.img"
 )
 
 const (
@@ -123,9 +123,9 @@ func buildInitrd(initPath, path string) (string, error) {
 
 func (p *Provider) Name() string { return Name }
 
-// Capabilities: every Mac pauses a VM in place, and one that saves it forks from the save.
+// Capabilities: the three optional verbs are one VZ save and two restores, so a host without them has none.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: true, Resume: true, Fork: p.cfg.SaveRestore}
+	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore}
 }
 
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.
@@ -142,7 +142,7 @@ type record struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
-	// Paused says the last verb was a pause: the VM is saved and gone, or frozen in its shim where the host cannot save.
+	// Paused says the last verb was a pause: the VM is saved into the snapshot and its shim is gone.
 	Paused bool `json:"paused,omitempty"`
 }
 

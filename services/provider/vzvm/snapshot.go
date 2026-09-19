@@ -13,8 +13,10 @@ import (
 )
 
 // Pause saves the VM into dir and stops it: the memory is on disk, the shim is gone, and the record says paused.
-// A host that cannot save freezes the VM in its shim instead, and dir gets nothing a fork could use.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
+	if !p.cfg.SaveRestore {
+		return models.Unsupported(Name, models.VerbPause)
+	}
 	stateDir, r, err := p.open(id)
 	if err != nil {
 		return err
@@ -29,41 +31,45 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if m == nil || !m.status(p).Alive() {
 		return fmt.Errorf("sandbox %s is %s on %s, and only a live one can pause", id, models.StateStopped, Name)
 	}
-	if !p.cfg.SaveRestore {
-		if _, err := m.client.Pause(); err != nil {
-			return fmt.Errorf("pause sandbox %s: %w", id, err)
-		}
-		r.Paused = true
 
-		return writeRecord(stateDir, r)
+	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	tmp := dir + ".tmp"
+	if err := os.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
 	}
-
-	// A pause into a directory that holds a snapshot replaces it.
-	for _, name := range []string{snapshotState, snapshotDiskFile} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("clear %s of the last snapshot: %w", name, err)
-		}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
 	if _, err := m.client.Pause(); err != nil {
 		return fmt.Errorf("pause sandbox %s: %w", id, err)
 	}
-	if _, err := m.client.Save(filepath.Join(dir, snapshotState)); err != nil {
+	if _, err := m.client.Save(filepath.Join(tmp, snapshotState)); err != nil {
 		// A VM that could not be saved runs on, so the pause is refused rather than half done.
 		_, resumeErr := m.client.Resume()
 
-		return errors.Join(fmt.Errorf("save sandbox %s: %w", id, err), resumeErr)
+		return errors.Join(fmt.Errorf("save sandbox %s: %w", id, err), resumeErr, os.RemoveAll(tmp))
 	}
 	if err := p.end(ctx, m); err != nil {
 		return err
 	}
 
 	// The disk is copied once the VM is off it, so the save and the disk are one moment.
-	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(dir, snapshotDiskFile)); err != nil {
+	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, snapshotDiskFile)); err != nil {
 		return fmt.Errorf("copy the disk of sandbox %s: %w", id, err)
 	}
 	snap := snapshot{MachineID: r.MachineID, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
-	if err := writeJSON(filepath.Join(dir, snapshotFile), snap); err != nil {
+	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
 		return err
+	}
+	// The marker is what the sandbox service takes as a complete snapshot after a restart of the daemon.
+	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
+		return fmt.Errorf("mark the snapshot complete: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("clear the snapshot directory %s: %w", dir, err)
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		return fmt.Errorf("move the snapshot into place: %w", err)
 	}
 
 	r.Paused = true
@@ -72,17 +78,16 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 }
 
 // Resume restores the save in dir over the sandbox's own disk, which the snapshot's copy replaces first.
-// A host that cannot save thaws the VM its shim still holds, and dir is not read.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
+	if !p.cfg.SaveRestore {
+		return models.Unsupported(Name, models.VerbResume)
+	}
 	stateDir, r, err := p.open(id)
 	if err != nil {
 		return err
 	}
 	if !r.Paused {
 		return fmt.Errorf("sandbox %s is not paused on %s", id, Name)
-	}
-	if !p.cfg.SaveRestore {
-		return p.thaw(ctx, id, stateDir, r)
 	}
 	snap, err := readSnapshot(dir)
 	if err != nil {
@@ -158,24 +163,10 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	return nil
 }
 
-// thaw resumes a VM a pause froze in its shim; a shim that went in between left nothing to resume.
-func (p *Provider) thaw(ctx context.Context, id, stateDir string, r record) error {
-	m, err := p.lookup(ctx, id, stateDir, r)
-	if err != nil {
-		return err
-	}
-	if m == nil || !m.status(p).Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s, and only a paused one resumes", id, models.StateStopped, Name)
-	}
-	if _, err := m.client.Resume(); err != nil {
-		return fmt.Errorf("resume sandbox %s: %w", id, err)
-	}
-	r.Paused = false
-
-	return writeRecord(stateDir, r)
-}
-
 func readSnapshot(dir string) (snapshot, error) {
+	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
+		return snapshot{}, fmt.Errorf("no complete snapshot in %s: %w", dir, err)
+	}
 	blob, err := os.ReadFile(filepath.Join(dir, snapshotFile))
 	if err != nil {
 		return snapshot{}, fmt.Errorf("read the snapshot in %s: %w", dir, err)
