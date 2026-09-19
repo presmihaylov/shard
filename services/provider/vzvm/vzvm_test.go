@@ -200,13 +200,17 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"snapshot.json", "vm.vzvmstate", "disk.img"} {
+	for _, name := range []string{"snapshot.json", "vm.vzvmstate", "disk.img", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(snap, name)); err != nil {
 			t.Errorf("the snapshot lacks %s: %v", name, err)
 		}
 	}
+	if _, err := os.Stat(snap + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the pause left its staging directory: %v", err)
+	}
+	// The save ends the shim, so the substrate says stopped and the snapshot marker is what says paused.
 	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.State != models.StatePaused {
+	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Pause = %+v, %v", status, err)
 	}
 	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "already paused") {
@@ -280,9 +284,12 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	}
 }
 
-// A host that cannot save still pauses: the VM freezes in its shim, and a fork is refused as unsupported.
-func TestAHostWithoutSaveFreezesTheVMInPlace(t *testing.T) {
+// A host that cannot save has no optional verb: each is refused by name, and none freezes a VM in its shim.
+func TestAHostWithoutSaveRefusesTheOptionalVerbs(t *testing.T) {
 	h := newHarnessOn(t, false)
+	if caps := h.provider.Capabilities(); caps.Pause || caps.Resume || caps.Fork {
+		t.Fatalf("Capabilities = %+v, want none", caps)
+	}
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
@@ -292,44 +299,75 @@ func TestAHostWithoutSaveFreezesTheVMInPlace(t *testing.T) {
 	}
 
 	snap := t.TempDir()
-	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
-		t.Fatal(err)
+	refused := map[string]error{
+		models.VerbPause:  h.provider.Pause(t.Context(), spec.ID, snap),
+		models.VerbResume: h.provider.Resume(t.Context(), spec.ID, snap),
+		models.VerbFork:   h.provider.Fork(t.Context(), snap, h.newSpec(t)),
+	}
+	for verb, err := range refused {
+		var refusal *models.UnsupportedError
+		if !errors.As(err, &refusal) || refusal.Verb != verb || refusal.Provider != vzvm.Name {
+			t.Errorf("%s = %v, want unsupported on %s", verb, err, vzvm.Name)
+		}
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.State != models.StatePaused {
-		t.Fatalf("Status after Pause = %+v, %v", status, err)
-	}
-	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}}); err == nil || !strings.Contains(err.Error(), "paused") {
-		t.Fatalf("Exec on a paused sandbox = %v, want a refusal", err)
-	}
-	var refusal *models.UnsupportedError
-	if err := h.provider.Fork(t.Context(), snap, h.newSpec(t)); !errors.As(err, &refusal) || refusal.Verb != models.VerbFork {
-		t.Fatalf("Fork = %v, want unsupported", err)
-	}
-
-	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
-		t.Fatal(err)
-	}
-	status, err = h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateRunning {
-		t.Fatalf("Status after Resume = %+v, %v", status, err)
+		t.Fatalf("Status after the refusals = %+v, %v", status, err)
 	}
-	if exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}}); err != nil || exit.Code != 0 {
-		t.Fatalf("Exec after Resume = %+v, %v", exit, err)
+}
+
+// An exit the loop could not land is an error on every read, not a wait that never ends.
+func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 3")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(spec.StateDir, 0o700) })
+	if err := os.Chmod(spec.StateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
 	}
 
-	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := h.provider.Wait(ctx, spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("Wait = %v, want the lost exit", err)
+	}
+	if _, err := h.provider.ExitStatus(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("ExitStatus = %v, want the lost exit", err)
+	}
+	if _, err := h.provider.Restarts(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("Restarts = %v, want the lost exit", err)
+	}
+}
+
+// A log that cannot open fails the attach, so no verb reports a sandbox whose output has nowhere to go.
+func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
-	began := time.Now()
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+	log := filepath.Join(spec.StateDir, "output.log")
+	if err := os.Remove(log); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(began) >= stopGrace {
-		t.Fatal("Stop of a frozen sandbox waited the grace, and nothing in it runs to owe one to")
+	if err := os.Mkdir(log, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	status, err = h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.State != models.StateStopped {
-		t.Fatalf("Status after Stop = %+v, %v", status, err)
+
+	if _, err := h.open(t).Status(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "open the log") {
+		t.Fatalf("Status over a fresh provider = %v, want the log open failure", err)
+	}
+
+	// The failed adopt took the guest's one control connection, so the stop goes through a provider that adopts it again.
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.open(t).Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
 	}
 }

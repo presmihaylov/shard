@@ -223,7 +223,7 @@ func guestInit(t *testing.T) string {
 	return path
 }
 
-// On macOS 14 a locked screen withholds the key a restore needs (docs/provider-vz.md, item 9); 26.6 restores locked, so only 14 falls back to the freeze path.
+// On macOS 14 a locked screen withholds the key a restore needs (docs/provider-vz.md, item 9); 26.6 restores locked, so only 14 runs without the optional verbs.
 func sessionLocked(t *testing.T) bool {
 	t.Helper()
 

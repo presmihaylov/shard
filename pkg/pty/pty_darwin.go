@@ -11,8 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ptmx is a var so a test can point open at a file that is no multiplexer, which is the only way to
-// reach the failure path below.
+// ptmx is a var so a test can point open at a file that is no multiplexer, the one way to reach the failure path.
 var ptmx = "/dev/ptmx"
 
 func open() (*Pty, error) {
