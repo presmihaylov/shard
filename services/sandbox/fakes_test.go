@@ -13,6 +13,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/proxy"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -639,6 +640,8 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 		Secrets:   secrets,
 		Policies:  policies,
 		Substrate: l.substrate,
+		// The fakes build a real bundle where a grant is under test, so the environment is the bundle's.
+		Environments: bundle.Opener(l.repo.Dir),
 		ProxyCA: func() ([]byte, error) {
 			ca, err := proxy.LoadCA(filepath.Join(root, "proxy"))
 			if err != nil {

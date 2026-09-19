@@ -78,15 +78,22 @@ type Substrate interface {
 	ReleaseRoot() error
 }
 
+// Environments answers where a provider keeps the guest environment of a sandbox it built, which a
+// grant and an attach rewrite between a stop and the next start.
+type Environments interface {
+	Environment(id string) (models.Environment, error)
+}
+
 // Config is every layer the orchestrator drives. The daemon builds each one once.
 type Config struct {
-	Repo      Repository
-	Images    Images
-	Network   Network
-	Provider  models.Provider
-	Secrets   Secrets
-	Policies  Policies
-	Substrate Substrate
+	Repo         Repository
+	Images       Images
+	Network      Network
+	Provider     models.Provider
+	Secrets      Secrets
+	Policies     Policies
+	Substrate    Substrate
+	Environments Environments
 	// ProxyCA hands a fronted sandbox the certificate it must trust, so the proxy can terminate its TLS.
 	ProxyCA func() ([]byte, error)
 	// PullTimeout bounds one pull; zero is no bound.
