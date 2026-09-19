@@ -245,6 +245,38 @@ func TestDiskAHardLinkKeepsTheVersionItTook(t *testing.T) {
 	closeAndCheck(t, w, path)
 }
 
+// A whiteout of the target leaves the content to its link alone: no name of the target comes back.
+func TestDiskAWhiteoutOfALinkTargetKeepsOnlyTheLink(t *testing.T) {
+	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
+	top := layerOf(t, reg("bin/.wh.tool", ""))
+
+	w, path := disk(t, base, top)
+
+	if got := statSize(t, w, "bin/alias"); got != int64(len("tool-body")) {
+		t.Errorf("bin/alias size %d", got)
+	}
+	missing(t, w, "bin/tool")
+	missing(t, w, ".shard-link-0-1")
+
+	closeAndCheck(t, w, path)
+}
+
+// A target whose every link is gone is gone too, whatever a lower layer linked to it.
+func TestDiskAWhiteoutOfTheLinkAndTheTargetDropsBoth(t *testing.T) {
+	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
+	top := layerOf(t, reg("bin/.wh.tool", ""), reg("bin/.wh.alias", ""))
+
+	w, path := disk(t, base, top)
+
+	missing(t, w, "bin/tool")
+	missing(t, w, "bin/alias")
+	missing(t, w, ".shard-link-0-1")
+
+	closeAndCheck(t, w, path)
+}
+
 func TestDiskRefusesAHardLinkToNothing(t *testing.T) {
 	hard := entry{hdr: tar.Header{Name: "bin/ls", Typeflag: tar.TypeLink, Linkname: "bin/busybox"}}
 
@@ -263,5 +295,20 @@ func TestDiskStopsWhenTheContextEnds(t *testing.T) {
 	err := buildDisk(ctx, path, []v1.Layer{layerOf(t, reg("a", "a"))})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("buildDisk: %v", err)
+	}
+}
+
+// A cancel lands at the next read of the tar, not at the next header, so a large body cannot outlive it.
+func TestDiskACancelEndsTheBodyMidCopy(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	r := readerOf(ctx, strings.NewReader("body"))
+
+	buf := make([]byte, 2)
+	if n, err := r.Read(buf); err != nil || n != 2 {
+		t.Fatalf("read before the cancel: %d, %v", n, err)
+	}
+	cancel()
+	if _, err := r.Read(buf); !errors.Is(err, context.Canceled) {
+		t.Fatalf("read after the cancel: %v", err)
 	}
 }

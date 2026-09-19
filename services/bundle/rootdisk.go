@@ -41,15 +41,23 @@ func copyFile(src, dst string) (err error) {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
 	}
-	defer in.Close()
+	defer func() {
+		if cerr := in.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", src, cerr))
+		}
+	}()
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
+	// A half-written copy is removed, so a retry finds the name free.
 	defer func() {
-		if cerr := out.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("close %s: %w", dst, cerr)
+		if cerr := out.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", dst, cerr))
+		}
+		if err != nil {
+			err = errors.Join(err, os.Remove(dst))
 		}
 	}()
 

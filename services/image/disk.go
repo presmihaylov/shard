@@ -29,7 +29,9 @@ type version struct {
 // merge is the final tree once the whiteouts are applied, plus the older versions the hard links took.
 type merge struct {
 	tree   map[string]version
+	links  map[version]version
 	needed map[version]bool
+	placed map[version]string
 }
 
 // buildDisk writes the layers as one ext4 image at dst, from the tars: an unpack on a Mac loses the uid, the devices and the xattrs.
@@ -71,12 +73,19 @@ func writeDisk(ctx context.Context, w *ext4.Writer, layers []v1.Layer) error {
 		}
 	}
 
+	// A target that lost its name lives on through its links alone.
+	for _, scratch := range m.placed {
+		if err := w.Unlink(scratch); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // planDisk reads every layer once for its headers and settles which version of each path survives.
 func planDisk(ctx context.Context, layers []v1.Layer) (*merge, error) {
-	m := &merge{tree: map[string]version{}, needed: map[version]bool{}}
+	m := &merge{tree: map[string]version{}, links: map[version]version{}, needed: map[version]bool{}, placed: map[version]string{}}
 	for i, layer := range layers {
 		if err := walkLayer(ctx, layer, func(seq int, hdr *tar.Header, _ io.Reader) error {
 			return m.plan(version{i, seq}, hdr)
@@ -87,6 +96,9 @@ func planDisk(ctx context.Context, layers []v1.Layer) (*merge, error) {
 
 	for _, v := range m.tree {
 		m.needed[v] = true
+		if tv, ok := m.links[v]; ok {
+			m.needed[tv] = true
+		}
 	}
 
 	return m, nil
@@ -111,7 +123,7 @@ func (m *merge) plan(v version, hdr *tar.Header) error {
 		return nil
 	}
 
-	// A hard link takes the target as it is now, even if a later layer replaces the target's name.
+	// A hard link takes the target as it is now, even if a later layer replaces or removes the target's name.
 	if hdr.Typeflag == tar.TypeLink {
 		target, ok := cleanName(hdr.Linkname)
 		if !ok {
@@ -121,7 +133,7 @@ func (m *merge) plan(v version, hdr *tar.Header) error {
 		if !ok {
 			return fmt.Errorf("%s: a hard link to %s, which the layers so far do not hold", name, target)
 		}
-		m.needed[tv] = true
+		m.links[v] = tv
 	}
 
 	// A directory entry only refreshes its metadata; the files under it from lower layers stay.
@@ -151,12 +163,21 @@ func (m *merge) write(w *ext4.Writer, made map[string]bool, v version, hdr *tar.
 	if !ok || !m.needed[v] {
 		return nil
 	}
+
+	// A version a link took but a later layer replaced or removed is written under a scratch name.
+	if m.tree[name] != v {
+		m.placed[v] = fmt.Sprintf(".shard-link-%d-%d", v.layer, v.seq)
+		name = m.placed[v]
+	}
 	if err := m.parents(w, made, name); err != nil {
 		return err
 	}
 
 	if hdr.Typeflag == tar.TypeLink {
 		target, _ := cleanName(hdr.Linkname)
+		if scratch, ok := m.placed[m.links[v]]; ok {
+			target = scratch
+		}
 		if err := w.Link(target, name); err != nil {
 			return err
 		}
@@ -181,6 +202,21 @@ func (m *merge) write(w *ext4.Writer, made map[string]bool, v version, hdr *tar.
 
 	return nil
 }
+
+// readerOf ends a tar at the next read after ctx ends, so a large body cannot outlive a cancel in either pass.
+func readerOf(ctx context.Context, r io.Reader) io.Reader {
+	return readerFunc(func(p []byte) (int, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+
+		return r.Read(p)
+	})
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 // parents makes every directory above name that is not made yet, from the tar when the layers hold it.
 func (m *merge) parents(w *ext4.Writer, made map[string]bool, name string) error {
@@ -262,11 +298,8 @@ func walkLayer(ctx context.Context, layer v1.Layer, fn func(seq int, hdr *tar.He
 		}
 	}()
 
-	tr := tar.NewReader(rc)
+	tr := tar.NewReader(readerOf(ctx, rc))
 	for seq := 0; ; seq++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			return nil

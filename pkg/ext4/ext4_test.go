@@ -1,6 +1,9 @@
 package ext4
 
 import (
+	"bytes"
+	"encoding/binary"
+	"io"
 	"math/bits"
 	"os"
 	"os/exec"
@@ -224,3 +227,80 @@ func TestStatReadsBackWhatCreateWrote(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// A file past 340 extents spills into a second leaf; the tree must stay contiguous and each leaf must hold its own count.
+func TestWriteExtentsSpillsIntoASecondLeaf(t *testing.T) {
+	const extentsPerBlock = BlockSize/12 - 1
+	const extents = extentsPerBlock + 1
+	const blocks = extents * maxBlocksPerExtent
+	const startBlock = 1 + gdBlocks
+
+	var sink memFile
+	w := NewWriter(&sink)
+	w.pos = int64(startBlock+blocks) * BlockSize
+	w.dataWritten = int64(blocks) * BlockSize
+	node := &inode{}
+	if err := w.writeExtents(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.bw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	var root struct {
+		Hdr   ExtentHeader
+		Nodes [4]ExtentIndexNode
+	}
+	if err := binary.Read(bytes.NewReader(node.Data), binary.LittleEndian, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root.Hdr.Depth != 1 || root.Hdr.Entries != 2 {
+		t.Fatalf("root is depth %d with %d entries, want depth 1 with 2", root.Hdr.Depth, root.Hdr.Entries)
+	}
+	if node.BlockCount != blocks+2 {
+		t.Errorf("block count is %d, want the data plus two leaves, %d", node.BlockCount, blocks+2)
+	}
+
+	var next uint32
+	for i, idx := range root.Nodes[:2] {
+		if idx.Block != next {
+			t.Errorf("leaf %d covers from block %d, want %d", i, idx.Block, next)
+		}
+		var leaf struct {
+			Hdr     ExtentHeader
+			Extents [extentsPerBlock]ExtentLeafNode
+		}
+		off := int64(idx.LeafLow-startBlock-blocks) * BlockSize
+		if err := binary.Read(bytes.NewReader(sink.data[off:]), binary.LittleEndian, &leaf); err != nil {
+			t.Fatal(err)
+		}
+		want := uint16(min(extents-i*extentsPerBlock, extentsPerBlock))
+		if leaf.Hdr.Depth != 0 || leaf.Hdr.Entries != want {
+			t.Fatalf("leaf %d is depth %d with %d entries, want depth 0 with %d", i, leaf.Hdr.Depth, leaf.Hdr.Entries, want)
+		}
+		for _, e := range leaf.Extents[:leaf.Hdr.Entries] {
+			if e.Block != next || e.StartLow != startBlock+next || e.Length != maxBlocksPerExtent {
+				t.Fatalf("extent at %d starts at %d for %d blocks, want %d at %d for %d", e.Block, e.StartLow, e.Length, next, startBlock+next, maxBlocksPerExtent)
+			}
+			next += uint32(e.Length)
+		}
+	}
+	if next != blocks {
+		t.Errorf("the leaves cover %d blocks, want %d", next, blocks)
+	}
+}
+
+// memFile is the sink writeExtents lays its leaf blocks into, from offset zero.
+type memFile struct {
+	data []byte
+}
+
+func (m *memFile) Write(b []byte) (int, error) {
+	m.data = append(m.data, b...)
+
+	return len(b), nil
+}
+
+func (m *memFile) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (m *memFile) Seek(off int64, _ int) (int64, error) { return off, nil }

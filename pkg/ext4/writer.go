@@ -73,8 +73,8 @@ const (
 	// mkfs's ratio of one inode per 16 KiB; fixed, since Grow adds groups with the same count.
 	inodesPerGroup uint32 = blocksPerGroup / 4
 
-	// MaxDiskSize bounds what Grow can reach: the descriptor table is reserved for it up front.
-	MaxDiskSize = int64(1) << 40
+	// MaxDiskSize is the last whole group a 32-bit block count holds; Grow's descriptor table is reserved up front.
+	MaxDiskSize = int64(1)<<44 - blocksPerGroup*BlockSize
 	maxGroups   = (MaxDiskSize/BlockSize-1)/blocksPerGroup + 1
 	gdBlocks    = uint32((maxGroups-1)/groupsPerDescriptorBlock + 1)
 
@@ -229,13 +229,17 @@ func (s *xattrState) addXattr(name string, value []byte) bool {
 	if s.inodeLeft >= length {
 		s.inode = append(s.inode, x)
 		s.inodeLeft -= length
-	} else if s.blockLeft >= length {
+
+		return true
+	}
+	if s.blockLeft >= length {
 		s.block = append(s.block, x)
 		s.blockLeft -= length
-	} else {
-		return false
+
+		return true
 	}
-	return true
+
+	return false
 }
 
 func putXattrs(xattrs []xattr, b []byte, offsetDelta uint16) {
@@ -303,7 +307,8 @@ func (w *Writer) writeXattrs(inode *inode, state *xattrState) error {
 		if inode.XattrBlock == 0 {
 			inode.XattrBlock = orig
 			inode.BlockCount++
-		} else {
+		}
+		if inode.XattrBlock != orig {
 			// Reuse the original block.
 			w.seekBlock(inode.XattrBlock)
 			defer w.seekBlock(orig)
@@ -352,6 +357,10 @@ func (w *Writer) makeInode(f *File, node *inode) (*inode, error) {
 	}
 	typ := mode & TypeMask
 	ino := InodeNumber(len(w.inodes) + 1)
+	if node != nil && node.Flags&InodeFlagExtents != 0 {
+		// Blocks are never freed, so data already written cannot be replaced.
+		return nil, errors.New("cannot overwrite file with non-inline data")
+	}
 	if node == nil {
 		node = &inode{
 			Number: ino,
@@ -360,9 +369,6 @@ func (w *Writer) makeInode(f *File, node *inode) (*inode, error) {
 			node.Children = make(directory)
 			node.LinkCount = 1 // A directory is linked to itself.
 		}
-	} else if node.Flags&InodeFlagExtents != 0 {
-		// Blocks are never freed, so data already written cannot be replaced.
-		return nil, errors.New("cannot overwrite file with non-inline data")
 	}
 	node.Mode = mode
 	node.Uid = f.Uid
@@ -487,22 +493,9 @@ func (w *Writer) Create(name string, f *File) error {
 	if err != nil {
 		return err
 	}
-	var reuse *inode
-	if existing != nil {
-		if existing.IsDir() {
-			if f.Mode&TypeMask != S_IFDIR {
-				return fmt.Errorf("%s: cannot replace a directory with a file", name)
-			}
-			reuse = existing
-		} else if f.Mode&TypeMask == S_IFDIR {
-			return fmt.Errorf("%s: cannot replace a file with a directory", name)
-		} else if existing.LinkCount < 2 {
-			reuse = existing
-		}
-	} else {
-		if f.Mode&TypeMask == S_IFDIR && dir.LinkCount >= MaxLinks {
-			return fmt.Errorf("%s: exceeded parent directory maximum link count", name)
-		}
+	reuse, err := reusable(name, dir, existing, f.Mode&TypeMask == S_IFDIR)
+	if err != nil {
+		return err
 	}
 	child, err := w.makeInode(f, reuse)
 	if err != nil {
@@ -555,6 +548,26 @@ func (w *Writer) Link(oldname, newname string) error {
 	}
 	oldfile.LinkCount++
 	newdir.Children[newchildname] = oldfile
+	return nil
+}
+
+// Unlink drops one name of a file that keeps another; blocks are never freed, so the last name stays.
+func (w *Writer) Unlink(name string) error {
+	if err := w.finishInode(); err != nil {
+		return err
+	}
+	dir, node, childname, err := w.lookup(name, true)
+	if err != nil {
+		return err
+	}
+	if node.IsDir() {
+		return fmt.Errorf("%s: cannot unlink a directory", name)
+	}
+	if node.LinkCount < 2 {
+		return fmt.Errorf("%s: cannot orphan the last name of a file", name)
+	}
+	node.LinkCount--
+	delete(dir.Children, childname)
 	return nil
 }
 
@@ -689,18 +702,18 @@ func (w *Writer) writeExtents(inode *inode) error {
 
 	extents := (blocks + maxBlocksPerExtent - 1) / maxBlocksPerExtent
 	var b bytes.Buffer
-	if extents == 0 {
+	switch {
+	case extents == 0:
 		// Nothing to do.
-	} else if extents <= 4 {
+	case extents <= 4:
 		var root struct {
 			hdr     ExtentHeader
 			extents [4]ExtentLeafNode
 		}
 		fillExtents(&root.hdr, root.extents[:extents], startBlock, 0, blocks)
 		_ = binary.Write(&b, binary.LittleEndian, root)
-	} else if extents <= 4*extentsPerBlock {
-		const extentsPerBlock = BlockSize/extentNodeSize - 1
-		extentBlocks := extents/extentsPerBlock + 1
+	case extents <= 4*extentsPerBlock:
+		extentBlocks := (extents-1)/extentsPerBlock + 1
 		usedBlocks += extentBlocks
 		var b2 bytes.Buffer
 
@@ -719,7 +732,7 @@ func (w *Writer) writeExtents(inode *inode) error {
 				Block:   i * extentsPerBlock * maxBlocksPerExtent,
 				LeafLow: w.block(),
 			}
-			extentsInBlock := min(extents-i*extentBlocks, extentsPerBlock)
+			extentsInBlock := min(extents-i*extentsPerBlock, extentsPerBlock)
 
 			var node struct {
 				hdr     ExtentHeader
@@ -728,14 +741,14 @@ func (w *Writer) writeExtents(inode *inode) error {
 			}
 
 			offset := i * extentsPerBlock * maxBlocksPerExtent
-			fillExtents(&node.hdr, node.extents[:extentsInBlock], startBlock+offset, offset, blocks)
+			fillExtents(&node.hdr, node.extents[:extentsInBlock], startBlock, offset, blocks)
 			_ = binary.Write(&b2, binary.LittleEndian, node)
 			if _, err := w.write(b2.Next(BlockSize)); err != nil {
 				return err
 			}
 		}
 		_ = binary.Write(&b, binary.LittleEndian, root)
-	} else {
+	default:
 		panic("file too big")
 	}
 
@@ -929,6 +942,32 @@ func (w *Writer) writeDirectoryRecursive(dir, parent *inode) error {
 	return nil
 }
 
+// reusable picks the inode a new entry takes over, and refuses a change of type or a full parent.
+func reusable(name string, dir, existing *inode, isDir bool) (*inode, error) {
+	if existing == nil {
+		if isDir && dir.LinkCount >= MaxLinks {
+			return nil, fmt.Errorf("%s: exceeded parent directory maximum link count", name)
+		}
+
+		return nil, nil
+	}
+	if existing.IsDir() {
+		if !isDir {
+			return nil, fmt.Errorf("%s: cannot replace a directory with a file", name)
+		}
+
+		return existing, nil
+	}
+	if isDir {
+		return nil, fmt.Errorf("%s: cannot replace a file with a directory", name)
+	}
+	if existing.LinkCount < 2 {
+		return existing, nil
+	}
+
+	return nil, nil
+}
+
 func (w *Writer) writeInodeTable(tableSize uint32) error {
 	var b bytes.Buffer
 	for _, inode := range w.inodes {
@@ -967,7 +1006,8 @@ func (w *Writer) writeInodeTable(tableSize uint32) error {
 			b.Truncate(inodeUsedSize)
 			n, _ := b.Write(inode.XattrInline)
 			_, _ = io.CopyN(&b, zero, int64(inodeExtraSize-n))
-		} else {
+		}
+		if inode == nil {
 			_, _ = io.CopyN(&b, zero, inodeSize)
 		}
 		if _, err := w.write(b.Next(inodeSize)); err != nil {
@@ -1067,13 +1107,14 @@ func (w *Writer) Close() error {
 		var dirCount, usedInodeCount, usedBlockCount uint16
 
 		// Block bitmap
-		if (g+1)*blocksPerGroup <= validDataSize {
+		switch {
+		case (g+1)*blocksPerGroup <= validDataSize:
 			// This group is fully allocated.
 			for j := range b[:BlockSize] {
 				b[j] = 0xff
 			}
 			usedBlockCount = blocksPerGroup
-		} else if g*blocksPerGroup < validDataSize {
+		case g*blocksPerGroup < validDataSize:
 			for j := uint32(0); j < validDataSize-g*blocksPerGroup; j++ {
 				b[j/8] |= 1 << (j % 8)
 				usedBlockCount++

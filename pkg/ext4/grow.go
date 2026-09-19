@@ -3,6 +3,7 @@ package ext4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -10,7 +11,7 @@ import (
 const superBlockOffset = 1024
 
 // Grow extends an unmounted image written by Writer to size bytes, adding empty block groups.
-func Grow(path string, size int64) error {
+func Grow(path string, size int64) (err error) {
 	if size%BlockSize != 0 {
 		return fmt.Errorf("ext4: grow %s: size %d is not a multiple of %d", path, size, BlockSize)
 	}
@@ -21,7 +22,11 @@ func Grow(path string, size int64) error {
 	if err != nil {
 		return fmt.Errorf("ext4: grow: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("ext4: grow %s: close: %w", path, cerr))
+		}
+	}()
 
 	var sb SuperBlock
 	if err := readAt(f, superBlockOffset, &sb); err != nil {
@@ -192,16 +197,23 @@ func setTail(f *os.File, bitmapBlock, first uint32, used bool) (uint16, error) {
 func readAt(f *os.File, off int64, v any) error {
 	b := make([]byte, binary.Size(v))
 	if _, err := f.ReadAt(b, off); err != nil {
-		return err
+		return fmt.Errorf("read %d bytes at %d: %w", len(b), off, err)
 	}
-	return binary.Read(bytes.NewReader(b), binary.LittleEndian, v)
+	if err := binary.Read(bytes.NewReader(b), binary.LittleEndian, v); err != nil {
+		return fmt.Errorf("decode %T at %d: %w", v, off, err)
+	}
+
+	return nil
 }
 
 func writeAt(f *os.File, off int64, v any) error {
 	var b bytes.Buffer
 	if err := binary.Write(&b, binary.LittleEndian, v); err != nil {
-		return err
+		return fmt.Errorf("encode %T: %w", v, err)
 	}
-	_, err := f.WriteAt(b.Bytes(), off)
-	return err
+	if _, err := f.WriteAt(b.Bytes(), off); err != nil {
+		return fmt.Errorf("write %d bytes at %d: %w", b.Len(), off, err)
+	}
+
+	return nil
 }
