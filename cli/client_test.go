@@ -34,7 +34,8 @@ func TestVersionPrintsBothLines(t *testing.T) {
 		t.Fatalf("version: %v", err)
 	}
 
-	if got := strings.TrimSpace(out.String()); got != "client test\ndaemon v-daemon" {
+	// A Mac binary adds a third line for the VM shim after these two.
+	if got := out.String(); !strings.HasPrefix(got, "client test\ndaemon v-daemon\n") {
 		t.Errorf("version printed %q, want the client line and the daemon line", got)
 	}
 }

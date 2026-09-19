@@ -19,7 +19,8 @@ make build                   build ./cmd/shard into bin/shard
 make build-linux             cross-compile for the box (GOOS=linux GOARCH=amd64)
 make build-shard-init        build ./cmd/shard-init into bin/shard-init (static, CGO_ENABLED=0)
 make build-shard-init-linux  cross-compile the supervisor for the box
-make build-shard-vz-shim     build and ad-hoc sign the VM shim into bin/shard-vz-shim (darwin only)
+make build-shard-vz-shim     build and ad-hoc sign the VM shim into pkg/vzshim/shim, where the daemon embeds it (darwin only)
+make build-darwin            the shim, then ./cmd/shard with cgo for this Mac, into bin/shard-darwin-<arch>
 make test                    unit tests; must stay green on macOS
 make test-integration        integration tests, on this host; Linux box only, needs root
 make itest                   integration tests for ITEST_PKG, on the devbox
@@ -60,6 +61,8 @@ pkg/registry/              OCI registry transport
 pkg/netns/                 netns, veth, bridge, NAT rules
 pkg/store/                 atomic file write, the daemon singleton lock
 pkg/proxy/                 intercepting HTTP and TLS proxy
+pkg/vz/                    the Virtualization.framework driver: the shim protocol, its client and its server
+pkg/vzshim/                the shim binary embedded in the daemon, installed and ad-hoc signed on first use
 
 services/sandbox/          the orchestrator: the lifecycle verbs the daemon serves
 services/image/            pull, unpack, cache policy
@@ -90,9 +93,9 @@ docs/
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
-- **`cli/` imports `services/client`, `pkg/pty`, `models`, the request types in
-  `services/sandbox`, and `services/daemon` and `services/serve` for the two
-  verbs that are a process rather than a client. Nothing else.** A verb holds no
+- **`cli/` imports `services/client`, `pkg/pty`, `pkg/vzshim`, `models`, the request
+  types in `services/sandbox`, and `services/daemon` and `services/serve` for the
+  two verbs that are a process rather than a client. Nothing else.** A verb holds no
   store and no provider: it asks the socket.
   `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports

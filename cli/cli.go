@@ -428,8 +428,14 @@ func (a App) version(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := a.print("daemon " + daemon.Version); err != nil {
+		return err
+	}
+	if line := shimLine(); line != "" {
+		return a.print(line)
+	}
 
-	return a.print("daemon " + daemon.Version)
+	return nil
 }
 
 // warn reports something the operator should know that is not a reason to fail the command.

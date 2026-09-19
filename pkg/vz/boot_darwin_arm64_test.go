@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/vzshim"
 )
 
 // The boot tests want the shard kernel; a Mac without one skips them, and SHARD_KERNEL names one elsewhere.
@@ -53,6 +55,9 @@ func prepare(t *testing.T) fixtures {
 	}
 
 	f := fixtures{kernel: kernel, shim: os.Getenv("SHARD_VZ_SHIM"), initrd: os.Getenv("SHARD_VZ_INITRD")}
+	if f.shim == "" && vzshim.Embedded() {
+		f.shim = installShim(t)
+	}
 	if f.shim == "" {
 		f.shim = buildShim(t)
 	}
@@ -63,13 +68,25 @@ func prepare(t *testing.T) fixtures {
 	return f
 }
 
+// A test binary built after make build-shard-vz-shim carries the shim, the way make build-darwin's daemon does.
+func installShim(t *testing.T) string {
+	t.Helper()
+
+	shim, err := vzshim.Install(t.TempDir())
+	if err != nil {
+		t.Fatalf("vzshim.Install: %v", err)
+	}
+
+	return shim
+}
+
 // The shim needs the virtualization entitlement, and an ad hoc signature is enough to carry it.
 func buildShim(t *testing.T) string {
 	t.Helper()
 
 	shim := filepath.Join(t.TempDir(), "shard-vz-shim")
 	run(t, "", "go", "build", "-o", shim, "../../cmd/shard-vz-shim")
-	run(t, "", "codesign", "--sign", "-", "--force", "--entitlements", "../../cmd/shard-vz-shim/entitlements.plist", shim)
+	run(t, "", "codesign", "--sign", "-", "--force", "--entitlements", "shim/entitlements.plist", shim)
 
 	return shim
 }
@@ -459,4 +476,21 @@ func hold() int {
 	}
 	fmt.Println(info.PID)
 	select {}
+}
+
+// The install itself is proven in pkg/vzshim; this is the boot half of the SHARD-214 AC, over the embedded shim.
+func TestTheEmbeddedShimBootsAVM(t *testing.T) {
+	if !vzshim.Embedded() {
+		t.Skip("this test binary carries no shim: run make build-shard-vz-shim first")
+	}
+	f := prepare(t)
+	f.shim = installShim(t)
+	client, info := start(t, f.shim, config(t, f))
+	if pid := guestPID(t, client); pid != 1 {
+		t.Fatalf("the guest answered as pid %d", pid)
+	}
+	if _, err := client.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	awaitExit(t, info.PID)
 }
