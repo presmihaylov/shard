@@ -16,6 +16,7 @@ records exist: the other substrate has never heard of those sandboxes.
 | Docker inside | no | yes | no | yes |
 | systemd as PID 1 | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one host |
+| Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM |
 | Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | does not exist yet |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
@@ -55,6 +56,17 @@ two customers' sandboxes on one. shard pins that same mapping on the user namesp
 sandbox's netns (`services/provider/sysbox.Userns`), which is why the guest holds `CAP_NET_ADMIN` over
 its own interface and nothing else. The upstream fix is an exclusive-range allocator in
 `sysbox-mgr`, and until it lands this limit stands.
+
+**Sysbox does not verify the entrypoint's exit code.** `shard-init` reports the exit record on its
+fd 0, which the host holds, and clears its dumpable flag so `/proc/1/fd` is out of the guest's reach.
+On gVisor that holds: the sentry enforces the capability set the bundle grants, which has no
+`CAP_SYS_PTRACE`, so a guest write to `/proc/1/fd/0` fails with `EACCES`. `sysbox-runc` gives guest
+root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE` included, so guest root
+controls PID 1 and the entrypoint: it can write a forged record, drive the exit value or pick the
+signal, and a background write after the real exit makes `inspect` report the forged code. No channel
+on Sysbox is host-readable and guest-unwritable, so there is no mechanism fix: the exit code of a
+Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. Firecracker
+will verify it behind the VM boundary the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
 and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a
