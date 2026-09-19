@@ -9,25 +9,25 @@ code; this page says what the signatures cannot.
 host runs on it. A record names the substrate that made it. Do not switch a host's provider while
 records exist: the other substrate has never heard of those sandboxes.
 
-| | gVisor (`gvisor`, the default) | Sysbox (`sysbox`) | runc (`runc`) | Firecracker |
-|---|---|---|---|---|
-| Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a microVM, needs `/dev/kvm` |
-| Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native |
-| Docker inside | no | yes | no | yes |
-| systemd as PID 1 | no | no | no | no |
-| Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one host |
-| Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | does not exist yet |
+| | gVisor (`gvisor`, the default on Linux) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`, the default on macOS) | Firecracker |
+|---|---|---|---|---|---|
+| Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a VM per sandbox on Virtualization.framework, one `shard-vz-shim` each | a microVM, needs `/dev/kvm` |
+| Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
+| Docker inside | no | yes | no | no | yes |
+| systemd as PID 1 | no | no | no | no | no |
+| Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
+| Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb; `fork` needs macOS 14 | does not exist yet |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
 
-| Verb | gVisor | Sysbox | runc | Firecracker |
-|---|---|---|---|---|
-| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | planned |
-| `pause` | yes | **no** | **no** | planned |
-| `resume` | yes | **no** | **no** | planned |
-| `fork` | yes | **no** | **no** | planned |
+| Verb | gVisor | Sysbox | runc | vz | Firecracker |
+|---|---|---|---|---|---|
+| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | planned |
+| `pause` | yes | **no** | **no** | yes | planned |
+| `resume` | yes | **no** | **no** | yes | planned |
+| `fork` | yes | **no** | **no** | macOS 14+, **no** on 13 | planned |
 
 ### systemd is not a sandbox's init
 
@@ -95,6 +95,21 @@ source but its status and its state directory. Firecracker will copy a disk wher
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
+
+### What vz does and does not do
+
+`vz` is the substrate `shard daemon` picks on a Mac when `--provider` is empty, and it is refused by
+name anywhere else. Each sandbox is one Virtualization.framework VM booting shard's own arm64 kernel
+(`services/kernel` fetches the release once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256`
+override it) over an APFS clone of the image's ext4 disk, held by one `shard-vz-shim` the daemon
+signs under `<root>/vz` from the copy `make build-darwin` embeds; a `go build` alone has no shim and
+the first sandbox says so. `SHARD_INIT_PATH` must name a static linux/arm64 `shard-init`, which
+becomes the initrd. `--memory` defaults to 512 MB and is a hard cap. There is no bridge: the daemon
+leases each guest an address from the pool, terminates its frames in a userspace stack that answers
+for the gateway alone, and serves the proxy and the resolver on that stack, so a guest reaches
+`gateway:30080`, `gateway:30443` and `gateway:53` and nothing else. Nothing is redirected: a guest
+that dials port 80 on the internet is dropped, not proxied, which `docs/provider-vz.md` covers.
+`pause` and `resume` hold on every Mac; `fork` needs the save of macOS 14 and refuses by name on 13.
 
 ## Refuse, never downgrade
 

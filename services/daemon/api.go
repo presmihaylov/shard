@@ -35,7 +35,7 @@ type Config struct {
 	PullTimeout time.Duration
 	// InitPath is the host path of the guest supervisor.
 	InitPath string
-	// Provider names the substrate: gvisor.Name, sysbox.Name, or empty for gVisor.
+	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, or empty for the platform's default.
 	Provider string
 }
 
@@ -542,9 +542,22 @@ func (t proxyTask) Run(ctx context.Context) error {
 		return err
 	}
 
+	front, err := t.deps.front()
+	if err != nil {
+		return err
+	}
+	plain, err := front.ListenTCP(proxy.PlainPort)
+	if err != nil {
+		return fmt.Errorf("listen for plain http: %w", err)
+	}
+	secure, err := front.ListenTCP(proxy.TLSPort)
+	if err != nil {
+		return errors.Join(fmt.Errorf("listen for tls: %w", err), plain.Close())
+	}
+
 	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
 
-	return server.Run(ctx)
+	return server.Serve(ctx, plain, secure)
 }
 
 // dnsTask runs the resolver every policy sandbox's lookups are turned to, on the bridge gateway beside the proxy.
@@ -602,9 +615,22 @@ func (t dnsTask) Run(ctx context.Context) error {
 		return err
 	}
 
+	front, err := t.deps.front()
+	if err != nil {
+		return err
+	}
+	udp, err := front.ListenPacket(dns.Port)
+	if err != nil {
+		return fmt.Errorf("listen for udp questions: %w", err)
+	}
+	tcp, err := front.ListenTCP(dns.Port)
+	if err != nil {
+		return errors.Join(fmt.Errorf("listen for tcp questions: %w", err), udp.Close())
+	}
+
 	logger.Printf("dns resolver listening on %s, udp and tcp %d", hostNet.Gateway(), dns.Port)
 
-	return server.Run(ctx)
+	return server.Serve(ctx, udp, tcp)
 }
 
 // egressLogTailer moves the host's drops out of the kernel ring and into the sandbox's own log, where
