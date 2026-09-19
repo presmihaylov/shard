@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync/atomic"
 	"testing"
 )
 
@@ -68,6 +69,39 @@ func TestEnsureDownloadsOnceAndVerifies(t *testing.T) {
 	}
 	if _, err := s.Ensure(context.Background(), "test"); !errors.Is(err, ErrChecksum) {
 		t.Fatalf("tampered file passed: %v", err)
+	}
+}
+
+func TestConcurrentFirstUseDownloadsOnce(t *testing.T) {
+	body := []byte("not a kernel")
+	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum(body)}
+	defer delete(artifacts, "test")
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport = rewriteTo(srv.URL, client.Transport)
+
+	s := New(t.TempDir(), WithHTTPClient(client))
+	const n = 8
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := s.Ensure(context.Background(), "test")
+			errs <- err
+		}()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("downloaded %d times, want 1", got)
 	}
 }
 

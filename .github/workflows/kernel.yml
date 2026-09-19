@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - Makefile
       - packaging/kernel/**
       - services/kernel/**
       - .github/workflows/kernel.yml
@@ -48,7 +49,7 @@ jobs:
 
   release:
     name: release
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -72,4 +73,4 @@ jobs:
         run: |
           tag=$(go run ./packaging/kernel/tag)
           cat dist/*.sha256 > dist/SHA256SUMS
-          gh release create "$tag" --title "guest kernel $tag" --notes "Built by the kernel workflow from packaging/kernel. Reproducible: each file was built twice." dist/Image-arm64 dist/vmlinux-amd64 dist/SHA256SUMS
+          gh release create "$tag" --target "$GITHUB_SHA" --title "guest kernel $tag" --notes "Built by the kernel workflow from packaging/kernel. Reproducible: each file was built twice." dist/Image-arm64 dist/vmlinux-amd64 dist/SHA256SUMS

@@ -20,7 +20,8 @@ make kernel ARCH=amd64          the same, bin/kernel/amd64/vmlinux-amd64
 make kernel-reproducible        two builds, and a diff of the two hashes
 ```
 
-The build runs in `packaging/kernel/Dockerfile`, a `debian:13` image pinned by digest and always
+The build runs in `packaging/kernel/Dockerfile`, a `debian:13` image pinned by digest, with apt
+pointed at a dated `snapshot.debian.org` archive and every package at an exact version, and always
 `linux/amd64`, so a Mac and a GitHub runner produce the same bytes: same compiler, same cross
 compiler for arm64, and `KBUILD_BUILD_TIMESTAMP`, `KBUILD_BUILD_USER`, `KBUILD_BUILD_HOST` and
 `SOURCE_DATE_EPOCH` fixed. The source tarball is fetched from `cdn.kernel.org` once into

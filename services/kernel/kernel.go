@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Version is the Linux release packaging/kernel builds; packaging/kernel/version.mk must say the same.
@@ -63,6 +64,8 @@ func URL(arch string) (string, error) {
 type Service struct {
 	root   string
 	client *http.Client
+	// One download per arch at a time; the daemon is the only process that writes the tree.
+	mu sync.Mutex
 
 	// local names a kernel file to use in place of the release, with the hash it must have.
 	local, localSHA256 string
@@ -123,6 +126,8 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	}
 	path := filepath.Join(s.root, Tag(), a.name)
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := os.Stat(path); err == nil {
 		return verified(path, arch, a.sha256)
 	}
@@ -157,11 +162,11 @@ func (s *Service) download(ctx context.Context, url, path, want string) error {
 		return fmt.Errorf("status %s", resp.Status)
 	}
 
-	part := path + ".part"
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.part")
 	if err != nil {
 		return err
 	}
+	part := f.Name()
 	h := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(f, h), resp.Body)
 	closeErr := f.Close()
