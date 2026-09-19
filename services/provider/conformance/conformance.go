@@ -405,7 +405,7 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Stop: %v", err)
 		}
 
-		clone := s.NewSpec(t)
+		clone := copyOf(s.NewSpec(t))
 		if err := s.Provider.Clone(t.Context(), source, clone); err != nil {
 			t.Fatalf("Clone: %v", err)
 		}
@@ -504,9 +504,14 @@ func Run(t *testing.T, s Subject) {
 	t.Run("Fork", func(t *testing.T) {
 		id := s.running(t)
 		dir := s.snapshotOf(t, id, caps.Pause)
-		err := s.Provider.Fork(t.Context(), dir, s.NewSpec(t))
+		err := s.Provider.Fork(t.Context(), dir, copyOf(s.NewSpec(t)))
 		s.check(t, models.VerbFork, caps.Fork, err)
 	})
+}
+
+// copyOf is the spec the orchestrator hands Clone and Fork: the copy's id, name, lease and bounds, and no entrypoint, which the source keeps.
+func copyOf(spec models.SandboxSpec) models.SandboxSpec {
+	return models.SandboxSpec{ID: spec.ID, Name: spec.Name, StateDir: spec.StateDir, Network: spec.Network, Resources: spec.Resources}
 }
 
 func (s Subject) scratch(name string) string {
