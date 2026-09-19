@@ -61,4 +61,5 @@ error at start. This is for a developer with a fresh build, not for an install.
 2. Set `Version` in `services/kernel/kernel.go` to the same, and `Build` to 1; a config-only
    change keeps `Version` and adds one to `Build`.
 3. `make kernel-reproducible ARCH=arm64` and `ARCH=amd64`; put the two hashes in `artifacts`.
-4. Merge, then run the `kernel` workflow on `main`. It refuses if a hash differs from step 3.
+4. Merge, then run the `kernel` workflow on `main` by hand. No PR runs it: that manual run is what
+   verifies a bump, and it refuses if a hash differs from step 3.
