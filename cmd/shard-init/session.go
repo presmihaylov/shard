@@ -71,23 +71,23 @@ func (s *session) run(g *guest, header supervisor.ExecHeader) (models.ExitStatus
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
-	closeAll := func(files []*os.File) {
-		for _, f := range files {
-			_ = f.Close()
-		}
-	}
 
 	ep := entrypoint{argv: header.Argv, env: header.Env, dir: header.WorkDir, credential: credential}
 	pid, exited, err := g.spawn(ep, files, header.TTY)
 	// The child holds its own copies, so the supervisor's ends close whether the start took or not.
 	closeAll(files)
 	if err != nil {
-		closeAll(outputs)
+		s.release(outputs)
 
 		return models.ExitStatus{}, err
 	}
 
 	if err := s.send(supervisor.StreamStarted, supervisor.StartedFrame{PID: pid}); err != nil {
+		// The host never learned the pid, so nothing else can end the command.
+		g.kill(pid)
+		<-exited
+		s.release(outputs)
+
 		return models.ExitStatus{}, err
 	}
 
@@ -104,12 +104,23 @@ func (s *session) run(g *guest, header supervisor.ExecHeader) (models.ExitStatus
 	exit := <-exited
 	// A pty's output ends with EIO once the last holder closes, a pipe with EOF; both end the pump.
 	pumps.Wait()
+	s.release(outputs)
+
+	return exit, nil
+}
+
+func closeAll(files []*os.File) {
+	for _, f := range files {
+		_ = f.Close()
+	}
+}
+
+// release closes the supervisor's read ends, and the pty behind them when the exec had one.
+func (s *session) release(outputs []*os.File) {
 	closeAll(outputs)
 	if s.term != nil {
 		_ = s.term.Close()
 	}
-
-	return exit, nil
 }
 
 // open builds the child's fds: a pty's replica three times, or a stdin pipe and two output pipes.
@@ -139,17 +150,29 @@ func (s *session) open(header supervisor.ExecHeader) (files, outputs []*os.File,
 		return []*os.File{term.Replica, term.Replica, term.Replica}, []*os.File{out}, nil
 	}
 
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		return nil, nil, fmt.Errorf("open the stdin pipe: %w", err)
+	var opened []*os.File
+	pipe := func(name string) (*os.File, *os.File, error) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			closeAll(opened)
+
+			return nil, nil, fmt.Errorf("open the %s pipe: %w", name, err)
+		}
+		opened = append(opened, r, w)
+
+		return r, w, nil
 	}
-	stdoutR, stdoutW, err := os.Pipe()
+	stdinR, stdinW, err := pipe("stdin")
 	if err != nil {
-		return nil, nil, fmt.Errorf("open the stdout pipe: %w", err)
+		return nil, nil, err
 	}
-	stderrR, stderrW, err := os.Pipe()
+	stdoutR, stdoutW, err := pipe("stdout")
 	if err != nil {
-		return nil, nil, fmt.Errorf("open the stderr pipe: %w", err)
+		return nil, nil, err
+	}
+	stderrR, stderrW, err := pipe("stderr")
+	if err != nil {
+		return nil, nil, err
 	}
 	s.stdin = stdinW
 
@@ -181,12 +204,13 @@ func (s *session) pump(stream byte, r io.Reader) {
 	}
 }
 
-// readFrames takes stdin, its close, and a resize from the host until the connection ends.
+// readFrames takes stdin, its close, and a resize from the host; a connection that ends first is a cancel, and kills the command.
 func (s *session) readFrames(g *guest, pid int) {
 	for {
 		stream, payload, err := supervisor.ReadFrame(s.conn)
 		if err != nil {
 			s.closeStdin()
+			g.kill(pid)
 
 			return
 		}

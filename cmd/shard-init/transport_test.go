@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -222,13 +224,66 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	if err := c.Signal(os.Getpid(), "KILL"); err != nil {
-		t.Fatalf("send the signal: %v", err)
+	err = c.Signal(os.Getpid(), "KILL")
+	if err == nil || !strings.Contains(err.Error(), "not a process shard-init started") {
+		t.Fatalf("signal gave %v, want the refusal", err)
 	}
-	failure := awaitKind(t, c, supervisor.KindFailure)
-	if !strings.Contains(failure.Error, "not a process shard-init started") {
-		t.Fatalf("failure = %q, want the refusal", failure.Error)
+}
+
+func TestTransportExecCancelKillsTheCommand(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
 	}
+	defer c.Close()
+	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	execCtx, cancel := context.WithCancel(ctx)
+	started := make(chan int, 1)
+	spec := models.ExecSpec{Report: func(p int) { started <- p }}
+	done := make(chan error, 1)
+	go func() {
+		_, err := supervisor.Exec(execCtx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("sleep:60000")}, spec)
+		done <- err
+	}()
+	pid := <-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("exec gave %v, want context.Canceled", err)
+	}
+	// The supervisor reaps its child, so a signal of zero says ESRCH once the command is gone.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d still runs after the cancel", pid)
+}
+
+// syncBuffer is a bytes.Buffer the logs goroutine and the test can share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
@@ -247,7 +302,7 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 
 	logsCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var logs bytes.Buffer
+	var logs syncBuffer
 	done := make(chan error, 1)
 	go func() { done <- supervisor.Logs(logsCtx, dial, &logs) }()
 	deadline := time.Now().Add(10 * time.Second)

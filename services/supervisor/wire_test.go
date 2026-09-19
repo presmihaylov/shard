@@ -89,7 +89,7 @@ func TestRunReportsAFailureAsNotStarted(t *testing.T) {
 		if err := supervisor.ReadMessage(r, &m); err != nil || m.Kind != supervisor.KindRun {
 			return
 		}
-		_ = supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindFailure, Error: "no such file"})
+		_ = supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindFailure, ID: m.ID, Error: "no such file"})
 	}()
 
 	c := supervisor.ControlOver(host)

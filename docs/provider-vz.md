@@ -83,12 +83,15 @@ connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in; `state`, `ready`, `exit`, `restarts`, `failure` out |
+| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts` out |
 | 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
 | 5002 | logs | the entrypoint's stdout and stderr, raw; with no host attached the bytes wait |
 
-Every new control connection hears `state` first (ready, the last exit, the count), so a daemon
-that restarts, or re-attaches after a restore, loses nothing. The host writes the exit record and the
+Every new control connection hears `state` first (ready, the last exit, the count), written on the
+supervisor's own goroutine before any event, so a daemon that restarts, or re-attaches after a
+restore, loses nothing. A request returns once the guest has done it: `readdress` answers after the
+address and the route are set, so a fork is never exposed on its source address in between. A closed
+exec connection kills the command, which is how a cancelled `Exec` ends it. The host writes the exit record and the
 count into the same files gVisor's pipe fills, so `Wait`, `ExitStatus` and `inspect` are unchanged.
 `services/supervisor` holds the wire and the host client, which the Firecracker provider reuses. The
 same binary runs the protocol over `-transport unix:<dir>` in the unit tests, on any OS. The host
