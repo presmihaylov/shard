@@ -2,10 +2,12 @@ package vzvm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -141,6 +143,33 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	err := h.provider.Create(t.Context(), spec)
 	if err == nil || !strings.Contains(err.Error(), spec.ID) || !strings.Contains(err.Error(), "root disk") {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the disk", err)
+	}
+}
+
+// An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
+func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "sh", "-c", "exit 0")
+	spec.Env = []string{"HOME=/root"}
+
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(filepath.Join(spec.StateDir, "vm.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Run struct {
+			Env []string `json:"env"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(blob, &r); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"HOME=/root", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	if !slices.Equal(r.Run.Env, want) {
+		t.Fatalf("the record's env = %q, want %q", r.Run.Env, want)
 	}
 }
 

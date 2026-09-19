@@ -342,3 +342,187 @@ func TestAFrameFromAnotherAddressIsDropped(t *testing.T) {
 		t.Fatalf("read %q from %v, %v", buf[:n], from, err)
 	}
 }
+
+// A guest that dials port 80 anywhere lands on the redirected listener, and the listener still sees the guest as the source.
+func TestARedirectedPortLandsOnTheListenerWhereverTheGuestDialed(t *testing.T) {
+	host, err := New(Config{Address: gateway, Redirects: map[uint16]uint16{80: 30080}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	guest := attach(t, host, guestA)
+
+	ln, err := host.ListenTCP(30080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			close(accepted)
+
+			return
+		}
+		accepted <- conn
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := guest.dialTCP(ctx, netip.MustParseAddrPort("93.184.216.34:80"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	server := <-accepted
+	if server == nil {
+		t.FailNow()
+	}
+	defer server.Close()
+	if got := server.RemoteAddr().(*net.TCPAddr).IP.String(); got != guestA.String() {
+		t.Errorf("the listener saw source %s, want %s", got, guestA)
+	}
+	if _, err := client.Write([]byte("GET /")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 5)
+	if _, err := server.Read(buf); err != nil || string(buf) != "GET /" {
+		t.Fatalf("read %q, %v", buf, err)
+	}
+}
+
+// A frame the stack refuses is reported once, naming the guest, where it reached for and on which port.
+func TestARefusedFrameIsReportedAsADrop(t *testing.T) {
+	drops := make(chan Drop, 16)
+	host, err := New(Config{Address: gateway, Drops: func(d Drop) { drops <- d }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	guest := attach(t, host, guestA)
+	if err := guest.knows(gateway, host.cfg.MAC); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, remote := range []netip.AddrPort{netip.MustParseAddrPort("1.1.1.1:443"), netip.AddrPortFrom(gateway, 22)} {
+		client, err := guest.dialUDP(remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Write([]byte("out")); err != nil {
+			t.Fatal(err)
+		}
+		client.Close()
+
+		select {
+		case got := <-drops:
+			want := Drop{Guest: guestA, Destination: remote.Addr(), Protocol: "udp", Port: int(remote.Port())}
+			got.Time = time.Time{}
+			if got != want {
+				t.Errorf("reported %+v, want %+v", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no drop reported for %s", remote)
+		}
+	}
+
+	// A served port on the address is not a drop.
+	conn, err := host.ListenPacket(5353)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client, err := guest.dialUDP(netip.AddrPortFrom(gateway, 5353))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("in")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 8)
+	if n, _, err := conn.ReadFrom(buf); err != nil || string(buf[:n]) != "in" {
+		t.Fatalf("read %q, %v", buf[:n], err)
+	}
+	select {
+	case got := <-drops:
+		t.Fatalf("a served port was reported as a drop: %+v", got)
+	default:
+	}
+}
+
+// A frame the guest could not have sent is refused on its link and charged to that guest: a forged source and IPv6 alike.
+func TestAFrameTheGuestDidNotSendIsReportedOnItsLink(t *testing.T) {
+	drops := make(chan Drop, 16)
+	host, err := New(Config{Address: gateway, Drops: func(d Drop) { drops <- d }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	await := func(t *testing.T, want Drop) {
+		t.Helper()
+		select {
+		case got := <-drops:
+			got.Time = time.Time{}
+			if got != want {
+				t.Errorf("reported %+v, want %+v", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no drop reported, want %+v", want)
+		}
+	}
+
+	t.Run("forged", func(t *testing.T) {
+		hostEnd, guestEnd := wire(t)
+		link, err := host.Attach(hostEnd, guestA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Close()
+		guest, err := New(Config{Address: guestB, MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 3}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer guest.Close()
+		if _, err := guest.Attach(guestEnd, gateway); err != nil {
+			t.Fatal(err)
+		}
+		guest.defaultRoute(gateway)
+		if err := guest.knows(gateway, host.cfg.MAC); err != nil {
+			t.Fatal(err)
+		}
+		remote := netip.MustParseAddrPort("1.1.1.1:53")
+		client, err := guest.dialUDP(remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.Write([]byte("forged")); err != nil {
+			t.Fatal(err)
+		}
+		await(t, Drop{Guest: guestA, Destination: remote.Addr(), Protocol: "forged udp", Port: int(remote.Port())})
+	})
+
+	t.Run("ipv6", func(t *testing.T) {
+		hostEnd, guestEnd := wire(t)
+		link, err := host.Attach(hostEnd, guestA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Close()
+		defer guestEnd.Close()
+		destination := netip.MustParseAddr("2001:db8::1")
+		frame := append([]byte(nil), host.cfg.MAC...)
+		frame = append(frame, 0x02, 0, 0, 0, 0, 2, 0x86, 0xdd)
+		frame = append(frame, 0x60, 0, 0, 0, 0, 0, 17, 64)
+		frame = append(frame, netip.MustParseAddr("fe80::2").AsSlice()...)
+		frame = append(frame, destination.AsSlice()...)
+		if _, err := guestEnd.Write(frame); err != nil {
+			t.Fatal(err)
+		}
+		await(t, Drop{Guest: guestA, Destination: destination, Protocol: "ipv6"})
+	})
+}

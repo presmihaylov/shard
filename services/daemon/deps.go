@@ -1,23 +1,35 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"net"
+	"net/netip"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
 	runccli "github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/vz"
+	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/runc"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
+	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
@@ -34,11 +46,36 @@ type deps struct {
 
 	imageSvc    *image.Service
 	repoSvc     *sandboxstate.Repository
-	netSvc      *network.Service
+	netSvc      hostNetwork
+	stackSvc    *netstack.Stack
 	providerSvc models.Provider
 	secretSvc   *secret.Store
 	policySvc   *egress.Store
 	runnerSvc   *runsc.Runner
+}
+
+// hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.
+type hostNetwork interface {
+	sandbox.Network
+	Gateway() netip.Addr
+}
+
+// front is where the proxy and the resolver listen: the bridge gateway on Linux, the userspace stack on a VM host.
+type front interface {
+	ListenTCP(port uint16) (net.Listener, error)
+	ListenPacket(port uint16) (net.PacketConn, error)
+}
+
+// providerName is the substrate the daemon runs: --provider, or the platform's default when it is empty.
+func (d *deps) providerName() string {
+	if d.cfg.Provider != "" {
+		return d.cfg.Provider
+	}
+	if runtime.GOOS == "darwin" {
+		return vzvm.Name
+	}
+
+	return gvisor.Name
 }
 
 func (d *deps) imagesLocked() (*image.Service, error) {
@@ -46,7 +83,12 @@ func (d *deps) imagesLocked() (*image.Service, error) {
 		return d.imageSvc, nil
 	}
 
-	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), image.WithRegistry(registry.WithInsecureRegistries(d.cfg.Insecure...)))
+	opts := []image.Option{image.WithRegistry(registry.WithInsecureRegistries(d.cfg.Insecure...))}
+	// A VM boots from a disk, so the vz daemon builds one per image at the pull.
+	if d.providerName() == vzvm.Name {
+		opts = append(opts, image.WithDisks())
+	}
+	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +111,19 @@ func (d *deps) repoLocked() (*sandboxstate.Repository, error) {
 	return d.repoSvc, nil
 }
 
-func (d *deps) netLocked() (*network.Service, error) {
+func (d *deps) netLocked() (hostNetwork, error) {
 	if d.netSvc != nil {
+		return d.netSvc, nil
+	}
+
+	// A VM host has no bridge: the addresses are leased and the stack answers for the gateway.
+	if d.providerName() == vzvm.Name {
+		svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root})
+		if err != nil {
+			return nil, err
+		}
+		d.netSvc = svc
+
 		return d.netSvc, nil
 	}
 
@@ -105,12 +158,7 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	bundles, err := bundle.New(d.cfg.InitPath)
-	if err != nil {
-		return nil, err
-	}
-
-	provider, err := d.newProvider(bundles, repo.Dir)
+	provider, err := d.newProvider(repo.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -119,33 +167,175 @@ func (d *deps) providerLocked() (models.Provider, error) {
 	return d.providerSvc, nil
 }
 
-// newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default.
-func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, error)) (models.Provider, error) {
-	switch d.cfg.Provider {
-	case "", gvisor.Name:
+// stackLocked is the one userspace stack every VM's frames end in, and the front the proxy listens on.
+func (d *deps) stackLocked() (*netstack.Stack, error) {
+	if d.stackSvc != nil {
+		return d.stackSvc, nil
+	}
+
+	gateway, err := network.Gateway(network.Config{Root: d.cfg.Root})
+	if err != nil {
+		return nil, err
+	}
+	repo, err := d.repoLocked()
+	if err != nil {
+		return nil, err
+	}
+	logger := log.New(d.cfg.Out, "", log.LstdFlags)
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
+	// The host chains dnat a guest's 80 and 443 onto the proxy, and the stack does the same with its own table.
+	stack, err := netstack.New(netstack.Config{
+		Address:   gateway,
+		Redirects: map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
+		Drops:     drops.report,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.stackSvc = stack
+
+	return d.stackSvc, nil
+}
+
+// stackDrops lands every frame the stack refused in the sandbox's decision log, which is what the tailer does with the kernel ring on Linux.
+type stackDrops struct {
+	mu      sync.Mutex
+	tailer  *egress.Tailer
+	gateway netip.Addr
+	out     *log.Logger
+}
+
+func (s *stackDrops) report(d netstack.Drop) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.tailer.Drop(d.Guest, egress.StackDrop(s.gateway, d)); err != nil {
+		// The frame is refused already, so a log that cannot be written closes no door; the daemon log carries it.
+		s.out.Printf("egress log: sandbox at %s: %v", d.Guest, err)
+	}
+}
+
+// frontLocked is what the proxy and the resolver listen through, so one task serves either host the same way.
+func (d *deps) frontLocked() (front, error) {
+	if d.providerName() == vzvm.Name {
+		return d.stackLocked()
+	}
+
+	hostNet, err := d.netLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	return gatewayFront{address: hostNet.Gateway()}, nil
+}
+
+// gatewayFront listens on the bridge gateway, which the bridge must carry first.
+type gatewayFront struct {
+	address netip.Addr
+}
+
+func (f gatewayFront) ListenTCP(port uint16) (net.Listener, error) {
+	return net.Listen("tcp", netip.AddrPortFrom(f.address, port).String())
+}
+
+func (f gatewayFront) ListenPacket(port uint16) (net.PacketConn, error) {
+	return net.ListenPacket("udp", netip.AddrPortFrom(f.address, port).String())
+}
+
+// newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default on Linux and vz on a Mac.
+func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, error) {
+	switch d.providerName() {
+	case gvisor.Name:
 		runner, err := d.runnerLocked()
 		if err != nil {
 			return nil, err
 		}
 
-		return gvisor.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return gvisor.New(runner, bundles, dirs) })
 	case sysbox.Name:
 		runner, err := runccli.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runccli.WithBinary(sysbox.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
 
-		return sysbox.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return sysbox.New(runner, bundles, dirs) })
 	case runc.Name:
 		runner, err := runccli.New(filepath.Join(d.cfg.Root, "runc"), runccli.WithBinary(runc.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}
 
-		return runc.New(runner, bundles, dirs)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) })
+	case vzvm.Name:
+		return d.newVZ(dirs)
 	default:
-		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name)
+		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name, vzvm.Name)
 	}
+}
+
+// onBundles builds a Linux substrate over the OCI bundle service; a VM has an initrd and a disk instead, so vz never comes here.
+func (d *deps) onBundles(build func(*bundle.Service) (models.Provider, error)) (models.Provider, error) {
+	bundles, err := bundle.New(d.cfg.InitPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return build(bundles)
+}
+
+// vzDir is where under the root the vz daemon keeps the signed shim, the guest init and the initrd.
+const vzDir = "vz"
+
+// kernelFetchTimeout bounds the first-use download, which runs under deps.mu and would otherwise hold every verb on a dead release endpoint.
+const kernelFetchTimeout = 5 * time.Minute
+
+// newVZ builds the Virtualization.framework provider: the embedded shim signed under the root, the guest kernel fetched once, and the stack.
+func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
+	if runtime.GOOS != "darwin" {
+		return nil, fmt.Errorf("provider %s runs on macOS only, not %s", vzvm.Name, runtime.GOOS)
+	}
+
+	dir := filepath.Join(d.cfg.Root, vzDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("create %s: %w", dir, err)
+	}
+	shim, err := vzshim.Install(dir)
+	if err != nil {
+		return nil, err
+	}
+	// SHARD_INIT_PATH names a guest init of its own; without one the daemon installs the linux build it carries beside the shim.
+	init := d.cfg.InitPath
+	if init == "" {
+		if init, err = vzshim.InstallInit(dir); err != nil {
+			return nil, err
+		}
+	}
+
+	opts, err := kernel.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
+	defer cancel()
+	// The guest runs the host's arch: the framework virtualises, it never emulates.
+	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
+	if err != nil {
+		return nil, err
+	}
+
+	stack, err := d.stackLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	return vzvm.New(vzvm.Config{
+		Shim:        shim,
+		Kernel:      guest.Path,
+		Init:        init,
+		Dir:         dir,
+		Stack:       stack,
+		Dirs:        dirs,
+		SaveRestore: vz.HostSaveRestore(),
+	})
 }
 
 // execDir is where under the root the driver keeps each exec's scratch, so a restart can sweep what the last daemon left.
@@ -406,11 +596,18 @@ func (d *deps) provider() (models.Provider, error) {
 	return d.providerLocked()
 }
 
-func (d *deps) net() (*network.Service, error) {
+func (d *deps) net() (hostNetwork, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	return d.netLocked()
+}
+
+func (d *deps) front() (front, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.frontLocked()
 }
 
 func (d *deps) secrets() (*secret.Store, error) {

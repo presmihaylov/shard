@@ -212,7 +212,10 @@ func (m *machine) readdress(r record) error {
 	if err != nil {
 		return fmt.Errorf("parse the recorded address: %w", err)
 	}
-	address := supervisor.Address{Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway}
+	address := supervisor.Address{
+		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
+		Nameservers: r.Nameservers, Hostname: r.Hostname,
+	}
 	if err := m.control.Readdress(address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
 	}

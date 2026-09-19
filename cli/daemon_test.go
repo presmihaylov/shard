@@ -40,7 +40,7 @@ func TestDaemonStatusSaysWhyTheProviderCannotBeBuilt(t *testing.T) {
 	}()
 
 	err := App{Version: "v-test", Root: root, Out: io.Discard}.Run(t.Context(), []string{"daemon", "status"})
-	if want := "unknown provider \"vmware\": shard knows gvisor, sysbox and runc"; err == nil || err.Error() != want {
+	if want := "unknown provider \"vmware\": shard knows gvisor, sysbox, runc and vz"; err == nil || err.Error() != want {
 		t.Errorf("daemon status returned %v, want %q", err, want)
 	}
 }
