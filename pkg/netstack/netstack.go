@@ -210,10 +210,10 @@ func (l *Link) send(ctx context.Context) error {
 	}
 }
 
-// quiet reports the ends a closed link produces, on this side or the VM's, which are how a pump stops and not a fault.
+// quiet reports the ends a closed link produces on either side, Linux answers a dead datagram peer with ECONNREFUSED, which are how a pump stops and not a fault.
 func quiet(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ)
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ)
 }
 
 // ListenTCP opens a listener on the stack address, which every link's guest can reach.
