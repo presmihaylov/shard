@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -341,5 +343,93 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the supervisor did not exit after the stop")
+	}
+}
+
+func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The echo role copies stdin until EOF; with no stdin it must still end, and promptly.
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	exit, err := supervisor.Exec(execCtx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("echo:0"), Env: os.Environ()}, models.ExecSpec{})
+	if err != nil {
+		t.Fatalf("exec with no stdin: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want code 0", exit)
+	}
+}
+
+func TestTransportRefusedExecsLeakNoDescriptor(t *testing.T) {
+	cmd, dial := startTransport(t)
+	fds := filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "fd")
+	if _, err := os.Stat(fds); err != nil {
+		t.Skipf("no %s on this platform", fds)
+	}
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	count := func() int {
+		entries, err := os.ReadDir(fds)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return len(entries)
+	}
+	refuse := func() {
+		_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"/nonexistent/cmd"}}, models.ExecSpec{})
+		var notStarted *models.CommandNotStartedError
+		if !errors.As(err, &notStarted) {
+			t.Fatalf("exec gave %v, want CommandNotStartedError", err)
+		}
+	}
+	refuse()
+	before := count()
+	for range 20 {
+		refuse()
+	}
+	if after := count(); after > before {
+		t.Fatalf("the supervisor holds %d descriptors after 20 refused execs, %d before", after, before)
+	}
+}
+
+func TestAnswerStaysOnTheConnectionThatAsked(t *testing.T) {
+	oldHost, oldGuest := net.Pipe()
+	newHost, newGuest := net.Pipe()
+	defer oldHost.Close()
+	defer newHost.Close()
+	tr := &transport{control: newGuest}
+
+	// The old host asked, the new one replaced it; the old answer must reach neither.
+	tr.answer(oldGuest, 1, nil)
+	_ = newHost.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var stray supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &stray); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the new host read %+v (%v), want nothing", stray, err)
+	}
+
+	go tr.answer(newGuest, 2, nil)
+	_ = newHost.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var reply supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &reply); err != nil || reply.ID != 2 || reply.Kind != supervisor.KindDone {
+		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
 	}
 }

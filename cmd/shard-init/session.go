@@ -115,9 +115,10 @@ func closeAll(files []*os.File) {
 	}
 }
 
-// release closes the supervisor's read ends, and the pty behind them when the exec had one.
+// release closes the supervisor's ends: the read ends, the stdin pipe, and the pty behind them when the exec had one.
 func (s *session) release(outputs []*os.File) {
 	closeAll(outputs)
+	s.closeStdin()
 	if s.term != nil {
 		_ = s.term.Close()
 	}

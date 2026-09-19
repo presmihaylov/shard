@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -129,4 +131,63 @@ func TestWriteRestartsReadsBackThroughBundle(t *testing.T) {
 	if got.Count != 2 || !got.GaveUp {
 		t.Fatalf("got %+v", got)
 	}
+}
+
+func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
+	// A unix socket half-closed by the guest still takes the host's write, so only the reader's end can refuse the request.
+	dir := shortDir(t)
+	l, err := net.Listen("unix", filepath.Join(dir, "c.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	host, err := net.Dial("unix", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	guest := (<-accepted).(*net.UnixConn)
+	defer guest.Close()
+
+	c := supervisor.ControlOver(host)
+	if err := guest.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("next = %v, want io.EOF once the guest is gone", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Signal(1, "KILL") }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "went away") {
+			t.Fatalf("signal = %v, want the refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("signal blocked after the reader ended")
+	}
+}
+
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sv") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove %s: %v", dir, err)
+		}
+	})
+
+	return dir
 }
