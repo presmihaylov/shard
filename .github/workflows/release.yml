@@ -10,8 +10,21 @@ permissions:
   contents: read
 
 jobs:
+  # A tag on a feature head must publish nothing, so every build waits on this.
+  on-main:
+    name: the tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
+
   linux:
     name: linux amd64
+    needs: on-main
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +44,7 @@ jobs:
 
   darwin:
     name: darwin arm64 and amd64
+    needs: on-main
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,10 +85,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: publish
+      # A draft: the VM proof runs by hand (docs/release.md), and its record is what publishes the release.
+      - name: publish a draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
           sha256sum * > SHA256SUMS
-          gh release create "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "shard ${{ github.ref_name }}" --notes "Built by the release workflow. The VM proof that ran before this tag is in docs/release.md." *
+          notes="Built by the release workflow from $GITHUB_SHA.
+
+          VM proof, per docs/release.md, fill in before you publish:
+          - Mac: TODO
+          - macOS: TODO
+          - head that passed: TODO"
+          gh release create "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "shard ${{ github.ref_name }}" --draft --notes "$notes" *
