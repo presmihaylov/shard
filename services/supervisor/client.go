@@ -217,15 +217,7 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	defer stop()
 
 	var writes sync.Mutex
-	if spec.Stdin != nil {
-		go feedStdin(conn, &writes, spec.Stdin)
-	}
-	// No stdin is /dev/null: the command sees EOF at once, not a pipe nobody closes.
-	if spec.Stdin == nil {
-		if err := WriteFrame(conn, StreamStdinClose, nil); err != nil {
-			return models.ExitStatus{}, fmt.Errorf("close the exec stdin: %w", err)
-		}
-	}
+	go feedStdin(conn, &writes, spec.Stdin)
 
 	exit, err := readExec(conn, id, spec)
 	if err != nil && ctx.Err() != nil {
@@ -238,8 +230,15 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	return exit, nil
 }
 
-// feedStdin moves the caller's stdin into frames until it ends, then tells the guest so.
+// feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed write is the guest gone, which the frame reader reports.
 func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) {
+	if stdin == nil {
+		writes.Lock()
+		_ = WriteFrame(conn, StreamStdinClose, nil)
+		writes.Unlock()
+
+		return
+	}
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := stdin.Read(buf)
