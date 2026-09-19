@@ -10,7 +10,7 @@ one Go binary, `shard`, and it stays as the Go linker leaves it.
 
 `make build-darwin` builds the shim, ad-hoc signs it into `pkg/vz/shim/`, and then builds `shard`
 with the shim embedded. On first use the daemon writes the shim into the shard root and ad-hoc signs
-it there (`vz.InstallShim`), with the entitlements plist it also embeds. A later build with a
+it there (`vz.InstallShim`), with the entitlements plist it also embeds. A stamp beside it, `shard-vz-shim.sha256`, holds the hash of the embedded build, so a later start finds the shim in place. A later build with a
 different shim replaces the file by rename, so a running shim keeps its inode. The install needs
 `codesign`, which the Command Line Tools provide; Xcode is not needed.
 

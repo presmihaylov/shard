@@ -2,6 +2,7 @@ package vz
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"errors"
 	"fmt"
@@ -38,8 +39,13 @@ func InstallShim(dir string) (string, error) {
 		return "", ErrNoShim
 	}
 	path := filepath.Join(dir, shimName)
-	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, body) {
-		return path, nil
+	// codesign rewrites the bytes, so a stamp of the embedded build says whether the installed shim is this one.
+	stamp := filepath.Join(dir, shimName+".sha256")
+	sum := fmt.Appendf(nil, "%x\n", sha256.Sum256(body))
+	if current, err := os.ReadFile(stamp); err == nil && bytes.Equal(current, sum) {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
 	}
 
 	entitlements, err := fs.ReadFile(shimFS, "shim/"+entitlementsName)
@@ -60,6 +66,9 @@ func InstallShim(dir string) (string, error) {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return "", fmt.Errorf("install the shim: %w", err)
+	}
+	if err := os.WriteFile(stamp, sum, 0o600); err != nil {
+		return "", fmt.Errorf("stamp the shim: %w", err)
 	}
 
 	return path, nil
