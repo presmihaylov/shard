@@ -10,13 +10,13 @@ import (
 	"github.com/presmihaylov/shard/pkg/pty"
 )
 
-// A pair is a kernel call, so a developer Mac must say it cannot rather than fail the suite.
-func TestOpenGivesAPairAndRefusesOffLinux(t *testing.T) {
+// A pair is a kernel call, so a host without a driver must say it cannot rather than fail the suite.
+func TestOpenGivesAPairAndRefusesElsewhere(t *testing.T) {
 	pair, err := pty.Open()
 
-	if runtime.GOOS != "linux" {
-		if !errors.Is(err, pty.ErrNotLinux) {
-			t.Fatalf("Open returned %v, want ErrNotLinux off Linux", err)
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		if !errors.Is(err, pty.ErrUnsupported) {
+			t.Fatalf("Open returned %v, want ErrUnsupported on %s", err, runtime.GOOS)
 		}
 
 		return

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,8 @@ type Subject struct {
 	SnapshotDir func(t *testing.T) string
 	// Shell turns a shell script into the argv that runs it in the sandboxes NewSpec builds.
 	Shell func(script string) []string
+	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /.
+	Scratch string
 }
 
 // ReadyMarker is what an ignores-term entrypoint prints once it refuses SIGTERM. A stop sent before
@@ -314,11 +317,11 @@ func Run(t *testing.T, s Subject) {
 	t.Run("TwoExecsShareTheSandbox", func(t *testing.T) {
 		id := s.running(t)
 
-		if status, _ := s.exec(t, id, models.ExecSpec{Argv: s.Shell("echo shared > /conformance-exec")}); status.Code != 0 {
+		if status, _ := s.exec(t, id, models.ExecSpec{Argv: s.Shell("echo shared > " + s.scratch("conformance-exec"))}); status.Code != 0 {
 			t.Fatalf("the first Exec exited %d", status.Code)
 		}
 
-		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("cat /conformance-exec")})
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-exec"))})
 		if status.Code != 0 {
 			t.Fatalf("the second Exec exited %d, so it did not read what the first wrote", status.Code)
 		}
@@ -393,7 +396,7 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("CloneRunsTheEntrypointAgainOverWhatTheSourceKept", func(t *testing.T) {
 		source := s.running(t)
-		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo kept > /conformance-clone")}); status.Code != 0 {
+		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo kept > " + s.scratch("conformance-clone"))}); status.Code != 0 {
 			t.Fatalf("the write into the source exited %d", status.Code)
 		}
 		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
@@ -406,7 +409,7 @@ func Run(t *testing.T, s Subject) {
 		}
 
 		// A Create under the clone's id would pass everything below but this: the file is the source's.
-		if _, out := s.exec(t, clone.ID, models.ExecSpec{Argv: s.Shell("cat /conformance-clone")}); !strings.Contains(out, "kept") {
+		if _, out := s.exec(t, clone.ID, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-clone"))}); !strings.Contains(out, "kept") {
 			t.Errorf("the clone reads %q from the file the source wrote, want kept", out)
 		}
 
@@ -461,6 +464,14 @@ func Run(t *testing.T, s Subject) {
 		err := s.Provider.Fork(t.Context(), dir, s.NewSpec(t))
 		s.check(t, models.VerbFork, caps.Fork, err)
 	})
+}
+
+func (s Subject) scratch(name string) string {
+	if s.Scratch == "" {
+		return "/" + name
+	}
+
+	return path.Join(s.Scratch, name)
 }
 
 // awaitReady blocks until the entrypoint has printed ReadyMarker, which is the only proof the suite
