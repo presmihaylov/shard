@@ -41,12 +41,23 @@ func shortDir(t *testing.T) string {
 func startTransport(t *testing.T) (*exec.Cmd, supervisor.Dialer) {
 	t.Helper()
 
+	return startTransportUnder(t, 0)
+}
+
+// startTransportUnder is the same with a descriptor limit on the supervisor; zero keeps the test's own.
+func startTransportUnder(t *testing.T, limit uint64) (*exec.Cmd, supervisor.Dialer) {
+	t.Helper()
+
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("locate the test binary: %v", err)
 	}
 	dir := shortDir(t)
 	cmd := exec.Command(exe, "-transport", "unix:"+dir)
+	if limit > 0 {
+		// The hard limit too, or the Go runtime raises the soft one back at startup; the shell keeps the pid.
+		cmd = exec.Command("/bin/sh", "-c", `ulimit -n "$1" && exec "$2" -transport "$3"`, "sh", strconv.FormatUint(limit, 10), exe, "unix:"+dir)
+	}
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -371,11 +382,8 @@ func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
 }
 
 func TestTransportRefusedExecsLeakNoDescriptor(t *testing.T) {
-	cmd, dial := startTransport(t)
-	fds := filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "fd")
-	if _, err := os.Stat(fds); err != nil {
-		t.Skipf("no %s on this platform", fds)
-	}
+	// The supervisor is undumpable, so its fd table cannot be counted; a limit it must stay under shows a leak instead.
+	_, dial := startTransportUnder(t, 48)
 	ctx := testContext(t)
 	c, err := supervisor.Connect(ctx, dial)
 	if err != nil {
@@ -386,28 +394,19 @@ func TestTransportRefusedExecsLeakNoDescriptor(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	count := func() int {
-		entries, err := os.ReadDir(fds)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		return len(entries)
-	}
-	refuse := func() {
+	for i := range 40 {
 		_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"/nonexistent/cmd"}}, models.ExecSpec{})
 		var notStarted *models.CommandNotStartedError
 		if !errors.As(err, &notStarted) {
-			t.Fatalf("exec gave %v, want CommandNotStartedError", err)
+			t.Fatalf("refused exec %d gave %v, want CommandNotStartedError", i, err)
 		}
 	}
-	refuse()
-	before := count()
-	for range 20 {
-		refuse()
-	}
-	if after := count(); after > before {
-		t.Fatalf("the supervisor holds %d descriptors after 20 refused execs, %d before", after, before)
+
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	exit, err := supervisor.Exec(execCtx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("say:still-here"), Env: os.Environ()}, models.ExecSpec{})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("after 40 refused execs a healthy one gave %+v, %v", exit, err)
 	}
 }
 
