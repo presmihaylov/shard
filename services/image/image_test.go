@@ -196,12 +196,11 @@ func newService(t *testing.T, server *httptest.Server) *image.Service {
 	return newServiceAt(t, t.TempDir(), server)
 }
 
-func newServiceAt(t *testing.T, root string, server *httptest.Server) *image.Service {
+func newServiceAt(t *testing.T, root string, server *httptest.Server, opts ...image.Option) *image.Service {
 	t.Helper()
 
-	var opts []registry.Option
 	if server != nil {
-		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server)))
+		opts = append(opts, image.WithRegistry(registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server))))
 	}
 
 	svc, err := image.New(root, opts...)
