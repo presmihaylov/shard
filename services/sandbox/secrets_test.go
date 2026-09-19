@@ -261,3 +261,47 @@ func config(t *testing.T, b bundle.Bundle) string {
 
 	return string(blob)
 }
+
+// The proxy sets the trust variables itself, so a secret of that name is refused before the CA is planted.
+func TestGrantSecretRefusesATrustVariableNameAndWritesNothing(t *testing.T) {
+	for _, name := range bundle.TrustEnv {
+		t.Run(name, func(t *testing.T) {
+			svc, l, b := granted(t, &recorder{}, stopped())
+			if _, err := l.secrets.Set(name, "s3cr3t", []string{"api.example.com"}, ""); err != nil {
+				t.Fatalf("secrets.Set: %v", err)
+			}
+			before := config(t, b)
+
+			_, err := svc.GrantSecret(context.Background(), "sandbox1", name)
+			if err == nil || !strings.Contains(err.Error(), "trust store") {
+				t.Fatalf("GrantSecret = %v, want a refusal that names the trust store", err)
+			}
+			if config(t, b) != before {
+				t.Error("the refused grant rewrote config.json")
+			}
+			if _, err := os.Stat(filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); !os.IsNotExist(err) {
+				t.Errorf("the refused grant wrote the writable layer: %v", err)
+			}
+		})
+	}
+}
+
+// An ungrant of a name the record never held leaves the image's own variable of that name where it is.
+func TestUngrantSecretLeavesAVariableTheGrantNeverPlanted(t *testing.T) {
+	svc, _, b := granted(t, &recorder{}, stopped(), "TOKEN=of-its-own")
+	before := config(t, b)
+
+	sb, err := svc.UngrantSecret(context.Background(), "sandbox1", "TOKEN")
+	if err != nil {
+		t.Fatalf("UngrantSecret: %v", err)
+	}
+	if len(sb.Secrets) != 0 {
+		t.Errorf("the record holds %v", sb.Secrets)
+	}
+	if config(t, b) != before {
+		t.Error("the ungrant rewrote config.json")
+	}
+	if value, held := guestEnv(t, b, "TOKEN"); !held || value != "of-its-own" {
+		t.Errorf("the guest environment holds TOKEN=%q, %v; want the image's own", value, held)
+	}
+}
