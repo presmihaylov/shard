@@ -8,9 +8,7 @@ import (
 	"os"
 )
 
-const superBlockOffset = 1024
-
-// Grow extends an unmounted image written by Writer to size bytes, adding empty block groups.
+// Grow extends an unmounted image from Write to size bytes, adding empty block groups.
 func Grow(path string, size int64) (err error) {
 	if size%BlockSize != 0 {
 		return fmt.Errorf("ext4: grow %s: size %d is not a multiple of %d", path, size, BlockSize)
@@ -45,13 +43,17 @@ func Grow(path string, size int64) (err error) {
 	}
 	oldGroups := (oldBlocks-1)/blocksPerGroup + 1
 	newGroups := (newBlocks-1)/blocksPerGroup + 1
+	// The descriptor table runs from block 1 to the first bitmap, which is where Write reserved it up to MaxDiskSize.
+	var gd GroupDescriptor
+	if err := readAt(f, descriptorOffset(0), &gd); err != nil {
+		return fmt.Errorf("ext4: grow %s: read descriptor 0: %w", path, err)
+	}
+	gdBlocks := gd.BlockBitmapLow - 1
 	if (newGroups-1)/groupsPerDescriptorBlock+1 > gdBlocks {
 		return fmt.Errorf("ext4: grow %s: %d groups exceed the reserved descriptor table", path, newGroups)
 	}
-	if sb.InodesPerGroup != inodesPerGroup {
-		return fmt.Errorf("ext4: grow %s: %d inodes per group, not the %d this package writes", path, sb.InodesPerGroup, inodesPerGroup)
-	}
-	tableBlocks := uint32(inodesPerGroup * inodeSize / BlockSize)
+	inodesPerGroup := sb.InodesPerGroup
+	tableBlocks := inodesPerGroup * inodeSize / BlockSize
 	if tail := newBlocks % blocksPerGroup; newGroups > oldGroups && tail != 0 && tail <= 2+tableBlocks {
 		return fmt.Errorf("ext4: grow %s: the last group holds %d blocks, under its %d of metadata", path, tail, 2+tableBlocks)
 	}
@@ -60,7 +62,6 @@ func Grow(path string, size int64) (err error) {
 	}
 
 	// The old last group marked the blocks past the end of the disk as used; give them back.
-	var gd GroupDescriptor
 	if err := readAt(f, descriptorOffset(oldGroups-1), &gd); err != nil {
 		return fmt.Errorf("ext4: grow %s: read descriptor %d: %w", path, oldGroups-1, err)
 	}
@@ -100,7 +101,7 @@ func Grow(path string, size int64) (err error) {
 		for j := range meta {
 			bitmaps[j/8] |= 1 << (j % 8)
 		}
-		setInodePadding(bitmaps[BlockSize:])
+		setInodePadding(bitmaps[BlockSize:], inodesPerGroup)
 		if _, err := f.WriteAt(bitmaps[:], int64(start)*BlockSize); err != nil {
 			return fmt.Errorf("ext4: grow %s: write the bitmaps of group %d: %w", path, g, err)
 		}
@@ -109,7 +110,7 @@ func Grow(path string, size int64) (err error) {
 			InodeBitmapLow:     start + 1,
 			InodeTableLow:      start + 2,
 			FreeBlocksCountLow: uint16(blocksPerGroup - meta),
-			FreeInodesCountLow: uint16(inodesPerGroup),
+			FreeInodesCountLow: uint16(inodesPerGroup), //nolint:gosec // at most 32768, the bitmap block
 		}
 		if err := writeAt(f, descriptorOffset(g), &gd); err != nil {
 			return fmt.Errorf("ext4: grow %s: write descriptor %d: %w", path, g, err)

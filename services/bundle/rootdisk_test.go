@@ -1,6 +1,7 @@
 package bundle_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -24,18 +25,22 @@ func baseDisk(t *testing.T) string {
 	}
 	defer f.Close()
 
-	w := ext4.NewWriter(f)
-	if err := w.Create("etc", &ext4.File{Mode: ext4.S_IFDIR | 0o755}); err != nil {
-		t.Fatalf("Create etc: %v", err)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "etc", Mode: 0o755}); err != nil {
+		t.Fatalf("write etc: %v", err)
 	}
-	if err := w.Create("etc/hostname", &ext4.File{Mode: 0o644, Size: int64(len(hostname))}); err != nil {
-		t.Fatalf("Create hostname: %v", err)
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "etc/hostname", Mode: 0o644, Size: int64(len(hostname))}); err != nil {
+		t.Fatalf("write hostname: %v", err)
 	}
-	if _, err := w.Write([]byte(hostname)); err != nil {
+	if _, err := tw.Write([]byte(hostname)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close the tar: %v", err)
+	}
+	if err := ext4.Write(&buf, f); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 
 	return path

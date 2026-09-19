@@ -15,8 +15,6 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
-
-	"github.com/presmihaylov/shard/pkg/ext4"
 )
 
 // entry is one tar entry of a test layer; body is the content of a regular file.
@@ -63,55 +61,64 @@ func layerOf(t *testing.T, entries ...entry) v1.Layer {
 	return layer
 }
 
-// disk writes the layers through the merge and hands back the writer, still open, so a test can stat it.
-func disk(t *testing.T, layers ...v1.Layer) (*ext4.Writer, string) {
+// stream plans the layers and reads back the merged tar the image writer would get, by name.
+func stream(t *testing.T, layers ...v1.Layer) map[string]entry {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "rootfs.ext4")
-	f, err := os.Create(path)
+	m, err := planDisk(t.Context(), layers)
 	if err != nil {
-		t.Fatalf("create the image: %v", err)
+		t.Fatalf("planDisk: %v", err)
 	}
-	t.Cleanup(func() { _ = f.Close() })
-
-	w := ext4.NewWriter(f)
-	if err := writeDisk(t.Context(), w, layers); err != nil {
-		t.Fatalf("writeDisk: %v", err)
+	var buf bytes.Buffer
+	if err := m.writeTar(t.Context(), &buf, layers); err != nil {
+		t.Fatalf("writeTar: %v", err)
 	}
 
-	return w, path
+	got := map[string]entry{}
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return got
+		}
+		if err != nil {
+			t.Fatalf("read the merged tar: %v", err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read %s: %v", hdr.Name, err)
+		}
+		if _, dup := got[hdr.Name]; dup {
+			t.Fatalf("%s is in the stream twice", hdr.Name)
+		}
+		got[hdr.Name] = entry{hdr: *hdr, body: string(body)}
+	}
 }
 
-func closeAndCheck(t *testing.T, w *ext4.Writer, path string) {
+func file(t *testing.T, got map[string]entry, name string) entry {
 	t.Helper()
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	e, ok := got[name]
+	if !ok {
+		t.Fatalf("%s is not in the stream", name)
 	}
-	if _, err := exec.LookPath("e2fsck"); err != nil {
-		t.Logf("no e2fsck on PATH, the stats stand alone")
 
-		return
-	}
-	out, err := exec.Command("e2fsck", "-fn", path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("e2fsck: %v\n%s", err, out)
-	}
+	return e
 }
 
-func statSize(t *testing.T, w *ext4.Writer, name string) int64 {
+func bodyOf(t *testing.T, got map[string]entry, name string) string {
 	t.Helper()
-	f, err := w.Stat(name)
-	if err != nil {
-		t.Fatalf("Stat %s: %v", name, err)
+	e := file(t, got, name)
+	if e.hdr.Typeflag != tar.TypeReg {
+		t.Fatalf("%s is a %q, not a file", name, e.hdr.Typeflag)
 	}
 
-	return f.Size
+	return e.body
 }
 
-func missing(t *testing.T, w *ext4.Writer, name string) {
+func missing(t *testing.T, got map[string]entry, name string) {
 	t.Helper()
-	if _, err := w.Stat(name); err == nil {
-		t.Errorf("%s is on the disk", name)
+	if _, ok := got[name]; ok {
+		t.Errorf("%s is in the stream", name)
 	}
 }
 
@@ -122,49 +129,22 @@ func TestDiskKeepsTheMetadataADirectoryUnpackLoses(t *testing.T) {
 	link := entry{hdr: tar.Header{Name: "bin/sh", Typeflag: tar.TypeSymlink, Linkname: "busybox"}}
 	owned := entry{hdr: tar.Header{Name: "home/app/.profile", Mode: 0o600, Typeflag: tar.TypeReg, Uid: 1000, Gid: 1000}, body: "x"}
 
-	w, path := disk(t, layerOf(t, dir("usr/"), dir("usr/bin/"), sudo, dir("dev/"), null, dir("bin/"), reg("bin/busybox", "bb"), link, owned))
+	got := stream(t, layerOf(t, dir("usr/"), dir("usr/bin/"), sudo, dir("dev/"), null, dir("bin/"), reg("bin/busybox", "bb"), link, owned))
 
-	f, err := w.Stat("usr/bin/sudo")
-	if err != nil {
-		t.Fatalf("Stat sudo: %v", err)
+	if f := file(t, got, "usr/bin/sudo"); f.hdr.Mode != 0o4755 || f.hdr.PAXRecords["SCHILY.xattr.security.capability"] != "\x01\x00\x00\x02" {
+		t.Errorf("sudo mode %o xattrs %q", f.hdr.Mode, f.hdr.PAXRecords)
 	}
-	if f.Mode != ext4.S_IFREG|0o4755 {
-		t.Errorf("sudo mode %o", f.Mode)
+	if f := file(t, got, "dev/null"); f.hdr.Typeflag != tar.TypeChar || f.hdr.Mode != 0o666 || f.hdr.Devmajor != 1 || f.hdr.Devminor != 3 {
+		t.Errorf("dev/null type %q mode %o dev %d:%d", f.hdr.Typeflag, f.hdr.Mode, f.hdr.Devmajor, f.hdr.Devminor)
 	}
-	if string(f.Xattrs["security.capability"]) != "\x01\x00\x00\x02" {
-		t.Errorf("sudo xattrs %q", f.Xattrs)
+	if f := file(t, got, "home/app/.profile"); f.hdr.Uid != 1000 || f.hdr.Gid != 1000 {
+		t.Errorf(".profile owner %d:%d", f.hdr.Uid, f.hdr.Gid)
 	}
-
-	f, err = w.Stat("dev/null")
-	if err != nil {
-		t.Fatalf("Stat dev/null: %v", err)
+	// home/ came from no tar entry: the image writer makes it on the way to .profile.
+	missing(t, got, "home")
+	if f := file(t, got, "bin/sh"); f.hdr.Typeflag != tar.TypeSymlink || f.hdr.Linkname != "busybox" {
+		t.Errorf("bin/sh type %q -> %s", f.hdr.Typeflag, f.hdr.Linkname)
 	}
-	if f.Mode != ext4.S_IFCHR|0o666 || f.Devmajor != 1 || f.Devminor != 3 {
-		t.Errorf("dev/null mode %o dev %d:%d", f.Mode, f.Devmajor, f.Devminor)
-	}
-
-	f, err = w.Stat("home/app/.profile")
-	if err != nil {
-		t.Fatalf("Stat .profile: %v", err)
-	}
-	if f.Uid != 1000 || f.Gid != 1000 {
-		t.Errorf(".profile owner %d:%d", f.Uid, f.Gid)
-	}
-
-	// home/ came from no tar entry, so it gets the default root directory.
-	f, err = w.Stat("home")
-	if err != nil {
-		t.Fatalf("Stat home: %v", err)
-	}
-	if f.Mode != ext4.S_IFDIR|0o755 || f.Uid != 0 {
-		t.Errorf("home mode %o owner %d", f.Mode, f.Uid)
-	}
-
-	if got := statSize(t, w, "bin/sh"); got != int64(len("busybox")) {
-		t.Errorf("bin/sh size %d", got)
-	}
-
-	closeAndCheck(t, w, path)
 }
 
 func TestDiskAppliesWhiteoutsAcrossLayers(t *testing.T) {
@@ -174,57 +154,56 @@ func TestDiskAppliesWhiteoutsAcrossLayers(t *testing.T) {
 		dir("opt/tool/"), reg("opt/tool/.wh..wh..opq", ""), reg("opt/tool/c", "ccc"),
 		reg("var/keep", "kept-longer"))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	missing(t, w, "etc/motd")
-	missing(t, w, "opt/tool/a")
-	missing(t, w, "opt/tool/b")
-	if got := statSize(t, w, "opt/tool/c"); got != 3 {
-		t.Errorf("opt/tool/c size %d", got)
+	missing(t, got, "etc/motd")
+	missing(t, got, "opt/tool/a")
+	missing(t, got, "opt/tool/b")
+	missing(t, got, "etc/.wh.motd")
+	missing(t, got, "opt/tool/.wh..wh..opq")
+	if body := bodyOf(t, got, "opt/tool/c"); body != "ccc" {
+		t.Errorf("opt/tool/c is %q", body)
 	}
-	if got := statSize(t, w, "var/keep"); got != int64(len("kept-longer")) {
-		t.Errorf("var/keep size %d", got)
+	if body := bodyOf(t, got, "var/keep"); body != "kept-longer" {
+		t.Errorf("var/keep is %q", body)
 	}
-	if _, err := w.Stat("etc"); err != nil {
-		t.Errorf("etc went with its file: %v", err)
-	}
-
-	closeAndCheck(t, w, path)
+	file(t, got, "etc")
 }
 
 func TestDiskADirectoryEntryKeepsTheFilesBelowIt(t *testing.T) {
 	base := layerOf(t, dir("etc/"), reg("etc/motd", "hello"))
 	top := layerOf(t, entry{hdr: tar.Header{Name: "etc/", Mode: 0o700, Typeflag: tar.TypeDir}}, reg("etc/issue", "i"))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	if got := statSize(t, w, "etc/motd"); got != 5 {
-		t.Errorf("etc/motd size %d", got)
+	if body := bodyOf(t, got, "etc/motd"); body != "hello" {
+		t.Errorf("etc/motd is %q", body)
 	}
-	f, err := w.Stat("etc")
-	if err != nil {
-		t.Fatalf("Stat etc: %v", err)
+	if f := file(t, got, "etc"); f.hdr.Typeflag != tar.TypeDir || f.hdr.Mode != 0o700 {
+		t.Errorf("etc type %q mode %o", f.hdr.Typeflag, f.hdr.Mode)
 	}
-	if f.Mode != ext4.S_IFDIR|0o700 {
-		t.Errorf("etc mode %o", f.Mode)
-	}
-
-	closeAndCheck(t, w, path)
 }
 
 func TestDiskAWhiteoutTakesTheSubtree(t *testing.T) {
 	base := layerOf(t, dir("opt/"), dir("opt/tool/"), reg("opt/tool/a", "a"))
 	top := layerOf(t, reg("opt/.wh.tool", ""))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	missing(t, w, "opt/tool")
-	missing(t, w, "opt/tool/a")
-	if _, err := w.Stat("opt"); err != nil {
-		t.Errorf("opt went too: %v", err)
+	missing(t, got, "opt/tool")
+	missing(t, got, "opt/tool/a")
+	file(t, got, "opt")
+}
+
+// A hard link to a target that keeps its name stays a link, so the image holds the body once.
+func TestDiskAHardLinkStaysALink(t *testing.T) {
+	hard := entry{hdr: tar.Header{Name: "bin/ls", Typeflag: tar.TypeLink, Linkname: "bin/busybox"}}
+
+	got := stream(t, layerOf(t, dir("bin/"), reg("bin/busybox", "bb"), hard))
+
+	if f := file(t, got, "bin/ls"); f.hdr.Typeflag != tar.TypeLink || f.hdr.Linkname != "bin/busybox" {
+		t.Errorf("bin/ls type %q -> %s", f.hdr.Typeflag, f.hdr.Linkname)
 	}
-
-	closeAndCheck(t, w, path)
 }
 
 // A hard link made in a lower layer keeps the content it linked, even when a higher layer replaces the target.
@@ -233,16 +212,14 @@ func TestDiskAHardLinkKeepsTheVersionItTook(t *testing.T) {
 	base := layerOf(t, dir("bin/"), reg("bin/busybox", "old-busybox"), hard)
 	top := layerOf(t, reg("bin/busybox", "new"))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	if got := statSize(t, w, "bin/ls"); got != int64(len("old-busybox")) {
-		t.Errorf("bin/ls size %d", got)
+	if body := bodyOf(t, got, "bin/ls"); body != "old-busybox" {
+		t.Errorf("bin/ls is %q", body)
 	}
-	if got := statSize(t, w, "bin/busybox"); got != 3 {
-		t.Errorf("bin/busybox size %d", got)
+	if body := bodyOf(t, got, "bin/busybox"); body != "new" {
+		t.Errorf("bin/busybox is %q", body)
 	}
-
-	closeAndCheck(t, w, path)
 }
 
 // A whiteout of the target leaves the content to its link alone: no name of the target comes back.
@@ -251,15 +228,30 @@ func TestDiskAWhiteoutOfALinkTargetKeepsOnlyTheLink(t *testing.T) {
 	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
 	top := layerOf(t, reg("bin/.wh.tool", ""))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	if got := statSize(t, w, "bin/alias"); got != int64(len("tool-body")) {
-		t.Errorf("bin/alias size %d", got)
+	if body := bodyOf(t, got, "bin/alias"); body != "tool-body" {
+		t.Errorf("bin/alias is %q", body)
 	}
-	missing(t, w, "bin/tool")
-	missing(t, w, ".shard-link0-0-1")
+	missing(t, got, "bin/tool")
+}
 
-	closeAndCheck(t, w, path)
+// Two links to a lost target share one body: the first carries it, the second links to the first.
+func TestDiskTwoLinksToALostTargetShareOneBody(t *testing.T) {
+	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	other := entry{hdr: tar.Header{Name: "sbin/other", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias, dir("sbin/"), other)
+	top := layerOf(t, reg("bin/.wh.tool", ""))
+
+	got := stream(t, base, top)
+
+	if body := bodyOf(t, got, "bin/alias"); body != "tool-body" {
+		t.Errorf("bin/alias is %q", body)
+	}
+	if f := file(t, got, "sbin/other"); f.hdr.Typeflag != tar.TypeLink || f.hdr.Linkname != "bin/alias" {
+		t.Errorf("sbin/other type %q -> %s", f.hdr.Typeflag, f.hdr.Linkname)
+	}
+	missing(t, got, "bin/tool")
 }
 
 // A target whose every link is gone is gone too, whatever a lower layer linked to it.
@@ -268,13 +260,10 @@ func TestDiskAWhiteoutOfTheLinkAndTheTargetDropsBoth(t *testing.T) {
 	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
 	top := layerOf(t, reg("bin/.wh.tool", ""), reg("bin/.wh.alias", ""))
 
-	w, path := disk(t, base, top)
+	got := stream(t, base, top)
 
-	missing(t, w, "bin/tool")
-	missing(t, w, "bin/alias")
-	missing(t, w, ".shard-link0-0-1")
-
-	closeAndCheck(t, w, path)
+	missing(t, got, "bin/tool")
+	missing(t, got, "bin/alias")
 }
 
 // A link to a link reaches the file behind both, even once the two earlier names are gone.
@@ -285,36 +274,56 @@ func TestDiskALinkToALinkOutlivesBothEarlierNames(t *testing.T) {
 	mid := layerOf(t, last)
 	top := layerOf(t, reg("bin/.wh.tool", ""), reg("bin/.wh.first", ""))
 
-	w, path := disk(t, base, mid, top)
+	got := stream(t, base, mid, top)
 
-	if got := statSize(t, w, "bin/last"); got != int64(len("tool-body")) {
-		t.Errorf("bin/last size %d", got)
+	if body := bodyOf(t, got, "bin/last"); body != "tool-body" {
+		t.Errorf("bin/last is %q", body)
 	}
-	missing(t, w, "bin/tool")
-	missing(t, w, "bin/first")
-	missing(t, w, ".shard-link0-0-1")
-
-	closeAndCheck(t, w, path)
+	missing(t, got, "bin/tool")
+	missing(t, got, "bin/first")
 }
 
-// An image file that spells a scratch name is left alone: the scratch prefix moves past it.
-func TestDiskAScratchNameNeverTakesAnImagePath(t *testing.T) {
-	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
-	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
-	top := layerOf(t, reg("bin/.wh.tool", ""), reg(".shard-link0-0-1", "mine"))
+func TestDiskRefusesWhatTheGuestCannotHold(t *testing.T) {
+	odd := entry{hdr: tar.Header{Name: "odd", Typeflag: 'Z', Mode: 0o644}}
 
-	w, path := disk(t, base, top)
-
-	if got := statSize(t, w, "bin/alias"); got != int64(len("tool-body")) {
-		t.Errorf("bin/alias size %d", got)
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	err := buildDisk(t.Context(), path, []v1.Layer{layerOf(t, odd)})
+	if err == nil || !strings.Contains(err.Error(), `tar type 'Z'`) {
+		t.Fatalf("buildDisk: %v", err)
 	}
-	if got := statSize(t, w, ".shard-link0-0-1"); got != 4 {
-		t.Errorf(".shard-link0-0-1 size %d", got)
-	}
-	missing(t, w, "bin/tool")
-	missing(t, w, ".shard-link1-0-1")
+}
 
-	closeAndCheck(t, w, path)
+// The image the stream lands in is ext4 the host's fsck accepts, where the host has one.
+func TestDiskBuildsAnImageFsckAccepts(t *testing.T) {
+	hard := entry{hdr: tar.Header{Name: "bin/ls", Typeflag: tar.TypeLink, Linkname: "bin/busybox"}}
+	base := layerOf(t, dir("bin/"), reg("bin/busybox", "old-busybox"), hard, reg("home/app/.profile", "x"))
+	top := layerOf(t, reg("bin/busybox", "new"), reg("bin/.wh.ls", ""))
+
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := buildDisk(t.Context(), path, []v1.Layer{base, top}); err != nil {
+		t.Fatalf("buildDisk: %v", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	magic := make([]byte, 2)
+	if _, err := f.ReadAt(magic, 1024+0x38); err != nil {
+		t.Fatal(err)
+	}
+	if magic[0] != 0x53 || magic[1] != 0xef {
+		t.Fatalf("magic %x", magic)
+	}
+	if _, err := exec.LookPath("e2fsck"); err != nil {
+		t.Logf("no e2fsck on PATH, the magic stands alone")
+
+		return
+	}
+	out, err := exec.Command("e2fsck", "-fn", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("e2fsck: %v\n%s", err, out)
+	}
 }
 
 func TestDiskRefusesAHardLinkToNothing(t *testing.T) {

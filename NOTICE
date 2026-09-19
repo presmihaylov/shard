@@ -46,8 +46,8 @@ SOFTWARE.
 
 ---
 
-pkg/ext4 is adapted from hcsshim (https://github.com/microsoft/hcsshim),
-ext4/internal/compactext4 and ext4/internal/format at v0.15.0-rc.1.
+pkg/ext4/format.go copies the on-disk structures of hcsshim
+(https://github.com/microsoft/hcsshim), ext4/internal/format at v0.15.0-rc.1.
 
 MIT License
 

@@ -1,4 +1,4 @@
-// Forked from github.com/Microsoft/hcsshim ext4/internal/format at v0.15.0-rc.1 (MIT, see NOTICE).
+// The on-disk structures Grow reads, copied from github.com/Microsoft/hcsshim ext4/internal/format at v0.15.0-rc.1 (MIT, see NOTICE).
 
 package ext4
 
@@ -110,47 +110,9 @@ type IncompatFeature uint32
 type RoCompatFeature uint32
 
 const (
-	CompatDirPrealloc   CompatFeature = 0x1
-	CompatImagicInodes  CompatFeature = 0x2
-	CompatHasJournal    CompatFeature = 0x4
-	CompatExtAttr       CompatFeature = 0x8
-	CompatResizeInode   CompatFeature = 0x10
-	CompatDirIndex      CompatFeature = 0x20
-	CompatLazyBg        CompatFeature = 0x40
-	CompatExcludeInode  CompatFeature = 0x80
-	CompatExcludeBitmap CompatFeature = 0x100
-	CompatSparseSuper2  CompatFeature = 0x200
+	CompatHasJournal CompatFeature = 0x4
 
-	IncompatCompression IncompatFeature = 0x1
-	IncompatFiletype    IncompatFeature = 0x2
-	IncompatRecover     IncompatFeature = 0x4
-	IncompatJournalDev  IncompatFeature = 0x8
-	IncompatMetaBg      IncompatFeature = 0x10
-	IncompatExtents     IncompatFeature = 0x40
-	Incompat_64Bit      IncompatFeature = 0x80
-	IncompatMmp         IncompatFeature = 0x100
-	IncompatFlexBg      IncompatFeature = 0x200
-	IncompatEaInode     IncompatFeature = 0x400
-	IncompatDirdata     IncompatFeature = 0x1000
-	IncompatCsumSeed    IncompatFeature = 0x2000
-	IncompatLargedir    IncompatFeature = 0x4000
-	IncompatInlineData  IncompatFeature = 0x8000
-	IncompatEncrypt     IncompatFeature = 0x10000
-
-	RoCompatSparseSuper  RoCompatFeature = 0x1
-	RoCompatLargeFile    RoCompatFeature = 0x2
-	RoCompatBtreeDir     RoCompatFeature = 0x4
-	RoCompatHugeFile     RoCompatFeature = 0x8
-	RoCompatGdtCsum      RoCompatFeature = 0x10
-	RoCompatDirNlink     RoCompatFeature = 0x20
-	RoCompatExtraIsize   RoCompatFeature = 0x40
-	RoCompatHasSnapshot  RoCompatFeature = 0x80
-	RoCompatQuota        RoCompatFeature = 0x100
-	RoCompatBigalloc     RoCompatFeature = 0x200
-	RoCompatMetadataCsum RoCompatFeature = 0x400
-	RoCompatReplica      RoCompatFeature = 0x800
-	RoCompatReadonly     RoCompatFeature = 0x1000
-	RoCompatProject      RoCompatFeature = 0x2000
+	RoCompatReadonly RoCompatFeature = 0x1000
 )
 
 type GroupDescriptor struct {
@@ -169,150 +131,15 @@ type GroupDescriptor struct {
 }
 
 const (
-	S_IXOTH  = 0x1
-	S_IWOTH  = 0x2
-	S_IROTH  = 0x4
-	S_IXGRP  = 0x8
-	S_IWGRP  = 0x10
-	S_IRGRP  = 0x20
-	S_IXUSR  = 0x40
-	S_IWUSR  = 0x80
-	S_IRUSR  = 0x100
-	S_ISVTX  = 0x200
-	S_ISGID  = 0x400
-	S_ISUID  = 0x800
-	S_IFIFO  = 0x1000
-	S_IFCHR  = 0x2000
-	S_IFDIR  = 0x4000
-	S_IFBLK  = 0x6000
-	S_IFREG  = 0x8000
-	S_IFLNK  = 0xA000
-	S_IFSOCK = 0xC000
+	superBlockOffset = 1024
 
-	TypeMask uint16 = 0xF000
-)
+	BlockSize      = 4096
+	blocksPerGroup = BlockSize * 8
+	inodeSize      = 256
 
-type InodeNumber uint32
+	groupDescriptorSize      = 32
+	groupsPerDescriptorBlock = BlockSize / groupDescriptorSize
 
-const (
-	InodeRoot = 2
-)
-
-type Inode struct {
-	Mode                 uint16
-	Uid                  uint16
-	SizeLow              uint32
-	Atime                uint32
-	Ctime                uint32
-	Mtime                uint32
-	Dtime                uint32
-	Gid                  uint16
-	LinksCount           uint16
-	BlocksLow            uint32
-	Flags                InodeFlag
-	Version              uint32
-	Block                [60]byte
-	Generation           uint32
-	XattrBlockLow        uint32
-	SizeHigh             uint32
-	ObsoleteFragmentAddr uint32
-	BlocksHigh           uint16
-	XattrBlockHigh       uint16
-	UidHigh              uint16
-	GidHigh              uint16
-	ChecksumLow          uint16
-	Reserved             uint16
-	ExtraIsize           uint16
-	ChecksumHigh         uint16
-	CtimeExtra           uint32
-	MtimeExtra           uint32
-	AtimeExtra           uint32
-	Crtime               uint32
-	CrtimeExtra          uint32
-	VersionHigh          uint32
-	Projid               uint32
-}
-
-type InodeFlag uint32
-
-const (
-	InodeFlagSecRm              InodeFlag = 0x1
-	InodeFlagUnRm               InodeFlag = 0x2
-	InodeFlagCompressed         InodeFlag = 0x4
-	InodeFlagSync               InodeFlag = 0x8
-	InodeFlagImmutable          InodeFlag = 0x10
-	InodeFlagAppend             InodeFlag = 0x20
-	InodeFlagNoDump             InodeFlag = 0x40
-	InodeFlagNoAtime            InodeFlag = 0x80
-	InodeFlagDirtyCompressed    InodeFlag = 0x100
-	InodeFlagCompressedClusters InodeFlag = 0x200
-	InodeFlagNoCompress         InodeFlag = 0x400
-	InodeFlagEncrypted          InodeFlag = 0x800
-	InodeFlagHashedIndex        InodeFlag = 0x1000
-	InodeFlagMagic              InodeFlag = 0x2000
-	InodeFlagJournalData        InodeFlag = 0x4000
-	InodeFlagNoTail             InodeFlag = 0x8000
-	InodeFlagDirSync            InodeFlag = 0x10000
-	InodeFlagTopDir             InodeFlag = 0x20000
-	InodeFlagHugeFile           InodeFlag = 0x40000
-	InodeFlagExtents            InodeFlag = 0x80000
-	InodeFlagEaInode            InodeFlag = 0x200000
-	InodeFlagEOFBlocks          InodeFlag = 0x400000
-	InodeFlagSnapfile           InodeFlag = 0x01000000
-	InodeFlagSnapfileDeleted    InodeFlag = 0x04000000
-	InodeFlagSnapfileShrunk     InodeFlag = 0x08000000
-	InodeFlagInlineData         InodeFlag = 0x10000000
-	InodeFlagProjectIDInherit   InodeFlag = 0x20000000
-	InodeFlagReserved           InodeFlag = 0x80000000
-)
-
-const (
-	MaxLinks = 65000
-)
-
-type ExtentHeader struct {
-	Magic      uint16
-	Entries    uint16
-	Max        uint16
-	Depth      uint16
-	Generation uint32
-}
-
-const ExtentHeaderMagic uint16 = 0xf30a
-
-const XAttrHeaderMagic uint32 = 0xea020000
-
-type ExtentIndexNode struct {
-	Block    uint32
-	LeafLow  uint32
-	LeafHigh uint16
-	Unused   uint16
-}
-
-type ExtentLeafNode struct {
-	Block     uint32
-	Length    uint16
-	StartHigh uint16
-	StartLow  uint32
-}
-
-type DirectoryEntry struct {
-	Inode        InodeNumber
-	RecordLength uint16
-	NameLength   uint8
-	FileType     FileType
-	//Name         []byte
-}
-
-type FileType uint8
-
-const (
-	FileTypeUnknown      FileType = 0x0
-	FileTypeRegular      FileType = 0x1
-	FileTypeDirectory    FileType = 0x2
-	FileTypeCharacter    FileType = 0x3
-	FileTypeBlock        FileType = 0x4
-	FileTypeFIFO         FileType = 0x5
-	FileTypeSocket       FileType = 0x6
-	FileTypeSymbolicLink FileType = 0x7
+	// MaxDiskSize is the last whole group a 32-bit block count holds; Write reserves the descriptor table for it.
+	MaxDiskSize = int64(1)<<44 - blocksPerGroup*BlockSize
 )

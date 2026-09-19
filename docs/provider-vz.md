@@ -59,11 +59,12 @@ the version drift each become a support case, and the Firecracker kernel is buil
 `services/image` unpacks the OCI layers into one ext4 image per image digest, `disks/<digest>.ext4`
 beside the rootfs tree, written by `pkg/ext4`, because a Mac has no `mkfs.ext4` and no loop mount.
 The image is built from the layer tars, not from the unpacked tree, so it keeps what an unpack on a
-Mac loses: the uid and gid, the device nodes and the capability xattrs. The writer is forked from
-hcsshim's, made read-write (no journal, extents, sparse super) with a fixed inode ratio, so
-`ext4.Grow` can add block groups to a copy offline, up to `ext4.MaxDiskSize`, 128 MiB short of
-16 TiB, where its 32-bit block count ends; `sandbox.MaxDiskMiB` is derived from it, so a `--disk`
-the daemon accepts is one the writer can grow to. Every sandbox gets an APFS clone of the base
+Mac loses: the uid and gid, the device nodes and the capability xattrs. `services/image` merges the
+layers into one tar stream (whiteouts applied, a hard link kept to the version it took) and
+hcsshim's `tar2ext4` lays it down; `ext4.Write` then clears the read-only flag it sets and pads the
+inode bitmaps, and `ext4.Grow` can add block groups to a copy offline, up to `ext4.MaxDiskSize`,
+128 MiB short of 16 TiB, where its 32-bit block count ends; `sandbox.MaxDiskMiB` is derived from it,
+so a `--disk` the daemon accepts is one the writer can grow to. Every sandbox gets an APFS clone of the base
 (`clonefile(2)`: instant, and the blocks are shared until written), grown to its `--disk` bound,
 attached as virtio-blk, and the clone is the writable layer. `bundle.CloneRootDisk` does both and
 reports whether the blocks are shared; on a volume that is not APFS it falls back to a copy, and the
