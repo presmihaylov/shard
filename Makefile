@@ -19,7 +19,7 @@ ARCH ?= arm64
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
 
 all: check build
 
@@ -37,6 +37,11 @@ build-shard-init:
 # The guest arch must match the box that runs the sandbox, so this one ships beside shard.
 build-shard-init-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(SHARD_INIT_BIN)-linux-amd64 ./cmd/shard-init
+
+# The shim holds one Virtualization.framework VM; darwin only, and unsigned it cannot create one.
+build-shard-vz-shim:
+	go build -o bin/shard-vz-shim ./cmd/shard-vz-shim
+	codesign --sign - --force --entitlements cmd/shard-vz-shim/entitlements.plist bin/shard-vz-shim
 
 test:
 	go test ./...
