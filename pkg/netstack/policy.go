@@ -55,7 +55,7 @@ func (l *Link) judge(frame []byte) (Drop, bool) {
 		return Drop{}, true
 	}
 
-	return Drop{Time: time.Now(), Guest: l.guest, Destination: netip.AddrFrom4(ip.DestinationAddress().As4()), Protocol: protocolName(proto), Port: int(port)}, false
+	return Drop{Time: time.Now().UTC(), Guest: l.guest, Destination: netip.AddrFrom4(ip.DestinationAddress().As4()), Protocol: protocolName(proto), Port: int(port)}, false
 }
 
 // serves reports a listener on the port; the stack answers a closed port with a reset, which a guest must not learn from.

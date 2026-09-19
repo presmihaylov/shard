@@ -142,12 +142,9 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 		return fmt.Errorf("copy the snapshot disk for sandbox %s: %w", spec.ID, err)
 	}
 
-	// The saved memory restores under its own identifier and size only; the address is the one thing the fork changes.
+	// The saved memory restores under its own identifier and size only; the network, and the name the guest answers to, are what the fork changes.
 	r := record{MachineID: snap.MachineID, RootFS: firstNonEmpty(spec.RootFS, snap.RootFS), Resources: snap.Resources, Run: snap.Run}
-	if spec.Network.Address.IsValid() {
-		r.Address = spec.Network.Address.String()
-		r.Gateway = spec.Network.Gateway.String()
-	}
+	r.network(spec)
 	if err := writeRecord(spec.StateDir, r); err != nil {
 		return err
 	}

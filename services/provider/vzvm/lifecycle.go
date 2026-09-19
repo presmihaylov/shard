@@ -87,19 +87,25 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	}
 
 	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: run}
-	if spec.Network.Address.IsValid() {
-		r.Address = spec.Network.Address.String()
-		r.Gateway = spec.Network.Gateway.String()
-		r.Hostname = spec.Name
-		if r.Hostname == "" {
-			r.Hostname = spec.ID
-		}
-		for _, server := range spec.Network.Nameservers {
-			r.Nameservers = append(r.Nameservers, server.String())
-		}
-	}
+	r.network(spec)
 
 	return r, nil
+}
+
+// network takes the lease and the name from the spec, which a fresh create and a fork both give the guest.
+func (r *record) network(spec models.SandboxSpec) {
+	if !spec.Network.Address.IsValid() {
+		return
+	}
+	r.Address = spec.Network.Address.String()
+	r.Gateway = spec.Network.Gateway.String()
+	r.Hostname = spec.Name
+	if r.Hostname == "" {
+		r.Hostname = spec.ID
+	}
+	for _, server := range spec.Network.Nameservers {
+		r.Nameservers = append(r.Nameservers, server.String())
+	}
 }
 
 func runOf(rootfs string, argv, env []string, workDir, user string, restart models.RestartSpec) (supervisor.RunSpec, error) {
