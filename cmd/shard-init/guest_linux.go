@@ -214,6 +214,8 @@ func powerOff() error {
 	if os.Getpid() != 1 {
 		return nil
 	}
+	// The reboot call flushes nothing, and a clone reads the disk: what the guest wrote must reach it first.
+	unix.Sync()
 	if err := unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
 		return fmt.Errorf("power off: %w", err)
 	}
