@@ -9,8 +9,9 @@ import (
 
 // The ambient set is how a capability survives the drop to another user: the kernel clears the
 // permitted and the effective set when every id moves away from root.
-func sysProcAttr(credential *syscall.Credential, ambient []uintptr) *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Credential: credential, AmbientCaps: ambient}
+// A tty makes the child a session leader with fd 0 as its controlling terminal, so job control works.
+func sysProcAttr(credential *syscall.Credential, ambient []uintptr, tty bool) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Credential: credential, AmbientCaps: ambient, Setsid: tty, Setctty: tty, Ctty: 0}
 }
 
 // setUndumpable clears the dumpable flag, so the kernel makes /proc/1/fd root-owned and unreadable to
