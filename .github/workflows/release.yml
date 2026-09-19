@@ -1,0 +1,80 @@
+name: release
+
+# Builds shard for each platform it runs on and publishes them under the pushed tag. The Mac job
+# builds both darwin arches on one arm64 runner, since the cgo build never leaves a Mac.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: make build-linux build-shard-init-linux VERSION=${{ github.ref_name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: bin/shard*-linux-amd64
+
+  darwin:
+    name: darwin arm64 and amd64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # One arch at a time: the shim and the guest init land at one embed path, so the second build replaces the first's.
+      - name: build arm64
+        run: make build-darwin DARWIN_ARCH=arm64 VERSION=${{ github.ref_name }}
+
+      - name: build amd64
+        run: make build-darwin DARWIN_ARCH=amd64 VERSION=${{ github.ref_name }}
+
+      # The runner has no Rosetta, so the amd64 binary is checked by its arch alone.
+      - name: check the binaries
+        run: |
+          got=$(bin/shard-darwin-arm64 --version | sed -n 's/^client //p')
+          test "$got" = "${{ github.ref_name }}" || { echo "shard-darwin-arm64 reports $got, not ${{ github.ref_name }}"; exit 1; }
+          file bin/shard-darwin-amd64 | grep -q x86_64 || { echo "shard-darwin-amd64 is not an x86_64 binary"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin
+          path: bin/shard-darwin-*
+
+  publish:
+    name: publish
+    needs: [linux, darwin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          gh release create "${{ github.ref_name }}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "shard ${{ github.ref_name }}" --notes "Built by the release workflow. The VM proof that ran before this tag is in docs/release.md." *
