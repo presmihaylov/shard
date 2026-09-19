@@ -4,6 +4,7 @@ package hostclean
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -37,26 +38,53 @@ func TestReadRecordReadsTheHandlesOffTheRecord(t *testing.T) {
 	}
 }
 
-// The runtime's state under the root is what names a sandbox it still holds, and only then is it a leftover.
-func TestSandboxOfNamesTheSandboxTheRuntimeHolds(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, sandboxDir, "amber-otter-1a2b")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+// The record naming a provider is what names a sandbox to delete: runsc keeps no <root>/runsc/<id>, so a stat there let a live sentry outlive a killed daemon (SHARD-226).
+func TestSandboxOfNamesTheSandboxTheRecordHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record string
+		named  bool
+	}{
+		{"gvisor, with no runtime dir", `{"provider":"gvisor"}`, true},
+		{"sysbox", `{"provider":"sysbox"}`, true},
+		{"runc", `{"provider":"runc"}`, true},
+		{"a record a crashed run never finished", `{"provider":`, false},
+		{"a provider this package does not drive", `{"provider":"firecracker"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, sandboxDir, "amber-otter-1a2b")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, recordFile), []byte(tc.record), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if left := sandboxOf(root, "amber-otter-1a2b"); names(left, "the sandbox") != tc.named {
+				t.Errorf("the record %s names the sandbox = %v, want %v: %v", tc.record, !tc.named, tc.named, left)
+			}
+		})
 	}
-	if err := os.WriteFile(filepath.Join(dir, recordFile), []byte(`{"provider":"gvisor"}`), 0o600); err != nil {
-		t.Fatal(err)
+}
+
+// The fix above rests on this: every runtime takes a forced delete of a sandbox it does not hold as done.
+func TestAForcedDeleteOfASandboxTheRuntimeDoesNotHoldIsDone(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("the runtimes want root")
 	}
 
-	if left := sandboxOf(root, "amber-otter-1a2b"); names(left, "the sandbox") {
-		t.Errorf("runsc holds nothing under %s, yet the sandbox is named: %v", root, left)
-	}
+	for provider, binary := range runtimes {
+		t.Run(provider, func(t *testing.T) {
+			if _, err := exec.LookPath(binary); err != nil {
+				t.Skipf("no %s on PATH", binary)
+			}
 
-	if err := os.MkdirAll(filepath.Join(root, "runsc", "amber-otter-1a2b"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if left := sandboxOf(root, "amber-otter-1a2b"); !names(left, "the sandbox") {
-		t.Errorf("runsc holds the sandbox under %s, yet it is not named: %v", root, left)
+			state := filepath.Join(t.TempDir(), binary)
+			if err := run(binary, "--root", state, "delete", "--force", "amber-otter-1a2b")(); err != nil {
+				t.Errorf("%s refused to delete a sandbox it does not hold: %v", binary, err)
+			}
+		})
 	}
 }
 

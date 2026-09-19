@@ -167,12 +167,10 @@ func sandboxOf(root, id string) []Leftover {
 	var out []Leftover
 	rec := readRecord(filepath.Join(root, sandboxDir, id, recordFile))
 
-	// The runtime's state sits under the root, so once the root is gone nothing can name the process or the cgroup.
+	// runsc keeps its state flat under the root, so only the record can name a sandbox; a forced delete of one the runtime no longer holds is a no-op on every runtime.
 	if binary, ok := runtimes[rec.Provider]; ok {
 		state := filepath.Join(root, binary)
-		if _, err := os.Stat(filepath.Join(state, id)); err == nil {
-			out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
-		}
+		out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
 	}
 	// A stop keeps the cgroup for the rm that never came.
 	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
