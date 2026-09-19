@@ -77,14 +77,22 @@ squashfs tooling on the host and a second writable disk anyway.
 
 ### The channel is vsock, one guest port per stream, and the host opens every connection
 
-`shard-init` gains a vsock transport next to the pipe one (SHARD-216). It listens on fixed guest
-ports and the host connects to each at boot, before the entrypoint starts:
+`shard-init -transport vsock -root /dev/vda` is the initrd `/init` of every VM (SHARD-216). It moves
+onto the root disk, mounts `devpts` for a tty exec, and listens on fixed guest ports. The host
+connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | ready, the exit record, the restart count, the re-address message of a fork |
-| 5001 | exec | one connection per exec session, the 8-byte framing the API already uses |
-| 5002 | logs | the entrypoint's stdout and stderr, which the shim writes to the log file |
+| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in; `state`, `ready`, `exit`, `restarts`, `failure` out |
+| 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
+| 5002 | logs | the entrypoint's stdout and stderr, raw; with no host attached the bytes wait |
+
+Every new control connection hears `state` first (ready, the last exit, the count), so a daemon
+that restarts, or re-attaches after a restore, loses nothing. The host writes the exit record and the
+count into the same files gVisor's pipe fills, so `Wait`, `ExitStatus` and `inspect` are unchanged.
+`services/supervisor` holds the wire and the host client, which the Firecracker provider reuses. The
+same binary runs the protocol over `-transport unix:<dir>` in the unit tests, on any OS. The host
+side of a tty resize, and `pkg/pty` on darwin, land with the provider (SHARD-218).
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection the host

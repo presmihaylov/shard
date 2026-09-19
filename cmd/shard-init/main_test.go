@@ -64,7 +64,7 @@ func spawnOrphans() {
 	pids := make([]string, 0, orphanCount)
 	for range orphanCount {
 		// They outlive the handler installation on purpose, so no SIGCHLD arrives before it.
-		pid, err := startProcess([]string{os.Args[0], childPrefix + "sleep:300"}, nil)
+		pid, err := startProcess(entrypoint{argv: []string{os.Args[0], childPrefix + "sleep:300"}, env: os.Environ()}, nil, false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "spawn orphan:", err)
 			os.Exit(1)
@@ -102,6 +102,16 @@ func runChild(spec string) int {
 		ms, code, _ := strings.Cut(arg, ":")
 		time.Sleep(time.Duration(atoi(ms)) * time.Millisecond)
 		return atoi(code)
+	case "echo":
+		// Stdin comes back on stdout and a marker on stderr, then the exit code the transport tests check.
+		if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
+			return 2
+		}
+		fmt.Fprint(os.Stderr, "echo-err")
+		return atoi(arg)
+	case "say":
+		fmt.Println(arg)
+		return 0
 	}
 
 	fmt.Fprintln(os.Stderr, "unknown child role:", spec)
@@ -118,7 +128,7 @@ func atoi(s string) int {
 	return n
 }
 
-type supervisor struct {
+type harness struct {
 	cmd         *exec.Cmd
 	exitFile    string
 	readyFile   string
@@ -129,7 +139,7 @@ type supervisor struct {
 }
 
 // restart flags go before the entrypoint; the count file lands beside the exit file when any are given.
-func startSupervisor(t *testing.T, role, child string, restart ...string) *supervisor {
+func startSupervisor(t *testing.T, role, child string, restart ...string) *harness {
 	t.Helper()
 
 	exe, err := os.Executable()
@@ -168,7 +178,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *super
 		t.Fatalf("close the exit channel write end: %v", err)
 	}
 
-	super := &supervisor{cmd: cmd, exitFile: exitFile, readyFile: readyFile, restartFile: restartFile, out: bufio.NewReader(pipe)}
+	super := &harness{cmd: cmd, exitFile: exitFile, readyFile: readyFile, restartFile: restartFile, out: bufio.NewReader(pipe)}
 
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -188,7 +198,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *super
 	return super
 }
 
-func (s *supervisor) line(t *testing.T) string {
+func (s *harness) line(t *testing.T) string {
 	t.Helper()
 
 	text, err := s.out.ReadString('\n')
@@ -199,7 +209,7 @@ func (s *supervisor) line(t *testing.T) string {
 	return strings.TrimSpace(text)
 }
 
-func (s *supervisor) awaitExitStatus(t *testing.T) models.ExitStatus {
+func (s *harness) awaitExitStatus(t *testing.T) models.ExitStatus {
 	t.Helper()
 
 	var status models.ExitStatus
@@ -256,7 +266,7 @@ func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
 }
 
 // awaitRestartCount waits until the count file says what the test wants of it.
-func (s *supervisor) awaitRestartCount(t *testing.T, want func(models.RestartCount) bool) models.RestartCount {
+func (s *harness) awaitRestartCount(t *testing.T, want func(models.RestartCount) bool) models.RestartCount {
 	t.Helper()
 
 	var count models.RestartCount
@@ -277,7 +287,7 @@ func (s *supervisor) awaitRestartCount(t *testing.T, want func(models.RestartCou
 }
 
 // awaitExit collects the supervisor's own exit, which nothing but a stop signal produces.
-func (s *supervisor) awaitExit(t *testing.T) {
+func (s *harness) awaitExit(t *testing.T) {
 	t.Helper()
 
 	s.waited = true
@@ -295,7 +305,7 @@ func (s *supervisor) awaitExit(t *testing.T) {
 	}
 }
 
-func (s *supervisor) alive(t *testing.T) bool {
+func (s *harness) alive(t *testing.T) bool {
 	t.Helper()
 
 	return s.cmd.Process.Signal(syscall.Signal(0)) == nil
