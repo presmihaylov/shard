@@ -266,3 +266,79 @@ func TestACloseFreesTheGuestAndEndsTheListeners(t *testing.T) {
 		t.Fatal("accept outlived the stack")
 	}
 }
+
+// A frame whose source is not the link's guest never reaches a listener, whether it is IP or the ARP before it.
+func TestAFrameFromAnotherAddressIsDropped(t *testing.T) {
+	host := hostStack(t)
+	conn, err := host.ListenPacket(5353)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// One wire is attached as guestA; a stack claiming guestB on its far end is the forged sibling.
+	forge := func(t *testing.T, seed bool) {
+		t.Helper()
+		hostEnd, guestEnd := wire(t)
+		link, err := host.Attach(hostEnd, guestA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer link.Close()
+		guest, err := New(Config{Address: guestB, MAC: net.HardwareAddr{0x02, 0, 0, 0, 0, 3}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer guest.Close()
+		if _, err := guest.Attach(guestEnd, gateway); err != nil {
+			t.Fatal(err)
+		}
+		guest.defaultRoute(gateway)
+		if seed {
+			if err := guest.knows(gateway, host.cfg.MAC); err != nil {
+				t.Fatal(err)
+			}
+		}
+		client, err := guest.dialUDP(netip.AddrPortFrom(gateway, 5353))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.Write([]byte("forged")); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 64)
+		n, from, err := conn.ReadFrom(buf)
+		if err == nil {
+			t.Fatalf("the listener got %q from %s, want nothing", buf[:n], from)
+		}
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatal(err)
+		}
+	}
+	t.Run("ip", func(t *testing.T) { forge(t, true) })
+	t.Run("arp", func(t *testing.T) { forge(t, false) })
+
+	// The real guest on a fresh wire still gets through, so the drop is the source and not the port.
+	guest := attach(t, host, guestA)
+	client, err := guest.dialUDP(netip.AddrPortFrom(gateway, 5353))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("real")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, from, err := conn.ReadFrom(buf)
+	if err != nil || string(buf[:n]) != "real" {
+		t.Fatalf("read %q from %v, %v", buf[:n], from, err)
+	}
+}

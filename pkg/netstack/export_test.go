@@ -38,3 +38,16 @@ func (s *Stack) dialUDP(remote netip.AddrPort) (net.Conn, error) {
 
 	return conn, nil
 }
+
+// knows seeds the neighbor a guest would otherwise ARP for, so a test can send IP without the ARP that comes first.
+func (s *Stack) knows(addr netip.Addr, mac net.HardwareAddr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.links {
+		if err := s.stack.AddStaticNeighbor(id, ipv4.ProtocolNumber, tcpip.AddrFrom4(addr.As4()), tcpip.LinkAddress(mac)); err != nil {
+			return fmt.Errorf("add the neighbor: %s", err)
+		}
+	}
+
+	return nil
+}
