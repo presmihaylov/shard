@@ -15,7 +15,9 @@ type Sandbox struct {
 	Name     string `json:"name,omitempty"`
 	Image    string `json:"image"`
 	Provider string `json:"provider"`
-	State    State  `json:"state"`
+	// Kernel is the guest kernel a microVM substrate booted, as its release tag; empty on a container substrate.
+	Kernel string `json:"kernel,omitempty"`
+	State  State  `json:"state"`
 	// ExitStatus is the last entrypoint exit, nil until one happens. A sandbox has none of its own.
 	ExitStatus *ExitStatus `json:"exit_status,omitempty"`
 	// StoppedReason says why shard stopped it when no operator did, empty otherwise.

@@ -41,10 +41,10 @@ Rejected: VMs in the daemon process. Two sandboxes per host, and every sandbox d
 
 ### The kernel is ours, and it is a raw arm64 Image
 
-shard ships one Linux kernel per architecture (SHARD-232): virtio-blk, virtio-net, virtio-vsock,
-virtio-console, ext4 and overlay built in, no modules, no initrd, versioned and checksummed with the
-release, downloaded into the shard root on first use. The Firecracker provider boots the same amd64
-kernel; the arm64 one is this substrate's.
+shard ships one Linux kernel per architecture (SHARD-232, `docs/kernel.md`): virtio-blk, virtio-net,
+virtio-vsock, virtio-console, ext4 and overlay built in, no modules, no initrd, versioned and
+checksummed with the release, downloaded into the shard root on first use. The Firecracker provider
+boots the same amd64 kernel; the arm64 one is this substrate's.
 
 The framework's Linux boot loader takes a raw arm64 `Image` and nothing else. A distribution kernel
 does not fit: Alpine's `vmlinuz-virt` is an EFI zboot wrapper (a PE file, `zimg` magic at offset 4,
