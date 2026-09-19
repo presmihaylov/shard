@@ -42,17 +42,22 @@ limactl start shard
 
 ## The binaries
 
-`shard` and `shard-init` are Linux binaries, built for the VM's arch and copied in:
+Three builds: `shard` and `shard-init` for the VM, Linux binaries of the VM's arch, and a `shard`
+for the Mac, which is the client alone and needs no cgo and no shim:
 
 ```
 GOOS=linux GOARCH=arm64 go build -o bin/shard-linux-arm64 ./cmd/shard
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/shard-init-linux-arm64 ./cmd/shard-init
+CGO_ENABLED=0 go build -o bin/shard ./cmd/shard
 limactl copy bin/shard-linux-arm64 shard:/tmp/shard
 limactl copy bin/shard-init-linux-arm64 shard:/tmp/shard-init
 limactl shell shard sudo install -m0755 /tmp/shard /tmp/shard-init /usr/local/bin/
+sudo install -m0755 bin/shard /usr/local/bin/shard
 ```
 
-`GOARCH=amd64` on an Intel Mac. The runtime the provider drives is installed inside the VM: `runc`
+`GOARCH=amd64` on an Intel Mac. A release carries the same three, `shard-linux-<arch>`,
+`shard-init-linux-<arch>` and `shard-darwin-<arch>` (`docs/release.md`); the darwin one is the full
+daemon, which serves as the client just the same. The runtime the provider drives is installed inside the VM: `runc`
 is `apt-get install runc`; `runsc` comes from gVisor's own apt repository; Sysbox from its release
 package. `docs/provider.md` says what each one needs from the kernel.
 
@@ -88,8 +93,8 @@ runs unprivileged; that is the shape to copy for anything that stays up (`docs/d
 The native `shard` binary reaches the front with three flags, or the environment behind them:
 
 ```
-mkdir -p ~/.shard
-limactl copy shard:/tmp/token ~/.shard/token
+install -d -m0700 ~/.shard
+(umask 077 && limactl shell shard sudo cat /tmp/token > ~/.shard/token)
 limactl shell shard sudo cat /etc/shard/serve.crt > ~/.shard/ca.pem
 export SHARD_REMOTE=https://localhost:2376
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
@@ -98,7 +103,8 @@ shard logs <id>
 shard ls
 ```
 
-Every verb works this way, exec and `logs -f` included: the front splices the bytes and the daemon
+The client refuses a token file that everyone can read, hence the `umask`. Every verb works this
+way, exec and `logs -f` included: the front splices the bytes and the daemon
 sees the same requests it does from the socket. `docs/daemon.md` has the flags, the scopes a token
 carries, and how to revoke one.
 
@@ -106,8 +112,8 @@ carries, and how to revoke one.
 
 ```
 limactl delete -f shard
-brew uninstall lima
-rm -rf ~/.lima ~/.shard
+rm ~/.shard/token ~/.shard/ca.pem
 ```
 
 Nothing else is left on the Mac: the images, the sandboxes and the state all lived inside the VM.
+Lima itself, and any other VM it runs, stay as they were.
