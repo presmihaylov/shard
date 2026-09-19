@@ -118,11 +118,17 @@ write and to debug, and a log line and an exec byte fight for it.
 
 The VM's one network device is a `VZFileHandleNetworkDeviceAttachment` over a unix datagram
 socketpair (SHARD-217). The shim creates the pair, gives the guest end to the framework, and hands
-the host end to the daemon over the shim socket (`SCM_RIGHTS`). The daemon terminates the frames in a
-userspace netstack (gVisor's) that answers for exactly two addresses, the proxy and the SHARD-169
-resolver, and drops everything else. No packet reaches the Mac, the LAN or the internet except
-through the proxy, so the proxy is the policy of record on this substrate, and `docs/egress.md`
-gains a per-substrate row.
+the host end to the daemon on the `network` verb of the shim socket (`SCM_RIGHTS`). The daemon
+terminates the frames in `pkg/netstack`, a userspace stack (gVisor's) that answers for exactly two
+addresses, the guest's own and the gateway, and drops everything else: forwarding is off, so a frame
+for the LAN, the Mac or the internet is dropped where it arrives. One stack serves the daemon; each
+VM is one link on it, with the gateway address on its NIC and a `/32` route back to the guest, so a
+guest never sees another guest's frames. The proxy (30080, 30443) and the SHARD-169 resolver (53)
+listen on the stack by port alone, the way they listen on the bridge gateway on Linux, and every
+frame carries the guest address the SHARD-216 readdress gave it, which is how the broker tells one
+sandbox from the next. No packet reaches the Mac, the LAN or the internet except through the proxy,
+so the proxy is the policy of record on this substrate, and `docs/egress.md` has the per-substrate
+row.
 
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state

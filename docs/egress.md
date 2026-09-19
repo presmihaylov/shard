@@ -184,6 +184,20 @@ Each drop is logged on rule `ipv6`, so it reads in `shard logs --egress` like an
 sandbox is IPv4 only today: it gets one IPv4 address and no IPv6 route, and every IPv6 packet it
 sends is dropped and logged. IPv6 support is a later addition, not a design limit.
 
+## Where the policy is enforced, per substrate
+
+| substrate | the table | what leaves the sandbox |
+|---|---|---|
+| gVisor, Sysbox, runc | host netfilter, one chain per sandbox with a policy | what the policy allows; 80 and 443 through the proxy when fronted |
+| Virtualization.framework | none: the frames end in `pkg/netstack` inside the daemon | the proxy on 30080 and 30443, the resolver on 53, nothing else |
+
+On macOS there is no host table and no packet path off the daemon: the guest's frames terminate in a
+userspace stack that answers for the gateway address alone and drops the rest, so every sandbox is
+fronted and a port the proxy does not serve is closed. The rules a policy compiles still judge each
+request in the proxy, so a policy means the same thing on both; the difference is that on macOS an
+allowed destination on a port other than 80 or 443 is unreachable, where on Linux the host chain
+would pass it. See `docs/provider-vz.md`.
+
 ## A policy change is immediate
 
 Storing a policy again enforces it at once on every sandbox that holds it, running or paused. There

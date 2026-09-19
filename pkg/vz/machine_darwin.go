@@ -167,6 +167,15 @@ func (m *VM) Connect(port uint32) (net.Conn, error) {
 	return conn, nil
 }
 
+// Network is the host end of the frames socketpair; nil when the VM was built without a network.
+func (m *VM) Network() (*os.File, error) {
+	if m.netHost == nil {
+		return nil, errors.New("the vm has no network device")
+	}
+
+	return m.netHost, nil
+}
+
 var states = map[vz.VirtualMachineState]State{
 	vz.VirtualMachineStateStopped:   StateStopped,
 	vz.VirtualMachineStateRunning:   StateRunning,
@@ -269,7 +278,7 @@ func disk(vmc *vz.VirtualMachineConfiguration, path string) error {
 	return nil
 }
 
-// One frame per datagram is what the file-handle device wants; the host end waits for SHARD-217 to take it.
+// One frame per datagram is what the file-handle device wants; the daemon takes the host end by the network verb.
 func (m *VM) network(vmc *vz.VirtualMachineConfiguration) error {
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
 	if err != nil {
