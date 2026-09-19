@@ -188,7 +188,7 @@ func (p *Provider) run(m *machine, r record) error {
 	if started {
 		return fmt.Errorf("the entrypoint of sandbox %s already runs", m.id)
 	}
-	if err := m.control.Run(r.Run); err != nil {
+	if err := m.control.Load().Run(r.Run); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 	p.mu.Lock()
@@ -241,7 +241,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return p.release(ctx, m)
 	}
 	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
-	if err := m.control.Stop(); err != nil && !m.status(p).Alive() {
+	if err := m.control.Load().Stop(); err != nil && !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
 	ended, err := m.awaitGone(ctx, grace)

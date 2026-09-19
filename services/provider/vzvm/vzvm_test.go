@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -659,4 +660,111 @@ func TestTheEnvironmentIsTheRecordTheNextStartSends(t *testing.T) {
 	if _, err := h.provider.Environment("sb-none"); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("Environment of an unknown sandbox = %v, want does not exist", err)
 	}
+}
+
+// A reset of the transport, as a sleep of the host can cause, ends every stream; the provider dials again and the sandbox goes on.
+func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	// The log must keep flowing on the stream the provider opened again, and the control stream must answer an exec.
+	awaitLog(t, h.provider, spec.ID, logged)
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo again"}, Stdout: out})
+	written, _ := os.ReadFile(out.Name())
+	if err != nil || exit.Code != 0 || !strings.Contains(string(written), "again") {
+		t.Fatalf("Exec after the reset = %+v, %q, %v", exit, written, err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the reset = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A daemon that starts over a root whose shim is gone finds the sandbox stopped, which the reconcile then records.
+func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGTERM); err != nil {
+		t.Fatalf("end the fake shim: %v", err)
+	}
+	awaitExit(t, status.PID)
+
+	status, err = h.open(t).Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Exists || status.Alive() || status.PID != 0 {
+		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid", status)
+	}
+}
+
+// awaitLog blocks until the sandbox log holds more than seen bytes, and answers how many it holds.
+func awaitLog(t *testing.T, p *vzvm.Provider, id string, seen int) int {
+	t.Helper()
+
+	path, err := p.LogPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(stopGrace)
+	for time.Now().Before(deadline) {
+		out, _ := os.ReadFile(path)
+		if len(out) > seen {
+			return len(out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the log of %s did not grow past %d bytes", id, seen)
+
+	return seen
+}
+
+// awaitExit blocks until the process is gone, which for the fake shim is its socket gone too.
+func awaitExit(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(stopGrace)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("process %d did not exit", pid)
 }
