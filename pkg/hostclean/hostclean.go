@@ -180,14 +180,27 @@ func sandboxOf(root, id string) []Leftover {
 		out = append(out, Leftover{What: "the namespace", Path: id, remove: run("ip", "netns", "delete", id)})
 	}
 
-	if rec.HostInterface == "" {
-		return out
-	}
-	if exec.Command("ip", "link", "show", rec.HostInterface).Run() != nil {
+	if rec.HostInterface == "" || !shown(rec.HostInterface) {
 		return out
 	}
 
-	return append(out, Leftover{What: "the sandbox link", Path: rec.HostInterface, remove: run("ip", "link", "delete", rec.HostInterface)})
+	return append(out, Leftover{What: "the sandbox link", Path: rec.HostInterface, remove: deleteLink(rec.HostInterface)})
+}
+
+// shown is whether the host still lists the link, which is what makes it ours to take.
+func shown(name string) bool {
+	return exec.Command("ip", "link", "show", name).Run() == nil
+}
+
+// deleteLink takes a link that is gone as swept: the namespace delete above takes the veth pair with it (SHARD-227).
+func deleteLink(name string) func() error {
+	return func() error {
+		if err := run("ip", "link", "delete", name)(); err != nil && shown(name) {
+			return err
+		}
+
+		return nil
+	}
 }
 
 // record is the two fields of a sandbox record this package reads: who holds the sandbox, and its veth.
