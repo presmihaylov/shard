@@ -176,6 +176,10 @@ file-handle network device. It ran on 2026-09-19 on a MacBook (M-series, macOS 1
 7. **Two VMs per process.** The third VM in one process fails to start, with the same identifier or
    distinct ones, restored or cold-booted. Eight VMs over four processes run together.
 8. A restore with a fresh machine identifier is refused with `Code=12, invalid argument`.
+9. **A restore needs an unlocked login session.** The helper unwraps the saved state with a key from
+   the Secure Enclave, and a locked screen withholds it: every restore then fails with `Code=12,
+   permission denied` while a save still succeeds (SHARD-213, macOS 14.6). A headless box that
+   never locks is fine; the driver test skips when `ioreg` reports the session locked.
 
 Not proved yet, and owned by the tickets that need it: a restore over a virtio-blk disk (SHARD-215),
 the vsock streams end to end (SHARD-216), the netstack (SHARD-217), and any of this on macOS 13.

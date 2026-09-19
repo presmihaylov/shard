@@ -14,6 +14,8 @@ require (
 )
 
 require (
+	github.com/Code-Hex/go-infinity-channel v1.0.0 // indirect
+	github.com/Code-Hex/vz/v3 v3.7.1 // indirect
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29 // indirect
 	github.com/Microsoft/hcsshim v0.15.0-rc.1 // indirect
 	github.com/containerd/cgroups/v3 v3.1.3 // indirect
@@ -34,6 +36,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
+	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260406210006-6f92a3bedf2d // indirect
 	google.golang.org/grpc v1.80.0 // indirect
