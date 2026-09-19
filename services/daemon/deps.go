@@ -9,8 +9,8 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/pkg/runsc"
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
@@ -129,7 +129,7 @@ func (d *deps) newProvider(bundles *bundle.Service, dirs func(string) (string, e
 
 		return gvisor.New(runner, bundles, dirs)
 	case sysbox.Name:
-		runner, err := sysboxrunc.New(filepath.Join(d.cfg.Root, "sysbox-runc"), sysboxrunc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+		runner, err := runc.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runc.WithBinary(sysbox.Binary), runc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 		if err != nil {
 			return nil, err
 		}

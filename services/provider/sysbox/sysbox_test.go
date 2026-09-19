@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
 )
@@ -32,7 +32,7 @@ func newProviderOver(t *testing.T, script string) *sysbox.Provider {
 		t.Fatalf("write the fake sysbox-runc: %v", err)
 	}
 
-	runner, err := sysboxrunc.New(filepath.Join(dir, "root"), sysboxrunc.WithBinary(binary))
+	runner, err := runc.New(filepath.Join(dir, "root"), runc.WithBinary(binary))
 	if err != nil {
 		t.Fatalf("open the sysbox-runc runner: %v", err)
 	}

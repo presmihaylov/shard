@@ -1,6 +1,6 @@
 //go:build !linux
 
-package sysboxrunc
+package runc
 
 import "syscall"
 

@@ -17,13 +17,16 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/netns"
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // Name is the substrate, as the record and every refusal name it.
 const Name = "sysbox"
+
+// Binary is the runc fork the provider drives, on PATH on a Sysbox host.
+const Binary = "sysbox-runc"
 
 // Userns is the one mapping Sysbox CE gives every container, so the netns shard makes for a sandbox
 // has to be owned by a user namespace with exactly it or the guest has no CAP_NET_ADMIN over it.
@@ -54,19 +57,19 @@ var _ models.Provider = (*Provider)(nil)
 type Provider struct {
 	models.NoSnapshots
 
-	runc    *sysboxrunc.Runner
+	runner  *runc.Runner
 	bundles *bundle.Service
 	dirs    StateDirs
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
 }
 
-func New(runner *sysboxrunc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
+func New(runner *runc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
 	if runner == nil || bundles == nil || dirs == nil {
 		return nil, errors.New("the sysbox provider needs a sysbox-runc runner, a bundle service and a state directory lookup")
 	}
 
-	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runc: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
+	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -145,17 +148,17 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	}
 	defer func() { err = errors.Join(err, exit.Close()) }()
 
-	if err := p.runc.Create(ctx, spec.ID, sysboxrunc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
+	if err := p.runner.Create(ctx, spec.ID, runc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
 		return err
 	}
 
 	if err := boundMemory(p.cgroupRoot, spec); err != nil {
 		// runc made the container, so a failed bound must delete it, or it dangles on the rootfs the caller drops.
-		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true))
 	}
 
 	if err := boundPids(p.cgroupRoot, spec.ID); err != nil {
-		return errors.Join(err, p.runc.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true))
 	}
 
 	return nil
@@ -218,7 +221,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := p.runc.Start(ctx, id); err != nil {
+	if err := p.runner.Start(ctx, id); err != nil {
 		return err
 	}
 
@@ -239,7 +242,7 @@ func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle
 	}
 
 	if held {
-		if err := p.runc.Delete(ctx, id, true); err != nil {
+		if err := p.runner.Delete(ctx, id, true); err != nil {
 			return err
 		}
 	}
@@ -371,7 +374,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 	// runc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
 	if status.State == models.StateCreated {
-		if err := p.runc.Delete(ctx, id, true); err != nil {
+		if err := p.runner.Delete(ctx, id, true); err != nil {
 			return err
 		}
 
@@ -381,13 +384,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	// A frozen cgroup delivers no signal. Nothing of shard's freezes a Sysbox sandbox, so this is
 	// only ever a container something else paused by hand.
 	if status.State == models.StatePaused {
-		if err := p.runc.Resume(ctx, id); err != nil {
+		if err := p.runner.Resume(ctx, id); err != nil {
 			return err
 		}
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
-	if err := p.runc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
+	if err := p.runner.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		return err
 	}
 
@@ -413,7 +416,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
-	if err := p.runc.Kill(ctx, id, "KILL", true); err != nil && !gone(err) {
+	if err := p.runner.Kill(ctx, id, "KILL", true); err != nil && !gone(err) {
 		return err
 	}
 
@@ -437,7 +440,7 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	}
 
 	// --force, because a running sandbox holds the rootfs.
-	if err := p.runc.Delete(ctx, id, true); err != nil {
+	if err := p.runner.Delete(ctx, id, true); err != nil {
 		return err
 	}
 
@@ -495,7 +498,7 @@ func orphaned(b bundle.Bundle, id string, held bool) error {
 
 // gone reports whether a signal failed because the sandbox had already ended, which is what a stop wants.
 func gone(err error) bool {
-	return errors.Is(err, sysboxrunc.ErrNotRunning) || errors.Is(err, sysboxrunc.ErrNotFound)
+	return errors.Is(err, runc.ErrNotRunning) || errors.Is(err, runc.ErrNotFound)
 }
 
 // Exec runs a command in a sandbox that already runs. It is not the entrypoint: the supervisor never
@@ -528,7 +531,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, err
 	}
 
-	code, err := p.runc.Exec(ctx, id, opts)
+	code, err := p.runner.Exec(ctx, id, opts)
 	if err != nil {
 		return models.ExitStatus{}, notStarted(id, err)
 	}
@@ -539,7 +542,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 // Signal sends one signal to a running exec by the host pid the driver reported for it.
 func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string) error {
-	if err := p.runc.Signal(ctx, id, pid, signal); err != nil {
+	if err := p.runner.Signal(ctx, id, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
@@ -549,7 +552,7 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 // notStarted gives a command the driver refused to start a name the cli can answer with a shell's
 // own exit code. The driver looked the command up on the host, so the reason is the shell's wording.
 func notStarted(id string, err error) error {
-	var lookup *sysboxrunc.LookupError
+	var lookup *runc.LookupError
 	if !errors.As(err, &lookup) {
 		return err
 	}
@@ -564,13 +567,13 @@ func notStarted(id string, err error) error {
 
 // execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
 // the rootfs it resolves a user and the command against is the sandbox's live tree, not the image's.
-func execOptions(b bundle.Bundle, spec models.ExecSpec) (sysboxrunc.ExecOptions, error) {
+func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
-		return sysboxrunc.ExecOptions{}, err
+		return runc.ExecOptions{}, err
 	}
 
-	opts := sysboxrunc.ExecOptions{
+	opts := runc.ExecOptions{
 		Argv:    spec.Argv,
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
@@ -588,7 +591,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (sysboxrunc.ExecOptions,
 	if spec.User != "" {
 		identity, err := bundle.ResolveUser(b.RootFS, spec.User)
 		if err != nil {
-			return sysboxrunc.ExecOptions{}, err
+			return runc.ExecOptions{}, err
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
@@ -663,8 +666,8 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 // Status asks the substrate, because a record saying running can outlive a shard restart. runc reads
 // the init process itself and calls a reaped or zombie one stopped, so nothing here second-guesses it.
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
-	state, err := p.runc.State(ctx, id)
-	if errors.Is(err, sysboxrunc.ErrNotFound) {
+	state, err := p.runner.State(ctx, id)
+	if errors.Is(err, runc.ErrNotFound) {
 		return models.Status{OOMKilled: p.oomKilled(id)}, nil
 	}
 	if err != nil {
@@ -708,13 +711,13 @@ func cgroupDir(root, id string) string {
 
 // stateOf maps the runc statuses onto the four shard states. A container runc is still creating has
 // nothing in its guest running, which is what created means here.
-func stateOf(status sysboxrunc.Status) models.State {
+func stateOf(status runc.Status) models.State {
 	switch status {
-	case sysboxrunc.StatusRunning:
+	case runc.StatusRunning:
 		return models.StateRunning
-	case sysboxrunc.StatusPaused:
+	case runc.StatusPaused:
 		return models.StatePaused
-	case sysboxrunc.StatusStopped:
+	case runc.StatusStopped:
 		return models.StateStopped
 	default:
 		return models.StateCreated
@@ -794,7 +797,7 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return errors.Join(err, b.Unmount())
 	}
 
-	if err := p.runc.Start(ctx, spec.ID); err != nil {
+	if err := p.runner.Start(ctx, spec.ID); err != nil {
 		return err
 	}
 

@@ -1,7 +1,7 @@
-// Package sysboxrunc drives the sysbox-runc binary. It knows the flags, the subcommands and the state
-// JSON, and nothing about sandboxes. It is runc's command line, so there is no checkpoint and no
-// restore: the fork dropped both (nestybox/sysbox#715), and the provider refuses what needs them.
-package sysboxrunc
+// Package runc drives the runc command line: the flags, the subcommands and the state JSON, and
+// nothing about sandboxes. sysbox-runc shares it, so a provider names its binary with WithBinary.
+// There is no checkpoint and no restore: sysbox-runc dropped both (nestybox/sysbox#715).
+package runc
 
 import (
 	"bytes"
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ErrNotFound is what a verb aimed at a container sysbox-runc does not hold returns. Match it with errors.Is.
+// ErrNotFound is what a verb aimed at a container runc does not hold returns. Match it with errors.Is.
 var ErrNotFound = errors.New("no such container")
 
 // ErrNotRunning is what a kill of an already dead container returns, which a stop must not treat as a failure.
@@ -40,7 +40,7 @@ const (
 	notRunningMessage = "container not running"
 )
 
-// Status is the container status sysbox-runc reports. It is the OCI set, and stopped is the terminal one.
+// Status is the container status runc reports. It is the OCI set, and stopped is the terminal one.
 type Status string
 
 const (
@@ -51,7 +51,7 @@ const (
 	StatusStopped  Status = "stopped"
 )
 
-// State is what sysbox-runc state prints. PID is 0 once the container is stopped.
+// State is what runc state prints. PID is 0 once the container is stopped.
 type State struct {
 	ID     string `json:"id"`
 	Status Status `json:"status"`
@@ -59,7 +59,7 @@ type State struct {
 	Bundle string `json:"bundle"`
 }
 
-// Runner runs one sysbox-runc root. Every container under it is reachable from any shard process,
+// Runner runs one runc root. Every container under it is reachable from any shard process,
 // so nothing here is held in memory between commands.
 type Runner struct {
 	binary  string
@@ -70,25 +70,25 @@ type Runner struct {
 // Option configures a Runner.
 type Option func(*Runner)
 
-// WithBinary points at a sysbox-runc other than the one on PATH.
+// WithBinary points at a runc other than the one on PATH.
 func WithBinary(path string) Option {
 	return func(r *Runner) { r.binary = path }
 }
 
-// WithExecDir keeps each exec's scratch under dir, off the sysbox-runc root that it scans, so a restarted daemon can sweep it.
+// WithExecDir keeps each exec's scratch under dir, off the runc root that it scans, so a restarted daemon can sweep it.
 func WithExecDir(dir string) Option {
 	return func(r *Runner) { r.execDir = dir }
 }
 
-// New prepares the sysbox-runc root, which is /var/lib/shard/sysbox-runc on the box.
+// New prepares the runc root, which is /var/lib/shard/runc on the box.
 func New(root string, opts ...Option) (*Runner, error) {
-	if !filepath.IsAbs(root) {
-		return nil, fmt.Errorf("the sysbox-runc root must be an absolute path, got %q", root)
-	}
-
-	r := &Runner{binary: "sysbox-runc", root: root}
+	r := &Runner{binary: "runc", root: root}
 	for _, opt := range opts {
 		opt(r)
+	}
+
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("the %s root must be an absolute path, got %q", r.name(), root)
 	}
 
 	if _, err := exec.LookPath(r.binary); err != nil {
@@ -96,7 +96,7 @@ func New(root string, opts ...Option) (*Runner, error) {
 	}
 
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("create the sysbox-runc root %s: %w", root, err)
+		return nil, fmt.Errorf("create the %s root %s: %w", r.name(), root, err)
 	}
 
 	if r.execDir != "" {
@@ -108,10 +108,13 @@ func New(root string, opts ...Option) (*Runner, error) {
 	return r, nil
 }
 
-// Root is where sysbox-runc keeps its own container state, which outlives the process that created it.
+// name is the binary as the provider named it, so a sysbox-runc failure says sysbox-runc.
+func (r *Runner) name() string { return filepath.Base(r.binary) }
+
+// Root is where runc keeps its own container state, which outlives the process that created it.
 func (r *Runner) Root() string { return r.root }
 
-// CreateOptions carries the fds the guest inherits. sysbox-runc create hands them over and exits; the
+// CreateOptions carries the fds the guest inherits. runc create hands them over and exits; the
 // container keeps them, which is what makes the guest output stream after the command has returned.
 type CreateOptions struct {
 	Bundle string
@@ -125,13 +128,13 @@ type CreateOptions struct {
 // config.json names: runc has no network flag of its own.
 func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) error {
 	if opts.Bundle == "" {
-		return errors.New("no bundle: sysbox-runc create has nothing to run")
+		return fmt.Errorf("no bundle: %s create has nothing to run", r.name())
 	}
 
 	// The caller may delete the log the moment this fails, so the diagnostics have to travel in the error.
 	start, err := logEnd(opts.Stderr)
 	if err != nil {
-		return fmt.Errorf("sysbox-runc create %s: %w", id, err)
+		return fmt.Errorf("%s create %s: %w", r.name(), id, err)
 	}
 
 	cmd := r.command(ctx, "create", "--bundle", opts.Bundle, id)
@@ -141,10 +144,10 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 	if err := cmd.Run(); err != nil {
 		// Our own cancellation killed it, so what it did not print says nothing about why.
 		if ctx.Err() != nil {
-			return fmt.Errorf("sysbox-runc create %s: %w: %w", id, err, ctx.Err())
+			return fmt.Errorf("%s create %s: %w: %w", r.name(), id, err, ctx.Err())
 		}
 
-		return fmt.Errorf("sysbox-runc create %s: %w%s", id, err, diagnostics(opts.Stderr, start))
+		return fmt.Errorf("%s create %s: %w%s", r.name(), id, err, diagnostics(opts.Stderr, start))
 	}
 
 	return nil
@@ -174,16 +177,16 @@ type ExecOptions struct {
 }
 
 // Exec runs a command in a running container and returns its exit code, which is no driver failure.
-// sysbox-runc reports a command it cannot start as exit 1 with nothing in its own log, so only the
+// runc reports a command it cannot start as exit 1 with nothing in its own log, so only the
 // lookup against RootFS tells the two apart. The caller checks the container is running first.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
-		return 0, errors.New("no command: sysbox-runc exec has nothing to run")
+		return 0, fmt.Errorf("no command: %s exec has nothing to run", r.name())
 	}
 
 	if opts.RootFS != "" {
 		if err := LookPath(opts.RootFS, opts.WorkDir, pathOf(opts.Env), opts.Argv[0]); err != nil {
-			return 0, fmt.Errorf("sysbox-runc exec %s: %w", id, err)
+			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
 		}
 	}
 
@@ -198,14 +201,14 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
-	// The driver dies with the daemon, so a restart orphans no sysbox-runc exec; the guest process is reparented inside the container and outlives both.
+	// The driver dies with the daemon, so a restart orphans no runc exec; the guest process is reparented inside the container and outlives both.
 	cmd.SysProcAttr = execAttr(opts.TTY)
 
 	// The parent-death signal watches the thread that forked, so this goroutine keeps that thread until the driver ends.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	// Killing sysbox-runc exec leaves the guest process running, so a cancellation has to reach into the container.
+	// Killing runc exec leaves the guest process running, so a cancellation has to reach into the container.
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }
 
 	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
@@ -218,26 +221,26 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	if err := cmd.Run(); err != nil {
 		// A cancelled call says nothing about how the command would have ended.
 		if ctx.Err() != nil {
-			return 0, fmt.Errorf("sysbox-runc exec %s: %w", id, ctx.Err())
+			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, ctx.Err())
 		}
 
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			// A driver something else killed says nothing about the guest process, so it is not an exit code.
 			if !exit.Exited() {
-				return 0, fmt.Errorf("sysbox-runc exec %s was ended by a signal: %w", id, err)
+				return 0, fmt.Errorf("%s exec %s was ended by a signal: %w", r.name(), id, err)
 			}
 
 			return exit.ExitCode(), nil
 		}
 
-		return 0, fmt.Errorf("sysbox-runc exec %s: %w", id, err)
+		return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
 	}
 
 	return 0, nil
 }
 
-// execArgs spells one sysbox-runc exec. The flags precede the id, and everything after it is the command.
+// execArgs spells one runc exec. The flags precede the id, and everything after it is the command.
 func execArgs(id, pidFile string, opts ExecOptions) []string {
 	args := []string{"exec", "--pid-file", pidFile}
 
@@ -260,7 +263,7 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 	return append(append(args, id), opts.Argv...)
 }
 
-// defaultPath is the OCI image spec default, what sysbox-runc itself resolves against when the
+// defaultPath is the OCI image spec default, what runc itself resolves against when the
 // process env names no PATH; the lookup must not refuse what the runtime would run.
 const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -336,7 +339,7 @@ func reportPID(ctx context.Context, pidFile string, report func(int)) {
 	}
 }
 
-// readPID reads the guest pid sysbox-runc wrote, which is the only handle a signal into the container has.
+// readPID reads the guest pid runc wrote, which is the only handle a signal into the container has.
 func readPID(path string) (int, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
@@ -356,7 +359,7 @@ func (r *Runner) Start(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "start", id)
 }
 
-// Pause freezes every task in the container. Nothing writes its memory out: sysbox-runc has no checkpoint.
+// Pause freezes every task in the container. Nothing writes its memory out: this driver has no checkpoint.
 func (r *Runner) Pause(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "pause", id)
 }
@@ -376,7 +379,7 @@ func (r *Runner) Kill(ctx context.Context, id, signal string, all bool) error {
 	return r.run(ctx, io.Discard, append(args, id, signal)...)
 }
 
-// Delete drops sysbox-runc's own state for the container. Until it runs, a stopped container still exists.
+// Delete drops runc's own state for the container. Until it runs, a stopped container still exists.
 func (r *Runner) Delete(ctx context.Context, id string, force bool) error {
 	args := []string{"delete"}
 	if force {
@@ -411,12 +414,12 @@ func (r *Runner) run(ctx context.Context, stdout io.Writer, args ...string) erro
 	if err := cmd.Run(); err != nil {
 		// A cancelled call says nothing about the container, so report the context and not what the kill looked like.
 		if ctx.Err() != nil {
-			return fmt.Errorf("sysbox-runc %s: %w", strings.Join(args, " "), ctx.Err())
+			return fmt.Errorf("%s %s: %w", r.name(), strings.Join(args, " "), ctx.Err())
 		}
 
 		message := strings.TrimSpace(stderr.String())
 
-		return fmt.Errorf("sysbox-runc %s: %w: %s", strings.Join(args, " "), sentinel(message, err), message)
+		return fmt.Errorf("%s %s: %w: %s", r.name(), strings.Join(args, " "), sentinel(message, err), message)
 	}
 
 	return nil
@@ -424,7 +427,7 @@ func (r *Runner) run(ctx context.Context, stdout io.Writer, args ...string) erro
 
 func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, r.binary, append([]string{"--root", r.root}, args...)...)
-	// Without this a cancelled call still blocks until every child sysbox-runc forked closes the pipes it inherited.
+	// Without this a cancelled call still blocks until every child runc forked closes the pipes it inherited.
 	cmd.WaitDelay = waitDelay
 
 	return cmd

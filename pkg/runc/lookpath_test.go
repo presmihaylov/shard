@@ -1,4 +1,4 @@
-package sysboxrunc_test
+package runc_test
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/presmihaylov/shard/pkg/sysboxrunc"
+	"github.com/presmihaylov/shard/pkg/runc"
 )
 
 // rootfs lays out a small guest tree: /usr/bin/sh, /bin -> usr/bin, /sbin -> /usr/sbin (absent),
@@ -77,7 +77,7 @@ func TestLookPathAnswersLikeAShell(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := sysboxrunc.LookPath(root, tc.workDir, tc.path, tc.command)
+			err := runc.LookPath(root, tc.workDir, tc.path, tc.command)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatalf("LookPath refused %q: %v", tc.command, err)
@@ -86,7 +86,7 @@ func TestLookPathAnswersLikeAShell(t *testing.T) {
 				return
 			}
 
-			var lookup *sysboxrunc.LookupError
+			var lookup *runc.LookupError
 			if !errors.As(err, &lookup) {
 				t.Fatalf("LookPath returned %v for %q, want a LookupError", err, tc.command)
 			}
@@ -106,9 +106,9 @@ func TestLookPathNeverLeavesTheRootFS(t *testing.T) {
 	root := rootfs(t)
 
 	// /bin/ls exists on every host that runs this test, and the guest's /usr/bin has no ls.
-	err := sysboxrunc.LookPath(root, "", "", "/bin/ls")
+	err := runc.LookPath(root, "", "", "/bin/ls")
 
-	var lookup *sysboxrunc.LookupError
+	var lookup *runc.LookupError
 	if !errors.As(err, &lookup) || lookup.Reason != "/bin/ls: not found" {
 		t.Fatalf("LookPath returned %v for a command only the host has, want not found", err)
 	}
