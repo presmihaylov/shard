@@ -17,12 +17,13 @@ Download `shard-darwin-arm64` from the latest release, put it on the path, and g
 
 ```
 curl -fsSLo shard https://github.com/presmihaylov/shard/releases/latest/download/shard-darwin-arm64
-chmod +x shard && sudo install -m0755 shard /usr/local/bin/shard
+chmod +x shard && sudo install -d -m0755 /usr/local/bin && sudo install -m0755 shard /usr/local/bin/shard
 sudo install -d -o "$USER" /var/lib/shard
 ```
 
-The root is where the daemon keeps every record, disk and kernel, and it defaults to
-`/var/lib/shard`; the `install -d` hands it to your user so nothing runs as root. `--root <dir>`
+A Mac without the developer tools has no `/usr/local/bin`, so the first `install -d` makes it. The
+root is where the daemon keeps every record, disk and kernel, and it defaults to `/var/lib/shard`;
+the second `install -d` hands it to your user so nothing runs as root. `--root <dir>`
 on every command picks another one, and needs no `sudo` at all. A binary a browser fetched carries
 the quarantine flag and macOS refuses to run it: `xattr -d com.apple.quarantine shard` clears it.
 `curl` sets none.
@@ -34,9 +35,11 @@ shard daemon
 ```
 
 That is the daemon, in a terminal of its own, and it stays there. On a Mac it picks the `vz`
-provider by itself. On its first boot it writes the signed VM shim and the guest supervisor under
-the root (`docs/macos-signing.md`), and the first `create` fetches the release kernel for this Mac
-into the root and checks its hash (`docs/kernel.md`). Both happen once.
+provider by itself. The daemon builds the provider on the first verb that needs it, not at boot:
+that verb writes the signed VM shim and the guest supervisor under the root (`docs/macos-signing.md`)
+and fetches the release kernel for this Mac into the root, checked against its hash
+(`docs/kernel.md`). A daemon of the same build finds all three in place; a new build replaces the
+shim and the supervisor, and the kernel is fetched again only when its tag moves.
 
 In a second terminal:
 
@@ -66,15 +69,17 @@ your printer.
 |---|---|---|
 | Isolation | a micro VM per sandbox, a Linux kernel of its own | a user-space kernel, `runsc` |
 | Syscall cost | native, inside the VM | high on file-heavy work |
-| `pause`, `resume`, `fork` | macOS 14 or later | yes |
-| Memory | `--memory` is a hard cap, 512 MB default | a limit the cgroup enforces |
+| `pause`, `resume`, `fork` | Apple silicon on macOS 14 or later | yes |
+| Memory | `--memory` is the VM's memory, 512 MB default; past it the guest's own OOM killer takes a process and the sandbox lives | a cgroup limit; past it the whole sandbox dies, and restarts on `restart_on_oom` |
+| CPUs | `--cpus 0` is one virtual CPU; `N` is `N` of them | `--cpus 0` is every host CPU; `N` is a quota |
+| Processes | no bound; a fork bomb stays inside the VM and hits its memory | `4096` per sandbox |
 | Host access | none: no shared folders, no LAN, no host mounts | none |
 
 `docs/provider.md` has the full matrix across every substrate.
 
 ## If it does not start
 
-- `provider vz does not support pause on this host`: macOS 13. The verb needs 14.
+- `provider vz does not support pause on this host`: macOS 13, or an Intel Mac. The verb needs Apple silicon on 14.
 - `kernel checksum mismatch`: a file under `<root>/kernel/` changed. Delete that directory and
   `create` again; the daemon fetches a fresh one.
 - A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The

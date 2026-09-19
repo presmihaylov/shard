@@ -8,9 +8,9 @@ sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.fram
 resident `shard daemon` owns the state and serves it over a REST API on a unix socket; the CLI is a
 thin client of that socket, one verb at a time.
 
-**Status: pre-alpha.** Every verb runs on gVisor, and on `vz` on a Mac with macOS 14 or later. Sysbox
-and runc run every verb but pause, resume and fork, which they refuse. Firecracker does not exist
-yet. Every verb speaks to the daemon and needs it up. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor, and on `vz` on an Apple silicon Mac with macOS 14
+or later. Sysbox and runc run every verb but pause, resume and fork, which they refuse. Firecracker
+does not exist yet. Every verb speaks to the daemon and needs it up. See `docs/daemon.md`.
 
 ## Providers
 
@@ -22,7 +22,7 @@ defaults to gVisor and a Mac to `vz`. `docs/provider.md` has the full matrix; th
 | Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
 | Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
 | Docker or systemd inside | no | yes | no | no |
-| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** | macOS 14 or later |
+| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
 | Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |
 
 Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
@@ -77,8 +77,8 @@ does not promise a restore across machines (gvisor#11486), so shard promises it 
 that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
 snapshot that exists, so it is not a thing to tune.
 
-The snapshot verbs exist on gVisor only. On Sysbox and runc each one refuses by name and the sandbox
-runs on.
+The snapshot verbs exist on gVisor, and on `vz` on an Apple silicon Mac with macOS 14 or later. On
+Sysbox and runc, and on `vz` on any other Mac, each one refuses by name and the sandbox runs on.
 
 `shard pause` writes a running sandbox into a snapshot and frees its memory; `shard resume` runs it
 again from there, and `shard fork` starts a new sandbox from the snapshot of another and leaves the
@@ -119,8 +119,9 @@ shard policy rm locked
 ```
 
 A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names, and
-what matches none of them is dropped. The host enforces it in netfilter, applies it again after
-every restore, and applies a change to every live sandbox at once. `docs/egress.md` has the rule
+what matches none of them is dropped. On Linux the host enforces it in netfilter, applies it again
+after every restore, and applies a change to every live sandbox at once; on a Mac the daemon's own
+userspace netstack enforces it, and writes every drop to the sandbox's egress log. `docs/egress.md` has the rule
 syntax and what a policy implies.
 
 ## Images
