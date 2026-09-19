@@ -36,7 +36,9 @@ restart re-adopts every running sandbox by that socket (SHARD-235), and only the
 shim is gone at that restart is `stopped` with the reason every provider uses, `daemon restarted and
 found no process`. A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
 daemon dials the control and the logs streams again while the shim says the VM runs, so `logs -f`
-and the events resume where they stopped.
+and the events resume where they stopped. The new control connection opens with the guest's state,
+and an exit or a restart that landed while no stream was open is recorded from that replay, so
+`wait` does not wait for an event that is gone.
 
 This is not only the re-adopt story. **The framework runs at most two VMs in one process.** The
 third `start` in a process fails with `VZErrorDomain Code=1, the virtual machine failed to start`,
