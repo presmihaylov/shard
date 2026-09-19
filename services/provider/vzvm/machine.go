@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -33,6 +34,8 @@ type machine struct {
 	control atomic.Pointer[supervisor.Control]
 	// closed says this process let the shim go, so a stream that ends after it is not dialed again.
 	closed atomic.Bool
+	// swap orders a replacement against close, so no stream is put in after the shim was let go.
+	swap   sync.Mutex
 	link   *netstack.Link
 	cancel context.CancelFunc
 	// events closes when the control connection ended, which is the guest gone.
@@ -166,7 +169,9 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
-	m.started = state.Ready
+	if err := p.reconcile(m, state); err != nil {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
+	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)
@@ -305,7 +310,14 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 			continue
 		}
 		err = p.reconcile(m, state)
+		m.swap.Lock()
+		if m.closed.Load() {
+			m.swap.Unlock()
+
+			return false, errors.Join(err, control.Close())
+		}
 		dropped := m.control.Swap(control)
+		m.swap.Unlock()
 
 		return true, errors.Join(err, dropped.Close())
 	}
@@ -370,6 +382,7 @@ func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
 
 // close ends what this process holds of the shim; the shim itself, and its VM, are the stop's business.
 func (m *machine) close() error {
+	m.swap.Lock()
 	m.closed.Store(true)
 	if m.cancel != nil {
 		m.cancel()
@@ -378,6 +391,7 @@ func (m *machine) close() error {
 	if control := m.control.Load(); control != nil {
 		err = control.Close()
 	}
+	m.swap.Unlock()
 
 	return errors.Join(err, m.closeLink())
 }
