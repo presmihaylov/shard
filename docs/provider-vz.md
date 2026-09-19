@@ -81,9 +81,17 @@ ports and the host connects to each at boot, before the entrypoint starts:
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection the host
 opened at boot, which `shard-init` holds as a file descriptor behind a cleared dumpable flag, the same
-way it holds fd 0 on gVisor. Guest root cannot reach that descriptor and cannot open a second
-connection the host would accept, so the exit code stays host-verified, behind the VM boundary, as
-`docs/provider.md` promises for a microVM.
+way it holds fd 0 on gVisor. A cleared dumpable flag alone is not the boundary: a root process with
+`CAP_SYS_PTRACE` in the initial user namespace passes the `/proc` ptrace check anyway, opens
+`/proc/1/fd/<n>` and forges the exit record, which is the forge shard-tester proved on Sysbox. gVisor
+never grants the guest that capability; the VM would, so `shard-init` drops `CAP_SYS_PTRACE` from
+the bounding set of every process it starts, the entrypoint and each exec session, before `exec`. A
+bounding set only shrinks, a child user namespace holds no capability over the initial one, and file
+capabilities are masked by it, so nothing in the guest regains it. The transport ticket (SHARD-216)
+ships the test: guest root opening `/proc/1/fd/<control fd>` gets `EACCES`, on nairiclaw. With that
+boundary guest root cannot reach the descriptor and cannot open a second connection the host would
+accept, so the exit code stays host-verified, behind the VM boundary, as `docs/provider.md` promises
+for a microVM.
 
 Rejected: multiplexing every stream over the virtio console. One serial line, one framing layer to
 write and to debug, and a log line and an exec byte fight for it.
@@ -106,13 +114,18 @@ to reach the proxy anyway.
 
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
-- `pause` pauses the VM, saves its state to `<snapshot dir>/vm.vzvmstate`, then stops the VM and the
-  shim exits. The memory is freed, as the verb promises on gVisor; the disk stays where it is.
-- `resume` starts a new shim that restores the state file over the same disk and resumes. The file
-  is not consumed.
-- `fork` clones the source's disk (APFS clone), starts a new shim that restores the same state file
-  over the clone, resumes, then sends one re-address message on the control port so the guest drops
-  the source's address and takes its own (hypeman's issue 423 is a fork that answers on the old IP).
+- `pause` pauses the VM, saves its state to `<snapshot dir>/vm.vzvmstate`, stops the VM, and then
+  takes an APFS clone of the quiescent disk as `<snapshot dir>/disk.img` beside it; the shim exits.
+  The memory is freed, as the verb promises on gVisor; the live disk stays where it is. The two
+  files are one snapshot: the memory and the disk of the same instant.
+- `resume` starts a new shim that restores the state file over the live disk and resumes. The
+  snapshot is not consumed.
+- `fork` clones the snapshot's `disk.img`, never the live disk, starts a new shim that restores the
+  same state file over that clone, resumes, then sends one re-address message on the control port so
+  the guest drops the source's address and takes its own (hypeman's issue 423 is a fork that answers
+  on the old IP). A source that resumed and wrote to its disk since the pause forks from the
+  pause-time pair, the way gVisor forks the layers `Pause` exported; the fork ticket (SHARD-215)
+  ships that resumed-source regression case.
 
 A restore refuses a VM whose configuration differs from the saved one, and the machine identifier
 is part of that configuration. The framework generates a fresh identifier per configuration, so the
