@@ -26,7 +26,7 @@ const (
 const cgroupParent = "shard"
 
 // runtimes maps the provider a record names to the binary whose state the daemon keeps under the root, by that name.
-var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc"}
+var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc", "runc": "runc"}
 
 // mountinfo is where the kernel lists what is mounted, and the only account of a mount a run leaked.
 const mountinfo = "/proc/self/mountinfo"
