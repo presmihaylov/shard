@@ -738,6 +738,35 @@ func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 	}
 }
 
+// An exit that lands while no daemon holds the shim reaches the next daemon through the state the guest opens with.
+func TestAnExitWhileNoProviderHeldTheShimReachesWait(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLog(t, h.provider, spec.ID, 0)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than the entrypoint, so the exit lands while no stream is open.
+	time.Sleep(1500 * time.Millisecond)
+
+	adopter := h.open(t)
+	ctx, cancel := context.WithTimeout(t.Context(), stopGrace)
+	defer cancel()
+	exit, err := adopter.Wait(ctx, spec.ID)
+	if err != nil || exit.Code != 7 {
+		t.Fatalf("Wait through the adopting provider = %+v, %v; want code 7", exit, err)
+	}
+	if err := adopter.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A daemon that starts over a root whose shim is gone finds the sandbox stopped, which the reconcile then records.
 func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	h := newHarness(t)
