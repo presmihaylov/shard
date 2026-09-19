@@ -229,6 +229,8 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	fork := h.newSpec(t)
+	fork.Name = "twin"
+	fork.Network.Nameservers = []netip.Addr{gateway}
 	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +253,19 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 			t.Fatalf("%s counted %q after the restore, want a count the pause froze", id, written)
 		}
 		t.Logf("%s: %s", id, strings.TrimSpace(string(written)))
+	}
+	// The fork is a new sandbox: it answers to its own name and resolves through its own lease, not the source's.
+	out, err := os.CreateTemp(t.TempDir(), "resolver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), fork.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "hostname; cat /etc/resolv.conf"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatal(err)
+	}
+	written, _ := os.ReadFile(out.Name())
+	if want := "twin\nnameserver " + gateway.String() + "\n"; string(written) != want {
+		t.Fatalf("the fork's hostname and resolv.conf = %q, want %q", written, want)
 	}
 }
 
