@@ -33,7 +33,7 @@ type Kernel struct {
 // artifacts is the hash of every release file, the output of make kernel-reproducible at this Version and Build.
 var artifacts = map[string]struct{ name, sha256 string }{
 	"arm64": {"Image-arm64", "ARM64_SHA256"},
-	"amd64": {"vmlinux-amd64", "AMD64_SHA256"},
+	"amd64": {"vmlinux-amd64", "13fc80b85d189cd85f5c4553bd80737230ca853d3fe635e6f8cd154f0676b029"},
 }
 
 // Tag is the GitHub release the artifacts live under.
