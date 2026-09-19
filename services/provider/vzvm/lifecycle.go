@@ -86,20 +86,27 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	if err != nil {
 		return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
 	}
-	if spec.ProxyCA != nil {
-		// The same store the bundle plants on Linux, written by the guest at first boot, so a fork's disk carries it too.
-		trust, err := bundle.Trust(spec.RootFS, run.Env, spec.ProxyCA)
-		if err != nil {
-			return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
-		}
-		run.Env = runspec.MergeEnv(run.Env, trust.Env)
-		run.Trust = &supervisor.Trust{Path: trust.Path, Roots: trust.Roots}
-	}
-
 	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: run}
 	r.network(spec)
+	if spec.ProxyCA != nil {
+		if err := r.trust(spec.ProxyCA); err != nil {
+			return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		}
+	}
 
 	return r, nil
+}
+
+// trust merges the proxy CA into the image roots the way the bundle plants them on Linux; the guest writes the store at every start, so a fork's disk carries it too.
+func (r *record) trust(proxyCA []byte) error {
+	trust, err := bundle.Trust(r.RootFS, r.Run.Env, proxyCA)
+	if err != nil {
+		return err
+	}
+	r.Run.Env = runspec.MergeEnv(r.Run.Env, trust.Env)
+	r.Run.Trust = &supervisor.Trust{Path: trust.Path, Roots: trust.Roots}
+
+	return nil
 }
 
 // network takes the lease and the name from the spec, which a fresh create and a fork both give the guest.

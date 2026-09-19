@@ -612,3 +612,80 @@ func TestCreateHandsAFrontedGuestTheMergedTrustStore(t *testing.T) {
 		}
 	}
 }
+
+// A grant after the create edits the record the next start sends: the placeholder, the trust store, and the ungrant that takes the placeholder back.
+func TestTheEnvironmentIsTheRecordTheNextStartSends(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/true")
+	spec.RootFS = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), []byte("image-roots\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec.Env = []string{"HELD=1"}
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := h.provider.Environment(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.CanSetEnv("HELD"); err == nil {
+		t.Error("CanSetEnv let a held name through")
+	}
+	if err := env.TrustProxy([]byte("proxy-ca\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.SetEnv("TOKEN", "shard-placeholder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.SetEnv("TOKEN", "again"); err == nil {
+		t.Error("SetEnv set a name the guest already holds")
+	}
+
+	read := func() (env []string, trust string) {
+		t.Helper()
+		blob, err := os.ReadFile(filepath.Join(spec.StateDir, "vm.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			Run struct {
+				Env   []string `json:"env"`
+				Trust *struct {
+					Roots []byte `json:"roots"`
+				} `json:"trust"`
+			} `json:"run"`
+		}
+		if err := json.Unmarshal(blob, &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Run.Trust != nil {
+			trust = string(r.Run.Trust.Roots)
+		}
+
+		return r.Run.Env, trust
+	}
+	got, trust := read()
+	if !slices.Contains(got, "TOKEN=shard-placeholder") || !slices.Contains(got, "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt") || !slices.Contains(got, "HELD=1") {
+		t.Errorf("the record's env = %q, want the placeholder, the trust variables and what the create set", got)
+	}
+	if trust != "image-roots\nproxy-ca\n" {
+		t.Errorf("the record's trust = %q, want the image roots then the proxy CA", trust)
+	}
+
+	if err := env.RemoveEnv("TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	got, trust = read()
+	if slices.Contains(got, "TOKEN=shard-placeholder") || trust != "image-roots\nproxy-ca\n" {
+		t.Errorf("after the ungrant env = %q, trust = %q; want the placeholder gone and the trust kept", got, trust)
+	}
+
+	if _, err := h.provider.Environment("sb-none"); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("Environment of an unknown sandbox = %v, want does not exist", err)
+	}
+}

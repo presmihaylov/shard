@@ -47,7 +47,8 @@ shard secret ungrant web OPENAI_API_KEY
 `shard secret grant <id|name> <NAME>` hands a sandbox that already exists the same placeholder a
 create with `--secret` would have given it: the placeholder goes into the bundle environment, the
 proxy CA is planted in the writable layer, and the grant goes into the record. `shard secret ungrant`
-takes the placeholder and the grant back, and leaves the CA in place.
+takes the placeholder and the grant back, and leaves the CA in place. A VM sandbox has no bundle, so
+there both edits land in the run message its record holds, which the guest reads at its next start.
 
 Both verbs take a created or stopped sandbox only. A running guest holds its environment in its
 processes and a paused one holds it in its snapshot, so both are refused with `stop it first`. Both

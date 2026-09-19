@@ -1066,6 +1066,11 @@ func (p *Provider) LogPath(id string) (string, error) {
 	return filepath.Join(dir, logFile), nil
 }
 
+// Environment is the bundle: its config.json is the one record of what the entrypoint runs with.
+func (p *Provider) Environment(id string) (models.Environment, error) {
+	return bundle.Opener(p.dirs).Environment(id)
+}
+
 // open finds the bundle of a sandbox this process did not create.
 func (p *Provider) open(id string) (bundle.Bundle, error) {
 	dir, err := p.dirs(id)

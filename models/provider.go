@@ -211,3 +211,16 @@ const (
 	CommandNotFoundExitCode      = 127
 	CommandNotExecutableExitCode = 126
 )
+
+// Environment is the guest environment of a sandbox that is created or stopped, which a grant, an
+// ungrant and an attach rewrite for the next start. Each provider answers it from where it keeps the run.
+type Environment interface {
+	// CanSetEnv answers what SetEnv would refuse and writes nothing, so a grant can check before it plants.
+	CanSetEnv(name string) error
+	// SetEnv adds one variable, and refuses a name the guest already holds.
+	SetEnv(name, value string) error
+	// RemoveEnv drops every entry of that name. An environment that holds none is the outcome asked for.
+	RemoveEnv(name string) error
+	// TrustProxy merges the proxy CA into the image roots, so the sandbox trusts the proxy from its next start.
+	TrustProxy(proxyCA []byte) error
+}
