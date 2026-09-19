@@ -1,15 +1,9 @@
 name: kernel
 
-# Builds each guest kernel twice and proves the hashes match the ones shard was built with. A PR that
-# touches the build runs that much; a manual dispatch also publishes under the tag services/kernel names.
+# Builds each guest kernel twice, proves the hashes match the ones shard was built with, and publishes
+# under the tag services/kernel names. Manual only: the kernel changes rarely, and each build takes 13 minutes.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - Makefile
-      - packaging/kernel/**
-      - services/kernel/**
-      - .github/workflows/kernel.yml
 
 permissions:
   contents: read
