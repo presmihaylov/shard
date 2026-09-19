@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/ext4"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
@@ -35,8 +36,8 @@ const DefaultStartBudget = 60 * time.Second
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
-// MaxDiskMiB is the same 16 TiB, for the same reason: the image size is MiB times 2^20 in an int64.
-const MaxDiskMiB = MaxMemoryMiB
+// MaxDiskMiB is what the ext4 writer's 32-bit block count holds, 128 MiB short of 16 TiB.
+const MaxDiskMiB = ext4.MaxDiskSize >> 20
 
 // Repository is the part of sandboxstate.Repository the lifecycle verbs drive.
 type Repository interface {

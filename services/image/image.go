@@ -34,6 +34,9 @@ const stagingPrefix = ".unpack-"
 type Service struct {
 	root  string
 	store *registry.Store
+	// disks builds one ext4 image per digest beside the rootfs tree, for a provider that boots a VM.
+	disks    bool
+	registry []registry.Option
 
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
 	// pull's rollback deletes the blobs another pull has written but not yet indexed.
@@ -46,6 +49,8 @@ type Image struct {
 	Digest    string `json:"digest"`
 	// RootFS is shared and read-only. Every sandbox gets its own writable layer over it.
 	RootFS string `json:"rootfs"`
+	// Disk is the same tree as one ext4 image, the base every VM sandbox clones. Empty on a host without disks.
+	Disk string `json:"disk,omitempty"`
 	// Size is the download size, not the size on disk after the unpack.
 	Size    int64              `json:"size"`
 	Created time.Time          `json:"created"`
@@ -54,19 +59,39 @@ type Image struct {
 	Broken string `json:"broken,omitempty"`
 }
 
+// Option configures the service.
+type Option func(*Service)
+
+// WithRegistry passes options to the registry transport under the store.
+func WithRegistry(opts ...registry.Option) Option {
+	return func(s *Service) { s.registry = append(s.registry, opts...) }
+}
+
+// WithDisks makes every pull also build the ext4 image a VM provider boots from.
+func WithDisks() Option {
+	return func(s *Service) { s.disks = true }
+}
+
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
-func New(root string, opts ...registry.Option) (*Service, error) {
-	store, err := registry.Open(filepath.Join(root, "layout"), opts...)
+func New(root string, opts ...Option) (*Service, error) {
+	s := &Service{root: root}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	store, err := registry.Open(filepath.Join(root, "layout"), s.registry...)
 	if err != nil {
 		return nil, err
 	}
+	s.store = store
 
-	rootfs := filepath.Join(root, "rootfs")
-	if err := os.MkdirAll(rootfs, 0o750); err != nil {
-		return nil, fmt.Errorf("create the rootfs directory under %s: %w", root, err)
+	for _, dir := range []string{"rootfs", "disks"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
+			return nil, fmt.Errorf("create the %s directory under %s: %w", dir, root, err)
+		}
 	}
 
-	return &Service{root: root, store: store}, nil
+	return s, nil
 }
 
 // Pull fetches ref and unpacks it. A second pull of the same reference needs no network.
@@ -228,6 +253,9 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 		if err := os.RemoveAll(staged); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)
 		}
+		if err := os.Remove(s.diskPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove the disk of %s: %w", digest, err)
+		}
 	}
 
 	return s.store.Remove(ref)
@@ -240,6 +268,9 @@ func (s *Service) describe(img registry.Image) (Image, error) {
 		RootFS:    s.rootfsDir(img.Digest),
 		Size:      img.Size,
 		Created:   img.Created,
+	}
+	if s.disks {
+		described.Disk = s.diskPath(img.Digest)
 	}
 	if img.Broken != nil {
 		described.Broken = img.Broken.Error()
@@ -268,30 +299,44 @@ func (s *Service) rootfsDir(digest string) string {
 	return filepath.Join(s.root, "rootfs", strings.ReplaceAll(digest, ":", "-"))
 }
 
+// diskPath is keyed like rootfsDir; the two are one tree in two shapes.
+func (s *Service) diskPath(digest string) string {
+	return filepath.Join(s.root, "disks", strings.ReplaceAll(digest, ":", "-")+".ext4")
+}
+
 func (s *Service) unpacked(img registry.Image) bool {
 	info, err := os.Stat(s.rootfsDir(img.Digest))
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	if !s.disks {
+		return true
+	}
+	_, err = os.Stat(s.diskPath(img.Digest))
 
-	return err == nil && info.IsDir()
+	return err == nil
 }
 
 // sweepStaging drops the tree a killed pull left mid-unpack. It runs under the lock and never in
 // New, because a staging tree another writer holds is a live unpack rather than debris.
 func (s *Service) sweepStaging() error {
-	rootfs := filepath.Join(s.root, "rootfs")
+	for _, dir := range []string{"rootfs", "disks"} {
+		parent := filepath.Join(s.root, dir)
 
-	entries, err := os.ReadDir(rootfs)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", rootfs, err)
-	}
-
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), stagingPrefix) {
-			continue
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", parent, err)
 		}
 
-		path := filepath.Join(rootfs, entry.Name())
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("remove the stale staging tree %s: %w", path, err)
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), stagingPrefix) {
+				continue
+			}
+
+			path := filepath.Join(parent, entry.Name())
+			if err := os.RemoveAll(path); err != nil {
+				return fmt.Errorf("remove the stale staging tree %s: %w", path, err)
+			}
 		}
 	}
 
@@ -309,7 +354,23 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 		return err
 	}
 
-	parent := filepath.Join(s.root, "rootfs")
+	if err := s.unpackDir(ctx, img, layers); err != nil {
+		return err
+	}
+	if !s.disks {
+		return nil
+	}
+
+	return s.unpackDisk(ctx, img, layers)
+}
+
+func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1.Layer) error {
+	dir := s.rootfsDir(img.Digest)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return nil
+	}
+
+	parent := filepath.Dir(dir)
 
 	// The temp directory is a sibling of the final one so that the rename stays on one filesystem.
 	tmp, err := os.MkdirTemp(parent, stagingPrefix)
@@ -329,8 +390,35 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 		}
 	}
 
-	if err := os.Rename(tmp, s.rootfsDir(img.Digest)); err != nil {
+	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
+	}
+
+	return nil
+}
+
+// unpackDisk builds the ext4 image under a staging name and renames it, the same way the tree lands.
+func (s *Service) unpackDisk(ctx context.Context, img registry.Image, layers []v1.Layer) error {
+	disk := s.diskPath(img.Digest)
+	if _, err := os.Stat(disk); err == nil {
+		return nil
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(disk), stagingPrefix)
+	if err != nil {
+		return fmt.Errorf("create a staging disk under %s: %w", filepath.Dir(disk), err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp.Name(), err)
+	}
+	defer os.Remove(tmp.Name())
+
+	if err := buildDisk(ctx, tmp.Name(), layers); err != nil {
+		return fmt.Errorf("build the disk of %s: %w", img.Reference, err)
+	}
+
+	if err := os.Rename(tmp.Name(), disk); err != nil {
+		return fmt.Errorf("rename %s: %w", tmp.Name(), err)
 	}
 
 	return nil

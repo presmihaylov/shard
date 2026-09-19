@@ -46,7 +46,7 @@ func (d *deps) imagesLocked() (*image.Service, error) {
 		return d.imageSvc, nil
 	}
 
-	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), registry.WithInsecureRegistries(d.cfg.Insecure...))
+	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), image.WithRegistry(registry.WithInsecureRegistries(d.cfg.Insecure...)))
 	if err != nil {
 		return nil, err
 	}

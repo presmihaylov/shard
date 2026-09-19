@@ -95,6 +95,11 @@ linters:
         linters:
           - errcheck
           - gosec
+      # The ext4 on-disk format is fixed-width fields; the writer narrows into them by design, within its own bounds.
+      - path: pkg/ext4/
+        linters:
+          - gosec
+        text: G115
 
 formatters:
   enable:
