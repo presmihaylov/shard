@@ -257,7 +257,7 @@ func TestDiskAWhiteoutOfALinkTargetKeepsOnlyTheLink(t *testing.T) {
 		t.Errorf("bin/alias size %d", got)
 	}
 	missing(t, w, "bin/tool")
-	missing(t, w, ".shard-link-0-1")
+	missing(t, w, ".shard-link0-0-1")
 
 	closeAndCheck(t, w, path)
 }
@@ -272,7 +272,47 @@ func TestDiskAWhiteoutOfTheLinkAndTheTargetDropsBoth(t *testing.T) {
 
 	missing(t, w, "bin/tool")
 	missing(t, w, "bin/alias")
-	missing(t, w, ".shard-link-0-1")
+	missing(t, w, ".shard-link0-0-1")
+
+	closeAndCheck(t, w, path)
+}
+
+// A link to a link reaches the file behind both, even once the two earlier names are gone.
+func TestDiskALinkToALinkOutlivesBothEarlierNames(t *testing.T) {
+	first := entry{hdr: tar.Header{Name: "bin/first", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	last := entry{hdr: tar.Header{Name: "bin/last", Typeflag: tar.TypeLink, Linkname: "bin/first"}}
+	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), first)
+	mid := layerOf(t, last)
+	top := layerOf(t, reg("bin/.wh.tool", ""), reg("bin/.wh.first", ""))
+
+	w, path := disk(t, base, mid, top)
+
+	if got := statSize(t, w, "bin/last"); got != int64(len("tool-body")) {
+		t.Errorf("bin/last size %d", got)
+	}
+	missing(t, w, "bin/tool")
+	missing(t, w, "bin/first")
+	missing(t, w, ".shard-link0-0-1")
+
+	closeAndCheck(t, w, path)
+}
+
+// An image file that spells a scratch name is left alone: the scratch prefix moves past it.
+func TestDiskAScratchNameNeverTakesAnImagePath(t *testing.T) {
+	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
+	base := layerOf(t, dir("bin/"), reg("bin/tool", "tool-body"), alias)
+	top := layerOf(t, reg("bin/.wh.tool", ""), reg(".shard-link0-0-1", "mine"))
+
+	w, path := disk(t, base, top)
+
+	if got := statSize(t, w, "bin/alias"); got != int64(len("tool-body")) {
+		t.Errorf("bin/alias size %d", got)
+	}
+	if got := statSize(t, w, ".shard-link0-0-1"); got != 4 {
+		t.Errorf(".shard-link0-0-1 size %d", got)
+	}
+	missing(t, w, "bin/tool")
+	missing(t, w, ".shard-link1-0-1")
 
 	closeAndCheck(t, w, path)
 }

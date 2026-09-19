@@ -28,10 +28,11 @@ type version struct {
 
 // merge is the final tree once the whiteouts are applied, plus the older versions the hard links took.
 type merge struct {
-	tree   map[string]version
-	links  map[version]version
-	needed map[version]bool
-	placed map[version]string
+	tree    map[string]version
+	links   map[version]version
+	needed  map[version]bool
+	placed  map[version]string
+	scratch string
 }
 
 // buildDisk writes the layers as one ext4 image at dst, from the tars: an unpack on a Mac loses the uid, the devices and the xattrs.
@@ -100,8 +101,29 @@ func planDisk(ctx context.Context, layers []v1.Layer) (*merge, error) {
 			m.needed[tv] = true
 		}
 	}
+	m.scratch = m.freePrefix()
 
 	return m, nil
+}
+
+// freePrefix picks a root name no surviving path starts with, so a scratch name never collides with the image's own.
+func (m *merge) freePrefix() string {
+	for n := 0; ; n++ {
+		prefix := fmt.Sprintf(".shard-link%d", n)
+		if !m.startsWith(prefix) {
+			return prefix
+		}
+	}
+}
+
+func (m *merge) startsWith(prefix string) bool {
+	for name := range m.tree {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *merge) plan(v version, hdr *tar.Header) error {
@@ -132,6 +154,10 @@ func (m *merge) plan(v version, hdr *tar.Header) error {
 		tv, ok := m.tree[target]
 		if !ok {
 			return fmt.Errorf("%s: a hard link to %s, which the layers so far do not hold", name, target)
+		}
+		// A link to a link takes the file behind both, so a whiteout of the middle name changes nothing.
+		if ftv, ok := m.links[tv]; ok {
+			tv = ftv
 		}
 		m.links[v] = tv
 	}
@@ -166,7 +192,7 @@ func (m *merge) write(w *ext4.Writer, made map[string]bool, v version, hdr *tar.
 
 	// A version a link took but a later layer replaced or removed is written under a scratch name.
 	if m.tree[name] != v {
-		m.placed[v] = fmt.Sprintf(".shard-link-%d-%d", v.layer, v.seq)
+		m.placed[v] = fmt.Sprintf("%s-%d-%d", m.scratch, v.layer, v.seq)
 		name = m.placed[v]
 	}
 	if err := m.parents(w, made, name); err != nil {

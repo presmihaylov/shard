@@ -36,7 +36,26 @@ func cloneOrCopy(base, dst string) (bool, error) {
 	return false, copyFile(base, dst)
 }
 
-func copyFile(src, dst string) (err error) {
+func copyFile(src, dst string) error {
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	// A half-written copy is removed once both files are closed, so a retry finds the name free.
+	if err := fill(out, src); err != nil {
+		return errors.Join(err, os.Remove(dst))
+	}
+
+	return nil
+}
+
+func fill(out *os.File, src string) (err error) {
+	defer func() {
+		if cerr := out.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", out.Name(), cerr))
+		}
+	}()
+
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
@@ -47,22 +66,8 @@ func copyFile(src, dst string) (err error) {
 		}
 	}()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", dst, err)
-	}
-	// A half-written copy is removed, so a retry finds the name free.
-	defer func() {
-		if cerr := out.Close(); cerr != nil {
-			err = errors.Join(err, fmt.Errorf("close %s: %w", dst, cerr))
-		}
-		if err != nil {
-			err = errors.Join(err, os.Remove(dst))
-		}
-	}()
-
 	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("copy %s to %s: %w", src, dst, err)
+		return fmt.Errorf("copy %s to %s: %w", src, out.Name(), err)
 	}
 
 	return nil
