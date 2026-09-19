@@ -50,6 +50,7 @@ func TestConformance(t *testing.T) {
 		},
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:      h.reopen,
 	})
 }
 
@@ -57,9 +58,22 @@ type harness struct {
 	provider *sysbox.Provider
 	image    image.Image
 
+	open func() (models.Provider, error)
+
 	mu   sync.Mutex
 	dirs map[string]string
 	next atomic.Int64
+}
+
+func (h *harness) reopen(t *testing.T) models.Provider {
+	t.Helper()
+
+	p, err := h.open()
+	if err != nil {
+		t.Fatalf("open the provider again: %v", err)
+	}
+
+	return p
 }
 
 func newHarness(t *testing.T) *harness {
@@ -92,6 +106,8 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
+	// A daemon restart is a second provider over the same runner and state, which holds nothing of the first in memory.
+	h.open = func() (models.Provider, error) { return sysbox.New(runner, bundles, h.stateDir) }
 
 	return h
 }
