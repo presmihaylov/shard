@@ -115,7 +115,7 @@ func newBrokerLog(t *testing.T, records Records, secrets Secrets, policies ...mo
 		}
 	}
 
-	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}}
+	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}, "private.example.net": {netip.MustParseAddr("10.0.0.5")}}
 	svc := egress.New(store, records, gateway, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
 
 	log := &fakeLog{}
@@ -157,7 +157,7 @@ func TestDecideNamesTheSandboxByAddressAndPinsTheUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if got.Allowed || got.Rule != "" || !strings.Contains(got.Reason, "no rule") {
+	if got.Allowed || got.Rule != network.RuleDefault || !strings.Contains(got.Reason, "no rule") {
 		t.Errorf("a host the policy does not name got %+v", got)
 	}
 
@@ -487,6 +487,43 @@ func TestDecideLogsWhatItDecided(t *testing.T) {
 
 	if deny := log.records[1]; deny.Verdict != string(models.ActionDeny) || deny.Rule != network.RuleDefault {
 		t.Errorf("the deny became %+v", deny)
+	}
+}
+
+// A deny with no rule text named an empty rule in the 403, so the floor, the default and a missing policy name their id (SHARD-229).
+func TestDecideNamesTheIdWhenNoRuleTextDecided(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{
+		{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "orphan", Policy: "gone", Address: netip.MustParsePrefix("10.87.0.4/16")},
+	}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+	}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, web)
+
+	for i, tc := range []struct {
+		name   string
+		source netip.Addr
+		host   string
+		rule   string
+	}{
+		{"the floor", source, "private.example.net", network.RulePrivate},
+		{"the default", source, "evil.example.net", network.RuleDefault},
+		{"a missing policy", netip.MustParseAddr("10.87.0.4"), "api.example.com", network.RuleMissing},
+	} {
+		got, err := b.Decide(t.Context(), proxy.Request{Source: tc.source, Host: tc.host, Port: 80})
+		if err != nil {
+			t.Fatalf("%s: Decide: %v", tc.name, err)
+		}
+		if got.Allowed || got.Rule != tc.rule {
+			t.Errorf("%s got %+v, want rule %s", tc.name, got, tc.rule)
+		}
+		if len(log.records) != i+1 {
+			t.Fatalf("%s left the log at %+v", tc.name, log.records)
+		}
+		if rec := log.records[i]; rec.Rule != tc.rule || rec.RuleText != "" {
+			t.Errorf("%s was logged as %+v, want rule %s and no text", tc.name, rec, tc.rule)
+		}
 	}
 }
 

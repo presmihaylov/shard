@@ -3,6 +3,7 @@
 package broker
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -83,10 +84,11 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		return proxy.Decision{}, err
 	}
 
+	// The floor, the default and a missing policy have no rule text, so the 403 and the proxy log name the id instead (SHARD-229).
 	return proxy.Decision{
 		Allowed:  decision.Action == models.ActionAllow,
 		Upstream: upstream,
-		Rule:     rule,
+		Rule:     cmp.Or(rule, decision.ID),
 		Reason:   decision.Reason,
 	}, nil
 }

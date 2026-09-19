@@ -12,7 +12,9 @@ A sandbox created without `--policy` reaches the internet and nothing private: t
 networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local and cloud metadata
 (`169.254.0.0/16`), loopback (`127.0.0.0/8`) and carrier NAT (`100.64.0.0/10`) are dropped, and so
 is every other sandbox. That floor holds under every policy too: no rule opens it, and
-`policy create` refuses a rule that names `private`.
+`policy create` refuses a rule that names `private`. The 403 and the egress log name that deny by
+its rule id, `private`, as they name `default` when no rule of a policy matches and `missing` when
+the policy does not exist.
 
 ## With a policy
 
