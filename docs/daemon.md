@@ -419,7 +419,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
-| `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. rm --force cannot reclaim through a wedge, since the kill opens with the same wedged call |
+| `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead: it SIGKILLs the sandbox's own runsc processes, matched by its cgroup and by its id on their command line, then finishes the teardown, and answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes that object alone into `*client.APIError`, with `Status`, `Code`, `Message`

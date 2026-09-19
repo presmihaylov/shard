@@ -86,12 +86,34 @@ func TestStopFallsThroughToTheKillWhenAStoppedRecordStillLies(t *testing.T) {
 	}
 }
 
-// A wedged runtime cannot be reclaimed through: Provider.Stop would open with the same runsc state and hang
-// too. So rm --force fails fast and typed rather than burning the client bound, and a raw kill is the only
-// recovery (SHARD-207b). It must reclaim nothing.
-func TestRemoveForceFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
+// rm --force on a wedge is the one reclaim route: the raw kill frees the substrate, then the stop and the teardown run (SHARD-207b).
+func TestRemoveForceReclaimsAWedgedSandboxThroughTheRawKill(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running(), fastBudget)
+	l.provider.statusGate = make(chan struct{})
+
+	start := time.Now()
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove --force returned %v, want the kill to carry it through", err)
+	}
+	bounded(t, start, "rm --force")
+
+	want := []string{"provider.Reclaim", "provider.Stop", "provider.Remove"}
+	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+		t.Errorf("rm --force ran %v, want the kill, then the stop, then the teardown: %v", got, want)
+	}
+	if !l.repo.deleted {
+		t.Error("the record of the reclaimed sandbox is still there")
+	}
+}
+
+// plainProvider hides the raw kill, the way a substrate that offers none looks to the orchestrator.
+type plainProvider struct{ models.Provider }
+
+// A substrate without a raw kill leaves rm --force where it was: fast, typed, and reclaiming nothing.
+func TestRemoveForceFailsFastWhenTheSubstrateOffersNoKill(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), fastBudget, func(c *sandbox.Config) { c.Provider = plainProvider{c.Provider} })
 	l.provider.statusGate = make(chan struct{})
 
 	start := time.Now()
@@ -106,7 +128,28 @@ func TestRemoveForceFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 		t.Errorf("the error names op %q, want rm", timeout.Op)
 	}
 	if l.provider.stopped || l.provider.removed || l.repo.deleted {
-		t.Errorf("rm --force reclaimed a wedged sandbox it should have left for a raw kill: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
+		t.Errorf("rm --force acted on a wedged sandbox it had no kill for: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
+	}
+}
+
+// A kill that did not land keeps the wedge typed, so the API still answers 504, and says why the kill failed.
+func TestRemoveForceReportsAKillThatDidNotLand(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), fastBudget)
+	l.provider.statusGate = make(chan struct{})
+	l.provider.reclaimErr = errors.New("sandbox sandbox1 still holds processes [4242] after SIGKILL")
+
+	err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace)
+
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("Remove --force returned %v, want the SubstrateTimeoutError kept under the kill failure", err)
+	}
+	if !strings.Contains(err.Error(), "still holds processes [4242]") {
+		t.Errorf("the error is %q, want it to say why the kill failed", err)
+	}
+	if l.provider.stopped || l.provider.removed || l.repo.deleted {
+		t.Errorf("rm --force went on after a kill that failed: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
 	}
 }
 
@@ -223,7 +266,7 @@ func TestStopFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 	if timeout.Op != "stop" {
 		t.Errorf("the error names op %q, want stop", timeout.Op)
 	}
-	if l.provider.stopped {
-		t.Error("stop killed a running sandbox it could not read")
+	if l.provider.stopped || l.provider.reclaimed {
+		t.Error("stop killed or reclaimed a running sandbox it could not read")
 	}
 }

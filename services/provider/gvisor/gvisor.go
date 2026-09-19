@@ -55,6 +55,10 @@ type Provider struct {
 	caps    models.Capabilities
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
+	// procRoot is where the kernel publishes a process's command line. A test points it at a directory it wrote.
+	procRoot string
+	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
+	killProcess func(pid int) error
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -65,8 +69,10 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
 	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
 
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root}, nil
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill}, nil
 }
+
+func sigkill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
 
 func (p *Provider) Name() string { return Name }
 
