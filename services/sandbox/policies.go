@@ -89,14 +89,14 @@ func (s *Service) writePolicy(id, name string) error {
 	})
 }
 
-// trustProxy plants the proxy CA in the bundle, as a grant does. Running it again changes nothing.
+// trustProxy plants the proxy CA in the guest environment, as a grant does. Running it again changes nothing.
 func (s *Service) trustProxy(id string) error {
 	proxyCA, err := s.proxyCA()
 	if err != nil {
 		return err
 	}
 
-	b, err := s.bundle(id)
+	b, err := s.environment(id)
 	if err != nil {
 		return err
 	}
