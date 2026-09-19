@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -240,6 +241,8 @@ type fake struct {
 	verbs []string
 	saved string
 	guest net.Conn
+	// frames is the host end of a datagram pair the network verb hands out; nil is a VM with no network.
+	frames *os.File
 }
 
 func (f *fake) State() State      { return f.state }
@@ -258,6 +261,13 @@ func (f *fake) Save(path string) error {
 	f.saved = path
 
 	return nil
+}
+func (f *fake) Network() (*os.File, error) {
+	if f.frames == nil {
+		return nil, errors.New("the vm has no network device")
+	}
+
+	return f.frames, nil
 }
 func (f *fake) Connect(port uint32) (net.Conn, error) {
 	if port != 5000 {
@@ -363,6 +373,49 @@ func TestConnectSplicesTheGuestStreamOntoTheSocket(t *testing.T) {
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The network verb hands the daemon the very socket the VM writes to: a datagram in on one end is a datagram out on the other.
+func TestNetworkHandsTheFramesSocketOverByDescriptor(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := os.NewFile(uintptr(fds[0]), "guest")
+	defer guest.Close()
+	machine := &fake{state: StateRunning, frames: os.NewFile(uintptr(fds[1]), "host")}
+	// Registered before serve, so the shim's copy closes after the shim has stopped, as in the real shim.
+	t.Cleanup(func() { machine.frames.Close() })
+	client := serve(t, machine)
+
+	frames, err := client.Network()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer frames.Close()
+
+	if _, err := guest.Write([]byte("frame")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, err := frames.Read(buf)
+	if err != nil || string(buf[:n]) != "frame" {
+		t.Fatalf("read %q, %v", buf[:n], err)
+	}
+	if _, err := frames.Write([]byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	n, err = guest.Read(buf)
+	if err != nil || string(buf[:n]) != "reply" {
+		t.Fatalf("read back %q, %v", buf[:n], err)
+	}
+}
+
+func TestNetworkRefusesAVMWithoutOne(t *testing.T) {
+	client := serve(t, &fake{state: StateRunning})
+	if _, err := client.Network(); err == nil || !strings.Contains(err.Error(), "no network device") {
+		t.Fatalf("Network() = %v", err)
 	}
 }
 
