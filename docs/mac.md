@@ -1,21 +1,96 @@
-# Macs shard does not support, and the workaround
+# Run shard on a Mac
 
-`shard` supports one Mac: Apple silicon on macOS 14 or later, over the native `vz` provider
-(`docs/provider-vz.md`). An Intel Mac is not supported: the binary builds and the framework boots,
-but nothing is tested there, the snapshot verbs refuse by name on every macOS, and a bug on Intel
-gets no fix. macOS 13 is not supported either: `pause`, `resume` and `fork` need the macOS 14 save,
-so on 13 they refuse by name.
+One binary, one VM per sandbox, every verb. `shard` on a Mac drives Virtualization.framework
+itself: the daemon boots a Linux micro VM for each sandbox, over shard's own kernel and a disk it
+builds from the image, and the CLI is the same one as on Linux. Nothing to install first, no
+Docker, no Homebrew, and the daemon runs as your user.
 
-There is no fallback provider. The one way to run shard on such a Mac is the workaround below: a
-Linux VM with shard inside it. It is a workaround, not a supported mode.
+Needs: Apple silicon, macOS 14 or later. That is the one supported Mac. An Intel Mac is not
+supported: the binary builds and the framework boots, but nothing is tested there, `pause`, `resume`
+and `fork` refuse by name on every macOS, and a bug on Intel gets no fix. macOS 13 is not supported
+either: the three snapshot verbs need the macOS 14 save and refuse by name on 13
+(`docs/provider-vz.md`). There is no fallback provider; the appendix is the workaround for both.
 
-## Workaround: shard inside one Linux VM
+## Get the binary
 
-Run any Linux VM on the Mac (UTM, Lima, Parallels, VMware), install `shard` inside it as on any
-Linux host, and use it from a shell in the VM. The Linux substrates are then the ones on offer:
-gVisor runs every verb, runc and Sysbox refuse `pause`, `resume` and `fork` by name
-(`docs/provider.md`). To drive it from the Mac's own terminal instead, expose
-`shard serve` from the VM and point the native CLI at it.
+Download `shard-darwin-arm64` from the latest release, put it on the path, and give it a root:
+
+```
+curl -fsSLo shard https://github.com/presmihaylov/shard/releases/latest/download/shard-darwin-arm64
+chmod +x shard && sudo install -m0755 shard /usr/local/bin/shard
+sudo install -d -o "$USER" /var/lib/shard
+```
+
+The root is where the daemon keeps every record, disk and kernel, and it defaults to
+`/var/lib/shard`; the `install -d` hands it to your user so nothing runs as root. `--root <dir>`
+on every command picks another one, and needs no `sudo` at all. A binary a browser fetched carries
+the quarantine flag and macOS refuses to run it: `xattr -d com.apple.quarantine shard` clears it.
+`curl` sets none.
+
+## Run it
+
+```
+shard daemon
+```
+
+That is the daemon, in a terminal of its own, and it stays there. On a Mac it picks the `vz`
+provider by itself. On its first boot it writes the signed VM shim and the guest supervisor under
+the root (`docs/macos-signing.md`), and the first `create` fetches the release kernel for this Mac
+into the root and checks its hash (`docs/kernel.md`). Both happen once.
+
+In a second terminal:
+
+```
+shard create python:3.12 -- python -c 'print(1)'
+shard logs <id>
+shard exec <id> -- uname -a
+shard pause <id>
+shard resume <id>
+shard stop <id>
+```
+
+The image is pulled from the registry and becomes an ext4 disk once; every sandbox over it boots an
+APFS clone of that disk, so the second `create` of an image is a boot and nothing more. A sandbox
+gets 512 MB by default, and `--memory` is a hard cap, because a VM's memory is real memory on a
+laptop. Keep the count of running sandboxes to what the Mac holds: eight of the default size is
+4 GB.
+
+The VM has no way onto the LAN. Its network is a file handle into the daemon, where shard's own
+netstack terminates it, and the only things it can reach are the egress proxy and the resolver
+(`docs/egress.md`). So a `--policy` holds on a Mac the same as on Linux, and a sandbox cannot see
+your printer.
+
+## What is different from Linux
+
+| | `vz` on a Mac | gVisor on Linux |
+|---|---|---|
+| Isolation | a micro VM per sandbox, a Linux kernel of its own | a user-space kernel, `runsc` |
+| Syscall cost | native, inside the VM | high on file-heavy work |
+| `pause`, `resume`, `fork` | macOS 14 or later | yes |
+| Memory | `--memory` is a hard cap, 512 MB default | a limit the cgroup enforces |
+| Host access | none: no shared folders, no LAN, no host mounts | none |
+
+`docs/provider.md` has the full matrix across every substrate.
+
+## If it does not start
+
+- `provider vz does not support pause on this host`: macOS 13. The verb needs 14.
+- `kernel checksum mismatch`: a file under `<root>/kernel/` changed. Delete that directory and
+  `create` again; the daemon fetches a fresh one.
+- A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The
+  error names `Virtualization.framework`; there is no workaround short of the profile.
+- `codesign: command not found`: the shim is signed on first use with the Command Line Tools.
+  `xcode-select --install` puts them on. Xcode itself is not needed.
+- A daemon restart keeps every sandbox: it re-adopts each running VM by its shim. A sleep of the
+  Mac keeps them too.
+
+## Appendix: the workaround for a Mac shard does not support
+
+An Intel Mac, or macOS 13, has one way onto shard's full verb set: run any Linux VM on the Mac
+(UTM, Lima, Parallels, VMware), install `shard` inside it as on any Linux host, and use it from a
+shell in the VM. The Linux substrates are then the ones on offer, gVisor by default, and every
+verb runs. To drive it from the Mac's own terminal instead, expose `shard serve` from the VM and
+point the native CLI at it. It is a workaround, not a supported mode.
 
 **The boundary.** Every sandbox shares that one VM: its kernel, its memory and its disk. The
 provider inside still isolates them from each other the way it does on any Linux host, but a
@@ -67,12 +142,11 @@ limactl shell shard sudo install -m0755 /tmp/shard /tmp/shard-init /usr/local/bi
 sudo install -m0755 bin/shard /usr/local/bin/shard
 ```
 
-`GOARCH=amd64` on an Intel Mac. A release carries `shard-linux-amd64`, `shard-init-linux-amd64`
-and `shard-darwin-<arch>` (`docs/release.md`), so an Intel Mac can skip the Linux builds and an
-Apple silicon one cannot; the darwin one is the full daemon, which serves as the client just the
-same. The runtime the provider drives is installed
-inside the VM: `runc` is `apt-get install runc`; `runsc` comes from gVisor's own apt repository;
-Sysbox from its release package. `docs/provider.md` says what each one needs from the kernel.
+`GOARCH=amd64` on an Intel Mac. A release carries the same three, `shard-linux-<arch>`,
+`shard-init-linux-<arch>` and `shard-darwin-<arch>` (`docs/release.md`); the darwin one is the full
+daemon, which serves as the client just the same. The runtime the provider drives is installed inside the VM: `runc`
+is `apt-get install runc`; `runsc` comes from gVisor's own apt repository; Sysbox from its release
+package. `docs/provider.md` says what each one needs from the kernel.
 
 ### The daemon, and the front for the Mac's CLI
 
@@ -92,8 +166,9 @@ shard daemon --provider gvisor
 ```
 
 The front refuses a secret file that everyone can read, and a token is a secret too, hence the
-`umask` before both. `--provider runc` or `--provider sysbox` picks the other two. The daemon
-stays in the foreground, so the front takes a second shell:
+`umask` before both. `--provider gvisor` or
+`--provider sysbox` picks the other two. The daemon stays in the foreground, so the front takes a
+second shell:
 
 ```
 limactl shell shard sudo shard serve --listen :2376 \
@@ -119,9 +194,9 @@ shard ls
 ```
 
 The client refuses a token file that everyone can read, hence the `umask`. Every verb works this
-way, exec and `logs -f` included: the front splices the bytes and the daemon sees the same requests
-it does from the socket. `docs/daemon.md` has the flags, the scopes a token carries, and how to
-revoke one.
+way, exec and `logs -f` included: the front splices the bytes and the daemon
+sees the same requests it does from the socket. `docs/daemon.md` has the flags, the scopes a token
+carries, and how to revoke one.
 
 ### Tearing it down
 
