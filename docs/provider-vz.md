@@ -25,7 +25,8 @@ The consequence is that the darwin build is a Mac build: cgo over an ObjC framew
 cross-compile from Linux. `make build-darwin` runs on a Mac with the Command Line Tools, and
 embeds the signed shim and a static linux `shard-init` for the Mac's arch in the daemon, which
 installs both under `<root>/vz` on first use; `make check` on Linux compiles the stub and never the
-binding.
+binding. CI builds and unit-tests the darwin binaries on a macOS runner, and the tests that boot a
+VM run by hand before a release (`docs/release.md`).
 
 ### One signed shim per sandbox, and the daemon never touches the framework
 
