@@ -261,6 +261,9 @@ type fakeProvider struct {
 	statusGate chan struct{}
 	// stopUnwedges makes Stop close statusGate, the way a kill frees a substrate a Status call had wedged.
 	stopUnwedges bool
+	// reclaimed says the raw kill ran, and reclaimErr is a kill that did not land.
+	reclaimed  bool
+	reclaimErr error
 
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
@@ -474,6 +477,23 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 		f.status = models.Status{Exists: true, State: models.StateStopped}
 	}
 	if f.stopUnwedges && f.statusGate != nil {
+		close(f.statusGate)
+		f.statusGate = nil
+	}
+
+	return nil
+}
+
+// Reclaim is the raw kill a wedged substrate gets, and it frees the substrate the way Stop's kill does.
+func (f *fakeProvider) Reclaim(_ context.Context, _ string) error {
+	if err := f.r.record("provider.Reclaim"); err != nil {
+		return err
+	}
+	if f.reclaimErr != nil {
+		return f.reclaimErr
+	}
+	f.reclaimed = true
+	if f.statusGate != nil {
 		close(f.statusGate)
 		f.statusGate = nil
 	}

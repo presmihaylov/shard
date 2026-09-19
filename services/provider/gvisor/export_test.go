@@ -22,6 +22,16 @@ func (p *Provider) SetCgroupRoot(root string) {
 	p.cgroupRoot = root
 }
 
+// SetProcRoot points a provider at a directory that stands in for /proc, so a reclaim reads command lines a test wrote.
+func (p *Provider) SetProcRoot(root string) {
+	p.procRoot = root
+}
+
+// SetKill replaces the SIGKILL a reclaim sends, so a test records the pids instead of killing anything.
+func (p *Provider) SetKill(kill func(pid int) error) {
+	p.killProcess = kill
+}
+
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.
 func RemoveCgroup(root, id string) error {
 	return cgroup.Remove(cgroupDir(root, id))

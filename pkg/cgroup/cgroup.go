@@ -100,6 +100,41 @@ func MemoryEvents(dir string) (Events, error) {
 	return events, nil
 }
 
+// Procs lists the processes in a cgroup and in every cgroup under it; a cgroup that is gone answers ErrNotFound.
+func Procs(dir string) ([]int, error) {
+	var pids []int
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil && path == dir && errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+
+		raw, err := read(path, "cgroup.procs")
+		if err != nil {
+			return err
+		}
+		for field := range strings.FieldsSeq(raw) {
+			pid, err := strconv.Atoi(field)
+			if err != nil {
+				return fmt.Errorf("read %s: %q is not a pid", filepath.Join(path, "cgroup.procs"), field)
+			}
+			pids = append(pids, pid)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return pids, nil
+}
+
 // Ensure makes a cgroup exist, and one that already does is fine.
 func Ensure(dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
