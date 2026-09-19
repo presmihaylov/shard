@@ -1,6 +1,4 @@
-// Package netstack terminates a VM's Ethernet frames in a userspace stack, gVisor's, that answers
-// for one address alone. Nothing it receives is forwarded, so a guest reaches the listeners on that
-// address and nothing else, not the host it runs on.
+// Package netstack terminates a VM's frames in a userspace stack that answers for one address and forwards nothing, so a guest reaches its listeners and nothing else.
 package netstack
 
 import (
@@ -94,8 +92,7 @@ type Link struct {
 	pumpErr error
 }
 
-// Attach puts a guest on the stack: one NIC over frames, the address on it, and a route to guest alone.
-// One datagram is one Ethernet frame, both ways, which is what the VZ file-handle device speaks.
+// Attach puts a guest on the stack: one NIC over frames, one datagram per Ethernet frame, the address on it, and a route to guest alone.
 func (s *Stack) Attach(frames io.ReadWriteCloser, guest netip.Addr) (*Link, error) {
 	if !guest.Is4() {
 		return nil, fmt.Errorf("the guest address %s is not IPv4", guest)
@@ -182,7 +179,7 @@ func (l *Link) receive() error {
 		if err != nil {
 			return fmt.Errorf("read a frame from the guest: %w", err)
 		}
-		if n < header.EthernetMinimumSize {
+		if !l.fromGuest(buf[:n]) {
 			continue
 		}
 		// The stack owns the packet's bytes, so each frame is copied out of the read buffer.
@@ -192,14 +189,34 @@ func (l *Link) receive() error {
 	}
 }
 
+// fromGuest reports a frame whose network source is the link's guest; anything else is a forged sibling, or a protocol the stack has no policy for, and drops.
+func (l *Link) fromGuest(frame []byte) bool {
+	if len(frame) < header.EthernetMinimumSize {
+		return false
+	}
+	eth := header.Ethernet(frame)
+	body := frame[header.EthernetMinimumSize:]
+	guest := tcpip.AddrFrom4(l.guest.As4())
+	switch eth.Type() {
+	case header.IPv4ProtocolNumber:
+		return len(body) >= header.IPv4MinimumSize && header.IPv4(body).SourceAddress() == guest
+	case header.ARPProtocolNumber:
+		return len(body) >= header.ARPSize && tcpip.AddrFromSlice(header.ARP(body).ProtocolAddressSender()) == guest
+	}
+
+	return false
+}
+
 func (l *Link) send(ctx context.Context) error {
 	for {
 		pkt := l.ep.ReadContext(ctx)
 		if pkt == nil {
 			return nil
 		}
-		frame := pkt.ToView().AsSlice()
-		_, err := l.frames.Write(frame)
+		// The view is the caller's to release; the packet's own reference does not cover it.
+		view := pkt.ToView()
+		_, err := l.frames.Write(view.AsSlice())
+		view.Release()
 		pkt.DecRef()
 		if quiet(err) {
 			return nil
