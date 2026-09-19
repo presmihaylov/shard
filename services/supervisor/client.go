@@ -32,6 +32,8 @@ type Control struct {
 
 	pending   map[int]chan Message
 	pendingMu sync.Mutex
+	// ended is the read error once the reader is gone, under pendingMu so a request registers or is refused, never lost.
+	ended error
 
 	// events is unbounded, so a host that reads Next late never stalls the guest's answers behind them.
 	events   []Message
@@ -91,9 +93,10 @@ func (c *Control) read() {
 	}
 }
 
-// end wakes every waiter with the read error, so no request outlives the connection.
+// end wakes every waiter with the read error, so no request outlives the connection, and refuses the ones after it.
 func (c *Control) end(err error) {
 	c.pendingMu.Lock()
+	c.ended = err
 	for id, reply := range c.pending {
 		delete(c.pending, id)
 		close(reply)
@@ -161,9 +164,18 @@ func (c *Control) request(m Message) error {
 	c.mu.Lock()
 	c.nextID++
 	m.ID = c.nextID
+	// Registered under the lock end takes, so a reader already gone cannot leave the reply unanswered.
 	c.pendingMu.Lock()
-	c.pending[m.ID] = reply
+	ended := c.ended
+	if ended == nil {
+		c.pending[m.ID] = reply
+	}
 	c.pendingMu.Unlock()
+	if ended != nil {
+		c.mu.Unlock()
+
+		return fmt.Errorf("%s: the guest went away: %w", m.Kind, ended)
+	}
 	err := WriteMessage(c.conn, m)
 	c.mu.Unlock()
 	if err != nil {
@@ -207,6 +219,12 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	var writes sync.Mutex
 	if spec.Stdin != nil {
 		go feedStdin(conn, &writes, spec.Stdin)
+	}
+	// No stdin is /dev/null: the command sees EOF at once, not a pipe nobody closes.
+	if spec.Stdin == nil {
+		if err := WriteFrame(conn, StreamStdinClose, nil); err != nil {
+			return models.ExitStatus{}, fmt.Errorf("close the exec stdin: %w", err)
+		}
 	}
 
 	exit, err := readExec(conn, id, spec)

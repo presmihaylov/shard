@@ -166,17 +166,23 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			return
 		}
-		t.answer(m.ID, t.handle(m))
+		t.answer(conn, m.ID, t.handle(m))
 	}
 }
 
-// answer carries the request's id back, so the host matches the reply to what it asked.
-func (t *transport) answer(id int, err error) {
+// answer carries the request's id back on the connection that asked; a host replaced meanwhile never sees another's reply.
+func (t *transport) answer(conn net.Conn, id int, err error) {
 	reply := supervisor.Message{Kind: supervisor.KindDone, ID: id}
 	if err != nil {
 		reply = supervisor.Message{Kind: supervisor.KindFailure, ID: id, Error: err.Error()}
 	}
-	if err := t.send(reply); err != nil {
+
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+	if t.control != conn {
+		return
+	}
+	if err := supervisor.WriteMessage(conn, reply); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)
 	}
 }
