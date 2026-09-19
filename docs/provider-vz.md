@@ -182,11 +182,52 @@ the vsock streams end to end (SHARD-216), the netstack (SHARD-217), and any of t
 
 ## What hypeman contributes
 
-SHARD-231 decides per file what shard copies from `kernel/hypeman` (`lib/hypervisor/vz`, `cmd/vz-shim`,
-MIT) and lists each piece here with its origin commit. The candidates: the shim with a runtime
-`codesign --sign -`, the per-VM shim socket and the reconnect, the vsock handshake, the arm64-only
-save and restore split, the entitlements plist. Their NAT networking, their instance store, their API
-and their guest agent are not taken. Copy with attribution, never import.
+`kernel/hypeman` (MIT, copyright 2025 Kernel) runs this substrate in production, as
+`lib/hypervisor/vz` and `cmd/vz-shim`. SHARD-231 read every file of both at `df4d1a56` (2026-09-18)
+and decided per file what shard takes. The rule: copy with attribution, never import. No shard
+package depends on a hypeman package, and `NOTICE` carries their MIT text. Each origin commit below
+is the last commit that touched the file at that revision, so a diff against it shows what shard
+changed.
+
+### Taken, as a copy adapted to shard
+
+| Piece | File in hypeman | Origin | Lands in |
+|---|---|---|---|
+| The device assembly: boot loader, console on file handles, entropy, virtio-blk, vsock, `Validate` before `NewVirtualMachine` | `cmd/vz-shim/vm.go` | `8331138c` | `cmd/shard-vz-shim` (SHARD-213) |
+| The machine identifier as base64 data, generated once and handed back so the caller persists it | `cmd/vz-shim/vm.go` `configurePlatform` | `8331138c` | `cmd/shard-vz-shim` (SHARD-213) |
+| The shim process shape: config as JSON on argv, restore-or-start, a state watcher that ends the process on `Stopped` or `Error`, SIGTERM stops the VM | `cmd/vz-shim/main.go` | `561e34fd` | `cmd/shard-vz-shim` (SHARD-213) |
+| The save and restore split: `darwin && arm64` calls the framework, every other build returns the unsupported error | `cmd/vz-shim/save_restore_arm64.go`, `save_restore_unsupported.go` | `561e34fd` | `pkg/vz` (SHARD-213) |
+| The host probe: `kern.osproductversion`, major 14 or later means save and restore exist, an unparsable version means no | `lib/hypervisor/vz/save_restore_support.go`, `save_restore_support_darwin.go` | `5d9eff09` | `pkg/vz` capability probe (SHARD-213) |
+| The shim as an embedded binary: `go:embed` the built shim and the plist, write both to a file, `codesign --sign - --entitlements` at first use | `lib/hypervisor/vz/starter.go` `extractShim`, `vz_shim_binary.go`, `vz_entitlements.go` | `840d6235`, `1c69f414` | SHARD-214 |
+| The shim start: `Setpgid`, `Wait` in a goroutine, poll the socket, and on a timeout read the shim's log and say whether it exited early | `lib/hypervisor/vz/starter.go` `startShim`, `waitForShim` | `840d6235` | `services/provider/vz` (SHARD-218) |
+| The vsock proxy over the shim socket: the client writes `CONNECT <port>\n`, the shim calls `SocketDevices()[0].Connect(port)`, answers `OK <port>\n` and copies both ways; the client keeps its `bufio.Reader` on the connection | `cmd/vz-shim/server.go` `handleVsockConnection`, `lib/hypervisor/vz/vsock.go` | `75c32892`, `1c69f414` | shim socket and `pkg/vz` client (SHARD-216) |
+
+The entitlements plist is copied with one key, `com.apple.security.virtualization`. hypeman's also
+grants `network.server` and `network.client`; those are App Sandbox keys and a signed command line
+tool outside the sandbox does not need them, which the spike confirmed.
+
+### Written by shard, informed by hypeman
+
+| Piece | What hypeman has | Why shard writes its own |
+|---|---|---|
+| The shim config | `shimconfig/config.go` (`8331138c`): disks, NAT nets, balloon, Rosetta, snapshot manifest | shard's shim has one disk, one file-handle net device and no balloon, and its record, not a manifest, holds the identifier |
+| The shim control channel | `cmd/vz-shim/server.go`, `lib/hypervisor/vz/client.go`: an HTTP API in the shape of cloud-hypervisor's | shard needs to pass the network fd over the socket (`SCM_RIGHTS`), which HTTP cannot carry; the verbs are pause, resume, save, stop and vsock connect, a length-prefixed request each |
+| The cpu and memory bounds | `cmd/vz-shim/vm.go` (`8331138c`) `computeMemorySize`, `computeCPUCount`: clamp a request into the framework's `MinimumAllowed`/`MaximumAllowed` | shard's `--memory` and `--cpus` are hard bounds the record and `inspect` report, and a clamp would hand the VM more than the record says; zero keeps the default, and an explicit value outside the framework's range is refused with an error that names the range, as gVisor refuses a request below its minimum. The shim ticket (SHARD-213) ships the boundary tests at both ends of the range |
+| Fork | `lib/hypervisor/vz/fork.go` (`561e34fd`): rewrite the snapshot manifest's paths for the target | shard clones the snapshot disk and restores from the record; the lesson taken is that the device configuration, the network device included, must not change between save and restore or the restore fails with `Code=12` |
+| The unit tests | `save_restore_support_test.go`, `fork_test.go` (`5d9eff09`, `561e34fd`): the host probe matrix and the manifest path rewrites, against their registry | shard writes its own cases for every adapted behavior, next to the code that lands: the host probe fails closed on every row of the matrix (a non-darwin `GOOS`, a non-arm64 arch, macOS 13, an empty version, a malformed version) in SHARD-213, the snapshot disk pairing and the re-address message in SHARD-215, the vsock handshake in SHARD-216. The conformance suite covers the verbs, not these internals, so without the probe cases SHARD-213 could advertise a verb the host lacks with no focused test failing |
+
+### Not taken
+
+- The NAT network device (`vm.go` `createNATNetworkDevice`, `assignMACAddress`): gotcha 5, the
+  frames go to a netstack in the daemon instead.
+- The memory balloon: shard's `--memory` is a hard cap, and a balloon would make the VM's footprint
+  a moving target on a laptop.
+- `lib/instances`, the API, the guest agent and the OpenTelemetry client: shard has its own record,
+  API and `shard-init`.
+- The Rosetta share (`cmd/vz-shim/rosetta_arm64.go`, `shimconfig/rosetta.go`, `8331138c`) is the
+  reference for SHARD-233, which is not approved. Nothing is copied until it is.
+- The test files verbatim: they test hypeman's registry. The behaviors they prove get shard-owned
+  cases, per the table above.
 
 ## Order
 
