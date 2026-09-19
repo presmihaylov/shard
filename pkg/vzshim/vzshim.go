@@ -1,5 +1,4 @@
-// Package vzshim carries shard-vz-shim inside the daemon and installs it, signed, on first use.
-// It is its own package so the shim, which imports pkg/vz, never embeds its own previous build.
+// Package vzshim carries shard-vz-shim inside the daemon, apart from pkg/vz so the shim never embeds its own previous build.
 package vzshim
 
 import (
@@ -34,8 +33,7 @@ func Embedded() bool {
 	return err == nil
 }
 
-// Install writes the embedded shim under dir and ad-hoc signs it with the virtualization entitlement, once per build.
-// Concurrent callers each publish their own signed copy by rename, so the path never holds a partial file.
+// Install writes the embedded shim under dir, ad-hoc signed with the virtualization entitlement, once per build; concurrent callers each rename their own signed copy in.
 func Install(dir string) (string, error) {
 	body, err := fs.ReadFile(shimFS, "shim/"+shimName)
 	if err != nil {

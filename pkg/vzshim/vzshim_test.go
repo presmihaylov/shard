@@ -18,8 +18,7 @@ func TestABinaryWithoutTheShimSaysSoInsteadOfInstallingNothing(t *testing.T) {
 	}
 }
 
-// The daemon must reference this package, or the linker drops the embedded shim and make build-darwin ships nothing.
-// The shim must not link it, or every build embeds the previous one and two builds of one tree never match.
+// The daemon must reference this package or the linker drops the embed; the shim must not, or it embeds its previous build.
 func TestTheDaemonLinksTheEmbeddedShimAndTheShimDoesNot(t *testing.T) {
 	daemon := filepath.Join(t.TempDir(), "shard")
 	build := exec.Command("go", "build", "-o", daemon, "../../cmd/shard")
