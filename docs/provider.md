@@ -216,7 +216,8 @@ host, and a pipe cannot be one.
   `Remove` has dropped every mount inside it.
 - The **network service** owns the namespace, the address and the host interface. `NetworkSpec` is
   allocated before `Create`, so a provider joins a namespace it did not build and never releases one.
-- **Host netfilter is the policy of record.** Nothing a sandbox can reach may depend on a rule that
+- **The host is the policy of record.** On Linux that is host netfilter; on `vz` it is the daemon's own
+  userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a rule that
   lives inside the sandbox.
 
 Every verb takes an id, because `shard` runs no daemon that could remember anything from `Create`.
@@ -243,8 +244,9 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 
 Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
 every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
-the refuse path there and the snapshot path only on gVisor. The snapshot-shaped interface questions wait
-for Firecracker (SHARD-45).
+the refuse path there and the snapshot path on gVisor and on `vz`, whose `vzvm_integration_test.go` runs
+the suite on real VMs on an Apple silicon Mac. The snapshot-shaped interface questions wait for
+Firecracker (SHARD-45).
 
 It does not prove anything about the network: every substrate joins a namespace the network service
 built, so there is nothing to generalize yet.
