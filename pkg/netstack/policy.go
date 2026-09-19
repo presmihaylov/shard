@@ -35,9 +35,9 @@ func (l *Link) judge(frame []byte) (Drop, bool) {
 	if s.open {
 		return Drop{}, true
 	}
-	// A forged frame names no guest, so it drops without a report.
+	// The link is one guest's wire, so a frame it did not send is still charged to it.
 	if !l.fromGuest(frame) {
-		return Drop{}, false
+		return l.refused(frame), false
 	}
 	eth := header.Ethernet(frame)
 	if eth.Type() != header.IPv4ProtocolNumber {
@@ -56,6 +56,34 @@ func (l *Link) judge(frame []byte) (Drop, bool) {
 	}
 
 	return Drop{Time: time.Now().UTC(), Guest: l.guest, Destination: netip.AddrFrom4(ip.DestinationAddress().As4()), Protocol: protocolName(proto), Port: int(port)}, false
+}
+
+// refused names a frame the link took from something other than its guest: IPv6, a forged source, or nothing the stack speaks.
+func (l *Link) refused(frame []byte) Drop {
+	d := Drop{Time: time.Now().UTC(), Guest: l.guest, Protocol: "runt"}
+	if len(frame) < header.EthernetMinimumSize {
+		return d
+	}
+	eth := header.Ethernet(frame)
+	body := frame[header.EthernetMinimumSize:]
+	d.Protocol = "ethertype " + strconv.Itoa(int(eth.Type()))
+	switch eth.Type() {
+	case header.IPv6ProtocolNumber:
+		d.Protocol = "ipv6"
+		if len(body) >= header.IPv6MinimumSize {
+			d.Destination = netip.AddrFrom16(header.IPv6(body).DestinationAddress().As16())
+		}
+	case header.IPv4ProtocolNumber, header.ARPProtocolNumber:
+		d.Protocol = "forged"
+		if eth.Type() == header.IPv4ProtocolNumber && len(body) >= header.IPv4MinimumSize {
+			ip := header.IPv4(body)
+			d.Destination = netip.AddrFrom4(ip.DestinationAddress().As4())
+			d.Protocol = "forged " + protocolName(ip.TransportProtocol())
+			d.Port = int(transportPort(ip))
+		}
+	}
+
+	return d
 }
 
 // serves reports a listener on the port; the stack answers a closed port with a reset, which a guest must not learn from.

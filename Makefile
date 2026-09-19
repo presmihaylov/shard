@@ -121,7 +121,7 @@ vuln:
 check: fmt-check vet lint test e2e-test
 
 clean:
-	rm -rf bin $(VZ_SHIM_BIN)
+	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)
 
 # One guest kernel, built in the pinned amd64 image so the bytes match CI wherever it runs (SHARD-232).
 kernel:
