@@ -8,10 +8,15 @@ one Go binary, `shard`, and it stays as the Go linker leaves it.
 
 ## What ships
 
-`make build-darwin` builds the shim, ad-hoc signs it into `pkg/vz/shim/`, and then builds `shard`
-with the shim embedded. On first use the daemon writes the shim into the shard root and ad-hoc signs
-it there (`vz.InstallShim`), with the entitlements plist it also embeds. A stamp beside it, `shard-vz-shim.sha256`, holds the hash of the embedded build, so a later start finds the shim in place. A later build with a
-different shim replaces the file by rename, so a running shim keeps its inode. The install needs
+`make build-darwin` builds the shim, ad-hoc signs it into `pkg/vzshim/shim/`, and then builds `shard`
+with the shim embedded. `pkg/vzshim` is its own package, which the daemon links and the shim does
+not: a shim that embedded its own previous build would never hash the same twice. On first use the
+daemon writes the shim into the shard root and ad-hoc signs it there (`vzshim.Install`), with the
+entitlements plist it also embeds, in a temporary file it removes after the signature. A stamp
+beside the shim, `shard-vz-shim.sha256`, holds the hash of the embedded build, so a later start
+finds the shim in place, and a build with a different shim replaces the file by rename, so a
+running shim keeps its inode. Concurrent first-use callers each sign a temporary copy of their
+own and publish it by rename, so the path never holds a partial file. The install needs
 `codesign`, which the Command Line Tools provide; Xcode is not needed.
 
 The installed shim, on a Mac with only the Command Line Tools:
@@ -61,7 +66,7 @@ notarizing the result lets a downloaded `shard` open without a Gatekeeper refusa
 an Apple team, and lets an MDM allow or deny shard by that team rather than by path or hash. It
 changes nothing about the entitlement: `com.apple.security.virtualization` is not restricted, so
 an ad-hoc and a Developer ID signature carry it the same way. A future release job can sign the
-embedded shim and `shard` itself with a Developer ID; `InstallShim` then re-signs the extracted
+embedded shim and `shard` itself with a Developer ID; `vzshim.Install` then re-signs the extracted
 shim ad-hoc, which is still valid, and a hardened build would sign with the identity instead.
 
 ## What an MDM block looks like

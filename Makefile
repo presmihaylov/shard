@@ -1,6 +1,6 @@
 BIN      := bin/shard
 SHARD_INIT_BIN := bin/shard-init
-VZ_SHIM_BIN := pkg/vz/shim/shard-vz-shim
+VZ_SHIM_BIN := pkg/vzshim/shim/shard-vz-shim
 PKG      := github.com/presmihaylov/shard
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -X main.version=$(VERSION)
@@ -39,10 +39,10 @@ build-shard-init:
 build-shard-init-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(SHARD_INIT_BIN)-linux-amd64 ./cmd/shard-init
 
-# The shim holds one Virtualization.framework VM. It lands where pkg/vz embeds it, signed, so a direct run works too.
+# The shim holds one Virtualization.framework VM. It lands where pkg/vzshim embeds it, signed, so a direct run works too.
 build-shard-vz-shim:
 	go build -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
-	codesign --sign - --force --entitlements pkg/vz/shim/entitlements.plist $(VZ_SHIM_BIN)
+	codesign --sign - --force --entitlements pkg/vzshim/shim/entitlements.plist $(VZ_SHIM_BIN)
 
 # The Mac build: cgo over the framework never cross-compiles, and the daemon carries the shim it will install and sign.
 build-darwin: build-shard-vz-shim

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/vzshim"
 )
 
 // The boot tests want the shard kernel; a Mac without one skips them, and SHARD_KERNEL names one elsewhere.
@@ -53,7 +55,7 @@ func prepare(t *testing.T) fixtures {
 	}
 
 	f := fixtures{kernel: kernel, shim: os.Getenv("SHARD_VZ_SHIM"), initrd: os.Getenv("SHARD_VZ_INITRD")}
-	if f.shim == "" && Embedded() {
+	if f.shim == "" && vzshim.Embedded() {
 		f.shim = installShim(t)
 	}
 	if f.shim == "" {
@@ -70,9 +72,9 @@ func prepare(t *testing.T) fixtures {
 func installShim(t *testing.T) string {
 	t.Helper()
 
-	shim, err := InstallShim(t.TempDir())
+	shim, err := vzshim.Install(t.TempDir())
 	if err != nil {
-		t.Fatalf("InstallShim: %v", err)
+		t.Fatalf("vzshim.Install: %v", err)
 	}
 
 	return shim
@@ -476,36 +478,13 @@ func hold() int {
 	select {}
 }
 
-func TestTheEmbeddedShimInstallsOnceSignedAndBootsAVM(t *testing.T) {
-	if !Embedded() {
+// The install itself is proven in pkg/vzshim; this is the boot half of the SHARD-214 AC, over the embedded shim.
+func TestTheEmbeddedShimBootsAVM(t *testing.T) {
+	if !vzshim.Embedded() {
 		t.Skip("this test binary carries no shim: run make build-shard-vz-shim first")
 	}
 	f := prepare(t)
-	dir := t.TempDir()
-
-	shim, err := InstallShim(dir)
-	if err != nil {
-		t.Fatalf("InstallShim: %v", err)
-	}
-	first, err := os.Stat(shim)
-	if err != nil {
-		t.Fatalf("stat the shim: %v", err)
-	}
-	if again, err := InstallShim(dir); err != nil || again != shim {
-		t.Fatalf("second InstallShim: %s, %v", again, err)
-	}
-	second, err := os.Stat(shim)
-	if err != nil {
-		t.Fatalf("stat the shim: %v", err)
-	}
-	if !second.ModTime().Equal(first.ModTime()) {
-		t.Fatal("the second InstallShim rewrote a shim that had not changed")
-	}
-	if out := run(t, "", "codesign", "-d", "--entitlements", "-", shim); !strings.Contains(out, "com.apple.security.virtualization") {
-		t.Fatalf("the installed shim carries no virtualization entitlement:\n%s", out)
-	}
-
-	f.shim = shim
+	f.shim = installShim(t)
 	client, info := start(t, f.shim, config(t, f))
 	if pid := guestPID(t, client); pid != 1 {
 		t.Fatalf("the guest answered as pid %d", pid)
