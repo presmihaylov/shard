@@ -212,8 +212,7 @@ const (
 	CommandNotExecutableExitCode = 126
 )
 
-// Environment is the guest environment of a sandbox that is created or stopped, which a grant, an
-// ungrant and an attach rewrite for the next start. Each provider answers it from where it keeps the run.
+// Environment is the guest environment of a created or stopped sandbox, which a grant, an ungrant and an attach rewrite for the next start.
 type Environment interface {
 	// CanSetEnv answers what SetEnv would refuse and writes nothing, so a grant can check before it plants.
 	CanSetEnv(name string) error

@@ -78,8 +78,7 @@ type Substrate interface {
 	ReleaseRoot() error
 }
 
-// Environments answers where a provider keeps the guest environment of a sandbox it built, which a
-// grant and an attach rewrite between a stop and the next start.
+// Environments answers where a provider keeps the guest environment of a sandbox, which a grant and an attach rewrite between a stop and the next start.
 type Environments interface {
 	Environment(id string) (models.Environment, error)
 }

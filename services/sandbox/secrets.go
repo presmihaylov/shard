@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -62,6 +63,9 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 	}
 
 	// Before any write: a refused grant must leave the guest environment byte for byte as it found it.
+	if slices.Contains(bundle.TrustEnv, name) {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: the proxy sets that variable to the trust store", id, name)}
+	}
 	if err := b.CanSetEnv(name); err != nil {
 		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: %w", id, name, err)}
 	}
@@ -96,11 +100,16 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 // UngrantSecret takes the placeholder back. The proxy CA stays: it is the image roots plus one
 // certificate, and a sandbox that trusts it reaches no host the policy does not allow.
 func (s *Service) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
-	id, _, unlock, err := s.held(ref, name, "ungrant")
+	id, sb, unlock, err := s.held(ref, name, "ungrant")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 	defer unlock()
+
+	// A name the record never granted may still be the image's own variable, which is not the grant's to take.
+	if !slices.Contains(sb.Secrets, name) {
+		return sb, nil
+	}
 
 	b, err := s.environment(id)
 	if err != nil {
