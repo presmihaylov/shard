@@ -3,6 +3,7 @@ module github.com/presmihaylov/shard
 go 1.26.6
 
 require (
+	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/v2 v2.3.5
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -11,11 +12,11 @@ require (
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
+	gvisor.dev/gvisor v0.0.0-20260919055340-501da953ee38
 )
 
 require (
 	github.com/Code-Hex/go-infinity-channel v1.0.0 // indirect
-	github.com/Code-Hex/vz/v3 v3.7.1 // indirect
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29 // indirect
 	github.com/Microsoft/hcsshim v0.15.0-rc.1 // indirect
 	github.com/containerd/cgroups/v3 v3.1.3 // indirect
@@ -28,6 +29,7 @@ require (
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/google/btree v1.1.2 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
@@ -36,8 +38,10 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
+	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260406210006-6f92a3bedf2d // indirect
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect

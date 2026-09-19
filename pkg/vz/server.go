@@ -1,6 +1,7 @@
 package vz
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ type Machine interface {
 	Save(path string) error
 	Stop() error
 	Connect(port uint32) (net.Conn, error)
+	// Network is the host end of the frames socket, which the daemon takes over the shim socket by fd.
+	Network() (*os.File, error)
 }
 
 // A client that connects and sends nothing within this is dropped, so it cannot keep the shim from exiting.
@@ -86,10 +89,13 @@ func serveOne(conn net.Conn, machine Machine, settled func()) error {
 		return fmt.Errorf("clear the handshake deadline: %w", err)
 	}
 
-	guest, err := handle(req, machine)
+	guest, frames, err := handle(req, machine)
 	reply := response{State: machine.State(), PID: os.Getpid(), MachineID: machine.MachineID()}
 	if err != nil {
 		reply = response{Error: err.Error()}
+	}
+	if frames != nil {
+		return writeFrameWithFile(conn, reply, frames)
 	}
 	if err := writeFrame(conn, reply); err != nil {
 		return err
@@ -103,24 +109,48 @@ func serveOne(conn net.Conn, machine Machine, settled func()) error {
 	return splice(conn, guest)
 }
 
-// handle runs one verb; only connect hands back a guest stream to splice onto the connection.
-func handle(req request, machine Machine) (net.Conn, error) {
+// handle runs one verb; connect hands back a guest stream to splice onto the connection, network a file to pass by fd.
+func handle(req request, machine Machine) (net.Conn, *os.File, error) {
 	switch req.Verb {
 	case "state":
-		return nil, nil
+		return nil, nil, nil
 	case "pause":
-		return nil, machine.Pause()
+		return nil, nil, machine.Pause()
 	case "resume":
-		return nil, machine.Resume()
+		return nil, nil, machine.Resume()
 	case "save":
-		return nil, machine.Save(req.Path)
+		return nil, nil, machine.Save(req.Path)
 	case "stop":
-		return nil, machine.Stop()
+		return nil, nil, machine.Stop()
 	case "connect":
-		return machine.Connect(req.Port)
+		guest, err := machine.Connect(req.Port)
+
+		return guest, nil, err
+	case "network":
+		frames, err := machine.Network()
+
+		return nil, frames, err
 	}
 
-	return nil, fmt.Errorf("unknown verb %q", req.Verb)
+	return nil, nil, fmt.Errorf("unknown verb %q", req.Verb)
+}
+
+// writeFrameWithFile sends the reply with the file's descriptor riding on it, so the daemon holds the same socket.
+func writeFrameWithFile(conn net.Conn, reply response, file *os.File) error {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("a file rides on a unix socket only, not %T", conn)
+	}
+
+	var frame bytes.Buffer
+	if err := writeFrame(&frame, reply); err != nil {
+		return err
+	}
+	if _, _, err := unixConn.WriteMsgUnix(frame.Bytes(), syscall.UnixRights(int(file.Fd())), nil); err != nil {
+		return fmt.Errorf("write the frame with the file: %w", err)
+	}
+
+	return nil
 }
 
 // splice copies both ways until one side ends, then ends the other copier's read.
