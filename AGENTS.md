@@ -93,9 +93,9 @@ docs/
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
-- **`cli/` imports `services/client`, `pkg/pty`, `models`, the request types in
-  `services/sandbox`, and `services/daemon` and `services/serve` for the two
-  verbs that are a process rather than a client. Nothing else.** A verb holds no
+- **`cli/` imports `services/client`, `pkg/pty`, `pkg/vzshim`, `models`, the request
+  types in `services/sandbox`, and `services/daemon` and `services/serve` for the
+  two verbs that are a process rather than a client. Nothing else.** A verb holds no
   store and no provider: it asks the socket.
   `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports

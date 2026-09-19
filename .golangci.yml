@@ -49,6 +49,7 @@ linters:
             - $gostd
             - github.com/presmihaylov/shard/models
             - github.com/presmihaylov/shard/pkg/pty
+            - github.com/presmihaylov/shard/pkg/vzshim
             - github.com/presmihaylov/shard/services/client
             - github.com/presmihaylov/shard/services/sandbox
             - github.com/presmihaylov/shard/services/daemon
