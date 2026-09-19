@@ -88,6 +88,43 @@ func TestAForcedDeleteOfASandboxTheRuntimeDoesNotHoldIsDone(t *testing.T) {
 	}
 }
 
+// The namespace delete takes the veth pair with it, so the link delete after it finds nothing and Sweep must still come back clean (SHARD-227).
+func TestALinkThatIsGoneIsSwept(t *testing.T) {
+	if _, err := exec.LookPath("ip"); err != nil {
+		t.Skip("no ip on PATH")
+	}
+
+	if err := deleteLink("shardv-none")(); err != nil {
+		t.Errorf("a link that is gone was not taken as swept: %v", err)
+	}
+}
+
+// A link that is there is still taken, and a second take of it is the no-op the first left.
+func TestALinkThatIsThereIsTaken(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("ip link add wants root")
+	}
+
+	const name = "shardvt227"
+	if err := run("ip", "link", "add", name, "type", "veth", "peer", "name", name+"p")(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := deleteLink(name)(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	for range 2 {
+		if err := deleteLink(name)(); err != nil {
+			t.Fatalf("deleteLink %s: %v", name, err)
+		}
+		if shown(name) {
+			t.Fatalf("%s is still on the host", name)
+		}
+	}
+}
+
 func names(left []Leftover, what string) bool {
 	return slices.ContainsFunc(left, func(l Leftover) bool { return l.What == what })
 }
