@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -589,28 +590,27 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	return pid, nil
 }
 
-// lookPath resolves argv[0] on the entrypoint's own PATH: in a VM shard-init's environ is the kernel's, which has none.
+// lookPath resolves argv[0] on the entrypoint's own PATH, in the entrypoint's own directory: in a VM shard-init's environ is the kernel's, which has none.
 func lookPath(ep entrypoint) (string, error) {
 	if strings.Contains(ep.argv[0], "/") {
-		return exec.LookPath(ep.argv[0])
+		return executable(ep.dir, ep.argv[0])
 	}
 	for _, entry := range ep.env {
 		if path, found := strings.CutPrefix(entry, "PATH="); found {
-			return lookPathIn(ep.argv[0], path)
+			return lookPathIn(ep.dir, ep.argv[0], path)
 		}
 	}
 
 	return exec.LookPath(ep.argv[0])
 }
 
-func lookPathIn(name, path string) (string, error) {
+func lookPathIn(workDir, name, path string) (string, error) {
 	for _, dir := range filepath.SplitList(path) {
 		if dir == "" {
 			dir = "."
 		}
-		candidate := filepath.Join(dir, name)
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		candidate, err := executable(workDir, filepath.Join(dir, name))
+		if err != nil {
 			continue
 		}
 
@@ -618,6 +618,23 @@ func lookPathIn(name, path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("%w in %q", exec.ErrNotFound, path)
+}
+
+// executable answers the path ForkExec runs from workDir, which is what a relative one means before the chdir.
+func executable(workDir, name string) (string, error) {
+	candidate := name
+	if !filepath.IsAbs(name) && workDir != "" {
+		candidate = filepath.Join(workDir, name)
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("%s: %w", name, fs.ErrPermission)
+	}
+
+	return name, nil
 }
 
 // statusFile is where the kernel, and the sentry that emulates it, prints this process's own sets.

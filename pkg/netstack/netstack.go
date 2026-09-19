@@ -1,4 +1,4 @@
-// Package netstack terminates a VM's frames in a userspace stack that answers for one address and forwards nothing, so a guest reaches its listeners and nothing else.
+// Package netstack terminates a VM's frames in a userspace stack that answers for one address and forwards nothing, so a guest reaches its listeners, its redirected ports, and nothing else.
 package netstack
 
 import (
@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 
+	"golang.org/x/time/rate"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -39,6 +40,10 @@ type Config struct {
 	Address netip.Addr
 	// MAC is the link address every link answers ARP with; the zero value takes a fixed local one.
 	MAC net.HardwareAddr
+	// Redirects maps a TCP port a guest dials, wherever it dials it, to the stack's own listener that takes the flow.
+	Redirects map[uint16]uint16
+	// Drops receives every frame the stack refuses, on the link's own goroutine; nil keeps the refusals silent.
+	Drops func(Drop)
 }
 
 // Stack is one userspace stack over any number of links, each a guest of its own.
@@ -50,6 +55,11 @@ type Stack struct {
 	nextID tcpip.NICID
 	links  map[tcpip.NICID]*Link
 	closed bool
+	// tcpPorts and udpPorts are what the listeners opened, which is all a guest may reach on the address.
+	tcpPorts map[uint16]bool
+	udpPorts map[uint16]bool
+	// open takes every frame for the address, which only a test stack playing a guest needs.
+	open bool
 }
 
 // New builds a stack that holds the address, forwards nothing, and has no link yet.
@@ -74,7 +84,9 @@ func New(cfg Config) (*Stack, error) {
 		return nil, fmt.Errorf("enable sack: %s", err)
 	}
 
-	return &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}}, nil
+	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects), false)
+
+	return &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}, nil
 }
 
 // Address is the one address the stack answers for.
@@ -90,6 +102,7 @@ type Link struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	pumpErr error
+	limiter *rate.Limiter
 }
 
 // Attach puts a guest on the stack: one NIC over frames, one datagram per Ethernet frame, the address on it, and a route to guest alone.
@@ -125,7 +138,7 @@ func (s *Stack) Attach(frames io.ReadWriteCloser, guest netip.Addr) (*Link, erro
 	s.stack.AddRoute(tcpip.Route{Destination: hostSubnet(guest), NIC: id})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, cancel: cancel, done: make(chan struct{})}
+	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, cancel: cancel, done: make(chan struct{}), limiter: newLimiter()}
 	s.links[id] = l
 	go l.pump(ctx)
 
@@ -179,7 +192,9 @@ func (l *Link) receive() error {
 		if err != nil {
 			return fmt.Errorf("read a frame from the guest: %w", err)
 		}
-		if !l.fromGuest(buf[:n]) {
+		if drop, taken := l.judge(buf[:n]); !taken {
+			l.report(drop)
+
 			continue
 		}
 		// The stack owns the packet's bytes, so each frame is copied out of the read buffer.
@@ -239,6 +254,9 @@ func (s *Stack) ListenTCP(port uint16) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s:%d: %w", s.cfg.Address, port, err)
 	}
+	s.mu.Lock()
+	s.tcpPorts[port] = true
+	s.mu.Unlock()
 
 	return ln, nil
 }
@@ -250,6 +268,9 @@ func (s *Stack) ListenPacket(port uint16) (net.PacketConn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on udp %s:%d: %w", s.cfg.Address, port, err)
 	}
+	s.mu.Lock()
+	s.udpPorts[port] = true
+	s.mu.Unlock()
 
 	return conn, nil
 }

@@ -102,13 +102,15 @@ verb, and it is the only place a substrate is allowed to be unequal to another.
 name anywhere else. Each sandbox is one Virtualization.framework VM booting shard's own arm64 kernel
 (`services/kernel` fetches the release once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256`
 override it) over an APFS clone of the image's ext4 disk, held by one `shard-vz-shim` the daemon
-signs under `<root>/vz` from the copy `make build-darwin` embeds; a `go build` alone has no shim and
-the first sandbox says so. `SHARD_INIT_PATH` must name a static linux/arm64 `shard-init`, which
-becomes the initrd. `--memory` defaults to 512 MB and is a hard cap. There is no bridge: the daemon
+signs under `<root>/vz` from the copy `make build-darwin` embeds, beside the static linux `shard-init`
+that build embeds for this Mac's arch and the daemon installs under `<root>/vz` as the initrd's
+`/init`; a `go build` alone has neither and the first sandbox says so. `SHARD_INIT_PATH` names a
+guest `shard-init` of your own instead. `--memory` defaults to 512 MB and is a hard cap. There is no bridge: the daemon
 leases each guest an address from the pool, terminates its frames in a userspace stack that answers
-for the gateway alone, and serves the proxy and the resolver on that stack, so a guest reaches
-`gateway:30080`, `gateway:30443` and `gateway:53` and nothing else. Nothing is redirected: a guest
-that dials port 80 on the internet is dropped, not proxied, which `docs/provider-vz.md` covers.
+for the gateway alone, and serves the proxy and the resolver on that stack. The stack's own NAT
+table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
+chains do on Linux, so a guest reaches the proxy, `gateway:53` and nothing else; every other frame
+is dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added: on 13 all three refuse by name.
 
 ## Refuse, never downgrade

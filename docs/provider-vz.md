@@ -22,8 +22,10 @@ Rejected: binding the ObjC framework directly with cgo. It saves one dependency 
 hand-written bridge for every device type, which the binding already carries and tests.
 
 The consequence is that the darwin build is a Mac build: cgo over an ObjC framework does not
-cross-compile from Linux. `make build-darwin` runs on a Mac with the Command Line Tools;
-`make check` on Linux compiles the stub and never the binding.
+cross-compile from Linux. `make build-darwin` runs on a Mac with the Command Line Tools, and
+embeds the signed shim and a static linux `shard-init` for the Mac's arch in the daemon, which
+installs both under `<root>/vz` on first use; `make check` on Linux compiles the stub and never the
+binding.
 
 ### One signed shim per sandbox, and the daemon never touches the framework
 
@@ -126,9 +128,15 @@ VM is one link on it, with the gateway address on its NIC and a `/32` route back
 guest never sees another guest's frames. The proxy (30080, 30443) and the SHARD-169 resolver (53)
 listen on the stack by port alone, the way they listen on the bridge gateway on Linux, and every
 frame carries the guest address the SHARD-216 readdress gave it, which is how the broker tells one
-sandbox from the next. No packet reaches the Mac, the LAN or the internet except through the proxy,
-so the proxy is the policy of record on this substrate, and `docs/egress.md` has the per-substrate
-row.
+sandbox from the next. The stack's NAT table redirects a guest's TCP 80 and 443 onto the proxy
+wherever the guest dialed them, the same `dnat` the host chains apply on Linux, so the Host header
+and the SNI reach the proxy unchanged. Every other frame is judged before the stack sees it: ARP,
+the redirected ports and a served port on the gateway pass, and the rest is dropped and written into
+the sandbox's egress log with the shape of a host drop, `rule` `local` for the gateway's own ports,
+`private` for the private ranges and `stack` for everything else, at the same two a second with a
+burst of ten the chains log at. No packet reaches the Mac, the LAN or the internet except through
+the proxy, so the proxy is the policy of record on this substrate, and `docs/egress.md` has the
+per-substrate row.
 
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state

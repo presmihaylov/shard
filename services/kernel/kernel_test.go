@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func sum(b []byte) string {
@@ -69,6 +70,30 @@ func TestEnsureDownloadsOnceAndVerifies(t *testing.T) {
 	}
 	if _, err := s.Ensure(context.Background(), "test"); !errors.Is(err, ErrChecksum) {
 		t.Fatalf("tampered file passed: %v", err)
+	}
+}
+
+// The daemon fetches under its lock, so a release endpoint that never answers must give the context's end back, not hang.
+func TestEnsureStopsABlockedDownloadWhenTheContextEnds(t *testing.T) {
+	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum([]byte("never"))}
+	defer delete(artifacts, "test")
+
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-released
+	}))
+	defer srv.Close()
+	defer close(released)
+	client := srv.Client()
+	client.Transport = rewriteTo(srv.URL, client.Transport)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := New(t.TempDir(), WithHTTPClient(client)).Ensure(ctx, "test")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ensure = %v, want the context's deadline", err)
 	}
 }
 

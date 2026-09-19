@@ -42,6 +42,9 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Errorf("Run(nil) printed %q, want the usage", out.String())
 	}
+	if !strings.Contains(out.String(), "gvisor, sysbox, runc or vz") || !strings.Contains(out.String(), "default gvisor on Linux, vz on macOS") {
+		t.Errorf("Run(nil) printed %q, want every provider and the platform default", out.String())
+	}
 }
 
 func TestRunUnknownCommand(t *testing.T) {

@@ -264,7 +264,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		// No User here: PID 1 stays root to reap and report the exit, and drops only the entrypoint.
 		Process: &specs.Process{
 			Args: argv,
-			Env:  environment(spec.Env),
+			Env:  Environment(spec.Env),
 			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:    defaultCapabilities,
@@ -336,8 +336,8 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 	return append(append(argv, "--"), entrypoint...), nil
 }
 
-// environment adds the one default that is runtime policy rather than image data.
-func environment(env []string) []string {
+// Environment adds the one default that is runtime policy rather than image data, which every substrate applies.
+func Environment(env []string) []string {
 	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
 		return env
 	}

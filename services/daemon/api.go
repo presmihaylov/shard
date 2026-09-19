@@ -34,7 +34,7 @@ type Config struct {
 	Insecure []string
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
-	// InitPath is the host path of the guest supervisor.
+	// InitPath is the host path of the guest supervisor; empty on a Mac boots the linux one the daemon embeds.
 	InitPath string
 	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, or empty for the platform's default.
 	Provider string
@@ -643,7 +643,7 @@ type egressLogTailer struct {
 func (egressLogTailer) Name() string { return "egress-log-tailer" }
 
 func (t egressLogTailer) Run(ctx context.Context) error {
-	// A VM host drops in the userspace stack, not in netfilter, so there is no kernel ring to tail and the task is done.
+	// A VM host drops in the userspace stack, which writes each drop into the log as it refuses the frame, so there is no ring to tail.
 	if t.deps.providerName() == vzvm.Name {
 		return nil
 	}
