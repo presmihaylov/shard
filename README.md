@@ -8,25 +8,28 @@ and Firecracker microVMs on a host with `/dev/kvm`. A resident `shard daemon` ow
 serves it over a REST API on a unix socket; the CLI is a thin client of that socket, one verb at a
 time.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Sysbox runs every verb but pause, resume and fork,
-which it refuses. Firecracker does not exist yet. Every verb speaks to the daemon and needs it up.
-See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor. Sysbox and runc run every verb but pause, resume
+and fork, which they refuse. Firecracker does not exist yet. Every verb speaks to the daemon and
+needs it up. See `docs/daemon.md`.
 
 ## Providers
 
-`shard daemon --provider gvisor|sysbox` picks the substrate for the host. `docs/provider.md` has the
+`shard daemon --provider gvisor|sysbox|runc` picks the substrate for the host. `docs/provider.md` has the
 full matrix; the short form:
 
-| | gVisor (default) | Sysbox |
-|---|---|---|
-| Isolation | user-space kernel | container with a user namespace |
-| Syscall cost | high on file-heavy work | near native |
-| Docker or systemd inside | no | yes |
-| pause, resume, fork | yes | **no, refused by name** |
-| Tenancy | many tenants per host | **one tenant per host** |
+| | gVisor (default) | Sysbox | runc |
+|---|---|---|---|
+| Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel |
+| Syscall cost | high on file-heavy work | near native | near native |
+| Docker or systemd inside | no | yes | no |
+| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** |
+| Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust |
 
 Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
 host and not from each other. Run one tenant per Sysbox host.
+
+runc isolates nothing: root in the guest is root on the host. It is never picked by default, and
+`--provider runc` is the only way onto it.
 
 ## Sandboxes
 
@@ -69,7 +72,8 @@ does not promise a restore across machines (gvisor#11486), so shard promises it 
 that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
 snapshot that exists, so it is not a thing to tune.
 
-The snapshot verbs exist on gVisor only. On Sysbox each one refuses by name and the sandbox runs on.
+The snapshot verbs exist on gVisor only. On Sysbox and runc each one refuses by name and the sandbox
+runs on.
 
 `shard pause` writes a running sandbox into a snapshot and frees its memory; `shard resume` runs it
 again from there, and `shard fork` starts a new sandbox from the snapshot of another and leaves the

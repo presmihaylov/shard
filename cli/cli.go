@@ -154,7 +154,7 @@ Flags:
   --timeout <duration>     how long a pull may take, read by the daemon (default 30m)
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
-  --provider <name>        the substrate the daemon runs sandboxes on: gvisor or sysbox (default gvisor)
+  --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox or runc (default gvisor)
   --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket
   --token-file <path>      the bearer token that front checks
   --ca-file <pem>          the certificate that signed the front's own

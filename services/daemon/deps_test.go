@@ -43,14 +43,14 @@ func TestTheGettersBuildOneLayerUnderConcurrentAsks(t *testing.T) {
 func TestTheProviderIsPickedByName(t *testing.T) {
 	// Both runners look their binary up on PATH, and neither substrate is installed where the tests run.
 	bin := t.TempDir()
-	for _, binary := range []string{"runsc", "sysbox-runc"} {
+	for _, binary := range []string{"runsc", "sysbox-runc", "runc"} {
 		if err := os.WriteFile(filepath.Join(bin, binary), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 			t.Fatalf("write the fake %s: %v", binary, err)
 		}
 	}
 	t.Setenv("PATH", bin)
 
-	for _, name := range []string{"", "gvisor", "sysbox"} {
+	for _, name := range []string{"", "gvisor", "sysbox", "runc"} {
 		d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: name}}
 
 		provider, err := d.providerLocked()
