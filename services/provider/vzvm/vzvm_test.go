@@ -72,6 +72,17 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 	return p
 }
 
+// reopen is a daemon restart: the first provider lets go of its shims, and a second one adopts them.
+func (h *harness) reopen(t *testing.T) models.Provider {
+	t.Helper()
+
+	if err := h.provider.Close(); err != nil {
+		t.Fatalf("close the provider: %v", err)
+	}
+
+	return h.open(t)
+}
+
 // stateDir answers for any id, as the repository does; only a spec's directory exists.
 func (h *harness) stateDir(id string) (string, error) {
 	return filepath.Join(h.root, "s", id), nil
@@ -132,6 +143,7 @@ func TestConformance(t *testing.T) {
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		// The fake guest is a host process, so the suite writes under the root; a clone here proves the verbs and not the disk.
 		Scratch: h.root,
+		Reopen:  h.reopen,
 	})
 }
 
@@ -170,47 +182,6 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	want := []string{"HOME=/root", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	if !slices.Equal(r.Run.Env, want) {
 		t.Fatalf("the record's env = %q, want %q", r.Run.Env, want)
-	}
-}
-
-// A daemon that starts over a root with a live shim adopts it by its socket, and the sandbox goes on as it was.
-func TestANewProviderAdoptsALiveShim(t *testing.T) {
-	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	again := h.open(t)
-	status, err := again.Status(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.State != models.StateRunning {
-		t.Fatalf("the second provider sees %s, want running", status.State)
-	}
-	out, err := os.CreateTemp(t.TempDir(), "out")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	exit, err := again.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo adopted"}, Stdout: out})
-	written, _ := os.ReadFile(out.Name())
-	if err != nil || exit.Code != 0 || strings.TrimSpace(string(written)) != "adopted" {
-		t.Fatalf("Exec over the adopted shim = %+v, %q, %v", exit, written, err)
-	}
-	if err := again.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-		t.Fatal(err)
-	}
-	status, err = h.provider.Status(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.State != models.StateStopped {
-		t.Fatalf("the first provider sees %s after the other stopped it, want stopped", status.State)
 	}
 }
 

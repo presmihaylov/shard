@@ -51,6 +51,7 @@ const (
 type vmHarness struct {
 	provider *vzvm.Provider
 	root     string
+	kernel   string
 	image    image.Image
 	stack    *netstack.Stack
 	drops    chan netstack.Drop
@@ -85,9 +86,18 @@ func newVMHarness(t *testing.T) *vmHarness {
 		t.Skipf("cannot pull %s: %v", testImage, err)
 	}
 
+	h := &vmHarness{root: root, image: img, kernel: kernel, drops: make(chan netstack.Drop, 64)}
+	h.provider = h.open(t)
+
+	return h
+}
+
+// open is a daemon start: a fresh stack and a provider over the root, which holds nothing of an earlier one in memory.
+func (h *vmHarness) open(t *testing.T) *vzvm.Provider {
+	t.Helper()
+
 	// The daemon's redirect of 80 onto the proxy, here onto a listener the tests serve.
-	h := &vmHarness{root: root, image: img, drops: make(chan netstack.Drop, 64)}
-	h.stack, err = netstack.New(netstack.Config{
+	stack, err := netstack.New(netstack.Config{
 		Address:   gateway,
 		Redirects: map[uint16]uint16{80: redirectPort, 443: tlsPort},
 		Drops:     func(d netstack.Drop) { h.drops <- d },
@@ -95,14 +105,15 @@ func newVMHarness(t *testing.T) *vmHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { h.stack.Close() })
+	t.Cleanup(func() { stack.Close() })
+	h.stack = stack
 
-	h.provider, err = vzvm.New(vzvm.Config{
+	p, err := vzvm.New(vzvm.Config{
 		Shim:        shimBinary(t),
-		Kernel:      kernel,
+		Kernel:      h.kernel,
 		Init:        guestInit(t),
-		Dir:         root,
-		Stack:       h.stack,
+		Dir:         h.root,
+		Stack:       stack,
 		Dirs:        h.stateDir,
 		SaveRestore: vz.HostSaveRestore() && !sessionLocked(t),
 	})
@@ -110,7 +121,18 @@ func newVMHarness(t *testing.T) *vmHarness {
 		t.Fatal(err)
 	}
 
-	return h
+	return p
+}
+
+// reopen is a daemon restart: the first provider lets go of its shims, and a second one adopts them.
+func (h *vmHarness) reopen(t *testing.T) models.Provider {
+	t.Helper()
+
+	if err := h.provider.Close(); err != nil {
+		t.Fatalf("close the provider: %v", err)
+	}
+
+	return h.open(t)
 }
 
 func (h *vmHarness) stateDir(id string) (string, error) {
@@ -159,6 +181,7 @@ func TestConformanceOnVMs(t *testing.T) {
 		},
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:      h.reopen,
 	})
 }
 

@@ -29,6 +29,8 @@ type Subject struct {
 	Shell func(script string) []string
 	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /.
 	Scratch string
+	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes.
+	Reopen func(t *testing.T) models.Provider
 }
 
 // ReadyMarker is what an ignores-term entrypoint prints once it refuses SIGTERM. A stop sent before
@@ -53,8 +55,8 @@ const (
 func Run(t *testing.T, s Subject) {
 	t.Helper()
 
-	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.SnapshotDir == nil || s.Shell == nil {
-		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, SnapshotDir and Shell")
+	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.SnapshotDir == nil || s.Shell == nil || s.Reopen == nil {
+		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, SnapshotDir, Shell and Reopen")
 	}
 
 	caps := s.Provider.Capabilities()
@@ -445,6 +447,47 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// A daemon restart opens a new provider over what the last one left, and a running sandbox goes on as it was.
+	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell("while true; do echo tick; sleep 0.2; done")
+		id := s.start(t, spec)
+		logged := s.awaitLog(t, id, 0)
+
+		again := s.Reopen(t)
+		status, err := again.Status(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Status over the new provider: %v", err)
+		}
+		if !status.Alive() || status.PID <= 0 {
+			t.Fatalf("the new provider sees %+v, want the sandbox running with its pid", status)
+		}
+
+		// The entrypoint's output must keep landing in the log, on the connection the new provider opened.
+		s.awaitLog(t, id, logged)
+
+		out, err := os.CreateTemp(t.TempDir(), "exec-output")
+		if err != nil {
+			t.Fatalf("create a file for the exec output: %v", err)
+		}
+		defer out.Close()
+		exit, err := again.Exec(t.Context(), id, models.ExecSpec{Argv: s.Shell("echo adopted"), Stdout: out, Stderr: out})
+		if err != nil {
+			t.Fatalf("Exec over the new provider: %v", err)
+		}
+		written, err := os.ReadFile(out.Name())
+		if err != nil || exit.Code != 0 || !strings.Contains(string(written), "adopted") {
+			t.Fatalf("Exec over the new provider = %+v, %q, %v", exit, written, err)
+		}
+
+		if err := again.Stop(t.Context(), id, stopGrace); err != nil {
+			t.Fatalf("Stop over the new provider: %v", err)
+		}
+		if s.status(t, id).Alive() {
+			t.Fatal("the first provider still sees the sandbox alive after the new one stopped it")
+		}
+	})
+
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
 		err := s.Provider.Pause(t.Context(), id, s.SnapshotDir(t))
@@ -498,6 +541,33 @@ func (s Subject) awaitReady(t *testing.T, id string) {
 	}
 
 	t.Fatalf("the entrypoint of %s never printed %q within %s", id, ReadyMarker, waitSlack)
+}
+
+// awaitLog blocks until the sandbox log holds more than seen bytes, and returns how many it holds.
+func (s Subject) awaitLog(t *testing.T, id string, seen int) int {
+	t.Helper()
+
+	path, err := s.Provider.LogPath(id)
+	if err != nil {
+		t.Fatalf("LogPath: %v", err)
+	}
+
+	deadline := time.Now().Add(waitSlack)
+	for time.Now().Before(deadline) {
+		out, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("read the sandbox log %s: %v", path, err)
+		}
+		if len(out) > seen {
+			return len(out)
+		}
+
+		time.Sleep(readyPoll)
+	}
+
+	t.Fatalf("the log of %s did not grow past %d bytes within %s", id, seen, waitSlack)
+
+	return seen
 }
 
 // exec runs one command in a sandbox and returns how it ended, with everything it wrote. The spec
