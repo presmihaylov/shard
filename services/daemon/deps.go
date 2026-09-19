@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -256,6 +257,9 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	}
 
 	dir := filepath.Join(d.cfg.Root, vzDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("create %s: %w", dir, err)
+	}
 	shim, err := vzshim.Install(dir)
 	if err != nil {
 		return nil, err
