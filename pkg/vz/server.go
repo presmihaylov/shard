@@ -69,9 +69,10 @@ func Serve(listener net.Listener, machine Machine, logger *log.Logger) error {
 	}
 }
 
-// settled runs once the request frame is in, so shutdown knows this connection is past its handshake.
+// settled runs once the request frame is in, and again on exit, so a failed handshake leaves nothing behind for shutdown to close.
 func serveOne(conn net.Conn, machine Machine, settled func()) error {
 	defer conn.Close()
+	defer settled()
 
 	var req request
 	if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {

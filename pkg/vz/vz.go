@@ -16,7 +16,7 @@ type Config struct {
 	Kernel  string `json:"kernel"`
 	Initrd  string `json:"initrd,omitempty"`
 	Cmdline string `json:"cmdline"`
-	// Zero keeps the framework's default; a value outside its range is refused, never clamped.
+	// Zero CPUs keeps the framework's default and zero Memory is DefaultMemory; a value outside the range is refused, never clamped.
 	CPUs   uint   `json:"cpus"`
 	Memory uint64 `json:"memory"`
 	Disk   string `json:"disk,omitempty"`

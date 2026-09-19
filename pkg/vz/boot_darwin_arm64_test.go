@@ -326,7 +326,16 @@ func awaitLine(t *testing.T, path, text string, n int) {
 			return
 		}
 	}
-	t.Fatalf("%s never held %q %d times", path, text, n)
+	b, _ := os.ReadFile(path)
+	t.Fatalf("%s never held %q %d times; it holds %d, and ends with: %s", path, text, n, strings.Count(string(b), text), tailOf(string(b)))
+}
+
+func tailOf(s string) string {
+	if len(s) > 600 {
+		return s[len(s)-600:]
+	}
+
+	return s
 }
 
 func TestAnOutOfRangeRequestIsRefusedByNameBeforeTheBoot(t *testing.T) {

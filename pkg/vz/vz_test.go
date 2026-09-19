@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -169,6 +170,68 @@ func TestAnIdleConnectionDoesNotKeepServeFromReturning(t *testing.T) {
 	if _, err := idle.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("the idle connection was not closed: %v", err)
 	}
+}
+
+func TestAFailedHandshakeLeavesNothingForShutdownToClose(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs safeBuffer
+	done := make(chan error, 1)
+	go func() { done <- Serve(listener, &fake{state: StateRunning}, log.New(&logs, "", 0)) }()
+
+	const clients = 8
+	for range clients {
+		conn, err := net.Dial("unix", socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Each dropped handshake is logged once, and the count is how the test knows every handler has left.
+	for deadline := time.Now().Add(handshakeTimeout); logs.count("shim socket: read the frame length") < clients; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d dropped handshakes were logged", logs.count("shim socket: read the frame length"), clients)
+		}
+	}
+
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := logs.count("pending"); n != 0 {
+		t.Fatalf("shutdown closed %d connections whose handshake had already failed:\n%s", n, logs.String())
+	}
+}
+
+// safeBuffer is a log sink the test reads while Serve still writes it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
+}
+
+func (s *safeBuffer) count(text string) int {
+	return strings.Count(s.String(), text)
 }
 
 // fake stands in for the framework VM: it records the verbs and serves a guest stream from a pipe.

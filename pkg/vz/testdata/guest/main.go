@@ -52,7 +52,7 @@ func serve() error {
 	}
 }
 
-// An initramfs has no /dev until someone mounts it; the console is how the host sees a write after the boot.
+// An initramfs has no /dev until someone mounts it; hvc0 is the port the host reads, and /dev/console does not reach it on macOS 26.
 func openConsole() (*os.File, error) {
 	if err := os.MkdirAll("/dev", 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir /dev: %w", err)
@@ -60,7 +60,7 @@ func openConsole() (*os.File, error) {
 	if err := unix.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
 		return nil, fmt.Errorf("mount /dev: %w", err)
 	}
-	console, err := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+	console, err := os.OpenFile("/dev/hvc0", os.O_WRONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open the console: %w", err)
 	}
