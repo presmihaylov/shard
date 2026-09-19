@@ -11,6 +11,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -84,6 +85,15 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	run, err := runOf(spec.RootFS, spec.Entrypoint, spec.Env, spec.WorkDir, spec.User, spec.Restart)
 	if err != nil {
 		return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
+	}
+	if spec.ProxyCA != nil {
+		// The same store the bundle plants on Linux, written by the guest at first boot, so a fork's disk carries it too.
+		trust, err := bundle.Trust(spec.RootFS, run.Env, spec.ProxyCA)
+		if err != nil {
+			return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		}
+		run.Env = runspec.MergeEnv(run.Env, trust.Env)
+		run.Trust = &supervisor.Trust{Path: trust.Path, Roots: trust.Roots}
 	}
 
 	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: run}
