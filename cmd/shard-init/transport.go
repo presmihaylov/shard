@@ -96,19 +96,38 @@ func (t *transport) acceptControl(l net.Listener) {
 
 			return
 		}
-		t.attach(conn)
+		if err := t.attach(conn); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: replay the state:", err)
+			_ = conn.Close()
+
+			continue
+		}
 		go t.serveControl(conn)
 	}
 }
 
-func (t *transport) attach(conn net.Conn) {
-	t.controlMu.Lock()
-	defer t.controlMu.Unlock()
+// attach swaps the host in and replays the state on the guest's goroutine, so no event can land between the two.
+func (t *transport) attach(conn net.Conn) error {
+	var err error
+	t.g.run(func() {
+		t.controlMu.Lock()
+		defer t.controlMu.Unlock()
 
-	if t.control != nil {
-		_ = t.control.Close()
-	}
-	t.control = conn
+		if t.control != nil {
+			_ = t.control.Close()
+		}
+		count := t.g.count
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count}
+		err = supervisor.WriteMessage(conn, state)
+		if err != nil {
+			t.control = nil
+
+			return
+		}
+		t.control = conn
+	})
+
+	return err
 }
 
 // send writes one message to the host, or drops it when no host is attached: the state replays on the next.
@@ -133,25 +152,8 @@ func (t *transport) restarted(count models.RestartCount) error {
 	return t.send(supervisor.Message{Kind: supervisor.KindRestarts, Restarts: &count})
 }
 
-func (t *transport) failure(err error) {
-	if err := t.send(supervisor.Message{Kind: supervisor.KindFailure, Error: err.Error()}); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init:", err)
-	}
-}
-
-// serveControl replays the state, then takes the host's messages until it hangs up.
+// serveControl takes the host's messages until it hangs up, and answers each with done or failure.
 func (t *transport) serveControl(conn net.Conn) {
-	var state supervisor.Message
-	t.g.run(func() {
-		count := t.g.count
-		state = supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count}
-	})
-	if err := supervisor.WriteMessage(conn, state); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init: replay the state:", err)
-
-		return
-	}
-
 	r := bufio.NewReader(conn)
 	for {
 		var m supervisor.Message
@@ -164,9 +166,18 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			return
 		}
-		if err := t.handle(m); err != nil {
-			t.failure(err)
-		}
+		t.answer(m.ID, t.handle(m))
+	}
+}
+
+// answer carries the request's id back, so the host matches the reply to what it asked.
+func (t *transport) answer(id int, err error) {
+	reply := supervisor.Message{Kind: supervisor.KindDone, ID: id}
+	if err != nil {
+		reply = supervisor.Message{Kind: supervisor.KindFailure, ID: id, Error: err.Error()}
+	}
+	if err := t.send(reply); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
 	}
 }
 
@@ -306,7 +317,7 @@ func (s *logSink) accept(l net.Listener) {
 	}
 }
 
-// copy moves each chunk to the live connection, and to the next one when the write fails midway.
+// copy moves each chunk to the live connection, and what is left of it to the next one when a write fails midway.
 func (s *logSink) copy(r io.Reader) {
 	buf := make([]byte, 32<<10)
 	for {
@@ -322,12 +333,14 @@ func (s *logSink) write(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for {
+	for len(chunk) > 0 {
 		for s.conn == nil {
 			s.cond.Wait()
 		}
-		if _, err := s.conn.Write(chunk); err == nil {
-			return
+		n, err := s.conn.Write(chunk)
+		chunk = chunk[n:]
+		if err == nil {
+			continue
 		}
 		_ = s.conn.Close()
 		s.conn = nil

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // AppendExit lands one exit record in the exit file, framed as on fd 0, so bundle.ReadExitStatus reads both alike.
-func AppendExit(path string, exit models.ExitStatus) error {
+func AppendExit(path string, exit models.ExitStatus) (err error) {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -21,11 +22,16 @@ func AppendExit(path string, exit models.ExitStatus) error {
 	if err != nil {
 		return fmt.Errorf("open the exit file: %w", err)
 	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close the exit file: %w", closeErr))
+		}
+	}()
 	if _, err := f.Write(append(append([]byte{'\n'}, encoded...), '\n')); err != nil {
 		return fmt.Errorf("append the exit record to %s: %w", path, err)
 	}
 
-	return f.Close()
+	return nil
 }
 
 // WriteRestarts keeps the guest's restart count where bundle.RestartCount reads it.

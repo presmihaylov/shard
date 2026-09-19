@@ -20,22 +20,25 @@ const (
 	LogsPort    uint32 = 5002
 )
 
-// The kinds a control message carries. The host sends the first four, the guest the rest.
+// The kinds a control message carries. The host sends the first four; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
 	KindStop      = "stop"
 	KindReaddress = "readdress"
+	KindDone      = "done"
+	KindFailure   = "failure"
 	KindState     = "state"
 	KindReady     = "ready"
 	KindExit      = "exit"
 	KindRestarts  = "restarts"
-	KindFailure   = "failure"
 )
 
 // Message is one newline-framed control message; Kind says which of the optional fields it carries.
 type Message struct {
 	Kind string `json:"kind"`
+	// ID numbers a host request, and the guest's done or failure carries it back; an event has none.
+	ID int `json:"id,omitempty"`
 	// Run is what the entrypoint runs as, sent once on the first control connection.
 	Run *RunSpec `json:"run,omitempty"`
 	// PID and Signal name one signal to a process shard-init started, TERM or KILL.
@@ -48,7 +51,7 @@ type Message struct {
 	// Exit is how the entrypoint last ended, and Restarts what the restart policy kept.
 	Exit     *models.ExitStatus   `json:"exit,omitempty"`
 	Restarts *models.RestartCount `json:"restarts,omitempty"`
-	// Error is why the guest could not do what the host asked, on a failure.
+	// Error is why the guest could not do what the host asked, on the failure that answers the request.
 	Error string `json:"error,omitempty"`
 }
 

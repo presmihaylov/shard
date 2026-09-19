@@ -340,6 +340,18 @@ func (g *guest) signal(pid int, sig syscall.Signal) error {
 	return err
 }
 
+// kill ends an exec the host let go of; a pid already reaped is nothing to kill, and never a reused one.
+func (g *guest) kill(pid int) {
+	g.run(func() {
+		if _, isExec := g.waiters[pid]; !isExec {
+			return
+		}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			fmt.Fprintf(os.Stderr, "shard-init: kill exec %d: %v\n", pid, err)
+		}
+	})
+}
+
 // PID 1 in a namespace has no default disposition, so a stop only works if we pass it on ourselves.
 func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 	unixSignal, ok := received.(syscall.Signal)
