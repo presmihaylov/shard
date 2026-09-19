@@ -30,7 +30,7 @@ cross-compile from Linux. `make build-darwin` runs on a Mac with the Command Lin
 The daemon starts one `shard-vz-shim` process per sandbox, detached, and speaks to it over a unix
 socket in the sandbox's state directory. The shim holds the VM; the daemon holds the record. A daemon
 restart re-adopts every running sandbox by that socket (SHARD-235), and only the shim carries the
-`com.apple.security.virtualization` entitlement (SHARD-214).
+`com.apple.security.virtualization` entitlement (SHARD-214, `docs/macos-signing.md`).
 
 This is not only the re-adopt story. **The framework runs at most two VMs in one process.** The
 third `start` in a process fails with `VZErrorDomain Code=1, the virtual machine failed to start`,

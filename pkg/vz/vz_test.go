@@ -372,3 +372,12 @@ func TestAdoptRefusesASocketNobodyAnswers(t *testing.T) {
 		t.Fatalf("Adopt() = %v", err)
 	}
 }
+
+func TestABinaryWithoutTheShimSaysSoInsteadOfInstallingNothing(t *testing.T) {
+	if Embedded() {
+		t.Skip("this test binary carries the shim")
+	}
+	if _, err := InstallShim(t.TempDir()); !errors.Is(err, ErrNoShim) {
+		t.Fatalf("InstallShim without a shim: %v", err)
+	}
+}

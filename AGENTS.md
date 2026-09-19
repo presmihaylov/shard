@@ -19,7 +19,8 @@ make build                   build ./cmd/shard into bin/shard
 make build-linux             cross-compile for the box (GOOS=linux GOARCH=amd64)
 make build-shard-init        build ./cmd/shard-init into bin/shard-init (static, CGO_ENABLED=0)
 make build-shard-init-linux  cross-compile the supervisor for the box
-make build-shard-vz-shim     build and ad-hoc sign the VM shim into bin/shard-vz-shim (darwin only)
+make build-shard-vz-shim     build and ad-hoc sign the VM shim into pkg/vz/shim, where the daemon embeds it (darwin only)
+make build-darwin            the shim, then ./cmd/shard with cgo for this Mac, into bin/shard-darwin-<arch>
 make test                    unit tests; must stay green on macOS
 make test-integration        integration tests, on this host; Linux box only, needs root
 make itest                   integration tests for ITEST_PKG, on the devbox

@@ -1,6 +1,7 @@
 # Build output
 /bin/
 /dist/
+/pkg/vz/shim/shard-vz-shim
 
 # Test and coverage output
 *.test
