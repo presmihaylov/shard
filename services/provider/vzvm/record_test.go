@@ -1,10 +1,15 @@
 package vzvm
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -79,3 +84,37 @@ func TestARecordCarriesTheResolverFilesTheGuestWrites(t *testing.T) {
 		t.Errorf("a sandbox without a network recorded %+v, want no resolver files", r)
 	}
 }
+
+// A log file that refuses a write marks the sandbox lost and ends the follow: a redial would carry the same broken file.
+func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1"}
+	guest, host := net.Pipe()
+	defer guest.Close()
+
+	done := make(chan struct{})
+	go func() {
+		p.followLogs(context.Background(), m, host, brokenLog{})
+		close(done)
+	}()
+	if _, err := guest.Write([]byte("hello\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follow went on after the log refused a write")
+	}
+	if m.lost == nil || !strings.Contains(m.lost.Error(), "the log stopped") || !errors.Is(m.lost, errNoSpace) {
+		t.Fatalf("lost = %v, want the log write failure", m.lost)
+	}
+}
+
+var errNoSpace = errors.New("no space left on device")
+
+type brokenLog struct{}
+
+func (brokenLog) Write([]byte) (int, error) { return 0, errNoSpace }
+
+func (brokenLog) Close() error { return nil }

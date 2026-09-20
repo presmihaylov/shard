@@ -186,7 +186,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go m.followLogs(pumpCtx, logs, out)
+	go p.followLogs(pumpCtx, m, logs, out)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -358,12 +358,19 @@ func (m *machine) alive() bool {
 }
 
 // followLogs appends what the logs connection carries to the log file, and opens it again after a drop while the VM runs.
-func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
+func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out io.WriteCloser) {
 	defer out.Close()
+	sink := &logSink{w: out}
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
-		err := supervisor.Logs(ctx, opened, out)
+		err := supervisor.Logs(ctx, opened, sink)
 		if ctx.Err() != nil {
+			return
+		}
+		// A file that refuses the log blocks the guest on its output pipe, so every read of the sandbox says so; a redial would not help.
+		if sink.err != nil {
+			p.keep(m, fmt.Errorf("the log stopped: %w", sink.err))
+
 			return
 		}
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -376,6 +383,21 @@ func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
 		opened = m.dial
 		time.Sleep(pollInterval)
 	}
+}
+
+// logSink keeps the first write failure of the log file, which the connection's own errors would otherwise hide.
+type logSink struct {
+	w   io.Writer
+	err error
+}
+
+func (s *logSink) Write(b []byte) (int, error) {
+	n, err := s.w.Write(b)
+	if err != nil && s.err == nil {
+		s.err = err
+	}
+
+	return n, err
 }
 
 // close ends what this process holds of the shim; the shim itself, and its VM, are the stop's business.
