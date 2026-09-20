@@ -265,6 +265,8 @@ type execSession struct {
 	stdinW    *os.File
 	stdinOnce sync.Once
 	pair      *pty.Pty
+	// resizes holds the latest window for a provider whose guest owns the pty; one slot, since only the last size matters.
+	resizes chan models.TerminalSize
 
 	// attachMu guards attached, so one client at a time replays and streams the output.
 	attachMu sync.Mutex
@@ -499,6 +501,8 @@ func (s *Service) startExec(id, execID string, req ExecRequest) (*execSession, e
 		}
 
 		session.pair = pair
+		session.resizes = make(chan models.TerminalSize, 1)
+		spec.Resizes = session.resizes
 		// A terminal carries one stream, so all three fds are the same file.
 		spec.Stdin, spec.Stdout, spec.Stderr = pair.Replica, pair.Replica, pair.Replica
 		go s.runTerminal(ctx, id, session, spec)
@@ -777,7 +781,27 @@ func (s *Service) ResizeExec(_ context.Context, ref, execID string, size Termina
 	default:
 	}
 
-	return session.pair.Resize(pty.Size{Rows: size.Rows, Cols: size.Cols})
+	if err := session.pair.Resize(pty.Size{Rows: size.Rows, Cols: size.Cols}); err != nil {
+		return err
+	}
+	offer(session.resizes, models.TerminalSize{Rows: size.Rows, Cols: size.Cols})
+
+	return nil
+}
+
+// offer replaces whatever size waits in the slot, so a provider that reads late gets the current window and never blocks a resize.
+func offer(slot chan models.TerminalSize, size models.TerminalSize) {
+	for {
+		select {
+		case slot <- size:
+			return
+		default:
+		}
+		select {
+		case <-slot:
+		default:
+		}
+	}
 }
 
 // dropExecs ends and forgets every exec of one sandbox, because a stop takes its execs with it.

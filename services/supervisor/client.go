@@ -218,6 +218,7 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 
 	var writes sync.Mutex
 	go feedStdin(conn, &writes, spec.Stdin)
+	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
 	exit, err := readExec(conn, id, spec)
 	if err != nil && ctx.Err() != nil {
@@ -256,6 +257,26 @@ func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) {
 			writes.Unlock()
 
 			return
+		}
+	}
+}
+
+// feedResizes frames each new window until the exec ends; a nil channel is an exec with no terminal to resize.
+func feedResizes(ctx context.Context, conn net.Conn, writes *sync.Mutex, resizes <-chan models.TerminalSize) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case size, ok := <-resizes:
+			if !ok {
+				return
+			}
+			writes.Lock()
+			err := WriteJSONFrame(conn, StreamResize, ResizeFrame{Rows: size.Rows, Cols: size.Cols})
+			writes.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
 }

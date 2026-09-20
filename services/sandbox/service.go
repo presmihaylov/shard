@@ -345,6 +345,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		ID:         id,
 		Name:       req.Name,
 		RootFS:     img.RootFS,
+		RootDisk:   img.Disk,
 		StateDir:   dir,
 		Entrypoint: req.Command,
 		Env:        env,

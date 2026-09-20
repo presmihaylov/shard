@@ -12,7 +12,7 @@ import (
 
 // CloneRootDisk gives one sandbox its own copy of the image disk at dst, grown to its bound; shared says the blocks are an APFS clone.
 func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error) {
-	shared, err = cloneOrCopy(base, dst)
+	shared, err = CloneFile(base, dst)
 	if err != nil {
 		return false, err
 	}
@@ -24,7 +24,8 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 	return shared, nil
 }
 
-func cloneOrCopy(base, dst string) (bool, error) {
+// CloneFile copies base to dst as it is, sharing the blocks where the filesystem can; shared says it did.
+func CloneFile(base, dst string) (bool, error) {
 	err := clonefile(base, dst)
 	if err == nil {
 		return true, nil
