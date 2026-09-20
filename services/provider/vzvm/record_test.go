@@ -209,3 +209,23 @@ func TestAMarkerThatCannotLandSendsNoStop(t *testing.T) {
 		t.Fatal("the host told the guest to go before the marker was down")
 	}
 }
+
+// A replay that carries the kill sends the stop down the stream just adopted, never the one it replaced.
+func TestAnAdoptedStreamCarriesTheStopOfItsReplay(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+	old, oldStops := stoppableGuest(t)
+	m.control.Store(old)
+	fresh, freshStops := stoppableGuest(t)
+
+	adopted, err := p.adopt(m, fresh, supervisor.Message{Kind: supervisor.KindState, Ready: true, OOM: true})
+	if err != nil || !adopted {
+		t.Fatalf("adopt = %v, %v", adopted, err)
+	}
+	if !oomKilled(m.dir) || freshStops.Load() != 1 || oldStops.Load() != 0 {
+		t.Fatalf("marker %v, %d stops on the adopted stream and %d on the dropped one", oomKilled(m.dir), freshStops.Load(), oldStops.Load())
+	}
+	if m.control.Load() != fresh {
+		t.Fatal("the machine does not hold the adopted stream")
+	}
+}

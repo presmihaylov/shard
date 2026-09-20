@@ -328,20 +328,24 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 
 			continue
 		}
-		err = p.reconcile(m, state)
-		m.swap.Lock()
-		if m.closed.Load() {
-			m.swap.Unlock()
-
-			return false, errors.Join(err, control.Close())
-		}
-		dropped := m.control.Swap(control)
-		m.swap.Unlock()
-
-		return true, errors.Join(err, dropped.Close())
+		return p.adopt(m, control, state)
 	}
 
 	return false, nil
+}
+
+// adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
+func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
+	m.swap.Lock()
+	if m.closed.Load() {
+		m.swap.Unlock()
+
+		return false, control.Close()
+	}
+	dropped := m.control.Swap(control)
+	m.swap.Unlock()
+
+	return true, errors.Join(p.reconcile(m, state), dropped.Close())
 }
 
 // reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.
