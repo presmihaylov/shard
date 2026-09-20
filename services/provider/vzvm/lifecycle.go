@@ -292,9 +292,9 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
-// Clone boots a new VM over a copy of the source's disk and runs the spec's entrypoint from the beginning.
+// Clone boots a new VM over a copy of the source's disk and runs the source's entrypoint from the beginning.
 func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
-	sourceDir, _, err := p.open(sourceID)
+	sourceDir, src, err := p.open(sourceID)
 	if err != nil {
 		return err
 	}
@@ -321,10 +321,9 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return fmt.Errorf("copy the disk of sandbox %s: %w", sourceID, err)
 	}
 
-	r, err := recordOf(spec)
-	if err != nil {
-		return err
-	}
+	// The spec names the copy and its lease alone; the run is the source's, as the bundle it copies is on Linux.
+	r := record{RootFS: src.RootFS, Resources: spec.Resources, Run: src.Run}
+	r.network(spec)
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 const stopGrace = 5 * time.Second
@@ -294,6 +296,83 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "already runs") {
 		t.Fatalf("Start with the entrypoint already run = %v, want a refusal", err)
 	}
+}
+
+// The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, from a stopped source and from a paused one.
+func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
+	h := newHarness(t)
+	source := h.newSpec(t, "/bin/sh", "-c", "exit 3")
+	source.Env = []string{"KEPT=1"}
+	if err := h.provider.Create(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if exit, err := h.provider.Wait(t.Context(), source.ID); err != nil || exit.Code != 3 {
+		t.Fatalf("Wait on the source = %+v, %v", exit, err)
+	}
+	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	src := readVM(t, source.StateDir)
+
+	clone := h.newSpec(t)
+	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: clone.Resources}
+	if err := h.provider.Clone(t.Context(), source.ID, clone); err != nil {
+		t.Fatalf("Clone from a stopped source: %v", err)
+	}
+	if exit, err := h.provider.Wait(t.Context(), clone.ID); err != nil || exit.Code != 3 {
+		t.Fatalf("Wait on the clone = %+v, %v", exit, err)
+	}
+	got := readVM(t, clone.StateDir)
+	if !reflect.DeepEqual(got.Run, src.Run) || got.RootFS != src.RootFS {
+		t.Errorf("the clone's record runs %+v over %q, want the source's %+v over %q", got.Run, got.RootFS, src.Run, src.RootFS)
+	}
+	if got.MachineID == "" || got.MachineID == src.MachineID {
+		t.Errorf("the clone's machine id is %q, want one of its own (the source's is %q)", got.MachineID, src.MachineID)
+	}
+
+	if err := h.provider.Start(t.Context(), source.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), source.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	second := h.newSpec(t)
+	second = models.SandboxSpec{ID: second.ID, StateDir: second.StateDir, Resources: second.Resources}
+	if err := h.provider.Clone(t.Context(), source.ID, second); err != nil {
+		t.Fatalf("Clone from a paused source: %v", err)
+	}
+	if exit, err := h.provider.Wait(t.Context(), second.ID); err != nil || exit.Code != 3 {
+		t.Fatalf("Wait on the clone of a paused source = %+v, %v", exit, err)
+	}
+	if r := readVM(t, source.StateDir); !r.Paused {
+		t.Errorf("the source's record after the clone = %+v, want it still paused", r)
+	}
+}
+
+// vm is the part of the record the clone test compares, decoded from the file as the provider wrote it.
+type vm struct {
+	MachineID string             `json:"machine_id"`
+	RootFS    string             `json:"rootfs"`
+	Run       supervisor.RunSpec `json:"run"`
+	Paused    bool               `json:"paused"`
+}
+
+func readVM(t *testing.T, dir string) vm {
+	t.Helper()
+	blob, err := os.ReadFile(filepath.Join(dir, "vm.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r vm
+	if err := json.Unmarshal(blob, &r); err != nil {
+		t.Fatal(err)
+	}
+
+	return r
 }
 
 // A host that cannot save has no optional verb: each is refused by name, and none freezes a VM in its shim.
