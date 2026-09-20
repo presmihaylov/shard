@@ -53,7 +53,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.WorkDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
 	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB; 0 is unbounded on Linux and 512 on vz, the VM's memory")
-	flags.IntVar(&req.Resources.VCPUs, "cpus", 0, "the vcpu bound; 0 is every host cpu, on vz up to the framework's ceiling")
+	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "the vcpu bound, a whole number; 0 is every host cpu, on vz up to the framework's ceiling")
 	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "the disk bound in MiB over the writable layer and /tmp, 0 for the default")
 	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "start the sandbox again when the host ends it for its memory, never on vz; bare is unlimited, =N caps the starts in a row")
 	var restart restartFlags
@@ -261,6 +261,21 @@ func named(flags *flag.FlagSet) bool {
 
 // envList refuses anything that is not an assignment, because a merge drops such an entry and
 // create would then report success with the variable absent.
+// cpuCount refuses a fraction by name, since vz hands a VM whole cpus and a rounded bound is not the one asked for.
+type cpuCount int
+
+func (c *cpuCount) String() string { return strconv.Itoa(int(*c)) }
+
+func (c *cpuCount) Set(value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("%q is not a whole number of cpus; a fraction is never rounded", value)
+	}
+	*c = cpuCount(n)
+
+	return nil
+}
+
 type envList []string
 
 func (e *envList) String() string { return strings.Join(*e, ",") }
