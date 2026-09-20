@@ -1,6 +1,8 @@
 package vzvm_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -104,11 +106,15 @@ func baseDisk(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	w := ext4.NewWriter(f)
-	if err := w.Create("etc", &ext4.File{Mode: ext4.S_IFDIR | 0o755}); err != nil {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "etc", Mode: 0o755}); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Close(); err != nil {
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ext4.Write(&buf, f); err != nil {
 		t.Fatal(err)
 	}
 
