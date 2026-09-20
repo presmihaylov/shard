@@ -47,6 +47,16 @@ func bootGuest(device string) error {
 	if err := mountOnce("devpts", "/newroot/dev/pts", "devpts", 0); err != nil {
 		return err
 	}
+	// A container runtime inside the guest asserts these at start: dockerd refuses to run without a writable cgroup2 root and a /dev/shm.
+	for _, m := range []struct{ source, target, fstype string }{
+		{"tmpfs", "/newroot/dev/shm", "tmpfs"},
+		{"mqueue", "/newroot/dev/mqueue", "mqueue"},
+		{"cgroup2", "/newroot/sys/fs/cgroup", "cgroup2"},
+	} {
+		if err := mountOnce(m.source, m.target, m.fstype, unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC); err != nil {
+			return err
+		}
+	}
 
 	if err := os.Chdir("/newroot"); err != nil {
 		return err

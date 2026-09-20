@@ -13,7 +13,7 @@ records exist: the other substrate has never heard of those sandboxes.
 |---|---|---|---|---|---|
 | Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a VM per sandbox on Virtualization.framework, one `shard-vz-shim` each | a microVM, needs `/dev/kvm` |
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
-| Docker inside | no | yes | no | no | yes |
+| Docker inside | no | yes | no | yes | yes |
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
@@ -37,7 +37,8 @@ entrypoint is never PID 1. systemd refuses the system-manager role below PID 1: 
 --user argument required to run as user manager." and exits, `systemctl is-system-running` reports
 `offline`, and the record stays `running` because a sandbox outlives its entrypoint. This is not a
 Sysbox limit. It holds on gVisor and Firecracker too, and it follows from `shard-init` being PID 1 in
-every sandbox. Docker inside a sandbox is unaffected and works end to end on Sysbox. To run
+every sandbox. Docker inside a sandbox is unaffected and works end to end on Sysbox and on `vz`,
+where `dockerd` runs as the entrypoint of a VM (SHARD-247, `docs/provider-vz.md`). To run
 systemd, run it inside a Docker container the sandbox starts, not as the sandbox's own init.
 
 ### What Sysbox does not do

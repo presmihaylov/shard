@@ -65,6 +65,16 @@ virtio-vsock, virtio-console, ext4 and overlay built in, no modules, no initrd, 
 checksummed with the release, downloaded into the shard root on first use. The Firecracker provider
 boots the same amd64 kernel; the arm64 one is this substrate's.
 
+Docker runs inside a VM (SHARD-247). The kernel carries what `dockerd` and `runc` assert at start:
+netfilter with conntrack and NAT, nf_tables and the xtables compat layer so either `iptables`
+flavour works, the bridge with its netfilter hook, veth, overlay, cgroup v2 with the cpu, memory,
+pids and device controllers, user namespaces and seccomp. IPv6 stays off, as before, so `dockerd`
+runs IPv4 only. `shard-init` mounts `cgroup2` on `/sys/fs/cgroup`, a `tmpfs` on `/dev/shm` and
+`mqueue` on `/dev/mqueue` before the entrypoint, so an image that ships `dockerd` starts it as the
+entrypoint or under one, and a container's packets leave over the bridge, masqueraded to the
+guest's address, and cross the stack as the guest's own: 80 and 443 to the proxy, the rest judged
+and dropped like any other frame, and written to the egress log under the sandbox.
+
 The framework's Linux boot loader takes a raw arm64 `Image` and nothing else. A distribution kernel
 does not fit: Alpine's `vmlinuz-virt` is an EFI zboot wrapper (a PE file, `zimg` magic at offset 4,
 a gzip payload inside), and the framework refuses it with the same `Code=1` as a hard failure. The
@@ -99,7 +109,8 @@ squashfs tooling on the host and a second writable disk anyway.
 ### The channel is vsock, one guest port per stream, and the host opens every connection
 
 `shard-init -transport vsock -root /dev/vda` is the initrd `/init` of every VM (SHARD-216). It moves
-onto the root disk, mounts `devpts` for a tty exec, and listens on fixed guest ports. The host
+onto the root disk, mounts `devpts` for a tty exec and `cgroup2`, `/dev/shm` and `mqueue` for a
+container runtime, and listens on fixed guest ports. The host
 connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |

@@ -44,6 +44,9 @@ const defaultKernel = "../../../bin/kernel/arm64/Image-arm64"
 // The digest is alpine:3.20 as of 2026-09-20; a tag moves, and a rebuilt image changes the inode count the disk is sized to.
 const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
+// dindImage ships dockerd and its runtime; the Docker-inside test boots it as the entrypoint.
+const dindImage = "docker:28-dind"
+
 var gateway = netip.MustParseAddr("10.200.0.1")
 
 const (
@@ -65,6 +68,12 @@ type vmHarness struct {
 func newVMHarness(t *testing.T) *vmHarness {
 	t.Helper()
 
+	return newVMHarnessFor(t, testImage)
+}
+
+func newVMHarnessFor(t *testing.T, ref string) *vmHarness {
+	t.Helper()
+
 	kernel := os.Getenv("SHARD_KERNEL")
 	if kernel == "" {
 		kernel = defaultKernel
@@ -83,11 +92,11 @@ func newVMHarness(t *testing.T) *vmHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	img, err := svc.Pull(ctx, testImage)
+	img, err := svc.Pull(ctx, ref)
 	if err != nil {
-		t.Skipf("cannot pull %s: %v", testImage, err)
+		t.Skipf("cannot pull %s: %v", ref, err)
 	}
 
 	h := &vmHarness{root: root, image: img, kernel: kernel, drops: make(chan netstack.Drop, 64)}
@@ -378,6 +387,80 @@ func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	read, _ := os.ReadFile(out.Name())
 	if got, want := strings.TrimSpace(string(read)), strconv.FormatUint(uint64(vz.HostCPUs()), 10); got != want {
 		t.Fatalf("the guest sees %s cpus, want the host's %s", got, want)
+	}
+}
+
+// Docker runs inside a VM: dockerd is the entrypoint, a container runs, and a container's request crosses the stack as the guest's own does.
+func TestDockerRunsInsideAVM(t *testing.T) {
+	h := newVMHarnessFor(t, dindImage)
+
+	caPEM, leaf := testCA(t, net.ParseIP("93.184.216.34"))
+	inner, err := h.stack.ListenTCP(tlsPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := tls.NewListener(inner, &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12})
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+					return
+				}
+				fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\ntrusted\n")
+			}()
+		}
+	}()
+
+	spec := h.newSpec(t, "dockerd", "--host=unix:///var/run/docker.sock")
+	spec.ProxyCA = caPEM
+	spec.Resources.MemoryMiB = 512
+	spec.Resources.DiskMiB = 1024
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The image the container runs is the guest's own userland, since a pull would need a registry behind the redirect.
+	script := `for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 1; done
+docker info >/dev/null 2>&1 || { echo "dockerd never answered"; exit 1; }
+tar -C / -c bin sbin lib usr/lib usr/bin etc | docker import - local/base >/dev/null || exit 1
+docker run --rm local/base /bin/true && echo ran-true
+docker run --rm local/base wget -qO- -T 15 https://93.184.216.34/
+docker run --rm local/base wget -qO- -T 3 http://93.184.216.34:8080/ 2>&1`
+	out, err := os.CreateTemp(t.TempDir(), "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", script}, Stdout: out, Stderr: out}); err != nil {
+		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+		read, _ := os.ReadFile(out.Name())
+		t.Fatalf("Exec: %v\nexec output:\n%s\nsandbox log:\n%s", err, read, log)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if !strings.Contains(string(read), "ran-true\ntrusted\n") {
+		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+		t.Fatalf("the containers wrote %q, want a true exit and the listener's body over TLS\nsandbox log:\n%s", read, log)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case drop := <-h.drops:
+			if drop.Guest == spec.Network.Address.Addr() && drop.Protocol == "tcp" && drop.Port == 8080 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no drop reported for the container's dial of 8080")
+		}
 	}
 }
 
