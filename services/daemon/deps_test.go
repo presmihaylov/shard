@@ -201,3 +201,16 @@ func TestTheUsernsIsAskedOfTheProviderNotTheName(t *testing.T) {
 		t.Errorf("a gvisor daemon owns its namespaces from %+v, want the host's user namespace", got)
 	}
 }
+
+// A deps with no Out is what a test builds, and the kernel fetch logs through it, so it must not panic.
+func TestADepsWithNoOutLogsNowhere(t *testing.T) {
+	d := &deps{cfg: Config{Root: t.TempDir()}}
+	d.logger().Print("dropped")
+
+	var out strings.Builder
+	d = &deps{cfg: Config{Root: t.TempDir(), Out: &out}}
+	d.logger().Print("kept")
+	if !strings.Contains(out.String(), "kept") {
+		t.Fatalf("log = %q, want the line", out.String())
+	}
+}

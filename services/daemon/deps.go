@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -69,6 +70,16 @@ type front interface {
 }
 
 // providerName is the substrate the daemon runs: --provider, or the platform's default when it is empty.
+// logger writes where the daemon does; a test builds deps with no Out, and a fetch must not panic on it.
+func (d *deps) logger() *log.Logger {
+	out := d.cfg.Out
+	if out == nil {
+		out = io.Discard
+	}
+
+	return log.New(out, "", log.LstdFlags)
+}
+
 func (d *deps) providerName() string {
 	if d.cfg.Provider != "" {
 		return d.cfg.Provider
@@ -341,6 +352,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	opts = append(opts, kernel.WithLogger(d.logger()))
 	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
 	defer cancel()
 	// The guest runs the host's arch: the framework virtualises, it never emulates.

@@ -1,15 +1,18 @@
 package kernel
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,5 +202,55 @@ func TestFromEnvNeedsBoth(t *testing.T) {
 	opts, err := FromEnv()
 	if err != nil || len(opts) != 1 {
 		t.Fatalf("opts %v, err %v", opts, err)
+	}
+}
+
+func TestEnsureLogsTheFetchAndEveryVerifiedKernel(t *testing.T) {
+	body := []byte("a kernel")
+	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum(body)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	url, err := URL("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	s := New(t.TempDir(), WithHTTPClient(&http.Client{Transport: rewriteTo(srv.URL, http.DefaultTransport)}), WithLogger(log.New(&out, "", 0)))
+	k, err := s.Ensure(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "kernel: downloading " + url + " to " + k.Path + "\nkernel: verified " + k.Path + " sha256 " + sum(body) + "\n"
+	if out.String() != want {
+		t.Fatalf("log:\n%s\nwant:\n%s", out.String(), want)
+	}
+	out.Reset()
+	if _, err := s.Ensure(context.Background(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "kernel: verified "+k.Path+" sha256 "+sum(body)+"\n"; got != want {
+		t.Fatalf("a cached kernel logged %q, want %q", got, want)
+	}
+}
+
+func TestEnsureLogsAChecksumMismatch(t *testing.T) {
+	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum([]byte("a kernel"))}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("something else"))
+	}))
+	defer srv.Close()
+	url, err := URL("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	s := New(t.TempDir(), WithHTTPClient(&http.Client{Transport: rewriteTo(srv.URL, http.DefaultTransport)}), WithLogger(log.New(&out, "", 0)))
+	if _, err := s.Ensure(context.Background(), "test"); !errors.Is(err, ErrChecksum) {
+		t.Fatalf("err = %v, want ErrChecksum", err)
+	}
+	if !strings.Contains(out.String(), "kernel: checksum mismatch for "+url+": got "+sum([]byte("something else"))+", want "+sum([]byte("a kernel"))) {
+		t.Fatalf("log:\n%s", out.String())
 	}
 }
