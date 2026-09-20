@@ -17,7 +17,7 @@ records exist: the other substrate has never heard of those sandboxes.
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on macOS 14+; no snapshot verb on 13 | does not exist yet |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | does not exist yet |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
@@ -25,9 +25,9 @@ reports and the CLI refuses on:
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
 | `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | planned |
-| `pause` | yes | **no** | **no** | macOS 14+, **no** on 13 | planned |
-| `resume` | yes | **no** | **no** | macOS 14+, **no** on 13 | planned |
-| `fork` | yes | **no** | **no** | macOS 14+, **no** on 13 | planned |
+| `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
+| `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
+| `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
 
 ### systemd is not a sandbox's init
 
@@ -111,7 +111,9 @@ for the gateway alone, and serves the proxy and the resolver on that stack. The 
 table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
 chains do on Linux, so a guest reaches the proxy, `gateway:53` and nothing else; every other frame
 is dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
-`pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added: on 13 all three refuse by name.
+`pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
+The three resource bounds below hold on the Linux substrates; `vz` has no host cgroup, and each
+section says what the VM does instead.
 
 ## Refuse, never downgrade
 
@@ -133,6 +135,9 @@ not one process inside it, and the daemon restarts it when the record set `resta
 sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
 pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
+On `vz` the bound is the VM's memory: past it the guest kernel's own OOM killer takes one process
+inside the VM, the sandbox lives, `Status` never reports `OOMKilled`, and `restart_on_oom` never
+fires. A killed entrypoint is an exit the supervisor records, the same as any other.
 
 ## What a cpu bound means
 
@@ -140,7 +145,8 @@ the OOM killer took one guest process, the sandbox lived, and `oom_restarts` sta
 the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
-of unbounded.
+of unbounded. On `vz` the count is the VM's virtual CPUs, not a quota: `--cpus 0` gives it one, the
+framework's minimum, and a positive `N` gives it `N`, refused outside the host's range.
 
 ## What the pids bound means
 
@@ -150,7 +156,8 @@ every launch, so a sandbox created before the bound existed is capped when it ru
 systemd, Docker and nested containers with headroom, yet stops a fork bomb far below the host PID
 count. The bound is fixed because on Sysbox a guest process is a host process, so an unbounded fork
 bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits `memory.max`
-first, but the same bound applies.
+first, but the same bound applies. On `vz` there is no bound: a guest process is a process inside
+the VM, so a fork bomb stays there and hits the VM's memory, and the host is untouched.
 
 ## What a disk bound means
 
@@ -209,7 +216,8 @@ host, and a pipe cannot be one.
   `Remove` has dropped every mount inside it.
 - The **network service** owns the namespace, the address and the host interface. `NetworkSpec` is
   allocated before `Create`, so a provider joins a namespace it did not build and never releases one.
-- **Host netfilter is the policy of record.** Nothing a sandbox can reach may depend on a rule that
+- **The host is the policy of record.** On Linux that is host netfilter; on `vz` it is the daemon's own
+  userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a rule that
   lives inside the sandbox.
 
 Every verb takes an id, because `shard` runs no daemon that could remember anything from `Create`.
@@ -236,8 +244,9 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 
 Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
 every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
-the refuse path there and the snapshot path only on gVisor. The snapshot-shaped interface questions wait
-for Firecracker (SHARD-45).
+the refuse path there and the snapshot path on gVisor and on `vz`, whose `vzvm_integration_test.go` runs
+the suite on real VMs on an Apple silicon Mac. The snapshot-shaped interface questions wait for
+Firecracker (SHARD-45).
 
 It does not prove anything about the network: every substrate joins a namespace the network service
 built, so there is nothing to generalize yet.

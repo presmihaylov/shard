@@ -1,35 +1,38 @@
 # shard
 This is a work in progress, will announce when it's live and ready to be used!
 
-A single-node sandbox manager. One binary runs isolated sandboxes on a Linux host, with or without
-hardware virtualization, and gives them the same lifecycle verbs either way: run, exec, pause, resume
-and fork. It drives gVisor by default, Sysbox when you need Docker or systemd inside the sandbox,
-and Firecracker microVMs on a host with `/dev/kvm`. A resident `shard daemon` owns the state and
-serves it over a REST API on a unix socket; the CLI is a thin client of that socket, one verb at a
-time.
+A single-node sandbox manager. One binary runs isolated sandboxes on a Linux host or a Mac, with or
+without hardware virtualization, and gives them the same lifecycle verbs either way: run, exec, pause,
+resume and fork. It drives gVisor by default, Sysbox when you need Docker or systemd inside the
+sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.framework on a Mac. A
+resident `shard daemon` owns the state and serves it over a REST API on a unix socket; the CLI is a
+thin client of that socket, one verb at a time.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Sysbox and runc run every verb but pause, resume
-and fork, which they refuse. Firecracker does not exist yet. Every verb speaks to the daemon and
-needs it up. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor, and on `vz` on an Apple silicon Mac with macOS 14
+or later. Sysbox and runc run every verb but pause, resume and fork, which they refuse. Firecracker
+does not exist yet. Every verb speaks to the daemon and needs it up. See `docs/daemon.md`.
 
 ## Providers
 
-`shard daemon --provider gvisor|sysbox|runc` picks the substrate for the host. `docs/provider.md` has the
-full matrix; the short form:
+`shard daemon --provider gvisor|sysbox|runc|vz` picks the substrate for the host; a Linux host
+defaults to gVisor and a Mac to `vz`. `docs/provider.md` has the full matrix; the short form:
 
-| | gVisor (default) | Sysbox | runc |
-|---|---|---|---|
-| Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel |
-| Syscall cost | high on file-heavy work | near native | near native |
-| Docker or systemd inside | no | yes | no |
-| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** |
-| Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust |
+| | gVisor (Linux default) | Sysbox | runc | vz (Mac default) |
+|---|---|---|---|---|
+| Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
+| Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
+| Docker or systemd inside | no | yes | no | no |
+| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
+| Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |
 
 Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
 host and not from each other. Run one tenant per Sysbox host.
 
 runc isolates nothing: root in the guest is root on the host. It is never picked by default, and
 `--provider runc` is the only way onto it.
+
+`vz` runs on a Mac alone, over Virtualization.framework, with no Docker and no root: `docs/mac.md`
+is the page to start from, and `docs/provider-vz.md` the contract.
 
 ## Sandboxes
 
@@ -74,8 +77,8 @@ does not promise a restore across machines (gvisor#11486), so shard promises it 
 that took the snapshot, and treats anything else as best effort. Changing the list invalidates every
 snapshot that exists, so it is not a thing to tune.
 
-The snapshot verbs exist on gVisor only. On Sysbox and runc each one refuses by name and the sandbox
-runs on.
+The snapshot verbs exist on gVisor, and on `vz` on an Apple silicon Mac with macOS 14 or later. On
+Sysbox and runc, and on `vz` on any other Mac, each one refuses by name and the sandbox runs on.
 
 `shard pause` writes a running sandbox into a snapshot and frees its memory; `shard resume` runs it
 again from there, and `shard fork` starts a new sandbox from the snapshot of another and leaves the
@@ -116,8 +119,9 @@ shard policy rm locked
 ```
 
 A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names, and
-what matches none of them is dropped. The host enforces it in netfilter, applies it again after
-every restore, and applies a change to every live sandbox at once. `docs/egress.md` has the rule
+what matches none of them is dropped. On Linux the host enforces it in netfilter, applies it again
+after every restore, and applies a change to every live sandbox at once; on a Mac the daemon's own
+userspace netstack enforces it, and writes every drop to the sandbox's egress log. `docs/egress.md` has the rule
 syntax and what a policy implies.
 
 ## Images
@@ -142,9 +146,10 @@ The code sits in three buckets: `models/` for domain structs, `pkg/` for thin dr
 things, and `services/` for business logic. `pkg/` never imports `models/`, and `depguard` enforces
 that in CI. [AGENTS.md](AGENTS.md) has the full layout and the rules that go with it.
 
-`shard` is a Linux server tool and does not run on macOS. `make test` stays green on a Mac; anything
-that needs `runsc`, netns or KVM lives behind the `integration` build tag and runs on a Linux box
-through `make test-integration`.
+The Linux substrates do not run on macOS. `make test` stays green on a Mac; anything that needs
+`runsc`, netns or KVM lives behind the `integration` build tag and runs on a Linux box through
+`make test-integration`. `make build-darwin` builds the Mac binary, and `docs/release.md` says what
+runs where.
 
 `CLAUDE.md` is a symlink to `AGENTS.md`, so one document serves every agent. A Windows checkout
 needs `core.symlinks=true`.
