@@ -14,25 +14,40 @@ const DefaultDiskMiB = 10240
 // diskAnnotation records the bound in config.json, the one file a start after a stop reads a bundle back from.
 const diskAnnotation = "dev.shard.disk-mib"
 
-// diskLocks holds one mutex per disk image: two clones of one stopped source race Mounted against Unmount without it (SHARD-251).
+// diskLocks holds one mutex per disk image in use: two clones of one stopped source race Mounted against Unmount without it (SHARD-251).
 var diskLocks = struct {
 	sync.Mutex
-	byImage map[string]*sync.Mutex
-}{byImage: map[string]*sync.Mutex{}}
+	byImage map[string]*diskLock
+}{byImage: map[string]*diskLock{}}
+
+// diskLock counts its holders and waiters, so the entry leaves the table with the last of them.
+type diskLock struct {
+	sync.Mutex
+	users int
+}
 
 // lockDisk takes the mutex of this bundle's disk image and returns its release.
 func (b Bundle) lockDisk() func() {
 	diskLocks.Lock()
 	lock, ok := diskLocks.byImage[b.Image]
 	if !ok {
-		lock = &sync.Mutex{}
+		lock = &diskLock{}
 		diskLocks.byImage[b.Image] = lock
 	}
+	lock.users++
 	diskLocks.Unlock()
 
 	lock.Lock()
 
-	return lock.Unlock
+	return func() {
+		lock.Unlock()
+		diskLocks.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(diskLocks.byImage, b.Image)
+		}
+		diskLocks.Unlock()
+	}
 }
 
 // DiskBound is the size of a sandbox's disk in MiB, never 0: its writable layer and its /tmp are host files.

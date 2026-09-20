@@ -37,6 +37,16 @@ func TestTwoWithDiskCallsOnOneImageRunOneAtATime(t *testing.T) {
 	if overlap {
 		t.Fatal("two withDisk calls on one image ran at the same time")
 	}
+	if n := heldDiskLocks(); n != 0 {
+		t.Fatalf("%d disk locks left in the table after every call returned, want none", n)
+	}
+}
+
+func heldDiskLocks() int {
+	diskLocks.Lock()
+	defer diskLocks.Unlock()
+
+	return len(diskLocks.byImage)
 }
 
 func TestWithDiskOnTwoImagesDoesNotSerialise(t *testing.T) {
@@ -44,7 +54,12 @@ func TestWithDiskOnTwoImagesDoesNotSerialise(t *testing.T) {
 	a, b := Bundle{Image: dir + "/a.img"}, Bundle{Image: dir + "/b.img"}
 
 	release := a.lockDisk()
-	defer release()
+	defer func() {
+		release()
+		if n := heldDiskLocks(); n != 0 {
+			t.Errorf("%d disk locks left in the table after the release, want none", n)
+		}
+	}()
 
 	done := make(chan error, 1)
 	go func() { done <- b.withDisk(func() error { return nil }) }()
