@@ -49,7 +49,7 @@ func NewMachine(cfg *Config) (*VM, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boot loader: %w", err)
 	}
-	vmc, err := vz.NewVirtualMachineConfiguration(loader, cpus(cfg.CPUs), Memory(cfg.Memory))
+	vmc, err := vz.NewVirtualMachineConfiguration(loader, cpus(cfg.CPUs), cfg.Memory)
 	if err != nil {
 		return nil, fmt.Errorf("vm configuration: %w", err)
 	}

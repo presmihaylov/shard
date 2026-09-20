@@ -114,7 +114,7 @@ Create flags, which must precede the image:
                            a sandbox that already exists takes one with shard policy attach
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
-  --memory <MiB>           the memory bound; 0 is unbounded on Linux and 512 on vz, the VM's memory
+  --memory <MiB>           the memory bound; 0 is unbounded on Linux, and vz refuses it: the VM needs a size
   --cpus <n>               the vcpu bound, a whole number; 0 is every host cpu, on vz up to the framework's ceiling
   --restart-on-oom[=N]     start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts; needs --memory
   --restart <policy>       start the entrypoint again inside the sandbox when it exits: no, on-failure or always

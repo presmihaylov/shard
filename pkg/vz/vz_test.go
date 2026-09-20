@@ -73,19 +73,10 @@ func TestAnExplicitValueOutsideTheRangeIsRefusedAndNamesIt(t *testing.T) {
 	}
 }
 
-func TestAZeroMemoryRequestIsTheDefaultAndNotTheFrameworksMinimum(t *testing.T) {
-	if got := Memory(0); got != DefaultMemory || DefaultMemory != 512<<20 {
-		t.Fatalf("Memory(0) = %d, want 512 MiB", got)
-	}
-	if got := Memory(1 << 20); got != 1<<20 {
-		t.Fatalf("Memory(1 MiB) = %d", got)
-	}
-	if err := CheckMemory(0, Range{Min: 4 << 20, Max: 1 << 40}); err != nil {
-		t.Fatalf("CheckMemory(0) = %v, want the default to pass", err)
-	}
-	err := CheckMemory(0, Range{Min: 4 << 20, Max: 256 << 20})
-	if err == nil || !strings.Contains(err.Error(), "536870912 bytes") {
-		t.Fatalf("CheckMemory(0) = %v, want the default refused by name", err)
+func TestAZeroMemoryRequestHasNoDefaultAndIsRefused(t *testing.T) {
+	err := CheckMemory(0, Range{Min: 4 << 20, Max: 1 << 40})
+	if err == nil || !strings.Contains(err.Error(), "0 bytes") {
+		t.Fatalf("CheckMemory(0) = %v, want zero refused by name", err)
 	}
 }
 

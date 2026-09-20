@@ -84,9 +84,12 @@ func clear(dir string) error {
 }
 
 // recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
-// checkMemory refuses a bound the guest cannot boot under; zero is the default and fine.
+// checkMemory refuses a bound the guest cannot boot under; zero is unbounded on Linux, and a VM has no such thing.
 func checkMemory(spec models.SandboxSpec) error {
-	if spec.Resources.MemoryMiB != 0 && spec.Resources.MemoryMiB < MinMemoryMiB {
+	if spec.Resources.MemoryMiB == 0 {
+		return fmt.Errorf("sandbox %s: provider %s takes no --memory 0, a VM's memory is real memory on the host; set --memory <MiB>, %d or more", spec.ID, Name, MinMemoryMiB)
+	}
+	if spec.Resources.MemoryMiB < MinMemoryMiB {
 		return fmt.Errorf("sandbox %s: %s needs at least %d MiB of memory, got %d", spec.ID, Name, MinMemoryMiB, spec.Resources.MemoryMiB)
 	}
 
