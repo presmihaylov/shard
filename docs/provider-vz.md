@@ -149,9 +149,12 @@ gets its rules in order and the default drop after them. An allowed flow is dial
 and spliced to the guest, with a TCP half-close carried across and a UDP flow aged out after thirty
 idle seconds; a refused one gets no answer, as a netfilter drop gives none. Every drop is written
 into the sandbox's egress log with the shape of a host drop: `rule` is the rule that refused a
-judged flow, `private` for the floor, `local` for the gateway's own ports, and `stack` for a frame
-the forwarders never take, ICMP, a fragment, or a port the daemon serves reached on an address other
-than the gateway. The bound is the same two a second with a burst of ten the chains log at. Nothing
+judged flow, `private` for the floor, `local` for the gateway's own ports and for any address the
+Mac owns, which the input chain refuses on Linux, `unapplied` for a flow that arrived before the
+daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow past the
+1024 a sandbox may hold open or the 4096 the stack may, and `stack` for a frame the forwarders
+never take, ICMP, a fragment, or a port the daemon serves reached on an address other than the
+gateway. The bound is the same two a second with a burst of ten the chains log at. Nothing
 reaches the Mac, the LAN or the internet except through the proxy or a flow the policy allowed, and
 `docs/egress.md` has the per-substrate row.
 

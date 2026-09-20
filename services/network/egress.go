@@ -9,6 +9,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/dns"
+	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
@@ -199,6 +200,9 @@ const (
 	RuleIPv6    = "ipv6"
 	// RuleStack is a VM host's drop: the frames end in the daemon, so nothing a policy allows leaves except through the proxy.
 	RuleStack = "stack"
+	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit the stack's when a sandbox holds its share of flows.
+	RuleUnapplied = "unapplied"
+	RuleLimit     = netstack.RuleLimit
 )
 
 // LogPrefix starts every line the chains write into the kernel ring, so shard logs can pick them out.

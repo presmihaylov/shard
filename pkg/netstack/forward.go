@@ -38,8 +38,14 @@ const (
 	udpIdle = 30 * time.Second
 	// maxInFlight is how many TCP handshakes the forwarder holds open per stack.
 	maxInFlight = 1024
-	datagramMax = 64 * 1024
+	// A flow holds a host socket and two goroutines for its life, so one guest gets a share and the stack a ceiling under the daemon's descriptors.
+	maxLinkFlows  = 1024
+	maxStackFlows = 4096
+	datagramMax   = 64 * 1024
 )
+
+// RuleLimit names the drop of a flow the judge allowed but the link or the stack has no room for.
+const RuleLimit = "limit"
 
 // forward installs the transport handlers that take a flow to any address no listener serves, which the judge already allowed through.
 func (s *Stack) forward() {
@@ -96,10 +102,17 @@ func (s *Stack) forwardTCP(r *tcp.ForwarderRequest) {
 
 		return
 	}
+	if !l.admit() {
+		l.report(flow.drop(RuleLimit))
+		r.Complete(false)
+
+		return
+	}
 	go l.spliceTCP(r, flow)
 }
 
 func (l *Link) spliceTCP(r *tcp.ForwarderRequest, flow Flow) {
+	defer l.release()
 	host, err := l.stack.dial(l.ctx, "tcp", flow.Destination.String())
 	if err != nil {
 		// A destination the host cannot reach resets the guest, the same answer a refused connect gives on Linux.
@@ -153,9 +166,15 @@ func (s *Stack) forwardUDP(r *udp.ForwarderRequest) bool {
 
 		return true
 	}
+	if !l.admit() {
+		l.report(flow.drop(RuleLimit))
+
+		return true
+	}
 	var wq waiter.Queue
 	ep, tcpErr := r.CreateEndpoint(&wq)
 	if tcpErr != nil {
+		l.release()
 		l.fail(fmt.Errorf("accept the guest side of udp %s: %s", flow.Destination, tcpErr))
 
 		return true
@@ -166,6 +185,7 @@ func (s *Stack) forwardUDP(r *udp.ForwarderRequest) bool {
 }
 
 func (l *Link) spliceUDP(guest net.Conn, flow Flow) {
+	defer l.release()
 	host, err := l.stack.dial(l.ctx, "udp", flow.Destination.String())
 	if err != nil {
 		l.fail(errors.Join(fmt.Errorf("dial udp %s: %w", flow.Destination, err), guest.Close()))
@@ -225,6 +245,27 @@ func quietOr(err error) error {
 // closeQuietly is the second Close of a flow's side, which the first half already ended.
 func closeQuietly(c io.Closer) error {
 	return quietOr(c.Close())
+}
+
+// admit takes one of the link's flows and one of the stack's for a flow's whole life; a link with none left, or a stack with none, refuses it.
+func (l *Link) admit() bool {
+	l.stack.mu.Lock()
+	defer l.stack.mu.Unlock()
+	if l.closing || l.active >= maxLinkFlows || l.stack.active >= maxStackFlows {
+		return false
+	}
+	l.active++
+	l.stack.active++
+
+	return true
+}
+
+// release gives back what admit took, once the splice is over.
+func (l *Link) release() {
+	l.stack.mu.Lock()
+	defer l.stack.mu.Unlock()
+	l.active--
+	l.stack.active--
 }
 
 // track keeps a flow's two sides for the link's close; a link already closing takes none and ends the sides here.

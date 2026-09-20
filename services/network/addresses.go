@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -17,6 +18,8 @@ type Addresses struct {
 	gateway netip.Addr
 	egress  EgressSource
 	judge   Judge
+	// ensure serializes compile and apply, so an older snapshot never lands after a newer one; the host Service has the same lock.
+	ensure sync.Mutex
 }
 
 // NewAddresses takes the same layout as New; the bridge and the nameservers in it are unused, since the host holds neither.
@@ -83,6 +86,8 @@ func (a *Addresses) Reapply(ctx context.Context, id string) error {
 func (a *Addresses) ReapplyAll(ctx context.Context) error { return a.apply(ctx) }
 
 func (a *Addresses) apply(ctx context.Context) error {
+	a.ensure.Lock()
+	defer a.ensure.Unlock()
 	if a.egress == nil {
 		a.judge.Apply(nil)
 

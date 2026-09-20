@@ -58,6 +58,8 @@ type Stack struct {
 	mu     sync.Mutex
 	nextID tcpip.NICID
 	links  map[tcpip.NICID]*Link
+	// active counts the flows admitted across every link, against maxStackFlows.
+	active int
 	closed bool
 	// tcpPorts and udpPorts are what the listeners opened, which is all a guest may reach on the address.
 	tcpPorts map[uint16]bool
@@ -114,7 +116,9 @@ type Link struct {
 	pumpErr error
 	limiter *rate.Limiter
 	// flows are the two sides of every forwarded connection the link carries, and flowErr the first fault among them.
-	flows   map[io.Closer]struct{}
+	flows map[io.Closer]struct{}
+	// active counts the flows admitted on this link, against maxLinkFlows.
+	active  int
 	flowErr error
 	splices sync.WaitGroup
 	closing bool

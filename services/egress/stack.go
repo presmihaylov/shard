@@ -58,6 +58,10 @@ func stackReason(rule, proto string) string {
 		return "the stack dropped a " + proto + " packet: no rule of the policy matches"
 	case network.RuleStack:
 		return "the stack dropped a " + proto + " packet: the stack forwards no such frame off the gateway"
+	case network.RuleUnapplied:
+		return "the stack dropped a " + proto + " packet: the policy is not applied yet"
+	case network.RuleLimit:
+		return "the stack dropped a " + proto + " packet: the sandbox holds every flow the stack lets it"
 	}
 
 	return "the stack dropped a " + proto + " packet: the first matching rule of the policy denies it"

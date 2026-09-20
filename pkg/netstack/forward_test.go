@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -71,7 +71,7 @@ func wantDrop(t *testing.T, drops chan Drop, protocol string) {
 }
 
 // echoTCP answers every connection with what it reads, and counts the connections it took.
-func echoTCP(t *testing.T) (string, *int32) {
+func echoTCP(t *testing.T) (string, *atomic.Int32) {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -79,17 +79,14 @@ func echoTCP(t *testing.T) (string, *int32) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	var mu sync.Mutex
-	var taken int32
+	var taken atomic.Int32
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			mu.Lock()
-			taken++
-			mu.Unlock()
+			taken.Add(1)
 			go func() {
 				defer conn.Close()
 				buf := make([]byte, 64)
@@ -152,8 +149,8 @@ func TestADeniedTCPFlowIsDroppedAndNamesTheRule(t *testing.T) {
 	}
 	wantFlow(t, flows, "tcp")
 	wantDrop(t, drops, "tcp")
-	if *taken != 0 {
-		t.Errorf("the host listener took %d connections for a denied flow", *taken)
+	if n := taken.Load(); n != 0 {
+		t.Errorf("the host listener took %d connections for a denied flow", n)
 	}
 }
 
@@ -300,5 +297,62 @@ func TestAClosedLinkEndsItsFlows(t *testing.T) {
 	host.mu.Unlock()
 	if left != 0 {
 		t.Errorf("%d flow sides still tracked after the close", left)
+	}
+}
+
+// A link that holds its share of flows gets the next one dropped as limit, and a flow that ends gives its place back.
+func TestALinkAtItsFlowLimitDropsTheNextFlow(t *testing.T) {
+	target, taken := echoTCP(t)
+	host, drops, _ := judged(t, allowed, target)
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+
+	host.mu.Lock()
+	link.active = maxLinkFlows
+	host.mu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if conn, err := guest.dialTCP(ctx, remote); err == nil {
+		conn.Close()
+		t.Fatal("a flow over the limit connected")
+	}
+	select {
+	case got := <-drops:
+		if got.Rule != RuleLimit {
+			t.Errorf("the drop names %q, want %q", got.Rule, RuleLimit)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no drop reported")
+	}
+	if n := taken.Load(); n != 0 {
+		t.Errorf("the host listener took %d connections over the limit", n)
+	}
+
+	host.mu.Lock()
+	link.active = 0
+	host.mu.Unlock()
+	client, err := guest.dialTCP(t.Context(), remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	during := link.active + host.active
+	host.mu.Unlock()
+	if during != 2 {
+		t.Errorf("an open flow counts %d on the link and the stack together, want 2", during)
+	}
+	client.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		host.mu.Lock()
+		after := link.active + host.active
+		host.mu.Unlock()
+		if after == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a closed flow still counts %d", after)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
