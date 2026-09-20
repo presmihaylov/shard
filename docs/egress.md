@@ -190,16 +190,19 @@ sends is dropped and logged. IPv6 support is a later addition, not a design limi
 | substrate | the table | what leaves the sandbox |
 |---|---|---|
 | gVisor, Sysbox, runc | host netfilter, one chain per sandbox with a policy | what the policy allows; 80 and 443 through the proxy when fronted |
-| Virtualization.framework | the NAT table of `pkg/netstack` inside the daemon | 80 and 443 through the proxy, the resolver on 53, nothing else |
+| Virtualization.framework | the judge of `pkg/netstack` inside the daemon, over the same compiled chains | the same: what the policy allows; 80 and 443 through the proxy when fronted |
 
-On macOS there is no host table and no packet path off the daemon: the guest's frames terminate in a
-userspace stack that answers for the gateway address alone, redirects 80 and 443 onto the proxy the
-way the host chains do, and drops the rest, so every sandbox is fronted and a port the proxy does
-not serve is closed. A drop is written into the sandbox's log as the stack refuses the frame, with
-`source` `host` and `rule` `local`, `private` or `stack`, so `shard logs --egress` reads the same on
-both hosts. The rules a policy compiles still judge each request in the proxy, so a policy means the
-same thing on both; the difference is that on macOS an allowed destination on a port other than 80
-or 443 is unreachable, where on Linux the host chain would pass it. See `docs/provider-vz.md`.
+On macOS there is no host table: the guest's frames terminate in a userspace stack that answers for
+the gateway address, redirects 80 and 443 onto the proxy the way the host chains do, and asks a judge
+about every other TCP or UDP flow. The judge holds the same chains the host ruleset compiles from and
+answers the way the `egress` chain does: the private floor drops first, a sandbox without a policy
+reaches everything else, and one with a policy gets its rules in order and the default drop after
+them. A flow the judge allows is dialed from the daemon and spliced to the guest; a refused one gets
+no answer, as a netfilter drop gives none, and is written into the sandbox's log as the stack refuses
+it, with `source` `host` and the `rule` the chain would have named. A frame that is not a TCP or UDP
+flow, or that reaches for a port the daemon itself serves on an address other than the gateway,
+carries `stack`. Because every sandbox on a VM host is fronted, 80 and 443 always go through the
+proxy and 53 is answered by the resolver on the gateway alone. See `docs/provider-vz.md`.
 
 ## A policy change is immediate
 

@@ -20,7 +20,7 @@ func TestStackDropReadsLikeAHostDrop(t *testing.T) {
 		destination string
 		rule, want  string
 	}{
-		{"203.0.113.7", network.RuleStack, "the stack dropped a tcp packet: a VM reaches nothing off the daemon except through the proxy"},
+		{"203.0.113.7", network.RuleStack, "the stack dropped a tcp packet: the stack forwards no such frame off the gateway"},
 		{"10.87.0.1", network.RuleLocal, "the stack dropped a tcp packet to the host's own address"},
 		{"192.168.1.10", network.RulePrivate, "the stack dropped a tcp packet to a private address"},
 	} {
@@ -31,9 +31,23 @@ func TestStackDropReadsLikeAHostDrop(t *testing.T) {
 		}
 	}
 
+	// A judged flow carries the rule that refused it, and the reason reads like the decision the director gives.
+	for _, tc := range []struct {
+		rule, want string
+	}{
+		{network.RuleDefault, "the stack dropped a tcp packet: no rule of the policy matches"},
+		{"no-smtp", "the stack dropped a tcp packet: the first matching rule of the policy denies it"},
+	} {
+		got := StackDrop(stackGateway, netstack.Drop{Time: now, Guest: netip.MustParseAddr("10.87.0.2"), Destination: netip.MustParseAddr("203.0.113.7"), Protocol: "tcp", Port: 25, Rule: tc.rule})
+		want := Record{Time: now, Source: SourceHost, Verdict: string(models.ActionDeny), Port: 25, Address: "203.0.113.7", Rule: tc.rule, Reason: tc.want}
+		if got != want {
+			t.Errorf("%s: got %+v, want %+v", tc.rule, got, want)
+		}
+	}
+
 	// A frame the stack could not read names no destination, and the record carries none rather than an invalid one.
 	got := StackDrop(stackGateway, netstack.Drop{Time: now, Guest: netip.MustParseAddr("10.87.0.2"), Protocol: "runt"})
-	want := Record{Time: now, Source: SourceHost, Verdict: string(models.ActionDeny), Rule: network.RuleStack, Reason: "the stack dropped a runt packet: a VM reaches nothing off the daemon except through the proxy"}
+	want := Record{Time: now, Source: SourceHost, Verdict: string(models.ActionDeny), Rule: network.RuleStack, Reason: "the stack dropped a runt packet: the stack forwards no such frame off the gateway"}
 	if got != want {
 		t.Errorf("runt: got %+v, want %+v", got, want)
 	}

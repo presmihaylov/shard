@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/network"
 )
@@ -134,6 +136,17 @@ func TestAVZDaemonLeasesAddressesAndFrontsOnTheStack(t *testing.T) {
 	defer ln.Close()
 	if d.stackSvc.Address() != hostNet.Gateway() {
 		t.Errorf("the stack answers for %s, the pool hands out gateway %s", d.stackSvc.Address(), hostNet.Gateway())
+	}
+	// The stack judges by the same chains the leases compile, so a flow off the gateway gets the Linux answer: the floor drops, the rest passes without a policy.
+	if d.addressesSvc == nil {
+		t.Fatal("the vz daemon holds no address pool of its own")
+	}
+	guest := spec.Address.Addr()
+	if v := d.addressesSvc.Judge(netstack.Flow{Guest: guest, Protocol: "tcp", Destination: netip.MustParseAddrPort("192.168.1.1:22")}); v.Allow || v.Rule != network.RulePrivate {
+		t.Errorf("a private destination judged %+v", v)
+	}
+	if v := d.addressesSvc.Judge(netstack.Flow{Guest: guest, Protocol: "tcp", Destination: netip.MustParseAddrPort("203.0.113.7:22")}); !v.Allow || v.Rule != network.RuleNone {
+		t.Errorf("a public destination without a policy judged %+v", v)
 	}
 }
 

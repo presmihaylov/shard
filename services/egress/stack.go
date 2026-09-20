@@ -12,6 +12,9 @@ import (
 func StackDrop(gateway netip.Addr, d netstack.Drop) Record {
 	rule := network.RuleStack
 	switch {
+	case d.Rule != "":
+		// A judged flow names the rule that refused it, the way a ring line names the rule of the chain.
+		rule = d.Rule
 	case d.Destination == gateway:
 		rule = network.RuleLocal
 	case isPrivate(d.Destination):
@@ -46,14 +49,18 @@ func isPrivate(addr netip.Addr) bool {
 }
 
 func stackReason(rule, proto string) string {
-	if rule == network.RuleLocal {
+	switch rule {
+	case network.RuleLocal:
 		return "the stack dropped a " + proto + " packet to the host's own address"
-	}
-	if rule == network.RulePrivate {
+	case network.RulePrivate:
 		return "the stack dropped a " + proto + " packet to a private address"
+	case network.RuleDefault:
+		return "the stack dropped a " + proto + " packet: no rule of the policy matches"
+	case network.RuleStack:
+		return "the stack dropped a " + proto + " packet: the stack forwards no such frame off the gateway"
 	}
 
-	return "the stack dropped a " + proto + " packet: a VM reaches nothing off the daemon except through the proxy"
+	return "the stack dropped a " + proto + " packet: the first matching rule of the policy denies it"
 }
 
 // Drop writes one stack drop into the sandbox that holds the guest address, the way a ring line lands; a guest no record holds is counted and not written.
