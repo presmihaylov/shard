@@ -56,11 +56,19 @@ the version drift each become a support case, and the Firecracker kernel is buil
 
 ### The root disk is a pure-Go ext4 image, cloned per sandbox
 
-`services/image` unpacks the OCI layers into one ext4 image per image digest, written by a Go ext4
-writer, because a Mac has no `mkfs.ext4` and no loop mount. Every sandbox gets an APFS clone of that
-base disk (`clonefile(2)`: instant, and the blocks are shared until written), attached as virtio-blk,
-and the clone is the writable layer. `--disk` is the size of the image. On a volume that is not APFS
-the clone falls back to a copy and says so once in the log (SHARD-215).
+`services/image` unpacks the OCI layers into one ext4 image per image digest, `disks/<digest>.ext4`
+beside the rootfs tree, written by `pkg/ext4`, because a Mac has no `mkfs.ext4` and no loop mount.
+The image is built from the layer tars, not from the unpacked tree, so it keeps what an unpack on a
+Mac loses: the uid and gid, the device nodes and the capability xattrs. `services/image` merges the
+layers into one tar stream (whiteouts applied, a hard link kept to the version it took) and
+hcsshim's `tar2ext4` lays it down; `ext4.Write` then clears the read-only flag it sets and pads the
+inode bitmaps, and `ext4.Grow` can add block groups to a copy offline, up to `ext4.MaxDiskSize`,
+128 MiB short of 16 TiB, where its 32-bit block count ends; `sandbox.MaxDiskMiB` is derived from it,
+so a `--disk` the daemon accepts is one the writer can grow to. Every sandbox gets an APFS clone of the base
+(`clonefile(2)`: instant, and the blocks are shared until written), grown to its `--disk` bound,
+attached as virtio-blk, and the clone is the writable layer. `bundle.CloneRootDisk` does both and
+reports whether the blocks are shared; on a volume that is not APFS it falls back to a copy, and the
+provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218).
 
 Rejected: a virtiofs share of an unpacked directory. It is the simplest to build and it has no
 consistent snapshot: a saved VM state and a directory that keeps changing under it cannot be restored
@@ -180,6 +188,9 @@ file-handle network device. It ran on 2026-09-19 on a MacBook (M-series, macOS 1
    the Secure Enclave, and a locked screen withholds it: every restore then fails with `Code=12,
    permission denied` while a save still succeeds (SHARD-213, macOS 14.6). A headless box that
    never locks is fine; the driver test skips when `ioreg` reports the session locked.
+10. **On macOS 26 a guest write to `/dev/console` never reaches the host.** The console file the
+    shim reads stays empty while the same guest's writes to `/dev/hvc0` arrive; on macOS 14 both
+    arrive. Every guest-side probe and `shard-init` write the virtio console by its own node, `hvc0`.
 
 Not proved yet, and owned by the tickets that need it: a restore over a virtio-blk disk (SHARD-215),
 the vsock streams end to end (SHARD-216), the netstack (SHARD-217), and any of this on macOS 13.
