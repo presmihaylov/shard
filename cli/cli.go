@@ -115,7 +115,7 @@ Create flags, which must precede the image:
   --workdir <dir>          the directory the entrypoint starts in
   --user <user>            the user the entrypoint runs as
   --memory <MiB>           the memory bound; 0 is unbounded on Linux and 512 on vz, the VM's memory
-  --cpus <n>               the vcpu bound; 0 is unbounded on Linux and one vcpu on vz
+  --cpus <n>               the vcpu bound; 0 is every host cpu
   --restart-on-oom[=N]     start the sandbox again when the host ends it for its memory, never on vz; bare is unlimited, =N caps the starts; needs --memory
   --restart <policy>       start the entrypoint again inside the sandbox when it exits: no, on-failure or always
   --restart-retries <n>    the starts again before the supervisor gives up, unlimited by default; always takes none

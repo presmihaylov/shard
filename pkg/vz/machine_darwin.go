@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -227,10 +228,9 @@ func memoryRange() Range {
 	return Range{Min: vz.VirtualMachineConfigurationMinimumAllowedMemorySize(), Max: vz.VirtualMachineConfigurationMaximumAllowedMemorySize()}
 }
 
-// The cpu default is one, the smallest the framework allows.
 func cpus(n uint) uint {
 	if n == 0 {
-		return uint(cpuRange().Min)
+		return DefaultCPUs(runtime.NumCPU(), cpuRange())
 	}
 
 	return n

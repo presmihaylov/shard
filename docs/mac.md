@@ -71,7 +71,7 @@ your printer.
 | Syscall cost | native, inside the VM | high on file-heavy work |
 | `pause`, `resume`, `fork` | Apple silicon on macOS 14 or later | yes |
 | Memory | `--memory` is the VM's memory, 512 MB default; past it the guest's own OOM killer takes a process and the sandbox lives | a cgroup limit; past it the whole sandbox dies, and restarts on `restart_on_oom` |
-| CPUs | `--cpus 0` is one virtual CPU; `N` is `N` of them | `--cpus 0` is every host CPU; `N` is a quota |
+| CPUs | `--cpus 0` is one virtual CPU per host CPU; `N` is `N` of them | `--cpus 0` is every host CPU; `N` is a quota |
 | Processes | no bound; a fork bomb stays inside the VM and hits its memory | `4096` per sandbox |
 | Host access | none: no shared folders, no LAN, no host mounts | none |
 

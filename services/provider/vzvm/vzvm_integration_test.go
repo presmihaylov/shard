@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -355,6 +356,31 @@ func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
 }
 
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
+// The framework's ceiling is the host count on every Mac it runs on, so the unbounded default lands there.
+func TestAnUnboundedCPUCountIsEveryHostCPU(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "nproc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"nproc"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if got := strings.TrimSpace(string(read)); got != strconv.Itoa(runtime.NumCPU()) {
+		t.Fatalf("the guest sees %s cpus, want the host's %d", got, runtime.NumCPU())
+	}
+}
+
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
 	if !h.provider.Capabilities().Fork {
