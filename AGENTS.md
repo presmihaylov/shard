@@ -83,6 +83,7 @@ services/provider/firecracker/  implements models.Provider on Firecracker
 services/provider/conformance/  the test suite every substrate must pass
 
 packaging/systemd/         the unit for the daemon, and the one for the TCP front
+packaging/launchd/         the LaunchDaemon for the native Mac daemon
 packaging/kernel/          the guest kernel build: pinned image, config per arch, release tag helper
 services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
 docs/
