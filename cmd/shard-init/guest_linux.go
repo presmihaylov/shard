@@ -70,6 +70,9 @@ func bootGuest(device string) error {
 	if err := os.Chdir("/"); err != nil {
 		return err
 	}
+	if err := boundMemory(); err != nil {
+		return err
+	}
 
 	// The console goes through hvc0 on the VZ kernel; /dev/console is a sink there (docs/provider-vz.md).
 	console, err := os.OpenFile("/dev/hvc0", os.O_WRONLY, 0)
@@ -94,16 +97,17 @@ func mountOnce(source, target, fstype string, flags uintptr) error {
 	return nil
 }
 
-// capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk.
-const capbsetEnv = "SHARD_INIT_CAPBSET"
-
-// dropPtrace takes CAP_SYS_PTRACE out of the bounding set, so no guest process can open PID 1's fds.
-func dropPtrace() error {
+// confine takes CAP_SYS_PTRACE out of the bounding set, so no guest process can open PID 1's fds, and
+// puts the guest in its own cgroup namespace, so a runtime inside it makes cgroups under the sandbox's bound.
+func confine() error {
 	if os.Getenv(capbsetEnv) == "" {
-		// The bounding set is per thread, and exec carries the calling thread's, so a re-exec gives it to the whole runtime.
+		// The bounding set and the namespace are per thread, and exec carries the calling thread's, so a re-exec gives them to the whole runtime.
 		runtime.LockOSThread()
 		if err := unix.Prctl(unix.PR_CAPBSET_DROP, unix.CAP_SYS_PTRACE, 0, 0, 0); err != nil {
 			return fmt.Errorf("drop CAP_SYS_PTRACE from the bounding set: %w", err)
+		}
+		if err := unix.Unshare(unix.CLONE_NEWCGROUP); err != nil {
+			return fmt.Errorf("unshare the cgroup namespace: %w", err)
 		}
 
 		return syscall.Exec("/proc/self/exe", os.Args, append(os.Environ(), capbsetEnv+"=1"))
@@ -113,7 +117,7 @@ func dropPtrace() error {
 		return fmt.Errorf("clear the dumpable flag: %w", err)
 	}
 
-	return nil
+	return remountCgroup()
 }
 
 // applyAddress sets the interface by ioctl, as the image has no iproute2 to shell out to.

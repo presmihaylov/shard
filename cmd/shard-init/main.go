@@ -141,6 +141,8 @@ type reporter interface {
 	ready() error
 	exited(models.ExitStatus) error
 	restarted(models.RestartCount) error
+	// oomKilled says the sandbox hit its memory bound and every guest process is gone, so the guest ends.
+	oomKilled() error
 }
 
 // death is one reaped child.
@@ -170,6 +172,8 @@ type guest struct {
 	// started and lastExit are what a new control connection is told first.
 	started  bool
 	lastExit *models.ExitStatus
+	// oomProbe says whether the guest's own memory bound was hit; nil is a guest with no bound, where a SIGKILL is a signal.
+	oomProbe func() (bool, error)
 }
 
 // newGuest watches for child deaths before anything forks, so no exit is ever missed.
@@ -188,7 +192,7 @@ func newGuest(report reporter, restart restartPolicy) *guest {
 func (g *guest) launch(ep entrypoint) error {
 	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
 	g.runStartedAt = time.Now()
-	pid, err := startProcess(ep, nil, false)
+	pid, err := g.start(ep, nil, false)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, ep.argv[0], err)
 	}
@@ -225,8 +229,17 @@ func (g *guest) supervise() error {
 }
 
 // collect reaps what died and routes each exit: the entrypoint's to the policy, an exec's to its session.
+// A kill the memory bound made ends the guest, as it ends a whole Linux sandbox, after every exec has its exit.
 func (g *guest) collect() bool {
+	done := false
 	for _, d := range collectDeadChildren() {
+		if d.exit.Signal == int(syscall.SIGKILL) && g.oomProbe != nil && !done {
+			oom, err := g.oomProbe()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "shard-init:", err)
+			}
+			done = oom
+		}
 		if waiter, ok := g.waiters[d.pid]; ok {
 			delete(g.waiters, d.pid)
 			waiter <- d.exit
@@ -234,6 +247,11 @@ func (g *guest) collect() bool {
 			continue
 		}
 		if d.pid != g.entrypointPID || g.entrypointPID == 0 {
+			continue
+		}
+		if done {
+			g.entrypointPID = 0
+
 			continue
 		}
 
@@ -257,8 +275,14 @@ func (g *guest) collect() bool {
 			g.record()
 		}
 	}
+	if done {
+		// A sandbox outlives its entrypoint, but not its memory bound: the host reads the reason and decides on a start again.
+		if err := g.report.oomKilled(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
+		}
+	}
 
-	return false
+	return done
 }
 
 // stop forwards the signal to the entrypoint. Nothing left to forward to ends the supervisor at once.
@@ -276,7 +300,7 @@ func (g *guest) stop(received os.Signal) (bool, error) {
 
 // restartEntrypoint forks it once more and records the count; an image that no longer starts is a give-up.
 func (g *guest) restartEntrypoint() int {
-	pid, err := startProcess(g.ep, nil, false)
+	pid, err := g.start(g.ep, nil, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", g.ep.argv[0], err)
 		g.count.GaveUp = true
@@ -316,7 +340,7 @@ func (g *guest) spawn(ep entrypoint, files []*os.File, tty bool) (int, <-chan mo
 		exit = make(chan models.ExitStatus, 1)
 	)
 	g.run(func() {
-		pid, err = startProcess(ep, files, tty)
+		pid, err = g.start(ep, files, tty)
 		if err == nil {
 			g.waiters[pid] = exit
 		}
@@ -421,6 +445,11 @@ func (r fileReporter) ready() error {
 
 // exited frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
 // The newlines let a reader take whole lines only; shard-init is the sole writer, so appends never interleave.
+// oomKilled never reaches a file: a Linux sandbox dies whole with its cgroup, and the host reads the cgroup's own count.
+func (fileReporter) oomKilled() error {
+	return errors.New("a file reporter has no memory bound to report a kill under")
+}
+
 func (fileReporter) exited(exit models.ExitStatus) error {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
@@ -540,6 +569,21 @@ func parseID(field string) (uint32, error) {
 	}
 
 	return uint32(id), nil
+}
+
+// start forks a guest process; under a bound it inherits PID 1's OOM exemption, which the kill switch undoes at once.
+func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
+	pid, err := startProcess(ep, files, tty)
+	if err != nil || g.oomProbe == nil {
+		return pid, err
+	}
+	if err := exposeToOOMKiller(pid); err != nil {
+		g.kill(pid)
+
+		return 0, err
+	}
+
+	return pid, nil
 }
 
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.

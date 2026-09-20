@@ -118,3 +118,24 @@ type brokenLog struct{}
 func (brokenLog) Write([]byte) (int, error) { return 0, errNoSpace }
 
 func (brokenLog) Close() error { return nil }
+
+// An OOM message leaves a marker the status reads once the guest is gone, and the next boot must clear it.
+func TestAnOOMMessageMarksTheMachineKilledUnderTheBound(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindOOM}); err != nil {
+		t.Fatal(err)
+	}
+	if m.status(p).OOMKilled {
+		t.Fatal("the status blamed the bound while the guest still ran")
+	}
+	m.gone = true
+	status := m.status(p)
+	if status.State != models.StateStopped || !status.OOMKilled {
+		t.Fatalf("status = %+v; want stopped and OOMKilled", status)
+	}
+	if !oomKilled(m.dir) {
+		t.Fatal("no marker for a status read with no machine")
+	}
+}

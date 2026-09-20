@@ -72,7 +72,16 @@ type Events struct {
 // MemoryEvents reads memory.events. A cgroup that is gone answers ErrNotFound, which is the ordinary
 // answer for a sandbox that stopped cleanly, because runsc removes its cgroup on delete.
 func MemoryEvents(dir string) (Events, error) {
-	raw, err := read(dir, "memory.events")
+	return memoryEvents(dir, "memory.events")
+}
+
+// LocalMemoryEvents reads memory.events.local: what hit this cgroup's own bound, and not a descendant's.
+func LocalMemoryEvents(dir string) (Events, error) {
+	return memoryEvents(dir, "memory.events.local")
+}
+
+func memoryEvents(dir, file string) (Events, error) {
+	raw, err := read(dir, file)
 	if err != nil {
 		return Events{}, err
 	}
@@ -86,7 +95,7 @@ func MemoryEvents(dir string) (Events, error) {
 
 		count, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return Events{}, fmt.Errorf("read %s: %q counts %q, which is not a number", filepath.Join(dir, "memory.events"), key, value)
+			return Events{}, fmt.Errorf("read %s: %q counts %q, which is not a number", filepath.Join(dir, file), key, value)
 		}
 
 		switch key {

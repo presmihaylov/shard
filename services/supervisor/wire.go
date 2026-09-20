@@ -32,6 +32,8 @@ const (
 	KindReady     = "ready"
 	KindExit      = "exit"
 	KindRestarts  = "restarts"
+	// KindOOM says the guest hit its memory bound, every guest process is gone, and the VM powers off.
+	KindOOM = "oom"
 )
 
 // Message is one newline-framed control message; Kind says which of the optional fields it carries.

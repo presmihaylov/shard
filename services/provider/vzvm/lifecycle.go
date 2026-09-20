@@ -71,7 +71,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, logFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, diskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -443,8 +443,15 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		return models.Status{}, err
 	}
 	if m == nil {
-		return models.Status{Exists: true, State: models.StateStopped}, nil
+		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}, nil
 	}
 
 	return m.status(p), nil
+}
+
+// oomKilled reads the marker the last boot left; only the next boot clears it.
+func oomKilled(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, oomFile))
+
+	return err == nil
 }

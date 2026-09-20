@@ -33,6 +33,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/pkg/vzshim"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
@@ -461,6 +462,43 @@ docker run --rm local/base wget -qO- -T 3 http://93.184.216.34:8080/ 2>&1`
 		case <-deadline:
 			t.Fatal("no drop reported for the container's dial of 8080")
 		}
+	}
+}
+
+// A guest that outgrows its bound dies as a whole and the status blames the bound, as a Linux sandbox does; nothing records an exit.
+func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
+	h := newVMHarness(t)
+
+	// The tmpfs is charged to the writer, and its default size sits under the bound, so the remount lifts it first.
+	script := "mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done"
+	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		status, err := h.provider.Status(t.Context(), spec.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State == models.StateStopped {
+			if !status.OOMKilled {
+				log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+				t.Fatalf("the guest stopped without the bound blamed\nsandbox log:\n%s", log)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the guest is still %s two minutes into the fill", status.State)
+		}
+		time.Sleep(time.Second)
+	}
+	if _, found, err := bundle.ReadExitStatus(filepath.Join(spec.StateDir, "exit.json")); err != nil || found {
+		t.Fatalf("exit record after the kill: found=%v err=%v; want none", found, err)
 	}
 }
 

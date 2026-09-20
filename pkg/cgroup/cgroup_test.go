@@ -117,6 +117,24 @@ func TestReadingTheEventCounters(t *testing.T) {
 	}
 }
 
+// TestTheLocalEventCountersReadTheirOwnFile keeps a descendant's OOM out of the answer: only the local file says what hit this bound.
+func TestTheLocalEventCountersReadTheirOwnFile(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{"memory.events": "oom 3\noom_kill 3\n", "memory.events.local": "oom 1\noom_kill 0\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	got, err := cgroup.LocalMemoryEvents(dir)
+	if err != nil {
+		t.Fatalf("LocalMemoryEvents: %v", err)
+	}
+	if got != (cgroup.Events{OOM: 1}) {
+		t.Fatalf("LocalMemoryEvents = %+v, want {OOM:1 OOMKill:0}", got)
+	}
+}
+
 // TestTheEventsOfACgroupThatIsGone is the ordinary case for a sandbox that stopped cleanly: runsc
 // removed the cgroup, so there is nothing to read and nothing to report.
 func TestTheEventsOfACgroupThatIsGone(t *testing.T) {

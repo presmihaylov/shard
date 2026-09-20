@@ -107,7 +107,7 @@ func (p *Provider) forget(m *machine) {
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -281,6 +281,10 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		}
 
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
+	case supervisor.KindOOM:
+		if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
+			return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
+		}
 	}
 
 	return nil
@@ -481,7 +485,7 @@ func (m *machine) status(p *Provider) models.Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if m.gone {
-		return models.Status{Exists: true, State: models.StateStopped}
+		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
 	state := models.StateCreated
 	if m.started {

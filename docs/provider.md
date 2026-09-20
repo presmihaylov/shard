@@ -140,9 +140,15 @@ not one process inside it, and the daemon restarts it when the record set `resta
 sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
 pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
-On `vz` the bound is the VM's memory: past it the guest kernel's own OOM killer takes one process
-inside the VM, the sandbox lives, `Status` never reports `OOMKilled`, and `restart_on_oom` never
-fires. A killed entrypoint is an exit the supervisor records, the same as any other.
+On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
+guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
+itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` moves into that cgroup and
+unshares a cgroup namespace rooted there, so everything a guest starts, a Docker daemon and its
+containers included, lands under the bound; `shard-init` alone is exempt, through
+`oom_score_adj=-1000`, and each child it forks is exposed again. When the killer takes the group,
+`shard-init` reads `memory.events.local`, reports the kill over vsock instead of an exit, and
+powers the VM off, so `Status` says `OOMKilled`, no exit record lands, and the daemon restarts the
+sandbox on `restart_on_oom` exactly as it does on Linux.
 
 ## What a cpu bound means
 

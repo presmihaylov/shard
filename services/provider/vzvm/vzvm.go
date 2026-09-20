@@ -33,8 +33,10 @@ const (
 	consoleFile  = "console.log"
 	exitFile     = "exit.json"
 	restartsFile = "restarts.json"
-	logFile      = "output.log"
-	initrdFile   = "initrd.cpio"
+	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
+	oomFile    = "oom"
+	logFile    = "output.log"
+	initrdFile = "initrd.cpio"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
