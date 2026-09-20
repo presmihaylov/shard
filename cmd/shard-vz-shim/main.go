@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	vzfw "github.com/Code-Hex/vz/v3"
 
@@ -56,6 +57,8 @@ func run() error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	changed := machine.Changed()
+	// A stop the framework accepted but never reports past this ends the shim anyway: the VM dies with its process.
+	var overdue <-chan time.Time
 	for {
 		select {
 		case sig := <-signals:
@@ -71,6 +74,9 @@ func run() error {
 			if err := machine.Stop(); err != nil {
 				return err
 			}
+			overdue = time.After(stopGrace)
+		case <-overdue:
+			return fmt.Errorf("the vm did not report its stop within %s: exiting", stopGrace)
 		case state := <-changed:
 			if state != vzfw.VirtualMachineStateStopped && state != vzfw.VirtualMachineStateError {
 				continue
@@ -80,7 +86,19 @@ func run() error {
 				return fmt.Errorf("close the shim socket: %w", err)
 			}
 
-			return errors.Join(<-served, machine.Close())
+			return errors.Join(awaitServed(served), machine.Close())
 		}
+	}
+}
+
+// The VM is gone, so a connection still spliced on a guest stream is not worth more than this.
+const stopGrace = 5 * time.Second
+
+func awaitServed(served <-chan error) error {
+	select {
+	case err := <-served:
+		return err
+	case <-time.After(stopGrace):
+		return fmt.Errorf("a shim connection still runs %s after the vm stopped: exiting", stopGrace)
 	}
 }

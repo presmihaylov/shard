@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -21,8 +22,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -385,6 +388,91 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	if want := "twin\nnameserver " + gateway.String() + "\n"; string(written) != want {
 		t.Fatalf("the fork's hostname and resolv.conf = %q, want %q", written, want)
 	}
+}
+
+// A guest that panics before anything listens on vsock fails the create within its grace and leaves no shim behind (SHARD-255).
+func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
+	h := newVMHarness(t)
+	// An empty /init is a kernel panic before the supervisor exists.
+	empty := filepath.Join(t.TempDir(), "shard-init")
+	if err := os.WriteFile(empty, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := vzvm.New(vzvm.Config{Shim: shimBinary(t), Kernel: h.kernel, Init: empty, Dir: t.TempDir(), Stack: h.stack, Dirs: h.stateDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := h.newSpec(t, "sleep", "3600")
+
+	started := time.Now()
+	err = p.Create(t.Context(), spec)
+	if err == nil {
+		t.Fatal("Create over a guest that never answers succeeded")
+	}
+	t.Logf("Create failed after %s: %v", time.Since(started).Round(time.Second), err)
+	if shims := shimsOf(t, spec.StateDir); len(shims) != 0 {
+		t.Fatalf("shims left after the failed create: %v", shims)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, "vm.json")); !os.IsNotExist(err) {
+		t.Fatalf("the record of the failed create is still there: %v", err)
+	}
+}
+
+// SIGTERM is what an operator sends first, so a shim ends its VM and exits on it (SHARD-255).
+func TestAShimEndsItsVMOnSIGTERM(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "sleep", "3600")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	shims := shimsOf(t, spec.StateDir)
+	if len(shims) != 1 {
+		t.Fatalf("shims of the running sandbox = %v, want one", shims)
+	}
+	if err := syscall.Kill(shims[0], syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for len(shimsOf(t, spec.StateDir)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the shim %d still runs 15s after SIGTERM", shims[0])
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State == models.StateRunning {
+		t.Fatalf("the sandbox is still running after its shim ended: %+v", status)
+	}
+}
+
+// shimsOf is the pid of every shim whose config names the sandbox's socket.
+func shimsOf(t *testing.T, stateDir string) []int {
+	t.Helper()
+
+	out, err := exec.Command("pgrep", "-f", filepath.Join(stateDir, "shim.sock")).Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("pgrep: %v", err)
+	}
+	var pids []int
+	for field := range strings.FieldsSeq(string(out)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pids = append(pids, pid)
+	}
+
+	return pids
 }
 
 // The shim needs the virtualization entitlement, and the embedded one is signed on install; a build without it is signed here.

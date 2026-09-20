@@ -43,6 +43,14 @@ and the events resume where they stopped. The new control connection opens with 
 and an exit or a restart that landed while no stream was open is recorded from that replay, so
 `wait` does not wait for an event that is gone.
 
+The shim lives exactly as long as its VM. A vsock connect to a port the guest does not serve never
+calls back (the framework "does nothing" for it), so the shim bounds every connect at 5 seconds and
+answers that nothing listens; a `create` whose guest never reaches the supervisor fails within its
+30 second grace, stops the VM and waits for the shim to go, and kills it by pid if it is still there
+10 seconds later; that cleanup runs on its own clock, past a canceled `create` and past a failed
+stop, and reports a shim that outlives the kill (SHARD-255). SIGTERM to a shim force-stops its VM, and a stop the framework never
+reports ends the shim after 5 seconds anyway.
+
 This is not only the re-adopt story. **The framework runs at most two VMs in one process.** The
 third `start` in a process fails with `VZErrorDomain Code=1, the virtual machine failed to start`,
 whatever the machine identifier and however small the VMs. Four processes ran eight VMs at once on

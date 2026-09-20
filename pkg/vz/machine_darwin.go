@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
 )
@@ -158,13 +160,41 @@ func (m *VM) Stop() error {
 	return nil
 }
 
-func (m *VM) Connect(port uint32) (net.Conn, error) {
-	conn, err := m.vm.SocketDevices()[0].Connect(port)
-	if err != nil {
-		return nil, fmt.Errorf("connect to guest vsock port %d: %w", port, err)
-	}
+// A guest that listens answers a connect at once; one that does not never calls back, since the framework "does nothing" for it.
+const connectTimeout = 5 * time.Second
 
-	return conn, nil
+func (m *VM) Connect(port uint32) (net.Conn, error) {
+	type result struct {
+		conn *vz.VirtioSocketConnection
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		conn, err := m.vm.SocketDevices()[0].Connect(port)
+		done <- result{conn, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return nil, fmt.Errorf("connect to guest vsock port %d: %w", port, r.err)
+		}
+
+		return r.conn, nil
+	case <-time.After(connectTimeout):
+		// A callback that fires late finds nobody, so the connection it carries is closed here rather than leaked.
+		go func() {
+			r := <-done
+			if r.conn == nil {
+				return
+			}
+			if err := r.conn.Close(); err != nil {
+				log.Printf("vsock port %d: close a connection that answered late: %v", port, err)
+			}
+		}()
+
+		return nil, fmt.Errorf("connect to guest vsock port %d: nothing listens within %s", port, connectTimeout)
+	}
 }
 
 // Network is the host end of the frames socketpair; nil when the VM was built without a network.
