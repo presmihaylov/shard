@@ -49,7 +49,7 @@ func TestTheEntrypointRunsAsTheGivenUser(t *testing.T) {
 		t.Fatalf("close the exit channel write end: %v", err)
 	}
 
-	super := &supervisor{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
+	super := &harness{cmd: cmd, exitFile: exitFile, out: bufio.NewReader(pipe)}
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("kill the supervisor: %v", err)

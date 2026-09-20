@@ -25,8 +25,10 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
              [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]
+  shard-init -transport vsock [-root <device>]
 
-The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.`
+The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
+With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -72,9 +74,18 @@ func run(args []string) error {
 	retries := flags.Int("retries", 0, "how many starts again before the supervisor gives up, 0 for unlimited")
 	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
 	reset := flags.Duration("restart-reset", defaultReset, "how long the entrypoint must run since its last start before an exit clears the count")
+	transport := flags.String("transport", "", "vsock, or unix:<dir> in a test: the host sends the entrypoint, and every stream goes over it")
+	root := flags.String("root", "", "the root disk to move onto before anything runs, with -transport")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
+	}
+	if *transport != "" {
+		if flags.NArg() != 0 || *readyFile != "" || *restartFile != "" {
+			return errors.New("-transport takes the entrypoint from the host, so no -ready-file, -restart-file or arguments")
+		}
+
+		return serveTransport(*transport, *root)
 	}
 	if *readyFile == "" {
 		return errors.New("-ready-file is required")
@@ -91,12 +102,19 @@ func run(args []string) error {
 		return err
 	}
 
-	restart, err := parseRestart(*policy, *restartFile, *retries, *backoff, *reset)
+	restart, err := parseRestart(*policy, *retries, *backoff, *reset)
 	if err != nil {
 		return err
 	}
+	if err := checkRestartFile(restart, *restartFile); err != nil {
+		return err
+	}
 
-	err = supervise(flags.Args(), *readyFile, credential, restart)
+	g := newGuest(fileReporter{readyFile: *readyFile, restartFile: *restartFile}, restart)
+	err = g.launch(entrypoint{argv: flags.Args(), env: os.Environ(), credential: credential})
+	if err == nil {
+		err = g.supervise()
+	}
 	if errors.Is(err, errNoEntrypoint) {
 		return err
 	}
@@ -107,65 +125,231 @@ func run(args []string) error {
 	return nil
 }
 
+// entrypoint is the process the sandbox runs, as the host resolved it.
+type entrypoint struct {
+	argv       []string
+	env        []string
+	dir        string
+	credential *syscall.Credential
+	// out is where the entrypoint writes; nil keeps shard-init's own stdout and stderr, the log on gVisor.
+	out *os.File
+}
+
+// reporter is where ready, the exit record and the restart count go: files on gVisor, the control connection in a VM.
+type reporter interface {
+	ready() error
+	exited(models.ExitStatus) error
+	restarted(models.RestartCount) error
+}
+
+// death is one reaped child.
+type death struct {
+	pid  int
+	exit models.ExitStatus
+}
+
+// guest is the supervisor's state. One goroutine owns it, and everything else reaches it over commands.
+type guest struct {
+	report  reporter
+	restart restartPolicy
+	// commands run on the owning goroutine, so a transport starts, signals and waits for children without a lock.
+	commands chan func()
+	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
+	childDeaths chan os.Signal
+	stopSignals chan os.Signal
+
+	ep            entrypoint
+	entrypointPID int
+	runStartedAt  time.Time
+	count         models.RestartCount
+	startAgain    <-chan time.Time
+	stopping      bool
+	// waiters are the exec sessions, each keyed by the pid it waits for.
+	waiters map[int]chan<- models.ExitStatus
+	// started and lastExit are what a new control connection is told first.
+	started  bool
+	lastExit *models.ExitStatus
+}
+
+// newGuest watches for child deaths before anything forks, so no exit is ever missed.
+func newGuest(report reporter, restart restartPolicy) *guest {
+	g := &guest{
+		report: report, restart: restart, commands: make(chan func()), waiters: map[int]chan<- models.ExitStatus{},
+		childDeaths: make(chan os.Signal, 1), stopSignals: make(chan os.Signal, 4),
+	}
+	signal.Notify(g.childDeaths, syscall.SIGCHLD)
+	signal.Notify(g.stopSignals, syscall.SIGTERM, syscall.SIGINT)
+
+	return g
+}
+
+// launch starts the entrypoint once and says so, which is the host's only proof that it ran.
+func (g *guest) launch(ep entrypoint) error {
+	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
+	g.runStartedAt = time.Now()
+	pid, err := startProcess(ep, nil, false)
+	if err != nil {
+		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, ep.argv[0], err)
+	}
+	g.ep, g.entrypointPID, g.started = ep, pid, true
+
+	if err := g.report.ready(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
-func supervise(entrypointArgv []string, readyFile string, credential *syscall.Credential, restart restartPolicy) error {
-	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
-	childDeaths := make(chan os.Signal, 1)
-	stopSignals := make(chan os.Signal, 4)
-	signal.Notify(childDeaths, syscall.SIGCHLD)
-	signal.Notify(stopSignals, syscall.SIGTERM, syscall.SIGINT)
-
-	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
-	runStartedAt := time.Now()
-	entrypointPID, err := startProcess(entrypointArgv, credential)
-	if err != nil {
-		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, entrypointArgv[0], err)
-	}
-
-	// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
-	if err := store.WriteFile(readyFile, nil, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", readyFile, err)
-	}
-
-	stopping := false
-	var count models.RestartCount
-	// startAgain fires once the backoff has passed, and stays nil while nothing is due.
-	var startAgain <-chan time.Time
-
+func (g *guest) supervise() error {
 	for {
 		select {
-		case <-childDeaths:
-			// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
-			exit, exited := collectDeadChildren(entrypointPID)
-			if !exited {
-				continue
-			}
-			entrypointPID = 0
-			// The exit status is written by now, so a stop that was waiting for it may finish.
-			if stopping {
+		case <-g.childDeaths:
+			if done := g.collect(); done {
 				return nil
 			}
-			// A run that lasted the reset window starts the count over, so a rare crash never spends the retries.
-			if time.Since(runStartedAt) >= restart.reset {
-				count.Count = 0
-			}
-			startAgain = restart.schedule(exit, &count)
-		case <-startAgain:
-			startAgain = nil
-			runStartedAt = time.Now()
-			entrypointPID = restart.startAgain(entrypointArgv, credential, &count)
-		case received := <-stopSignals:
-			stopping = true
-			// Nothing is left to forward to, and a stop that had to wait out its grace is a stop that failed.
-			if entrypointPID == 0 {
-				return nil
-			}
-			if err := forwardToEntrypoint(entrypointPID, received); err != nil {
+		case <-g.startAgain:
+			g.startAgain = nil
+			g.runStartedAt = time.Now()
+			g.entrypointPID = g.restartEntrypoint()
+		case received := <-g.stopSignals:
+			if done, err := g.stop(received); done || err != nil {
 				return err
 			}
+		case command := <-g.commands:
+			command()
 		}
 	}
+}
+
+// collect reaps what died and routes each exit: the entrypoint's to the policy, an exec's to its session.
+func (g *guest) collect() bool {
+	for _, d := range collectDeadChildren() {
+		if waiter, ok := g.waiters[d.pid]; ok {
+			delete(g.waiters, d.pid)
+			waiter <- d.exit
+
+			continue
+		}
+		if d.pid != g.entrypointPID || g.entrypointPID == 0 {
+			continue
+		}
+
+		// The guest PID space wraps at 65536, so stop watching the PID once it has been reaped.
+		g.entrypointPID = 0
+		g.lastExit = &d.exit
+		// A sandbox outlives its entrypoint, so a lost exit status is reported and never fatal (AGENTS.md).
+		if err := g.report.exited(d.exit); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
+		}
+		// The exit status is written by now, so a stop that was waiting for it may finish.
+		if g.stopping {
+			return true
+		}
+		// A run that lasted the reset window starts the count over, so a rare crash never spends the retries.
+		if time.Since(g.runStartedAt) >= g.restart.reset {
+			g.count.Count = 0
+		}
+		g.startAgain = g.restart.schedule(d.exit, &g.count)
+		if g.count.GaveUp {
+			g.record()
+		}
+	}
+
+	return false
+}
+
+// stop forwards the signal to the entrypoint. Nothing left to forward to ends the supervisor at once.
+func (g *guest) stop(received os.Signal) (bool, error) {
+	g.stopping = true
+	if g.entrypointPID == 0 {
+		return true, nil
+	}
+	if err := forwardToEntrypoint(g.entrypointPID, received); err != nil {
+		return true, err
+	}
+
+	return false, nil
+}
+
+// restartEntrypoint forks it once more and records the count; an image that no longer starts is a give-up.
+func (g *guest) restartEntrypoint() int {
+	pid, err := startProcess(g.ep, nil, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", g.ep.argv[0], err)
+		g.count.GaveUp = true
+		g.record()
+
+		return 0
+	}
+	g.count.Count++
+	g.count.LastAt = time.Now().UTC()
+	g.record()
+
+	return pid
+}
+
+// A sandbox outlives its entrypoint, so a lost count is reported and never fatal (AGENTS.md).
+func (g *guest) record() {
+	if err := g.report.restarted(g.count); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
+	}
+}
+
+// run hands a closure to the owning goroutine and waits for it, so a session reads consistent state.
+func (g *guest) run(command func()) {
+	done := make(chan struct{})
+	g.commands <- func() {
+		command()
+		close(done)
+	}
+	<-done
+}
+
+// spawn starts one exec's process under the supervisor and returns the channel its exit arrives on.
+func (g *guest) spawn(ep entrypoint, files []*os.File, tty bool) (int, <-chan models.ExitStatus, error) {
+	var (
+		pid  int
+		err  error
+		exit = make(chan models.ExitStatus, 1)
+	)
+	g.run(func() {
+		pid, err = startProcess(ep, files, tty)
+		if err == nil {
+			g.waiters[pid] = exit
+		}
+	})
+
+	return pid, exit, err
+}
+
+// signal reaches only a process the supervisor started, so a guest pid the host guessed is refused.
+func (g *guest) signal(pid int, sig syscall.Signal) error {
+	var err error
+	g.run(func() {
+		_, isExec := g.waiters[pid]
+		if pid != g.entrypointPID && !isExec {
+			err = fmt.Errorf("pid %d is not a process shard-init started", pid)
+
+			return
+		}
+		err = syscall.Kill(pid, sig)
+	})
+
+	return err
+}
+
+// kill ends an exec the host let go of; a pid already reaped is nothing to kill, and never a reused one.
+func (g *guest) kill(pid int) {
+	g.run(func() {
+		if _, isExec := g.waiters[pid]; !isExec {
+			return
+		}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			fmt.Fprintf(os.Stderr, "shard-init: kill exec %d: %v\n", pid, err)
+		}
+	})
 }
 
 // PID 1 in a namespace has no default disposition, so a stop only works if we pass it on ourselves.
@@ -184,10 +368,8 @@ func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 }
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.
-// It reports how the entrypoint ended when it was among them.
-func collectDeadChildren(entrypointPID int) (models.ExitStatus, bool) {
-	var exit models.ExitStatus
-	entrypointExited := false
+func collectDeadChildren() []death {
+	var deaths []death
 	for {
 		var waitStatus syscall.WaitStatus
 		deadPID, err := syscall.Wait4(-1, &waitStatus, syscall.WNOHANG, nil)
@@ -195,28 +377,20 @@ func collectDeadChildren(entrypointPID int) (models.ExitStatus, bool) {
 			continue
 		}
 		if errors.Is(err, syscall.ECHILD) {
-			return exit, entrypointExited
+			return deaths
 		}
 		// PID 1 must survive, so an unexpected wait error is reported and the next SIGCHLD tries again.
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init: wait for a child:", err)
 
-			return exit, entrypointExited
+			return deaths
 		}
 		// Zero means children are alive but none has died, so nothing is left to collect right now.
 		if deadPID <= 0 {
-			return exit, entrypointExited
-		}
-		if entrypointPID == 0 || deadPID != entrypointPID {
-			continue
+			return deaths
 		}
 
-		exit = exitStatusFrom(waitStatus)
-		// A sandbox outlives its entrypoint, so a lost exit status is reported and never fatal (AGENTS.md).
-		if err := reportExit(exit); err != nil {
-			fmt.Fprintln(os.Stderr, "shard-init:", err)
-		}
-		entrypointExited = true
+		deaths = append(deaths, death{pid: deadPID, exit: exitStatusFrom(waitStatus)})
 	}
 }
 
@@ -229,9 +403,24 @@ func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
-// reportExit frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
+// fileReporter is the gVisor transport: two files under the bind mount, and the exit record on fd 0.
+type fileReporter struct {
+	readyFile   string
+	restartFile string
+}
+
+// The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
+func (r fileReporter) ready() error {
+	if err := store.WriteFile(r.readyFile, nil, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", r.readyFile, err)
+	}
+
+	return nil
+}
+
+// exited frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
 // The newlines let a reader take whole lines only; shard-init is the sole writer, so appends never interleave.
-func reportExit(exit models.ExitStatus) error {
+func (fileReporter) exited(exit models.ExitStatus) error {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -244,6 +433,10 @@ func reportExit(exit models.ExitStatus) error {
 	}
 
 	return nil
+}
+
+func (r fileReporter) restarted(count models.RestartCount) error {
+	return writeJSON(r.restartFile, "the restart count", count)
 }
 
 // A full disk is usually transient, so the budget is tens of seconds and not the length of one hiccup.
@@ -349,13 +542,14 @@ func parseID(field string) (uint32, error) {
 }
 
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
-func startProcess(argv []string, credential *syscall.Credential) (int, error) {
-	binary, err := exec.LookPath(argv[0])
+// files are the child's fds, or nil for the entrypoint's: /dev/null and the log.
+func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
+	binary, err := exec.LookPath(ep.argv[0])
 	if err != nil {
-		return 0, fmt.Errorf("look up %q: %w", argv[0], err)
+		return 0, fmt.Errorf("look up %q: %w", ep.argv[0], err)
 	}
 
-	ambient, err := inheritedCapabilities(credential)
+	ambient, err := inheritedCapabilities(ep.credential)
 	if err != nil {
 		return 0, err
 	}
@@ -367,11 +561,20 @@ func startProcess(argv []string, credential *syscall.Credential) (int, error) {
 		return 0, fmt.Errorf("open %s for the entrypoint stdin: %w", os.DevNull, err)
 	}
 
-	// The child keeps our own stdout and stderr, the output log: shard streams them through, not proxies.
-	pid, forkErr := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
-		Env:   os.Environ(),
-		Files: []uintptr{devNull.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
-		Sys:   sysProcAttr(credential, ambient),
+	// The entrypoint keeps our own stdout and stderr, the output log: shard streams them through, not proxies.
+	fds := []uintptr{devNull.Fd(), os.Stdout.Fd(), os.Stderr.Fd()}
+	if ep.out != nil {
+		fds = []uintptr{devNull.Fd(), ep.out.Fd(), ep.out.Fd()}
+	}
+	if files != nil {
+		fds = []uintptr{files[0].Fd(), files[1].Fd(), files[2].Fd()}
+	}
+
+	pid, forkErr := syscall.ForkExec(binary, ep.argv, &syscall.ProcAttr{
+		Dir:   ep.dir,
+		Env:   ep.env,
+		Files: fds,
+		Sys:   sysProcAttr(ep.credential, ambient, tty),
 	})
 	// The child holds its own copy of fd 0 now, so our template is spent whichever way the fork went.
 	closeErr := devNull.Close()
