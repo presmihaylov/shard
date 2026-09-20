@@ -160,7 +160,6 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 		h.provider.Remove(ctx, id)
 	})
 
-	// The image disk carries almost no spare inodes, and only a second 128 MiB block group adds any (SHARD-253).
 	return models.SandboxSpec{
 		ID:         id,
 		StateDir:   dir,
@@ -169,7 +168,32 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 		Entrypoint: entrypoint,
 		Env:        []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 		Network:    models.NetworkSpec{Address: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 200, 0, byte(n + 1)}), 24), Gateway: gateway},
-		Resources:  models.Resources{MemoryMiB: 256, DiskMiB: 256},
+		Resources:  models.Resources{MemoryMiB: 256, DiskMiB: 64},
+	}
+}
+
+// The image disk holds a full group of inodes, so the smallest disk takes thousands of files (SHARD-254).
+func TestASmallDiskHoldsThousandsOfFiles(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t, "/bin/sh", "-c", "mkdir /many && i=0; while [ $i -lt 2000 ]; do : > /many/f$i; i=$((i+1)); done && ls /many | wc -l")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	exit, err := h.provider.Wait(t.Context(), spec.ID)
+	if err != nil || exit.Code != 0 {
+		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+		t.Fatalf("Wait = %+v, %v\nsandbox log:\n%s", exit, err, log)
+	}
+	log, err := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "2000") {
+		t.Fatalf("the guest did not count 2000 files:\n%s", log)
 	}
 }
 

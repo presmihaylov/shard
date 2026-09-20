@@ -16,6 +16,12 @@ const mib = 1 << 20
 // writeImage lays down a small tree with what a directory unpack loses: an owner, an xattr, a device node and a hard link.
 func writeImage(t *testing.T, path string) {
 	t.Helper()
+	writeImageWith(t, path, 3*mib)
+}
+
+// writeImageWith is writeImage with a big file of the given size, which sets how many block groups the data spans.
+func writeImageWith(t *testing.T, path string, bigSize int) {
+	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	must := func(err error) {
@@ -32,7 +38,7 @@ func writeImage(t *testing.T, path string) {
 	must(tw.WriteHeader(&tar.Header{Typeflag: tar.TypeLink, Name: "etc/hard", Linkname: "etc/hostname"}))
 	must(tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "dev", Mode: 0o755}))
 	must(tw.WriteHeader(&tar.Header{Typeflag: tar.TypeChar, Name: "dev/null", Mode: 0o666, Devmajor: 1, Devminor: 3}))
-	big := make([]byte, 3*mib)
+	big := make([]byte, bigSize)
 	must(tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "big", Mode: 0o644, Size: int64(len(big))}))
 	_, err = tw.Write(big)
 	must(err)
@@ -203,5 +209,54 @@ func TestGrowRefusesADescriptorBlockAMountTookOver(t *testing.T) {
 	err = Grow(img, 17<<30)
 	if err == nil || !strings.Contains(err.Error(), "mounted since") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestWriteReservesAFullGroupOfInodes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		big    int
+		groups uint32
+		grow   int64
+	}{
+		{"one group", 3 * mib, 1, 64 * mib},
+		// 126 MiB of data leaves the wider table no room in the first group, so the bitmaps open a second.
+		{"the table crosses into a second group", 126 * mib, 2, 300 * mib},
+		{"two groups of data", 130 * mib, 2, 300 * mib},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := filepath.Join(t.TempDir(), "rootfs.ext4")
+			writeImageWith(t, img, tc.big)
+			s := summarize(t, img)
+			if s.sb.InodesPerGroup != inodesPerGroup || s.groups != tc.groups || s.sb.InodesCount != inodesPerGroup*tc.groups {
+				t.Fatalf("%d inodes per group over %d groups, %d in all; want %d over %d", s.sb.InodesPerGroup, s.groups, s.sb.InodesCount, inodesPerGroup, tc.groups)
+			}
+			if s.sb.FreeInodesCount < inodesPerGroup*tc.groups-64 {
+				t.Fatalf("%d free inodes of %d", s.sb.FreeInodesCount, s.sb.InodesCount)
+			}
+			st, err := os.Stat(img)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if int64(s.sb.BlocksCountLow)*BlockSize != st.Size() {
+				t.Fatalf("superblock counts %d blocks for %d bytes", s.sb.BlocksCountLow, st.Size())
+			}
+			fsck(t, img)
+			if err := Grow(img, tc.grow); err != nil {
+				t.Fatal(err)
+			}
+			fsck(t, img)
+		})
+	}
+}
+
+func TestWidenRefusesALayoutPastTheLastGroup(t *testing.T) {
+	limit := uint32(MaxDiskSize / BlockSize)
+	if _, _, _, err := widen(limit/blocksPerGroup, limit-tableBlocks, limit); err == nil || !strings.Contains(err.Error(), "past the maximum") {
+		t.Fatalf("widen with a table at the end = %v, want the limit named", err)
+	}
+	groups, valid, blocks, err := widen(1, 300, 16384)
+	if err != nil || groups != 1 || valid != 300+tableBlocks+2 || blocks != 16384 {
+		t.Fatalf("widen of a small image = %d, %d, %d, %v", groups, valid, blocks, err)
 	}
 }
