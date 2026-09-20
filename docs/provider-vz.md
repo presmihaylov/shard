@@ -226,7 +226,8 @@ three optional verbs are `false` and refuse by name, `provider vz does not suppo
 host`, the same as Sysbox. `--memory` defaults to 512 MB on this substrate and is a hard cap, because
 a VM's memory is real memory on a laptop. Past it the whole sandbox dies and `Status` says
 `OOMKilled`, as on Linux: `shard-init` bounds the guest under a cgroup 32 MB short of the VM's
-memory and powers the VM off when the group is killed; `docs/provider.md` has the mechanism. The
+memory, reports the kill and holds the guest until the host has the marker on disk and says stop;
+`docs/provider.md` has the mechanism. The
 smallest `--memory` is 128 MiB, and `create` refuses less by name.
 
 ## What the spike proved

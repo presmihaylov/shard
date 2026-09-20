@@ -1,6 +1,7 @@
 package vzvm
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -119,13 +121,45 @@ func (brokenLog) Write([]byte) (int, error) { return 0, errNoSpace }
 
 func (brokenLog) Close() error { return nil }
 
-// An OOM message leaves a marker the status reads once the guest is gone, and the next boot must clear it.
-func TestAnOOMMessageMarksTheMachineKilledUnderTheBound(t *testing.T) {
+// A guest that answers every request, and counts the stops, so a test proves the host said stop only once the marker was down.
+func stoppableGuest(t *testing.T) (*supervisor.Control, *atomic.Int32) {
+	t.Helper()
+
+	host, guest := net.Pipe()
+	t.Cleanup(func() { host.Close() })
+	var stops atomic.Int32
+	go func() {
+		defer guest.Close()
+		r := bufio.NewReader(guest)
+		for {
+			var m supervisor.Message
+			if err := supervisor.ReadMessage(r, &m); err != nil {
+				return
+			}
+			if m.Kind == supervisor.KindStop {
+				stops.Add(1)
+			}
+			if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindDone, ID: m.ID}); err != nil {
+				return
+			}
+		}
+	}()
+
+	return supervisor.ControlOver(host), &stops
+}
+
+// An OOM message leaves a marker the status reads once the guest is gone, then tells the guest to go; the next boot clears the marker.
+func TestAnOOMMessageMarksTheMachineKilledUnderTheBoundThenStopsIt(t *testing.T) {
 	p := &Provider{}
 	m := &machine{id: "sb-1", dir: t.TempDir()}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
 
 	if err := p.record(m, supervisor.Message{Kind: supervisor.KindOOM}); err != nil {
 		t.Fatal(err)
+	}
+	if stops.Load() != 1 {
+		t.Fatalf("the host sent %d stops after the marker, want one", stops.Load())
 	}
 	if m.status(p).OOMKilled {
 		t.Fatal("the status blamed the bound while the guest still ran")
@@ -144,17 +178,34 @@ func TestAnOOMMessageMarksTheMachineKilledUnderTheBound(t *testing.T) {
 func TestAStateReplayThatCarriesAnOOMMarksTheMachine(t *testing.T) {
 	p := &Provider{}
 	m := &machine{id: "sb-1", dir: t.TempDir()}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
 
 	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true}); err != nil {
 		t.Fatal(err)
 	}
-	if oomKilled(m.dir) {
-		t.Fatal("a plain state replay left a marker")
+	if oomKilled(m.dir) || stops.Load() != 0 {
+		t.Fatal("a plain state replay left a marker or a stop")
 	}
 	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true, OOM: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !oomKilled(m.dir) {
-		t.Fatal("no marker for a replay that carried the kill")
+	if !oomKilled(m.dir) || stops.Load() != 1 {
+		t.Fatalf("marker %v and %d stops for a replay that carried the kill, want the marker and one stop", oomKilled(m.dir), stops.Load())
+	}
+}
+
+// A marker that cannot land keeps the guest up: the stop goes only after the write, so the kill is never lost to a full disk.
+func TestAMarkerThatCannotLandSendsNoStop(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: filepath.Join(t.TempDir(), "missing")}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindOOM}); err == nil {
+		t.Fatal("a marker under a missing directory landed")
+	}
+	if stops.Load() != 0 {
+		t.Fatal("the host told the guest to go before the marker was down")
 	}
 }

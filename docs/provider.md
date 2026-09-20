@@ -147,12 +147,14 @@ unshares a cgroup namespace rooted there, so everything a guest starts, a Docker
 containers included, lands under the bound; `shard-init` alone is exempt, through
 `oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
 exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
-`memory.events.local`, reports the kill over vsock instead of an exit, and powers the VM off, so
-`Status` says `OOMKilled`, no exit record lands, and the daemon restarts the sandbox on
-`restart_on_oom` exactly as it does on Linux. A kill that finds no host attached, during a
-reconnect after a sleep, keeps the guest up: the state the next connection replays carries it, and
-the VM powers off once that replay lands. The bound needs room under the headroom, so `vz` refuses
-a `--memory` below 128 MiB by name.
+`memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
+that state and does not power off on its own: the host writes the `oom` marker first and only then
+sends the stop, so a daemon that dies between the report and the marker finds the kill again in
+the state the next connection replays, and marks it then. Once the marker is down `Status` says
+`OOMKilled`, no exit record lands, and the daemon restarts the sandbox on `restart_on_oom` exactly
+as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
+the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
+`--memory` below 128 MiB by name.
 
 ## What a cpu bound means
 

@@ -135,6 +135,9 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	if err != nil {
 		return nil, errors.Join(err, endShim(id, client, info.PID))
 	}
+	if m == nil {
+		return nil, fmt.Errorf("sandbox %s: the restored guest was killed by its memory bound", id)
+	}
 
 	return m, nil
 }
@@ -171,6 +174,10 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	}
 	if err := p.reconcile(m, state); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
+	}
+	if state.OOM {
+		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
+		return nil, p.release(ctx, m)
 	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
@@ -288,9 +295,13 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 	return nil
 }
 
+// markOOM puts the reason on disk and only then tells the guest to go: a host that dies first hears the kill again in the replay.
 func (m *machine) markOOM() error {
 	if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
 		return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
+	}
+	if err := m.control.Load().Stop(); err != nil {
+		return fmt.Errorf("end sandbox %s after its memory bound: %w", m.id, err)
 	}
 
 	return nil

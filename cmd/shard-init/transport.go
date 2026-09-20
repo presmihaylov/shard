@@ -133,8 +133,6 @@ func (t *transport) attach(conn net.Conn) error {
 			return
 		}
 		t.control = conn
-		// The replay is the report a kill with no host attached waited for, so the guest may end now.
-		t.g.halted = t.g.oom
 	})
 
 	return err

@@ -186,8 +186,8 @@ type guest struct {
 	oomProbe func() (bool, error)
 	// exempt says PID 1 holds the OOM exemption boundMemory wrote, which every child it forks must give up.
 	exempt bool
-	// oom says the bound took every guest process; halted says the host has heard it, so supervise may end.
-	oom, halted bool
+	// oom says the bound took every guest process; the guest holds it until the host, with the reason on disk, says stop.
+	oom bool
 }
 
 // newGuest watches for child deaths before anything forks, so no exit is ever missed.
@@ -238,9 +238,6 @@ func (g *guest) supervise() error {
 			}
 		case command := <-g.commands:
 			command()
-			if g.halted {
-				return nil
-			}
 		}
 	}
 }
@@ -295,18 +292,13 @@ func (g *guest) collect() bool {
 	if !done {
 		return false
 	}
-	// A sandbox outlives its entrypoint, but not its memory bound: the host reads the reason and decides on a start again.
+	// The guest stays up until the host has the reason on disk and says stop, so a host that missed the report reads the replay.
 	g.oom = true
-	err := g.report.oomKilled()
-	// A guest nobody heard stays up, so the reason is not lost with the VM: the next connection's replay carries it.
-	if errors.Is(err, errNoHost) {
-		return false
-	}
-	if err != nil {
+	if err := g.report.oomKilled(); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)
 	}
 
-	return true
+	return false
 }
 
 // stop forwards the signal to the entrypoint. Nothing left to forward to ends the supervisor at once.
