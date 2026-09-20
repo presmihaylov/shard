@@ -38,7 +38,8 @@ import (
 // The suite wants the shard kernel; a Mac without one skips it, and SHARD_KERNEL names one elsewhere.
 const defaultKernel = "../../../bin/kernel/arm64/Image-arm64"
 
-const testImage = "alpine:3.20"
+// The digest is alpine:3.20 as of 2026-09-20; a tag moves, and a rebuilt image changes the inode count the disk is sized to.
+const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
 
@@ -156,6 +157,7 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 		h.provider.Remove(ctx, id)
 	})
 
+	// The image disk carries almost no spare inodes, and only a second 128 MiB block group adds any (SHARD-253).
 	return models.SandboxSpec{
 		ID:         id,
 		StateDir:   dir,
@@ -164,7 +166,7 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 		Entrypoint: entrypoint,
 		Env:        []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 		Network:    models.NetworkSpec{Address: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 200, 0, byte(n + 1)}), 24), Gateway: gateway},
-		Resources:  models.Resources{MemoryMiB: 256, DiskMiB: 64},
+		Resources:  models.Resources{MemoryMiB: 256, DiskMiB: 256},
 	}
 }
 
