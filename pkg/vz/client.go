@@ -1,10 +1,12 @@
 package vz
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -108,6 +110,100 @@ func (c *Client) Connect(port uint32) (net.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+// Network takes the host end of the VM's frames socket: one datagram is one Ethernet frame, both ways.
+func (c *Client) Network() (*os.File, error) {
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = callTimeout
+	}
+	conn, err := net.DialTimeout("unix", c.socket, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial the shim: %w", err)
+	}
+	defer conn.Close()
+
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return nil, fmt.Errorf("a file rides on a unix socket only, not %T", conn)
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("network: %w", err)
+	}
+	if err := writeFrame(conn, request{Verb: "network"}); err != nil {
+		return nil, fmt.Errorf("network: %w", err)
+	}
+
+	reply, file, err := readFrameWithFile(unixConn)
+	if err != nil {
+		return nil, fmt.Errorf("network: %w", err)
+	}
+	if err := reply.err(); err != nil {
+		return nil, errors.Join(fmt.Errorf("network: %w", err), closeIfAny(file))
+	}
+	if file == nil {
+		return nil, errors.New("network: the shim sent no file with its reply")
+	}
+
+	return file, nil
+}
+
+// readFrameWithFile reads one reply frame and the descriptor riding on its first bytes, non-blocking so a close ends a read.
+func readFrameWithFile(conn *net.UnixConn) (response, *os.File, error) {
+	buf := make([]byte, 4+maxFrame)
+	oob := make([]byte, syscall.CmsgSpace(4))
+	n, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
+	if err != nil {
+		return response{}, nil, fmt.Errorf("read the frame with the file: %w", err)
+	}
+
+	var file *os.File
+	if oobn > 0 {
+		fd, err := fdOf(oob[:oobn])
+		if err != nil {
+			return response{}, nil, err
+		}
+		if err := syscall.SetNonblock(fd, true); err != nil {
+			return response{}, nil, fmt.Errorf("set the frames socket non-blocking: %w", err)
+		}
+		file = os.NewFile(uintptr(fd), "vmnet-host") //nolint:gosec // fd came in over SCM_RIGHTS and is ours now
+	}
+
+	// A stream may split the frame; the rest follows on the same connection, with nothing riding on it.
+	var reply response
+	if err := readFrame(io.MultiReader(bytes.NewReader(buf[:n]), conn), &reply); err != nil {
+		return response{}, nil, errors.Join(err, closeIfAny(file))
+	}
+
+	return reply, file, nil
+}
+
+func fdOf(oob []byte) (int, error) {
+	msgs, err := syscall.ParseSocketControlMessage(oob)
+	if err != nil {
+		return 0, fmt.Errorf("parse the control message: %w", err)
+	}
+	if len(msgs) != 1 {
+		return 0, fmt.Errorf("%d control messages, want one", len(msgs))
+	}
+	fds, err := syscall.ParseUnixRights(&msgs[0])
+	if err != nil {
+		return 0, fmt.Errorf("parse the rights: %w", err)
+	}
+	if len(fds) != 1 {
+		return 0, fmt.Errorf("%d descriptors, want one", len(fds))
+	}
+
+	return fds[0], nil
+}
+
+func closeIfAny(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+
+	return file.Close()
 }
 
 func (c *Client) call(req request) (Info, error) {
