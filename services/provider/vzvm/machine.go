@@ -133,7 +133,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 	m, err := p.attach(ctx, id, dir, r, client, info)
 	if err != nil {
-		return nil, errors.Join(err, endShim(client))
+		return nil, errors.Join(err, endShim(ctx, id, client, info.PID))
 	}
 
 	return m, nil
@@ -426,10 +426,21 @@ func (m *machine) closeLink() error {
 	return link.Close()
 }
 
-// endShim force-stops the VM behind a client that answered, for a boot the provider could not finish.
-func endShim(client *vz.Client) error {
+// endShim force-stops the VM of a boot the provider could not finish and sees its shim out; one that stays past the grace is killed by pid.
+func endShim(ctx context.Context, id string, client *vz.Client, pid int) error {
 	if _, err := client.Stop(); err != nil && !absent(err) {
 		return fmt.Errorf("stop the vm after a failed boot: %w", err)
+	}
+	m := &machine{id: id, client: client}
+	ended, err := m.awaitGone(ctx, killGrace)
+	if err != nil {
+		return err
+	}
+	if ended {
+		return nil
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill the shim %d of sandbox %s after a failed boot: %w", pid, id, err)
 	}
 
 	return nil
