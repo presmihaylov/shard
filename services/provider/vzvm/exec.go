@@ -107,7 +107,7 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	if err != nil {
 		return err
 	}
-	if err := m.control.Signal(pid, signal); err != nil {
+	if err := m.control.Load().Signal(pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 

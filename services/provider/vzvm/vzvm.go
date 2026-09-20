@@ -123,6 +123,23 @@ func buildInitrd(initPath, path string) (string, error) {
 
 func (p *Provider) Name() string { return Name }
 
+// Close drops what this process holds of every shim and leaves the VMs running, which is what a daemon exit does.
+func (p *Provider) Close() error {
+	p.mu.Lock()
+	held := p.machines
+	p.machines = map[string]*machine{}
+	p.mu.Unlock()
+
+	var errs []error
+	for _, m := range held {
+		if err := m.close(); err != nil {
+			errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
 // Capabilities: the three optional verbs are one VZ save and two restores, so a host without them has none.
 func (p *Provider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore}

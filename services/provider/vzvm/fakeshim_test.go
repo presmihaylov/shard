@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/vz"
 )
@@ -96,19 +97,32 @@ func fakeShim() error {
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
-	select {
-	case <-signals:
-		if err := machine.Stop(); err != nil {
-			return err
-		}
-		<-machine.exited
-	case <-machine.exited:
-	}
-	if err := listener.Close(); err != nil {
-		return err
-	}
+	// SIGUSR1 is a vsock reset, as a sleep of the host can cause: every open stream ends, the guest goes on.
+	resets := make(chan os.Signal, 1)
+	signal.Notify(resets, syscall.SIGUSR1)
+	// SIGUSR2 is the same reset on a transport that takes a while to settle: a dial answers, and ends at once.
+	holds := make(chan os.Signal, 1)
+	signal.Notify(holds, syscall.SIGUSR2)
+	for {
+		select {
+		case <-resets:
+			machine.dropStreams()
+		case <-holds:
+			machine.mu.Lock()
+			machine.holdUntil = time.Now().Add(resetHold)
+			machine.mu.Unlock()
+			machine.dropStreams()
+		case <-signals:
+			if err := machine.Stop(); err != nil {
+				return err
+			}
+			<-machine.exited
 
-	return <-served
+			return errors.Join(listener.Close(), <-served)
+		case <-machine.exited:
+			return errors.Join(listener.Close(), <-served)
+		}
+	}
 }
 
 // fakeMachine is a shard-init process in its own group: a pause is SIGSTOP, a save a marker file, a stop SIGKILL.
@@ -118,9 +132,15 @@ type fakeMachine struct {
 	cmd    *exec.Cmd
 	exited chan struct{}
 
-	mu    sync.Mutex
-	state vz.State
+	mu      sync.Mutex
+	state   vz.State
+	streams map[net.Conn]struct{}
+	// holdUntil is how long a dial answers with a stream that ends at once, after a reset SIGUSR2 asked for.
+	holdUntil time.Time
 }
+
+// resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
+const resetHold = 1500 * time.Millisecond
 
 func bootFake(cfg vz.Config) (*fakeMachine, error) {
 	id := cfg.MachineID
@@ -163,7 +183,7 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 		return nil, fmt.Errorf("start shard-init: %w", err)
 	}
 
-	m := &fakeMachine{id: id, dir: dir, cmd: cmd, exited: make(chan struct{}), state: vz.StateRunning}
+	m := &fakeMachine{id: id, dir: dir, cmd: cmd, exited: make(chan struct{}), state: vz.StateRunning, streams: map[net.Conn]struct{}{}}
 	go func() {
 		defer close(m.exited)
 		// The exit is the guest powering off; the group may still hold an entrypoint that ignored TERM.
@@ -225,7 +245,42 @@ func (m *fakeMachine) Stop() error {
 }
 
 func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
-	return net.Dial("unix", filepath.Join(m.dir, fmt.Sprintf("%d.sock", port)))
+	conn, err := net.Dial("unix", filepath.Join(m.dir, fmt.Sprintf("%d.sock", port)))
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if time.Now().Before(m.holdUntil) {
+		return conn, conn.Close()
+	}
+	m.streams[conn] = struct{}{}
+
+	return &stream{Conn: conn, machine: m}, nil
+}
+
+// dropStreams ends every stream to the guest at once, which is what a reset of the transport looks like to both ends.
+func (m *fakeMachine) dropStreams() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for conn := range m.streams {
+		_ = conn.Close()
+		delete(m.streams, conn)
+	}
+}
+
+// stream is one tracked guest connection, which forgets itself when the shim ends it.
+type stream struct {
+	net.Conn
+	machine *fakeMachine
+}
+
+func (s *stream) Close() error {
+	s.machine.mu.Lock()
+	delete(s.machine.streams, s.Conn)
+	s.machine.mu.Unlock()
+
+	return s.Conn.Close()
 }
 
 func (m *fakeMachine) Network() (*os.File, error) {

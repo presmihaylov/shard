@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,9 +30,14 @@ type machine struct {
 	pid    int
 	// machineID is what the shim reported, which a record persists for every later boot of the disk.
 	machineID string
-	control   *supervisor.Control
-	link      *netstack.Link
-	cancel    context.CancelFunc
+	// control is the stream to shard-init, replaced when a dropped one is dialed again.
+	control atomic.Pointer[supervisor.Control]
+	// closed says this process let the shim go, so a stream that ends after it is not dialed again.
+	closed atomic.Bool
+	// swap orders a replacement against close, so no stream is put in after the shim was let go.
+	swap   sync.Mutex
+	link   *netstack.Link
+	cancel context.CancelFunc
 	// events closes when the control connection ended, which is the guest gone.
 	events chan struct{}
 
@@ -153,7 +160,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: %w", id, err), m.closeLink())
 	}
-	m.control = control
+	m.control.Store(control)
 
 	state, err := control.Next()
 	if err != nil {
@@ -162,9 +169,8 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
-	// The state replays an exit and a restart count a restore brought back, which boot cleared from the files.
-	if err := p.record(m, state); err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: land the supervisor state: %w", id, err), m.close())
+	if err := p.reconcile(m, state); err != nil {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
 	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
@@ -219,46 +225,50 @@ func (m *machine) readdress(r record) error {
 		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
 		Nameservers: r.Nameservers, Hostname: r.Hostname,
 	}
-	if err := m.control.Readdress(address); err != nil {
+	if err := m.control.Load().Readdress(address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
 	}
 
 	return nil
 }
 
-// follow lands every event the guest sends where the file readers look, until the control connection ends.
+// follow lands every event the guest sends where the file readers look, until the guest is gone.
 func (p *Provider) follow(m *machine) {
 	defer close(m.events)
 	for {
-		event, err := m.control.Next()
+		event, err := m.control.Load().Next()
 		if err != nil {
+			again, err := p.reconnect(m)
+			p.keep(m, err)
+			if again {
+				continue
+			}
 			p.mu.Lock()
 			m.gone = true
 			p.mu.Unlock()
 
 			return
 		}
-		if err := p.record(m, event); err != nil {
-			p.markLost(m, err)
-		}
+		p.keep(m, p.record(m, event))
+	}
+}
+
+// keep holds the first error the event loop met, which is what a later verb reports.
+func (p *Provider) keep(m *machine, err error) {
+	if err == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m.lost == nil {
+		m.lost = err
 	}
 }
 
 func (p *Provider) record(m *machine, event supervisor.Message) error {
 	switch event.Kind {
 	case supervisor.KindReady, supervisor.KindState:
-		p.mu.Lock()
-		m.started = m.started || event.Ready
-		p.mu.Unlock()
-		// The replayed exit is the guest's last, and the file reads its last line, so it always lands.
-		if event.Exit != nil {
-			if err := supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit); err != nil {
-				return err
-			}
-		}
-		if event.Restarts != nil {
-			return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
-		}
+		return p.reconcile(m, event)
 	case supervisor.KindExit:
 		if event.Exit == nil {
 			return errors.New("an exit event carries no status")
@@ -276,34 +286,132 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 	return nil
 }
 
-// followLogs appends what the open logs connection carries to the log file, until the guest ends it.
-func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *os.File) {
+// reconnect dials the control stream again after a drop, which a sleep of the host can cause, while the shim says the VM runs.
+func (p *Provider) reconnect(m *machine) (bool, error) {
+	deadline := time.Now().Add(startGrace)
+	for m.alive() && time.Now().Before(deadline) {
+		conn, err := m.dial(context.Background(), supervisor.ControlPort)
+		if err != nil {
+			time.Sleep(pollInterval)
+
+			continue
+		}
+		control := supervisor.ControlOver(conn)
+		state, err := control.Next()
+		if err != nil || state.Kind != supervisor.KindState {
+			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
+			if err := control.Close(); err != nil {
+				return false, err
+			}
+			time.Sleep(pollInterval)
+
+			continue
+		}
+		err = p.reconcile(m, state)
+		m.swap.Lock()
+		if m.closed.Load() {
+			m.swap.Unlock()
+
+			return false, errors.Join(err, control.Close())
+		}
+		dropped := m.control.Swap(control)
+		m.swap.Unlock()
+
+		return true, errors.Join(err, dropped.Close())
+	}
+
+	return false, nil
+}
+
+// reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.
+func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
+	p.mu.Lock()
+	m.started = m.started || state.Ready
+	p.mu.Unlock()
+	if state.Exit != nil {
+		path := filepath.Join(m.dir, exitFile)
+		last, found, err := bundle.ReadExitStatus(path)
+		if err != nil {
+			return err
+		}
+		if !found || last != *state.Exit {
+			if err := supervisor.AppendExit(path, *state.Exit); err != nil {
+				return err
+			}
+		}
+	}
+	if state.Restarts != nil {
+		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *state.Restarts)
+	}
+
+	return nil
+}
+
+// alive says the shim still answers with a running VM and this process has not let it go.
+func (m *machine) alive() bool {
+	if m.closed.Load() {
+		return false
+	}
+	info, err := m.client.State()
+
+	return err == nil && info.State == vz.StateRunning
+}
+
+// followLogs appends what the logs connection carries to the log file, and opens it again after a drop while the VM runs.
+func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out io.WriteCloser) {
 	defer out.Close()
+	sink := &logSink{w: out}
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
-	if err := supervisor.Logs(ctx, opened, out); err != nil && !errors.Is(err, io.EOF) {
-		// A log that stopped landing blocks the guest on its output pipe, so every read of the sandbox says so.
-		p.markLost(m, fmt.Errorf("the log stopped: %w", err))
+	for {
+		err := supervisor.Logs(ctx, opened, sink)
+		if ctx.Err() != nil {
+			return
+		}
+		// A file that refuses the log blocks the guest on its output pipe, so every read of the sandbox says so; a redial would not help.
+		if sink.err != nil {
+			p.keep(m, fmt.Errorf("the log stopped: %w", sink.err))
+
+			return
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			// The guest ends the connection when it powers off, which is the normal end of a log.
+			fmt.Fprintf(os.Stderr, "vz: sandbox %s: %v\n", m.id, err)
+		}
+		if !m.alive() {
+			return
+		}
+		opened = m.dial
+		time.Sleep(pollInterval)
 	}
 }
 
-// markLost keeps the first failure the files cannot show, which every read of the sandbox then reports.
-func (p *Provider) markLost(m *machine, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if m.lost == nil {
-		m.lost = err
+// logSink keeps the first write failure of the log file, which the connection's own errors would otherwise hide.
+type logSink struct {
+	w   io.Writer
+	err error
+}
+
+func (s *logSink) Write(b []byte) (int, error) {
+	n, err := s.w.Write(b)
+	if err != nil && s.err == nil {
+		s.err = err
 	}
+
+	return n, err
 }
 
 // close ends what this process holds of the shim; the shim itself, and its VM, are the stop's business.
 func (m *machine) close() error {
+	m.swap.Lock()
+	m.closed.Store(true)
 	if m.cancel != nil {
 		m.cancel()
 	}
 	var err error
-	if m.control != nil {
-		err = m.control.Close()
+	if control := m.control.Load(); control != nil {
+		err = control.Close()
 	}
+	m.swap.Unlock()
 
 	return errors.Join(err, m.closeLink())
 }
