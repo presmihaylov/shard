@@ -91,7 +91,7 @@ func newVMHarness(t *testing.T) *vmHarness {
 	}
 
 	h := &vmHarness{root: root, image: img, kernel: kernel, drops: make(chan netstack.Drop, 64)}
-	h.provider = h.open(t)
+	h.open(t)
 
 	return h
 }
@@ -124,6 +124,8 @@ func (h *vmHarness) open(t *testing.T) *vzvm.Provider {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The newest provider holds the live shims, so a spec's cleanup must stop through it.
+	h.provider = p
 
 	return p
 }

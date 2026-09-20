@@ -54,7 +54,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	t.Cleanup(func() { os.RemoveAll(root) })
 
 	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore}
-	h.provider = h.open(t)
+	h.open(t)
 
 	return h
 }
@@ -74,6 +74,8 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
+	// The newest provider holds the live shims, so a spec's cleanup must stop through it.
+	h.provider = p
 
 	return p
 }
