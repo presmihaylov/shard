@@ -133,7 +133,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 	m, err := p.attach(ctx, id, dir, r, client, info)
 	if err != nil {
-		return nil, errors.Join(err, endShim(ctx, id, client, info.PID))
+		return nil, errors.Join(err, endShim(id, client, info.PID))
 	}
 
 	return m, nil
@@ -427,23 +427,34 @@ func (m *machine) closeLink() error {
 }
 
 // endShim force-stops the VM of a boot the provider could not finish and sees its shim out; one that stays past the grace is killed by pid.
-func endShim(ctx context.Context, id string, client *vz.Client, pid int) error {
+func endShim(id string, client *vz.Client, pid int) error {
+	// The create's context may already be canceled, and the shim must go either way, so the cleanup runs on its own clock.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
+	defer cancel()
+	var stopErr error
 	if _, err := client.Stop(); err != nil && !absent(err) {
-		return fmt.Errorf("stop the vm after a failed boot: %w", err)
+		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
 	m := &machine{id: id, client: client}
 	ended, err := m.awaitGone(ctx, killGrace)
 	if err != nil {
-		return err
+		return errors.Join(stopErr, err)
 	}
 	if ended {
-		return nil
+		return stopErr
 	}
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill the shim %d of sandbox %s after a failed boot: %w", pid, id, err)
+		return errors.Join(stopErr, fmt.Errorf("kill the shim %d of sandbox %s after a failed boot: %w", pid, id, err))
+	}
+	ended, err = m.awaitGone(ctx, killGrace)
+	if err != nil {
+		return errors.Join(stopErr, err)
+	}
+	if !ended {
+		return errors.Join(stopErr, fmt.Errorf("the shim %d of sandbox %s still answers %s after a kill", pid, id, killGrace))
 	}
 
-	return nil
+	return stopErr
 }
 
 // awaitGone polls the shim until it stops answering, which is the VM powered off and the shim exited.
