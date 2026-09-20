@@ -13,6 +13,9 @@ func Write(r io.Reader, f *os.File) error {
 	if err := tar2ext4.Convert(r, f, tar2ext4.MaximumDiskSize(MaxDiskSize)); err != nil {
 		return fmt.Errorf("ext4: convert the tar: %w", err)
 	}
+	if err := reserveInodes(f); err != nil {
+		return fmt.Errorf("ext4: reserve the inodes: %w", err)
+	}
 	if err := writable(f); err != nil {
 		return fmt.Errorf("ext4: make the image writable: %w", err)
 	}
