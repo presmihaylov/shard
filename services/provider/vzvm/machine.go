@@ -162,7 +162,10 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
-	m.started = state.Ready
+	// The state replays an exit and a restart count a restore brought back, which boot cleared from the files.
+	if err := p.record(m, state); err != nil {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: land the supervisor state: %w", id, err), m.close())
+	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)
@@ -177,7 +180,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go m.followLogs(pumpCtx, logs, out)
+	go p.followLogs(pumpCtx, m, logs, out)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -233,11 +236,7 @@ func (p *Provider) follow(m *machine) {
 			return
 		}
 		if err := p.record(m, event); err != nil {
-			p.mu.Lock()
-			if m.lost == nil {
-				m.lost = err
-			}
-			p.mu.Unlock()
+			p.markLost(m, err)
 		}
 	}
 }
@@ -248,6 +247,14 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		p.mu.Lock()
 		m.started = m.started || event.Ready
 		p.mu.Unlock()
+		if event.Exit != nil {
+			if err := p.recordExit(m, *event.Exit); err != nil {
+				return err
+			}
+		}
+		if event.Restarts != nil {
+			return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
+		}
 	case supervisor.KindExit:
 		if event.Exit == nil {
 			return errors.New("an exit event carries no status")
@@ -265,13 +272,35 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 	return nil
 }
 
+// recordExit lands a replayed exit once: an adopted shim's file holds it already, and a second line would count a second exit.
+func (p *Provider) recordExit(m *machine, exit models.ExitStatus) error {
+	_, found, err := bundle.ReadExitStatus(filepath.Join(m.dir, exitFile))
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+
+	return supervisor.AppendExit(filepath.Join(m.dir, exitFile), exit)
+}
+
 // followLogs appends what the open logs connection carries to the log file, until the guest ends it.
-func (m *machine) followLogs(ctx context.Context, logs net.Conn, out *os.File) {
+func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *os.File) {
 	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	if err := supervisor.Logs(ctx, opened, out); err != nil && !errors.Is(err, io.EOF) {
-		// The guest ends the connection when it powers off, which is the normal end of a log.
-		fmt.Fprintf(os.Stderr, "vz: sandbox %s: %v\n", m.id, err)
+		// A log that stopped landing blocks the guest on its output pipe, so every read of the sandbox says so.
+		p.markLost(m, fmt.Errorf("the log stopped: %w", err))
+	}
+}
+
+// markLost keeps the first failure the files cannot show, which every read of the sandbox then reports.
+func (p *Provider) markLost(m *machine, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m.lost == nil {
+		m.lost = err
 	}
 }
 

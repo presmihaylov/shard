@@ -32,7 +32,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return fmt.Errorf("sandbox %s is %s on %s, and only a live one can pause", id, models.StateStopped, Name)
 	}
 
-	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
@@ -43,19 +43,30 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if _, err := m.client.Pause(); err != nil {
 		return fmt.Errorf("pause sandbox %s: %w", id, err)
 	}
+	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
+		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
+	}
+	// The record says paused before the snapshot is in place, so a crash between the two leaves a resume that ends the leftover shim.
+	r.Paused = true
+	if err := writeRecord(stateDir, r); err != nil {
+		return abandon(m, tmp, err)
+	}
+	if err := swapDir(tmp, dir); err != nil {
+		r.Paused = false
+
+		return abandon(m, tmp, errors.Join(fmt.Errorf("install the snapshot of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
+	}
+
+	return p.end(ctx, m)
+}
+
+// stageSnapshot writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
+func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if _, err := m.client.Save(filepath.Join(tmp, snapshotState)); err != nil {
-		// A VM that could not be saved runs on, so the pause is refused rather than half done.
-		_, resumeErr := m.client.Resume()
-
-		return errors.Join(fmt.Errorf("save sandbox %s: %w", id, err), resumeErr, os.RemoveAll(tmp))
+		return fmt.Errorf("save the vm: %w", err)
 	}
-	if err := p.end(ctx, m); err != nil {
-		return err
-	}
-
-	// The disk is copied once the VM is off it, so the save and the disk are one moment.
 	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, snapshotDiskFile)); err != nil {
-		return fmt.Errorf("copy the disk of sandbox %s: %w", id, err)
+		return fmt.Errorf("copy the disk: %w", err)
 	}
 	snap := snapshot{MachineID: r.MachineID, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
 	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
@@ -65,16 +76,15 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
 		return fmt.Errorf("mark the snapshot complete: %w", err)
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", dir, err)
-	}
-	if err := os.Rename(tmp, dir); err != nil {
-		return fmt.Errorf("move the snapshot into place: %w", err)
-	}
 
-	r.Paused = true
+	return nil
+}
 
-	return writeRecord(stateDir, r)
+// abandon gives up a pause that could not complete: the VM runs on and the staging directory goes.
+func abandon(m *machine, tmp string, err error) error {
+	_, resumeErr := m.client.Resume()
+
+	return errors.Join(err, resumeErr, os.RemoveAll(tmp))
 }
 
 // Resume restores the save in dir over the sandbox's own disk, which the snapshot's copy replaces first.
@@ -92,6 +102,16 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	snap, err := readSnapshot(dir)
 	if err != nil {
 		return err
+	}
+	// A shim still up under a paused record is what a pause that crashed before its end left, and the save is the truth.
+	leftover, err := p.lookup(ctx, id, stateDir, r)
+	if err != nil {
+		return err
+	}
+	if leftover != nil {
+		if err := p.end(ctx, leftover); err != nil {
+			return err
+		}
 	}
 
 	// The disk comes back to the moment of the save, or the restored memory would meet a filesystem it never wrote.

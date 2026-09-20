@@ -377,3 +377,52 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A pause that cannot complete its snapshot resumes the VM, keeps the last snapshot and leaves no staging directory.
+func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(snap, "vm.vzvmstate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without a disk to copy the snapshot cannot complete, and the pause must give the VM back.
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "disk.img")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err == nil || !strings.Contains(err.Error(), "copy the disk") {
+		t.Fatalf("Pause without a disk = %v, want the copy failure", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || !status.Alive() {
+		t.Fatalf("Status after a failed Pause = %+v, %v; want alive", status, err)
+	}
+	if _, err := os.Stat(snap + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the failed pause left its staging directory: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(snap, "vm.vzvmstate"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("the last snapshot changed under a failed pause: %v", err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "copy the disk") {
+		t.Fatalf("a second Pause = %v, want the copy failure again, not an already-paused refusal", err)
+	}
+}
