@@ -85,9 +85,14 @@ fallback to gVisor.
 
 ## Required verbs against optional verbs
 
-Ten verbs are required. Every substrate must do all of them, and none of them has a capability
-flag: `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Wait`, `Status`, `LogPath`, and
-`Capabilities` itself.
+Eleven verbs are required. Every substrate must do all of them, and none of them has a capability
+flag: `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Wait`, `Status`,
+`LogPath`, and `Capabilities` itself.
+
+`CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
+a record, so a refusal leaves nothing in `ls`. Only vz refuses anything: a VM's memory is real
+memory, so `--memory 0` and a bound under 128 MiB are refused by name. The Linux substrates take
+every bound. `Create` checks its spec again, so a clone or a fork is held to the same rule.
 
 `Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
 another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id

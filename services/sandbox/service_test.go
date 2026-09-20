@@ -95,6 +95,26 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 	}
 }
 
+// A bound the substrate refuses is a bad request: nothing was pulled or claimed, so no record may say failed.
+func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.refuse = errors.New("provider fake takes no --memory 0")
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 0") {
+		t.Fatalf("create = %v, want a request error with the provider's reason", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+	if l.repo.sb.ID != "" {
+		t.Errorf("a refused create left the record %+v", l.repo.sb)
+	}
+}
+
 // A cancelled context would fail every give-back at once, so the unwind builds its own.
 func TestCreateTearsDownAfterAnInterrupt(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Create"}}

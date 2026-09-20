@@ -14,6 +14,9 @@ type Provider interface {
 	// Capabilities reports the optional verbs this host can run. Probe once in the constructor.
 	Capabilities() Capabilities
 
+	// CheckResources refuses a bound this substrate cannot run under, before the orchestrator writes a
+	// record: a refusal here leaves nothing behind. Create checks the same bounds again on its spec.
+	CheckResources(res Resources) error
 	// Create prepares a sandbox in StateCreated. Nothing in the guest runs yet.
 	Create(ctx context.Context, spec SandboxSpec) error
 	// Start runs the entrypoint. Create prepared the sandbox and nothing in the guest ran before this.

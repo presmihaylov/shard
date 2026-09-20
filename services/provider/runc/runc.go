@@ -69,6 +69,9 @@ func New(runner *runccli.Runner, bundles *bundle.Service, dirs StateDirs) (*Prov
 
 func (p *Provider) Name() string { return Name }
 
+// CheckResources takes every bound: zero is unbounded on Linux, and a cgroup holds any size.
+func (p *Provider) CheckResources(models.Resources) error { return nil }
+
 // ReleaseRoot has nothing to give back: runc pins no mount under its root between sandboxes.
 func (p *Provider) ReleaseRoot() error { return nil }
 
