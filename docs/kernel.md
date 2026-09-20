@@ -8,7 +8,8 @@ provider boots the arm64 one; Firecracker will boot the amd64 one (SHARD-232, sh
 
 `packaging/kernel/config-<arch>` is a full `.config` with no modules and no initrd: virtio-blk,
 virtio-net, virtio-vsock, virtio-console, virtio-pci and virtio-mmio, ext4, overlay, squashfs,
-cgroups, namespaces and seccomp are built in. Both started as Cloud Hypervisor's `ch_defconfig` at
+cgroups, namespaces, seccomp, and since build 2 the bridge, netfilter, conntrack, NAT and nf_tables
+a container runtime inside the guest needs (SHARD-247) are built in. Both started as Cloud Hypervisor's `ch_defconfig` at
 their `ch-6.12.8` tag, which hypeman boots on Virtualization.framework in production, and
 `olddefconfig` carries them to the pinned release. A change to either file is a new `Build`.
 

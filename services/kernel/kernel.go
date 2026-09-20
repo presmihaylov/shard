@@ -18,7 +18,7 @@ import (
 const Version = "6.12.110"
 
 // Build counts the shard builds of that release, so a config change ships without a kernel bump.
-const Build = 1
+const Build = 2
 
 // ErrChecksum marks a kernel file whose bytes do not hash to the value shard was built with.
 var ErrChecksum = errors.New("kernel checksum mismatch")
@@ -33,8 +33,8 @@ type Kernel struct {
 
 // artifacts is the hash of every release file, the output of make kernel-reproducible at this Version and Build.
 var artifacts = map[string]struct{ name, sha256 string }{
-	"arm64": {"Image-arm64", "ef2b1ec110009c6e791f048c7069afd7afa88d51a70de56fddc9414ccde9bbed"},
-	"amd64": {"vmlinux-amd64", "13fc80b85d189cd85f5c4553bd80737230ca853d3fe635e6f8cd154f0676b029"},
+	"arm64": {"Image-arm64", "5c74ffa7b3c1301b27cec965d864d753cf5fc50700e13da119ab945caa38c52e"},
+	"amd64": {"vmlinux-amd64", "dd655f03acc346b1d6bd323684b581aa8739457c7e0a4bb8f1d8a67c992be0a2"},
 }
 
 // Tag is the GitHub release the artifacts live under.

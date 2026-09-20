@@ -74,6 +74,7 @@ your printer.
 | CPUs | `--cpus 0` is one virtual CPU per host CPU, up to the framework's ceiling; `N` is `N` of them | `--cpus 0` is every host CPU; `N` is a quota |
 | Processes | no bound; a fork bomb stays inside the VM and hits its memory | `4096` per sandbox |
 | Host access | none: no shared folders, no LAN, no host mounts | none |
+| Docker inside | yes: `dockerd` as the entrypoint of a `docker:dind` sandbox, IPv4 only | no; Sysbox on Linux |
 
 `docs/provider.md` has the full matrix across every substrate.
 
