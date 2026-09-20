@@ -74,6 +74,9 @@ func New(runner *runc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provide
 
 func (p *Provider) Name() string { return Name }
 
+// CheckResources takes every bound: zero is unbounded on Linux, and a cgroup holds any size.
+func (p *Provider) CheckResources(models.Resources) error { return nil }
+
 // Userns is the mapping every sandbox's network namespace must belong to, so the guest owns it.
 func (p *Provider) Userns() netns.IDMapping { return Userns }
 

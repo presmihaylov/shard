@@ -210,6 +210,21 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	}
 }
 
+// The orchestrator asks before it writes a record, so a refused --memory leaves no failed sandbox in ls.
+func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
+	h := newHarness(t)
+
+	for _, res := range []models.Resources{{MemoryMiB: 0}, {MemoryMiB: 64}} {
+		err := h.provider.CheckResources(res)
+		if err == nil || !strings.Contains(err.Error(), "128") {
+			t.Fatalf("CheckResources(%+v) = %v, want a refusal that names the minimum", res, err)
+		}
+	}
+	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128}); err != nil {
+		t.Fatalf("CheckResources(128) = %v, want nil", err)
+	}
+}
+
 // An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
 func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	h := newHarness(t)

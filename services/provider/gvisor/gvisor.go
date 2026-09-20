@@ -76,6 +76,9 @@ func sigkill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
 
 func (p *Provider) Name() string { return Name }
 
+// CheckResources takes every bound: zero is unbounded on Linux, and a cgroup holds any size.
+func (p *Provider) CheckResources(models.Resources) error { return nil }
+
 func (p *Provider) Capabilities() models.Capabilities { return p.caps }
 
 // ReleaseRoot unmounts the null netns runsc keeps under its root, which no sandbox teardown drops.

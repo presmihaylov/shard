@@ -266,6 +266,8 @@ type fakeProvider struct {
 	reclaimed  bool
 	reclaimErr error
 
+	// refuse is what CheckResources answers, the way vz refuses a --memory it cannot boot under.
+	refuse error
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
 	grace   time.Duration
@@ -391,6 +393,8 @@ func (f *fakeProvider) Signal(_ context.Context, _ string, pid int, signal strin
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
+
+func (f *fakeProvider) CheckResources(models.Resources) error { return f.refuse }
 
 func (f *fakeProvider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}

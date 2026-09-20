@@ -256,6 +256,8 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 
 func (f *fakeLifecycleProvider) Name() string { return "fake" }
 
+func (f *fakeLifecycleProvider) CheckResources(models.Resources) error { return nil }
+
 // Capabilities claims every optional verb unless a test takes one away.
 func (f *fakeLifecycleProvider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}

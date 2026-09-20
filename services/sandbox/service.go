@@ -246,6 +246,10 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
+	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
+	if err := s.cfg.Provider.CheckResources(req.Resources); err != nil {
+		return models.Sandbox{}, &RequestError{Err: err}
+	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	req.Resources.DiskMiB = bundle.DiskBound(req.Resources)
 

@@ -128,6 +128,9 @@ func buildInitrd(initPath, path string) (string, error) {
 
 func (p *Provider) Name() string { return Name }
 
+// CheckResources is checkMemory before any record exists, so a refused --memory leaves no failed sandbox in ls.
+func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }
+
 // Close drops what this process holds of every shim and leaves the VMs running, which is what a daemon exit does.
 func (p *Provider) Close() error {
 	p.mu.Lock()
