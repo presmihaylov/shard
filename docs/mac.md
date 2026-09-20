@@ -91,11 +91,12 @@ your printer.
 
 ## Appendix: the workaround for a Mac shard does not support
 
-An Intel Mac, or macOS 13, has one way onto shard's full verb set: run any Linux VM on the Mac
+An Intel Mac, or macOS 13, has one way onto shard: run any Linux VM on the Mac
 (UTM, Lima, Parallels, VMware), install `shard` inside it as on any Linux host, and use it from a
-shell in the VM. The Linux substrates are then the ones on offer, gVisor by default, and every
-verb runs. To drive it from the Mac's own terminal instead, expose `shard serve` from the VM and
-point the native CLI at it. It is a workaround, not a supported mode.
+shell in the VM. The Linux substrates are then the ones on offer: gVisor runs every verb, runc and
+Sysbox refuse `pause`, `resume` and `fork` by name (`docs/provider.md`). To drive it from the Mac's
+own terminal instead, expose `shard serve` from the VM and point the native CLI at it. It is a
+workaround, not a supported mode.
 
 **The boundary.** Every sandbox shares that one VM: its kernel, its memory and its disk. The
 provider inside still isolates them from each other the way it does on any Linux host, but a
@@ -147,9 +148,10 @@ limactl shell shard sudo install -m0755 /tmp/shard /tmp/shard-init /usr/local/bi
 sudo install -m0755 bin/shard /usr/local/bin/shard
 ```
 
-`GOARCH=amd64` on an Intel Mac. A release carries the same three, `shard-linux-<arch>`,
-`shard-init-linux-<arch>` and `shard-darwin-<arch>` (`docs/release.md`); the darwin one is the full
-daemon, which serves as the client just the same. The runtime the provider drives is installed inside the VM: `runc`
+`GOARCH=amd64` on an Intel Mac. A release carries `shard-linux-amd64`, `shard-init-linux-amd64`
+and `shard-darwin-<arch>` (`docs/release.md`), so an Intel Mac can skip the Linux builds and an
+Apple silicon one cannot; the darwin one is the full daemon, which serves as the client just the
+same. The runtime the provider drives is installed inside the VM: `runc`
 is `apt-get install runc`; `runsc` comes from gVisor's own apt repository; Sysbox from its release
 package. `docs/provider.md` says what each one needs from the kernel.
 
@@ -171,9 +173,8 @@ shard daemon --provider gvisor
 ```
 
 The front refuses a secret file that everyone can read, and a token is a secret too, hence the
-`umask` before both. `--provider gvisor` or
-`--provider sysbox` picks the other two. The daemon stays in the foreground, so the front takes a
-second shell:
+`umask` before both. `--provider runc` or `--provider sysbox` picks the other two. The daemon
+stays in the foreground, so the front takes a second shell:
 
 ```
 limactl shell shard sudo shard serve --listen :2376 \
