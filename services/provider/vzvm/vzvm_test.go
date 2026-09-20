@@ -112,7 +112,7 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 		h.provider.Remove(ctx, id)
 	})
 
-	return models.SandboxSpec{ID: id, StateDir: dir, RootDisk: h.disk, Entrypoint: entrypoint, Resources: models.Resources{DiskMiB: 16}}
+	return models.SandboxSpec{ID: id, StateDir: dir, RootDisk: h.disk, Entrypoint: entrypoint, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}
 }
 
 // baseDisk is the smallest ext4 image the clone accepts; the fake guest never mounts it.
@@ -181,6 +181,15 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	spec.Resources.MemoryMiB = 0
+	err = h.provider.Create(t.Context(), spec)
+	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory <MiB>", "128"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
+		}
+	}
+
 	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
 	if err := h.provider.Create(t.Context(), source); err != nil {
 		t.Fatal(err)
@@ -193,6 +202,11 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	err = h.provider.Clone(t.Context(), source.ID, clone)
 	if err == nil || !strings.Contains(err.Error(), clone.ID) || !strings.Contains(err.Error(), "128 MiB") {
 		t.Fatalf("Clone = %v, want a refusal that names the sandbox and the minimum", err)
+	}
+	clone.Resources.MemoryMiB = 0
+	err = h.provider.Clone(t.Context(), source.ID, clone)
+	if err == nil || !strings.Contains(err.Error(), "--memory 0") {
+		t.Fatalf("Clone with --memory 0 = %v, want the refusal by name", err)
 	}
 }
 

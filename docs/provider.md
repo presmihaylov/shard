@@ -109,7 +109,7 @@ override it) over an APFS clone of the image's ext4 disk, held by one `shard-vz-
 signs under `<root>/vz` from the copy `make build-darwin` embeds, beside the static linux `shard-init`
 that build embeds for this Mac's arch and the daemon installs under `<root>/vz` as the initrd's
 `/init`; a `go build` alone has neither and the first sandbox says so. `SHARD_INIT_PATH` names a
-guest `shard-init` of your own instead. `--memory` defaults to 512 MB and is a hard cap. There is no bridge: the daemon
+guest `shard-init` of your own instead. `--memory` is required, `0` is refused by name, and it is a hard cap. There is no bridge: the daemon
 leases each guest an address from the pool, terminates its frames in a userspace stack that answers
 for the gateway alone, and serves the proxy and the resolver on that stack. The stack's own NAT
 table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
