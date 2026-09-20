@@ -36,12 +36,12 @@ const (
 	dialTimeout = 10 * time.Second
 	// udpIdle ends a UDP flow neither side has used, the way a conntrack entry ages out.
 	udpIdle = 30 * time.Second
-	// maxInFlight is how many TCP handshakes the forwarder holds open per stack.
-	maxInFlight = 1024
 	// A flow holds a host socket and two goroutines for its life, so one guest gets a share and the stack a ceiling under the daemon's descriptors.
 	maxLinkFlows  = 1024
 	maxStackFlows = 4096
-	datagramMax   = 64 * 1024
+	// A handshake is in flight for the whole host dial, so the forwarder holds the stack ceiling and one link's share cannot fill it.
+	maxInFlight = maxStackFlows
+	datagramMax = 64 * 1024
 )
 
 // RuleLimit names the drop of a flow the judge allowed but the link or the stack has no room for.

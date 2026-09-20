@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -17,7 +18,14 @@ type Judge struct {
 	mu      sync.RWMutex
 	applied bool
 	chains  map[netip.Addr]Chain
+	// The host's addresses are read at most once per hostRefresh, so a guest varying its 4-tuples cannot drive the lookup.
+	hostMu   sync.Mutex
+	host     map[netip.Addr]struct{}
+	hostErr  error
+	hostRead time.Time
 }
+
+const hostRefresh = time.Second
 
 // Apply replaces every chain at once, the way the host ruleset is replaced in one transaction.
 func (j *Judge) Apply(chains []Chain) {
@@ -64,12 +72,36 @@ func (j *Judge) local(addr netip.Addr) bool {
 	if addr.IsUnspecified() || addr.IsMulticast() || addr == broadcast {
 		return true
 	}
-	owned, err := j.hostAddresses()
+	owned, err := j.owned()
 	if err != nil {
 		return true
 	}
+	_, ok := owned[addr]
 
-	return slices.Contains(owned, addr)
+	return ok
+}
+
+// owned is the cached host address set; a lookup that fails is kept for the interval too, so the refusal holds until one succeeds.
+func (j *Judge) owned() (map[netip.Addr]struct{}, error) {
+	j.hostMu.Lock()
+	defer j.hostMu.Unlock()
+	if !j.hostRead.IsZero() && time.Since(j.hostRead) < hostRefresh {
+		return j.host, j.hostErr
+	}
+	j.hostRead = time.Now()
+	addrs, err := j.hostAddresses()
+	if err != nil {
+		j.host, j.hostErr = nil, err
+
+		return nil, err
+	}
+	j.host = make(map[netip.Addr]struct{}, len(addrs))
+	for _, a := range addrs {
+		j.host[a] = struct{}{}
+	}
+	j.hostErr = nil
+
+	return j.host, nil
 }
 
 var broadcast = netip.MustParseAddr("255.255.255.255")

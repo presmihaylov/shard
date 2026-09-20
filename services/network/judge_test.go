@@ -53,6 +53,7 @@ func TestTheJudgeRulesLikeTheEgressChain(t *testing.T) {
 
 	// The host's own addresses are refused as local, wherever they sit, and so is a lookup that fails.
 	j.Local = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil }
+	j.hostRead = time.Time{}
 	for _, tc := range []struct {
 		name string
 		flow netstack.Flow
@@ -69,10 +70,12 @@ func TestTheJudgeRulesLikeTheEgressChain(t *testing.T) {
 		}
 	}
 	j.Local = func() ([]netip.Addr, error) { return nil, errors.New("no interfaces") }
+	j.hostRead = time.Time{}
 	if got := j.Judge(flow(judgedGuest, "tcp", "203.0.113.7:5432")); got != (netstack.Verdict{Rule: RuleLocal}) {
 		t.Errorf("a failed lookup allowed: %+v", got)
 	}
 	j.Local = nil
+	j.hostRead = time.Time{}
 
 	// An apply replaces every chain, so a policy detached leaves the guest with the floor alone.
 	j.Apply(nil)
