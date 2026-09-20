@@ -233,6 +233,11 @@ func (t *transport) launch(spec supervisor.RunSpec) error {
 		return err
 	}
 
+	if spec.Trust != nil {
+		if err := writeTrustIn("/", *spec.Trust); err != nil {
+			return err
+		}
+	}
 	ep := entrypoint{argv: spec.Argv, env: spec.Env, dir: spec.WorkDir, credential: credential, out: t.logs.pipe}
 	t.g.run(func() {
 		if t.g.started {

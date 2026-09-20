@@ -68,6 +68,14 @@ type RunSpec struct {
 	Retries int                  `json:"retries,omitempty"`
 	Backoff time.Duration        `json:"backoff,omitempty"`
 	Reset   time.Duration        `json:"reset,omitempty"`
+	// Trust is the merged CA bundle a fronted guest writes before the entrypoint; a VM has no upper layer a host could plant it in.
+	Trust *Trust `json:"trust,omitempty"`
+}
+
+// Trust is the image roots plus the proxy CA, at the path the image already reads its roots from.
+type Trust struct {
+	Path  string `json:"path"`
+	Roots []byte `json:"roots"`
 }
 
 // Address is one IPv4 address the guest takes on its interface, with the default route behind it and the resolver files that name it.
