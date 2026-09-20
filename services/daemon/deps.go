@@ -419,6 +419,21 @@ func (d *deps) substrateLocked() (sandbox.Substrate, error) {
 	return sub, nil
 }
 
+// environmentsLocked is the provider's own hook for where it keeps a guest environment, and every provider has one.
+func (d *deps) environmentsLocked() (sandbox.Environments, error) {
+	provider, err := d.providerLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	envs, ok := provider.(sandbox.Environments)
+	if !ok {
+		return nil, fmt.Errorf("provider %s cannot open a guest environment", provider.Name())
+	}
+
+	return envs, nil
+}
+
 func (d *deps) policiesLocked() (*egress.Store, error) {
 	if d.policySvc != nil {
 		return d.policySvc, nil
@@ -526,16 +541,22 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		return nil, err
 	}
 
+	envs, err := d.environmentsLocked()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.New(sandbox.Config{
-		Repo:        repo,
-		Images:      images,
-		Network:     net,
-		Provider:    provider,
-		Secrets:     secrets,
-		Policies:    policies,
-		Substrate:   sub,
-		ProxyCA:     d.proxyCA,
-		PullTimeout: d.cfg.PullTimeout,
+		Repo:         repo,
+		Images:       images,
+		Network:      net,
+		Provider:     provider,
+		Secrets:      secrets,
+		Policies:     policies,
+		Substrate:    sub,
+		Environments: envs,
+		ProxyCA:      d.proxyCA,
+		PullTimeout:  d.cfg.PullTimeout,
 	}), nil
 }
 

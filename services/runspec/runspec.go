@@ -4,6 +4,8 @@
 package runspec
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -79,4 +81,33 @@ func firstNonEmpty(values ...string) string {
 	}
 
 	return ""
+}
+
+// Settable is the one predicate a check and a set share, so the two cannot drift.
+func Settable(env []string, name string) error {
+	if name == "" {
+		return errors.New("the environment variable has no name")
+	}
+	if strings.ContainsAny(name, "=\x00") {
+		return fmt.Errorf("%q is not an environment variable name", name)
+	}
+
+	for _, entry := range env {
+		if envKey(entry) == name {
+			return fmt.Errorf("the guest environment already holds %s, so nothing may be set over it", name)
+		}
+	}
+
+	return nil
+}
+
+// RemoveEnv drops every entry of that name and leaves the rest in order.
+func RemoveEnv(env []string, name string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool { return envKey(entry) == name })
+}
+
+func envKey(entry string) string {
+	key, _, _ := strings.Cut(entry, "=")
+
+	return key
 }

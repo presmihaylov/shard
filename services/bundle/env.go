@@ -2,16 +2,15 @@ package bundle
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // configPath is the runtime spec of a built bundle, which is the only record of the guest environment.
@@ -24,7 +23,7 @@ func (b Bundle) CanSetEnv(name string) error {
 		return err
 	}
 
-	return settable(spec.Process.Env, name)
+	return runspec.Settable(spec.Process.Env, name)
 }
 
 // SetEnv adds one variable to the guest environment of a built bundle, which the next start reads.
@@ -34,7 +33,7 @@ func (b Bundle) SetEnv(name, value string) error {
 		return err
 	}
 
-	if err := settable(spec.Process.Env, name); err != nil {
+	if err := runspec.Settable(spec.Process.Env, name); err != nil {
 		return err
 	}
 
@@ -50,37 +49,13 @@ func (b Bundle) RemoveEnv(name string) error {
 		return err
 	}
 
-	env := slices.DeleteFunc(slices.Clone(spec.Process.Env), func(entry string) bool { return envKey(entry) == name })
+	env := runspec.RemoveEnv(spec.Process.Env, name)
 	if len(env) == len(spec.Process.Env) {
 		return nil
 	}
 	spec.Process.Env = env
 
 	return b.writeSpec(spec)
-}
-
-// settable is the one predicate CanSetEnv and SetEnv share, so the check and the write cannot drift.
-func settable(env []string, name string) error {
-	if name == "" {
-		return errors.New("the environment variable has no name")
-	}
-	if strings.ContainsAny(name, "=\x00") {
-		return fmt.Errorf("%q is not an environment variable name", name)
-	}
-
-	for _, entry := range env {
-		if envKey(entry) == name {
-			return fmt.Errorf("the guest environment already holds %s, so nothing may be set over it", name)
-		}
-	}
-
-	return nil
-}
-
-func envKey(entry string) string {
-	key, _, _ := strings.Cut(entry, "=")
-
-	return key
 }
 
 // readSpec reads config.json back. A bundle with no process names no environment, so it is refused.
@@ -113,4 +88,16 @@ func (b Bundle) writeSpec(spec *specs.Spec) error {
 	}
 
 	return nil
+}
+
+// Opener answers the guest environment of any sandbox by its state dir, which on every OCI substrate is its bundle.
+type Opener func(id string) (string, error)
+
+func (o Opener) Environment(id string) (models.Environment, error) {
+	dir, err := o(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return Open(dir)
 }

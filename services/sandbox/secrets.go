@@ -57,12 +57,15 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 		return models.Sandbox{}, err
 	}
 
-	b, err := s.bundle(id)
+	b, err := s.environment(id)
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 
-	// Before any write: a refused grant must leave the bundle byte for byte as it found it.
+	// Before any write: a refused grant must leave the guest environment byte for byte as it found it.
+	if slices.Contains(bundle.TrustEnv, name) {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: the proxy sets that variable to the trust store", id, name)}
+	}
 	if err := b.CanSetEnv(name); err != nil {
 		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: %w", id, name, err)}
 	}
@@ -97,18 +100,23 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 // UngrantSecret takes the placeholder back. The proxy CA stays: it is the image roots plus one
 // certificate, and a sandbox that trusts it reaches no host the policy does not allow.
 func (s *Service) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
-	id, _, unlock, err := s.held(ref, name, "ungrant")
+	id, sb, unlock, err := s.held(ref, name, "ungrant")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 	defer unlock()
 
-	b, err := s.bundle(id)
+	// A name the record never granted may still be the image's own variable, which is not the grant's to take.
+	if !slices.Contains(sb.Secrets, name) {
+		return sb, nil
+	}
+
+	b, err := s.environment(id)
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 
-	// The bundle goes first and the record second, so a run that stops between the two is finished by the next.
+	// The environment goes first and the record second, so a run that stops between the two is finished by the next.
 	if err := b.RemoveEnv(name); err != nil {
 		return models.Sandbox{}, err
 	}
@@ -140,7 +148,7 @@ func (s *Service) held(ref, name, verb string) (string, models.Sandbox, func(), 
 	return s.holdCreatedOrStopped(ref, "secret "+verb+" takes a created or stopped sandbox: stop it first")
 }
 
-// holdCreatedOrStopped locks the sandbox and refuses every state a verb that rewrites the bundle cannot take.
+// holdCreatedOrStopped locks the sandbox and refuses every state a verb that rewrites the guest environment cannot take.
 func (s *Service) holdCreatedOrStopped(ref, fix string) (string, models.Sandbox, func(), error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
@@ -171,12 +179,7 @@ func (s *Service) holdCreatedOrStopped(ref, fix string) (string, models.Sandbox,
 	return id, sb, unlock, nil
 }
 
-// bundle opens the bundle of a sandbox that is already built, which is where the guest environment lives.
-func (s *Service) bundle(id string) (bundle.Bundle, error) {
-	dir, err := s.cfg.Repo.Dir(id)
-	if err != nil {
-		return bundle.Bundle{}, err
-	}
-
-	return bundle.Open(dir)
+// environment opens the guest environment of a sandbox that is already built, wherever its provider keeps it.
+func (s *Service) environment(id string) (models.Environment, error) {
+	return s.cfg.Environments.Environment(id)
 }

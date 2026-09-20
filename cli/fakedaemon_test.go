@@ -15,6 +15,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
@@ -90,6 +91,8 @@ func (f *fakeDaemon) build() {
 			Secrets:   f.secretSvc,
 			Policies:  f.policySvc,
 			Substrate: f.substrateSvc,
+			// A verb test without a repo never grants, so the opener asks the repo only when called.
+			Environments: bundle.Opener(func(id string) (string, error) { return f.repoSvc.Dir(id) }),
 			ProxyCA: func() ([]byte, error) {
 				if f.proxyCA == nil {
 					return nil, errors.New("this shard has no proxy CA, so it cannot front a sandbox")
