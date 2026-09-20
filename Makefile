@@ -18,6 +18,8 @@ ITEST_PKG ?= ./services/network/... ./services/provider/gvisor/... ./services/pr
 include packaging/kernel/version.mk
 # The guest kernel arch to build: arm64 or amd64.
 ARCH ?= arm64
+# The Mac arch the darwin build targets; the release builds both on one arm64 Mac, one after the other.
+DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
@@ -42,16 +44,16 @@ build-shard-init-linux:
 
 # The shim holds one Virtualization.framework VM. It lands where pkg/vzshim embeds it, signed, so a direct run works too.
 build-shard-vz-shim:
-	go build -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
+	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
 	codesign --sign - --force --entitlements pkg/vzshim/shim/entitlements.plist $(VZ_SHIM_BIN)
 
 # A VM boots the host's arch, so the guest init is linux on this Mac's arch, and it lands where pkg/vzshim embeds it.
 build-shard-vz-init:
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -o $(VZ_INIT_BIN) ./cmd/shard-init
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(DARWIN_ARCH) go build -o $(VZ_INIT_BIN) ./cmd/shard-init
 
 # The Mac build: cgo over the framework never cross-compiles, and the daemon carries the shim and the guest init it will install.
 build-darwin: build-shard-vz-shim build-shard-vz-init
-	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN)-darwin-$(shell go env GOARCH) ./cmd/shard
+	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build -ldflags "$(LDFLAGS)" -o $(BIN)-darwin-$(DARWIN_ARCH) ./cmd/shard
 
 test:
 	go test ./...
