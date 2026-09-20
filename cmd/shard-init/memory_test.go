@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,17 +14,26 @@ import (
 type memoryReporter struct {
 	exits chan models.ExitStatus
 	ooms  chan struct{}
+	// deaf is a reporter with no host attached, which the OOM report must say rather than drop.
+	deaf bool
 }
 
 func (r memoryReporter) ready() error                        { return nil }
 func (r memoryReporter) exited(exit models.ExitStatus) error { r.exits <- exit; return nil }
 func (memoryReporter) restarted(models.RestartCount) error   { return nil }
-func (r memoryReporter) oomKilled() error                    { r.ooms <- struct{}{}; return nil }
+func (r memoryReporter) oomKilled() error {
+	r.ooms <- struct{}{}
+	if r.deaf {
+		return errNoHost
+	}
 
-func superviseBounded(t *testing.T, oom bool) (memoryReporter, chan error) {
+	return nil
+}
+
+func superviseBounded(t *testing.T, oom, deaf bool) (*guest, memoryReporter, chan error) {
 	t.Helper()
 
-	report := memoryReporter{exits: make(chan models.ExitStatus, 1), ooms: make(chan struct{}, 1)}
+	report := memoryReporter{exits: make(chan models.ExitStatus, 1), ooms: make(chan struct{}, 1), deaf: deaf}
 	g := newGuest(report, restartPolicy{policy: models.RestartNo})
 	g.oomProbe = func() (bool, error) { return oom, nil }
 	if err := g.launch(entrypoint{argv: []string{os.Args[0], childPrefix + "sigkill:0"}, env: os.Environ()}); err != nil {
@@ -32,12 +42,12 @@ func superviseBounded(t *testing.T, oom bool) (memoryReporter, chan error) {
 	done := make(chan error, 1)
 	go func() { done <- g.supervise() }()
 
-	return report, done
+	return g, report, done
 }
 
 // A SIGKILL the memory bound made ends the guest with the OOM report and no exit record, as a whole Linux sandbox dies.
 func TestAKillUnderTheMemoryBoundEndsTheGuest(t *testing.T) {
-	report, done := superviseBounded(t, true)
+	_, report, done := superviseBounded(t, true, false)
 
 	select {
 	case <-report.ooms:
@@ -59,7 +69,7 @@ func TestAKillUnderTheMemoryBoundEndsTheGuest(t *testing.T) {
 
 // A SIGKILL from anywhere else is an exit like any other: the record lands and the sandbox outlives it.
 func TestAKillOutsideTheMemoryBoundIsAnExit(t *testing.T) {
-	report, done := superviseBounded(t, false)
+	g, report, done := superviseBounded(t, false, false)
 
 	select {
 	case exit := <-report.exits:
@@ -76,5 +86,41 @@ func TestAKillOutsideTheMemoryBoundIsAnExit(t *testing.T) {
 	}
 	if len(report.ooms) != 0 {
 		t.Fatal("a plain kill was reported as an OOM")
+	}
+	// Every guest in this process hears SIGCHLD, so one left running would reap the next test's child.
+	g.stopSignals <- syscall.SIGTERM
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest did not end on a stop with nothing to forward to")
+	}
+}
+
+// A kill nobody heard keeps the guest up, so the reason survives until a host connects and reads it in the replay.
+func TestAKillWithNoHostAttachedWaitsForTheReplay(t *testing.T) {
+	g, report, done := superviseBounded(t, true, true)
+
+	select {
+	case <-report.ooms:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no OOM report within 5s")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the guest ended with no host to tell: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	var oom bool
+	g.run(func() { oom = g.oom; g.halted = g.oom })
+	if !oom {
+		t.Fatal("the guest forgot the kill")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("supervise: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest kept running after the replay")
 	}
 }

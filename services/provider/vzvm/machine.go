@@ -282,9 +282,15 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
 	case supervisor.KindOOM:
-		if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
-			return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
-		}
+		return m.markOOM()
+	}
+
+	return nil
+}
+
+func (m *machine) markOOM() error {
+	if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
+		return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
 	}
 
 	return nil
@@ -332,6 +338,11 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 	p.mu.Lock()
 	m.started = m.started || state.Ready
 	p.mu.Unlock()
+	if state.OOM {
+		if err := m.markOOM(); err != nil {
+			return err
+		}
+	}
 	if state.Exit != nil {
 		path := filepath.Join(m.dir, exitFile)
 		last, found, err := bundle.ReadExitStatus(path)

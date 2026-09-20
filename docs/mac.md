@@ -55,7 +55,7 @@ shard stop <id>
 The image is pulled from the registry and becomes an ext4 disk once; every sandbox over it boots an
 APFS clone of that disk, so the second `create` of an image is a boot and nothing more. A sandbox
 gets 512 MB by default, and `--memory` is a hard cap, because a VM's memory is real memory on a
-laptop. Keep the count of running sandboxes to what the Mac holds: eight of the default size is
+laptop; 128 MiB is the smallest a sandbox boots with. Keep the count of running sandboxes to what the Mac holds: eight of the default size is
 4 GB.
 
 The VM has no way onto the LAN. Its network is a file handle into the daemon, where shard's own

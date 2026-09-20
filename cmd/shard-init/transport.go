@@ -67,7 +67,7 @@ func serveTransport(name, root string) error {
 	t.g = newGuest(t, restartPolicy{})
 	// Only a VM has the bound; a test on a Linux host runs unconfined and would read its own cgroup.
 	if root != "" {
-		t.g.oomProbe = oomKilledGuest
+		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
 	}
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
@@ -125,7 +125,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -133,6 +133,8 @@ func (t *transport) attach(conn net.Conn) error {
 			return
 		}
 		t.control = conn
+		// The replay is the report a kill with no host attached waited for, so the guest may end now.
+		t.g.halted = t.g.oom
 	})
 
 	return err
@@ -156,7 +158,20 @@ func (t *transport) exited(exit models.ExitStatus) error {
 	return t.send(supervisor.Message{Kind: supervisor.KindExit, Exit: &exit})
 }
 
-func (t *transport) oomKilled() error { return t.send(supervisor.Message{Kind: supervisor.KindOOM}) }
+// oomKilled is the one report that must land, so it says when nobody is attached instead of dropping the message.
+func (t *transport) oomKilled() error {
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+
+	if t.control == nil {
+		return errNoHost
+	}
+	if err := supervisor.WriteMessage(t.control, supervisor.Message{Kind: supervisor.KindOOM}); err != nil {
+		return fmt.Errorf("%w: %w", errNoHost, err)
+	}
+
+	return nil
+}
 
 func (t *transport) restarted(count models.RestartCount) error {
 	return t.send(supervisor.Message{Kind: supervisor.KindRestarts, Restarts: &count})

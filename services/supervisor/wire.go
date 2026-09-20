@@ -53,6 +53,8 @@ type Message struct {
 	// Exit is how the entrypoint last ended, and Restarts what the restart policy kept.
 	Exit     *models.ExitStatus   `json:"exit,omitempty"`
 	Restarts *models.RestartCount `json:"restarts,omitempty"`
+	// OOM on a state replay says the bound took every guest process while no host was attached to hear it.
+	OOM bool `json:"oom,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request.
 	Error string `json:"error,omitempty"`
 }

@@ -139,3 +139,22 @@ func TestAnOOMMessageMarksTheMachineKilledUnderTheBound(t *testing.T) {
 		t.Fatal("no marker for a status read with no machine")
 	}
 }
+
+// A kill that found no host attached rides the state the next connection replays, and marks the machine the same way.
+func TestAStateReplayThatCarriesAnOOMMarksTheMachine(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true}); err != nil {
+		t.Fatal(err)
+	}
+	if oomKilled(m.dir) {
+		t.Fatal("a plain state replay left a marker")
+	}
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true, OOM: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !oomKilled(m.dir) {
+		t.Fatal("no marker for a replay that carried the kill")
+	}
+}

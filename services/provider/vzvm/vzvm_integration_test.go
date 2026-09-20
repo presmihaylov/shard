@@ -470,13 +470,27 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 	h := newVMHarness(t)
 
 	// The tmpfs is charged to the writer, and its default size sits under the bound, so the remount lifts it first.
-	script := "mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done"
+	script := "while [ ! -e /tmp/go ]; do sleep 0.2; done; mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done"
 	spec := h.newSpec(t, "/bin/sh", "-c", script)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
+	}
+
+	// Only PID 1 is exempt from the killer: a guest process, and what it forks, as any user, is exposed before it runs.
+	out, err := os.CreateTemp(t.TempDir(), "adj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	probe := "cat /proc/1/oom_score_adj /proc/self/oom_score_adj; sh -c 'cat /proc/self/oom_score_adj'; touch /tmp/go"
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", probe}, User: "nobody", Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if read, _ := os.ReadFile(out.Name()); string(read) != "-1000\n0\n0\n" {
+		t.Fatalf("oom_score_adj of PID 1, an exec and its child = %q, want -1000, 0 and 0", read)
 	}
 
 	deadline := time.Now().Add(2 * time.Minute)

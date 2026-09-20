@@ -27,6 +27,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	if spec.RootDisk == "" {
 		return fmt.Errorf("sandbox %s: the image has no root disk, and a vm boots from one", spec.ID)
 	}
+	if err := checkMemory(spec); err != nil {
+		return err
+	}
 
 	if err := clear(spec.StateDir); err != nil {
 		return err
@@ -81,6 +84,15 @@ func clear(dir string) error {
 }
 
 // recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
+// checkMemory refuses a bound the guest cannot boot under; zero is the default and fine.
+func checkMemory(spec models.SandboxSpec) error {
+	if spec.Resources.MemoryMiB != 0 && spec.Resources.MemoryMiB < MinMemoryMiB {
+		return fmt.Errorf("sandbox %s: %s needs at least %d MiB of memory, got %d", spec.ID, Name, MinMemoryMiB, spec.Resources.MemoryMiB)
+	}
+
+	return nil
+}
+
 func recordOf(spec models.SandboxSpec) (record, error) {
 	run, err := runOf(spec.RootFS, spec.Entrypoint, spec.Env, spec.WorkDir, spec.User, spec.Restart)
 	if err != nil {
@@ -312,6 +324,9 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	}
 	if status.Alive() {
 		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
+	}
+	if err := checkMemory(spec); err != nil {
+		return err
 	}
 
 	if err := clear(spec.StateDir); err != nil {

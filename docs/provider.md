@@ -145,10 +145,14 @@ guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and
 itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` moves into that cgroup and
 unshares a cgroup namespace rooted there, so everything a guest starts, a Docker daemon and its
 containers included, lands under the bound; `shard-init` alone is exempt, through
-`oom_score_adj=-1000`, and each child it forks is exposed again. When the killer takes the group,
-`shard-init` reads `memory.events.local`, reports the kill over vsock instead of an exit, and
-powers the VM off, so `Status` says `OOMKilled`, no exit record lands, and the daemon restarts the
-sandbox on `restart_on_oom` exactly as it does on Linux.
+`oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
+exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
+`memory.events.local`, reports the kill over vsock instead of an exit, and powers the VM off, so
+`Status` says `OOMKilled`, no exit record lands, and the daemon restarts the sandbox on
+`restart_on_oom` exactly as it does on Linux. A kill that finds no host attached, during a
+reconnect after a sleep, keeps the guest up: the state the next connection replays carries it, and
+the VM powers off once that replay lands. The bound needs room under the headroom, so `vz` refuses
+a `--memory` below 128 MiB by name.
 
 ## What a cpu bound means
 
