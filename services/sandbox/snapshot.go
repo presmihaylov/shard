@@ -181,8 +181,12 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	}
 	defer unlock()
 
+	// A resume runs on past the snapshot and keeps its name, so only a paused source's snapshot is current.
+	if src.State != models.StatePaused {
+		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "pause it first, fork reads what the pause wrote", Code: models.CodeSandboxNotPaused}
+	}
 	if src.Snapshot == "" {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "pause it first, fork reads what the pause wrote", Code: models.CodeNoSnapshot}
+		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "its record names no snapshot to fork from", Code: models.CodeNoSnapshot}
 	}
 
 	var td Teardown
