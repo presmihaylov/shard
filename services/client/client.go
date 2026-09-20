@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -75,11 +76,19 @@ func (e *ConnectError) Unwrap() error { return e.Err }
 
 // hint is what to check when nothing answers under root: the unit, or the daemon someone starts by hand elsewhere.
 func hint(root string) string {
-	if root == DefaultRoot {
-		return "systemctl status shard"
+	return hintFor(root, runtime.GOOS)
+}
+
+// hintFor names the unit of the host: a Mac has no systemctl, and its default root is the LaunchDaemon's.
+func hintFor(root, goos string) string {
+	if root != DefaultRoot {
+		return "shard --root " + root + " daemon"
+	}
+	if goos == "darwin" {
+		return "launchctl print system/shard.daemon"
 	}
 
-	return "shard --root " + root + " daemon"
+	return "systemctl status shard"
 }
 
 // NotFoundError is the daemon's 404: nothing holds the reference.
