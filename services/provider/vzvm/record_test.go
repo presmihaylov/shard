@@ -1,6 +1,7 @@
 package vzvm
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,3 +120,112 @@ type brokenLog struct{}
 func (brokenLog) Write([]byte) (int, error) { return 0, errNoSpace }
 
 func (brokenLog) Close() error { return nil }
+
+// A guest that answers every request, and counts the stops, so a test proves the host said stop only once the marker was down.
+func stoppableGuest(t *testing.T) (*supervisor.Control, *atomic.Int32) {
+	t.Helper()
+
+	host, guest := net.Pipe()
+	t.Cleanup(func() { host.Close() })
+	var stops atomic.Int32
+	go func() {
+		defer guest.Close()
+		r := bufio.NewReader(guest)
+		for {
+			var m supervisor.Message
+			if err := supervisor.ReadMessage(r, &m); err != nil {
+				return
+			}
+			if m.Kind == supervisor.KindStop {
+				stops.Add(1)
+			}
+			if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindDone, ID: m.ID}); err != nil {
+				return
+			}
+		}
+	}()
+
+	return supervisor.ControlOver(host), &stops
+}
+
+// An OOM message leaves a marker the status reads once the guest is gone, then tells the guest to go; the next boot clears the marker.
+func TestAnOOMMessageMarksTheMachineKilledUnderTheBoundThenStopsIt(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindOOM}); err != nil {
+		t.Fatal(err)
+	}
+	if stops.Load() != 1 {
+		t.Fatalf("the host sent %d stops after the marker, want one", stops.Load())
+	}
+	if m.status(p).OOMKilled {
+		t.Fatal("the status blamed the bound while the guest still ran")
+	}
+	m.gone = true
+	status := m.status(p)
+	if status.State != models.StateStopped || !status.OOMKilled {
+		t.Fatalf("status = %+v; want stopped and OOMKilled", status)
+	}
+	if !oomKilled(m.dir) {
+		t.Fatal("no marker for a status read with no machine")
+	}
+}
+
+// A kill that found no host attached rides the state the next connection replays, and marks the machine the same way.
+func TestAStateReplayThatCarriesAnOOMMarksTheMachine(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true}); err != nil {
+		t.Fatal(err)
+	}
+	if oomKilled(m.dir) || stops.Load() != 0 {
+		t.Fatal("a plain state replay left a marker or a stop")
+	}
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindState, Ready: true, OOM: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !oomKilled(m.dir) || stops.Load() != 1 {
+		t.Fatalf("marker %v and %d stops for a replay that carried the kill, want the marker and one stop", oomKilled(m.dir), stops.Load())
+	}
+}
+
+// A marker that cannot land keeps the guest up: the stop goes only after the write, so the kill is never lost to a full disk.
+func TestAMarkerThatCannotLandSendsNoStop(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: filepath.Join(t.TempDir(), "missing")}
+	control, stops := stoppableGuest(t)
+	m.control.Store(control)
+
+	if err := p.record(m, supervisor.Message{Kind: supervisor.KindOOM}); err == nil {
+		t.Fatal("a marker under a missing directory landed")
+	}
+	if stops.Load() != 0 {
+		t.Fatal("the host told the guest to go before the marker was down")
+	}
+}
+
+// A replay that carries the kill sends the stop down the stream just adopted, never the one it replaced.
+func TestAnAdoptedStreamCarriesTheStopOfItsReplay(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir()}
+	old, oldStops := stoppableGuest(t)
+	m.control.Store(old)
+	fresh, freshStops := stoppableGuest(t)
+
+	adopted, err := p.adopt(m, fresh, supervisor.Message{Kind: supervisor.KindState, Ready: true, OOM: true})
+	if err != nil || !adopted {
+		t.Fatalf("adopt = %v, %v", adopted, err)
+	}
+	if !oomKilled(m.dir) || freshStops.Load() != 1 || oldStops.Load() != 0 {
+		t.Fatalf("marker %v, %d stops on the adopted stream and %d on the dropped one", oomKilled(m.dir), freshStops.Load(), oldStops.Load())
+	}
+	if m.control.Load() != fresh {
+		t.Fatal("the machine does not hold the adopted stream")
+	}
+}

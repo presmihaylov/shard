@@ -140,9 +140,21 @@ not one process inside it, and the daemon restarts it when the record set `resta
 sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
 pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
-On `vz` the bound is the VM's memory: past it the guest kernel's own OOM killer takes one process
-inside the VM, the sandbox lives, `Status` never reports `OOMKilled`, and `restart_on_oom` never
-fires. A killed entrypoint is an exit the supervisor records, the same as any other.
+On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
+guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
+itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` moves into that cgroup and
+unshares a cgroup namespace rooted there, so everything a guest starts, a Docker daemon and its
+containers included, lands under the bound; `shard-init` alone is exempt, through
+`oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
+exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
+`memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
+that state and does not power off on its own: the host writes the `oom` marker first and only then
+sends the stop, so a daemon that dies between the report and the marker finds the kill again in
+the state the next connection replays, and marks it then. Once the marker is down `Status` says
+`OOMKilled`, no exit record lands, and the daemon restarts the sandbox on `restart_on_oom` exactly
+as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
+the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
+`--memory` below 128 MiB by name.
 
 ## What a cpu bound means
 

@@ -12,7 +12,7 @@ var errNotLinux = errors.New("a root disk needs Linux")
 
 func bootGuest(string) error { return errNotLinux }
 
-func dropPtrace() error { return nil }
+func confine() error { return nil }
 
 func applyAddress(supervisor.Address) error { return errNotLinux }
 

@@ -27,6 +27,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	if spec.RootDisk == "" {
 		return fmt.Errorf("sandbox %s: the image has no root disk, and a vm boots from one", spec.ID)
 	}
+	if err := checkMemory(spec); err != nil {
+		return err
+	}
 
 	if err := clear(spec.StateDir); err != nil {
 		return err
@@ -71,7 +74,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, logFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, diskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -81,6 +84,15 @@ func clear(dir string) error {
 }
 
 // recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
+// checkMemory refuses a bound the guest cannot boot under; zero is the default and fine.
+func checkMemory(spec models.SandboxSpec) error {
+	if spec.Resources.MemoryMiB != 0 && spec.Resources.MemoryMiB < MinMemoryMiB {
+		return fmt.Errorf("sandbox %s: %s needs at least %d MiB of memory, got %d", spec.ID, Name, MinMemoryMiB, spec.Resources.MemoryMiB)
+	}
+
+	return nil
+}
+
 func recordOf(spec models.SandboxSpec) (record, error) {
 	run, err := runOf(spec.RootFS, spec.Entrypoint, spec.Env, spec.WorkDir, spec.User, spec.Restart)
 	if err != nil {
@@ -313,6 +325,9 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if status.Alive() {
 		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
 	}
+	if err := checkMemory(spec); err != nil {
+		return err
+	}
 
 	if err := clear(spec.StateDir); err != nil {
 		return err
@@ -443,8 +458,15 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		return models.Status{}, err
 	}
 	if m == nil {
-		return models.Status{Exists: true, State: models.StateStopped}, nil
+		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}, nil
 	}
 
 	return m.status(p), nil
+}
+
+// oomKilled reads the marker the last boot left; only the next boot clears it.
+func oomKilled(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, oomFile))
+
+	return err == nil
 }

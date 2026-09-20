@@ -170,6 +170,32 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	}
 }
 
+// The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name, on a create and a clone.
+func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec.Resources.MemoryMiB = 64
+
+	err := h.provider.Create(t.Context(), spec)
+	if err == nil || !strings.Contains(err.Error(), spec.ID) || !strings.Contains(err.Error(), "128 MiB") {
+		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
+	}
+
+	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := h.provider.Create(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	clone := h.newSpec(t)
+	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: models.Resources{MemoryMiB: 64}}
+	err = h.provider.Clone(t.Context(), source.ID, clone)
+	if err == nil || !strings.Contains(err.Error(), clone.ID) || !strings.Contains(err.Error(), "128 MiB") {
+		t.Fatalf("Clone = %v, want a refusal that names the sandbox and the minimum", err)
+	}
+}
+
 // An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
 func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	h := newHarness(t)

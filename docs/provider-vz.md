@@ -224,7 +224,11 @@ the verb means one thing on every substrate: a snapshot on disk and the memory g
 Save and restore are macOS 14 APIs. A pause that frees memory needs the save, so on macOS 13 all
 three optional verbs are `false` and refuse by name, `provider vz does not support pause on this
 host`, the same as Sysbox. `--memory` defaults to 512 MB on this substrate and is a hard cap, because
-a VM's memory is real memory on a laptop.
+a VM's memory is real memory on a laptop. Past it the whole sandbox dies and `Status` says
+`OOMKilled`, as on Linux: `shard-init` bounds the guest under a cgroup 32 MB short of the VM's
+memory, reports the kill and holds the guest until the host has the marker on disk and says stop;
+`docs/provider.md` has the mechanism. The
+smallest `--memory` is 128 MiB, and `create` refuses less by name.
 
 ## What the spike proved
 

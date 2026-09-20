@@ -55,7 +55,7 @@ shard stop <id>
 The image is pulled from the registry and becomes an ext4 disk once; every sandbox over it boots an
 APFS clone of that disk, so the second `create` of an image is a boot and nothing more. A sandbox
 gets 512 MB by default, and `--memory` is a hard cap, because a VM's memory is real memory on a
-laptop. Keep the count of running sandboxes to what the Mac holds: eight of the default size is
+laptop; 128 MiB is the smallest a sandbox boots with. Keep the count of running sandboxes to what the Mac holds: eight of the default size is
 4 GB.
 
 The VM has no way onto the LAN. Its network is a file handle into the daemon, where shard's own
@@ -70,7 +70,7 @@ your printer.
 | Isolation | a micro VM per sandbox, a Linux kernel of its own | a user-space kernel, `runsc` |
 | Syscall cost | native, inside the VM | high on file-heavy work |
 | `pause`, `resume`, `fork` | Apple silicon on macOS 14 or later | yes |
-| Memory | `--memory` is the VM's memory, 512 MB default; past it the guest's own OOM killer takes a process and the sandbox lives | a cgroup limit; past it the whole sandbox dies, and restarts on `restart_on_oom` |
+| Memory | `--memory` is the VM's memory, 512 MB default; past it the whole sandbox dies, and restarts on `restart_on_oom` | a cgroup limit; past it the whole sandbox dies, and restarts on `restart_on_oom` |
 | CPUs | `--cpus 0` is one virtual CPU per host CPU, up to the framework's ceiling; `N` is `N` of them | `--cpus 0` is every host CPU; `N` is a quota |
 | Processes | no bound; a fork bomb stays inside the VM and hits its memory | `4096` per sandbox |
 | Host access | none: no shared folders, no LAN, no host mounts | none |

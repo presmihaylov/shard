@@ -107,7 +107,7 @@ func (p *Provider) forget(m *machine) {
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -134,6 +134,9 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	m, err := p.attach(ctx, id, dir, r, client, info)
 	if err != nil {
 		return nil, errors.Join(err, endShim(id, client, info.PID))
+	}
+	if m == nil {
+		return nil, fmt.Errorf("sandbox %s: the restored guest was killed by its memory bound", id)
 	}
 
 	return m, nil
@@ -171,6 +174,10 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	}
 	if err := p.reconcile(m, state); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
+	}
+	if state.OOM {
+		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
+		return nil, p.release(ctx, m)
 	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
@@ -281,6 +288,20 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		}
 
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
+	case supervisor.KindOOM:
+		return m.markOOM()
+	}
+
+	return nil
+}
+
+// markOOM puts the reason on disk and only then tells the guest to go: a host that dies first hears the kill again in the replay.
+func (m *machine) markOOM() error {
+	if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
+		return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
+	}
+	if err := m.control.Load().Stop(); err != nil {
+		return fmt.Errorf("end sandbox %s after its memory bound: %w", m.id, err)
 	}
 
 	return nil
@@ -307,20 +328,24 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 
 			continue
 		}
-		err = p.reconcile(m, state)
-		m.swap.Lock()
-		if m.closed.Load() {
-			m.swap.Unlock()
-
-			return false, errors.Join(err, control.Close())
-		}
-		dropped := m.control.Swap(control)
-		m.swap.Unlock()
-
-		return true, errors.Join(err, dropped.Close())
+		return p.adopt(m, control, state)
 	}
 
 	return false, nil
+}
+
+// adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
+func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
+	m.swap.Lock()
+	if m.closed.Load() {
+		m.swap.Unlock()
+
+		return false, control.Close()
+	}
+	dropped := m.control.Swap(control)
+	m.swap.Unlock()
+
+	return true, errors.Join(p.reconcile(m, state), dropped.Close())
 }
 
 // reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.
@@ -328,6 +353,11 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 	p.mu.Lock()
 	m.started = m.started || state.Ready
 	p.mu.Unlock()
+	if state.OOM {
+		if err := m.markOOM(); err != nil {
+			return err
+		}
+	}
 	if state.Exit != nil {
 		path := filepath.Join(m.dir, exitFile)
 		last, found, err := bundle.ReadExitStatus(path)
@@ -481,7 +511,7 @@ func (m *machine) status(p *Provider) models.Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if m.gone {
-		return models.Status{Exists: true, State: models.StateStopped}
+		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
 	state := models.StateCreated
 	if m.started {

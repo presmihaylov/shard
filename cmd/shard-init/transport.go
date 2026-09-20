@@ -26,20 +26,24 @@ type transport struct {
 	logs      *logSink
 }
 
+// capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
+const capbsetEnv = "SHARD_INIT_CAPBSET"
+
 // serveTransport is the whole of -transport: move onto the root disk, listen, and supervise until the stop.
 func serveTransport(name, root string) error {
 	listen, err := listenerFor(name)
 	if err != nil {
 		return err
 	}
-	if root != "" {
+	// The re-exec in confine runs this again, over a root disk already moved onto.
+	if root != "" && os.Getenv(capbsetEnv) == "" {
 		if err := bootGuest(root); err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
 	if os.Getpid() == 1 {
-		if err := dropPtrace(); err != nil {
+		if err := confine(); err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
 	}
@@ -61,6 +65,10 @@ func serveTransport(name, root string) error {
 
 	t := &transport{logs: logs}
 	t.g = newGuest(t, restartPolicy{})
+	// Only a VM has the bound; a test on a Linux host runs unconfined and would read its own cgroup.
+	if root != "" {
+		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
+	}
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
 	go logs.accept(listeners[2])
@@ -117,7 +125,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -146,6 +154,21 @@ func (t *transport) ready() error { return t.send(supervisor.Message{Kind: super
 
 func (t *transport) exited(exit models.ExitStatus) error {
 	return t.send(supervisor.Message{Kind: supervisor.KindExit, Exit: &exit})
+}
+
+// oomKilled is the one report that must land, so it says when nobody is attached instead of dropping the message.
+func (t *transport) oomKilled() error {
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+
+	if t.control == nil {
+		return errNoHost
+	}
+	if err := supervisor.WriteMessage(t.control, supervisor.Message{Kind: supervisor.KindOOM}); err != nil {
+		return fmt.Errorf("%w: %w", errNoHost, err)
+	}
+
+	return nil
 }
 
 func (t *transport) restarted(count models.RestartCount) error {

@@ -25,6 +25,9 @@ const Name = "vz"
 // cmdline boots the guest onto the console and hands shard-init the vsock transport and the root disk.
 const cmdline = "console=hvc0 -- -transport vsock -root /dev/vda"
 
+// MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
+const MinMemoryMiB = 128
+
 // The files under a sandbox's state directory, all the provider's own.
 const (
 	recordFile   = "vm.json"
@@ -33,8 +36,10 @@ const (
 	consoleFile  = "console.log"
 	exitFile     = "exit.json"
 	restartsFile = "restarts.json"
-	logFile      = "output.log"
-	initrdFile   = "initrd.cpio"
+	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
+	oomFile    = "oom"
+	logFile    = "output.log"
+	initrdFile = "initrd.cpio"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.

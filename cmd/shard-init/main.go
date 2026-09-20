@@ -37,7 +37,15 @@ var errSupervisor = errors.New("the supervisor failed")
 // errNoEntrypoint marks a broken image, not a broken supervisor, so the two do not share an exit code.
 var errNoEntrypoint = errors.New("the entrypoint did not start")
 
+// errNoHost is a report with no host to take it; the kind that must land waits for the next connection's replay.
+var errNoHost = errors.New("no host attached")
+
 func main() {
+	// The bounded child runs this first, so it gives up PID 1's OOM exemption before the workload can fork.
+	if len(os.Args) > 2 && os.Args[1] == exposeFlag {
+		fmt.Fprintln(os.Stderr, "shard-init:", expose(os.Args[2], os.Args[3:]))
+		os.Exit(models.EntrypointNotStartedExitCode)
+	}
 	err := run(os.Args[1:])
 	if err == nil {
 		return
@@ -134,6 +142,8 @@ type entrypoint struct {
 	credential *syscall.Credential
 	// out is where the entrypoint writes; nil keeps shard-init's own stdout and stderr, the log on gVisor.
 	out *os.File
+	// expose says the child inherits PID 1's OOM exemption and must drop it before the workload runs.
+	expose bool
 }
 
 // reporter is where ready, the exit record and the restart count go: files on gVisor, the control connection in a VM.
@@ -141,6 +151,8 @@ type reporter interface {
 	ready() error
 	exited(models.ExitStatus) error
 	restarted(models.RestartCount) error
+	// oomKilled says the sandbox hit its memory bound and every guest process is gone; errNoHost means nobody heard it yet.
+	oomKilled() error
 }
 
 // death is one reaped child.
@@ -170,6 +182,12 @@ type guest struct {
 	// started and lastExit are what a new control connection is told first.
 	started  bool
 	lastExit *models.ExitStatus
+	// oomProbe says whether the guest's own memory bound was hit; nil is a guest with no bound, where a SIGKILL is a signal.
+	oomProbe func() (bool, error)
+	// exempt says PID 1 holds the OOM exemption boundMemory wrote, which every child it forks must give up.
+	exempt bool
+	// oom says the bound took every guest process; the guest holds it until the host, with the reason on disk, says stop.
+	oom bool
 }
 
 // newGuest watches for child deaths before anything forks, so no exit is ever missed.
@@ -188,7 +206,7 @@ func newGuest(report reporter, restart restartPolicy) *guest {
 func (g *guest) launch(ep entrypoint) error {
 	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
 	g.runStartedAt = time.Now()
-	pid, err := startProcess(ep, nil, false)
+	pid, err := g.start(ep, nil, false)
 	if err != nil {
 		return fmt.Errorf("%w: %q: %w", errNoEntrypoint, ep.argv[0], err)
 	}
@@ -225,8 +243,17 @@ func (g *guest) supervise() error {
 }
 
 // collect reaps what died and routes each exit: the entrypoint's to the policy, an exec's to its session.
+// A kill the memory bound made ends the guest, as it ends a whole Linux sandbox, after every exec has its exit.
 func (g *guest) collect() bool {
+	done := false
 	for _, d := range collectDeadChildren() {
+		if d.exit.Signal == int(syscall.SIGKILL) && g.oomProbe != nil && !done {
+			oom, err := g.oomProbe()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "shard-init:", err)
+			}
+			done = oom
+		}
 		if waiter, ok := g.waiters[d.pid]; ok {
 			delete(g.waiters, d.pid)
 			waiter <- d.exit
@@ -234,6 +261,11 @@ func (g *guest) collect() bool {
 			continue
 		}
 		if d.pid != g.entrypointPID || g.entrypointPID == 0 {
+			continue
+		}
+		if done {
+			g.entrypointPID = 0
+
 			continue
 		}
 
@@ -257,6 +289,14 @@ func (g *guest) collect() bool {
 			g.record()
 		}
 	}
+	if !done {
+		return false
+	}
+	// The guest stays up until the host has the reason on disk and says stop, so a host that missed the report reads the replay.
+	g.oom = true
+	if err := g.report.oomKilled(); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
+	}
 
 	return false
 }
@@ -276,7 +316,7 @@ func (g *guest) stop(received os.Signal) (bool, error) {
 
 // restartEntrypoint forks it once more and records the count; an image that no longer starts is a give-up.
 func (g *guest) restartEntrypoint() int {
-	pid, err := startProcess(g.ep, nil, false)
+	pid, err := g.start(g.ep, nil, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", g.ep.argv[0], err)
 		g.count.GaveUp = true
@@ -316,7 +356,7 @@ func (g *guest) spawn(ep entrypoint, files []*os.File, tty bool) (int, <-chan mo
 		exit = make(chan models.ExitStatus, 1)
 	)
 	g.run(func() {
-		pid, err = startProcess(ep, files, tty)
+		pid, err = g.start(ep, files, tty)
 		if err == nil {
 			g.waiters[pid] = exit
 		}
@@ -421,6 +461,11 @@ func (r fileReporter) ready() error {
 
 // exited frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
 // The newlines let a reader take whole lines only; shard-init is the sole writer, so appends never interleave.
+// oomKilled never reaches a file: a Linux sandbox dies whole with its cgroup, and the host reads the cgroup's own count.
+func (fileReporter) oomKilled() error {
+	return errors.New("a file reporter has no memory bound to report a kill under")
+}
+
 func (fileReporter) exited(exit models.ExitStatus) error {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
@@ -542,6 +587,13 @@ func parseID(field string) (uint32, error) {
 	return uint32(id), nil
 }
 
+// start forks a guest process, which gives up the OOM exemption it inherits from an exempt PID 1.
+func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
+	ep.expose = g.exempt
+
+	return startProcess(ep, files, tty)
+}
+
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
 // files are the child's fds, or nil for the entrypoint's: /dev/null and the log.
 func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
@@ -553,6 +605,13 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	ambient, err := inheritedCapabilities(ep.credential)
 	if err != nil {
 		return 0, err
+	}
+
+	// A parent-side reset would race the child's first fork, so the child itself resets before it execs the workload.
+	argv := ep.argv
+	if ep.expose {
+		argv = append([]string{"shard-init", exposeFlag, binary}, ep.argv...)
+		binary = "/proc/self/exe"
 	}
 
 	// The entrypoint must not inherit our fd 0: that is shard-init's exit channel to the host. It gets
@@ -571,7 +630,7 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 		fds = []uintptr{files[0].Fd(), files[1].Fd(), files[2].Fd()}
 	}
 
-	pid, forkErr := syscall.ForkExec(binary, ep.argv, &syscall.ProcAttr{
+	pid, forkErr := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
 		Dir:   ep.dir,
 		Env:   ep.env,
 		Files: fds,
