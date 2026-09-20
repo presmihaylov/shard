@@ -354,7 +354,7 @@ func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), leaf
 }
 
-// A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
+// The unbounded default is the host count held inside the framework's range, the same count HostCPUs reports.
 func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	h := newVMHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
@@ -379,6 +379,7 @@ func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	}
 }
 
+// A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
 	if !h.provider.Capabilities().Fork {
