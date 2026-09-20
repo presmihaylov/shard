@@ -55,21 +55,14 @@ func reserveInodes(f *os.File) error {
 	}
 
 	// Wider tables push the bitmaps out, which can open a group that needs a table of its own; iterate until the count settles.
-	groups := oldGroups
-	var blocks, valid uint32
-	for {
-		valid = tableStart + groups*tableBlocks + 2*groups
-		blocks = max(valid, sb.BlocksCountLow)
-		next := (blocks-1)/blocksPerGroup + 1
-		if next == groups {
-			break
-		}
-		groups = next
+	groups, valid, blocks, err := widen(oldGroups, tableStart, sb.BlocksCountLow)
+	if err != nil {
+		return err
 	}
 	if err := f.Truncate(int64(blocks) * BlockSize); err != nil {
 		return fmt.Errorf("extend the image to %d blocks: %w", blocks, err)
 	}
-	if _, err := f.WriteAt(make([]byte, int64(valid-tableStart)*BlockSize), int64(tableStart)*BlockSize); err != nil {
+	if err := zero(f, int64(tableStart)*BlockSize, int64(valid-tableStart)*BlockSize); err != nil {
 		return fmt.Errorf("clear the new table: %w", err)
 	}
 	if _, err := f.WriteAt(table, int64(tableStart)*BlockSize); err != nil {
@@ -141,6 +134,39 @@ func reserveInodes(f *os.File) error {
 	sb.FreeBlocksCountLow = freeBlocks
 	if err := writeAt(f, superBlockOffset, &sb); err != nil {
 		return fmt.Errorf("write the superblock: %w", err)
+	}
+
+	return nil
+}
+
+// widen settles the group count in 64 bits, since the new metadata can carry a 32-bit block number past the last group Grow may reach.
+func widen(groups, tableStart, size uint32) (uint32, uint32, uint32, error) {
+	const limit = uint64(MaxDiskSize / BlockSize)
+	g := uint64(groups)
+	for {
+		valid := uint64(tableStart) + g*tableBlocks + 2*g
+		blocks := max(valid, uint64(size))
+		if blocks > limit {
+			return 0, 0, 0, fmt.Errorf("the widened image needs %d blocks, past the maximum of %d", blocks, limit)
+		}
+		next := (blocks-1)/blocksPerGroup + 1
+		if next == g {
+			return uint32(g), uint32(valid), uint32(blocks), nil //nolint:gosec // all three are under limit
+		}
+		g = next
+	}
+}
+
+// zero clears a span through one small buffer, since the new metadata of a large image is a gigabyte.
+func zero(f *os.File, off, n int64) error {
+	buf := make([]byte, min(n, 1<<20))
+	for n > 0 {
+		chunk := min(n, int64(len(buf)))
+		if _, err := f.WriteAt(buf[:chunk], off); err != nil {
+			return err
+		}
+		off += chunk
+		n -= chunk
 	}
 
 	return nil

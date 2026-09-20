@@ -249,3 +249,14 @@ func TestWriteReservesAFullGroupOfInodes(t *testing.T) {
 		})
 	}
 }
+
+func TestWidenRefusesALayoutPastTheLastGroup(t *testing.T) {
+	limit := uint32(MaxDiskSize / BlockSize)
+	if _, _, _, err := widen(limit/blocksPerGroup, limit-tableBlocks, limit); err == nil || !strings.Contains(err.Error(), "past the maximum") {
+		t.Fatalf("widen with a table at the end = %v, want the limit named", err)
+	}
+	groups, valid, blocks, err := widen(1, 300, 16384)
+	if err != nil || groups != 1 || valid != 300+tableBlocks+2 || blocks != 16384 {
+		t.Fatalf("widen of a small image = %d, %d, %d, %v", groups, valid, blocks, err)
+	}
+}
