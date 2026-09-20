@@ -41,6 +41,8 @@ func (b Bundle) UnmountDisk() error {
 
 // withDisk runs fn over a mounted disk and leaves it as found; a bundle never provisioned, as a unit test's, keeps its layers on the host.
 func (b Bundle) withDisk(fn func() error) error {
+	defer b.lockDisk()()
+
 	if _, err := os.Stat(b.Image); errors.Is(err, fs.ErrNotExist) {
 		return fn()
 	}

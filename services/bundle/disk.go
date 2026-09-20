@@ -3,6 +3,7 @@ package bundle
 import (
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -12,6 +13,27 @@ const DefaultDiskMiB = 10240
 
 // diskAnnotation records the bound in config.json, the one file a start after a stop reads a bundle back from.
 const diskAnnotation = "dev.shard.disk-mib"
+
+// diskLocks holds one mutex per disk image: two clones of one stopped source race Mounted against Unmount without it (SHARD-251).
+var diskLocks = struct {
+	sync.Mutex
+	byImage map[string]*sync.Mutex
+}{byImage: map[string]*sync.Mutex{}}
+
+// lockDisk takes the mutex of this bundle's disk image and returns its release.
+func (b Bundle) lockDisk() func() {
+	diskLocks.Lock()
+	lock, ok := diskLocks.byImage[b.Image]
+	if !ok {
+		lock = &sync.Mutex{}
+		diskLocks.byImage[b.Image] = lock
+	}
+	diskLocks.Unlock()
+
+	lock.Lock()
+
+	return lock.Unlock
+}
 
 // DiskBound is the size of a sandbox's disk in MiB, never 0: its writable layer and its /tmp are host files.
 func DiskBound(r models.Resources) int64 {

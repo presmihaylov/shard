@@ -18,4 +18,8 @@ func (b Bundle) MountDisk() error { return errNoDisk }
 func (b Bundle) UnmountDisk() error { return errNoDisk }
 
 // withDisk runs fn over the host layers: no disk can exist here, so there is nothing to mount around it.
-func (b Bundle) withDisk(fn func() error) error { return fn() }
+func (b Bundle) withDisk(fn func() error) error {
+	defer b.lockDisk()()
+
+	return fn()
+}
