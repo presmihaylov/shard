@@ -259,8 +259,6 @@ func named(flags *flag.FlagSet) bool {
 	return set
 }
 
-// envList refuses anything that is not an assignment, because a merge drops such an entry and
-// create would then report success with the variable absent.
 // cpuCount refuses a fraction by name, since vz hands a VM whole cpus and a rounded bound is not the one asked for.
 type cpuCount int
 
@@ -276,6 +274,8 @@ func (c *cpuCount) Set(value string) error {
 	return nil
 }
 
+// envList refuses anything that is not an assignment, because a merge drops such an entry and
+// create would then report success with the variable absent.
 type envList []string
 
 func (e *envList) String() string { return strings.Join(*e, ",") }
