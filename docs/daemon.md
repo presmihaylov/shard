@@ -410,10 +410,10 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
-| `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
+| `sandbox_not_paused` | 409 | resume or fork on a sandbox that is not paused |
 | `sandbox_failed` | 409 | any verb but a get or an `rm` on a create that ended `failed`; the message carries the `failed_reason`, and `rm` frees it |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
-| `no_snapshot` | 409 | resume or fork when the record names no snapshot |
+| `no_snapshot` | 409 | resume or fork on a paused sandbox whose record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |

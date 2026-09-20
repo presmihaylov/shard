@@ -95,6 +95,9 @@ source but its status and its state directory. Firecracker will copy a disk wher
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
+`fork` takes a paused source on every substrate: the snapshot is what the pause wrote, a resume runs
+on past it and keeps its name, so a running or stopped source is refused even when its record still
+names one.
 
 ### What vz does and does not do
 

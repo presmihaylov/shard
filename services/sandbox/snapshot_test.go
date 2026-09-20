@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -280,26 +281,35 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	}
 }
 
-// A fork reads the snapshot, so the source may be in any state that has one, the running one included.
-func TestForkTakesASourceInAnyStateThatHasASnapshot(t *testing.T) {
-	for _, state := range []models.State{models.StateRunning, models.StateStopped, models.StatePaused} {
+// A resume runs on past the snapshot and keeps its name, so a fork of a running or stopped source would copy a stale pause.
+func TestForkRefusesASourceThatIsNotPaused(t *testing.T) {
+	for _, state := range []models.State{models.StateRunning, models.StateStopped} {
+		r := &recorder{}
 		sb := pausedSandbox()
 		sb.State = state
-		svc, _ := newService(t, &recorder{}, sb)
+		svc, _ := newService(t, r, sb)
 
-		if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{}); err != nil {
-			t.Errorf("fork of a %s sandbox: %v", state, err)
+		_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
+		var refused *sandbox.StateError
+		if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotPaused || !strings.Contains(err.Error(), "pause it first") {
+			t.Errorf("fork of a %s sandbox with a snapshot returned %v, want a not-paused refusal", state, err)
+		}
+		if slices.Contains(r.calls, "repo.Create") {
+			t.Errorf("the refusal of a %s source came after a record was created", state)
 		}
 	}
 }
 
 func TestForkRefusesASourceWithNoSnapshot(t *testing.T) {
 	r := &recorder{}
-	svc, _ := newService(t, r, running())
+	sb := pausedSandbox()
+	sb.Snapshot = ""
+	svc, _ := newService(t, r, sb)
 
 	_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
-	if err == nil || !strings.Contains(err.Error(), "pause it first") {
-		t.Errorf("fork of a sandbox that was never paused returned %v, want a refusal that says so", err)
+	var refused *sandbox.StateError
+	if !errors.As(err, &refused) || refused.Code != models.CodeNoSnapshot {
+		t.Errorf("fork of a paused sandbox with no snapshot returned %v, want a no-snapshot refusal", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") {
 		t.Error("the refusal came after a record was created")
