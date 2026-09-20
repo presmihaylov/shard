@@ -21,6 +21,8 @@ cp packaging/systemd/shard.service /etc/systemd/system/
 systemctl enable --now shard
 ```
 
+On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as `docs/mac.md` says.
+
 ## What the daemon owns
 
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- shard daemon is a resident process, installed on purpose: no one-shot verb ever spawns it. The LaunchDaemon mirror of packaging/systemd/shard.service. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>shard.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/shard</string>
+		<string>daemon</string>
+	</array>
+	<!-- The root under /var/lib/shard belongs to this user, so nothing runs as root; docs/mac.md puts the name in. -->
+	<key>UserName</key>
+	<string>__USER__</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Restart=on-failure: a clean exit stays down, a crash comes back after ThrottleInterval, as RestartSec=1. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>1</integer>
+	<!-- KillMode=process: a sandbox outlives the daemon, so a stop or a restart ends the daemon and leaves every VM shim to be adopted. -->
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<!-- UMask=0077, as a decimal: a unix socket needs write to connect, so it must never sit at 0755 between listen and chmod. -->
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>StandardOutPath</key>
+	<string>/var/log/shard/daemon.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/shard/daemon.log</string>
+</dict>
+</plist>

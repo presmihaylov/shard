@@ -63,6 +63,34 @@ netstack terminates it, and the only things it can reach are the egress proxy an
 (`docs/egress.md`). So a `--policy` holds on a Mac the same as on Linux, and a sandbox cannot see
 your printer.
 
+## Keep it up
+
+A terminal that closes takes the daemon with it. To have launchd hold it instead, the LaunchDaemon
+in `packaging/launchd/shard.daemon.plist` is the mirror of the Linux unit: it starts the daemon at
+boot as your user, brings it back one second after a crash and not after a clean exit, and leaves
+every VM alone when the daemon stops, so a restart re-adopts them. The daemon writes to
+`/var/log/shard/daemon.log`. `__USER__` in the file is the account the root belongs to, so `sed` puts
+yours in:
+
+```
+curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.daemon.plist
+sudo install -d -m0755 -o "$USER" /var/log/shard
+sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/shard.daemon.plist >/dev/null
+sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
+```
+
+`launchctl print system/shard.daemon` shows it running, and `shard ls` answers in the same terminal.
+A daemon in a terminal must be gone first: two on one root refuse each other over `daemon.lock`. To
+take it out:
+
+```
+sudo launchctl bootout system/shard.daemon
+sudo rm /Library/LaunchDaemons/shard.daemon.plist
+```
+
+The bootout ends the daemon and nothing else: a running sandbox stays up until a daemon adopts it
+again, so `shard stop` each one first when the Mac is to be clean.
+
 ## What is different from Linux
 
 | | `vz` on a Mac | gVisor on Linux |
@@ -183,7 +211,8 @@ limactl shell shard sudo shard serve --listen :2376 \
 ```
 
 On a Linux host the two processes run from the systemd units in `packaging/systemd`, and the front
-runs unprivileged; that is the shape to copy for anything that stays up (`docs/daemon.md`).
+runs unprivileged; that is the shape to copy for anything that stays up (`docs/daemon.md`). The
+native daemon has its own, the LaunchDaemon under "Keep it up" above.
 
 ### The CLI on the Mac
 
