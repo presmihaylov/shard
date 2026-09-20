@@ -43,7 +43,8 @@ It owns the state; every other verb is a client of its socket and fails fast wit
 
 The daemon never binds TCP. A client on another host reaches it through `shard serve`, an
 unprivileged process that terminates TLS, checks a bearer token and passes the bytes to the socket;
-the CLI then takes `--remote https://box:2376 --token-file <path>`. See `docs/daemon.md`.
+the CLI then takes `--remote https://box:2376 --token-file <path>`. See `docs/daemon.md`. A Mac
+shard does not support, an Intel one or macOS 13, runs it inside a Linux VM as a workaround; `docs/mac.md`.
 
 It pulls the image, claims the record, allocates the network, creates the sandbox and starts the
 entrypoint. Then it prints the id and returns. It never attaches: the entrypoint runs as the child
