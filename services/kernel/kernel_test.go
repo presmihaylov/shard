@@ -205,7 +205,7 @@ func TestFromEnvNeedsBoth(t *testing.T) {
 	}
 }
 
-func TestEnsureLogsTheFetchAndTheVerifiedKernel(t *testing.T) {
+func TestEnsureLogsTheFetchAndEveryVerifiedKernel(t *testing.T) {
 	body := []byte("a kernel")
 	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum(body)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -230,8 +230,8 @@ func TestEnsureLogsTheFetchAndTheVerifiedKernel(t *testing.T) {
 	if _, err := s.Ensure(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("a cached kernel logged %q", out.String())
+	if got, want := out.String(), "kernel: verified "+k.Path+" sha256 "+sum(body)+"\n"; got != want {
+		t.Fatalf("a cached kernel logged %q, want %q", got, want)
 	}
 }
 

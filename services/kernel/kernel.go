@@ -124,7 +124,7 @@ func New(root string, opts ...Option) *Service {
 // kernel that changed on disk never boots.
 func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	if s.local != "" {
-		return verified(s.local, arch, s.localSHA256)
+		return s.verified(s.local, arch, s.localSHA256)
 	}
 
 	a, ok := artifacts[arch]
@@ -136,7 +136,7 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := os.Stat(path); err == nil {
-		return verified(path, arch, a.sha256)
+		return s.verified(path, arch, a.sha256)
 	}
 
 	url, err := URL(arch)
@@ -147,13 +147,8 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	if err := s.download(ctx, url, path, a.sha256); err != nil {
 		return Kernel{}, fmt.Errorf("download the guest kernel %s: %w", url, err)
 	}
-	k, err := verified(path, arch, a.sha256)
-	if err != nil {
-		return Kernel{}, err
-	}
-	s.log.Printf("kernel: verified %s sha256 %s", path, a.sha256)
 
-	return k, nil
+	return s.verified(path, arch, a.sha256)
 }
 
 // download fetches url into a sibling part file and renames it only after the hash matched.
@@ -196,7 +191,7 @@ func (s *Service) download(ctx context.Context, url, path, want string) error {
 }
 
 // verified hashes the file at path and returns it as a Kernel only when the hash is want.
-func verified(path, arch, want string) (Kernel, error) {
+func (s *Service) verified(path, arch, want string) (Kernel, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Kernel{}, fmt.Errorf("open the guest kernel: %w", err)
@@ -211,6 +206,8 @@ func verified(path, arch, want string) (Kernel, error) {
 	if got != want {
 		return Kernel{}, fmt.Errorf("%w for %s: got %s, want %s", ErrChecksum, path, got, want)
 	}
+
+	s.log.Printf("kernel: verified %s sha256 %s", path, got)
 
 	return Kernel{Path: path, Version: Version, Arch: arch, SHA256: got}, nil
 }
