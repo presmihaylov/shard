@@ -247,8 +247,9 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		p.mu.Lock()
 		m.started = m.started || event.Ready
 		p.mu.Unlock()
+		// The replayed exit is the guest's last, and the file reads its last line, so it always lands.
 		if event.Exit != nil {
-			if err := p.recordExit(m, *event.Exit); err != nil {
+			if err := supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit); err != nil {
 				return err
 			}
 		}
@@ -270,19 +271,6 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 	}
 
 	return nil
-}
-
-// recordExit lands a replayed exit once: an adopted shim's file holds it already, and a second line would count a second exit.
-func (p *Provider) recordExit(m *machine, exit models.ExitStatus) error {
-	_, found, err := bundle.ReadExitStatus(filepath.Join(m.dir, exitFile))
-	if err != nil {
-		return err
-	}
-	if found {
-		return nil
-	}
-
-	return supervisor.AppendExit(filepath.Join(m.dir, exitFile), exit)
 }
 
 // followLogs appends what the open logs connection carries to the log file, until the guest ends it.

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
@@ -40,19 +42,28 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
-	if _, err := m.client.Pause(); err != nil {
-		return fmt.Errorf("pause sandbox %s: %w", id, err)
+	info, err := m.client.State()
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %w", id, err)
+	}
+	// A pause that crashed before its record left the VM paused, and this one carries on from there.
+	if info.State != vz.StatePaused {
+		if _, err := m.client.Pause(); err != nil {
+			return fmt.Errorf("pause sandbox %s: %w", id, err)
+		}
 	}
 	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
 		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
-	// The record says paused before the snapshot is in place, so a crash between the two leaves a resume that ends the leftover shim.
+	// The record says paused before the swap, so a crash between the two leaves a resume that installs the staged snapshot and ends the shim.
 	r.Paused = true
+	r.Pauses++
 	if err := writeRecord(stateDir, r); err != nil {
 		return abandon(m, tmp, err)
 	}
 	if err := swapDir(tmp, dir); err != nil {
 		r.Paused = false
+		r.Pauses--
 
 		return abandon(m, tmp, errors.Join(fmt.Errorf("install the snapshot of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
 	}
@@ -68,7 +79,7 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, snapshotDiskFile)); err != nil {
 		return fmt.Errorf("copy the disk: %w", err)
 	}
-	snap := snapshot{MachineID: r.MachineID, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
+	snap := snapshot{MachineID: r.MachineID, Pause: r.Pauses + 1, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
 	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
 		return err
 	}
@@ -87,6 +98,30 @@ func abandon(m *machine, tmp string, err error) error {
 	return errors.Join(err, resumeErr, os.RemoveAll(tmp))
 }
 
+// installStaged finishes a pause that crashed after its record: a staged snapshot newer than the one in dir goes in, an older one goes.
+func installStaged(dir string) error {
+	tmp := dir + ".tmp"
+	staged, err := readSnapshot(tmp)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.RemoveAll(tmp)
+	}
+	if err != nil {
+		return err
+	}
+	current, err := readSnapshot(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err == nil && current.Pause >= staged.Pause {
+		return os.RemoveAll(tmp)
+	}
+	if err := swapDir(tmp, dir); err != nil {
+		return fmt.Errorf("install the staged snapshot: %w", err)
+	}
+
+	return nil
+}
+
 // Resume restores the save in dir over the sandbox's own disk, which the snapshot's copy replaces first.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if !p.cfg.SaveRestore {
@@ -98,6 +133,9 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 	if !r.Paused {
 		return fmt.Errorf("sandbox %s is not paused on %s", id, Name)
+	}
+	if err := installStaged(dir); err != nil {
+		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 	snap, err := readSnapshot(dir)
 	if err != nil {

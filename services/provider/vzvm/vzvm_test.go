@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -424,5 +425,96 @@ func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
 	}
 	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "copy the disk") {
 		t.Fatalf("a second Pause = %v, want the copy failure again, not an already-paused refusal", err)
+	}
+}
+
+// A pause that crashed after its record and before its swap leaves the staged snapshot beside the old one; Resume installs the newer and ends the shim.
+func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+
+	// The crash state by hand: a complete second snapshot in the staging directory, a record that says paused, and the shim still up.
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := snap + ".tmp"
+	if err := os.CopyFS(staged, os.DirFS(snap)); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 2)
+	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
+	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
+
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
+		t.Fatalf("the snapshot in place is pause %v, want 2, the staged one", got)
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging directory is still there: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || !status.Alive() {
+		t.Fatalf("Status after the recovering Resume = %+v, %v; want alive", status, err)
+	}
+
+	// An older staged snapshot, left by a swap whose cleanup failed, goes, and the one in place stays.
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.CopyFS(staged, os.DirFS(snap)); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 1)
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 3.0 {
+		t.Fatalf("the snapshot in place is pause %v, want 3", got)
+	}
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the stale staging directory is still there: %v", err)
+	}
+}
+
+func readJSON(t *testing.T, path string) map[string]any {
+	t.Helper()
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(blob, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	return m
+}
+
+func setJSON(t *testing.T, path, key string, value any) {
+	t.Helper()
+	m := readJSON(t, path)
+	m[key] = value
+	blob, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

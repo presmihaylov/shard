@@ -144,11 +144,14 @@ type record struct {
 	Run       supervisor.RunSpec `json:"run"`
 	// Paused says the last verb was a pause: the VM is saved into the snapshot and its shim is gone.
 	Paused bool `json:"paused,omitempty"`
+	// Pauses counts them, so a snapshot a crashed pause staged is told from the one it meant to replace.
+	Pauses int `json:"pauses,omitempty"`
 }
 
 // snapshot is snapshot.json: what a restore of the saved state beside it must reuse.
 type snapshot struct {
 	MachineID string             `json:"machine_id"`
+	Pause     int                `json:"pause"`
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
