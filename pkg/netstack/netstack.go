@@ -44,6 +44,10 @@ type Config struct {
 	Redirects map[uint16]uint16
 	// Drops receives every frame the stack refuses, on the link's own goroutine; nil keeps the refusals silent.
 	Drops func(Drop)
+	// Judge rules on a TCP or UDP flow off the address to a port no listener serves; nil keeps every such flow closed.
+	Judge func(Flow) Verdict
+	// Dial opens the host side of a flow the judge allowed; nil dials from the host's own stack.
+	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Stack is one userspace stack over any number of links, each a guest of its own.
@@ -54,6 +58,8 @@ type Stack struct {
 	mu     sync.Mutex
 	nextID tcpip.NICID
 	links  map[tcpip.NICID]*Link
+	// active counts the flows admitted across every link, against maxStackFlows.
+	active int
 	closed bool
 	// tcpPorts and udpPorts are what the listeners opened, which is all a guest may reach on the address.
 	tcpPorts map[uint16]bool
@@ -86,7 +92,12 @@ func New(cfg Config) (*Stack, error) {
 
 	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects), false)
 
-	return &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}, nil
+	st := &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}
+	if cfg.Judge != nil {
+		st.forward()
+	}
+
+	return st, nil
 }
 
 // Address is the one address the stack answers for.
@@ -99,10 +110,18 @@ type Link struct {
 	guest   netip.Addr
 	frames  io.ReadWriteCloser
 	ep      *channel.Endpoint
+	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
 	pumpErr error
 	limiter *rate.Limiter
+	// flows are the two sides of every forwarded connection the link carries, and flowErr the first fault among them.
+	flows map[io.Closer]struct{}
+	// active counts the flows admitted on this link, against maxLinkFlows.
+	active  int
+	flowErr error
+	splices sync.WaitGroup
+	closing bool
 }
 
 // Attach puts a guest on the stack: one NIC over frames, one datagram per Ethernet frame, the address on it, and a route to guest alone.
@@ -136,9 +155,18 @@ func (s *Stack) Attach(frames io.ReadWriteCloser, guest netip.Addr) (*Link, erro
 	}
 	// A route to the guest alone: a reply finds its NIC, and any other destination has no route and drops.
 	s.stack.AddRoute(tcpip.Route{Destination: hostSubnet(guest), NIC: id})
+	if s.cfg.Judge != nil {
+		// A forwarded flow is to an address the NIC does not hold, so the NIC must take it in and answer from it.
+		if err := s.stack.SetPromiscuousMode(id, true); err != nil {
+			return nil, errors.Join(fmt.Errorf("open nic %d to forwarded flows: %s", id, err), s.remove(id))
+		}
+		if err := s.stack.SetSpoofing(id, true); err != nil {
+			return nil, errors.Join(fmt.Errorf("let nic %d answer from a forwarded address: %s", id, err), s.remove(id))
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, cancel: cancel, done: make(chan struct{}), limiter: newLimiter()}
+	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, ctx: ctx, cancel: cancel, done: make(chan struct{}), limiter: newLimiter(), flows: map[io.Closer]struct{}{}}
 	s.links[id] = l
 	go l.pump(ctx)
 
@@ -151,14 +179,14 @@ func (l *Link) Guest() netip.Addr { return l.guest }
 // Close takes the guest off the stack and closes its frames; a pump that failed reports why.
 func (l *Link) Close() error {
 	l.cancel()
-	closeErr := l.frames.Close()
+	closeErr := errors.Join(l.frames.Close(), l.closeFlows())
 	<-l.done
 
 	l.stack.mu.Lock()
 	defer l.stack.mu.Unlock()
 	delete(l.stack.links, l.id)
 
-	return errors.Join(l.stack.remove(l.id), closeErr, l.pumpErr)
+	return errors.Join(l.stack.remove(l.id), closeErr, l.pumpErr, l.flowErr)
 }
 
 func (s *Stack) remove(id tcpip.NICID) error {

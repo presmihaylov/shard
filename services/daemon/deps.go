@@ -44,14 +44,16 @@ type deps struct {
 	// needs another one calls its locked form, because a Mutex taken twice by one goroutine deadlocks.
 	mu sync.Mutex
 
-	imageSvc    *image.Service
-	repoSvc     *sandboxstate.Repository
-	netSvc      hostNetwork
-	stackSvc    *netstack.Stack
-	providerSvc models.Provider
-	secretSvc   *secret.Store
-	policySvc   *egress.Store
-	runnerSvc   *runsc.Runner
+	imageSvc *image.Service
+	repoSvc  *sandboxstate.Repository
+	netSvc   hostNetwork
+	// addressesSvc is netSvc on a VM host, kept in its own type because the stack asks it to judge.
+	addressesSvc *network.Addresses
+	stackSvc     *netstack.Stack
+	providerSvc  models.Provider
+	secretSvc    *secret.Store
+	policySvc    *egress.Store
+	runnerSvc    *runsc.Runner
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.
@@ -118,7 +120,7 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// A VM host has no bridge: the addresses are leased and the stack answers for the gateway.
 	if d.providerName() == vzvm.Name {
-		svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root})
+		svc, err := d.addressesLocked()
 		if err != nil {
 			return nil, err
 		}
@@ -167,10 +169,34 @@ func (d *deps) providerLocked() (models.Provider, error) {
 	return d.providerSvc, nil
 }
 
+// addressesLocked is the VM host's network: leases, and the judge the stack asks with the same chains the host rules compile from.
+func (d *deps) addressesLocked() (*network.Addresses, error) {
+	if d.addressesSvc != nil {
+		return d.addressesSvc, nil
+	}
+
+	source, err := d.egressLocked()
+	if err != nil {
+		return nil, err
+	}
+	svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root, Egress: source})
+	if err != nil {
+		return nil, err
+	}
+	d.addressesSvc = svc
+
+	return d.addressesSvc, nil
+}
+
 // stackLocked is the one userspace stack every VM's frames end in, and the front the proxy listens on.
 func (d *deps) stackLocked() (*netstack.Stack, error) {
 	if d.stackSvc != nil {
 		return d.stackSvc, nil
+	}
+
+	addresses, err := d.addressesLocked()
+	if err != nil {
+		return nil, err
 	}
 
 	gateway, err := network.Gateway(network.Config{Root: d.cfg.Root})
@@ -183,11 +209,12 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
 	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
-	// The host chains dnat a guest's 80 and 443 onto the proxy, and the stack does the same with its own table.
+	// The host chains dnat a guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
 		Address:   gateway,
 		Redirects: map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
 		Drops:     drops.report,
+		Judge:     addresses.Judge,
 	})
 	if err != nil {
 		return nil, err

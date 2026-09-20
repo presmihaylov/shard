@@ -131,9 +131,9 @@ write and to debug, and a log line and an exec byte fight for it.
 The VM's one network device is a `VZFileHandleNetworkDeviceAttachment` over a unix datagram
 socketpair (SHARD-217). The shim creates the pair, gives the guest end to the framework, and hands
 the host end to the daemon on the `network` verb of the shim socket (`SCM_RIGHTS`). The daemon
-terminates the frames in `pkg/netstack`, a userspace stack (gVisor's) that answers for exactly two
-addresses, the guest's own and the gateway, and drops everything else: forwarding is off, so a frame
-for the LAN, the Mac or the internet is dropped where it arrives. One stack serves the daemon; each
+terminates the frames in `pkg/netstack`, a userspace stack (gVisor's) that answers for the gateway
+and forwards nothing by itself: a flow to any other address is dialed from the daemon only when the
+egress judge allows it, and is dropped where it arrives otherwise. One stack serves the daemon; each
 VM is one link on it, with the gateway address on its NIC and a `/32` route back to the guest, so a
 guest never sees another guest's frames. The proxy (30080, 30443) and the SHARD-169 resolver (53)
 listen on the stack by port alone, the way they listen on the bridge gateway on Linux, and every
@@ -141,12 +141,22 @@ frame carries the guest address the SHARD-216 readdress gave it, which is how th
 sandbox from the next. The stack's NAT table redirects a guest's TCP 80 and 443 onto the proxy
 wherever the guest dialed them, the same `dnat` the host chains apply on Linux, so the Host header
 and the SNI reach the proxy unchanged. Every other frame is judged before the stack sees it: ARP,
-the redirected ports and a served port on the gateway pass, and the rest is dropped and written into
-the sandbox's egress log with the shape of a host drop, `rule` `local` for the gateway's own ports,
-`private` for the private ranges and `stack` for everything else, at the same two a second with a
-burst of ten the chains log at. No packet reaches the Mac, the LAN or the internet except through
-the proxy, so the proxy is the policy of record on this substrate, and `docs/egress.md` has the
-per-substrate row.
+the redirected ports and a served port on the gateway pass; a TCP or UDP flow to any other address
+goes to the stack's forwarders, where the daemon's judge rules on it with the same compiled chains
+the Linux ruleset is built from (SHARD-246). The judge answers as the `egress` chain does: the
+private floor drops first, a sandbox without a policy reaches everything else, a sandbox with one
+gets its rules in order and the default drop after them. An allowed flow is dialed from the daemon
+and spliced to the guest, with a TCP half-close carried across and a UDP flow aged out after thirty
+idle seconds; a refused one gets no answer, as a netfilter drop gives none. Every drop is written
+into the sandbox's egress log with the shape of a host drop: `rule` is the rule that refused a
+judged flow, `private` for the floor, `local` for the gateway's own ports and for any address the
+Mac owns, which the input chain refuses on Linux, `unapplied` for a flow that arrived before the
+daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow past the
+1024 a sandbox may hold open or the 4096 the stack may, and `stack` for a frame the forwarders
+never take, ICMP, a fragment, or a port the daemon serves reached on an address other than the
+gateway. The bound is the same two a second with a burst of ten the chains log at. Nothing
+reaches the Mac, the LAN or the internet except through the proxy or a flow the policy allowed, and
+`docs/egress.md` has the per-substrate row.
 
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state

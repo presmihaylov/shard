@@ -112,8 +112,9 @@ guest `shard-init` of your own instead. `--memory` defaults to 512 MB and is a h
 leases each guest an address from the pool, terminates its frames in a userspace stack that answers
 for the gateway alone, and serves the proxy and the resolver on that stack. The stack's own NAT
 table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
-chains do on Linux, so a guest reaches the proxy, `gateway:53` and nothing else; every other frame
-is dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
+chains do on Linux, and every other TCP or UDP flow is judged by the same compiled chains the host
+ruleset is built from, so a policy means the same on both hosts (SHARD-246); a refused flow is
+dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
 The three resource bounds below hold on the Linux substrates; `vz` has no host cgroup, and each
 section says what the VM does instead.

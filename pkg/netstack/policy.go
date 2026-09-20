@@ -19,6 +19,8 @@ type Drop struct {
 	// Protocol is tcp, udp, icmp or the IP protocol number as text; Port is the transport destination, or 0 without one.
 	Protocol string
 	Port     int
+	// Rule names the policy rule that refused a judged flow, and is empty for a frame the stack refused on its own.
+	Rule string
 }
 
 // The host chains log two drops a second with a burst of ten, and a link reports at the same bound.
@@ -27,7 +29,7 @@ const (
 	dropBurst = 10
 )
 
-// judge says whether the stack takes the frame: from the guest, and ARP, a redirected port or a served port on the address, nothing else.
+// judge says whether the stack takes the frame: from the guest, and ARP, a redirected port, a served port on the address, or a flow the judge gets to rule on.
 func (l *Link) judge(frame []byte) (Drop, bool) {
 	s := l.stack
 	s.mu.Lock()
@@ -51,7 +53,12 @@ func (l *Link) judge(frame []byte) (Drop, bool) {
 			return Drop{}, true
 		}
 	}
-	if ip.DestinationAddress() == tcpip.AddrFrom4(s.cfg.Address.As4()) && s.serves(proto, port) {
+	onAddress := ip.DestinationAddress() == tcpip.AddrFrom4(s.cfg.Address.As4())
+	if onAddress && s.serves(proto, port) {
+		return Drop{}, true
+	}
+	// A served port off the address stays closed here: the listener binds the port alone and would take the flow before the judge.
+	if !onAddress && s.forwardable(proto, port) {
 		return Drop{}, true
 	}
 
