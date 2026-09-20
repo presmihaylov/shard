@@ -767,3 +767,46 @@ func TestNoAmbientSetWithoutADrop(t *testing.T) {
 		})
 	}
 }
+
+// A VM's shard-init has no PATH of its own, so argv[0] resolves on the entrypoint's PATH and never on ours.
+func TestLookPathUsesTheEntrypointsPath(t *testing.T) {
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a fixture the test executes
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/nonexistent")
+
+	got, err := lookPath(entrypoint{argv: []string{"tool"}, env: []string{"HOME=/", "PATH=/nonexistent:" + dir}})
+	if err != nil || got != tool {
+		t.Fatalf("lookPath = %q, %v; want %q", got, err, tool)
+	}
+	if _, err := lookPath(entrypoint{argv: []string{"tool"}, env: []string{"PATH=/nonexistent"}}); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("a missing tool resolved: %v", err)
+	}
+	if got, err := lookPath(entrypoint{argv: []string{tool}}); err != nil || got != tool {
+		t.Fatalf("an absolute argv[0] = %q, %v", got, err)
+	}
+}
+
+// ForkExec changes into the workdir before the exec, so a relative argv[0] and a relative PATH entry mean the workdir.
+func TestLookPathResolvesRelativeNamesAgainstTheWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", "server"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a fixture the test executes
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+
+	if got, err := lookPath(entrypoint{argv: []string{"./bin/server"}, dir: dir}); err != nil || got != "./bin/server" {
+		t.Fatalf("a relative argv[0] = %q, %v", got, err)
+	}
+	if got, err := lookPath(entrypoint{argv: []string{"server"}, env: []string{"PATH=/nonexistent:bin"}, dir: dir}); err != nil || got != "bin/server" {
+		t.Fatalf("a relative PATH entry = %q, %v", got, err)
+	}
+	if _, err := lookPath(entrypoint{argv: []string{"./bin/server"}, dir: t.TempDir()}); err == nil {
+		t.Fatal("a name outside the workdir resolved")
+	}
+}

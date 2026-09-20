@@ -53,7 +53,8 @@ of `shard-init`, and the sandbox outlives it. `--env`, `--workdir`, `--user`, `-
 `--user` sets the user of the entrypoint, never of the supervisor. PID 1 stays privileged so it can
 always record how the entrypoint ended.
 
-`SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init`.
+`SHARD_INIT_PATH` names the supervisor binary, and defaults to `/usr/local/bin/shard-init` on
+Linux; a Mac daemon carries its own guest build and installs it under `<root>/vz`.
 
 `--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
 host, and the egress proxy puts it into a request on its way to the granted destination. See

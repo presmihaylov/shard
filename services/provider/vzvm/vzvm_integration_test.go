@@ -3,8 +3,10 @@
 package vzvm_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -31,11 +33,15 @@ const testImage = "alpine:3.20"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
 
+const redirectPort = 30080
+
 // vmHarness is the provider over real VMs: the shim, the kernel, a linux/arm64 shard-init and the image's disk.
 type vmHarness struct {
 	provider *vzvm.Provider
 	root     string
 	image    image.Image
+	stack    *netstack.Stack
+	drops    chan netstack.Drop
 	next     atomic.Int64
 }
 
@@ -67,19 +73,24 @@ func newVMHarness(t *testing.T) *vmHarness {
 		t.Skipf("cannot pull %s: %v", testImage, err)
 	}
 
-	stack, err := netstack.New(netstack.Config{Address: gateway})
+	// The daemon's redirect of 80 onto the proxy, here onto a listener the tests serve.
+	h := &vmHarness{root: root, image: img, drops: make(chan netstack.Drop, 64)}
+	h.stack, err = netstack.New(netstack.Config{
+		Address:   gateway,
+		Redirects: map[uint16]uint16{80: redirectPort},
+		Drops:     func(d netstack.Drop) { h.drops <- d },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { stack.Close() })
+	t.Cleanup(func() { h.stack.Close() })
 
-	h := &vmHarness{root: root, image: img}
 	h.provider, err = vzvm.New(vzvm.Config{
 		Shim:        shimBinary(t),
 		Kernel:      kernel,
 		Init:        guestInit(t),
 		Dir:         root,
-		Stack:       stack,
+		Stack:       h.stack,
 		Dirs:        h.stateDir,
 		SaveRestore: vz.HostSaveRestore() && !sessionLocked(t),
 	})
@@ -139,6 +150,65 @@ func TestConformanceOnVMs(t *testing.T) {
 	})
 }
 
+// A guest's request to an outside address on 80 lands on the redirected port, Host header intact, and the stack drops the rest and says so.
+func TestAGuestReachesTheRedirectedPortAndNothingElse(t *testing.T) {
+	h := newVMHarness(t)
+
+	listener, err := h.stack.ListenTCP(redirectPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	hosts := make(chan string, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		request, _ := http.ReadRequest(bufio.NewReader(conn))
+		hosts <- request.Host
+		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\nproxied\n")
+	}()
+
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "wget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	script := "wget -qO- -T 10 http://93.184.216.34/; wget -qO- -T 3 http://93.184.216.34:8080/ 2>&1"
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", script}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if !strings.HasPrefix(string(read), "proxied") {
+		t.Fatalf("the guest read %q through port 80, want the listener's body", read)
+	}
+	if host := <-hosts; host != "93.184.216.34" {
+		t.Fatalf("the listener saw Host %q, want the address the guest dialed", host)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case drop := <-h.drops:
+			if drop.Guest == spec.Network.Address.Addr() && drop.Protocol == "tcp" && drop.Port == 8080 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no drop reported for the guest's dial of 8080")
+		}
+	}
+}
+
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
@@ -159,6 +229,8 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	fork := h.newSpec(t)
+	fork.Name = "twin"
+	fork.Network.Nameservers = []netip.Addr{gateway}
 	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +253,19 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 			t.Fatalf("%s counted %q after the restore, want a count the pause froze", id, written)
 		}
 		t.Logf("%s: %s", id, strings.TrimSpace(string(written)))
+	}
+	// The fork is a new sandbox: it answers to its own name and resolves through its own lease, not the source's.
+	out, err := os.CreateTemp(t.TempDir(), "resolver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), fork.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "hostname; cat /etc/resolv.conf"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatal(err)
+	}
+	written, _ := os.ReadFile(out.Name())
+	if want := "twin\nnameserver " + gateway.String() + "\n"; string(written) != want {
+		t.Fatalf("the fork's hostname and resolv.conf = %q, want %q", written, want)
 	}
 }
 

@@ -1,6 +1,7 @@
 BIN      := bin/shard
 SHARD_INIT_BIN := bin/shard-init
 VZ_SHIM_BIN := pkg/vzshim/shim/shard-vz-shim
+VZ_INIT_BIN := pkg/vzshim/shim/shard-init
 PKG      := github.com/presmihaylov/shard
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -X main.version=$(VERSION)
@@ -20,7 +21,7 @@ ARCH ?= arm64
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
 
 all: check build
 
@@ -44,8 +45,12 @@ build-shard-vz-shim:
 	go build -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
 	codesign --sign - --force --entitlements pkg/vzshim/shim/entitlements.plist $(VZ_SHIM_BIN)
 
-# The Mac build: cgo over the framework never cross-compiles, and the daemon carries the shim it will install and sign.
-build-darwin: build-shard-vz-shim
+# A VM boots the host's arch, so the guest init is linux on this Mac's arch, and it lands where pkg/vzshim embeds it.
+build-shard-vz-init:
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -o $(VZ_INIT_BIN) ./cmd/shard-init
+
+# The Mac build: cgo over the framework never cross-compiles, and the daemon carries the shim and the guest init it will install.
+build-darwin: build-shard-vz-shim build-shard-vz-init
 	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(BIN)-darwin-$(shell go env GOARCH) ./cmd/shard
 
 test:
@@ -116,7 +121,7 @@ vuln:
 check: fmt-check vet lint test e2e-test
 
 clean:
-	rm -rf bin $(VZ_SHIM_BIN)
+	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)
 
 # One guest kernel, built in the pinned amd64 image so the bytes match CI wherever it runs (SHARD-232).
 kernel:

@@ -148,7 +148,23 @@ func applyAddress(a supervisor.Address) error {
 		return fmt.Errorf("bring %s up: %w", a.Interface, err)
 	}
 
-	return setDefaultRoute(fd, a.Interface, gateway)
+	if err := setDefaultRoute(fd, a.Interface, gateway); err != nil {
+		return err
+	}
+
+	return writeResolverFiles(a)
+}
+
+// writeResolverFiles is what the bundle writes into an upper layer on Linux; a VM's disk is the guest's alone, so the guest writes it.
+func writeResolverFiles(a supervisor.Address) error {
+	if a.Hostname != "" {
+		// runsc sets the hostname from the OCI spec; in a VM the kernel keeps its build-time default until the guest sets one.
+		if err := unix.Sethostname([]byte(a.Hostname)); err != nil {
+			return fmt.Errorf("set the hostname %q: %w", a.Hostname, err)
+		}
+	}
+
+	return writeResolverFilesIn("/etc", a)
 }
 
 func ifreqAddr(fd int, name string, request uint, addr net.IP) error {

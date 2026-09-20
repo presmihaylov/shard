@@ -3,6 +3,7 @@
 package vzshim
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,36 @@ func embedded(t *testing.T) {
 	t.Helper()
 	if !Embedded() {
 		t.Skip("this test binary carries no shim: run make build-shard-vz-shim first")
+	}
+}
+
+// The guest init lands beside the shim, unsigned, and a second install of the same build leaves it be.
+func TestTheGuestInitInstallsOnce(t *testing.T) {
+	if _, err := fs.Stat(shimFS, "shim/"+initName); err != nil {
+		t.Skip("this test binary carries no guest init: run make build-darwin first")
+	}
+	dir := t.TempDir()
+
+	init, err := InstallInit(dir)
+	if err != nil {
+		t.Fatalf("InstallInit: %v", err)
+	}
+	first, err := os.Stat(init)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("the guest init is %v, want executable", first.Mode())
+	}
+	if again, err := InstallInit(dir); err != nil || again != init {
+		t.Fatalf("second InstallInit: %s, %v", again, err)
+	}
+	second, err := os.Stat(init)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ModTime().Equal(first.ModTime()) {
+		t.Fatal("the second InstallInit rewrote an init that had not changed")
 	}
 }
 

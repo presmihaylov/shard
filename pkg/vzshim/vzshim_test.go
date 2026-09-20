@@ -2,6 +2,7 @@ package vzshim
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,15 @@ func TestABinaryWithoutTheShimSaysSoInsteadOfInstallingNothing(t *testing.T) {
 	}
 	if _, err := Install(t.TempDir()); !errors.Is(err, ErrNoShim) {
 		t.Fatalf("Install without a shim: %v", err)
+	}
+}
+
+func TestABinaryWithoutTheGuestInitSaysSo(t *testing.T) {
+	if _, err := fs.Stat(shimFS, "shim/"+initName); err == nil {
+		t.Skip("this test binary carries the guest init")
+	}
+	if _, err := InstallInit(t.TempDir()); !errors.Is(err, ErrNoInit) {
+		t.Fatalf("InstallInit without an init: %v", err)
 	}
 }
 

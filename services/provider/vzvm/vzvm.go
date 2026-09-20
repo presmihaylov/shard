@@ -138,6 +138,9 @@ type record struct {
 	// Address is the guest's prefix and Gateway the stack's address; empty boots the VM without a network.
 	Address string `json:"address,omitempty"`
 	Gateway string `json:"gateway,omitempty"`
+	// Nameservers and Hostname are the resolver files the guest writes itself, as a VM has no upper layer.
+	Nameservers []string `json:"nameservers,omitempty"`
+	Hostname    string   `json:"hostname,omitempty"`
 	// RootFS is the image tree an exec resolves a named user against.
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`

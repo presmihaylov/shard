@@ -197,6 +197,8 @@ const (
 	RuleMissing = "missing"
 	RuleResolve = "resolve"
 	RuleIPv6    = "ipv6"
+	// RuleStack is a VM host's drop: the frames end in the daemon, so nothing a policy allows leaves except through the proxy.
+	RuleStack = "stack"
 )
 
 // LogPrefix starts every line the chains write into the kernel ring, so shard logs can pick them out.

@@ -189,14 +189,16 @@ sends is dropped and logged. IPv6 support is a later addition, not a design limi
 | substrate | the table | what leaves the sandbox |
 |---|---|---|
 | gVisor, Sysbox, runc | host netfilter, one chain per sandbox with a policy | what the policy allows; 80 and 443 through the proxy when fronted |
-| Virtualization.framework | none: the frames end in `pkg/netstack` inside the daemon | the proxy on 30080 and 30443, the resolver on 53, nothing else |
+| Virtualization.framework | the NAT table of `pkg/netstack` inside the daemon | 80 and 443 through the proxy, the resolver on 53, nothing else |
 
 On macOS there is no host table and no packet path off the daemon: the guest's frames terminate in a
-userspace stack that answers for the gateway address alone and drops the rest, so every sandbox is
-fronted and a port the proxy does not serve is closed. The rules a policy compiles still judge each
-request in the proxy, so a policy means the same thing on both; the difference is that on macOS an
-allowed destination on a port other than 80 or 443 is unreachable, where on Linux the host chain
-would pass it. See `docs/provider-vz.md`.
+userspace stack that answers for the gateway address alone, redirects 80 and 443 onto the proxy the
+way the host chains do, and drops the rest, so every sandbox is fronted and a port the proxy does
+not serve is closed. A drop is written into the sandbox's log as the stack refuses the frame, with
+`source` `host` and `rule` `local`, `private` or `stack`, so `shard logs --egress` reads the same on
+both hosts. The rules a policy compiles still judge each request in the proxy, so a policy means the
+same thing on both; the difference is that on macOS an allowed destination on a port other than 80
+or 443 is unreachable, where on Linux the host chain would pass it. See `docs/provider-vz.md`.
 
 ## A policy change is immediate
 
@@ -225,8 +227,8 @@ There are three sources, and the daemon writes all of them into the one file,
   the file, within a second of the drop. A read never touches the ring.
 
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
-prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`, `missing` and
-`resolve`. A packet the guest sent to the host's own address carries `local`: the host takes the
+prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`, `missing`, `resolve`
+and, on a VM host, `stack`. A packet the guest sent to the host's own address carries `local`: the host takes the
 proxy ports and drops the rest, so that drop is logged like any other. An IPv6 packet carries
 `ipv6`, and is named by the port it died on rather than by its address.
 

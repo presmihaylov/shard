@@ -20,5 +20,6 @@ coverage.*
 # Local Claude Code worktrees, one per in-flight ticket
 /.claude/worktrees/
 
-# The shim binary is build output; pkg/vzshim embeds it from here
+# The shim and the guest init are build output; pkg/vzshim embeds them from here
 /pkg/vzshim/shim/shard-vz-shim
+/pkg/vzshim/shim/shard-init
