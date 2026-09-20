@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -181,6 +182,20 @@ func TestParseCreateRejections(t *testing.T) {
 	for name, args := range cases {
 		if _, err := parseCreate(args); err == nil {
 			t.Errorf("parseCreate(%s) returned no error", name)
+		}
+	}
+}
+
+func TestParseCreateNamesAFractionalCPUBound(t *testing.T) {
+	for _, value := range []string{"0.5", "1.0"} {
+		_, err := parseCreate([]string{"--cpus", value, "alpine:3.20"})
+		if err == nil {
+			t.Fatalf("parseCreate(--cpus %s) returned no error", value)
+		}
+		for _, want := range []string{"-cpus", value, "whole number", "never rounded"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("parseCreate(--cpus %s) = %q, want %q in it", value, err, want)
+			}
 		}
 	}
 }

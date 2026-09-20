@@ -149,8 +149,10 @@ fires. A killed entrypoint is an exit the supervisor records, the same as any ot
 the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
-of unbounded. On `vz` the count is the VM's virtual CPUs, not a quota: `--cpus 0` gives it one per
-host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`, refused outside the host's range.
+of unbounded, and a fraction such as `0.5` with an error that names it, because a VM gets whole CPUs
+and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
+`--cpus 0` gives it one per host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`,
+refused outside the host's range.
 
 ## What the pids bound means
 
