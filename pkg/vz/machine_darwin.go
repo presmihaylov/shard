@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -230,7 +229,7 @@ func memoryRange() Range {
 
 func cpus(n uint) uint {
 	if n == 0 {
-		return DefaultCPUs(runtime.NumCPU(), cpuRange())
+		return HostCPUs()
 	}
 
 	return n

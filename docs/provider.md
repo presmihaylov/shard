@@ -150,7 +150,7 @@ the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every 
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
 of unbounded. On `vz` the count is the VM's virtual CPUs, not a quota: `--cpus 0` gives it one per
-host CPU, and a positive `N` gives it `N`, refused outside the host's range.
+host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`, refused outside the host's range.
 
 ## What the pids bound means
 

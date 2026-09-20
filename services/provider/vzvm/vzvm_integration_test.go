@@ -22,7 +22,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -356,8 +355,7 @@ func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
 }
 
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
-// The framework's ceiling is the host count on every Mac it runs on, so the unbounded default lands there.
-func TestAnUnboundedCPUCountIsEveryHostCPU(t *testing.T) {
+func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	h := newVMHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -376,8 +374,8 @@ func TestAnUnboundedCPUCountIsEveryHostCPU(t *testing.T) {
 		t.Fatalf("Exec: %v", err)
 	}
 	read, _ := os.ReadFile(out.Name())
-	if got := strings.TrimSpace(string(read)); got != strconv.Itoa(runtime.NumCPU()) {
-		t.Fatalf("the guest sees %s cpus, want the host's %d", got, runtime.NumCPU())
+	if got, want := strings.TrimSpace(string(read)), strconv.FormatUint(uint64(vz.HostCPUs()), 10); got != want {
+		t.Fatalf("the guest sees %s cpus, want the host's %s", got, want)
 	}
 }
 
