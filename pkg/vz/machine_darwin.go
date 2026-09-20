@@ -227,10 +227,9 @@ func memoryRange() Range {
 	return Range{Min: vz.VirtualMachineConfigurationMinimumAllowedMemorySize(), Max: vz.VirtualMachineConfigurationMaximumAllowedMemorySize()}
 }
 
-// The cpu default is one, the smallest the framework allows.
 func cpus(n uint) uint {
 	if n == 0 {
-		return uint(cpuRange().Min)
+		return HostCPUs()
 	}
 
 	return n

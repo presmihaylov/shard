@@ -16,7 +16,7 @@ type Config struct {
 	Kernel  string `json:"kernel"`
 	Initrd  string `json:"initrd,omitempty"`
 	Cmdline string `json:"cmdline"`
-	// Zero CPUs keeps the framework's default and zero Memory is DefaultMemory; a value outside the range is refused, never clamped.
+	// Zero CPUs is every host CPU the framework allows and zero Memory is DefaultMemory; a value outside the range is refused, never clamped.
 	CPUs   uint   `json:"cpus"`
 	Memory uint64 `json:"memory"`
 	Disk   string `json:"disk,omitempty"`
@@ -50,6 +50,11 @@ const (
 type Range struct {
 	Min uint64
 	Max uint64
+}
+
+// DefaultCPUs is the host's count held inside the range, so --cpus 0 is every host CPU the framework can give.
+func DefaultCPUs(host int, allowed Range) uint {
+	return uint(min(max(uint64(max(host, 0)), allowed.Min), allowed.Max)) //nolint:gosec // a cpu count fits
 }
 
 // CheckCPUs refuses an explicit count outside the range; zero asks for the default.

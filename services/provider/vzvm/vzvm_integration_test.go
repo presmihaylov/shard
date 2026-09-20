@@ -356,6 +356,31 @@ func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), leaf
 }
 
+// The unbounded default is the host count held inside the framework's range, the same count HostCPUs reports.
+func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "nproc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"nproc"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if got, want := strings.TrimSpace(string(read)), strconv.FormatUint(uint64(vz.HostCPUs()), 10); got != want {
+		t.Fatalf("the guest sees %s cpus, want the host's %s", got, want)
+	}
+}
+
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)

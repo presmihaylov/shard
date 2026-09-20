@@ -39,6 +39,15 @@ func TestSaveRestoreFailsClosedOnEveryRowOfTheMatrix(t *testing.T) {
 	}
 }
 
+func TestTheCPUDefaultIsTheHostCountHeldInsideTheRange(t *testing.T) {
+	allowed := Range{Min: 1, Max: 8}
+	for host, want := range map[int]uint{4: 4, 8: 8, 12: 8, 0: 1, -1: 1} {
+		if got := DefaultCPUs(host, allowed); got != want {
+			t.Fatalf("DefaultCPUs(%d) = %d, want %d", host, got, want)
+		}
+	}
+}
+
 func TestAnExplicitValueOutsideTheRangeIsRefusedAndNamesIt(t *testing.T) {
 	allowed := Range{Min: 128, Max: 4096}
 	for _, ok := range []uint64{128, 4096, 1024} {
