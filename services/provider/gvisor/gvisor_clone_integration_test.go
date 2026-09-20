@@ -4,7 +4,6 @@ package gvisor_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // One stopped sandbox clones into two live ones at once, each running the entrypoint from the
@@ -67,8 +67,9 @@ func TestOneStoppedSandboxClonesIntoTwoIndependentSandboxes(t *testing.T) {
 		if booted := strings.Count(readFile(t, path), "booted"); booted != 1 {
 			t.Errorf("clone %s printed the banner %d times, want once from a fresh run", clone.ID, booted)
 		}
-		if _, err := os.Stat(filepath.Join(stateDirOf(t, h, clone.ID), "exit.json")); err == nil {
-			t.Errorf("clone %s carries the source's exit status", clone.ID)
+		// bringUp pre-creates an empty exit.json, so the absence of a record is what proves the exit is not inherited.
+		if _, found, err := bundle.ReadExitStatus(filepath.Join(stateDirOf(t, h, clone.ID), "exit.json")); err != nil || found {
+			t.Errorf("clone %s carries the source's exit status (found %v, err %v)", clone.ID, found, err)
 		}
 	}
 
@@ -79,11 +80,8 @@ func TestOneStoppedSandboxClonesIntoTwoIndependentSandboxes(t *testing.T) {
 	}
 
 	assertAlive(t, h, source.ID, false)
-	if got := readFile(t, filepath.Join(stateDirOf(t, h, source.ID), "overlay", "upper", "root", "marker")); got != "from-the-source\n" {
-		t.Errorf("the source's layer holds %q after the clones, want its own write", got)
-	}
 
-	// The source still starts again over what it kept, so the clones consumed nothing.
+	// The upper lives in disk.img, so a restart plus exec is how the source's layer is read after the clones.
 	if err := h.provider.Start(t.Context(), source.ID); err != nil {
 		t.Fatalf("Start of the source after two clones: %v", err)
 	}
