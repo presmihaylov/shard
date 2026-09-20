@@ -1,17 +1,28 @@
-# shard on a Mac: the other providers, in one Linux VM
+# Macs shard does not support, and the workaround
 
-The native Mac path is the `vz` provider: `make build-darwin` on a Mac, `shard daemon` on the Mac
-itself, one Virtualization.framework VM per sandbox (`docs/provider-vz.md`). This page is the other
-path: gVisor, Sysbox or runc on a Mac, for a provider `vz` is not, or a macOS the framework binding
-does not cover. It runs the whole Linux stack inside one Lima VM, exposes `shard serve` from it, and
-drives it with the native CLI on the Mac.
+`shard` supports one Mac: Apple silicon on macOS 14 or later, over the native `vz` provider
+(`docs/provider-vz.md`). An Intel Mac is not supported: the binary builds and the framework boots,
+but nothing is tested there, the snapshot verbs refuse by name on every macOS, and a bug on Intel
+gets no fix. macOS 13 is not supported either: `pause`, `resume` and `fork` need the macOS 14 save,
+so on 13 they refuse by name.
+
+There is no fallback provider. The one way to run shard's full verb set on such a Mac is the
+workaround below: a Linux VM with shard inside it. It is a workaround, not a supported mode.
+
+## Workaround: shard inside one Linux VM
+
+Run any Linux VM on the Mac (UTM, Lima, Parallels, VMware), install `shard` inside it as on any
+Linux host, and use it from a shell in the VM. The Linux substrates are then the ones on offer,
+gVisor by default, and every verb runs. To drive it from the Mac's own terminal instead, expose
+`shard serve` from the VM and point the native CLI at it.
 
 **The boundary.** Every sandbox shares that one VM: its kernel, its memory and its disk. The
 provider inside still isolates them from each other the way it does on any Linux host, but a
-sandbox that fills the VM's memory or disk starves the rest, and there is no per-sandbox VM. The
-`vz` provider is the per-sandbox shape.
+sandbox that fills the VM's memory or disk starves the rest, and there is no per-sandbox VM.
 
-## The VM
+The steps below use Lima, because it is a shell script and takes a file.
+
+### The VM
 
 One Lima file, arm64 on Apple silicon and amd64 on Intel, no host mounts, and port 2376 forwarded:
 
@@ -40,7 +51,7 @@ limactl create --name shard shard.yaml
 limactl start shard
 ```
 
-## The binaries
+### The binaries
 
 Three builds: `shard` and `shard-init` for the VM, Linux binaries of the VM's arch, and a `shard`
 for the Mac, which is the client alone and needs no cgo and no shim:
@@ -57,14 +68,15 @@ sudo install -m0755 bin/shard /usr/local/bin/shard
 
 `GOARCH=amd64` on an Intel Mac. A release carries the same three, `shard-linux-<arch>`,
 `shard-init-linux-<arch>` and `shard-darwin-<arch>` (`docs/release.md`); the darwin one is the full
-daemon, which serves as the client just the same. The runtime the provider drives is installed inside the VM: `runc`
-is `apt-get install runc`; `runsc` comes from gVisor's own apt repository; Sysbox from its release
-package. `docs/provider.md` says what each one needs from the kernel.
+daemon, which serves as the client just the same. The runtime the provider drives is installed
+inside the VM: `runc` is `apt-get install runc`; `runsc` comes from gVisor's own apt repository;
+Sysbox from its release package. `docs/provider.md` says what each one needs from the kernel.
 
-## The daemon and the front
+### The daemon, and the front for the Mac's CLI
 
-Inside the VM, the daemon is root, and the front runs beside it with a self-signed certificate for
-`localhost`, which is where the Mac reaches the forwarded port:
+Inside the VM, the daemon is root. The front is only for driving it from the Mac; a shell in the VM
+needs the daemon alone. It runs beside the daemon with a self-signed certificate for `localhost`,
+which is where the Mac reaches the forwarded port:
 
 ```
 limactl shell shard sudo -i
@@ -78,9 +90,8 @@ shard daemon --provider runc
 ```
 
 The front refuses a secret file that everyone can read, and a token is a secret too, hence the
-`umask` before both. `--provider gvisor` or
-`--provider sysbox` picks the other two. The daemon stays in the foreground, so the front takes a
-second shell:
+`umask` before both. `--provider gvisor` or `--provider sysbox` picks the other two. The daemon
+stays in the foreground, so the front takes a second shell:
 
 ```
 limactl shell shard sudo shard serve --listen :2376 \
@@ -90,7 +101,7 @@ limactl shell shard sudo shard serve --listen :2376 \
 On a Linux host the two processes run from the systemd units in `packaging/systemd`, and the front
 runs unprivileged; that is the shape to copy for anything that stays up (`docs/daemon.md`).
 
-## The CLI on the Mac
+### The CLI on the Mac
 
 The native `shard` binary reaches the front with three flags, or the environment behind them:
 
@@ -106,11 +117,11 @@ shard ls
 ```
 
 The client refuses a token file that everyone can read, hence the `umask`. Every verb works this
-way, exec and `logs -f` included: the front splices the bytes and the daemon
-sees the same requests it does from the socket. `docs/daemon.md` has the flags, the scopes a token
-carries, and how to revoke one.
+way, exec and `logs -f` included: the front splices the bytes and the daemon sees the same requests
+it does from the socket. `docs/daemon.md` has the flags, the scopes a token carries, and how to
+revoke one.
 
-## Tearing it down
+### Tearing it down
 
 ```
 limactl delete -f shard

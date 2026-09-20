@@ -6,8 +6,10 @@ macOS; only the substrate is new. This page names every decision SHARD-212 made,
 rejected, and what a run on two Macs proved. `docs/provider.md` is the contract every substrate
 shares; this page says what `vz` does with it.
 
-Target: Apple Silicon, macOS 13 or later. Intel Macs build and boot the framework, get no Rosetta and
-no attention. Firecracker stays unsupported on a Mac. Nothing here runs on Linux: `pkg/vz` sits
+Target: Apple Silicon, macOS 14 or later. Intel Macs build and boot the framework and are not
+supported: no Rosetta, no snapshot verb, no attention. macOS 13 runs every verb but the three
+snapshot ones, and is not supported either; `docs/mac.md` has the workaround for both. Firecracker
+stays unsupported on a Mac. Nothing here runs on Linux: `pkg/vz` sits
 behind `//go:build darwin` and its stub returns the unsupported-platform error.
 
 ## The decisions
