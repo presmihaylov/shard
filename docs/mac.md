@@ -6,14 +6,15 @@ but nothing is tested there, the snapshot verbs refuse by name on every macOS, a
 gets no fix. macOS 13 is not supported either: `pause`, `resume` and `fork` need the macOS 14 save,
 so on 13 they refuse by name.
 
-There is no fallback provider. The one way to run shard's full verb set on such a Mac is the
-workaround below: a Linux VM with shard inside it. It is a workaround, not a supported mode.
+There is no fallback provider. The one way to run shard on such a Mac is the workaround below: a
+Linux VM with shard inside it. It is a workaround, not a supported mode.
 
 ## Workaround: shard inside one Linux VM
 
 Run any Linux VM on the Mac (UTM, Lima, Parallels, VMware), install `shard` inside it as on any
-Linux host, and use it from a shell in the VM. The Linux substrates are then the ones on offer,
-gVisor by default, and every verb runs. To drive it from the Mac's own terminal instead, expose
+Linux host, and use it from a shell in the VM. The Linux substrates are then the ones on offer:
+gVisor runs every verb, runc and Sysbox refuse `pause`, `resume` and `fork` by name
+(`docs/provider.md`). To drive it from the Mac's own terminal instead, expose
 `shard serve` from the VM and point the native CLI at it.
 
 **The boundary.** Every sandbox shares that one VM: its kernel, its memory and its disk. The
@@ -66,9 +67,10 @@ limactl shell shard sudo install -m0755 /tmp/shard /tmp/shard-init /usr/local/bi
 sudo install -m0755 bin/shard /usr/local/bin/shard
 ```
 
-`GOARCH=amd64` on an Intel Mac. A release carries the same three, `shard-linux-<arch>`,
-`shard-init-linux-<arch>` and `shard-darwin-<arch>` (`docs/release.md`); the darwin one is the full
-daemon, which serves as the client just the same. The runtime the provider drives is installed
+`GOARCH=amd64` on an Intel Mac. A release carries `shard-linux-amd64`, `shard-init-linux-amd64`
+and `shard-darwin-<arch>` (`docs/release.md`), so an Intel Mac can skip the Linux builds and an
+Apple silicon one cannot; the darwin one is the full daemon, which serves as the client just the
+same. The runtime the provider drives is installed
 inside the VM: `runc` is `apt-get install runc`; `runsc` comes from gVisor's own apt repository;
 Sysbox from its release package. `docs/provider.md` says what each one needs from the kernel.
 
@@ -86,11 +88,11 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
 umask 077
 openssl rand -hex 32 > serve.secret
 shard tokens mint --name mac --secret-file serve.secret > mac.token
-shard daemon --provider runc
+shard daemon --provider gvisor
 ```
 
 The front refuses a secret file that everyone can read, and a token is a secret too, hence the
-`umask` before both. `--provider gvisor` or `--provider sysbox` picks the other two. The daemon
+`umask` before both. `--provider runc` or `--provider sysbox` picks the other two. The daemon
 stays in the foreground, so the front takes a second shell:
 
 ```
