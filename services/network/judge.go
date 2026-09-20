@@ -2,6 +2,7 @@ package network
 
 import (
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/presmihaylov/shard/models"
@@ -53,16 +54,8 @@ func matches(rule Compiled, f netstack.Flow) bool {
 	if rule.Protocol != "" && rule.Protocol != f.Protocol {
 		return false
 	}
-	if len(rule.Ports) == 0 {
-		return true
-	}
-	for _, port := range rule.Ports {
-		if port == int(f.Destination.Port()) {
-			return true
-		}
-	}
 
-	return false
+	return len(rule.Ports) == 0 || slices.Contains(rule.Ports, int(f.Destination.Port()))
 }
 
 func contains(prefixes []netip.Prefix, addr netip.Addr) bool {
