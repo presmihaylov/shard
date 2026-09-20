@@ -23,12 +23,13 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	if r.Paused {
-		return fmt.Errorf("sandbox %s is already paused on %s", id, Name)
-	}
 	m, err := p.lookup(ctx, id, stateDir, r)
 	if err != nil {
 		return err
+	}
+	// A retry after a crash between the record and the swap lands here, and finishes that pause instead of refusing.
+	if r.Paused {
+		return p.finishPause(ctx, id, dir, m)
 	}
 	if m == nil || !m.status(p).Alive() {
 		return fmt.Errorf("sandbox %s is %s on %s, and only a live one can pause", id, models.StateStopped, Name)
@@ -66,6 +67,21 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		r.Pauses--
 
 		return abandon(m, tmp, errors.Join(fmt.Errorf("install the snapshot of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
+	}
+
+	return p.end(ctx, m)
+}
+
+// finishPause installs what a crashed pause staged, proves a snapshot is in place and ends the shim it left.
+func (p *Provider) finishPause(ctx context.Context, id, dir string, m *machine) error {
+	if err := installStaged(dir); err != nil {
+		return fmt.Errorf("sandbox %s: %w", id, err)
+	}
+	if _, err := readSnapshot(dir); err != nil {
+		return fmt.Errorf("sandbox %s is paused on %s: %w", id, Name, err)
+	}
+	if m == nil {
+		return nil
 	}
 
 	return p.end(ctx, m)

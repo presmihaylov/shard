@@ -220,8 +220,12 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Pause = %+v, %v", status, err)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "already paused") {
-		t.Fatalf("a second Pause = %v, want a refusal", err)
+	// A second Pause is a service retry, and finds nothing left to finish.
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatalf("a second Pause = %v, want a no-op", err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+		t.Fatalf("a second Pause into an empty directory = %v, want a refusal", err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "resume it first") {
 		t.Fatalf("Start of a paused sandbox = %v, want a refusal", err)
@@ -459,7 +463,8 @@ func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
 	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
 	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
 
-	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+	// The service retries the pause, which finishes the crashed one: the staged snapshot goes in and the shim goes.
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
 	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
@@ -469,8 +474,15 @@ func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
 		t.Errorf("the staging directory is still there: %v", err)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after the finishing Pause = %+v, %v; want stopped", status, err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
 	if err != nil || !status.Alive() {
-		t.Fatalf("Status after the recovering Resume = %+v, %v; want alive", status, err)
+		t.Fatalf("Status after Resume = %+v, %v; want alive", status, err)
 	}
 
 	// An older staged snapshot, left by a swap whose cleanup failed, goes, and the one in place stays.
