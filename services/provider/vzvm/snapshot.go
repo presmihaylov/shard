@@ -23,13 +23,13 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
+	// A retry after a crash between the record and the swap lands here, and finishes that pause instead of refusing.
+	if r.Paused {
+		return p.finishPause(ctx, id, stateDir, dir)
+	}
 	m, err := p.lookup(ctx, id, stateDir, r)
 	if err != nil {
 		return err
-	}
-	// A retry after a crash between the record and the swap lands here, and finishes that pause instead of refusing.
-	if r.Paused {
-		return p.finishPause(ctx, id, dir, m)
 	}
 	if m == nil || !m.status(p).Alive() {
 		return fmt.Errorf("sandbox %s is %s on %s, and only a live one can pause", id, models.StateStopped, Name)
@@ -73,18 +73,34 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 }
 
 // finishPause installs what a crashed pause staged, proves a snapshot is in place and ends the shim it left.
-func (p *Provider) finishPause(ctx context.Context, id, dir string, m *machine) error {
+func (p *Provider) finishPause(ctx context.Context, id, stateDir, dir string) error {
 	if err := installStaged(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 	if _, err := readSnapshot(dir); err != nil {
 		return fmt.Errorf("sandbox %s is paused on %s: %w", id, Name, err)
 	}
-	if m == nil {
+
+	return p.endLeftover(ctx, id, stateDir)
+}
+
+// endLeftover stops the shim a crashed pause left; its guest is suspended, so it is never attached, only cut by its socket.
+func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+	if held {
+		return p.end(ctx, m)
+	}
+	client, _, err := vz.Adopt(filepath.Join(stateDir, socketFile))
+	if absent(err) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
 
-	return p.end(ctx, m)
+	return p.end(ctx, &machine{id: id, dir: stateDir, client: client})
 }
 
 // stageSnapshot writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
@@ -158,14 +174,8 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 		return err
 	}
 	// A shim still up under a paused record is what a pause that crashed before its end left, and the save is the truth.
-	leftover, err := p.lookup(ctx, id, stateDir, r)
-	if err != nil {
+	if err := p.endLeftover(ctx, id, stateDir); err != nil {
 		return err
-	}
-	if leftover != nil {
-		if err := p.end(ctx, leftover); err != nil {
-			return err
-		}
 	}
 
 	// The disk comes back to the moment of the save, or the restored memory would meet a filesystem it never wrote.

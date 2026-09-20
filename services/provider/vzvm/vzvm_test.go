@@ -16,6 +16,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 )
@@ -432,8 +433,8 @@ func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
 	}
 }
 
-// A pause that crashed after its record and before its swap leaves the staged snapshot beside the old one; Resume installs the newer and ends the shim.
-func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
+// A pause that crashed after its record leaves the staged snapshot beside the old one and a shim over a suspended guest; the daemon comes back, the service retries, and that pause is finished.
+func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -450,7 +451,7 @@ func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The crash state by hand: a complete second snapshot in the staging directory, a record that says paused, and the shim still up.
+	// The crash state by hand: a complete second snapshot staged, a record that says paused, and the shim still up over a suspended guest.
 	dir, err := h.stateDir(spec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -462,10 +463,21 @@ func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
 	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 2)
 	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
 	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
-
-	// The service retries the pause, which finishes the crashed one: the staged snapshot goes in and the shim goes.
-	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+	shim, _, err := vz.Adopt(filepath.Join(dir, "shim.sock"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := shim.Pause(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The daemon comes back and the service retries the pause, which finishes the crashed one: the staged snapshot goes in and the shim goes.
+	again := h.open(t)
+	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shim.State(); err == nil {
+		t.Fatal("the shim the crashed pause left still answers")
 	}
 	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
 		t.Fatalf("the snapshot in place is pause %v, want 2, the staged one", got)
@@ -473,27 +485,27 @@ func TestResumeInstallsTheSnapshotACrashedPauseStaged(t *testing.T) {
 	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory is still there: %v", err)
 	}
-	status, err := h.provider.Status(t.Context(), spec.ID)
+	status, err := again.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after the finishing Pause = %+v, %v; want stopped", status, err)
 	}
-	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+	if err := again.Resume(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	status, err = h.provider.Status(t.Context(), spec.ID)
+	status, err = again.Status(t.Context(), spec.ID)
 	if err != nil || !status.Alive() {
 		t.Fatalf("Status after Resume = %+v, %v; want alive", status, err)
 	}
 
 	// An older staged snapshot, left by a swap whose cleanup failed, goes, and the one in place stays.
-	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.CopyFS(staged, os.DirFS(snap)); err != nil {
 		t.Fatal(err)
 	}
 	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 1)
-	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+	if err := again.Resume(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
 	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 3.0 {
