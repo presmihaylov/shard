@@ -341,6 +341,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	opts = append(opts, kernel.WithLogger(log.New(d.cfg.Out, "", log.LstdFlags)))
 	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
 	defer cancel()
 	// The guest runs the host's arch: the framework virtualises, it never emulates.

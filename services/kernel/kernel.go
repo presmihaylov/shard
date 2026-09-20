@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,6 +65,7 @@ func URL(arch string) (string, error) {
 type Service struct {
 	root   string
 	client *http.Client
+	log    *log.Logger
 	// One download per arch at a time; the daemon is the only process that writes the tree.
 	mu sync.Mutex
 
@@ -103,9 +105,14 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(s *Service) { s.client = c }
 }
 
+// WithLogger is the daemon log, where a fetch of some 22 MB says it started and what it verified.
+func WithLogger(l *log.Logger) Option {
+	return func(s *Service) { s.log = l }
+}
+
 // New prepares the kernel tree under root, which is the daemon root.
 func New(root string, opts ...Option) *Service {
-	s := &Service{root: filepath.Join(root, "kernel"), client: http.DefaultClient}
+	s := &Service{root: filepath.Join(root, "kernel"), client: http.DefaultClient, log: log.New(io.Discard, "", 0)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -136,11 +143,17 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	if err != nil {
 		return Kernel{}, err
 	}
+	s.log.Printf("kernel: downloading %s to %s", url, path)
 	if err := s.download(ctx, url, path, a.sha256); err != nil {
 		return Kernel{}, fmt.Errorf("download the guest kernel %s: %w", url, err)
 	}
+	k, err := verified(path, arch, a.sha256)
+	if err != nil {
+		return Kernel{}, err
+	}
+	s.log.Printf("kernel: verified %s sha256 %s", path, a.sha256)
 
-	return verified(path, arch, a.sha256)
+	return k, nil
 }
 
 // download fetches url into a sibling part file and renames it only after the hash matched.
@@ -175,6 +188,7 @@ func (s *Service) download(ctx context.Context, url, path, want string) error {
 	}
 
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		s.log.Printf("kernel: checksum mismatch for %s: got %s, want %s", url, got, want)
 		return errors.Join(fmt.Errorf("%w: got %s, want %s", ErrChecksum, got, want), os.Remove(part))
 	}
 
