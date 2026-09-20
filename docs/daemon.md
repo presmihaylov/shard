@@ -8,6 +8,7 @@ without a daemon, with one line:
 shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
 ```
 
+On a Mac the unit is the LaunchDaemon, so the hint there is `launchctl print system/shard.daemon`.
 The unit serves `/var/lib/shard` only, so under any other `--root` the hint names that root's own
 daemon instead, `is it running? shard --root /srv/shard-e2e daemon`, and under `--remote` it names
 the front, `shard serve on box.example.com:2376`.
