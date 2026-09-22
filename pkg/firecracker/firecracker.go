@@ -30,6 +30,20 @@ type Config struct {
 	Console string
 }
 
+// Snapshot is what one microVM comes back from: the two files a snapshot wrote, and the host things the new process owns instead of the old one's.
+type Snapshot struct {
+	// State and Memory are the files Client.Snapshot wrote; the vmm maps the memory private and read-only, so one file serves any number of restores.
+	State  string
+	Memory string
+	// Tap replaces the host device of eth0; empty keeps the one in the snapshot, which two microVMs cannot both open.
+	Tap string
+	// Drives swap the host path of a drive the snapshot names, by id, after the load opened the snapshot's own; a drive not named keeps it.
+	Drives  []Drive
+	Vsock   string
+	Socket  string
+	Console string
+}
+
 // Drive is one virtio block device.
 type Drive struct {
 	ID       string

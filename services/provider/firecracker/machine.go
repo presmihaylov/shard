@@ -118,8 +118,8 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 		VCPUs:     vcpus(r.Resources.VCPUs),
 		MemoryMiB: r.Resources.MemoryMiB,
 		Drives: []fcapi.Drive{
-			{ID: "base", Path: r.BaseDisk, ReadOnly: true},
-			{ID: "overlay", Path: filepath.Join(dir, bundle.OverlayDiskFile)},
+			{ID: baseDrive, Path: r.BaseDisk, ReadOnly: true},
+			{ID: overlayDrive, Path: filepath.Join(dir, bundle.OverlayDiskFile)},
 		},
 		Network: device,
 		Vsock:   filepath.Join(dir, vsockFile),
@@ -131,6 +131,11 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
 
+	return p.up(ctx, id, dir, client, info)
+}
+
+// up attaches to a vmm this provider just spawned, and ends it when there is no guest to attach to.
+func (p *Provider) up(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
 	m, err := p.attach(ctx, id, dir, client, info)
 	if err != nil {
 		return nil, errors.Join(err, endVMM(id, client))
@@ -162,7 +167,7 @@ func guestMAC(address netip.Addr) string {
 	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", v4[0], v4[1], v4[2], v4[3])
 }
 
-// readdress gives the guest the address the record names, once the control stream is up and before the entrypoint runs.
+// readdress gives the guest the address the record names, once the control stream is up; a fork's memory holds the source's, MAC included.
 func (m *machine) readdress(r record) error {
 	if r.Address == "" {
 		return nil
@@ -172,7 +177,7 @@ func (m *machine) readdress(r record) error {
 		return fmt.Errorf("parse the recorded address: %w", err)
 	}
 	address := supervisor.Address{
-		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
+		Interface: "eth0", MAC: guestMAC(prefix.Addr()), IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
 		Nameservers: r.Nameservers, Hostname: r.Hostname,
 	}
 	if err := m.control.Load().Readdress(address); err != nil {

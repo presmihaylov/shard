@@ -88,9 +88,11 @@ type Trust struct {
 // Address is one IPv4 address the guest takes on its interface, with the default route behind it and the resolver files that name it.
 type Address struct {
 	Interface string `json:"interface"`
-	IP        string `json:"ip"`
-	Prefix    int    `json:"prefix"`
-	Gateway   string `json:"gateway,omitempty"`
+	// MAC replaces the hardware address of the interface; a fork restored from another guest's memory still carries that guest's.
+	MAC     string `json:"mac,omitempty"`
+	IP      string `json:"ip"`
+	Prefix  int    `json:"prefix"`
+	Gateway string `json:"gateway,omitempty"`
 	// Nameservers go into /etc/resolv.conf and Hostname into /etc/hosts; a VM has no upper layer a host could write them to.
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`

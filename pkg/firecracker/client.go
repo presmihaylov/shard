@@ -27,38 +27,114 @@ type Client struct {
 // Start spawns firecracker in its own group, so it outlives this process, puts the microVM in over the API and boots it; the console goes to cfg.Console.
 func Start(ctx context.Context, binary string, cfg Config) (*Client, Info, error) {
 	client := &Client{socket: cfg.Socket, vsock: cfg.Vsock}
-	if err := client.claim(); err != nil {
-		return nil, Info{}, err
-	}
-
-	console, err := os.OpenFile(cfg.Console, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	cmd, err := client.spawn(ctx, binary, cfg.Console)
 	if err != nil {
-		return nil, Info{}, fmt.Errorf("open the console log: %w", err)
-	}
-	defer console.Close()
-
-	cmd := exec.Command(binary, "--api-sock", cfg.Socket)
-	cmd.Stdout = console
-	cmd.Stderr = console
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return nil, Info{}, fmt.Errorf("start firecracker: %w", err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-
-	if err := client.await(ctx, cmd, exited, cfg.Console); err != nil {
 		return nil, Info{}, err
 	}
 	if err := client.configure(cfg); err != nil {
 		return nil, Info{}, errors.Join(err, end(cmd))
 	}
-	info, err := client.State()
+
+	return client.up(cmd)
+}
+
+// Restore spawns a fresh firecracker and brings the snapshot back in it, running; a snapshot loads only into a process that booted nothing.
+func Restore(ctx context.Context, binary string, snap Snapshot) (*Client, Info, error) {
+	client := &Client{socket: snap.Socket, vsock: snap.Vsock}
+	cmd, err := client.spawn(ctx, binary, snap.Console)
+	if err != nil {
+		return nil, Info{}, err
+	}
+	if err := client.load(snap); err != nil {
+		return nil, Info{}, errors.Join(err, end(cmd))
+	}
+
+	return client.up(cmd)
+}
+
+// spawn execs firecracker on the socket and waits for its API; the process is the caller's to end when what follows fails.
+func (c *Client) spawn(ctx context.Context, binary, console string) (*exec.Cmd, error) {
+	if err := c.claim(); err != nil {
+		return nil, err
+	}
+
+	log, err := os.OpenFile(console, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the console log: %w", err)
+	}
+	defer log.Close()
+
+	cmd := exec.Command(binary, "--api-sock", c.socket)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	if err := c.await(ctx, cmd, exited, console); err != nil {
+		return nil, err
+	}
+
+	return cmd, nil
+}
+
+// up reads the state the microVM settled in, which is what every spawn reports back.
+func (c *Client) up(cmd *exec.Cmd) (*Client, Info, error) {
+	info, err := c.State()
 	if err != nil {
 		return nil, Info{}, errors.Join(fmt.Errorf("read the state after the boot: %w", err), end(cmd))
 	}
 
-	return client, info, nil
+	return c, info, nil
+}
+
+// load puts the snapshot in, paused, swaps the drives the caller names while nothing runs, then resumes the guest.
+func (c *Client) load(snap Snapshot) error {
+	body := snapshotLoad{
+		StatePath: snap.State,
+		Memory:    memoryBackend{Type: "File", Path: snap.Memory},
+		// The guest's clock stopped at the snapshot; this moves it up to now, on x86_64 only.
+		ClockRealtime: true,
+	}
+	if snap.Tap != "" {
+		body.Network = []networkOverride{{ID: guestInterface, HostDev: snap.Tap}}
+	}
+	if snap.Vsock != "" {
+		body.Vsock = &vsockOverride{Path: snap.Vsock}
+	}
+	if err := c.put("/snapshot/load", body); err != nil {
+		return err
+	}
+	for _, d := range snap.Drives {
+		if err := c.UpdateDrive(d.ID, d.Path); err != nil {
+			return err
+		}
+	}
+
+	return c.Resume()
+}
+
+// Pause stops the vCPUs; the guest keeps its memory and its devices, and answers nothing until Resume.
+func (c *Client) Pause() error {
+	return c.patch("/vm", vmState{State: "Paused"})
+}
+
+// Resume starts the vCPUs of a paused microVM.
+func (c *Client) Resume() error {
+	return c.patch("/vm", vmState{State: "Resumed"})
+}
+
+// Snapshot writes the device state and the whole guest memory to two files; firecracker wants the microVM paused first.
+func (c *Client) Snapshot(state, memory string) error {
+	return c.put("/snapshot/create", snapshotCreate{Type: "Full", StatePath: state, MemoryPath: memory})
+}
+
+// UpdateDrive points a drive the guest already has at another host file; firecracker reopens it in place.
+func (c *Client) UpdateDrive(id, path string) error {
+	return c.patch("/drives/"+id, partialDrive{ID: id, Path: path})
 }
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.
@@ -242,6 +318,12 @@ func handshake(conn net.Conn, port uint32) error {
 
 func (c *Client) put(path string, body any) error {
 	_, err := c.call(http.MethodPut, path, body, nil)
+
+	return err
+}
+
+func (c *Client) patch(path string, body any) error {
+	_, err := c.call(http.MethodPatch, path, body, nil)
 
 	return err
 }

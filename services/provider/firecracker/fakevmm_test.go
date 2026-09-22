@@ -140,12 +140,20 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	if f.state != "Not started" {
+	// The vmm takes a configuration before the boot and the snapshot verbs after it, and refuses each in the other half.
+	booted := f.state != "Not started"
+	postBoot := r.Method == http.MethodPatch || r.URL.Path == "/snapshot/create"
+	if booted && !postBoot {
 		fault(w, http.StatusBadRequest, "The requested operation is not supported after starting the microVM.")
 
 		return
 	}
-	refusal, err := f.apply(r.URL.Path, body)
+	if !booted && postBoot {
+		fault(w, http.StatusBadRequest, "The requested operation is not supported before starting the microVM.")
+
+		return
+	}
+	refusal, err := f.apply(r.Method, r.URL.Path, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 
@@ -159,9 +167,17 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apply takes one PUT the way firecracker would; a refusal is in its words, an error is the fake's own.
-func (f *fake) apply(path string, body []byte) (string, error) {
+// apply takes one request the way firecracker would; a refusal is in its words, an error is the fake's own.
+func (f *fake) apply(method, path string, body []byte) (string, error) {
 	switch {
+	case path == "/vm":
+		return f.patchVM(body)
+	case path == "/snapshot/create":
+		return f.createSnapshot(body)
+	case path == "/snapshot/load":
+		return f.loadSnapshot(body)
+	case strings.HasPrefix(path, "/drives/") && method == http.MethodPatch:
+		return f.patchDrive(body)
 	case path == "/machine-config":
 		var m struct {
 			VCPUs     int64 `json:"vcpu_count"`
@@ -216,10 +232,162 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 	return "", nil
 }
 
+// patchVM stops or starts the vCPUs, which here is the guest process stopped or continued.
+func (f *fake) patchVM(body []byte) (string, error) {
+	var v struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return "", err
+	}
+	switch v.State {
+	case "Paused":
+		f.state = "Paused"
+
+		return "", f.signal(syscall.SIGSTOP)
+	case "Resumed":
+		f.state = "Running"
+
+		return "", f.signal(syscall.SIGCONT)
+	}
+
+	return "Invalid microVM state: " + v.State, nil
+}
+
+// createSnapshot writes what a load brings back, which without guest memory is the configuration the vmm holds.
+func (f *fake) createSnapshot(body []byte) (string, error) {
+	var c struct {
+		StatePath  string `json:"snapshot_path"`
+		MemoryPath string `json:"mem_file_path"`
+	}
+	if err := json.Unmarshal(body, &c); err != nil {
+		return "", err
+	}
+	if f.state != "Paused" {
+		return "Cannot snapshot a running microVM.", nil
+	}
+	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock})
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(c.StatePath, encoded, 0o600); err != nil {
+		return "", err
+	}
+	// The fake has no guest memory, so the file is a blob: what a restore links to and the tests count the links of.
+	return "", os.WriteFile(c.MemoryPath, []byte("fake guest memory\n"), 0o600)
+}
+
+// loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices, and the overrides the host paths of this one.
+func (f *fake) loadSnapshot(body []byte) (string, error) {
+	var l struct {
+		StatePath string `json:"snapshot_path"`
+		Memory    struct {
+			Path string `json:"backend_path"`
+		} `json:"mem_backend"`
+		ResumeVM bool `json:"resume_vm"`
+		Vsock    *struct {
+			Path string `json:"uds_path"`
+		} `json:"vsock_override"`
+	}
+	if err := json.Unmarshal(body, &l); err != nil {
+		return "", err
+	}
+	encoded, err := os.ReadFile(l.StatePath)
+	if err != nil {
+		return "Load snapshot error: " + err.Error(), nil
+	}
+	var state vmstate
+	if err := json.Unmarshal(encoded, &state); err != nil {
+		return "Load snapshot error: " + err.Error(), nil
+	}
+	if _, err := os.Stat(l.Memory.Path); err != nil {
+		return "Load snapshot error: " + err.Error(), nil
+	}
+	// The load opens every drive the state names, which are the paths of the sandbox the snapshot was taken from.
+	for _, raw := range state.Drives {
+		var d struct {
+			Path string `json:"path_on_host"`
+		}
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(d.Path); err != nil {
+			return "Load snapshot error: " + err.Error(), nil
+		}
+	}
+	f.boot, f.drives, f.vsock = state.Boot, state.Drives, state.Vsock
+	if l.Vsock != nil {
+		f.vsock = l.Vsock.Path
+	}
+	if err := f.persist(); err != nil {
+		return "", err
+	}
+	if err := f.start(); err != nil {
+		return "", err
+	}
+	f.state = "Running"
+	if !l.ResumeVM {
+		f.state = "Paused"
+
+		return "", f.signal(syscall.SIGSTOP)
+	}
+
+	return "", nil
+}
+
+// patchDrive points a drive the guest already has at another host file, which is how a restore takes its own overlay.
+func (f *fake) patchDrive(body []byte) (string, error) {
+	var patch struct {
+		ID   string `json:"drive_id"`
+		Path string `json:"path_on_host"`
+	}
+	if err := json.Unmarshal(body, &patch); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(patch.Path); err != nil {
+		return "Unable to patch the block device: " + err.Error(), nil
+	}
+	for i, raw := range f.drives {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return "", err
+		}
+		if fields["drive_id"] != patch.ID {
+			continue
+		}
+		fields["path_on_host"] = patch.Path
+		swapped, err := json.Marshal(fields)
+		if err != nil {
+			return "", err
+		}
+		f.drives[i] = swapped
+
+		return "", f.persist()
+	}
+
+	return "Invalid block device ID: " + patch.ID, nil
+}
+
+// signal reaches the guest, which stands in for the vCPUs; a vmm that booted nothing has none.
+func (f *fake) signal(sig syscall.Signal) error {
+	if f.cmd == nil {
+		return nil
+	}
+
+	return f.cmd.Process.Signal(sig)
+}
+
 // boot is the bootFile: the boot source as put, and the drives in the order the guest sees them.
 type boot struct {
 	Source json.RawMessage   `json:"source"`
 	Drives []json.RawMessage `json:"drives"`
+}
+
+// vmstate is the snapshot file: the devices the vmm held, which a load puts back before the overrides.
+type vmstate struct {
+	Boot   json.RawMessage   `json:"boot"`
+	Drives []json.RawMessage `json:"drives"`
+	Vsock  string            `json:"vsock"`
 }
 
 func (f *fake) persist() error {

@@ -45,6 +45,22 @@ const (
 	oomFile    = "oom"
 	logFile    = "output.log"
 	initrdFile = "initrd.cpio"
+	// memoryFile is the guest memory a restore mapped, a hard link to the snapshot's own; a fresh boot has none.
+	memoryFile = "memory"
+)
+
+// The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.
+const (
+	snapshotState = "vmstate"
+	snapshotFile  = "snapshot.json"
+	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
+	checkpointFile = "checkpoint.img"
+)
+
+// The drive ids on the API, in the order the guest sees them as /dev/vda and /dev/vdb.
+const (
+	baseDrive    = "base"
+	overlayDrive = "overlay"
 )
 
 const (
@@ -73,10 +89,8 @@ type Config struct {
 
 var _ models.Provider = (*Provider)(nil)
 
-// Provider implements models.Provider on Firecracker. The snapshot verbs are NoSnapshots' refusals until SHARD-44.
+// Provider implements models.Provider on Firecracker.
 type Provider struct {
-	models.NoSnapshots
-
 	cfg    Config
 	initrd string
 
@@ -99,10 +113,15 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
+
+// Capabilities are the three snapshot verbs, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
+func (p *Provider) Capabilities() models.Capabilities {
+	return models.Capabilities{Pause: true, Resume: true, Fork: true}
+}
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }
@@ -173,11 +192,14 @@ func readRecord(dir string) (record, bool, error) {
 }
 
 func writeRecord(dir string, r record) error {
-	encoded, err := json.Marshal(r)
+	return writeJSON(filepath.Join(dir, recordFile), r)
+}
+
+func writeJSON(path string, value any) error {
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("marshal %s: %w", recordFile, err)
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
 	}
-	path := filepath.Join(dir, recordFile)
 	if err := store.WriteFile(path, encoded, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
