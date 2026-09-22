@@ -15,7 +15,8 @@ unset E2E_LIB_ONLY
 
 MEMORY=${MEMORY:-256}
 # The bridge and the two policy tables the daemon makes are host-wide, not per root, so two runs on one box collide over them.
-HOST_BRIDGE=${HOST_BRIDGE:-shard0}
+# The name is the daemon's own and takes no override: a wrong one here would delete a bridge this run never made.
+HOST_BRIDGE="shard0"
 DATA_DISK=${DATA_DISK:-8192}
 # The image the daemon provisions beside the root (services/datadir). check_root normalises SHARD_ROOT first, so this waits for it.
 DATA_IMAGE=""
@@ -131,6 +132,11 @@ if [ -n "${SHARD_KERNEL:-}" ]; then
 else
 	say "the daemon fetches the guest kernel release by checksum under its root"
 fi
+
+# The teardown deletes host-wide network state, so a daemon on another root would lose its bridge and its policy to this run.
+daemons=$(pgrep -x shard || true)
+[ -z "${daemons}" ] || fail "a shard daemon is already running on this host (pid ${daemons}): it shares the bridge ${HOST_BRIDGE} and the shard nft tables with this run, so stop it or wait for it"
+say "no shard daemon holds the host-wide bridge and tables"
 
 check_host_is_free
 say "no other sandbox holds a link on this host"

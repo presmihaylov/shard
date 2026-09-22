@@ -175,7 +175,8 @@ beside it, so it refuses a `SHARD_ROOT` that already holds files unless the mark
 The bridge `shard0` and the nft tables `inet shard` and `bridge shard` are host-wide, one set for the
 whole box rather than one per root, so the teardown drops all three and the last step proves they are
 gone. Two runs on one box therefore collide over them: run this suite and any other e2e on the same
-box one at a time.
+box one at a time. The run refuses to start while any `shard` daemon is on the box, because the
+teardown would take that daemon's bridge and policy with it.
 
 ## Refuse, never downgrade
 
