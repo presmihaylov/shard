@@ -254,3 +254,18 @@ func TestEnsureLogsAChecksumMismatch(t *testing.T) {
 		t.Fatalf("log:\n%s", out.String())
 	}
 }
+
+// TestConfigsCarryWhatAGuestMounts pins the filesystems both substrates need, so a config regenerated from a defconfig cannot drop one.
+func TestConfigsCarryWhatAGuestMounts(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		cfg, err := os.ReadFile(filepath.Join("..", "..", "packaging", "kernel", "config-"+arch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, opt := range []string{"CONFIG_EROFS_FS", "CONFIG_EROFS_FS_XATTR", "CONFIG_OVERLAY_FS", "CONFIG_EXT4_FS", "CONFIG_VIRTIO_VSOCKETS"} {
+			if !bytes.Contains(cfg, []byte("\n"+opt+"=y\n")) {
+				t.Errorf("config-%s lacks %s=y", arch, opt)
+			}
+		}
+	}
+}

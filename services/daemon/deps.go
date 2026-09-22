@@ -326,6 +326,19 @@ const vzDir = "vz"
 // kernelFetchTimeout bounds the first-use download, which runs under deps.mu and would otherwise hold every verb on a dead release endpoint.
 const kernelFetchTimeout = 5 * time.Minute
 
+// guestKernel is the kernel every microVM substrate boots: the dev override when set, else the release fetched once under the root.
+func (d *deps) guestKernel() (kernel.Kernel, error) {
+	opts, err := kernel.FromEnv()
+	if err != nil {
+		return kernel.Kernel{}, err
+	}
+	opts = append(opts, kernel.WithLogger(d.logger()))
+	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
+	defer cancel()
+	// The guest runs the host's arch: vz and KVM virtualise, they never emulate.
+	return kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
+}
+
 // newVZ builds the Virtualization.framework provider: the embedded shim signed under the root, the guest kernel fetched once, and the stack.
 func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	if runtime.GOOS != "darwin" {
@@ -348,15 +361,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 		}
 	}
 
-	opts, err := kernel.FromEnv()
-	if err != nil {
-		return nil, err
-	}
-	opts = append(opts, kernel.WithLogger(d.logger()))
-	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
-	defer cancel()
-	// The guest runs the host's arch: the framework virtualises, it never emulates.
-	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
+	guest, err := d.guestKernel()
 	if err != nil {
 		return nil, err
 	}
