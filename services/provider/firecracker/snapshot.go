@@ -67,8 +67,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The snapshot is complete, so a Ctrl-C from here on must not leave a paused VM behind.
-	return p.end(context.WithoutCancel(ctx), m)
+	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
+	return errors.Join(os.RemoveAll(tmp), p.end(context.WithoutCancel(ctx), m))
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.

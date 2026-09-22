@@ -835,15 +835,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
 	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(tmp)); err != nil {
-		// Only stop ends a sandbox, so one whose snapshot failed goes on running, even after a Ctrl-C.
-		thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
-		defer cancel()
-
-		return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
+		return p.abandon(ctx, id, tmp, err)
 	}
 
+	// A filesystem without an atomic exchange refuses the install, and that must leave a running sandbox, not a frozen one.
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return fmt.Errorf("install the snapshot of sandbox %s: %w", id, err)
+		return p.abandon(ctx, id, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
 	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.
@@ -858,8 +855,16 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
-	// The layer stays, which is what the resume mounts again, and only the merged view goes.
-	return b.Unmount()
+	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.
+	return errors.Join(os.RemoveAll(tmp), b.Unmount())
+}
+
+// abandon gives up a pause that could not complete: only stop ends a sandbox, so this one goes on running, even after a Ctrl-C.
+func (p *Provider) abandon(ctx context.Context, id, tmp string, err error) error {
+	thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
+	defer cancel()
+
+	return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
 }
 
 // Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,

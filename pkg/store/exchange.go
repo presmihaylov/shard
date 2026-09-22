@@ -16,7 +16,9 @@ func Exchange(a, b string) error {
 	return nil
 }
 
-// SwapDir installs src at dst and drops what dst held: a rename when dst holds nothing, an exchange when it does, so no cut leaves dst absent.
+// SwapDir installs src at dst, by a rename when dst holds nothing and an exchange when it does, so no cut
+// leaves dst absent. An error means dst still holds what it held, and a success leaves that at src, which
+// the caller drops: a failure to drop it is not a failure to install.
 func SwapDir(src, dst string) error {
 	_, err := os.Stat(dst)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -25,10 +27,6 @@ func SwapDir(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := Exchange(src, dst); err != nil {
-		return err
-	}
 
-	// The exchange left what dst held at src, which the caller owns and drops.
-	return os.RemoveAll(src)
+	return Exchange(src, dst)
 }

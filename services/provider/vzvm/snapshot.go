@@ -74,7 +74,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return abandon(m, tmp, errors.Join(fmt.Errorf("install the snapshot of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
 	}
 
-	return p.end(ctx, m)
+	// The install left the snapshot it replaced at tmp, which this pause owns and drops.
+	return errors.Join(os.RemoveAll(tmp), p.end(ctx, m))
 }
 
 // finishPause installs what a crashed pause staged, proves a snapshot is in place and ends the shim it left.
@@ -156,7 +157,8 @@ func installStaged(dir string) error {
 		return fmt.Errorf("install the staged snapshot: %w", err)
 	}
 
-	return nil
+	// The install left the older snapshot at tmp, which no resume and no fork reads again.
+	return os.RemoveAll(tmp)
 }
 
 // Resume restores the save in dir over the sandbox's own disk, which the snapshot's copy replaces first.
