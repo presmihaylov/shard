@@ -158,7 +158,8 @@ Flags:
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
   --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox, runc, vz or firecracker
-                           (without it a root that holds records keeps what made them, and a root that holds none takes
+                           (without it a root that holds records, or the data image they live in, keeps what made them,
+                           and a root that holds neither takes
                            firecracker on a Linux host whose ` + daemon.KVMDevice + ` opens, gvisor on one without, vz on macOS;
                            sysbox and runc are never picked for a host, only named here)
   --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket

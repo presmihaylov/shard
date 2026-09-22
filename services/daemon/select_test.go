@@ -113,6 +113,22 @@ func TestARootKeepsWhatMadeItsRecords(t *testing.T) {
 	}
 }
 
+// A firecracker root holds its records inside <root>.xfs, so an unmounted image leaves the mountpoint empty.
+func TestAnUnmountedDataImageKeepsFirecracker(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "shard")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(root+".xfs", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := pick(t, "", root, filepath.Join(t.TempDir(), "gone"))
+	if got.Provider != "firecracker" || !strings.Contains(got.Reason, root+".xfs") {
+		t.Errorf("a root whose data image is not mounted picks %+v, want firecracker for the image", got)
+	}
+}
+
 // --provider outranks the records too: an operator who names one is not guessing.
 func TestTheNamedProviderWinsOverTheHostAndTheRecords(t *testing.T) {
 	kvm := openable(t)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
@@ -46,6 +47,16 @@ func selectProvider(named, root, kvm string) (Selection, error) {
 	}
 	if recorded != "" {
 		return Selection{Provider: recorded, Reason: "it made the records under " + root}, nil
+	}
+
+	// A firecracker root keeps its records inside its data image, which hides them whenever it is not mounted.
+	image := datadir.ImagePath(root)
+	_, err = os.Stat(image)
+	if err == nil {
+		return Selection{Provider: firecracker.Name, Reason: "it made the data image " + image}, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return Selection{}, fmt.Errorf("stat %s: %w", image, err)
 	}
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.
 	if runtime.GOOS == "darwin" {
