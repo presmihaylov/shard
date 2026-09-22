@@ -73,14 +73,16 @@ func (c *Client) spawn(ctx context.Context, binary, console, group string) (*exe
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
+	// The waiter comes before anything that can end the vmm, so a kill on a failure path is reaped and leaves no zombie.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
 	// The guest's memory is mapped when the API configures the machine, which is after this, so the cgroup is charged all of it.
 	if group != "" {
 		if err := cgroup.Add(group, cmd.Process.Pid); err != nil {
 			return nil, errors.Join(fmt.Errorf("bound firecracker %d: %w", cmd.Process.Pid, err), end(cmd))
 		}
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
 
 	if err := c.await(ctx, cmd, exited, console); err != nil {
 		return nil, err
