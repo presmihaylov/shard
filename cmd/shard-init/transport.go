@@ -98,17 +98,31 @@ func (t *transport) fail(err error) error {
 	report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: err.Error(), Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
 	for {
 		heard, sendErr := t.tell(report)
-		if sendErr != nil {
-			return errors.Join(err, sendErr)
-		}
-		if heard {
+		if heard && sendErr == nil {
 			return err
+		}
+		if sendErr != nil {
+			// The host went while the guest died; the next one gets the report.
+			t.detach(nil)
 		}
 		select {
 		case <-t.attached:
+		// The guest loop is over, so a late attach replays the state here or blocks forever.
+		case command := <-t.g.commands:
+			command()
 		case <-deadline:
 			return fmt.Errorf("%w; no host attached to hear it", err)
 		}
+	}
+}
+
+// detach forgets the control connection, all of them for nil, so a report waits for the next host instead of a dead one.
+func (t *transport) detach(conn net.Conn) {
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+
+	if conn == nil || t.control == conn {
+		t.control = nil
 	}
 }
 
@@ -219,6 +233,7 @@ func (t *transport) restarted(count models.RestartCount) error {
 
 // serveControl takes the host's messages until it hangs up, and answers each with done or failure.
 func (t *transport) serveControl(conn net.Conn) {
+	defer t.detach(conn)
 	r := bufio.NewReader(conn)
 	for {
 		var m supervisor.Message

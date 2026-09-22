@@ -3,13 +3,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -123,6 +126,17 @@ func TestTransportFilesRefuseWhatTheyCannotCopy(t *testing.T) {
 	if _, err := supervisor.Stat(ctx, dial, filepath.Join(dir, "missing")); err == nil || !strings.Contains(err.Error(), "no such file") {
 		t.Fatalf("stat of a missing path gave %v, want the guest's not-exist", err)
 	}
+	// A fifo would block the guest's open forever, so the get refuses it before the reply.
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Get(ctx, dial, fifo, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("get of a fifo gave %v, want a refusal", err)
+	}
+	if got, err := supervisor.Stat(ctx, dial, fifo); err != nil || fs.FileMode(got.Mode).Type() != fs.ModeNamedPipe || got.Dir {
+		t.Fatalf("stat of a fifo gave %+v, %v, want its mode", got, err)
+	}
 	// The guest refuses the header, so its reason must beat the broken pipe the rest of the payload meets.
 	want := payload(t)
 	err := supervisor.Put(ctx, dial, filepath.Join(dir, "nowhere", "blob"), 0o600, int64(len(want)), bytes.NewReader(want))
@@ -178,6 +192,7 @@ func TestFailTellsTheAttachedHostBeforeTheExit(t *testing.T) {
 	host, guest := net.Pipe()
 	defer host.Close()
 	tr := &transport{control: guest, attached: make(chan struct{}, 1)}
+	tr.g = newGuest(tr, restartPolicy{})
 
 	cause := errors.New("power off: no such device")
 	failed := make(chan error, 1)
@@ -197,26 +212,101 @@ func TestFailTellsTheAttachedHostBeforeTheExit(t *testing.T) {
 	}
 }
 
-func TestFailWaitsForTheFirstHost(t *testing.T) {
-	host, guest := net.Pipe()
-	defer host.Close()
-	tr := &transport{attached: make(chan struct{}, 1)}
+// hasControl says whether a host is attached, which a test waits on after a hang-up.
+func (t *transport) hasControl() bool {
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
 
+	return t.control != nil
+}
+
+// deadTransport is a guest whose loop has ended: the listeners are up, the control port accepts, and nobody runs supervise.
+func deadTransport(t *testing.T) (*transport, supervisor.Dialer) {
+	t.Helper()
+	dir := shortDir(t)
+	l, err := net.Listen("unix", filepath.Join(dir, fmt.Sprintf("%d.sock", supervisor.ControlPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	tr := &transport{attached: make(chan struct{}, 1)}
+	tr.g = newGuest(tr, restartPolicy{})
+	go tr.acceptControl(l)
+
+	return tr, func(ctx context.Context, port uint32) (net.Conn, error) {
+		var d net.Dialer
+
+		return d.DialContext(ctx, "unix", filepath.Join(dir, fmt.Sprintf("%d.sock", port)))
+	}
+}
+
+// expectDeath reads the state replay and then the death a host attaching after the supervisor failed must hear.
+func expectDeath(t *testing.T, c *supervisor.Control) {
+	t.Helper()
+	for _, want := range []string{supervisor.KindState, supervisor.KindSupervisorFailed} {
+		m, err := c.Next()
+		if err != nil || m.Kind != want {
+			t.Fatalf("the host read %+v (%v), want %s", m, err, want)
+		}
+	}
+}
+
+func TestFailWaitsForTheFirstHost(t *testing.T) {
+	tr, dial := deadTransport(t)
 	failed := make(chan error, 1)
 	go func() { failed <- tr.fail(errSupervisor) }()
 
-	// The host attaches a moment later, the way one does while the guest still boots.
+	// The host attaches a moment later, the way one does while the guest still boots, through the real attach.
 	time.Sleep(50 * time.Millisecond)
-	tr.controlMu.Lock()
-	tr.control = guest
-	tr.controlMu.Unlock()
-	tr.attached <- struct{}{}
-
-	_ = host.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var m supervisor.Message
-	if err := supervisor.ReadMessage(bufio.NewReader(host), &m); err != nil || m.Kind != supervisor.KindSupervisorFailed {
-		t.Fatalf("the late host read %+v (%v), want supervisor-failed", m, err)
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer c.Close()
+	expectDeath(t, c)
+	if err := <-failed; !errors.Is(err, errSupervisor) {
+		t.Fatalf("fail returned %v, want the supervisor error", err)
+	}
+}
+
+func TestFailWaitsPastAHostThatLeft(t *testing.T) {
+	tr, dial := deadTransport(t)
+	ctx := testContext(t)
+	// The guest loop is still alive while the first host comes and goes.
+	alive := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case command := <-tr.g.commands:
+				command()
+			case <-alive:
+				return
+			}
+		}
+	}()
+	first, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, err := first.Next(); err != nil || m.Kind != supervisor.KindState {
+		t.Fatalf("the first host read %+v, %v", m, err)
+	}
+	// The first host hangs up before the death; the guest must forget it and wait for the next.
+	first.Close()
+	for tr.hasControl() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(alive)
+
+	failed := make(chan error, 1)
+	go func() { failed <- tr.fail(errSupervisor) }()
+	time.Sleep(50 * time.Millisecond)
+	second, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	expectDeath(t, second)
 	if err := <-failed; !errors.Is(err, errSupervisor) {
 		t.Fatalf("fail returned %v, want the supervisor error", err)
 	}
@@ -227,6 +317,7 @@ func TestFailGivesUpWhenNoHostComes(t *testing.T) {
 	failureGrace = 100 * time.Millisecond
 	t.Cleanup(func() { failureGrace = old })
 	tr := &transport{attached: make(chan struct{}, 1)}
+	tr.g = newGuest(tr, restartPolicy{})
 
 	err := tr.fail(errSupervisor)
 	if !errors.Is(err, errSupervisor) || !strings.Contains(err.Error(), "no host attached") {

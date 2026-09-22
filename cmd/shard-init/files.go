@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -36,7 +37,7 @@ func serveFiles(conn net.Conn) {
 		return
 	}
 
-	stat, err := serveFile(conn, header)
+	stat, src, err := serveFile(conn, header)
 	if err != nil {
 		if err := supervisor.WriteMessage(conn, supervisor.FileReply{Error: err.Error()}); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init:", err)
@@ -49,50 +50,68 @@ func serveFiles(conn net.Conn) {
 
 		return
 	}
-	if header.Op != supervisor.OpGet {
+	if src == nil {
 		return
 	}
-	if err := sendFile(conn, header.Path, stat.Size); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init:", err)
+	defer src.Close()
+	if _, err := io.CopyN(conn, src, stat.Size); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: send", header.Path+":", err)
 	}
 }
 
-func serveFile(conn net.Conn, header supervisor.FileHeader) (supervisor.FileStat, error) {
+// serveFile does the operation and, for a get, hands back the open file, so what the reply describes is what the bytes come from.
+func serveFile(conn net.Conn, header supervisor.FileHeader) (supervisor.FileStat, *os.File, error) {
 	if !filepath.IsAbs(header.Path) {
-		return supervisor.FileStat{}, fmt.Errorf("a guest path must be absolute, got %q", header.Path)
+		return supervisor.FileStat{}, nil, fmt.Errorf("a guest path must be absolute, got %q", header.Path)
 	}
 
 	switch header.Op {
 	case supervisor.OpStat:
-		return statFile(header.Path)
-	case supervisor.OpGet:
-		stat, err := statFile(header.Path)
+		info, err := os.Stat(header.Path)
 		if err != nil {
-			return supervisor.FileStat{}, err
-		}
-		if stat.Dir {
-			return supervisor.FileStat{}, fmt.Errorf("%s is a directory; a get takes one file", header.Path)
+			return supervisor.FileStat{}, nil, err
 		}
 
-		return stat, nil
+		return statOf(info), nil, nil
+	case supervisor.OpGet:
+		return openFile(header.Path)
 	case supervisor.OpPut:
 		if err := receiveFile(conn, header); err != nil {
-			return supervisor.FileStat{}, err
+			return supervisor.FileStat{}, nil, err
+		}
+		info, err := os.Stat(header.Path)
+		if err != nil {
+			return supervisor.FileStat{}, nil, err
 		}
 
-		return statFile(header.Path)
+		return statOf(info), nil, nil
 	default:
-		return supervisor.FileStat{}, fmt.Errorf("the host asked for %q, which the guest does not take", header.Op)
+		return supervisor.FileStat{}, nil, fmt.Errorf("unknown files op %q", header.Op)
 	}
 }
 
-func statFile(path string) (supervisor.FileStat, error) {
-	info, err := os.Stat(path)
+// openFile opens a get's source and refuses anything but a regular file: a fifo would block the open, a directory has no bytes.
+func openFile(path string) (supervisor.FileStat, *os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return supervisor.FileStat{}, err
+		return supervisor.FileStat{}, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return supervisor.FileStat{}, nil, errors.Join(err, f.Close())
+	}
+	if info.IsDir() {
+		return supervisor.FileStat{}, nil, errors.Join(fmt.Errorf("%s is a directory; a get takes one file", path), f.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return supervisor.FileStat{}, nil, errors.Join(fmt.Errorf("%s is a %s, not a regular file; a get takes one file", path, info.Mode().Type()), f.Close())
 	}
 
-	return supervisor.FileStat{Name: info.Name(), Size: info.Size(), Mode: uint32(info.Mode()), ModTime: info.ModTime(), Dir: info.IsDir()}, nil
+	return statOf(info), f, nil
+}
+
+func statOf(info os.FileInfo) supervisor.FileStat {
+	return supervisor.FileStat{Name: info.Name(), Size: info.Size(), Mode: uint32(info.Mode()), ModTime: info.ModTime(), Dir: info.IsDir()}
 }
 
 // receiveFile takes the host's bytes into a temp name beside the target, so a copy that dies midway leaves the old file whole.
@@ -129,21 +148,6 @@ func fillFile(f *os.File, conn net.Conn, header supervisor.FileHeader) error {
 func removeTemp(name string) error {
 	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
-	}
-
-	return nil
-}
-
-// sendFile streams exactly the size the reply promised; a file that changed meanwhile ends the stream short, which the host reports.
-func sendFile(conn net.Conn, path string, size int64) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if _, err := io.CopyN(conn, f, size); err != nil {
-		return fmt.Errorf("send %s: %w", path, err)
 	}
 
 	return nil
