@@ -166,6 +166,12 @@ The guest reaches the resolver and the proxy on the bridge address, so a host fi
 common case. Run `iptables -I INPUT -i shard0 -j ACCEPT` there, or `ufw allow in on shard0`, before
 the suite; the host check fails by name when the policy is `DROP` and no such rule exists.
 
+`SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default, and the daemon
+mounts the XFS image over it. `MEMORY` is the `--memory` of every create, 256 MiB by default, and
+`DATA_DISK` the `--data-disk` of the daemon, 8192 MiB. The run deletes its root and the image
+beside it, so it refuses a `SHARD_ROOT` that already holds files unless the marker file
+`<root>.e2e-owned` names it as one of its own; point it at an empty or absent path.
+
 ## Refuse, never downgrade
 
 A provider that cannot do an optional verb returns `models.Unsupported(provider, verb)`. That error

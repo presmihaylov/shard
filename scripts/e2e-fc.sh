@@ -1,24 +1,7 @@
 #!/usr/bin/env bash
 # SHARD-268: the whole sandbox lifecycle on Firecracker, from an install to a clean host.
-# It needs /dev/kvm, which no CI runner and no cloud devbox has, so nothing runs it on its own:
-# rent a bare-metal box, run it, destroy the box. CI, make check, make e2e and make devbox-e2e
-# never invoke it; make e2e-firecracker is the one caller.
-#
-#   sudo ./scripts/e2e-fc.sh
-#
-# It sources the helpers of scripts/e2e.sh and runs the same shape over --provider firecracker: it
-# installs the two binaries, starts the daemon over its own root, which the daemon turns into a
-# loopback XFS image on an ext4 host, creates a microVM with --memory, execs into it, fronts it
-# through the proxy with a secret and a policy, restarts the daemon under it, stops, clones and
-# removes it, and proves the host holds nothing the run left: no tap, no vmm, no image, no fstab line.
-#
-# Environment, over what scripts/e2e.sh takes:
-#   SHARD_ROOT          where this run keeps its state (default /var/lib/shard-fc-e2e); the daemon mounts an XFS image over it
-#   MEMORY              the --memory of every create, in MiB (default 256)
-#   DATA_DISK           the --data-disk of the daemon, in MiB (default 8192)
-#   SHARD_KERNEL        a guest kernel on this host, with SHARD_KERNEL_SHA256; unset, the daemon fetches the release
-#
-# The snapshot verbs refuse by name until SHARD-44 lands; the run proves the refusals and then that the sandbox runs on.
+# It needs /dev/kvm, which no CI runner and no cloud devbox has, so nothing runs it on its own.
+# docs/provider.md holds the runbook, the environment it reads, and the rule that keeps it out of CI.
 
 # The library reads these before its own defaults, so the run never lands on the gVisor root.
 export SHARD_ROOT=${SHARD_ROOT:-/var/lib/shard-fc-e2e}
@@ -32,8 +15,9 @@ unset E2E_LIB_ONLY
 
 MEMORY=${MEMORY:-256}
 DATA_DISK=${DATA_DISK:-8192}
-# The image the daemon provisions beside the root, and the lock it takes to do so (services/datadir).
-DATA_IMAGE="${SHARD_ROOT}.xfs"
+# The image the daemon provisions beside the root (services/datadir). check_root normalises SHARD_ROOT first, so this waits for it.
+DATA_IMAGE=""
+ROOT_MARKER=""
 # The sandboxes the feature steps hold, so a step that fails mid-flight still gives them back.
 EXIT_ID=""
 
@@ -59,11 +43,29 @@ start_daemon() {
 # fstab_line is what services/datadir appends, byte for byte, so the teardown removes that line and no other.
 fstab_line() { printf '%s %s xfs loop 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
 
-# forget_fstab drops the run's own line. The file is rewritten in place rather than moved, so its mode and owner stay.
+# forget_fstab drops the run's own line through a temp file in /etc, so an interrupt never leaves a half-written fstab.
 forget_fstab() {
-	local kept
-	kept=$(grep -vxF -- "$(fstab_line)" /etc/fstab || true)
-	printf '%s\n' "${kept}" >/etc/fstab
+	local kept status tmp
+	grep -qxF -- "$(fstab_line)" /etc/fstab || return 0
+	kept=$(grep -vxF -- "$(fstab_line)" /etc/fstab) && status=0 || status=$?
+	[ "${status}" -le 1 ] || fail "read /etc/fstab: grep exited ${status}"
+	tmp=$(mktemp /etc/fstab.e2e-fc.XXXXXX)
+	chmod --reference=/etc/fstab "${tmp}"
+	chown --reference=/etc/fstab "${tmp}"
+	if [ -n "${kept}" ]; then
+		printf '%s\n' "${kept}" >"${tmp}"
+	fi
+	mv "${tmp}" /etc/fstab
+}
+
+# own_root refuses a root this run did not make, because wipe_root below is an rm -rf and check_root guards only / and the production root.
+own_root() {
+	[ -e "${SHARD_ROOT}" ] || return 0
+	[ -d "${SHARD_ROOT}" ] || fail "${SHARD_ROOT} is not a directory: name a root of this suite's own"
+	if [ -f "${ROOT_MARKER}" ]; then
+		return 0
+	fi
+	[ -z "$(/bin/ls -A "${SHARD_ROOT}")" ] || fail "${SHARD_ROOT} holds files and ${ROOT_MARKER} does not exist: this run deletes no directory it did not make, so name an empty or absent root"
 }
 
 # wipe_root is the library's plus what the firecracker daemon put beside the root: the mount over it, the image and its fstab line.
@@ -83,8 +85,6 @@ record_field() { grep -o "\"$2\": *\"[^\"]*\"" "${SHARD_ROOT}/sandboxes/$1/sandb
 
 # record_pid reads the pid the record holds, which on firecracker is the vmm.
 record_pid() { grep -o '"pid": *[0-9]*' "${SHARD_ROOT}/sandboxes/$1/sandbox.json" | grep -o '[0-9]*$'; }
-
-trap on_exit EXIT
 
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives /dev/kvm, a tap and nft, so this needs root"
@@ -111,7 +111,14 @@ say "no other sandbox holds a link on this host"
 [ -z "$(vmm_pids)" ] || fail "a firecracker process already drives ${SHARD_ROOT}: $(vmm_pids)"
 
 check_root
+DATA_IMAGE="${SHARD_ROOT}.xfs"
+ROOT_MARKER="${SHARD_ROOT}.e2e-owned"
+own_root
 say "this run owns the root ${SHARD_ROOT} and the image ${DATA_IMAGE}"
+
+# The marker outlives a crashed run, so the next one recognises its own root; only now may the teardown delete anything.
+: >"${ROOT_MARKER}"
+trap on_exit EXIT
 
 step "install shard and its guest supervisor"
 cd "${HERE}/.."
@@ -440,6 +447,7 @@ say "the socket is gone"
 
 step "clean up"
 teardown
+rm -f "${ROOT_MARKER}"
 [ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
 [ ! -e "${DATA_IMAGE}" ] || fail "the run's own image ${DATA_IMAGE} is still on the host"
 grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line for ${SHARD_ROOT}"
