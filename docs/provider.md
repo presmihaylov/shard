@@ -172,6 +172,11 @@ mounts the XFS image over it. `MEMORY` is the `--memory` of every create, 256 Mi
 beside it, so it refuses a `SHARD_ROOT` that already holds files unless the marker file
 `<root>.e2e-owned` names it as one of its own; point it at an empty or absent path.
 
+The bridge `shard0` and the nft tables `inet shard` and `bridge shard` are host-wide, one set for the
+whole box rather than one per root, so the teardown drops all three and the last step proves they are
+gone. Two runs on one box therefore collide over them: run this suite and any other e2e on the same
+box one at a time.
+
 ## Refuse, never downgrade
 
 A provider that cannot do an optional verb returns `models.Unsupported(provider, verb)`. That error

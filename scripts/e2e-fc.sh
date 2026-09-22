@@ -14,6 +14,8 @@ E2E_LIB_ONLY=1
 unset E2E_LIB_ONLY
 
 MEMORY=${MEMORY:-256}
+# The bridge and the two policy tables the daemon makes are host-wide, not per root, so two runs on one box collide over them.
+HOST_BRIDGE=${HOST_BRIDGE:-shard0}
 DATA_DISK=${DATA_DISK:-8192}
 # The image the daemon provisions beside the root (services/datadir). check_root normalises SHARD_ROOT first, so this waits for it.
 DATA_IMAGE=""
@@ -78,13 +80,27 @@ own_root() {
 	[ -z "$(/bin/ls -A "${SHARD_ROOT}")" ] || fail "${SHARD_ROOT} holds files and ${ROOT_MARKER} does not exist: this run deletes no directory it did not make, so name an empty or absent root"
 }
 
-# wipe_root is the library's plus what the firecracker daemon put beside the root: the mount over it, the image and its fstab line.
+# clear_host_net drops the host-wide network state the daemon leaves: a run that keeps it collides with the next run and with the other suites.
+clear_host_net() {
+	local table
+	for table in inet bridge; do
+		if nft list table "${table}" shard >/dev/null 2>&1; then
+			nft delete table "${table}" shard
+		fi
+	done
+	if ip link show "${HOST_BRIDGE}" >/dev/null 2>&1; then
+		ip link del "${HOST_BRIDGE}"
+	fi
+}
+
+# wipe_root is the library's plus what the firecracker daemon put beside the root and on the host: the mount over it, the image, its fstab line, the bridge and the policy tables.
 wipe_root() {
 	unmount_under "${SHARD_ROOT}"
 	umount -l "${SHARD_ROOT}" >/dev/null 2>&1 || true
 	rm -rf "${SHARD_ROOT}" || true
 	rm -f "${DATA_IMAGE}" "${DATA_IMAGE}.part" "${DATA_IMAGE}.lock"
 	forget_fstab
+	clear_host_net
 }
 
 # vmm_pids lists every firecracker process driving a socket under this root, and no other root's.
@@ -450,6 +466,7 @@ step "prove the host holds nothing the run left"
 absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
+say "the tap, the vmm and the mount are gone; the bridge and the policy tables go with the teardown below"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
@@ -461,8 +478,11 @@ rm -f "${ROOT_MARKER}"
 [ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
 [ ! -e "${DATA_IMAGE}" ] || fail "the run's own image ${DATA_IMAGE} is still on the host"
 grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line for ${SHARD_ROOT}"
-say "the root, the image and the fstab line are gone"
+ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
+nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
+nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
+say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE} and both shard nft tables are gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, logs, exec, an entrypoint exit, network, policy, proxy, daemon restart, reconcile, refused pause, resume and fork, stop, clone twice, start, rm, prune, daemon down, and a clean host"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, logs, exec, an entrypoint exit, network, policy, proxy, daemon restart, reconcile, refused pause, resume and fork, stop, clone twice, start, rm, prune, daemon down, and a host with no bridge and no policy table left"
