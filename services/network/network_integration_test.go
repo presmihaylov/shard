@@ -4,6 +4,7 @@ package network_test
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -130,6 +131,22 @@ func TestAllocateBuildsTheNamespaceAndItsRoute(t *testing.T) {
 	}
 	if !strings.Contains(link, "master "+testBridge) {
 		t.Errorf("%s is not a port of %s: %q", spec.HostInterface, testBridge, strings.TrimSpace(link))
+	}
+}
+
+// The first lease is pinned by the Allocate that takes it, so a guest whose create never reapplies the rules cannot send as another.
+func TestTheFirstAllocatePinsItsOwnPort(t *testing.T) {
+	for name, open := range map[string]func(*testing.T) (*network.Service, *netns.Manager){"veth": newService, "tap": newTapService} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := open(t)
+			spec := allocate(t, s, "amber-otter")
+
+			table := run(t, "nft", "list", "table", "bridge", "shard")
+			pin := fmt.Sprintf("iifname %q ether type ip ip saddr != %s drop", spec.HostInterface, spec.Address.Addr())
+			if !strings.Contains(table, pin) {
+				t.Errorf("the bridge table does not pin %s to %s after the first Allocate:\n%s", spec.HostInterface, spec.Address.Addr(), table)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,5 @@
-// Package network gives every sandbox its own network namespace, or a tap when it is a VM, an address
-// from a pool and a way out through the host. Host netfilter is the policy of record on every
-// substrate: nothing a sandbox can reach may depend on a rule that lives inside the sandbox, where
-// shard does not control it.
+// Package network leases every sandbox an address and a port on the host bridge, a veth into its own
+// namespace or a tap for a VM. Host netfilter is the policy of record, never a rule inside the sandbox.
 package network
 
 import (
@@ -224,13 +222,14 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	if err := s.Ensure(ctx); err != nil {
-		return models.NetworkSpec{}, err
-	}
-
 	address, _, err := s.pool.allocate(id)
 	if err != nil {
 		return models.NetworkSpec{}, err
+	}
+
+	// The lease goes first, so the ruleset Ensure renders pins the port before the guest sends a frame.
+	if err := s.Ensure(ctx); err != nil {
+		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
 	}
 
 	built, err := netns.NamespaceExists(id)
