@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vsock"
@@ -23,7 +24,9 @@ type transport struct {
 	// control is the host's live control connection; nil between two, and the state replays on the next.
 	control   net.Conn
 	controlMu sync.Mutex
-	logs      *logSink
+	// attached wakes a death report waiting for its first host; one token, since a report reads the connection itself.
+	attached chan struct{}
+	logs     *logSink
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -48,8 +51,8 @@ func serveTransport(name, root string) error {
 		}
 	}
 
-	listeners := make([]net.Listener, 0, 3)
-	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort} {
+	listeners := make([]net.Listener, 0, 4)
+	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort, supervisor.FilesPort} {
 		l, err := listen(port)
 		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
@@ -63,7 +66,7 @@ func serveTransport(name, root string) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
-	t := &transport{logs: logs}
+	t := &transport{logs: logs, attached: make(chan struct{}, 1)}
 	t.g = newGuest(t, restartPolicy{})
 	// Only a VM has the bound; a test on a Linux host runs unconfined and would read its own cgroup.
 	if root != "" {
@@ -72,13 +75,41 @@ func serveTransport(name, root string) error {
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
 	go logs.accept(listeners[2])
+	go t.acceptFiles(listeners[3])
 
 	if err := t.g.supervise(); err != nil {
-		return fmt.Errorf("%w: %w", errSupervisor, err)
+		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 
 	// The stop is done, so the VM has nothing left to run; a powered-off guest is what the host waits for.
-	return powerOff()
+	if err := powerOff(); err != nil {
+		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
+	}
+
+	return nil
+}
+
+// A host that dials while the guest boots is at most this far from attaching, so a death waits this long for it.
+var failureGrace = 10 * time.Second
+
+// fail carries the supervisor's own death to the host before the exit 125 halts the VM, where runsc wait would read the code on gVisor.
+func (t *transport) fail(err error) error {
+	deadline := time.After(failureGrace)
+	report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: err.Error(), Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
+	for {
+		heard, sendErr := t.tell(report)
+		if sendErr != nil {
+			return errors.Join(err, sendErr)
+		}
+		if heard {
+			return err
+		}
+		select {
+		case <-t.attached:
+		case <-deadline:
+			return fmt.Errorf("%w; no host attached to hear it", err)
+		}
+	}
 }
 
 // listenerFor picks the socket family: vsock in a VM, unix sockets under a directory in a test.
@@ -133,6 +164,10 @@ func (t *transport) attach(conn net.Conn) error {
 			return
 		}
 		t.control = conn
+		select {
+		case t.attached <- struct{}{}:
+		default:
+		}
 	})
 
 	return err
@@ -140,14 +175,21 @@ func (t *transport) attach(conn net.Conn) error {
 
 // send writes one message to the host, or drops it when no host is attached: the state replays on the next.
 func (t *transport) send(m supervisor.Message) error {
+	_, err := t.tell(m)
+
+	return err
+}
+
+// tell writes one message to the attached host, and says whether there was one to write to.
+func (t *transport) tell(m supervisor.Message) (bool, error) {
 	t.controlMu.Lock()
 	defer t.controlMu.Unlock()
 
 	if t.control == nil {
-		return nil
+		return false, nil
 	}
 
-	return supervisor.WriteMessage(t.control, m)
+	return true, supervisor.WriteMessage(t.control, m)
 }
 
 func (t *transport) ready() error { return t.send(supervisor.Message{Kind: supervisor.KindReady}) }

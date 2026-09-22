@@ -115,9 +115,14 @@ connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts` out |
+| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
 | 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
 | 5002 | logs | the entrypoint's stdout and stderr, raw; with no host attached the bytes wait |
+| 5003 | files | one connection per operation: a `FileHeader` line naming `stat`, `put` or `get` and an absolute guest path, then a `FileReply` line with the file's shape or the guest's reason; a put sends its bytes after the header, a get receives them after the reply (SHARD-42) |
+
+A put lands under a temp name beside the target and renames once the bytes, the mode and the sync
+are in, so a copy that dies midway leaves the old file whole and no partial one. A get streams
+exactly the size the reply promised. Neither takes a directory.
 
 Every new control connection hears `state` first (ready, the last exit, the count), written on the
 supervisor's own goroutine before any event, so a daemon that restarts, or re-attaches after a
@@ -128,6 +133,12 @@ count into the same files gVisor's pipe fills, so `Wait`, `ExitStatus` and `insp
 `services/supervisor` holds the wire and the host client, which the Firecracker provider reuses. The
 same binary runs the protocol over `-transport unix:<dir>` in the unit tests, on any OS. The host
 side of a tty resize, and `pkg/pty` on darwin, land with the provider (SHARD-218).
+
+On gVisor a supervisor that fails its own bookkeeping exits 125 and the host reads that back with
+`runsc wait`. A VM halts when PID 1 exits and the code is lost with it, so `shard-init` first sends
+`supervisor-failed` on the control connection, with the reason and the exit code 125, and waits up
+to ten seconds for a host to attach when none is, then exits (SHARD-42). The vz provider ignores
+the event today and reads the halt as the guest gone; the Firecracker provider records it (SHARD-41).
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection the host

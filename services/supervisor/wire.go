@@ -18,6 +18,7 @@ const (
 	ControlPort uint32 = 5000
 	ExecPort    uint32 = 5001
 	LogsPort    uint32 = 5002
+	FilesPort   uint32 = 5003
 )
 
 // The kinds a control message carries. The host sends the first four; the guest answers each with done or failure, and sends the rest on its own.
@@ -34,6 +35,8 @@ const (
 	KindRestarts  = "restarts"
 	// KindOOM says the guest hit its memory bound, every guest process is gone, and the VM powers off.
 	KindOOM = "oom"
+	// KindSupervisorFailed is shard-init's own death: a VM halts when PID 1 exits, so the 125 goes over the wire first.
+	KindSupervisorFailed = "supervisor-failed"
 )
 
 // Message is one newline-framed control message; Kind says which of the optional fields it carries.
@@ -55,7 +58,7 @@ type Message struct {
 	Restarts *models.RestartCount `json:"restarts,omitempty"`
 	// OOM on a state replay says the bound took every guest process while no host was attached to hear it.
 	OOM bool `json:"oom,omitempty"`
-	// Error is why the guest could not do what the host asked, on the failure that answers the request.
+	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
 }
 
