@@ -35,7 +35,7 @@ shard daemon
 ```
 
 That is the daemon, in a terminal of its own, and it stays there. On a Mac it picks the `vz`
-provider by itself. The daemon builds the provider on the first verb that needs it, not at boot:
+provider by itself, and `shard info` prints that choice and the reason for it before a daemon is up. The daemon builds the provider on the first verb that needs it, not at boot:
 that verb writes the signed VM shim and the guest supervisor under the root (`docs/macos-signing.md`)
 and fetches the release kernel for this Mac into the root, checked against its hash
 (`docs/kernel.md`). A daemon of the same build finds all three in place; a new build replaces the
