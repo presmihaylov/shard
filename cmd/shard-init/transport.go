@@ -97,13 +97,9 @@ func (t *transport) fail(err error) error {
 	deadline := time.After(failureGrace)
 	report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: err.Error(), Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
 	for {
-		heard, sendErr := t.tell(report)
-		if heard && sendErr == nil {
+		// A failed write already forgot that host; the next one gets the report.
+		if heard, sendErr := t.tell(report); heard && sendErr == nil {
 			return err
-		}
-		if sendErr != nil {
-			// The host went while the guest died; the next one gets the report.
-			t.detach(nil)
 		}
 		select {
 		case <-t.attached:
@@ -121,7 +117,7 @@ func (t *transport) detach(conn net.Conn) {
 	t.controlMu.Lock()
 	defer t.controlMu.Unlock()
 
-	if conn == nil || t.control == conn {
+	if t.control == conn {
 		t.control = nil
 	}
 }
@@ -202,8 +198,13 @@ func (t *transport) tell(m supervisor.Message) (bool, error) {
 	if t.control == nil {
 		return false, nil
 	}
+	err := supervisor.WriteMessage(t.control, m)
+	// Forgotten under the same lock, so a host that attached meanwhile is never the one cleared.
+	if err != nil {
+		t.control = nil
+	}
 
-	return true, supervisor.WriteMessage(t.control, m)
+	return true, err
 }
 
 func (t *transport) ready() error { return t.send(supervisor.Message{Kind: supervisor.KindReady}) }

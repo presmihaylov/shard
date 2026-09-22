@@ -327,3 +327,54 @@ func TestFailGivesUpWhenNoHostComes(t *testing.T) {
 		t.Fatalf("the exit code is %d, want 125", exitCodeFor(err))
 	}
 }
+
+// deadConn is a host whose socket went away: every write fails.
+type deadConn struct{ net.Conn }
+
+func (deadConn) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+// A write that fails forgets that host and no other, so a replacement that attached meanwhile keeps its seat.
+func TestATellThatFailsForgetsOnlyThatHost(t *testing.T) {
+	tr := &transport{attached: make(chan struct{}, 1)}
+	tr.g = newGuest(tr, restartPolicy{})
+	gone, other := net.Pipe()
+	defer other.Close()
+	tr.control = deadConn{gone}
+
+	heard, err := tr.tell(supervisor.Message{Kind: supervisor.KindState})
+	if !heard || err == nil {
+		t.Fatalf("tell = %v, %v; want heard and the write error", heard, err)
+	}
+	if tr.hasControl() {
+		t.Fatal("the dead host is still attached")
+	}
+
+	host, peer := net.Pipe()
+	defer peer.Close()
+	tr.control = host
+	tr.detach(deadConn{gone})
+	if !tr.hasControl() {
+		t.Fatal("a detach of the dead host cleared its replacement")
+	}
+}
+
+// The first host's socket died under the report, and a second attaches while fail waits: the second hears the death.
+func TestFailReachesAHostThatReplacedADeadOne(t *testing.T) {
+	tr, dial := deadTransport(t)
+	gone, other := net.Pipe()
+	defer other.Close()
+	tr.control = deadConn{gone}
+
+	failed := make(chan error, 1)
+	go func() { failed <- tr.fail(errSupervisor) }()
+	time.Sleep(50 * time.Millisecond)
+	second, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	expectDeath(t, second)
+	if err := <-failed; !errors.Is(err, errSupervisor) {
+		t.Fatalf("fail returned %v, want the supervisor error", err)
+	}
+}
