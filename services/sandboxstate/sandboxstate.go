@@ -380,6 +380,42 @@ func (r *Repository) List() ([]models.Sandbox, error) {
 	return sandboxes, unreadable
 }
 
+// RecordedProvider is the substrate that made the records under root, and "" when the root holds none.
+// It creates nothing and opens no image, so a daemon can ask it before it prepares the tree.
+func RecordedProvider(root string) (string, error) {
+	dir := filepath.Join(root, sandboxesDir)
+
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", dir, err)
+	}
+
+	r := &Repository{root: root}
+	for _, entry := range entries {
+		// Anything that could not be an id is not a sandbox.
+		if !entry.IsDir() || ValidID(entry.Name()) != nil {
+			continue
+		}
+
+		sb, err := r.Get(entry.Name())
+		// A directory with no record is a claimed id whose write has not landed, or a half-done delete.
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if sb.Provider != "" {
+			return sb.Provider, nil
+		}
+	}
+
+	return "", nil
+}
+
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
 // refused at the door rather than resolved by a precedence rule nobody would remember.
 var generatedIDShape = regexp.MustCompile(`^[a-z]+-[a-z]+-[0-9a-f]{4}$`)

@@ -31,26 +31,38 @@ reports and the CLI refuses on:
 
 ### What a host picks without --provider
 
-`--provider` always wins. Without it the host picks, so the same command runs unchanged on a box with
-hardware virtualization and on one without:
+`--provider` always wins. Without it the root decides first and the host decides second, so the same
+command runs unchanged on a box with hardware virtualization and on one without:
 
-| The host | The substrate | The reason |
+| The root and the host | The substrate | The reason |
 |---|---|---|
-| Linux with `/dev/kvm` | Firecracker | `/dev/kvm is present` |
-| Linux without it | gVisor | `no /dev/kvm` |
-| macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
+| any root that holds records | what made them | `it made the records under <root>` |
+| a root with none, on Linux, `/dev/kvm` opens | Firecracker | `/dev/kvm opens` |
+| a root with none, on Linux, no `/dev/kvm` | gVisor | `no /dev/kvm` |
+| a root with none, on Linux, `/dev/kvm` will not open | gVisor | `/dev/kvm does not open: <error>` |
+| a root with none, on macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
+
+**A root keeps the substrate that made its records.** No other substrate can read them, so a daemon
+that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has.
+`--provider` still overrides that, and switching a host with records is what the warning above says
+it is.
+
+**The probe opens `/dev/kvm`, it does not stat it.** A node this daemon cannot open runs no microVM,
+so a present but unusable one leaves the pick at gVisor instead of failing every create.
 
 **Sysbox and runc are never picked for a host.** One is single-tenant and the other is a plain
-container on the host kernel, so only `--provider` names either.
+container on the host kernel, so only `--provider`, or a root they already made records under, names
+either.
 
-`shard info` prints the substrate and the reason. It asks the host, not the socket, so it answers
-before a daemon exists and says what the next one picks; `shard daemon status` says what the daemon
-that is up runs on.
+`shard info` prints the substrate and the reason. It asks the host and the root, not the socket, so
+it answers before a daemon exists and says what one started now would run. `shard daemon status` says
+what the daemon that is already up runs on, which differs when that daemon was started with other
+flags.
 
 ```
 $ shard info
 provider   firecracker
-reason     /dev/kvm is present
+reason     /dev/kvm opens
 ```
 
 ### systemd is not a sandbox's init

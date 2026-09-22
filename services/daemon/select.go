@@ -10,6 +10,7 @@ import (
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // KVMDevice is what a host exposes when it can run a virtual machine, and so what firecracker needs.
@@ -26,29 +27,42 @@ func (s Selection) String() string {
 	return s.Provider + ": " + s.Reason
 }
 
-// SelectProvider names the substrate a daemon started with this --provider runs sandboxes on. Only
-// --provider names sysbox or runc: one is single-tenant and the other is a plain container, so a host
-// is never handed either of them by a probe.
-func SelectProvider(named string) Selection {
-	return selectProvider(named, KVMDevice)
+// SelectProvider names the substrate a daemon started over this root with this --provider runs sandboxes
+// on. A probe hands a host neither sysbox nor runc, since one is single-tenant and the other a plain
+// container on the host kernel: only --provider or the root's own records name either.
+func SelectProvider(named, root string) (Selection, error) {
+	return selectProvider(named, root, KVMDevice)
 }
 
-func selectProvider(named, kvm string) Selection {
+func selectProvider(named, root, kvm string) (Selection, error) {
 	if named != "" {
-		return Selection{Provider: named, Reason: "named by --provider"}
+		return Selection{Provider: named, Reason: "named by --provider"}, nil
+	}
+
+	// A root that already holds records keeps the substrate that made them: no other one can read them.
+	recorded, err := sandboxstate.RecordedProvider(root)
+	if err != nil {
+		return Selection{}, fmt.Errorf("read what made the records under %s: %w", root, err)
+	}
+	if recorded != "" {
+		return Selection{Provider: recorded, Reason: "it made the records under " + root}, nil
 	}
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.
 	if runtime.GOOS == "darwin" {
-		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}
+		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}, nil
 	}
 
-	_, err := os.Stat(kvm)
-	if err == nil {
-		return Selection{Provider: firecracker.Name, Reason: kvm + " is present"}
-	}
+	// A node this process cannot open runs no microVM, so the probe opens it rather than stat it.
+	dev, err := os.OpenFile(kvm, os.O_RDWR, 0)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Selection{Provider: gvisor.Name, Reason: "no " + kvm}
+		return Selection{Provider: gvisor.Name, Reason: "no " + kvm}, nil
+	}
+	if err != nil {
+		return Selection{Provider: gvisor.Name, Reason: fmt.Sprintf("%s does not open: %v", kvm, err)}, nil
+	}
+	if err := dev.Close(); err != nil {
+		return Selection{}, fmt.Errorf("close %s: %w", kvm, err)
 	}
 
-	return Selection{Provider: gvisor.Name, Reason: fmt.Sprintf("%s does not answer: %v", kvm, err)}
+	return Selection{Provider: firecracker.Name, Reason: kvm + " opens"}, nil
 }
