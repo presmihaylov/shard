@@ -22,8 +22,6 @@ import (
 type Client struct {
 	socket string
 	vsock  string
-	// Zero means callTimeout; a test shortens it.
-	timeout time.Duration
 }
 
 // Start spawns firecracker in its own group, so it outlives this process, puts the microVM in over the API and boots it; the console goes to cfg.Console.
@@ -159,14 +157,21 @@ func (c *Client) State() (Info, error) {
 
 // Kill ends the vmm by the pid behind its socket, the only forced stop firecracker has; a socket nobody answers is already ended.
 func (c *Client) Kill() error {
-	info, err := c.State()
-	if absent(err) {
-		return nil
+	deadline := time.Now().Add(resetGrace)
+	for {
+		info, err := c.State()
+		if err == nil {
+			return kill(info.PID)
+		}
+		if absent(err) {
+			return nil
+		}
+		// A reset mid-request is a vmm on its way out, which leaves its socket or answers again; only one that does neither is an error.
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("kill: %w", err)
+		}
+		time.Sleep(resetPoll)
 	}
-	if err != nil {
-		return fmt.Errorf("kill: %w", err)
-	}
-	return kill(info.PID)
 }
 
 // kill ends the vmm with the group Start made it lead, so nothing it spawned outlives it; one that leads no group dies alone.
@@ -288,15 +293,11 @@ func (c *Client) call(method, path string, body, reply any) (int, error) {
 
 // dial opens one bounded connection to a unix socket.
 func (c *Client) dial(socket string) (net.Conn, error) {
-	timeout := c.timeout
-	if timeout == 0 {
-		timeout = callTimeout
-	}
-	conn, err := net.DialTimeout("unix", socket, timeout)
+	conn, err := net.DialTimeout("unix", socket, callTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", socket, err)
 	}
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(callTimeout)); err != nil {
 		return nil, errors.Join(fmt.Errorf("dial %s: %w", socket, err), conn.Close())
 	}
 

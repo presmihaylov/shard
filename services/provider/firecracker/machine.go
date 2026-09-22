@@ -33,12 +33,10 @@ type machine struct {
 	// swap orders a replacement against close, so no stream is put in after the vmm was let go.
 	swap   sync.Mutex
 	cancel context.CancelFunc
-	// events closes when the control connection ended, which is the guest gone.
-	events chan struct{}
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
-	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
+	// gone is set by the event loop once the vmm no longer runs the VM, so a status needs no socket round trip.
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
@@ -140,7 +138,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 
 // attach opens the control connection to the guest and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, events: make(chan struct{})}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
@@ -187,9 +185,8 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	return m, nil
 }
 
-// follow lands every event the guest sends where the file readers look, until the guest is gone.
+// follow lands every event the guest sends where the file readers look, until the VM is gone.
 func (p *Provider) follow(m *machine) {
-	defer close(m.events)
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
@@ -255,10 +252,9 @@ func (m *machine) markOOM() error {
 	return nil
 }
 
-// reconnect dials the control stream again after a drop, while the vmm says the VM runs.
+// reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.
 func (p *Provider) reconnect(m *machine) (bool, error) {
-	deadline := time.Now().Add(startGrace)
-	for m.alive() && time.Now().Before(deadline) {
+	for m.alive() {
 		conn, err := m.dial(context.Background(), supervisor.ControlPort)
 		if err != nil {
 			time.Sleep(pollInterval)
@@ -269,9 +265,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
 			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try.
-			if err := control.Close(); err != nil {
-				return false, err
-			}
+			p.keep(m, control.Close())
 			time.Sleep(pollInterval)
 
 			continue

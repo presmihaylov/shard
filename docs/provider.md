@@ -97,7 +97,9 @@ every bound. `Create` checks its spec again, so a clone or a fork is held to the
 `Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
 another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id
 and the new network. It refuses a source that is alive or still mounted, and it reads nothing of the
-source but its status and its state directory. Firecracker copies `overlay.raw` where gVisor copies an overlay layer.
+source but its status and its state directory. Firecracker reflinks `overlay.raw` where gVisor copies
+an overlay layer: the clone shares the source's blocks, and a root whose filesystem cannot (ext4,
+tmpfs) refuses the clone by name rather than copy every byte. XFS and Btrfs can.
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
@@ -136,8 +138,10 @@ the static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under
 `<root>/firecracker`. The host needs `erofs-utils` for the pull. The host speaks to the guest over
 vsock alone, through the socket firecracker proxies it on, so `exec`, `logs` and the exit come the
 way they do on `vz`. The vmm has no stop of its own: a stop tells `shard-init` to end the
-entrypoint and power off, and the grace runs out into a kill of the process. A daemon restart
-adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
+entrypoint and reboot, which is the one guest exit firecracker ends its process on (a power off
+leaves it running), and the grace runs out into a kill of the process. A guest the host can no
+longer reach over vsock is still a running VM: `inspect` says so, and `stop` kills it without a
+grace it could not hear. A daemon restart adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
 the least a guest boots with. The guest has no network until SHARD-43 wires a tap onto the bridge;
 `pause`, `resume` and `fork` refuse by name until SHARD-44 lands the snapshot.
 

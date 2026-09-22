@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -106,8 +108,26 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	return models.SandboxSpec{ID: id, StateDir: dir, BaseDisk: h.erofs, Entrypoint: entrypoint, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}
 }
 
+// requireReflink skips where the root shares no blocks: Clone is refused there, and the suite would prove only the refusal.
+func requireReflink(t *testing.T, root string) {
+	t.Helper()
+
+	probe := filepath.Join(root, "reflink-probe")
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := bundle.Reflink(probe, probe+"-clone")
+	if errors.Is(err, errors.ErrUnsupported) {
+		t.Skipf("%s shares no blocks, so Clone is refused there; put TMPDIR on xfs or btrfs: %v", root, err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
+	requireReflink(t, h.root)
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,
@@ -289,9 +309,77 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	}
 }
 
+// runLong creates and starts a sandbox that runs until it is stopped, and returns the pid of its vmm.
+func (h *harness) runLong(t *testing.T) (models.SandboxSpec, int) {
+	t.Helper()
+
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID == 0 {
+		t.Fatalf("Status after Start = %+v, %v, want running with a pid", status, err)
+	}
+
+	return spec, status.PID
+}
+
+// A control stream the transport drops is dialed again while the VM runs: the sandbox stays running and the stop still reaches the guest.
+func TestADroppedControlStreamIsDialedAgain(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the drop = %+v, %v, want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over the stream dialed again: %v", err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
+// A guest that no longer answers on its control port is still a running VM: Status says so, and Stop kills the vmm instead of waiting out a grace the guest cannot hear.
+func TestStopKillsAVMWhoseGuestNoLongerAnswers(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status with the guest out of reach = %+v, %v, want running", status, err)
+	}
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, 20*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Fatalf("Stop took %s: it waited a grace on a guest that could not hear it", took)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)
+	requireReflink(t, h.root)
 	source := h.newSpec(t, "/bin/sh", "-c", "exit 3")
 	source.Env = []string{"KEPT=1"}
 	if err := h.provider.Create(t.Context(), source); err != nil {
@@ -410,8 +498,8 @@ func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(spec.StateDir, 0o700) })
-	if err := os.Chmod(spec.StateDir, 0o500); err != nil {
+	// A link into a directory that is not there refuses the exit file to root as well, where a mode bit would not.
+	if err := os.Symlink(filepath.Join(spec.StateDir, "missing", "exit.json"), filepath.Join(spec.StateDir, "exit.json")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {

@@ -58,3 +58,9 @@ const startTimeout = 30 * time.Second
 
 // Every call, dial to reply, is bounded, so a vmm that accepts and never answers cannot hold the daemon.
 const callTimeout = 30 * time.Second
+
+// A vmm that resets a call is exiting; a kill gives it this long to leave its socket, or to answer again.
+const (
+	resetGrace = time.Second
+	resetPoll  = 50 * time.Millisecond
+)

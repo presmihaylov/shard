@@ -3,9 +3,9 @@ package bundle_test
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -54,8 +54,8 @@ func TestCloneRootDiskGrowsTheCloneToTheBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CloneRootDisk: %v", err)
 	}
-	if shared != (runtime.GOOS == "darwin") {
-		t.Errorf("shared is %v on %s", shared, runtime.GOOS)
+	if shared != reflinks(t, filepath.Dir(dst)) {
+		t.Errorf("shared = %v, want %v on this filesystem", shared, !shared)
 	}
 
 	info, err := os.Stat(dst)
@@ -80,6 +80,65 @@ func TestCloneRootDiskGrowsTheCloneToTheBound(t *testing.T) {
 	}
 	if !bytes.Contains(clone, []byte(hostname)) {
 		t.Error("the clone lost the base's file")
+	}
+}
+
+// reflinks says whether the filesystem under dir shares blocks, which is what CloneRootDisk reports as shared there.
+func reflinks(t *testing.T, dir string) bool {
+	t.Helper()
+	src := filepath.Join(dir, "probe")
+	if err := os.WriteFile(src, []byte("probe"), 0o600); err != nil {
+		t.Fatalf("write the probe: %v", err)
+	}
+	err := bundle.Reflink(src, filepath.Join(dir, "probe-clone"))
+	if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("Reflink the probe: %v", err)
+	}
+
+	return err == nil
+}
+
+func TestReflinkRefusesAnExistingTarget(t *testing.T) {
+	base := baseDisk(t)
+	dst := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(dst, []byte("taken"), 0o600); err != nil {
+		t.Fatalf("plant the target: %v", err)
+	}
+
+	if err := bundle.Reflink(base, dst); err == nil {
+		t.Fatal("the reflink took an existing target")
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "taken" {
+		t.Fatalf("the target after a refused reflink: %q, %v", got, err)
+	}
+}
+
+func TestReflinkSharesOrRefusesAndNeverCopies(t *testing.T) {
+	base := baseDisk(t)
+	dst := filepath.Join(t.TempDir(), "rootfs.ext4")
+
+	err := bundle.Reflink(base, dst)
+	if errors.Is(err, errors.ErrUnsupported) {
+		if _, statErr := os.Stat(dst); statErr == nil {
+			t.Fatal("a refused reflink left a copy behind")
+		}
+
+		return
+	}
+	if err != nil {
+		t.Fatalf("Reflink: %v", err)
+	}
+	want, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatalf("read the base: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read the clone: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("the clone differs from the base")
 	}
 }
 

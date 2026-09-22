@@ -81,14 +81,19 @@ func fakeVMM() error {
 	if err != nil {
 		return err
 	}
-	f := &fake{socket: *socket, state: "Not started"}
+	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
-	<-signals
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2)
+	// USR1 severs the guest's transport for good and USR2 drops the streams once, so a test can lose the control stream of a live VM.
+	sig := <-signals
+	for sig == syscall.SIGUSR1 || sig == syscall.SIGUSR2 {
+		f.drop(sig == syscall.SIGUSR1)
+		sig = <-signals
+	}
 	if f.stop() {
 		// The guest's exit ends the group, this process with it.
 		select {}
@@ -112,6 +117,9 @@ type fake struct {
 	cmd   *exec.Cmd
 	// drives is every drive put, in order, which with the boot args is what a test reads back from bootFile.
 	drives []json.RawMessage
+	// streams is every host connection through the vsock device, so a drop can end them all; severed refuses the ones after it.
+	streams map[net.Conn]struct{}
+	severed bool
 }
 
 // bootFile is written beside the api socket at the start, with what the vmm was told to boot.
@@ -260,7 +268,7 @@ func (f *fake) start() error {
 			if err != nil {
 				return
 			}
-			go proxy(conn, dir)
+			go f.proxy(conn, dir)
 		}
 	}()
 
@@ -279,8 +287,36 @@ func (f *fake) stop() bool {
 	return true
 }
 
+// drop ends every stream through the vsock device, as a transport reset would, and with severed refuses every one after.
+func (f *fake) drop(severed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.severed = severed
+	for conn := range f.streams {
+		_ = conn.Close()
+	}
+}
+
+// hold registers a stream for drop, and says whether the transport still carries any.
+func (f *fake) hold(conn net.Conn) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.severed {
+		return false
+	}
+	f.streams[conn] = struct{}{}
+
+	return true
+}
+
+func (f *fake) let(conn net.Conn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.streams, conn)
+}
+
 // proxy is one host connection through the vsock device: CONNECT <port> in, OK back, and then the guest's own stream.
-func proxy(conn net.Conn, dir string) {
+func (f *fake) proxy(conn net.Conn, dir string) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadString('\n')
@@ -291,6 +327,10 @@ func proxy(conn net.Conn, dir string) {
 	if err != nil {
 		return
 	}
+	if !f.hold(conn) {
+		return
+	}
+	defer f.let(conn)
 	// Nothing listening in the guest ends the connection without a word, as firecracker does.
 	guest, err := net.Dial("unix", filepath.Join(dir, fmt.Sprintf("%d.sock", port)))
 	if err != nil {

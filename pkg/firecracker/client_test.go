@@ -250,3 +250,47 @@ func TestARefusalCarriesTheVmmsOwnWordsAndEndsIt(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// resetting is a socket whose owner ends every connection unanswered, as a vmm mid-exit does; gone closes the listener after the first.
+func resetting(t *testing.T, socket string, gone bool) {
+	t.Helper()
+
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+			if gone {
+				listener.Close()
+
+				return
+			}
+		}
+	}()
+}
+
+func TestKillOutwaitsAVmmThatResetsTheCallOnItsWayOut(t *testing.T) {
+	cfg := config(shortRoot(t))
+	resetting(t, cfg.Socket, true)
+
+	if err := firecracker.Over(cfg.Socket, cfg.Vsock).Kill(); err != nil {
+		t.Fatalf("Kill over a vmm that left after the reset = %v, want nil", err)
+	}
+}
+
+func TestKillReportsASocketThatKeepsResetting(t *testing.T) {
+	cfg := config(shortRoot(t))
+	resetting(t, cfg.Socket, false)
+
+	err := firecracker.Over(cfg.Socket, cfg.Vsock).Kill()
+	if err == nil || !strings.Contains(err.Error(), "kill: GET /") {
+		t.Fatalf("Kill over a socket that never answers = %v, want the failed call named", err)
+	}
+}

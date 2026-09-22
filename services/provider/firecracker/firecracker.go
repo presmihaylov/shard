@@ -24,8 +24,8 @@ const Name = "firecracker"
 // Binary is the vmm the provider drives, on PATH wherever firecracker is installed.
 const Binary = "firecracker"
 
-// cmdline boots the guest onto the serial console and hands shard-init the vsock transport and its two disks, in attach order.
-const cmdline = "console=ttyS0 reboot=k panic=1 pci=off -- -transport vsock -base /dev/vda -overlay /dev/vdb -console /dev/ttyS0"
+// cmdline boots the guest onto the serial console and hands shard-init the vsock transport, its two disks in attach order, and -reboot: firecracker exits on a guest reboot, never on a power off.
+const cmdline = "console=ttyS0 reboot=k panic=1 pci=off -- -transport vsock -base /dev/vda -overlay /dev/vdb -console /dev/ttyS0 -reboot"
 
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
 const MinMemoryMiB = 128
@@ -90,6 +90,10 @@ func New(cfg Config) (*Provider, error) {
 		return nil, errors.New("the firecracker provider needs a binary, a kernel, a shard-init, a directory and a state directory lookup")
 	}
 
+	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.
+	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
+		return nil, fmt.Errorf("create the firecracker directory: %w", err)
+	}
 	initrd := filepath.Join(cfg.Dir, initrdFile)
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err

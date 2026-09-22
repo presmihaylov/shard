@@ -14,6 +14,8 @@ func TestGuestBootIsOneDiskOrTwo(t *testing.T) {
 		"root with a base": {guestBoot{Root: "/dev/vda", Base: "/dev/vdb", Overlay: "/dev/vdc"}, true, false},
 		"base alone":       {guestBoot{Base: "/dev/vda"}, true, false},
 		"overlay alone":    {guestBoot{Overlay: "/dev/vdb"}, false, false},
+		"reboot on a disk": {guestBoot{Root: "/dev/vda", Reboot: true}, true, true},
+		"reboot alone":     {guestBoot{Reboot: true}, false, false},
 	}
 
 	for name, c := range cases {

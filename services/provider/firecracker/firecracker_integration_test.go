@@ -167,6 +167,7 @@ func TestAMicroVMBootsAndRunsTheEntrypoint(t *testing.T) {
 
 func TestConformanceOnMicroVMs(t *testing.T) {
 	h := newVMHarness(t)
+	requireReflink(t, h.root)
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,

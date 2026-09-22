@@ -81,8 +81,8 @@ func serveTransport(name string, boot guestBoot) error {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 
-	// The stop is done, so the VM has nothing left to run; a powered-off guest is what the host waits for.
-	if err := powerOff(); err != nil {
+	// The stop is done, so the VM has nothing left to run; a guest that went is what the host waits for.
+	if err := powerOff(boot.Reboot); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 

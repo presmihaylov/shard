@@ -227,9 +227,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
-	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
-	if err := m.control.Load().Stop(); err != nil && !m.status(p).Alive() {
-		return p.release(ctx, m)
+	// The guest forwards TERM to the entrypoint and reboots once it is reaped; a refused request is the guest already gone.
+	if err := m.control.Load().Stop(); err != nil {
+		if !m.status(p).Alive() {
+			return p.release(ctx, m)
+		}
+		// A VM that runs with no stream to its guest heard nothing, so the grace would wait on nobody.
+		return p.end(ctx, m)
 	}
 	ended, err := m.awaitGone(ctx, grace)
 	if err != nil {
@@ -307,8 +311,9 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneFile(filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)); err != nil {
-		return fmt.Errorf("copy the overlay of sandbox %s: %w", sourceID, err)
+	// A clone shares the source's blocks or is refused: a full copy of the overlay is not what the verb promises.
+	if err := bundle.Reflink(filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)); err != nil {
+		return fmt.Errorf("clone the overlay of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
 	// The spec names the copy alone; the image and the run are the source's, as the bundle it copies is on Linux.
