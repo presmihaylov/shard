@@ -83,14 +83,7 @@ func (d *deps) logger() *log.Logger {
 }
 
 func (d *deps) providerName() string {
-	if d.cfg.Provider != "" {
-		return d.cfg.Provider
-	}
-	if runtime.GOOS == "darwin" {
-		return vzvm.Name
-	}
-
-	return gvisor.Name
+	return SelectProvider(d.cfg.Provider).Provider
 }
 
 func (d *deps) imagesLocked() (*image.Service, error) {

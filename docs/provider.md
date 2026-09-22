@@ -9,7 +9,7 @@ code; this page says what the signatures cannot.
 host runs on it. A record names the substrate that made it. Do not switch a host's provider while
 records exist: the other substrate has never heard of those sandboxes.
 
-| | gVisor (`gvisor`, the default on Linux) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`, the default on macOS) | Firecracker (`firecracker`) |
+| | gVisor (`gvisor`) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`) | Firecracker (`firecracker`) |
 |---|---|---|---|---|---|
 | Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a VM per sandbox on Virtualization.framework, one `shard-vz-shim` each | a microVM, needs `/dev/kvm` |
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
@@ -28,6 +28,30 @@ reports and the CLI refuses on:
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
+
+### What a host picks without --provider
+
+`--provider` always wins. Without it the host picks, so the same command runs unchanged on a box with
+hardware virtualization and on one without:
+
+| The host | The substrate | The reason |
+|---|---|---|
+| Linux with `/dev/kvm` | Firecracker | `/dev/kvm is present` |
+| Linux without it | gVisor | `no /dev/kvm` |
+| macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
+
+**Sysbox and runc are never picked for a host.** One is single-tenant and the other is a plain
+container on the host kernel, so only `--provider` names either.
+
+`shard info` prints the substrate and the reason. It asks the host, not the socket, so it answers
+before a daemon exists and says what the next one picks; `shard daemon status` says what the daemon
+that is up runs on.
+
+```
+$ shard info
+provider   firecracker
+reason     /dev/kvm is present
+```
 
 ### systemd is not a sandbox's init
 
