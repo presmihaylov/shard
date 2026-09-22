@@ -55,6 +55,18 @@ func SetOOMGroup(dir string) error {
 	return write(dir, "memory.oom.group", "1")
 }
 
+// Delegate hands a controller down to the cgroup's children, which is what makes its control files
+// appear in them. A cgroup whose own parent withheld the controller has none to hand down.
+func Delegate(dir, controller string) error {
+	return write(dir, "cgroup.subtree_control", "+"+controller)
+}
+
+// Add moves a process into the cgroup. Only the pages it faults from here on are charged to it:
+// cgroup v2 leaves what a process already holds where it was charged, so a move comes before the work.
+func Add(dir string, pid int) error {
+	return write(dir, "cgroup.procs", strconv.Itoa(pid))
+}
+
 // SetPidsMax caps the processes a cgroup may hold. A cgroup at the cap refuses every new fork.
 func SetPidsMax(dir string, limit int64) error {
 	return write(dir, "pids.max", strconv.FormatInt(limit, 10))

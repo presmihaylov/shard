@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -93,6 +94,8 @@ var _ models.Provider = (*Provider)(nil)
 type Provider struct {
 	cfg    Config
 	initrd string
+	// cgroupRoot is the host cgroup v2 mount, under which every vmm is bounded. A test points it at a directory it owns, or at nothing.
+	cgroupRoot string
 
 	mu sync.Mutex
 	// machines is every vmm this daemon has spoken to; one it has not is adopted by its socket.
@@ -113,7 +116,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }

@@ -117,6 +117,10 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 	if err != nil {
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
+	group, err := p.bound(id, r.Resources)
+	if err != nil {
+		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
+	}
 	cfg := fcapi.Config{
 		Kernel:    p.cfg.Kernel,
 		Initrd:    p.initrd,
@@ -131,6 +135,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 		Vsock:   filepath.Join(dir, vsockFile),
 		Socket:  filepath.Join(dir, socketFile),
 		Console: filepath.Join(dir, consoleFile),
+		Cgroup:  group,
 	}
 	client, info, err := fcapi.Start(ctx, p.cfg.Binary, cfg)
 	if err != nil {
