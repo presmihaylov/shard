@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -615,6 +616,70 @@ func TestAFailedPauseResumesTheVMAndKeepsTheLastSnapshot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
 		t.Errorf("the last snapshot after the failed Pause: %v, want it whole", err)
+	}
+}
+
+// A pause over a directory that already holds a snapshot puts the new one there in one step, and nothing of the old stays.
+func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("the first Pause: %v", err)
+	}
+	// A file only the first snapshot has: it must go with it, not survive beside the second.
+	if err := os.WriteFile(filepath.Join(dir, "stale"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("the second Pause: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	want := []string{"checkpoint.img", "memory", "overlay.raw", "snapshot.json", "vmstate"}
+	if !slices.Equal(got, want) {
+		t.Errorf("the snapshot directory holds %v, want the second snapshot alone %v", got, want)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging directory after the second Pause: %v, want gone", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume from the second snapshot: %v", err)
+	}
+}
+
+// A daemon cut mid-pause leaves a paused VM whose guest answers nothing; the next daemon resumes it instead of waiting on it.
+func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+
+	// The vCPUs are stopped and no snapshot was written: this is the pause of a daemon that died before it ended the vmm.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.reopen(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status of the paused leftover = %+v, %v, want the sandbox running again", status, err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the leftover came back: %v", err)
 	}
 }
 

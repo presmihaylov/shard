@@ -64,6 +64,12 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if err != nil {
 		return nil, err
 	}
+	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
+	if info.State == fcapi.StatePaused {
+		if err := client.Resume(); err != nil {
+			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
+		}
+	}
 
 	return p.attach(ctx, id, dir, client, info)
 }

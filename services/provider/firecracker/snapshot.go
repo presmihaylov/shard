@@ -11,6 +11,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -91,13 +92,21 @@ func abandon(m *machine, tmp string, err error) error {
 	return errors.Join(err, m.client.Resume(), os.RemoveAll(tmp))
 }
 
-// swapDir puts src at dst and drops what dst held; the sandbox service holds the source's lock, so no fork reads dst between the two.
+// swapDir installs the staged snapshot at dst: a rename when dst holds none, an exchange when it does, so no cut leaves dst without one.
 func swapDir(src, dst string) error {
-	if err := os.RemoveAll(dst); err != nil {
+	_, err := os.Stat(dst)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.Rename(src, dst)
+	}
+	if err != nil {
+		return err
+	}
+	if err := store.Exchange(src, dst); err != nil {
 		return err
 	}
 
-	return os.Rename(src, dst)
+	// The exchange left the snapshot dst held at src, which the pause owns and drops.
+	return os.RemoveAll(src)
 }
 
 // Resume brings the sandbox back from the snapshot in dir, in a fresh vmm over its own copy of the snapshot's overlay; the snapshot stays for the next one.

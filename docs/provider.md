@@ -131,37 +131,39 @@ cgroup, and each section says what the VM does instead.
 
 `firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker`
 binary on PATH, one `firecracker` process per sandbox, driven over its API socket in the sandbox's
-state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release
-once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section
-below describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of
-the static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under
-`<root>/firecracker`. The host needs `erofs-utils` for the pull. The host speaks to the guest over
-vsock alone, through the socket firecracker proxies it on, so `exec`, `logs` and the exit come the
-way they do on `vz`. The vmm has no stop of its own: a stop tells `shard-init` to end the
-entrypoint and reboot, which is the one guest exit firecracker ends its process on (a power off
-leaves it running), and the grace runs out into a kill of the process. A guest the host can no
-longer reach over vsock is still a running VM: `inspect` says so, and `stop` kills it without a
-grace it could not hear. A daemon restart adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
-the least a guest boots with. The guest's network is a tap on the same bridge the veth substrates
-use, named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the
-IPv6 drop and the egress chain key on that name, the proxy redirect on the leased address and the
-private floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap as the
-guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the gateway
-and the resolver over vsock once the guest is up, before the entrypoint runs. The next start after
-a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
+state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release once
+under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section below
+describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of the
+static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<root>/firecracker`.
+The host needs `erofs-utils` for the pull. The host speaks to the guest over vsock alone, through
+the socket firecracker proxies it on, so `exec`, `logs` and the exit come the way they do on `vz`.
+The vmm has no stop of its own: a stop tells `shard-init` to end the entrypoint and reboot, which is
+the one guest exit firecracker ends its process on (a power off leaves it running), and the grace
+runs out into a kill of the process. A guest the host can no longer reach over vsock is still a
+running VM: `inspect` says so, and `stop` kills it without a grace it could not hear. A daemon
+restart adopts a running vmm by its socket, and resumes one a cut `pause` left paused, whose stopped
+guest would answer no handshake. `--memory` is required, `0` is refused by name, and 128 MiB is the
+least a guest boots with. The guest's network is a tap on the same bridge the veth substrates use,
+named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the IPv6
+drop and the egress chain key on that name, the proxy redirect on the leased address and the private
+floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap
+as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the
+gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
+after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 
 `pause` stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
-directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. The record
-stays, so `inspect` reports the sandbox stopped and the snapshot is what brings it back. `resume`
-and `fork` each load that snapshot into a fresh vmm, over its own reflinked copy of the overlay and
-a hardlink of the memory file: firecracker maps the memory private, so N sandboxes read the one copy
-on disk and none of them writes it. A snapshot is not consumed by either verb. Fork as many
-sandboxes from one as you like, each on its own writable disk, and the source and the snapshot are
-untouched. A fork restores holding the source's address, MAC and hostname, and `shard-init` replaces
-all three in place over vsock before the guest does anything else: the interface goes down for the
-MAC, which is why a fork's frames reach the bridge under its own and not the source's. Firecracker
-has no pause of the wall clock, so the guest's clock is corrected at the load on x86_64, where it
-reads kvm-clock, and nowhere else.
+directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
+all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
+leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
+snapshot is what brings it back. `resume` and `fork` each load that snapshot into a fresh vmm, over
+its own reflinked copy of the overlay and a hardlink of the memory file: firecracker maps the memory
+private, so N sandboxes read the one copy on disk and none of them writes it. A snapshot is not
+consumed by either verb. Fork as many sandboxes from one as you like, each on its own writable disk,
+and the source and the snapshot are untouched. A fork restores holding the source's address, MAC and
+hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
+else: the interface goes down for the MAC, which is why a fork's frames reach the bridge under its
+own and not the source's. Firecracker has no pause of the wall clock, so the guest's clock is
+corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
