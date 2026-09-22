@@ -27,6 +27,7 @@ make test-integration        integration tests, on this host; Linux box only, ne
 make itest                   integration tests for ITEST_PKG, on the devbox
 make e2e                     the whole lifecycle on this host, as root, over a daemon it starts (SHARD-17)
 make devbox-e2e              the same script, on the devbox; PROVIDER=sysbox or PROVIDER=runc picks the substrate (SHARD-90, SHARD-224)
+make e2e-firecracker         the lifecycle on Firecracker, on this host; on demand only, needs /dev/kvm on bare metal, never in CI (SHARD-268)
 make devbox-demo             record scripts/demo.sh on the devbox into docs/demo.cast (SHARD-36)
 make kernel ARCH=arm64       build the guest kernel for one arch in Docker, into bin/kernel (SHARD-232)
 make kernel-reproducible     the same twice, and fail if the two hashes differ

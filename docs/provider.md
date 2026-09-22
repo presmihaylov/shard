@@ -151,6 +151,21 @@ and the resolver over vsock once the guest is up, before the entrypoint runs. Th
 a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 `pause`, `resume` and `fork` refuse by name until SHARD-44 lands the snapshot.
 
+`scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
+over a root it turns into an XFS image, `create` with `--memory`, `logs`, `exec`, an entrypoint
+that exits, the policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost
+while the daemon was down, the three snapshot refusals, `stop`, two clones by reflink, `start`,
+`rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on demand only.
+It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`, `make e2e`
+and `make devbox-e2e` never call it: rent a bare-metal KVM box, run `sudo make e2e-firecracker`
+there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and destroy the box. `SHARD_KERNEL`
+and `SHARD_KERNEL_SHA256` point it at a kernel on the box; unset, the daemon fetches the release.
+
+The guest reaches the resolver and the proxy on the bridge address, so a host firewall that drops
+`INPUT` eats those packets after shard's own table accepted them. A rented box with `ufw` on is the
+common case. Run `iptables -I INPUT -i shard0 -j ACCEPT` there, or `ufw allow in on shard0`, before
+the suite; the host check fails by name when the policy is `DROP` and no such rule exists.
+
 ## Refuse, never downgrade
 
 A provider that cannot do an optional verb returns `models.Unsupported(provider, verb)`. That error

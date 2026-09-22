@@ -151,6 +151,10 @@ The Linux substrates do not run on macOS. `make test` stays green on a Mac; anyt
 `make test-integration`. `make build-darwin` builds the Mac binary, and `docs/release.md` says what
 runs where.
 
+`make e2e-firecracker` drives the whole lifecycle on Firecracker, and it runs on demand only: it
+needs `/dev/kvm`, which CI and the devbox do not have, so no gate calls it. Rent a bare-metal KVM box
+for the run, run it there as root, and destroy the box; `docs/provider.md` says what it proves.
+
 `CLAUDE.md` is a symlink to `AGENTS.md`, so one document serves every agent. A Windows checkout
 needs `core.symlinks=true`.
 
