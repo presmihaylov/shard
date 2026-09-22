@@ -10,9 +10,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/reflink"
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
@@ -21,6 +23,9 @@ const Firecracker = "firecracker"
 
 // DefaultImageMiB sizes the loopback image when the install set none.
 const DefaultImageMiB int64 = 100 * 1024
+
+// lockWait bounds a second daemon behind a bootstrap in flight, long enough for one mkfs over a full image.
+const lockWait = 2 * time.Minute
 
 // Config is what one root needs to be checked or provisioned.
 type Config struct {
@@ -37,6 +42,8 @@ type host struct {
 	mounted   func(string) (mountinfo.Mount, bool, error)
 	haveMkfs  func() error
 	isRoot    func() bool
+	lock      func(string) (*store.Lock, error)
+	inFstab   func(string, string) (bool, error)
 	makeImage func(context.Context, string, int64) error
 	mount     func(context.Context, string, string) error
 	fstab     func(string, string) error
@@ -47,6 +54,8 @@ var machine = host{
 	mounted:   mountinfo.At,
 	haveMkfs:  xfs.Have,
 	isRoot:    func() bool { return os.Geteuid() == 0 },
+	lock:      func(path string) (*store.Lock, error) { return store.Acquire(path, 0o600, lockWait) },
+	inFstab:   xfs.InFstab,
 	makeImage: xfs.MakeImage,
 	mount:     xfs.Mount,
 	fstab:     xfs.Fstab,
@@ -57,7 +66,7 @@ func Ensure(ctx context.Context, cfg Config) error {
 	return ensure(ctx, cfg, machine)
 }
 
-func ensure(ctx context.Context, cfg Config, h host) error {
+func ensure(ctx context.Context, cfg Config, h host) (err error) {
 	if cfg.Provider != Firecracker {
 		return nil
 	}
@@ -70,6 +79,12 @@ func ensure(ctx context.Context, cfg Config, h host) error {
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", cfg.Dir, err)
 	}
+	// The bootstrap runs before daemon.lock, so this lock, a sibling on the parent filesystem, is what keeps two starts from formatting over each other.
+	lock, err := h.lock(ImagePath(cfg.Dir) + ".lock")
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, lock.Release()) }()
 
 	fs, err := h.probe(cfg.Dir)
 	if err != nil {
@@ -120,6 +135,10 @@ func provision(ctx context.Context, cfg Config, h host) error {
 	image := ImagePath(cfg.Dir)
 	logger := log.New(cmp.Or[io.Writer](cfg.Out, io.Discard), "", log.LstdFlags)
 
+	// A foreign fstab line refuses here, before a mount a retry would then take for a finished bootstrap.
+	if _, err := h.inFstab(image, cfg.Dir); err != nil {
+		return err
+	}
 	if err := h.makeImage(ctx, image, cfg.ImageMiB<<20); err != nil {
 		if errors.Is(err, xfs.ErrNotImage) {
 			return fmt.Errorf("%w: remove it or move the data dir", err)

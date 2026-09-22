@@ -102,7 +102,7 @@ var FstabPath = "/etc/fstab"
 
 // Fstab adds the line that mounts image at point on boot, once; a line that mounts point from anything else is a conflict.
 func Fstab(image, point string) error {
-	present, err := inFstab(image, point)
+	present, err := InFstab(image, point)
 	if err != nil {
 		return err
 	}
@@ -121,8 +121,8 @@ func Fstab(image, point string) error {
 	return f.Close()
 }
 
-// inFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
-func inFstab(image, point string) (bool, error) {
+// InFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
+func InFstab(image, point string) (bool, error) {
 	f, err := os.Open(FstabPath)
 	if err != nil {
 		return false, fmt.Errorf("open %s: %w", FstabPath, err)

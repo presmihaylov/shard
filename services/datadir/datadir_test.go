@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/reflink"
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
@@ -21,6 +23,8 @@ type fakeHost struct {
 	mounted bool
 	noMkfs  bool
 	user    bool
+	fstabIn error
+	lockAt  string
 	steps   []string
 	image   string
 	size    int64
@@ -45,6 +49,14 @@ func (f *fakeHost) host() host {
 			return nil
 		},
 		isRoot: func() bool { return !f.user },
+		lock: func(path string) (*store.Lock, error) {
+			f.lockAt = path
+			return store.TryAcquire(path, 0o600)
+		},
+		inFstab: func(string, string) (bool, error) {
+			f.steps = append(f.steps, "fstab check")
+			return false, f.fstabIn
+		},
 		makeImage: func(_ context.Context, image string, size int64) error {
 			f.steps = append(f.steps, "image")
 			f.image, f.size = image, size
@@ -103,8 +115,11 @@ func TestEnsureProvisionsAnImageBesideAnEmptyDir(t *testing.T) {
 	if err := ensure(t.Context(), Config{Dir: dir, Provider: Firecracker, Out: &out}, f.host()); err != nil {
 		t.Fatalf("ext4: %v", err)
 	}
-	if want := []string{"image", "mount shard.xfs shard", "fstab"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
+	if want := []string{"fstab check", "image", "mount shard.xfs shard", "fstab"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Errorf("steps %v, want %v", f.steps, want)
+	}
+	if f.lockAt != dir+".xfs.lock" {
+		t.Errorf("locked %s, want %s", f.lockAt, dir+".xfs.lock")
 	}
 	if f.image != dir+".xfs" {
 		t.Errorf("image at %s, want %s", f.image, dir+".xfs")
@@ -190,5 +205,40 @@ func TestEnsureFailsWhenTheMountStillCannotClone(t *testing.T) {
 	err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "d"), Provider: Firecracker}, f.host())
 	if err == nil || !strings.Contains(err.Error(), "still cannot clone a disk") {
 		t.Errorf("got %v", err)
+	}
+}
+
+func TestEnsureRefusesAForeignFstabLineBeforeAnyBlock(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeHost{probes: []reflink.Filesystem{ext4}, fstabIn: fmt.Errorf("/etc/fstab: %w: %q", xfs.ErrFstabConflict, "/dev/sdb1 /x ext4 defaults 0 2")}
+	err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "shard"), Provider: Firecracker}, f.host())
+	if !errors.Is(err, xfs.ErrFstabConflict) {
+		t.Fatalf("got %v", err)
+	}
+	if want := []string{"fstab check"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
+		t.Errorf("steps %v, want %v", f.steps, want)
+	}
+}
+
+func TestEnsureWaitsBehindAnotherBootstrap(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "shard")
+	held, err := store.TryAcquire(dir+".xfs.lock", 0o600)
+	if err != nil || held == nil {
+		t.Fatalf("take the lock first: %v, %v", held, err)
+	}
+	defer held.Release()
+
+	f := &fakeHost{probes: []reflink.Filesystem{ext4}}
+	h := f.host()
+	h.lock = func(path string) (*store.Lock, error) { return store.Acquire(path, 0o600, 50*time.Millisecond) }
+	err = ensure(t.Context(), Config{Dir: dir, Provider: Firecracker}, h)
+	if err == nil || !strings.Contains(err.Error(), "still held") {
+		t.Fatalf("got %v", err)
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("ran %v under another bootstrap", f.steps)
 	}
 }
