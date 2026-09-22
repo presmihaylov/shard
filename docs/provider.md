@@ -277,6 +277,16 @@ the state the next connection replays, and marks it then. Once the marker is dow
 as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
 the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
 `--memory` below 128 MiB by name.
+On `firecracker` the guest half is the same, down to the marker and the replay, because the guest is
+the same `shard-init`; a host cgroup alone would see nothing, since the vmm holds the guest's whole
+memory from the boot and its host footprint stays flat while the guest fills up. What the host adds
+is a cgroup of its own around the vmm, at `/sys/fs/cgroup/shard/<id>`, with `memory.max` at the
+guest's memory plus 64 MiB for what firecracker holds beside it, and the same
+`memory.oom.group=1` and `memory.swap.max=0`. The vmm joins it between the spawn and the API call
+that configures the machine, because cgroup v2 charges a process only for the pages it faults after
+a move, so a vmm moved in later would leave the guest's memory charged to the parent. That ceiling
+is host safety and never the trigger: it sits above the guest's whole memory, so the guest's own
+killer runs first on every workload and the daemon hears an OOM instead of a death.
 
 ## What a cpu bound means
 

@@ -304,7 +304,8 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		}
 	}
 
-	return nil
+	// A stopped sandbox keeps its cgroup, empty, because the start that brings it back boots into that one.
+	return p.sweep(ctx, id)
 }
 
 // Clone boots a new VM over a copy of the source's overlay, on the same image, and runs the source's entrypoint from the beginning.

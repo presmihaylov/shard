@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/cgroup"
 )
 
 // Client speaks to one firecracker over its API socket. It holds no connection between calls, so a daemon restart loses nothing.
@@ -27,7 +29,7 @@ type Client struct {
 // Start spawns firecracker in its own group, so it outlives this process, puts the microVM in over the API and boots it; the console goes to cfg.Console.
 func Start(ctx context.Context, binary string, cfg Config) (*Client, Info, error) {
 	client := &Client{socket: cfg.Socket, vsock: cfg.Vsock}
-	cmd, err := client.spawn(ctx, binary, cfg.Console)
+	cmd, err := client.spawn(ctx, binary, cfg.Console, cfg.Cgroup)
 	if err != nil {
 		return nil, Info{}, err
 	}
@@ -41,7 +43,7 @@ func Start(ctx context.Context, binary string, cfg Config) (*Client, Info, error
 // Restore spawns a fresh firecracker and brings the snapshot back in it, running; a snapshot loads only into a process that booted nothing.
 func Restore(ctx context.Context, binary string, snap Snapshot) (*Client, Info, error) {
 	client := &Client{socket: snap.Socket, vsock: snap.Vsock}
-	cmd, err := client.spawn(ctx, binary, snap.Console)
+	cmd, err := client.spawn(ctx, binary, snap.Console, snap.Cgroup)
 	if err != nil {
 		return nil, Info{}, err
 	}
@@ -53,7 +55,7 @@ func Restore(ctx context.Context, binary string, snap Snapshot) (*Client, Info, 
 }
 
 // spawn execs firecracker on the socket and waits for its API; the process is the caller's to end when what follows fails.
-func (c *Client) spawn(ctx context.Context, binary, console string) (*exec.Cmd, error) {
+func (c *Client) spawn(ctx context.Context, binary, console, group string) (*exec.Cmd, error) {
 	if err := c.claim(); err != nil {
 		return nil, err
 	}
@@ -70,6 +72,12 @@ func (c *Client) spawn(ctx context.Context, binary, console string) (*exec.Cmd, 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+	// The guest's memory is mapped when the API configures the machine, which is after this, so the cgroup is charged all of it.
+	if group != "" {
+		if err := cgroup.Add(group, cmd.Process.Pid); err != nil {
+			return nil, errors.Join(fmt.Errorf("bound firecracker %d: %w", cmd.Process.Pid, err), end(cmd))
+		}
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()

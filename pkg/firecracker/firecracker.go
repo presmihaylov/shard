@@ -28,6 +28,8 @@ type Config struct {
 	Socket string
 	// Console is where the guest's serial console lands, which is firecracker's own stdout.
 	Console string
+	// Cgroup is the host cgroup the vmm joins before the guest is configured, so the guest's whole memory is charged to it; empty joins none.
+	Cgroup string
 }
 
 // Snapshot is what one microVM comes back from: the two files a snapshot wrote, and the host things the new process owns instead of the old one's.
@@ -42,6 +44,7 @@ type Snapshot struct {
 	Vsock   string
 	Socket  string
 	Console string
+	Cgroup  string
 }
 
 // Drive is one virtio block device.

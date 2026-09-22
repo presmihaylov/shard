@@ -99,6 +99,45 @@ func TestPinningTheSwapToNone(t *testing.T) {
 	}
 }
 
+func TestMovingAProcessIntoTheCgroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), nil, 0o600); err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+
+	if err := cgroup.Add(dir, 4171); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		t.Fatalf("read cgroup.procs: %v", err)
+	}
+	if string(raw) != "4171" {
+		t.Fatalf("cgroup.procs = %q, want 4171", raw)
+	}
+}
+
+// The kernel takes one controller per write, with the sign in front, and answers the read as a plain list.
+func TestDelegatingAControllerToTheChildren(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.subtree_control"), nil, 0o600); err != nil {
+		t.Fatalf("write cgroup.subtree_control: %v", err)
+	}
+
+	if err := cgroup.Delegate(dir, "memory"); err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "cgroup.subtree_control"))
+	if err != nil {
+		t.Fatalf("read cgroup.subtree_control: %v", err)
+	}
+	if string(raw) != "+memory" {
+		t.Fatalf("cgroup.subtree_control = %q, want +memory", raw)
+	}
+}
+
 // TestReadingTheEventCounters pins the parse against the real file's shape, which is one key and one
 // count per line, with keys this driver does not use mixed in.
 func TestReadingTheEventCounters(t *testing.T) {
