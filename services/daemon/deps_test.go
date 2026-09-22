@@ -68,9 +68,24 @@ func TestTheProviderIsPickedByName(t *testing.T) {
 		}
 	}
 
-	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
-	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "firecracker"`) {
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "vmware"}}
+	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "vmware"`) {
 		t.Errorf("an unknown provider built %v, want a refusal that names it", err)
+	}
+}
+
+// firecracker is refused by name off Linux, and on Linux without its binary, before any kernel is fetched.
+func TestFirecrackerIsRefusedWithoutItsPlatformOrItsBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
+
+	_, err := d.providerLocked()
+	want := "needs firecracker on PATH"
+	if runtime.GOOS != "linux" {
+		want = "Linux only"
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("firecracker on %s built %v, want a refusal that says %q", runtime.GOOS, err, want)
 	}
 }
 

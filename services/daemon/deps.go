@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/runc"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
@@ -97,9 +99,12 @@ func (d *deps) imagesLocked() (*image.Service, error) {
 	}
 
 	opts := []image.Option{image.WithRegistry(registry.WithInsecureRegistries(d.cfg.Insecure...))}
-	// A VM boots from a disk, so the vz daemon builds one per image at the pull.
-	if d.providerName() == vzvm.Name {
+	// A VM boots from a disk, so the vz daemon builds one per image at the pull, and the firecracker daemon an EROFS file.
+	switch d.providerName() {
+	case vzvm.Name:
 		opts = append(opts, image.WithDisks())
+	case firecracker.Name:
+		opts = append(opts, image.WithErofs())
 	}
 	svc, err := image.New(filepath.Join(d.cfg.Root, "images"), opts...)
 	if err != nil {
@@ -305,9 +310,46 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) })
 	case vzvm.Name:
 		return d.newVZ(dirs)
+	case firecracker.Name:
+		return d.newFirecracker(dirs)
 	default:
-		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name, vzvm.Name)
+		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s, %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name)
 	}
+}
+
+// firecrackerDir is where under the root the firecracker daemon keeps the initrd it builds from the guest init.
+const firecrackerDir = "firecracker"
+
+// newFirecracker builds the microVM provider: the vmm on PATH, the guest kernel fetched once, and the static init the initrd carries.
+func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, error) {
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("provider %s runs on Linux only, not %s", firecracker.Name, runtime.GOOS)
+	}
+	binary, err := exec.LookPath(firecracker.Binary)
+	if err != nil {
+		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Binary, err)
+	}
+
+	opts, err := kernel.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, kernel.WithLogger(d.logger()))
+	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
+	defer cancel()
+	// The guest runs the host's arch: KVM virtualises, it never emulates.
+	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
+	if err != nil {
+		return nil, err
+	}
+
+	return firecracker.New(firecracker.Config{
+		Binary: binary,
+		Kernel: guest.Path,
+		Init:   d.cfg.InitPath,
+		Dir:    filepath.Join(d.cfg.Root, firecrackerDir),
+		Dirs:   dirs,
+	})
 }
 
 // onBundles builds a Linux substrate over the OCI bundle service; a VM has an initrd and a disk instead, so vz never comes here.
