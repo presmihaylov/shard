@@ -37,6 +37,7 @@ command runs unchanged on a box with hardware virtualization and on one without:
 | The root and the host | The substrate | The reason |
 |---|---|---|
 | any root that holds records | what made them | `it made the records under <root>` |
+| a root with none, beside a `<root>.xfs` image | Firecracker | `it made the data image <root>.xfs` |
 | a root with none, on Linux, `/dev/kvm` opens | Firecracker | `/dev/kvm opens` |
 | a root with none, on Linux, no `/dev/kvm` | gVisor | `no /dev/kvm` |
 | a root with none, on Linux, `/dev/kvm` will not open | gVisor | `/dev/kvm does not open: <error>` |
@@ -46,6 +47,12 @@ command runs unchanged on a box with hardware virtualization and on one without:
 that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has.
 `--provider` still overrides that, and switching a host with records is what the warning above says
 it is.
+
+**An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
+beside it, and every record lives inside that image, so a root whose image is not mounted looks empty
+from outside it. The image itself is what says the root is Firecracker's; the daemon then mounts it
+back and the records return. Without this a host that lost `/dev/kvm` would start fresh over the
+mountpoint and hide them.
 
 **The probe opens `/dev/kvm`, it does not stat it.** A node this daemon cannot open runs no microVM,
 so a present but unusable one leaves the pick at gVisor instead of failing every create.
