@@ -16,6 +16,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 )
@@ -841,11 +842,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
 	}
 
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", dir, err)
-	}
-	if err := os.Rename(tmp, dir); err != nil {
-		return fmt.Errorf("move the snapshot into place: %w", err)
+	if err := store.SwapDir(tmp, dir); err != nil {
+		return fmt.Errorf("install the snapshot of sandbox %s: %w", id, err)
 	}
 
 	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.

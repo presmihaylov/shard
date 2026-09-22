@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 )
@@ -31,8 +32,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	if m == nil || !m.status(p).Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s, and only a live one can pause", id, models.StateStopped, Name)
+	state := models.StateStopped
+	if m != nil {
+		state = m.status(p).State
+	}
+	if state != models.StateRunning {
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
 
 	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.
@@ -62,7 +67,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := writeRecord(stateDir, r); err != nil {
 		return abandon(m, tmp, err)
 	}
-	if err := swapDir(tmp, dir); err != nil {
+	if err := store.SwapDir(tmp, dir); err != nil {
 		r.Paused = false
 		r.Pauses--
 
@@ -147,7 +152,7 @@ func installStaged(dir string) error {
 	if err == nil && current.Pause >= staged.Pause {
 		return os.RemoveAll(tmp)
 	}
-	if err := swapDir(tmp, dir); err != nil {
+	if err := store.SwapDir(tmp, dir); err != nil {
 		return fmt.Errorf("install the staged snapshot: %w", err)
 	}
 

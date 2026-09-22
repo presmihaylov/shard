@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// Provider runs sandboxes on one substrate. It is v0: SHARD-45 will change it again.
+// Provider runs sandboxes on one substrate. Every verb below means the same thing on every substrate,
+// and the conformance suite is where that is enforced. It is v0 and still changes with each substrate.
 type Provider interface {
-	// Name is the substrate, "gvisor" or "sysbox". It appears in errors.
+	// Name is the substrate: "gvisor", "sysbox", "runc", "firecracker" or "vz". It appears in errors.
 	Name() string
 	// Capabilities reports the optional verbs this host can run. Probe once in the constructor.
 	Capabilities() Capabilities
@@ -55,11 +56,15 @@ type Provider interface {
 	// LogPath names the file the guest's output lands in. SHARD-23 turns it into shard logs.
 	LogPath(id string) (string, error)
 
-	// Pause writes a snapshot into dir and frees the memory. Optional, see Capabilities.
+	// Pause writes a complete snapshot into dir, frees the memory and ends the sandbox on the substrate,
+	// so Status reports it stopped; a pause over a dir that holds one leaves it holding one. Optional,
+	// see Capabilities.
 	Pause(ctx context.Context, id string, dir string) error
-	// Resume restores from the snapshot in dir and does not consume it. Optional.
+	// Resume brings the sandbox back from the snapshot in dir and does not consume it. Optional.
 	Resume(ctx context.Context, id string, dir string) error
-	// Fork starts a new sandbox from the snapshot in dir and leaves the source alone. Optional.
+	// Fork starts one more sandbox from the snapshot in dir. It writes nothing of the source and consumes
+	// nothing of the snapshot, so any number of forks of one snapshot run at once, each on its own files.
+	// Optional.
 	Fork(ctx context.Context, dir string, spec SandboxSpec) error
 }
 

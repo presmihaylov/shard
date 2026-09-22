@@ -139,6 +139,13 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 		return nil, fmt.Errorf("sandbox %s: the restored guest was killed by its memory bound", id)
 	}
 
+	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
+	if restore != "" {
+		p.mu.Lock()
+		m.started = true
+		p.mu.Unlock()
+	}
+
 	return m, nil
 }
 
