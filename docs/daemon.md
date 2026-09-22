@@ -276,8 +276,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`)
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
   The provider is built on the first ask, so on a host without its runtime the route answers 500
-  and says what is missing. `shard info` is the same question asked of the host instead, so it
-  answers before a daemon exists; `docs/provider.md` says what a host picks.
+  and says what is missing. `shard info` asks the host and the root instead of the socket, so it
+  answers before a daemon exists and says what one started now would run, which is not what this
+  route says when the daemon that is up was started with other flags. `docs/provider.md` says what
+  a root and a host pick.
 - Every list answers `{"<plural>": [...], "next": null | "<cursor>"}`, plus `warnings` where the
   route says so. `?limit=N` caps the page and `?cursor=<c>` serves the items whose key sorts after
   the cursor, in the order of the list; `next` of the page before is the key of its last item: the id

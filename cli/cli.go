@@ -95,7 +95,7 @@ Usage:
                            list every token the ledger records, with its id, subject, issued and expiry times, scopes and status
   shard tokens revoke [--name <sub>] --secret-file <path> <id>
                            mark a token revoked so the next request with it fails; --name revokes every token of a subject; a local verb
-  shard info               print the substrate a daemon started here runs on and the reason it is that one; it asks the host, not the socket
+  shard info               print the substrate a daemon started now over this root would run on, and why; it asks the host, not the socket, so it answers before one exists
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -158,7 +158,8 @@ Flags:
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
   --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox, runc, vz or firecracker
-                           (default firecracker on a Linux host with ` + daemon.KVMDevice + `, gvisor on one without, vz on macOS;
+                           (without it a root that holds records keeps what made them, and a root that holds none takes
+                           firecracker on a Linux host whose ` + daemon.KVMDevice + ` opens, gvisor on one without, vz on macOS;
                            sysbox and runc are never picked for a host, only named here)
   --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket
   --token-file <path>      the bearer token that front checks
@@ -182,7 +183,7 @@ type App struct {
 	Timeout time.Duration
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty, and stays empty on a Mac.
 	InitPath string
-	// Provider names the substrate the daemon runs sandboxes on. Empty lets the host pick, which is what shard info prints.
+	// Provider names the substrate the daemon runs sandboxes on. Empty lets the root and the host pick, as shard info prints.
 	Provider string
 	// Remote is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
 	Remote string

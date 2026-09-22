@@ -42,7 +42,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Errorf("Run(nil) printed %q, want the usage", out.String())
 	}
-	if !strings.Contains(out.String(), "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(out.String(), "default firecracker on a Linux host with /dev/kvm") {
+	if !strings.Contains(out.String(), "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(out.String(), "firecracker on a Linux host whose /dev/kvm opens") {
 		t.Errorf("Run(nil) printed %q, want every provider and the host default", out.String())
 	}
 }
