@@ -111,7 +111,7 @@ func (c *Client) await(ctx context.Context, cmd *exec.Cmd, exited <-chan error, 
 	}
 }
 
-// configure puts the machine, the boot source, the drives and the vsock in, in the order the API wants them, then starts the instance.
+// configure puts the machine, the boot source, the drives, the network and the vsock in, in the order the API wants them, then starts the instance.
 func (c *Client) configure(cfg Config) error {
 	if err := c.put("/machine-config", machineConfig{VCPUs: cfg.VCPUs, MemoryMiB: cfg.MemoryMiB}); err != nil {
 		return err
@@ -121,6 +121,12 @@ func (c *Client) configure(cfg Config) error {
 	}
 	for _, d := range cfg.Drives {
 		if err := c.put("/drives/"+d.ID, drive{ID: d.ID, Path: d.Path, ReadOnly: d.ReadOnly}); err != nil {
+			return err
+		}
+	}
+	if cfg.Network.Tap != "" {
+		iface := networkInterface{ID: guestInterface, HostDev: cfg.Network.Tap, MAC: cfg.Network.MAC}
+		if err := c.put("/network-interfaces/"+guestInterface, iface); err != nil {
 			return err
 		}
 	}

@@ -40,6 +40,7 @@ func config(root string) firecracker.Config {
 			{ID: "base", Path: "/images/base.erofs", ReadOnly: true},
 			{ID: "overlay", Path: filepath.Join(root, "overlay.raw")},
 		},
+		Network: firecracker.Network{Tap: "shardv2", MAC: "02:fc:0a:57:00:02"},
 		Vsock:   filepath.Join(root, "vsock.sock"),
 		Socket:  filepath.Join(root, "firecracker.sock"),
 		Console: filepath.Join(root, "console.log"),
@@ -96,7 +97,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 
 	s := readSeen(t, cfg)
 	wantCalls := []string{
-		"PUT /machine-config", "PUT /boot-source", "PUT /drives/base", "PUT /drives/overlay", "PUT /vsock", "PUT /actions",
+		"PUT /machine-config", "PUT /boot-source", "PUT /drives/base", "PUT /drives/overlay", "PUT /network-interfaces/eth0", "PUT /vsock", "PUT /actions",
 	}
 	var puts []string
 	for _, call := range s.Calls {
@@ -112,6 +113,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 		"boot":    string(s.Boot),
 		"base":    string(s.Drives[0]),
 		"overlay": string(s.Drives[1]),
+		"network": string(s.Network),
 		"vsock":   string(s.Vsock),
 	} {
 		want := map[string]string{
@@ -119,6 +121,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 			"boot":    `{"kernel_image_path":"/kernels/vmlinux","initrd_path":"/kernels/initrd.cpio","boot_args":"console=ttyS0 -- -transport vsock"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
 			"overlay": `{"drive_id":"overlay","path_on_host":"` + filepath.Join(root, "overlay.raw") + `","is_root_device":false,"is_read_only":false}`,
+			"network": `{"iface_id":"eth0","host_dev_name":"shardv2","guest_mac":"02:fc:0a:57:00:02"}`,
 			"vsock":   `{"guest_cid":3,"uds_path":"` + cfg.Vsock + `"}`,
 		}[name]
 		if got != want {

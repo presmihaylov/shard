@@ -20,6 +20,8 @@ type Config struct {
 	MemoryMiB int64
 	// Drives attach in order, so the first is /dev/vda in the guest.
 	Drives []Drive
+	// Network is the one virtio-net device, eth0 in the guest; an empty tap attaches none.
+	Network Network
 	// Vsock is the unix socket the host dials to reach a guest port; empty attaches no vsock device.
 	Vsock string
 	// Socket is the API socket, which firecracker creates and refuses to find already there.
@@ -33,6 +35,12 @@ type Drive struct {
 	ID       string
 	Path     string
 	ReadOnly bool
+}
+
+// Network is the tap the vmm opens on the host, and the MAC the guest's device answers to.
+type Network struct {
+	Tap string
+	MAC string
 }
 
 // State is the microVM's state as firecracker reports it, in its own words.
@@ -52,6 +60,9 @@ type Info struct {
 
 // GuestCID is the vsock address of every guest; each microVM has its own vmm, so they never meet.
 const GuestCID = 3
+
+// guestInterface is the device's id on the API, and the name the guest kernel gives its only network device.
+const guestInterface = "eth0"
 
 // The API answers once the process is up; a spawn that takes longer than this is a failure to report.
 const startTimeout = 30 * time.Second

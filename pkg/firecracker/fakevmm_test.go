@@ -46,6 +46,7 @@ type seen struct {
 	Machine json.RawMessage   `json:"machine"`
 	Boot    json.RawMessage   `json:"boot"`
 	Drives  []json.RawMessage `json:"drives"`
+	Network json.RawMessage   `json:"network"`
 	Vsock   json.RawMessage   `json:"vsock"`
 	State   string            `json:"state"`
 }
@@ -147,6 +148,8 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 		f.seen.Boot = body
 	case strings.HasPrefix(path, "/drives/"):
 		f.seen.Drives = append(f.seen.Drives, body)
+	case strings.HasPrefix(path, "/network-interfaces/"):
+		f.seen.Network = body
 	case path == "/vsock":
 		f.seen.Vsock = body
 	case path == "/actions":
