@@ -51,6 +51,9 @@ const (
 	execCancelDelay = 500 * time.Millisecond
 )
 
+// forkCount is how many sandboxes one snapshot feeds at once: three, so nothing in a provider can count on a pair.
+const forkCount = 3
+
 // Run executes the suite. A verb with a false capability must refuse before its subtest skips.
 func Run(t *testing.T, s Subject) {
 	t.Helper()
@@ -494,6 +497,24 @@ func Run(t *testing.T, s Subject) {
 		s.check(t, models.VerbPause, caps.Pause, err)
 	})
 
+	// A snapshot is of a running sandbox on every substrate, so nothing else is a source for one.
+	t.Run("PauseRefusesASandboxThatNeverStarted", func(t *testing.T) {
+		if !caps.Pause {
+			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbPause)
+		}
+
+		spec := s.NewSpec(t)
+		if err := s.Provider.Create(t.Context(), spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := s.Provider.Pause(t.Context(), spec.ID, s.SnapshotDir(t)); err == nil {
+			t.Error("Pause of a sandbox that never started = nil, want a refusal")
+		}
+		if state := s.status(t, spec.ID).State; state != models.StateCreated {
+			t.Errorf("the refused sandbox is %q, and a refusal leaves it %q", state, models.StateCreated)
+		}
+	})
+
 	t.Run("Resume", func(t *testing.T) {
 		id := s.running(t)
 		dir := s.snapshotOf(t, id, caps.Pause)
@@ -506,6 +527,78 @@ func Run(t *testing.T, s Subject) {
 		dir := s.snapshotOf(t, id, caps.Pause)
 		err := s.Provider.Fork(t.Context(), dir, copyOf(s.NewSpec(t)))
 		s.check(t, models.VerbFork, caps.Fork, err)
+	})
+
+	// One snapshot feeds as many sandboxes as are asked of it, none of them is the source, and the source comes back after them.
+	t.Run("ManyForksFromOneSnapshot", func(t *testing.T) {
+		if !caps.Fork {
+			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbFork)
+		}
+
+		source := s.running(t)
+		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo source > " + s.scratch("conformance-fork"))}); status.Code != 0 {
+			t.Fatalf("the write into the source exited %d", status.Code)
+		}
+
+		dir := s.SnapshotDir(t)
+		if err := s.Provider.Pause(t.Context(), source, dir); err != nil {
+			t.Fatalf("Pause: %v", err)
+		}
+		if s.status(t, source).Alive() {
+			t.Fatal("the source is still alive after a Pause, and its snapshot is what holds it now")
+		}
+
+		forks := make([]models.SandboxSpec, forkCount)
+		for i := range forks {
+			forks[i] = copyOf(s.NewSpec(t))
+			if err := s.Provider.Fork(t.Context(), dir, forks[i]); err != nil {
+				t.Fatalf("fork %d of %d from one snapshot: %v", i+1, forkCount, err)
+			}
+		}
+
+		// Each fork is a sandbox of its own: its own process, and a command of its own that runs in it.
+		pids := map[int]string{}
+		for _, fork := range forks {
+			status := s.status(t, fork.ID)
+			if !status.Alive() || status.PID <= 0 {
+				t.Fatalf("fork %s is %+v, want it running with a pid of its own", fork.ID, status)
+			}
+			if other, held := pids[status.PID]; held {
+				t.Errorf("fork %s runs as pid %d, which fork %s already holds", fork.ID, status.PID, other)
+			}
+			pids[status.PID] = fork.ID
+
+			if _, out := s.exec(t, fork.ID, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
+				t.Errorf("fork %s reads %q from the file the source wrote, want source", fork.ID, out)
+			}
+		}
+
+		// Only Stop ends a sandbox, and it ends the one it names.
+		if err := s.Provider.Stop(t.Context(), forks[0].ID, stopGrace); err != nil {
+			t.Fatalf("Stop the first fork: %v", err)
+		}
+		for _, fork := range forks[1:] {
+			if !s.status(t, fork.ID).Alive() {
+				t.Errorf("fork %s went down with the fork that was stopped", fork.ID)
+			}
+			if err := s.Provider.Stop(t.Context(), fork.ID, stopGrace); err != nil {
+				t.Fatalf("Stop fork %s: %v", fork.ID, err)
+			}
+		}
+
+		// The forks consumed nothing: the same snapshot still brings the source back.
+		if err := s.Provider.Resume(t.Context(), source, dir); err != nil {
+			t.Fatalf("Resume the source after %d forks: %v", forkCount, err)
+		}
+		if !s.status(t, source).Alive() {
+			t.Fatal("the source is not running after a Resume from the snapshot its forks came from")
+		}
+		if _, out := s.exec(t, source, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
+			t.Errorf("the source reads %q from the file it wrote before the pause, want source", out)
+		}
+		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
+			t.Fatalf("Stop the source: %v", err)
+		}
 	})
 }
 
