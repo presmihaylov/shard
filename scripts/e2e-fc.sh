@@ -46,7 +46,11 @@ fstab_line() { printf '%s %s xfs loop 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
 # forget_fstab drops the run's own line through a temp file in /etc, so an interrupt never leaves a half-written fstab.
 forget_fstab() {
 	local kept status tmp
-	grep -qxF -- "$(fstab_line)" /etc/fstab || return 0
+	[ -e /etc/fstab ] || return 0
+	grep -qxF -- "$(fstab_line)" /etc/fstab && status=0 || status=$?
+	# Only exit 1 means the line is absent; anything above it is a read that failed, and a failed read must never pass for a clean file.
+	[ "${status}" -le 1 ] || fail "read /etc/fstab: grep exited ${status}"
+	[ "${status}" = "0" ] || return 0
 	kept=$(grep -vxF -- "$(fstab_line)" /etc/fstab) && status=0 || status=$?
 	[ "${status}" -le 1 ] || fail "read /etc/fstab: grep exited ${status}"
 	tmp=$(mktemp /etc/fstab.e2e-fc.XXXXXX)
@@ -58,13 +62,19 @@ forget_fstab() {
 	mv "${tmp}" /etc/fstab
 }
 
-# own_root refuses a root this run did not make, because wipe_root below is an rm -rf and check_root guards only / and the production root.
+# own_root refuses anything wipe_root would delete and this run did not make, because check_root guards only / and the production root.
 own_root() {
-	[ -e "${SHARD_ROOT}" ] || return 0
-	[ -d "${SHARD_ROOT}" ] || fail "${SHARD_ROOT} is not a directory: name a root of this suite's own"
 	if [ -f "${ROOT_MARKER}" ]; then
 		return 0
 	fi
+	local leftover
+	for leftover in "${DATA_IMAGE}" "${DATA_IMAGE}.part" "${DATA_IMAGE}.lock"; do
+		if [ -e "${leftover}" ]; then
+			fail "${leftover} is on this host and ${ROOT_MARKER} does not exist: this run deletes nothing it did not make, so name a root whose siblings are free"
+		fi
+	done
+	[ -e "${SHARD_ROOT}" ] || return 0
+	[ -d "${SHARD_ROOT}" ] || fail "${SHARD_ROOT} is not a directory: name a root of this suite's own"
 	[ -z "$(/bin/ls -A "${SHARD_ROOT}")" ] || fail "${SHARD_ROOT} holds files and ${ROOT_MARKER} does not exist: this run deletes no directory it did not make, so name an empty or absent root"
 }
 
