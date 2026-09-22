@@ -139,6 +139,10 @@ Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
 
+Daemon flags:
+  --data-disk <MiB>        the size of the xfs image the daemon provisions when its root is on ext4 and the
+                           provider is firecracker; other providers never provision one (default 102400)
+
 Serve flags:
   --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)
   --cert <pem>             the tls certificate to serve; without a pair serve refuses to start

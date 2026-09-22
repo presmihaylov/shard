@@ -72,6 +72,21 @@ the command keeps running inside the sandbox. The `runsc exec` driver dies with 
 next daemon sweeps the scratch every exec keeps under `<root>/exec` before it serves. A new
 `shard exec` answers as soon as the daemon is back.
 
+## The data dir on Firecracker
+
+Firecracker copies a disk where gVisor copies an overlay layer, so a `fork` or a `clone` on it is
+fast only where the filesystem clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs.
+Before it takes the lock, a daemon with `--provider firecracker` probes its root with one real clone.
+A root that clones is left alone. A root that does not, ext4 on most hosts, gets a loopback XFS image
+beside it, `<root>.xfs`, sized by `--data-disk <MiB>` (100 GiB by default, set at install), formatted
+with `mkfs.xfs -m reflink=1`, mounted over the root with `-o loop`, and given a line in `/etc/fstab`
+so it comes back on boot. Every step skips what is already done, so a restart is a no-op.
+
+The daemon refuses rather than provisions, and says why and what to do, when it is not root, when
+`mkfs.xfs` (xfsprogs) is missing, when the root is already a mount that cannot clone, when the root
+holds entries the mount would hide, or when a file at `<root>.xfs` is not an XFS image. It never
+falls back to a full copy. No other provider provisions or probes anything (SHARD-264).
+
 ## Reconcile at start
 
 The daemon checks every record against the substrate after it takes the lock and before it listens,

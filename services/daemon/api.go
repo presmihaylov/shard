@@ -18,11 +18,15 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/broker"
+	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
+
+// DefaultDataImageMiB is the loopback image size when the daemon verb sets none, which the CLI shows without importing datadir.
+const DefaultDataImageMiB = datadir.DefaultImageMiB
 
 // Config is the wiring one resident daemon needs.
 type Config struct {
@@ -38,11 +42,17 @@ type Config struct {
 	InitPath string
 	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name, or empty for the platform's default.
 	Provider string
+	// DataImageMiB sizes the loopback xfs image firecracker provisions under an ext4 root; zero takes DefaultDataImageMiB.
+	DataImageMiB int64
 }
 
 // Run supervises the daemon's tasks over one root until ctx ends.
 func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
+	// Before the lock: the lock file would be the first entry the xfs mount hides.
+	if err := datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), ImageMiB: cfg.DataImageMiB, Out: cfg.Out}); err != nil {
+		return err
+	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 

@@ -26,6 +26,15 @@ func TestDaemonTakesNoArgumentButStatus(t *testing.T) {
 	}
 }
 
+func TestDaemonRefusesADataDiskThatIsNoSize(t *testing.T) {
+	for _, size := range []string{"0", "-5"} {
+		err := App{Out: io.Discard}.Run(t.Context(), []string{"daemon", "--data-disk", size})
+		if want := "--data-disk is a size in MiB and must be positive, got " + size; err == nil || err.Error() != want {
+			t.Errorf("--data-disk %s got %v, want %q", size, err, want)
+		}
+	}
+}
+
 // The provider is built on the first ask, so the status is the one read that can say why there is none.
 func TestDaemonStatusSaysWhyTheProviderCannotBeBuilt(t *testing.T) {
 	root := shortRoot(t)
