@@ -15,6 +15,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/erofs"
 	"github.com/presmihaylov/shard/pkg/registry"
 )
 
@@ -30,12 +31,17 @@ var ErrNotReclaimed = registry.ErrNotReclaimed
 // stagingPrefix names the tree an unpack builds before it renames it into place under the digest.
 const stagingPrefix = ".unpack-"
 
+// artifactDirs are the shapes one digest unpacks into, each under its own directory of the root.
+var artifactDirs = []string{"rootfs", "disks", "erofs"}
+
 // Service owns the image tree: the layout under blobs, and one unpacked rootfs per image.
 type Service struct {
 	root  string
 	store *registry.Store
 	// disks builds one ext4 image per digest beside the rootfs tree, for a provider that boots a VM.
-	disks    bool
+	disks bool
+	// erofs builds one read-only EROFS image per digest, for a provider that boots a microVM over an overlay.
+	erofs    bool
 	registry []registry.Option
 
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
@@ -51,6 +57,8 @@ type Image struct {
 	RootFS string `json:"rootfs"`
 	// Disk is the same tree as one ext4 image, the base every VM sandbox clones. Empty on a host without disks.
 	Disk string `json:"disk,omitempty"`
+	// Erofs is the same tree as one read-only EROFS image, the base a microVM sandbox mounts under its overlay. Empty on a host without them.
+	Erofs string `json:"erofs,omitempty"`
 	// Size is the download size, not the size on disk after the unpack.
 	Size    int64              `json:"size"`
 	Created time.Time          `json:"created"`
@@ -72,6 +80,11 @@ func WithDisks() Option {
 	return func(s *Service) { s.disks = true }
 }
 
+// WithErofs makes every pull also build the EROFS image a microVM provider boots from; the host needs mkfs.erofs.
+func WithErofs() Option {
+	return func(s *Service) { s.erofs = true }
+}
+
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
 func New(root string, opts ...Option) (*Service, error) {
 	s := &Service{root: root}
@@ -85,7 +98,7 @@ func New(root string, opts ...Option) (*Service, error) {
 	}
 	s.store = store
 
-	for _, dir := range []string{"rootfs", "disks"} {
+	for _, dir := range artifactDirs {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
 			return nil, fmt.Errorf("create the %s directory under %s: %w", dir, root, err)
 		}
@@ -256,6 +269,9 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 		if err := os.Remove(s.diskPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove the disk of %s: %w", digest, err)
 		}
+		if err := os.Remove(s.erofsPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove the erofs image of %s: %w", digest, err)
+		}
 	}
 
 	return s.store.Remove(ref)
@@ -271,6 +287,9 @@ func (s *Service) describe(img registry.Image) (Image, error) {
 	}
 	if s.disks {
 		described.Disk = s.diskPath(img.Digest)
+	}
+	if s.erofs {
+		described.Erofs = s.erofsPath(img.Digest)
 	}
 	if img.Broken != nil {
 		described.Broken = img.Broken.Error()
@@ -304,23 +323,34 @@ func (s *Service) diskPath(digest string) string {
 	return filepath.Join(s.root, "disks", strings.ReplaceAll(digest, ":", "-")+".ext4")
 }
 
+// erofsPath is the third shape of the same tree, read-only by construction.
+func (s *Service) erofsPath(digest string) string {
+	return filepath.Join(s.root, "erofs", strings.ReplaceAll(digest, ":", "-")+".erofs")
+}
+
 func (s *Service) unpacked(img registry.Image) bool {
 	info, err := os.Stat(s.rootfsDir(img.Digest))
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	if !s.disks {
-		return true
+	if s.disks {
+		if _, err := os.Stat(s.diskPath(img.Digest)); err != nil {
+			return false
+		}
 	}
-	_, err = os.Stat(s.diskPath(img.Digest))
+	if s.erofs {
+		if _, err := os.Stat(s.erofsPath(img.Digest)); err != nil {
+			return false
+		}
+	}
 
-	return err == nil
+	return true
 }
 
 // sweepStaging drops the tree a killed pull left mid-unpack. It runs under the lock and never in
 // New, because a staging tree another writer holds is a live unpack rather than debris.
 func (s *Service) sweepStaging() error {
-	for _, dir := range []string{"rootfs", "disks"} {
+	for _, dir := range artifactDirs {
 		parent := filepath.Join(s.root, dir)
 
 		entries, err := os.ReadDir(parent)
@@ -357,11 +387,16 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 	if err := s.unpackDir(ctx, img, layers); err != nil {
 		return err
 	}
-	if !s.disks {
+	if s.disks {
+		if err := s.unpackDisk(ctx, img, layers); err != nil {
+			return err
+		}
+	}
+	if !s.erofs {
 		return nil
 	}
 
-	return s.unpackDisk(ctx, img, layers)
+	return s.unpackErofs(ctx, img)
 }
 
 func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1.Layer) error {
@@ -397,27 +432,54 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 	return nil
 }
 
-// unpackDisk builds the ext4 image under a staging name and renames it, the same way the tree lands.
+// unpackDisk builds the ext4 image from the layer tars, which keep the owners a directory unpack loses without root.
 func (s *Service) unpackDisk(ctx context.Context, img registry.Image, layers []v1.Layer) error {
 	disk := s.diskPath(img.Digest)
 	if _, err := os.Stat(disk); err == nil {
 		return nil
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(disk), stagingPrefix)
+	return stageFile(disk, func(tmp string) error {
+		if err := buildDisk(ctx, tmp, layers); err != nil {
+			return fmt.Errorf("build the disk of %s: %w", img.Reference, err)
+		}
+
+		return nil
+	})
+}
+
+// unpackErofs builds the EROFS image from the unpacked tree, so it runs after unpackDir and needs the root that unpack ran as.
+func (s *Service) unpackErofs(ctx context.Context, img registry.Image) error {
+	path := s.erofsPath(img.Digest)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
+	return stageFile(path, func(tmp string) error {
+		if err := erofs.Build(ctx, tmp, s.rootfsDir(img.Digest)); err != nil {
+			return fmt.Errorf("build the erofs image of %s: %w", img.Reference, err)
+		}
+
+		return nil
+	})
+}
+
+// stageFile builds one file under a staging name beside path and renames it, the same way the tree lands.
+func stageFile(path string, build func(tmp string) error) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), stagingPrefix)
 	if err != nil {
-		return fmt.Errorf("create a staging disk under %s: %w", filepath.Dir(disk), err)
+		return fmt.Errorf("create a staging file under %s: %w", filepath.Dir(path), err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp.Name(), err)
 	}
 	defer os.Remove(tmp.Name())
 
-	if err := buildDisk(ctx, tmp.Name(), layers); err != nil {
-		return fmt.Errorf("build the disk of %s: %w", img.Reference, err)
+	if err := build(tmp.Name()); err != nil {
+		return err
 	}
 
-	if err := os.Rename(tmp.Name(), disk); err != nil {
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp.Name(), err)
 	}
 

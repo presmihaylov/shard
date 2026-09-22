@@ -26,10 +26,11 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
              [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]
-  shard-init -transport vsock [-root <device>]
+  shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>]
 
 The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
-With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.`
+With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.
+-root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -84,17 +85,27 @@ func run(args []string) error {
 	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
 	reset := flags.Duration("restart-reset", defaultReset, "how long the entrypoint must run since its last start before an exit clears the count")
 	transport := flags.String("transport", "", "vsock, or unix:<dir> in a test: the host sends the entrypoint, and every stream goes over it")
-	root := flags.String("root", "", "the root disk to move onto before anything runs, with -transport")
+	root := flags.String("root", "", "the ext4 root disk to move onto before anything runs, with -transport")
+	base := flags.String("base", "", "the read-only EROFS image to boot under an overlay, with -overlay and -transport")
+	overlay := flags.String("overlay", "", "the ext4 disk the overlay's upper layer sits on, with -base")
+	console := flags.String("console", "/dev/hvc0", "the console device the supervisor's stderr goes to once the root is in place")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
+	}
+	boot := guestBoot{Root: *root, Base: *base, Overlay: *overlay, Console: *console}
+	if err := boot.check(); err != nil {
+		return err
 	}
 	if *transport != "" {
 		if flags.NArg() != 0 || *readyFile != "" || *restartFile != "" {
 			return errors.New("-transport takes the entrypoint from the host, so no -ready-file, -restart-file or arguments")
 		}
 
-		return serveTransport(*transport, *root)
+		return serveTransport(*transport, boot)
+	}
+	if boot.set() {
+		return errors.New("-root, -base and -overlay move onto a disk the host sends the entrypoint to, so they need -transport")
 	}
 	if *readyFile == "" {
 		return errors.New("-ready-file is required")

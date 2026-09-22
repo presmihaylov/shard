@@ -10,7 +10,7 @@ import (
 
 var errNotLinux = errors.New("a root disk needs Linux")
 
-func bootGuest(string) error { return errNotLinux }
+func bootGuest(guestBoot) error { return errNotLinux }
 
 func confine() error { return nil }
 

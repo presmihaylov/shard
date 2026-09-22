@@ -202,6 +202,24 @@ enforces, not a bare `0`. `shard create` refuses a negative value. The host need
 `e2fsprogs` ships. On Sysbox the directories `sysbox-runc` backs from the host, `/var/lib/docker` among
 them, sit outside the image and so outside the bound.
 
+## What a microVM boots from
+
+A microVM provider, Firecracker first, boots no OCI bundle and no ext4 root disk: it boots a
+read-only EROFS image of the pulled image, an `overlay.raw` of its own, and an initrd. The image
+service builds the EROFS image once per digest under `images/erofs/<digest>.erofs`, from the same
+unpacked tree the bundle path uses, with `mkfs.erofs` at 4 KiB blocks so an image built on a
+16 KiB-page host mounts in a 4 KiB-page guest; the host needs `erofs-utils`. `overlay.raw` is one
+empty ext4 image per sandbox, written in Go and grown to the disk bound, so the bound above holds
+the same way: every write of the sandbox lands on it and stops there. The initrd is `shard-init`
+alone, as `/init` of a newc archive, the same file the vz provider boots. The kernel command line
+hands it `-base` and `-overlay`, the two block devices, and `-console` for where its stderr goes:
+`shard-init` mounts the EROFS image read-only, the ext4 disk over it, lays `upper` and `work` on
+that disk, mounts the overlay as the root, moves the kernel filesystems across and pivots onto it,
+exactly as the one-disk `-root` boot does. It stays PID 1, and the host sends the entrypoint over
+vsock as before. `vz` keeps its ext4 root disk: an APFS clone is its overlay. The guest kernel must
+carry `CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`; neither shipped kernel config sets the first yet,
+which is a kernel bump the first Firecracker boot (SHARD-41) needs.
+
 ## What `Status` means
 
 `Status` asks the substrate and reports what it says now. It never reads the shard record, and the
