@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -23,6 +24,9 @@ var ErrNotLinux = errors.New("xfs: linux only")
 
 // ErrNotImage is a file at the image path that mkfs.xfs never wrote; the daemon must not format over it.
 var ErrNotImage = errors.New("not an xfs image")
+
+// ErrFstabConflict is a line at the mount point that is not this loop mount; the next boot would mount that instead.
+var ErrFstabConflict = errors.New("fstab already mounts the point from another source")
 
 // Have reports whether mkfs.xfs is on PATH, and names the package when it is not.
 func Have() error {
@@ -43,11 +47,19 @@ func MakeImage(ctx context.Context, path string, size int64) error {
 		return nil
 	}
 
-	if err := reserve(path, size); err != nil {
+	// The work lands under a staging name, so a crash or a failed mkfs never leaves an unformatted file at path.
+	staging := path + ".part"
+	if err := os.Remove(staging); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", staging, err)
+	}
+	if err := reserve(staging, size); err != nil {
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, Mkfs, "-q", "-m", "reflink=1", path).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s %s: %w: %s", Mkfs, path, err, bytes.TrimSpace(out))
+	if out, err := exec.CommandContext(ctx, Mkfs, "-q", "-m", "reflink=1", staging).CombinedOutput(); err != nil {
+		return errors.Join(fmt.Errorf("%s %s: %w: %s", Mkfs, staging, err, bytes.TrimSpace(out)), os.Remove(staging))
+	}
+	if err := os.Rename(staging, path); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", staging, path, err)
 	}
 
 	return nil
@@ -88,9 +100,9 @@ func Mount(ctx context.Context, image, point string) error {
 // FstabPath is where the line goes; a test points it at a file of its own.
 var FstabPath = "/etc/fstab"
 
-// Fstab adds the line that mounts image at point on boot, once.
+// Fstab adds the line that mounts image at point on boot, once; a line that mounts point from anything else is a conflict.
 func Fstab(image, point string) error {
-	present, err := inFstab(point)
+	present, err := inFstab(image, point)
 	if err != nil {
 		return err
 	}
@@ -109,8 +121,8 @@ func Fstab(image, point string) error {
 	return f.Close()
 }
 
-// inFstab reports whether any line already mounts point.
-func inFstab(point string) (bool, error) {
+// inFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
+func inFstab(image, point string) (bool, error) {
 	f, err := os.Open(FstabPath)
 	if err != nil {
 		return false, fmt.Errorf("open %s: %w", FstabPath, err)
@@ -120,9 +132,14 @@ func inFstab(point string) (bool, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 && !strings.HasPrefix(fields[0], "#") && fields[1] == point {
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") || fields[1] != point {
+			continue
+		}
+		if len(fields) >= 4 && fields[0] == image && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
 			return true, nil
 		}
+
+		return false, fmt.Errorf("%s: %w: %q", FstabPath, ErrFstabConflict, strings.Join(fields, " "))
 	}
 	if err := scanner.Err(); err != nil {
 		return false, fmt.Errorf("read %s: %w", FstabPath, err)

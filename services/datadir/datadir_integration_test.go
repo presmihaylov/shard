@@ -30,6 +30,9 @@ func TestEnsureProvisionsALoopbackXFSImage(t *testing.T) {
 	}
 	dir := filepath.Join(base, "shard")
 	xfs.FstabPath = filepath.Join(base, "fstab")
+	if err := os.WriteFile(xfs.FstabPath, []byte("# static\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if out, err := exec.Command("umount", dir).CombinedOutput(); err != nil {
 			t.Errorf("umount %s: %v: %s", dir, err, bytes.TrimSpace(out))

@@ -66,3 +66,24 @@ func TestIsImageReadsTheSuperblockMagic(t *testing.T) {
 		t.Errorf("an empty file got %v", err)
 	}
 }
+
+func TestFstabRefusesAForeignLineAtThePoint(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	for _, line := range []string{
+		"/dev/sdb1 /var/lib/shard ext4 defaults 0 2",
+		"/other.xfs /var/lib/shard xfs loop 0 0",
+		"/var/lib/shard.xfs /var/lib/shard xfs defaults 0 0",
+	} {
+		if err := os.WriteFile(FstabPath, []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := Fstab("/var/lib/shard.xfs", "/var/lib/shard")
+		if !errors.Is(err, ErrFstabConflict) || !strings.Contains(err.Error(), line) {
+			t.Errorf("%q got %v", line, err)
+		}
+		got, err := os.ReadFile(FstabPath)
+		if err != nil || string(got) != line+"\n" {
+			t.Errorf("after the conflict fstab holds %q, %v", got, err)
+		}
+	}
+}
