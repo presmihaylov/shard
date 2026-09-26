@@ -17,7 +17,7 @@ records exist: the other substrate has never heard of those sandboxes.
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every required verb; no snapshot verb until SHARD-44 |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every verb |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
@@ -25,9 +25,9 @@ reports and the CLI refuses on:
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
 | `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
-| `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
-| `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
-| `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
+| `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
+| `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
+| `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 
 ### systemd is not a sandbox's init
 
@@ -131,35 +131,56 @@ cgroup, and each section says what the VM does instead.
 
 `firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker`
 binary on PATH, one `firecracker` process per sandbox, driven over its API socket in the sandbox's
-state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release
-once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section
-below describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of
-the static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under
-`<root>/firecracker`. The host needs `erofs-utils` for the pull. The host speaks to the guest over
-vsock alone, through the socket firecracker proxies it on, so `exec`, `logs` and the exit come the
-way they do on `vz`. The vmm has no stop of its own: a stop tells `shard-init` to end the
-entrypoint and reboot, which is the one guest exit firecracker ends its process on (a power off
-leaves it running), and the grace runs out into a kill of the process. A guest the host can no
-longer reach over vsock is still a running VM: `inspect` says so, and `stop` kills it without a
-grace it could not hear. A daemon restart adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
-the least a guest boots with. The guest's network is a tap on the same bridge the veth substrates
-use, named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the
-IPv6 drop and the egress chain key on that name, the proxy redirect on the leased address and the
-private floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap as the
-guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the gateway
-and the resolver over vsock once the guest is up, before the entrypoint runs. The next start after
-a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
-`pause`, `resume` and `fork` refuse by name until SHARD-44 lands the snapshot.
+state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release once
+under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section below
+describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of the
+static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<root>/firecracker`.
+The host needs `erofs-utils` for the pull. The host speaks to the guest over vsock alone, through
+the socket firecracker proxies it on, so `exec`, `logs` and the exit come the way they do on `vz`.
+The vmm has no stop of its own: a stop tells `shard-init` to end the entrypoint and reboot, which is
+the one guest exit firecracker ends its process on (a power off leaves it running), and the grace
+runs out into a kill of the process. A guest the host can no longer reach over vsock is still a
+running VM: `inspect` says so, and `stop` kills it without a grace it could not hear. A daemon
+restart adopts a running vmm by its socket, and resumes one a cut `pause` left paused, whose stopped
+guest would answer no handshake. `--memory` is required, `0` is refused by name, and 128 MiB is the
+least a guest boots with. The guest's network is a tap on the same bridge the veth substrates use,
+named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the IPv6
+drop and the egress chain key on that name, the proxy redirect on the leased address and the private
+floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap
+as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the
+gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
+after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
+
+`pause` stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
+directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
+all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
+leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
+snapshot is what brings it back. `resume` and `fork` each load that snapshot into a fresh vmm, over
+its own reflinked copy of the overlay and a hardlink of the memory file: firecracker maps the memory
+private, so N sandboxes read the one copy on disk and none of them writes it. A snapshot is not
+consumed by either verb. Fork as many sandboxes from one as you like, each on its own writable disk,
+and the source and the snapshot are untouched. A fork restores holding the source's address, MAC and
+hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
+else: the interface goes down for the MAC, which is why a fork's frames reach the bridge under its
+own and not the source's. Firecracker has no pause of the wall clock, so the guest's clock is
+corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
+
+Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
+provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
+one that cannot, so no `pause` ever fails halfway for it. And the vmm's state names the source's
+`overlay.raw` by path, which the load opens before the drive is swapped for the fork's own copy, so
+a snapshot outlives neither a moved root nor a removed source.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
 over a root it turns into an XFS image, `create` with `--memory`, `logs`, `exec`, an entrypoint
 that exits, the policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost
-while the daemon was down, the three snapshot refusals, `stop`, two clones by reflink, `start`,
-`rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on demand only.
-It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`, `make e2e`
-and `make devbox-e2e` never call it: rent a bare-metal KVM box, run `sudo make e2e-firecracker`
-there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and destroy the box. `SHARD_KERNEL`
-and `SHARD_KERNEL_SHA256` point it at a kernel on the box; unset, the daemon fetches the release.
+while the daemon was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop`, two clones by
+reflink, `start`, `rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on
+demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`,
+`make e2e` and `make devbox-e2e` never call it: rent a bare-metal KVM box, run
+`sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and
+destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point it at a kernel on the box; unset,
+the daemon fetches the release.
 
 The guest reaches the resolver and the proxy on the bridge address, so a host firewall that drops
 `INPUT` eats those packets after shard's own table accepted them. A rented box with `ufw` on is the
@@ -344,8 +365,8 @@ Every substrate runs it from its own `*_integration_test.go` under `make itest`.
 every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
 the refuse path there and the snapshot path on gVisor and on `vz`, whose `vzvm_integration_test.go` runs
 the suite on real VMs on an Apple silicon Mac, and Firecracker, whose `firecracker_integration_test.go` runs it on
-real microVMs on a host with `/dev/kvm`. The snapshot-shaped interface questions wait for the Firecracker
-snapshot (SHARD-44).
+real microVMs on a host with `/dev/kvm`. The suite takes one fork from one snapshot; the N-fork case
+that holds every substrate to a snapshot no verb consumes is SHARD-45.
 
 It does not prove anything about the network: every substrate joins a namespace the network service
 built, so there is nothing to generalize yet.

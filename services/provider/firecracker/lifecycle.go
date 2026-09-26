@@ -68,7 +68,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, bundle.OverlayDiskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, memoryFile, bundle.OverlayDiskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -289,7 +289,7 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	return m.close()
 }
 
-// Remove ends the VM and drops the overlay, the record and the sockets; the state directory itself is the repository's.
+// Remove ends the VM and drops the overlay, the memory, the record and the sockets; the state directory itself is the repository's.
 func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err := p.Stop(ctx, id, 0); err != nil {
 		return err
@@ -298,7 +298,7 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{bundle.OverlayDiskFile, recordFile, socketFile, vsockFile} {
+	for _, name := range []string{bundle.OverlayDiskFile, memoryFile, recordFile, socketFile, vsockFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}

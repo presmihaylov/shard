@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -434,36 +435,306 @@ func readVM(t *testing.T, dir string) vm {
 	return r
 }
 
-// The snapshot verbs wait on SHARD-44: each is refused by name, and none touches the VM.
-func TestTheSnapshotVerbsAreRefusedByName(t *testing.T) {
+// A host with /dev/kvm has all three snapshot verbs: the vmm writes the snapshot and loads it back.
+func TestCapabilitiesAreTheThreeSnapshotVerbs(t *testing.T) {
 	h := newHarness(t)
-	if caps := h.provider.Capabilities(); caps.Pause || caps.Resume || caps.Fork {
-		t.Fatalf("Capabilities = %+v, want none", caps)
+	want := models.Capabilities{Pause: true, Resume: true, Fork: true}
+	if caps := h.provider.Capabilities(); caps != want {
+		t.Fatalf("Capabilities = %+v, want %+v", caps, want)
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	snap := t.TempDir()
-	refused := map[string]error{
-		models.VerbPause:  h.provider.Pause(t.Context(), spec.ID, snap),
-		models.VerbResume: h.provider.Resume(t.Context(), spec.ID, snap),
-		models.VerbFork:   h.provider.Fork(t.Context(), snap, h.newSpec(t)),
+// A pause writes the whole snapshot and ends the VM; the marker goes in last, and nothing of the staging is left.
+func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
 	}
-	for verb, err := range refused {
-		var refusal *models.UnsupportedError
-		if !errors.As(err, &refusal) || refusal.Verb != verb || refusal.Provider != firecracker.Name {
-			t.Errorf("%s = %v, want unsupported on %s", verb, err, firecracker.Name)
+	for _, name := range []string{"vmstate", "memory", "overlay.raw", "snapshot.json", "checkpoint.img"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s in the snapshot: %v, want it written", name, err)
 		}
 	}
-	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.State != models.StateRunning {
-		t.Fatalf("Status after the refusals = %+v, %v", status, err)
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging directory after Pause: %v, want gone", err)
 	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Pause = %+v, %v, want stopped", status, err)
+	}
+}
+
+// A resume brings the sandbox back over its own copy of the overlay and a link to the memory the snapshot keeps.
+func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || !status.Alive() {
+		t.Fatalf("Status after Resume = %+v, %v, want alive", status, err)
+	}
+	memory := filepath.Join(spec.StateDir, "memory")
+	if got := links(t, memory); got != 2 {
+		t.Errorf("the memory has %d links, want 2: the sandbox maps the snapshot's own file", got)
+	}
+	if got := driveOf(t, spec.StateDir, "overlay"); got != filepath.Join(spec.StateDir, "overlay.raw") {
+		t.Errorf("the overlay drive after Resume = %q, want the sandbox's own", got)
+	}
+
+	// The snapshot is not consumed: a stopped sandbox comes back from the same one.
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("the second Resume from the same snapshot: %v", err)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(memory); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the memory after Remove: %v, want gone", err)
+	}
+	if got := links(t, filepath.Join(dir, "memory")); got != 1 {
+		t.Errorf("the snapshot's memory has %d links after Remove, want 1", got)
+	}
+}
+
+// One snapshot forks as many sandboxes as are asked of it: each takes its own overlay, and the snapshot stays whole.
+func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	src := readVM(t, spec.StateDir)
+
+	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
+	for _, fork := range forks {
+		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+			t.Fatalf("Fork: %v", err)
+		}
+	}
+	for _, fork := range forks {
+		status, err := h.provider.Status(t.Context(), fork.ID)
+		if err != nil || !status.Alive() {
+			t.Fatalf("Status of fork %s = %+v, %v, want alive", fork.ID, status, err)
+		}
+		got := readVM(t, fork.StateDir)
+		if got.BaseDisk != src.BaseDisk || got.RootFS != src.RootFS || !reflect.DeepEqual(got.Run, src.Run) {
+			t.Errorf("the fork's record = %+v, want the snapshot's image, rootfs and run %+v", got, src)
+		}
+		if drive := driveOf(t, fork.StateDir, "overlay"); drive != filepath.Join(fork.StateDir, "overlay.raw") {
+			t.Errorf("the fork's overlay drive = %q, want its own", drive)
+		}
+	}
+	// The one memory file carries a link for each fork, so no fork copied it.
+	if got := links(t, filepath.Join(dir, "memory")); got != 1+len(forks) {
+		t.Errorf("the snapshot's memory has %d links, want %d", got, 1+len(forks))
+	}
+	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s after the forks: %v, want the snapshot whole", name, err)
+		}
+	}
+}
+
+// Each verb refuses the state it cannot take, and says which sandbox and which state that is.
+func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+
+	empty := t.TempDir()
+	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+		t.Errorf("Resume without a snapshot = %v, want the refusal", err)
+	}
+	if err := h.provider.Fork(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+		t.Errorf("Fork without a snapshot = %v, want the refusal", err)
+	}
+
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err == nil || !strings.Contains(err.Error(), "pause takes a running sandbox") {
+		t.Errorf("Pause of a sandbox whose VM is gone = %v, want the refusal", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err == nil || !strings.Contains(err.Error(), "resume takes a paused sandbox") {
+		t.Errorf("Resume of a live sandbox = %v, want the refusal", err)
+	}
+	// A fork onto a live sandbox would take the directory from under it.
+	onto := models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
+	if err := h.provider.Fork(t.Context(), dir, onto); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("Fork onto a live sandbox = %v, want the refusal", err)
+	}
+}
+
+// A pause that cannot finish leaves the VM running and the last snapshot whole: the new one is staged beside it.
+func TestAFailedPauseResumesTheVMAndKeepsTheLastSnapshot(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// The vmm holds no handle on the overlay, so dropping it breaks the copy after the vCPUs have stopped.
+	if err := os.Remove(filepath.Join(spec.StateDir, "overlay.raw")); err != nil {
+		t.Fatal(err)
+	}
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "copy the overlay") {
+		t.Fatalf("Pause with no overlay = %v, want the copy to fail", err)
+	}
+	status, statusErr := h.provider.Status(t.Context(), spec.ID)
+	if statusErr != nil || !status.Alive() {
+		t.Fatalf("Status after the failed Pause = %+v, %v, want the VM still there", status, statusErr)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging directory after the failed Pause: %v, want gone", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
+		t.Errorf("the last snapshot after the failed Pause: %v, want it whole", err)
+	}
+}
+
+// A pause over a directory that already holds a snapshot puts the new one there in one step, and nothing of the old stays.
+func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("the first Pause: %v", err)
+	}
+	// A file only the first snapshot has: it must go with it, not survive beside the second.
+	if err := os.WriteFile(filepath.Join(dir, "stale"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("the second Pause: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+	want := []string{"checkpoint.img", "memory", "overlay.raw", "snapshot.json", "vmstate"}
+	if !slices.Equal(got, want) {
+		t.Errorf("the snapshot directory holds %v, want the second snapshot alone %v", got, want)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging directory after the second Pause: %v, want gone", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume from the second snapshot: %v", err)
+	}
+}
+
+// A daemon cut mid-pause leaves a paused VM whose guest answers nothing; the next daemon resumes it instead of waiting on it.
+func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+
+	// The vCPUs are stopped and no snapshot was written: this is the pause of a daemon that died before it ended the vmm.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.reopen(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status of the paused leftover = %+v, %v, want the sandbox running again", status, err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the leftover came back: %v", err)
+	}
+}
+
+// forkSpec is what the orchestrator hands Fork: an id, a directory and the bounds, and no entrypoint.
+func (h *harness) forkSpec(t *testing.T) models.SandboxSpec {
+	t.Helper()
+
+	spec := h.newSpec(t)
+
+	return models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
+}
+
+// links is how many names the file has, which is what proves the memory is shared and not copied.
+func links(t *testing.T, path string) int {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no link count for %s", path)
+	}
+
+	return int(stat.Nlink)
+}
+
+// driveOf is the host file behind one of the guest's drives, as the vmm last had it.
+func driveOf(t *testing.T, dir, id string) string {
+	t.Helper()
+
+	blob, err := os.ReadFile(filepath.Join(dir, bootFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b boot
+	if err := json.Unmarshal(blob, &b); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range b.Drives {
+		var d struct {
+			ID   string `json:"drive_id"`
+			Path string `json:"path_on_host"`
+		}
+		if err := json.Unmarshal(raw, &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.ID == id {
+			return d.Path
+		}
+	}
+	t.Fatalf("no drive %q under %s", id, dir)
+
+	return ""
 }
 
 // A remove leaves the state directory with nothing of the VM in it; the directory itself is the repository's.

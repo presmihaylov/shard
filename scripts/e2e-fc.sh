@@ -198,7 +198,7 @@ STATUS_OUT=$(shard daemon status)
 status_field() { echo "${STATUS_OUT}" | awk -v name="$1" '$1 == name { print $2 }'; }
 expect "$(status_field pid)" "${DAEMON_PID}" "the status names the pid of the daemon this run started"
 expect "$(status_field provider)" "firecracker" "the status names firecracker"
-expect "$(status_field pause) $(status_field resume) $(status_field fork)" "false false false" "firecracker claims no snapshot verb until SHARD-44"
+expect "$(status_field pause) $(status_field resume) $(status_field fork)" "true true true" "firecracker claims every snapshot verb"
 
 step "store a secret and a policy"
 SECRET_VALUE="fc-e2e-secret-value-$$-$(date +%s)"
@@ -357,23 +357,10 @@ RECONCILE_ID=""
 RECONCILE_LINK=""
 say "ls gives the reason, and rm freed what it left on the host"
 
-# The shared library returns before its own copy of this, so the refusals live here until SHARD-44 lands the snapshot.
-for verb in pause resume; do
-	step "refuse to ${verb} on firecracker"
-	CODE=0
-	REFUSAL=$(shard "${verb}" "${ID}" 2>&1) || CODE=$?
-	[ "${CODE}" != "0" ] || fail "shard ${verb} exited 0 on firecracker, which holds no snapshots"
-	expect "${REFUSAL}" "shard: provider firecracker does not support ${verb} on this host" "${verb} names the provider and the verb"
-	expect "$(listed_state "${ID}")" "running" "the refused ${verb} left the microVM running"
-done
-
-step "refuse to fork on firecracker"
-CODE=0
-REFUSAL=$(shard fork --name e2e-fork "${ID}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "shard fork exited 0 on firecracker, which holds no snapshots"
-expect "${REFUSAL}" "shard: provider firecracker does not support fork on this host" "fork names the provider and the verb"
-absent "a sandbox named e2e-fork" "$(shard ls --all | grep e2e-fork || true)"
-expect_exec "still-running" "the microVM runs on after the refusals" /bin/echo still-running
+snapshot_steps
+# The resume brought the microVM up in a fresh vmm, so the stop and the start below read that one.
+VMM_PID=$(record_pid "${ID}")
+expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "a fresh vmm ${VMM_PID} drives the resumed microVM"
 
 step "stop the microVM"
 stop_it() { shard stop --time "${GRACE}" "${ID}" >/dev/null; }
@@ -490,4 +477,4 @@ say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE} and both sha
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, logs, exec, an entrypoint exit, network, policy, proxy, daemon restart, reconcile, refused pause, resume and fork, stop, clone twice, start, rm, prune, daemon down, and a host with no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, logs, exec, an entrypoint exit, network, policy, proxy, daemon restart, reconcile, pause, a fork of the paused snapshot, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no bridge and no policy table left"

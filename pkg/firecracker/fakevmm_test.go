@@ -42,13 +42,24 @@ func TestMain(m *testing.M) {
 
 // seen is what the fake was told, written beside its socket after every call so a test can read the order and the payloads.
 type seen struct {
-	Calls   []string          `json:"calls"`
+	Calls    []string          `json:"calls"`
+	Machine  json.RawMessage   `json:"machine"`
+	Boot     json.RawMessage   `json:"boot"`
+	Drives   []json.RawMessage `json:"drives"`
+	Network  json.RawMessage   `json:"network"`
+	Vsock    json.RawMessage   `json:"vsock"`
+	Load     json.RawMessage   `json:"load"`
+	Snapshot json.RawMessage   `json:"snapshot"`
+	State    string            `json:"state"`
+}
+
+// vmstate is what the fake's snapshot file holds: the devices as they were put in, which a load brings back.
+type vmstate struct {
 	Machine json.RawMessage   `json:"machine"`
 	Boot    json.RawMessage   `json:"boot"`
 	Drives  []json.RawMessage `json:"drives"`
 	Network json.RawMessage   `json:"network"`
 	Vsock   json.RawMessage   `json:"vsock"`
-	State   string            `json:"state"`
 }
 
 // fakeVMM is firecracker without KVM: the API on --api-sock, the vsock proxy on the uds_path, and a console line on stdout.
@@ -106,12 +117,19 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	if f.seen.State != "Not started" {
+	booted := f.seen.State != "Not started"
+	postBoot := r.Method == http.MethodPatch || r.URL.Path == "/snapshot/create"
+	if booted && !postBoot {
 		fault(w, http.StatusBadRequest, "The requested operation is not supported after starting the microVM.")
 
 		return
 	}
-	refusal, err := f.apply(r.URL.Path, body)
+	if !booted && postBoot {
+		fault(w, http.StatusBadRequest, "The requested operation is not supported before starting the microVM.")
+
+		return
+	}
+	refusal, err := f.apply(r.Method, r.URL.Path, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 
@@ -130,10 +148,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apply takes one PUT the way firecracker would; a refusal is in its own words, an error is the fake's own.
-func (f *fake) apply(path string, body []byte) (string, error) {
+// apply takes one call the way firecracker would; a refusal is in its own words, an error is the fake's own.
+func (f *fake) apply(method, path string, body []byte) (string, error) {
 	switch {
-	case path == "/machine-config":
+	case method == http.MethodPut && path == "/machine-config":
 		var m struct {
 			VCPUs int64 `json:"vcpu_count"`
 		}
@@ -144,15 +162,17 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 			return "The vCPU number is invalid!", nil
 		}
 		f.seen.Machine = body
-	case path == "/boot-source":
+	case method == http.MethodPut && path == "/boot-source":
 		f.seen.Boot = body
-	case strings.HasPrefix(path, "/drives/"):
+	case method == http.MethodPut && strings.HasPrefix(path, "/drives/"):
 		f.seen.Drives = append(f.seen.Drives, body)
-	case strings.HasPrefix(path, "/network-interfaces/"):
+	case method == http.MethodPatch && strings.HasPrefix(path, "/drives/"):
+		return f.updateDrive(body)
+	case method == http.MethodPut && strings.HasPrefix(path, "/network-interfaces/"):
 		f.seen.Network = body
-	case path == "/vsock":
+	case method == http.MethodPut && path == "/vsock":
 		f.seen.Vsock = body
-	case path == "/actions":
+	case method == http.MethodPut && path == "/actions":
 		if f.seen.Boot == nil {
 			return "Cannot start microvm without kernel configuration.", nil
 		}
@@ -160,11 +180,163 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 			return "", err
 		}
 		f.seen.State = "Running"
+	case method == http.MethodPatch && path == "/vm":
+		return f.patchVM(body)
+	case method == http.MethodPut && path == "/snapshot/create":
+		return f.createSnapshot(body)
+	case method == http.MethodPut && path == "/snapshot/load":
+		return f.loadSnapshot(body)
 	default:
-		return "no route for " + path, nil
+		return "no route for " + method + " " + path, nil
 	}
 
 	return "", nil
+}
+
+func (f *fake) patchVM(body []byte) (string, error) {
+	var v struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return "", err
+	}
+	switch v.State {
+	case "Paused":
+		f.seen.State = "Paused"
+	case "Resumed":
+		f.seen.State = "Running"
+	default:
+		return "Invalid vm state: " + v.State, nil
+	}
+
+	return "", nil
+}
+
+// createSnapshot writes the devices to the state path and a stand-in for the memory; firecracker wants the vCPUs stopped first.
+func (f *fake) createSnapshot(body []byte) (string, error) {
+	if f.seen.State != "Paused" {
+		return "Cannot snapshot a running microVM.", nil
+	}
+	var params struct {
+		StatePath  string `json:"snapshot_path"`
+		MemoryPath string `json:"mem_file_path"`
+	}
+	if err := json.Unmarshal(body, &params); err != nil {
+		return "", err
+	}
+	state, err := json.Marshal(vmstate{Machine: f.seen.Machine, Boot: f.seen.Boot, Drives: f.seen.Drives, Network: f.seen.Network, Vsock: f.seen.Vsock})
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(params.StatePath, state, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(params.MemoryPath, []byte("fake guest memory"), 0o600); err != nil {
+		return "", err
+	}
+	f.seen.Snapshot = body
+
+	return "", nil
+}
+
+// loadSnapshot brings the devices back with the tap and the vsock path the caller names; the microVM is paused unless told to resume.
+func (f *fake) loadSnapshot(body []byte) (string, error) {
+	var params struct {
+		StatePath string `json:"snapshot_path"`
+		Memory    struct {
+			Path string `json:"backend_path"`
+		} `json:"mem_backend"`
+		ResumeVM bool `json:"resume_vm"`
+		Network  []struct {
+			ID      string `json:"iface_id"`
+			HostDev string `json:"host_dev_name"`
+		} `json:"network_overrides"`
+		Vsock *struct {
+			Path string `json:"uds_path"`
+		} `json:"vsock_override"`
+	}
+	if err := json.Unmarshal(body, &params); err != nil {
+		return "", err
+	}
+	blob, err := os.ReadFile(params.StatePath)
+	if err != nil {
+		return "Load snapshot error: " + err.Error(), nil
+	}
+	if _, err := os.Stat(params.Memory.Path); err != nil {
+		return "Load snapshot error: " + err.Error(), nil
+	}
+	var state vmstate
+	if err := json.Unmarshal(blob, &state); err != nil {
+		return "", err
+	}
+	f.seen.Machine, f.seen.Boot, f.seen.Drives, f.seen.Network, f.seen.Vsock = state.Machine, state.Boot, state.Drives, state.Network, state.Vsock
+	for _, o := range params.Network {
+		f.seen.Network, err = replace(f.seen.Network, "host_dev_name", o.HostDev)
+		if err != nil {
+			return "", err
+		}
+	}
+	if params.Vsock != nil {
+		f.seen.Vsock, err = replace(f.seen.Vsock, "uds_path", params.Vsock.Path)
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := f.listenVsock(); err != nil {
+		return "", err
+	}
+	f.seen.Load = body
+	f.seen.State = "Paused"
+	if params.ResumeVM {
+		f.seen.State = "Running"
+	}
+
+	return "", nil
+}
+
+// updateDrive reopens a drive the guest has at another path; one the guest does not have, or a path that is not there, is refused.
+func (f *fake) updateDrive(body []byte) (string, error) {
+	var d struct {
+		ID   string `json:"drive_id"`
+		Path string `json:"path_on_host"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(d.Path); err != nil {
+		return "Unable to patch the block device: " + err.Error(), nil
+	}
+	for i, have := range f.seen.Drives {
+		var got struct {
+			ID string `json:"drive_id"`
+		}
+		if err := json.Unmarshal(have, &got); err != nil {
+			return "", err
+		}
+		if got.ID != d.ID {
+			continue
+		}
+		updated, err := replace(have, "path_on_host", d.Path)
+		if err != nil {
+			return "", err
+		}
+		f.seen.Drives[i] = updated
+
+		return "", nil
+	}
+
+	return "Invalid block device ID: " + d.ID, nil
+}
+
+// replace sets one string field of a JSON object, and keeps the rest as it was.
+func replace(object json.RawMessage, field, value string) (json.RawMessage, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(object, &fields); err != nil {
+		return nil, err
+	}
+	fields[field] = value
+
+	return json.Marshal(fields)
 }
 
 // listenVsock is the proxy firecracker opens at the uds_path on start: CONNECT <port> in, OK back, then the stream is the guest's.

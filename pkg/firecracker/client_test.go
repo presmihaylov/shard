@@ -254,6 +254,163 @@ func TestARefusalCarriesTheVmmsOwnWordsAndEndsIt(t *testing.T) {
 	}
 }
 
+// snapshot pauses the fake and writes its snapshot under root, the way a provider's pause does.
+func snapshot(t *testing.T, client *firecracker.Client, root string) (string, string) {
+	t.Helper()
+
+	if err := client.Pause(); err != nil {
+		t.Fatalf("Pause = %v", err)
+	}
+	state, memory := filepath.Join(root, "vmstate"), filepath.Join(root, "memory")
+	if err := client.Snapshot(state, memory); err != nil {
+		t.Fatalf("Snapshot = %v", err)
+	}
+
+	return state, memory
+}
+
+func TestPauseStopsTheVCPUsAndResumeStartsThem(t *testing.T) {
+	root := shortRoot(t)
+	client, _ := start(t, config(root))
+
+	if err := client.Pause(); err != nil {
+		t.Fatalf("Pause = %v", err)
+	}
+	if info, err := client.State(); err != nil || info.State != firecracker.StatePaused {
+		t.Fatalf("State after Pause = %+v, %v; want %q", info, err, firecracker.StatePaused)
+	}
+	if err := client.Resume(); err != nil {
+		t.Fatalf("Resume = %v", err)
+	}
+	if info, err := client.State(); err != nil || info.State != firecracker.StateRunning {
+		t.Fatalf("State after Resume = %+v, %v; want %q", info, err, firecracker.StateRunning)
+	}
+}
+
+func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
+	root := shortRoot(t)
+	cfg := config(root)
+	client, _ := start(t, cfg)
+
+	err := client.Snapshot(filepath.Join(root, "vmstate"), filepath.Join(root, "memory"))
+	if err == nil || !strings.Contains(err.Error(), "PUT /snapshot/create") {
+		t.Fatalf("Snapshot of a running microVM = %v, want the refusal named", err)
+	}
+
+	state, memory := snapshot(t, client, root)
+	for _, path := range []string{state, memory} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("Snapshot left no %s: %v", filepath.Base(path), err)
+		}
+	}
+	want := `{"snapshot_type":"Full","snapshot_path":"` + state + `","mem_file_path":"` + memory + `"}`
+	if got := string(readSeen(t, cfg).Snapshot); got != want {
+		t.Fatalf("the snapshot put = %s, want %s", got, want)
+	}
+}
+
+func TestRestoreBringsTheSnapshotUpInAFreshVmmWithItsOwnTapVsockAndDisk(t *testing.T) {
+	root := shortRoot(t)
+	cfg := config(root)
+	source, _ := start(t, cfg)
+	state, memory := snapshot(t, source, root)
+
+	other := shortRoot(t)
+	overlay := filepath.Join(other, "overlay.raw")
+	if err := os.WriteFile(overlay, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := firecracker.Snapshot{
+		State:   state,
+		Memory:  memory,
+		Tap:     "shardv3",
+		Drives:  []firecracker.Drive{{ID: "overlay", Path: overlay}},
+		Vsock:   filepath.Join(other, "vsock.sock"),
+		Socket:  filepath.Join(other, "firecracker.sock"),
+		Console: filepath.Join(other, "console.log"),
+	}
+	fork, info, err := firecracker.Restore(t.Context(), os.Args[0], snap)
+	if err != nil {
+		t.Fatalf("Restore = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := fork.Kill(); err != nil {
+			t.Errorf("Kill = %v", err)
+		}
+	})
+	if info.State != firecracker.StateRunning {
+		t.Fatalf("Restore reported %q, want %q", info.State, firecracker.StateRunning)
+	}
+
+	s := readSeen(t, firecracker.Config{Socket: snap.Socket})
+	var calls []string
+	for _, call := range s.Calls {
+		if !strings.HasPrefix(call, "GET ") {
+			calls = append(calls, call)
+		}
+	}
+	wantCalls := []string{"PUT /snapshot/load", "PATCH /drives/overlay", "PATCH /vm"}
+	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("the fresh vmm was told %q, want %q", calls, wantCalls)
+	}
+	wantLoad := `{"snapshot_path":"` + state + `","mem_backend":{"backend_type":"File","backend_path":"` + memory + `"},"resume_vm":false,` +
+		`"network_overrides":[{"iface_id":"eth0","host_dev_name":"shardv3"}],"vsock_override":{"uds_path":"` + snap.Vsock + `"},"clock_realtime":true}`
+	if string(s.Load) != wantLoad {
+		t.Fatalf("the load put = %s, want %s", s.Load, wantLoad)
+	}
+	for name, got := range map[string]string{
+		"network": string(s.Network),
+		"vsock":   string(s.Vsock),
+		"base":    string(s.Drives[0]),
+		"overlay": string(s.Drives[1]),
+	} {
+		want := map[string]string{
+			"network": `{"guest_mac":"02:fc:0a:57:00:02","host_dev_name":"shardv3","iface_id":"eth0"}`,
+			"vsock":   `{"guest_cid":3,"uds_path":"` + snap.Vsock + `"}`,
+			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
+			"overlay": `{"drive_id":"overlay","is_read_only":false,"is_root_device":false,"path_on_host":"` + overlay + `"}`,
+		}[name]
+		if got != want {
+			t.Fatalf("the restored %s = %s, want %s", name, got, want)
+		}
+	}
+
+	// The vsock proxy answers on the fresh path, and the source still stands, paused, on its own.
+	if _, err := fork.Connect(echoPort); err != nil {
+		t.Fatalf("Connect over the restored vmm = %v", err)
+	}
+	if info, err := source.State(); err != nil || info.State != firecracker.StatePaused {
+		t.Fatalf("the source after the restore = %+v, %v; want still %q", info, err, firecracker.StatePaused)
+	}
+}
+
+func TestRestoreReportsARefusedLoadAndEndsTheVmm(t *testing.T) {
+	root := shortRoot(t)
+	snap := firecracker.Snapshot{
+		State:   filepath.Join(root, "vmstate"),
+		Memory:  filepath.Join(root, "memory"),
+		Vsock:   filepath.Join(root, "vsock.sock"),
+		Socket:  filepath.Join(root, "firecracker.sock"),
+		Console: filepath.Join(root, "console.log"),
+	}
+
+	_, _, err := firecracker.Restore(t.Context(), os.Args[0], snap)
+	if err == nil || !strings.Contains(err.Error(), "PUT /snapshot/load") || !strings.Contains(err.Error(), "Load snapshot error") {
+		t.Fatalf("Restore without a snapshot = %v, want the call and the fault named", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, _, err := firecracker.Adopt(snap.Socket, snap.Vsock)
+		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the refused vmm still answers: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // resetting is a socket whose owner ends every connection unanswered, as a vmm mid-exit does; gone closes the listener after the first.
 func resetting(t *testing.T, socket string, gone bool) {
 	t.Helper()

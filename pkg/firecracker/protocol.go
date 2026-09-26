@@ -45,3 +45,43 @@ type instance struct {
 type fault struct {
 	Message string `json:"fault_message"`
 }
+
+// vmState is the one patch the vCPUs take: Paused or Resumed, which is not the Running the instance then reports.
+type vmState struct {
+	State string `json:"state"`
+}
+
+type snapshotCreate struct {
+	Type       string `json:"snapshot_type"`
+	StatePath  string `json:"snapshot_path"`
+	MemoryPath string `json:"mem_file_path"`
+}
+
+// snapshotLoad names the tap and the vsock path of the new process; the drives keep the paths the snapshot holds until a patch swaps them.
+type snapshotLoad struct {
+	StatePath     string            `json:"snapshot_path"`
+	Memory        memoryBackend     `json:"mem_backend"`
+	ResumeVM      bool              `json:"resume_vm"`
+	Network       []networkOverride `json:"network_overrides,omitempty"`
+	Vsock         *vsockOverride    `json:"vsock_override,omitempty"`
+	ClockRealtime bool              `json:"clock_realtime"`
+}
+
+type memoryBackend struct {
+	Type string `json:"backend_type"`
+	Path string `json:"backend_path"`
+}
+
+type networkOverride struct {
+	ID      string `json:"iface_id"`
+	HostDev string `json:"host_dev_name"`
+}
+
+type vsockOverride struct {
+	Path string `json:"uds_path"`
+}
+
+type partialDrive struct {
+	ID   string `json:"drive_id"`
+	Path string `json:"path_on_host"`
+}

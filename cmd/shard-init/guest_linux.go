@@ -180,6 +180,15 @@ func applyAddress(a supervisor.Address) error {
 	}
 	defer unix.Close(fd)
 
+	if a.MAC != "" {
+		// A fork's interface is already up with the source's MAC, and a live address change is not every driver's; take it down first.
+		if err := setFlags(fd, a.Interface, 0); err != nil {
+			return err
+		}
+		if err := setHWAddr(fd, a.Interface, a.MAC); err != nil {
+			return err
+		}
+	}
 	for _, step := range []struct {
 		request uint
 		addr    net.IP
@@ -192,13 +201,8 @@ func applyAddress(a supervisor.Address) error {
 		}
 	}
 
-	ifr, err := unix.NewIfreq(a.Interface)
-	if err != nil {
+	if err := setFlags(fd, a.Interface, unix.IFF_UP|unix.IFF_RUNNING); err != nil {
 		return err
-	}
-	ifr.SetUint16(unix.IFF_UP | unix.IFF_RUNNING)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("bring %s up: %w", a.Interface, err)
 	}
 
 	if err := setDefaultRoute(fd, a.Interface, gateway); err != nil {
@@ -220,6 +224,20 @@ func writeResolverFiles(a supervisor.Address) error {
 	return writeResolverFilesIn("/etc", a)
 }
 
+// setFlags writes the interface flags, which brings the link up and, with none, takes it down.
+func setFlags(fd int, name string, flags uint16) error {
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
+	}
+	ifr.SetUint16(flags)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("set the flags of %s: %w", name, err)
+	}
+
+	return nil
+}
+
 func ifreqAddr(fd int, name string, request uint, addr net.IP) error {
 	ifr, err := unix.NewIfreq(name)
 	if err != nil {
@@ -230,6 +248,38 @@ func ifreqAddr(fd int, name string, request uint, addr net.IP) error {
 	}
 	if err := unix.IoctlIfreq(fd, request, ifr); err != nil {
 		return fmt.Errorf("set %s on %s: %w", addr, name, err)
+	}
+
+	return nil
+}
+
+// ifreqHWAddr mirrors struct ifreq with ifr_hwaddr in the union, which x/sys reads but never sets; the pad brings it to the 40 bytes the kernel copies.
+type ifreqHWAddr struct {
+	name   [unix.IFNAMSIZ]byte
+	family uint16
+	data   [14]byte
+	pad    [8]byte
+}
+
+// setHWAddr changes the MAC of a down interface, which is what gives a fork its own and leaves the rest of the restored guest alone.
+func setHWAddr(fd int, name, mac string) error {
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return fmt.Errorf("the mac %q: %w", mac, err)
+	}
+	if len(hw) != 6 {
+		return fmt.Errorf("the mac %q is not 48 bits", mac)
+	}
+	if len(name) >= unix.IFNAMSIZ {
+		return fmt.Errorf("the interface name %q is too long", name)
+	}
+	ifr := ifreqHWAddr{family: unix.ARPHRD_ETHER}
+	copy(ifr.name[:], name)
+	copy(ifr.data[:], hw)
+
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.SIOCSIFHWADDR, uintptr(unsafe.Pointer(&ifr))) //nolint:gosec // the ifreq ioctl takes a struct pointer
+	if errno != 0 {
+		return fmt.Errorf("set the mac %s on %s: %w", mac, name, errno)
 	}
 
 	return nil
