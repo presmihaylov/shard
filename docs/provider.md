@@ -174,12 +174,13 @@ a snapshot outlives neither a moved root nor a removed source.
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
 over a root it turns into an XFS image, `create` with `--memory`, `logs`, `exec`, an entrypoint
 that exits, the policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost
-while the daemon was down, the three snapshot refusals, `stop`, two clones by reflink, `start`,
-`rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on demand only.
-It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`, `make e2e`
-and `make devbox-e2e` never call it: rent a bare-metal KVM box, run `sudo make e2e-firecracker`
-there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and destroy the box. `SHARD_KERNEL`
-and `SHARD_KERNEL_SHA256` point it at a kernel on the box; unset, the daemon fetches the release.
+while the daemon was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop`, two clones by
+reflink, `start`, `rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on
+demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`,
+`make e2e` and `make devbox-e2e` never call it: rent a bare-metal KVM box, run
+`sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and
+destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point it at a kernel on the box; unset,
+the daemon fetches the release.
 
 The guest reaches the resolver and the proxy on the bridge address, so a host firewall that drops
 `INPUT` eats those packets after shard's own table accepted them. A rented box with `ufw` on is the
