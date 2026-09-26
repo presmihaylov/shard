@@ -1,6 +1,5 @@
-// Package network gives every sandbox its own network namespace, an address from a pool and a way
-// out through the host. Host netfilter is the policy of record on every substrate: nothing a sandbox
-// can reach may depend on a rule that lives inside the sandbox, where shard does not control it.
+// Package network leases every sandbox an address and a port on the host bridge, a veth into its own
+// namespace or a tap for a VM. Host netfilter is the policy of record, never a rule inside the sandbox.
 package network
 
 import (
@@ -62,6 +61,9 @@ type Config struct {
 	// a user namespace of its own needs for CAP_NET_ADMIN over its netns. Nil or unset is the host's,
 	// which gVisor joins. Asked at Allocate and never at boot, so the host side needs no substrate.
 	Userns func() (netns.IDMapping, error)
+	// Tap gives each sandbox a tap on the host instead of a veth into a namespace, for a vmm to open.
+	// The spec then names no netns, and the provider addresses the guest itself.
+	Tap bool
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -220,13 +222,14 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	if err := s.Ensure(ctx); err != nil {
-		return models.NetworkSpec{}, err
-	}
-
 	address, _, err := s.pool.allocate(id)
 	if err != nil {
 		return models.NetworkSpec{}, err
+	}
+
+	// The lease goes first, so the ruleset Ensure renders pins the port before the guest sends a frame.
+	if err := s.Ensure(ctx); err != nil {
+		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
 	}
 
 	built, err := netns.NamespaceExists(id)
@@ -265,15 +268,23 @@ func (s *Service) owner() (netns.IDMapping, error) {
 
 // spec is what the provider joins. It is derived, so any shard process can rebuild it from the record.
 func (s *Service) spec(id string, address netip.Addr, owner netns.IDMapping) models.NetworkSpec {
-	return models.NetworkSpec{
-		NetnsPath:     netns.NamespacePath(id),
-		Userns:        userns(id, owner),
+	spec := models.NetworkSpec{
 		Address:       netip.PrefixFrom(address, s.cfg.Subnet.Bits()),
 		Gateway:       s.gateway,
 		HostInterface: s.hostInterface(address),
 		// Cloned: the spec crosses into the provider and the bundle, and neither may reach back here.
 		Nameservers: slices.Clone(s.cfg.Nameservers),
 	}
+
+	// A tap has no namespace to join: the vmm opens the host end and the guest addresses its own side.
+	if s.cfg.Tap {
+		return spec
+	}
+
+	spec.NetnsPath = netns.NamespacePath(id)
+	spec.Userns = userns(id, owner)
+
+	return spec
 }
 
 // userns is the user namespace the guest joins, which is none unless the config asks for one.
@@ -293,11 +304,7 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr, own
 		return err
 	}
 
-	if err := s.addNamespace(ctx, id, owner); err != nil {
-		return err
-	}
-
-	if err := s.manager.AddVeth(ctx, host, guestInterface, id); err != nil {
+	if err := s.link(ctx, id, host, owner); err != nil {
 		return err
 	}
 
@@ -314,7 +321,25 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr, own
 		return err
 	}
 
+	// A tap's guest side is inside the VM, which the provider addresses once the guest is up.
+	if s.cfg.Tap {
+		return nil
+	}
+
 	return s.configureGuest(ctx, id, address)
+}
+
+// link makes the host interface: a tap the vmm opens, or one end of a veth whose other end is in the netns.
+func (s *Service) link(ctx context.Context, id, host string, owner netns.IDMapping) error {
+	if s.cfg.Tap {
+		return s.manager.AddTap(ctx, host)
+	}
+
+	if err := s.addNamespace(ctx, id, owner); err != nil {
+		return err
+	}
+
+	return s.manager.AddVeth(ctx, host, guestInterface, id)
 }
 
 // addNamespace makes the netns, owned by a user namespace of the sandbox's own when the config asks for one.

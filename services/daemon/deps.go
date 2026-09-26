@@ -157,7 +157,10 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
 	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
-	svc, err := network.New(network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns}, manager)
+	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns}
+	// A microVM's link is a tap its vmm opens, on the same bridge and under the same rules as a veth.
+	cfg.Tap = d.providerName() == firecracker.Name
+	svc, err := network.New(cfg, manager)
 	if err != nil {
 		return nil, err
 	}

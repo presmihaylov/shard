@@ -135,6 +135,11 @@ func (m *Manager) AddVeth(ctx context.Context, host, peer, namespace string) err
 	return m.run(ctx, "link", "add", host, "type", "veth", "peer", "name", peer, "netns", namespace)
 }
 
+// AddTap creates a tap on the host, which a vmm opens as the guest's network device; it has no peer.
+func (m *Manager) AddTap(ctx context.Context, name string) error {
+	return m.run(ctx, "tuntap", "add", "dev", name, "mode", "tap")
+}
+
 // DeleteLink removes an interface from the host namespace. Deleting one end of a veth pair takes both.
 func (m *Manager) DeleteLink(ctx context.Context, name string) error {
 	err := m.run(ctx, "link", "delete", name)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -106,6 +107,10 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 		}
 	}
 
+	device, err := r.device()
+	if err != nil {
+		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
+	}
 	cfg := fcapi.Config{
 		Kernel:    p.cfg.Kernel,
 		Initrd:    p.initrd,
@@ -116,6 +121,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 			{ID: "base", Path: r.BaseDisk, ReadOnly: true},
 			{ID: "overlay", Path: filepath.Join(dir, bundle.OverlayDiskFile)},
 		},
+		Network: device,
 		Vsock:   filepath.Join(dir, vsockFile),
 		Socket:  filepath.Join(dir, socketFile),
 		Console: filepath.Join(dir, consoleFile),
@@ -134,6 +140,46 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 	}
 
 	return m, nil
+}
+
+// device is the virtio-net device the vmm attaches over the tap the record names; no tap is no device.
+func (r record) device() (fcapi.Network, error) {
+	if r.Tap == "" {
+		return fcapi.Network{}, nil
+	}
+	prefix, err := netip.ParsePrefix(r.Address)
+	if err != nil {
+		return fcapi.Network{}, fmt.Errorf("parse the recorded address: %w", err)
+	}
+
+	return fcapi.Network{Tap: r.Tap, MAC: guestMAC(prefix.Addr())}, nil
+}
+
+// guestMAC derives a locally administered MAC from the leased IPv4, so the bridge sees the same address on every boot.
+func guestMAC(address netip.Addr) string {
+	v4 := address.As4()
+
+	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", v4[0], v4[1], v4[2], v4[3])
+}
+
+// readdress gives the guest the address the record names, once the control stream is up and before the entrypoint runs.
+func (m *machine) readdress(r record) error {
+	if r.Address == "" {
+		return nil
+	}
+	prefix, err := netip.ParsePrefix(r.Address)
+	if err != nil {
+		return fmt.Errorf("parse the recorded address: %w", err)
+	}
+	address := supervisor.Address{
+		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
+		Nameservers: r.Nameservers, Hostname: r.Hostname,
+	}
+	if err := m.control.Load().Readdress(address); err != nil {
+		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // attach opens the control connection to the guest and follows its events and its logs.

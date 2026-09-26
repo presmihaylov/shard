@@ -21,6 +21,12 @@ type drive struct {
 	ReadOnly bool   `json:"is_read_only"`
 }
 
+type networkInterface struct {
+	ID      string `json:"iface_id"`
+	HostDev string `json:"host_dev_name"`
+	MAC     string `json:"guest_mac,omitempty"`
+}
+
 type vsockDevice struct {
 	CID  int    `json:"guest_cid"`
 	Path string `json:"uds_path"`

@@ -56,6 +56,9 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(dir, recordFile)))
 	}
+	if err := m.readdress(r); err != nil {
+		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(dir, recordFile)))
+	}
 	if !run {
 		return nil
 	}
@@ -104,6 +107,7 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 		return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
 	}
 	r := record{BaseDisk: spec.BaseDisk, RootFS: spec.RootFS, Resources: spec.Resources, Run: run}
+	r.network(spec)
 	if spec.ProxyCA != nil {
 		if err := r.trust(spec.ProxyCA); err != nil {
 			return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
@@ -111,6 +115,23 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	}
 
 	return r, nil
+}
+
+// network takes the tap, the lease and the name from the spec, which a fresh create and a clone both give the guest.
+func (r *record) network(spec models.SandboxSpec) {
+	if !spec.Network.Address.IsValid() {
+		return
+	}
+	r.Tap = spec.Network.HostInterface
+	r.Address = spec.Network.Address.String()
+	r.Gateway = spec.Network.Gateway.String()
+	r.Hostname = spec.Name
+	if r.Hostname == "" {
+		r.Hostname = spec.ID
+	}
+	for _, server := range spec.Network.Nameservers {
+		r.Nameservers = append(r.Nameservers, server.String())
+	}
 }
 
 // trust merges the proxy CA into the image roots the way the bundle plants them on Linux; the guest writes the store at every start, so a clone's overlay carries it too.
@@ -169,6 +190,9 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	m, err = p.boot(ctx, id, dir, r)
 	if err != nil {
 		return err
+	}
+	if err := m.readdress(r); err != nil {
+		return errors.Join(err, p.end(ctx, m))
 	}
 
 	return p.run(m, r)
@@ -318,6 +342,7 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 
 	// The spec names the copy alone; the image and the run are the source's, as the bundle it copies is on Linux.
 	r := record{BaseDisk: src.BaseDisk, RootFS: src.RootFS, Resources: spec.Resources, Run: src.Run}
+	r.network(spec)
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
 }

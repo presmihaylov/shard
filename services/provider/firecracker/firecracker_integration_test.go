@@ -5,6 +5,7 @@ package firecracker_test
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/erofs"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 )
@@ -162,6 +165,107 @@ func TestAMicroVMBootsAndRunsTheEntrypoint(t *testing.T) {
 	}
 	if !strings.Contains(string(log), "booted on") || !strings.Contains(string(log), "3.20") {
 		t.Fatalf("the entrypoint did not run over the image:\n%s", log)
+	}
+}
+
+// A tap on the test bridge, leased the way the daemon leases one for a microVM; the bridge and the tables go with the test.
+func newTapNetwork(t *testing.T) *network.Service {
+	t.Helper()
+
+	for _, binary := range []string{"ip", "nft"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("no %s on this host", binary)
+		}
+	}
+	manager, err := netns.New()
+	if err != nil {
+		t.Fatalf("open the netns manager: %v", err)
+	}
+	svc, err := network.New(network.Config{
+		Root: t.TempDir(), Bridge: testBridge, Subnet: netip.MustParsePrefix(testSubnet), Tap: true,
+	}, manager)
+	if err != nil {
+		t.Fatalf("open the network service: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if err := manager.DeleteLink(ctx, testBridge); err != nil {
+			t.Logf("remove the test bridge: %v", err)
+		}
+		for _, family := range []string{"inet", "bridge"} {
+			if err := manager.DeleteTable(ctx, family, "shard"); err != nil {
+				t.Logf("remove the test %s table: %v", family, err)
+			}
+		}
+	})
+
+	return svc
+}
+
+const (
+	testBridge = "shardt0"
+	testSubnet = "10.213.0.0/24"
+)
+
+// The network AC: the guest takes the leased address over the tap, and its frames reach the bridge with the MAC the lease fixes.
+func TestAMicroVMIsAddressedOverItsTap(t *testing.T) {
+	h := newVMHarness(t)
+	tapNet := newTapNetwork(t)
+
+	// The host's input chain drops the ping, but the ARP under it lands the guest's MAC on the bridge.
+	spec := h.newSpec(t, "/bin/sh", "-c",
+		"ip -4 -o addr show eth0; ip route show default; ping -c 1 -W 1 10.213.0.1; ip neigh show; hostname")
+	spec.Name = "web"
+	lease, err := tapNet.Allocate(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := tapNet.Release(context.Background(), spec.ID); err != nil {
+			t.Logf("release the lease: %v", err)
+		}
+	})
+	if lease.Address.String() != "10.213.0.2/24" || lease.HostInterface != "shardv2" {
+		t.Fatalf("the lease is %+v, want the first address of %s over shardv2", lease, testSubnet)
+	}
+	spec.Network = lease
+
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	// The log appends and the bridge keeps a neighbour, so each boot must add its own proof.
+	for boots, phase := range []string{"the first boot", "a boot after a stop"} {
+		// The daemon leases the network again before every start, which builds the tap again for the new vmm.
+		if boots > 0 {
+			if _, err := tapNet.Allocate(t.Context(), spec.ID); err != nil {
+				t.Fatalf("%s: allocate again: %v", phase, err)
+			}
+		}
+		if out, err := exec.Command("ip", "neigh", "flush", "dev", testBridge).CombinedOutput(); err != nil {
+			t.Fatalf("%s: flush the bridge neighbours: %v: %s", phase, err, out)
+		}
+		if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+			t.Fatalf("%s: %v", phase, err)
+		}
+		exit, err := h.provider.Wait(t.Context(), spec.ID)
+		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+		if err != nil || exit.Code != 0 {
+			console, _ := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
+			t.Fatalf("%s: Wait = %+v, %v\nsandbox log:\n%s\nconsole:\n%s", phase, exit, err, log, console)
+		}
+		for _, want := range []string{"inet 10.213.0.2/24", "default via 10.213.0.1", "10.213.0.1 dev eth0 lladdr", "\nweb\n"} {
+			if got := strings.Count(string(log), want); got != boots+1 {
+				t.Errorf("%s: the guest showed %q %d times, want %d:\n%s", phase, want, got, boots+1, log)
+			}
+		}
+		neigh, err := exec.Command("ip", "neigh", "show", "dev", testBridge).CombinedOutput()
+		if err != nil || !strings.Contains(string(neigh), "10.213.0.2 lladdr 02:fc:0a:d5:00:02") {
+			t.Errorf("%s: the bridge did not learn the guest from its tap: %v\n%s", phase, err, neigh)
+		}
+
+		if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
+			t.Fatalf("%s: stop: %v", phase, err)
+		}
 	}
 }
 

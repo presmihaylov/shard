@@ -17,7 +17,7 @@ records exist: the other substrate has never heard of those sandboxes.
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every required verb; no snapshot verb until SHARD-44, no network until SHARD-43 |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every required verb; no snapshot verb until SHARD-44 |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
@@ -142,7 +142,13 @@ entrypoint and reboot, which is the one guest exit firecracker ends its process 
 leaves it running), and the grace runs out into a kill of the process. A guest the host can no
 longer reach over vsock is still a running VM: `inspect` says so, and `stop` kills it without a
 grace it could not hear. A daemon restart adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
-the least a guest boots with. The guest has no network until SHARD-43 wires a tap onto the bridge;
+the least a guest boots with. The guest's network is a tap on the same bridge the veth substrates
+use, named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the
+IPv6 drop and the egress chain key on that name, the proxy redirect on the leased address and the
+private floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap as the
+guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the gateway
+and the resolver over vsock once the guest is up, before the entrypoint runs. The next start after
+a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 `pause`, `resume` and `fork` refuse by name until SHARD-44 lands the snapshot.
 
 ## Refuse, never downgrade
@@ -278,6 +284,8 @@ host, and a pipe cannot be one.
   `Remove` has dropped every mount inside it.
 - The **network service** owns the namespace, the address and the host interface. `NetworkSpec` is
   allocated before `Create`, so a provider joins a namespace it did not build and never releases one.
+  On `firecracker` the host interface is a tap and there is no namespace: the vmm opens the tap, and
+  the provider addresses the guest with the lease the spec carries.
 - **The host is the policy of record.** On Linux that is host netfilter; on `vz` it is the daemon's own
   userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a rule that
   lives inside the sandbox.

@@ -4,6 +4,7 @@ package network_test
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -130,6 +131,22 @@ func TestAllocateBuildsTheNamespaceAndItsRoute(t *testing.T) {
 	}
 	if !strings.Contains(link, "master "+testBridge) {
 		t.Errorf("%s is not a port of %s: %q", spec.HostInterface, testBridge, strings.TrimSpace(link))
+	}
+}
+
+// The first lease is pinned by the Allocate that takes it, so a guest whose create never reapplies the rules cannot send as another.
+func TestTheFirstAllocatePinsItsOwnPort(t *testing.T) {
+	for name, open := range map[string]func(*testing.T) (*network.Service, *netns.Manager){"veth": newService, "tap": newTapService} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := open(t)
+			spec := allocate(t, s, "amber-otter")
+
+			table := run(t, "nft", "list", "table", "bridge", "shard")
+			pin := fmt.Sprintf("iifname %q ether type ip ip saddr != %s drop", spec.HostInterface, spec.Address.Addr())
+			if !strings.Contains(table, pin) {
+				t.Errorf("the bridge table does not pin %s to %s after the first Allocate:\n%s", spec.HostInterface, spec.Address.Addr(), table)
+			}
+		})
 	}
 }
 
@@ -271,6 +288,64 @@ func TestReleaseUnpinsTheUserNamespace(t *testing.T) {
 	}
 }
 
+// A microVM's link is a tap on the bridge, isolated like a veth and named the same, with no namespace behind it.
+func TestAllocateWithATapBuildsAnIsolatedPortAndNoNamespace(t *testing.T) {
+	s, _ := newTapService(t)
+	spec := allocate(t, s, "amber-otter")
+
+	if spec.NetnsPath != "" || spec.Userns.Set() {
+		t.Errorf("the spec of a tap names the netns %q and the userns %+v", spec.NetnsPath, spec.Userns)
+	}
+	exists, err := netns.NamespaceExists("amber-otter")
+	if err != nil {
+		t.Fatalf("NamespaceExists: %v", err)
+	}
+	if exists {
+		t.Error("Allocate built a namespace behind a tap")
+	}
+
+	link := run(t, "ip", "-details", "link", "show", spec.HostInterface)
+	for _, want := range []string{"tun type tap", "isolated on", "master " + testBridge} {
+		if !strings.Contains(link, want) {
+			t.Errorf("%s is not %q: %q", spec.HostInterface, want, strings.TrimSpace(link))
+		}
+	}
+}
+
+// A start after a stop must hand the same tap back, on the same address, over a link built again.
+func TestASecondAllocateWithATapReturnsTheSameNetwork(t *testing.T) {
+	s, _ := newTapService(t)
+
+	first := allocate(t, s, "amber-otter")
+	second := allocate(t, s, "amber-otter")
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("got %+v then %+v, want the same network twice", first, second)
+	}
+}
+
+func TestReleaseDropsTheTapAndTheLease(t *testing.T) {
+	s, m := newTapService(t)
+	spec := allocate(t, s, "amber-otter")
+
+	if err := s.Release(t.Context(), "amber-otter"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	exists, err := m.LinkExists(t.Context(), spec.HostInterface)
+	if err != nil {
+		t.Fatalf("LinkExists: %v", err)
+	}
+	if exists {
+		t.Errorf("the tap %s survived the release", spec.HostInterface)
+	}
+
+	next := allocate(t, s, "brisk-heron")
+	if next.Address != spec.Address {
+		t.Errorf("the next sandbox got %s, want the released %s", next.Address, spec.Address)
+	}
+}
+
 func newService(t *testing.T) (*network.Service, *netns.Manager) {
 	t.Helper()
 
@@ -280,6 +355,20 @@ func newService(t *testing.T) (*network.Service, *netns.Manager) {
 // newServiceOwnedBy is newService with every namespace owned by a user namespace with the mapping.
 func newServiceOwnedBy(t *testing.T, owner netns.IDMapping) (*network.Service, *netns.Manager) {
 	t.Helper()
+
+	return newServiceWith(t, network.Config{Userns: func() (netns.IDMapping, error) { return owner, nil }})
+}
+
+// newTapService is newService with a tap per sandbox and no namespace, which is what a microVM gets.
+func newTapService(t *testing.T) (*network.Service, *netns.Manager) {
+	t.Helper()
+
+	return newServiceWith(t, network.Config{Tap: true})
+}
+
+// newServiceWith opens the service on the test bridge and subnet, and takes both host tables down after.
+func newServiceWith(t *testing.T, cfg network.Config) (*network.Service, *netns.Manager) {
+	t.Helper()
 	requireNetworkTools(t)
 
 	m, err := netns.New()
@@ -287,12 +376,10 @@ func newServiceOwnedBy(t *testing.T, owner netns.IDMapping) (*network.Service, *
 		t.Fatalf("open the netns manager: %v", err)
 	}
 
-	s, err := network.New(network.Config{
-		Root:   t.TempDir(),
-		Bridge: testBridge,
-		Subnet: netip.MustParsePrefix(testSubnet),
-		Userns: func() (netns.IDMapping, error) { return owner, nil },
-	}, m)
+	cfg.Root = t.TempDir()
+	cfg.Bridge = testBridge
+	cfg.Subnet = netip.MustParsePrefix(testSubnet)
+	s, err := network.New(cfg, m)
 	if err != nil {
 		t.Fatalf("open the network service: %v", err)
 	}

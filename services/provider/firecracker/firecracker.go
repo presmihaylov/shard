@@ -131,6 +131,14 @@ func (p *Provider) ReleaseRoot() error { return nil }
 type record struct {
 	// BaseDisk is the image's EROFS file, which every boot attaches read-only under the overlay.
 	BaseDisk string `json:"base_disk"`
+	// Tap is the host end the vmm opens, the bridge port the host rules name; empty boots the VM without a network.
+	Tap string `json:"tap,omitempty"`
+	// Address is the guest's prefix and Gateway the bridge's address, which the guest is told over the control stream.
+	Address string `json:"address,omitempty"`
+	Gateway string `json:"gateway,omitempty"`
+	// Nameservers and Hostname are the resolver files the guest writes itself, as a VM has no upper layer.
+	Nameservers []string `json:"nameservers,omitempty"`
+	Hostname    string   `json:"hostname,omitempty"`
 	// RootFS is the image tree an exec resolves a named user against.
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
