@@ -34,8 +34,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	if m == nil || !m.status(p).Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, models.StateStopped, Name)
+	state := models.StateStopped
+	if m != nil {
+		state = m.status(p).State
+	}
+	if state != models.StateRunning {
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
 
 	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
@@ -59,12 +63,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
 		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
-	if err := swapDir(tmp, dir); err != nil {
+	if err := store.SwapDir(tmp, dir); err != nil {
 		return abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The snapshot is complete, so a Ctrl-C from here on must not leave a paused VM behind.
-	return p.end(context.WithoutCancel(ctx), m)
+	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
+	return errors.Join(os.RemoveAll(tmp), p.end(context.WithoutCancel(ctx), m))
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
@@ -90,23 +94,6 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 // abandon gives up a pause that could not complete: the VM runs on and the staging directory goes.
 func abandon(m *machine, tmp string, err error) error {
 	return errors.Join(err, m.client.Resume(), os.RemoveAll(tmp))
-}
-
-// swapDir installs the staged snapshot at dst: a rename when dst holds none, an exchange when it does, so no cut leaves dst without one.
-func swapDir(src, dst string) error {
-	_, err := os.Stat(dst)
-	if errors.Is(err, fs.ErrNotExist) {
-		return os.Rename(src, dst)
-	}
-	if err != nil {
-		return err
-	}
-	if err := store.Exchange(src, dst); err != nil {
-		return err
-	}
-
-	// The exchange left the snapshot dst held at src, which the pause owns and drops.
-	return os.RemoveAll(src)
 }
 
 // Resume brings the sandbox back from the snapshot in dir, in a fresh vmm over its own copy of the snapshot's overlay; the snapshot stays for the next one.
@@ -188,8 +175,17 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	if err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
 	}
+	m, err := p.up(ctx, id, stateDir, client, info)
+	if err != nil {
+		return nil, err
+	}
 
-	return p.up(ctx, id, stateDir, client, info)
+	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
+	p.mu.Lock()
+	m.started = true
+	p.mu.Unlock()
+
+	return m, nil
 }
 
 // Fork brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; the source is not touched.
