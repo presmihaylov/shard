@@ -33,6 +33,22 @@ func listen(port uint32) (net.Listener, error) {
 	return &listener{file: os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d", port)), addr: Addr{Port: port}}, nil
 }
 
+// dial connects blocking, so the connect itself completes before the fd joins the poller as an accepted stream does.
+func dial(cid, port uint32) (net.Conn, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open a vsock socket: %w", err)
+	}
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: cid, Port: port}); err != nil {
+		return nil, errors.Join(fmt.Errorf("connect to vsock %d:%d: %w", cid, port, err), unix.Close(fd))
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		return nil, errors.Join(fmt.Errorf("connect to vsock %d:%d: %w", cid, port, err), unix.Close(fd))
+	}
+
+	return &conn{File: os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d:%d", cid, port)), local: Addr{}, remote: Addr{Port: port}}, nil
+}
+
 func (l *listener) Accept() (net.Conn, error) {
 	raw, err := l.file.SyscallConn()
 	if err != nil {
