@@ -15,7 +15,7 @@ import (
 )
 
 // bootGuest moves PID 1 from the initrd onto the root disk, with the kernel filesystems carried across.
-func bootGuest(device string) error {
+func bootGuest(boot guestBoot) error {
 	for _, m := range []struct{ source, target, fstype string }{
 		{"devtmpfs", "/dev", "devtmpfs"},
 		{"proc", "/proc", "proc"},
@@ -26,11 +26,8 @@ func bootGuest(device string) error {
 		}
 	}
 
-	if err := os.MkdirAll("/newroot", 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
+	if err := mountRoot(boot); err != nil {
 		return err
-	}
-	if err := unix.Mount(device, "/newroot", "ext4", 0, ""); err != nil {
-		return fmt.Errorf("mount %s on /newroot: %w", device, err)
 	}
 	for _, dir := range []string{"dev", "proc", "sys"} {
 		if err := os.MkdirAll("/newroot/"+dir, 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
@@ -74,12 +71,54 @@ func bootGuest(device string) error {
 		return err
 	}
 
-	// The console goes through hvc0 on the VZ kernel; /dev/console is a sink there (docs/provider-vz.md).
-	console, err := os.OpenFile("/dev/hvc0", os.O_WRONLY, 0)
+	if boot.Console == "" {
+		return nil
+	}
+	// The console is hvc0 on the VZ kernel and ttyS0 on Firecracker; /dev/console is a sink on VZ (docs/provider-vz.md).
+	console, err := os.OpenFile(boot.Console, os.O_WRONLY, 0)
 	if err == nil {
 		if err := unix.Dup2(int(console.Fd()), 2); err != nil {
 			return fmt.Errorf("put stderr on the console: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// mountRoot lays the root under /newroot: one disk as it is, or an overlay whose lower is the EROFS image and whose upper sits on the second disk.
+func mountRoot(boot guestBoot) error {
+	if err := os.MkdirAll("/newroot", 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
+		return err
+	}
+	if boot.Root != "" {
+		if err := unix.Mount(boot.Root, "/newroot", "ext4", 0, ""); err != nil {
+			return fmt.Errorf("mount %s on /newroot: %w", boot.Root, err)
+		}
+
+		return nil
+	}
+
+	// The two mounts stay in the initramfs root, which the pivot leaves unreachable but overlayfs keeps pinned.
+	if err := os.MkdirAll("/base", 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
+		return err
+	}
+	if err := unix.Mount(boot.Base, "/base", "erofs", unix.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("mount %s on /base: %w", boot.Base, err)
+	}
+	if err := os.MkdirAll("/overlay", 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
+		return err
+	}
+	if err := unix.Mount(boot.Overlay, "/overlay", "ext4", 0, ""); err != nil {
+		return fmt.Errorf("mount %s on /overlay: %w", boot.Overlay, err)
+	}
+	// The guest lays the upper and work directories itself, so the host and shard-init share no name for them.
+	for _, dir := range []string{"/overlay/upper", "/overlay/work"} {
+		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the upper is the root every guest process traverses
+			return err
+		}
+	}
+	if err := unix.Mount("overlay", "/newroot", "overlay", 0, "lowerdir=/base,upperdir=/overlay/upper,workdir=/overlay/work"); err != nil {
+		return fmt.Errorf("mount the overlay of %s over %s on /newroot: %w", boot.Overlay, boot.Base, err)
 	}
 
 	return nil

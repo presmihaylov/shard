@@ -106,6 +106,8 @@ type SandboxSpec struct {
 	RootFS string
 	// RootDisk is the same image as one ext4 file, for a provider that boots a VM; empty when the image service keeps none.
 	RootDisk string
+	// BaseDisk is the same image as one read-only EROFS file, for a provider that boots a microVM over an overlay; empty when the image service keeps none.
+	BaseDisk string
 	// StateDir is the per-sandbox directory whose whole layout belongs to the provider.
 	StateDir string
 

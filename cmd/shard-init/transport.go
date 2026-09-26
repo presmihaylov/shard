@@ -33,14 +33,14 @@ type transport struct {
 const capbsetEnv = "SHARD_INIT_CAPBSET"
 
 // serveTransport is the whole of -transport: move onto the root disk, listen, and supervise until the stop.
-func serveTransport(name, root string) error {
+func serveTransport(name string, boot guestBoot) error {
 	listen, err := listenerFor(name)
 	if err != nil {
 		return err
 	}
 	// The re-exec in confine runs this again, over a root disk already moved onto.
-	if root != "" && os.Getenv(capbsetEnv) == "" {
-		if err := bootGuest(root); err != nil {
+	if boot.set() && os.Getenv(capbsetEnv) == "" {
+		if err := bootGuest(boot); err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
 	}
@@ -69,7 +69,7 @@ func serveTransport(name, root string) error {
 	t := &transport{logs: logs, attached: make(chan struct{}, 1)}
 	t.g = newGuest(t, restartPolicy{})
 	// Only a VM has the bound; a test on a Linux host runs unconfined and would read its own cgroup.
-	if root != "" {
+	if boot.set() {
 		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
 	}
 	go t.acceptControl(listeners[0])

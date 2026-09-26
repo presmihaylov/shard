@@ -2,7 +2,6 @@
 package vzvm
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +12,9 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/cpio"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -96,34 +95,12 @@ func New(cfg Config) (*Provider, error) {
 		return nil, errors.New("the vz provider needs a shim, a kernel, a shard-init, a directory and a state directory lookup")
 	}
 
-	initrd, err := buildInitrd(cfg.Init, filepath.Join(cfg.Dir, initrdFile))
-	if err != nil {
+	initrd := filepath.Join(cfg.Dir, initrdFile)
+	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err
 	}
 
 	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
-}
-
-// buildInitrd packs shard-init as /init of a newc archive, so the kernel runs it as PID 1 with nothing else in the initramfs.
-func buildInitrd(initPath, path string) (string, error) {
-	body, err := os.ReadFile(initPath)
-	if err != nil {
-		return "", fmt.Errorf("read shard-init: %w", err)
-	}
-
-	var archive bytes.Buffer
-	w := cpio.New(&archive)
-	if err := w.File("init", 0o755, body); err != nil {
-		return "", fmt.Errorf("pack shard-init into the initrd: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return "", fmt.Errorf("finish the initrd: %w", err)
-	}
-	if err := store.WriteFile(path, archive.Bytes(), 0o600); err != nil {
-		return "", fmt.Errorf("write the initrd: %w", err)
-	}
-
-	return path, nil
 }
 
 func (p *Provider) Name() string { return Name }
