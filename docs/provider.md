@@ -167,10 +167,11 @@ common case. Run `iptables -I INPUT -i shard0 -j ACCEPT` there, or `ufw allow in
 the suite; the host check fails by name when the policy is `DROP` and no such rule exists.
 
 `SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default, and the daemon
-mounts the XFS image over it. `MEMORY` is the `--memory` of every create, 256 MiB by default, and
-`DATA_DISK` the `--data-disk` of the daemon, 8192 MiB. The run deletes its root and the image
-beside it, so it refuses a `SHARD_ROOT` that already holds files unless the marker file
-`<root>.e2e-owned` names it as one of its own; point it at an empty or absent path.
+mounts the XFS image over it. The image takes half the free space of the disk under the root, at
+most 100 GiB, so that disk needs 20 GiB free. `MEMORY` is the `--memory` of every create, 256 MiB by
+default. The run deletes its root and the image beside it, so it refuses a `SHARD_ROOT` that already
+holds files unless the marker file `<root>.e2e-owned` names it as one of its own; point it at an
+empty or absent path.
 
 The bridge `shard0` and the nft tables `inet shard` and `bridge shard` are host-wide, one set for the
 whole box rather than one per root, so the teardown drops all three and the last step proves they are

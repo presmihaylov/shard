@@ -17,14 +17,13 @@ MEMORY=${MEMORY:-256}
 # The bridge and the two policy tables the daemon makes are host-wide, not per root, so two runs on one box collide over them.
 # The name is the daemon's own and takes no override: a wrong one here would delete a bridge this run never made.
 HOST_BRIDGE="shard0"
-DATA_DISK=${DATA_DISK:-8192}
 # The image the daemon provisions beside the root (services/datadir). check_root normalises SHARD_ROOT first, so this waits for it.
 DATA_IMAGE=""
 ROOT_MARKER=""
 # The sandboxes the feature steps hold, so a step that fails mid-flight still gives them back.
 EXIT_ID=""
 
-# start_daemon is the library's over firecracker: the kernel override goes through, and the data disk is bounded.
+# start_daemon is the library's over firecracker, and the kernel override goes through.
 start_daemon() {
 	local busy
 	busy=$(ss -Hltn "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )" 2>/dev/null || true)
@@ -38,7 +37,7 @@ start_daemon() {
 	fi
 	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" \
 		SHARD_KERNEL="${SHARD_KERNEL:-}" SHARD_KERNEL_SHA256="${SHARD_KERNEL_SHA256:-}" \
-		"${PREFIX}/shard" --root "${SHARD_ROOT}" --provider firecracker daemon --data-disk "${DATA_DISK}" >"${DAEMON_LOG}" 2>&1 &
+		"${PREFIX}/shard" --root "${SHARD_ROOT}" --provider firecracker daemon >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
