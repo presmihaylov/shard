@@ -18,6 +18,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/broker"
+	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
@@ -43,6 +44,10 @@ type Config struct {
 // Run supervises the daemon's tasks over one root until ctx ends.
 func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
+	// Before the lock: the lock file would be the first entry the xfs mount hides.
+	if err := datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out}); err != nil {
+		return err
+	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 

@@ -62,6 +62,8 @@ pkg/registry/              OCI registry transport
 pkg/netns/                 netns, veth, bridge, NAT rules
 pkg/store/                 atomic file write, the daemon singleton lock
 pkg/proxy/                 intercepting HTTP and TLS proxy
+pkg/reflink/               one clone by reference, and whether a directory's filesystem does it
+pkg/xfs/                   mkfs.xfs, the loop mount and the fstab line of one image
 pkg/vz/                    the Virtualization.framework driver: the shim protocol, its client and its server
 pkg/vzshim/                the shim binary embedded in the daemon, installed and ad-hoc signed on first use
 
@@ -72,6 +74,7 @@ services/sandboxstate/     the sandbox record repository
 services/broker/           the proxy director: judge a request, put the secret value in
 services/egress/           compile and apply policy
 services/secret/           grants and destination binding
+services/datadir/          the root on a reflink filesystem: probe, provision the image, or refuse
 services/daemon/           shard daemon: the wiring of every layer, and the background work
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
