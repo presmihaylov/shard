@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -18,28 +16,18 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	if len(args) == 1 && args[0] == "status" {
 		return a.daemonStatus(ctx)
 	}
-	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	dataDisk := flags.Int64("data-disk", daemon.DefaultDataImageMiB, "the size in MiB of the xfs image firecracker provisions under an ext4 root")
-	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the daemon flags: %w", err)
-	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(flags.Args(), " "))
-	}
-	if *dataDisk <= 0 {
-		return fmt.Errorf("--data-disk is a size in MiB and must be positive, got %d", *dataDisk)
+	if len(args) != 0 {
+		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(args, " "))
 	}
 
 	return daemon.Run(ctx, daemon.Config{
-		Version:      a.Version,
-		Root:         a.Root,
-		Out:          a.Out,
-		Insecure:     a.Insecure,
-		PullTimeout:  a.Timeout,
-		InitPath:     a.InitPath,
-		Provider:     a.Provider,
-		DataImageMiB: *dataDisk,
+		Version:     a.Version,
+		Root:        a.Root,
+		Out:         a.Out,
+		Insecure:    a.Insecure,
+		PullTimeout: a.Timeout,
+		InitPath:    a.InitPath,
+		Provider:    a.Provider,
 	})
 }
 

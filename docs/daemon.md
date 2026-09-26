@@ -78,14 +78,16 @@ Firecracker copies a disk where gVisor copies an overlay layer, so a `fork` or a
 fast only where the filesystem clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs.
 Before it takes the lock, a daemon with `--provider firecracker` probes its root with one real clone.
 A root that clones is left alone. A root that does not, ext4 on most hosts, gets a loopback XFS image
-beside it, `<root>.xfs`, sized by `--data-disk <MiB>` (100 GiB by default, set at install), formatted
-with `mkfs.xfs -m reflink=1`, mounted over the root with `-o loop`, and given a line in `/etc/fstab`
-so it comes back on boot. Every step skips what is already done, so a restart is a no-op.
+beside it, `<root>.xfs`, formatted with `mkfs.xfs -m reflink=1`, mounted over the root with `-o loop`,
+and given a line in `/etc/fstab` so it comes back on boot. The image takes half the free space of the
+filesystem that holds it, at most 100 GiB, and its size is fixed once it exists. Every step skips what
+is already done, so a restart is a no-op.
 
 The daemon refuses rather than provisions, and says why and what to do, when it is not root, when
 `mkfs.xfs` (xfsprogs) is missing, when the root is already a mount that cannot clone, when the root
-holds entries the mount would hide, or when a file at `<root>.xfs` is not an XFS image. It never
-falls back to a full copy. No other provider provisions or probes anything (SHARD-264).
+holds entries the mount would hide, when a file at `<root>.xfs` is not an XFS image, or when half the
+free space is under 10 GiB. It never falls back to a full copy. No other provider provisions or
+probes anything (SHARD-264).
 
 ## Reconcile at start
 

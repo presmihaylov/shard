@@ -19,6 +19,9 @@ const Mkfs = "mkfs.xfs"
 // magic is the first four bytes of every xfs superblock.
 const magic = "XFSB"
 
+// stagingSuffix names the file a format works in until it succeeds.
+const stagingSuffix = ".part"
+
 // ErrNotLinux is what an image answers off Linux: fallocate, loop devices and mkfs.xfs live nowhere else.
 var ErrNotLinux = errors.New("xfs: linux only")
 
@@ -48,7 +51,7 @@ func MakeImage(ctx context.Context, path string, size int64) error {
 	}
 
 	// The work lands under a staging name, so a crash or a failed mkfs never leaves an unformatted file at path.
-	staging := path + ".part"
+	staging := path + stagingSuffix
 	if err := os.Remove(staging); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", staging, err)
 	}
@@ -63,6 +66,11 @@ func MakeImage(ctx context.Context, path string, size int64) error {
 	}
 
 	return nil
+}
+
+// Room is the bytes a new image at path can take: the free space beside it, plus the staging file of a crashed format, which MakeImage removes first.
+func Room(path string) (int64, error) {
+	return room(path)
 }
 
 // IsImage reports whether path holds an xfs superblock; a missing path is not an image, another file is an error.

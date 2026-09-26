@@ -2,6 +2,7 @@ package datadir
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,17 +18,22 @@ import (
 	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
+// plenty is the free space a fake host reports unless a test sets its own.
+const plenty int64 = 1 << 40
+
 // fakeHost records what a bootstrap did to the machine and answers the probe from a script.
 type fakeHost struct {
-	probes  []reflink.Filesystem
-	mounted bool
-	noMkfs  bool
-	user    bool
-	fstabIn error
-	lockAt  string
-	steps   []string
-	image   string
-	size    int64
+	probes    []reflink.Filesystem
+	mounted   bool
+	noMkfs    bool
+	user      bool
+	formatted bool
+	free      int64
+	fstabIn   error
+	lockAt    string
+	steps     []string
+	image     string
+	size      int64
 }
 
 func (f *fakeHost) host() host {
@@ -48,7 +54,9 @@ func (f *fakeHost) host() host {
 			}
 			return nil
 		},
-		isRoot: func() bool { return !f.user },
+		isImage: func(string) (bool, error) { return f.formatted, nil },
+		room:    func(string) (int64, error) { return cmp.Or(f.free, plenty), nil },
+		isRoot:  func() bool { return !f.user },
 		lock: func(path string) (*store.Lock, error) {
 			f.lockAt = path
 			return store.TryAcquire(path, 0o600)
@@ -124,18 +132,77 @@ func TestEnsureProvisionsAnImageBesideAnEmptyDir(t *testing.T) {
 	if f.image != dir+".xfs" {
 		t.Errorf("image at %s, want %s", f.image, dir+".xfs")
 	}
-	if f.size != DefaultImageMiB<<20 {
-		t.Errorf("image size %d, want the default %d MiB", f.size, DefaultImageMiB)
+	if f.size != maxImageMiB<<20 {
+		t.Errorf("image size %d, want the cap %d MiB", f.size, maxImageMiB)
 	}
 	if !strings.Contains(out.String(), "102400 MiB xfs image") {
 		t.Errorf("log %q says nothing of the image", out.String())
 	}
 }
 
+func TestEnsureSizesTheImageFromTheFreeSpace(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		free int64
+		want int64
+	}{
+		{"half of it", 40 << 30, 20 << 30},
+		{"the floor exactly", 20 << 30, 10 << 30},
+		{"capped", 500 << 30, maxImageMiB << 20},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}, free: c.free}
+			if err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "d"), Provider: Firecracker}, f.host()); err != nil {
+				t.Fatalf("%d bytes free: %v", c.free, err)
+			}
+			if f.size != c.want {
+				t.Errorf("%d bytes free gave an image of %d, want %d", c.free, f.size, c.want)
+			}
+		})
+	}
+}
+
+func TestEnsureRefusesAnImageUnderTheFloorBeforeAnyBlock(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "shard")
+	f := &fakeHost{probes: []reflink.Filesystem{ext4}, free: 19 << 30}
+	err := ensure(t.Context(), Config{Dir: dir, Provider: Firecracker}, f.host())
+	if err == nil {
+		t.Fatal("19 GiB free provisioned an image under the floor")
+	}
+	for _, want := range []string{dir, "19.0 GiB free", "free space on that disk", "on XFS or Btrfs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("got %v, want %q in it", err, want)
+		}
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("a refusal ran %v", f.steps)
+	}
+}
+
+// The image took its space when it was made, so the free space left says nothing about it.
+func TestEnsureKeepsAnImageThatExistsOnAFullDisk(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}, formatted: true, free: 1 << 30}
+	if err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "shard"), Provider: Firecracker}, f.host()); err != nil {
+		t.Fatalf("an existing image on a full disk: %v", err)
+	}
+	if want := []string{"fstab check", "image", "mount shard.xfs shard", "fstab"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
+		t.Errorf("steps %v, want %v", f.steps, want)
+	}
+}
+
 func TestEnsureTakesTheConfiguredSize(t *testing.T) {
 	t.Parallel()
 
-	f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}}
+	f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}, free: 1 << 30}
 	if err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "d"), Provider: Firecracker, ImageMiB: 512}, f.host()); err != nil {
 		t.Fatalf("512 MiB: %v", err)
 	}
@@ -189,12 +256,15 @@ func TestEnsureNamesAFileThatIsNoImage(t *testing.T) {
 
 	f := &fakeHost{probes: []reflink.Filesystem{ext4}}
 	h := f.host()
-	h.makeImage = func(_ context.Context, image string, _ int64) error {
-		return fmt.Errorf("%s: %w", image, xfs.ErrNotImage)
+	h.isImage = func(image string) (bool, error) {
+		return false, fmt.Errorf("%s: %w", image, xfs.ErrNotImage)
 	}
 	err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "d"), Provider: Firecracker}, h)
 	if err == nil || !strings.Contains(err.Error(), "not an xfs image: remove it or move the data dir") {
 		t.Errorf("got %v", err)
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("a file that is no image ran %v", f.steps)
 	}
 }
 

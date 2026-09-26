@@ -42,3 +42,28 @@ func TestMakeImageLeavesNothingAtThePathUntilTheFormatSucceeds(t *testing.T) {
 		t.Errorf("the staging file outlived the rename: %v", err)
 	}
 }
+
+// A crashed format leaves its staging file behind, and MakeImage removes it first, so its blocks count as room.
+func TestRoomCountsTheStagingFileOfACrashedFormat(t *testing.T) {
+	image := filepath.Join(t.TempDir(), "shard.xfs")
+	before, err := Room(image)
+	if err != nil || before <= 0 {
+		t.Fatalf("room beside a fresh image: %d, %v", before, err)
+	}
+	if err := reserve(image+stagingSuffix, 64<<20); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := Room(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Other writers on the host move the free space a little between the two reads.
+	if diff := after - before; diff < -(4<<20) || diff > 4<<20 {
+		t.Errorf("room moved by %d bytes across a 64 MiB staging file, want about zero", diff)
+	}
+
+	if _, err := Room(filepath.Join(t.TempDir(), "missing", "shard.xfs")); err == nil {
+		t.Error("room under a missing directory returned nil")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,4 +22,25 @@ func reserve(path string, size int64) error {
 	}
 
 	return f.Close()
+}
+
+func room(path string) (int64, error) {
+	dir := filepath.Dir(path)
+	var fs unix.Statfs_t
+	if err := unix.Statfs(dir, &fs); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	free := int64(fs.Bavail) * fs.Bsize //nolint:gosec // G115: no disk holds 8 EiB free
+
+	var st unix.Stat_t
+	staging := path + stagingSuffix
+	err := unix.Stat(staging, &st)
+	if errors.Is(err, unix.ENOENT) {
+		return free, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", staging, err)
+	}
+
+	return free + st.Blocks*512, nil
 }

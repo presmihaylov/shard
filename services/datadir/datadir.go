@@ -21,8 +21,11 @@ import (
 // Firecracker is the provider name that asks for a reflink root; SHARD-41 registers the substrate under it.
 const Firecracker = "firecracker"
 
-// DefaultImageMiB sizes the loopback image when the install set none.
-const DefaultImageMiB int64 = 100 * 1024
+// maxImageMiB caps the loopback image, which takes half the free space beside the root.
+const maxImageMiB int64 = 100 * 1024
+
+// minImageMiB is the smallest image the daemon provisions; below it the host has no room for a fleet of sandbox disks.
+const minImageMiB int64 = 10 * 1024
 
 // lockWait bounds a second daemon behind a bootstrap in flight, long enough for one mkfs over a full image.
 const lockWait = 2 * time.Minute
@@ -31,7 +34,7 @@ const lockWait = 2 * time.Minute
 type Config struct {
 	Dir      string
 	Provider string
-	// ImageMiB is the loopback image size; zero takes DefaultImageMiB.
+	// ImageMiB sizes the loopback image for a test that needs a small one; zero computes it from the free space.
 	ImageMiB int64
 	Out      io.Writer
 }
@@ -41,6 +44,8 @@ type host struct {
 	probe     func(string) (reflink.Filesystem, error)
 	mounted   func(string) (mountinfo.Mount, bool, error)
 	haveMkfs  func() error
+	isImage   func(string) (bool, error)
+	room      func(string) (int64, error)
 	isRoot    func() bool
 	lock      func(string) (*store.Lock, error)
 	inFstab   func(string, string) (bool, error)
@@ -53,6 +58,8 @@ var machine = host{
 	probe:     reflink.Probe,
 	mounted:   mountinfo.At,
 	haveMkfs:  xfs.Have,
+	isImage:   xfs.IsImage,
+	room:      xfs.Room,
 	isRoot:    func() bool { return os.Geteuid() == 0 },
 	lock:      func(path string) (*store.Lock, error) { return store.Acquire(path, 0o600, lockWait) },
 	inFstab:   xfs.InFstab,
@@ -72,9 +79,6 @@ func ensure(ctx context.Context, cfg Config, h host) (err error) {
 	}
 	if cfg.ImageMiB < 0 {
 		return fmt.Errorf("the data image size cannot be negative, got %d MiB", cfg.ImageMiB)
-	}
-	if cfg.ImageMiB == 0 {
-		cfg.ImageMiB = DefaultImageMiB
 	}
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", cfg.Dir, err)
@@ -97,8 +101,12 @@ func ensure(ctx context.Context, cfg Config, h host) (err error) {
 	if err := refuse(cfg, h, fs); err != nil {
 		return err
 	}
+	size, err := imageSize(cfg, h, fs)
+	if err != nil {
+		return err
+	}
 
-	return provision(ctx, cfg, h)
+	return provision(ctx, cfg, h, size)
 }
 
 // refuse names the one thing that stops a bootstrap, before any block is written.
@@ -130,8 +138,34 @@ func refuse(cfg Config, h host, fs reflink.Filesystem) error {
 	return nil
 }
 
+// imageSize is what a new image gets, in bytes: half the free space beside the root, capped; zero keeps the image already there.
+func imageSize(cfg Config, h host, fs reflink.Filesystem) (int64, error) {
+	image := ImagePath(cfg.Dir)
+	formatted, err := h.isImage(image)
+	if errors.Is(err, xfs.ErrNotImage) {
+		return 0, fmt.Errorf("%w: remove it or move the data dir", err)
+	}
+	if err != nil || formatted {
+		return 0, err
+	}
+	if cfg.ImageMiB > 0 {
+		return cfg.ImageMiB << 20, nil
+	}
+
+	room, err := h.room(image)
+	if err != nil {
+		return 0, err
+	}
+	size := min(room/2, maxImageMiB<<20)
+	if size < minImageMiB<<20 {
+		return 0, fmt.Errorf("%s is on %s, which cannot clone a disk, and the xfs image beside it takes half the free space, at least %d GiB, but %s has %.1f GiB free: free space on that disk, or put %s on XFS or Btrfs", cfg.Dir, fs.Type, minImageMiB>>10, filepath.Dir(image), float64(room)/(1<<30), cfg.Dir)
+	}
+
+	return size, nil
+}
+
 // provision makes the image beside the dir, mounts it there and makes the mount survive a reboot; every step skips what is already done.
-func provision(ctx context.Context, cfg Config, h host) error {
+func provision(ctx context.Context, cfg Config, h host, size int64) error {
 	image := ImagePath(cfg.Dir)
 	logger := log.New(cmp.Or[io.Writer](cfg.Out, io.Discard), "", log.LstdFlags)
 
@@ -139,11 +173,10 @@ func provision(ctx context.Context, cfg Config, h host) error {
 	if _, err := h.inFstab(image, cfg.Dir); err != nil {
 		return err
 	}
-	if err := h.makeImage(ctx, image, cfg.ImageMiB<<20); err != nil {
-		if errors.Is(err, xfs.ErrNotImage) {
-			return fmt.Errorf("%w: remove it or move the data dir", err)
-		}
-
+	if size > 0 {
+		logger.Printf("data dir %s gets a %d MiB xfs image at %s", cfg.Dir, size>>20, image)
+	}
+	if err := h.makeImage(ctx, image, size); err != nil {
 		return err
 	}
 	if err := h.mount(ctx, image, cfg.Dir); err != nil {
@@ -160,7 +193,7 @@ func provision(ctx context.Context, cfg Config, h host) error {
 	if !fs.Reflink {
 		return fmt.Errorf("%s is mounted from %s and still cannot clone a disk", cfg.Dir, image)
 	}
-	logger.Printf("data dir %s is a %d MiB xfs image at %s, with reflink", cfg.Dir, cfg.ImageMiB, image)
+	logger.Printf("data dir %s is the xfs image at %s, with reflink", cfg.Dir, image)
 
 	return nil
 }
