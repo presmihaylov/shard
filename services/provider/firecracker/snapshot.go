@@ -161,6 +161,10 @@ func restoreFiles(dir, stateDir string) error {
 
 // restore brings the snapshot in dir up in a fresh vmm under the sandbox's directory, over the overlay and the memory restoreFiles put there.
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string) (*machine, error) {
+	group, err := p.bound(id, r.Resources)
+	if err != nil {
+		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
+	}
 	snap := fcapi.Snapshot{
 		State:  filepath.Join(dir, snapshotState),
 		Memory: filepath.Join(stateDir, memoryFile),
@@ -170,6 +174,7 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 		Vsock:   filepath.Join(stateDir, vsockFile),
 		Socket:  filepath.Join(stateDir, socketFile),
 		Console: filepath.Join(stateDir, consoleFile),
+		Cgroup:  group,
 	}
 	client, info, err := fcapi.Restore(ctx, p.cfg.Binary, snap)
 	if err != nil {

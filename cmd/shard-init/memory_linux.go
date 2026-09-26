@@ -23,7 +23,7 @@ const memoryHeadroom int64 = 32 << 20
 // boundMemory makes the sandbox cgroup and moves PID 1 into it, so every guest process is born under the bound.
 // PID 1 itself is exempt from the OOM killer, so a group kill takes the guest's processes and leaves the supervisor to report it.
 func boundMemory() error {
-	if err := os.WriteFile(filepath.Join(cgroupRoot, "cgroup.subtree_control"), []byte("+memory"), 0o600); err != nil {
+	if err := cgroup.Delegate(cgroupRoot, "memory"); err != nil {
 		return fmt.Errorf("enable the memory controller: %w", err)
 	}
 	dir := filepath.Join(cgroupRoot, "sandbox")
@@ -46,7 +46,7 @@ func boundMemory() error {
 	if err := cgroup.SetOOMGroup(dir); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+	if err := cgroup.Add(dir, os.Getpid()); err != nil {
 		return fmt.Errorf("move PID 1 into the sandbox cgroup: %w", err)
 	}
 	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("-1000"), 0o600); err != nil {
