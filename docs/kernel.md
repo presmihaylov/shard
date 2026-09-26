@@ -9,7 +9,8 @@ provider boots the arm64 one; Firecracker will boot the amd64 one (SHARD-232, sh
 `packaging/kernel/config-<arch>` is a full `.config` with no modules and no initrd: virtio-blk,
 virtio-net, virtio-vsock, virtio-console, virtio-pci and virtio-mmio, ext4, overlay, squashfs,
 cgroups, namespaces, seccomp, and since build 2 the bridge, netfilter, conntrack, NAT and nf_tables
-a container runtime inside the guest needs (SHARD-247) are built in. Both started as Cloud Hypervisor's `ch_defconfig` at
+a container runtime inside the guest needs (SHARD-247), and since build 3 EROFS with xattrs, ACLs and
+LZ4, the read-only base disk Firecracker mounts under its overlay (SHARD-265), are built in. Both started as Cloud Hypervisor's `ch_defconfig` at
 their `ch-6.12.8` tag, which hypeman boots on Virtualization.framework in production, and
 `olddefconfig` carries them to the pinned release. A change to either file is a new `Build`.
 
@@ -53,7 +54,9 @@ SHARD_KERNEL=/path/to/Image-arm64 SHARD_KERNEL_SHA256=<its sha256> shard daemon 
 ```
 
 The hash is still checked, against the value given. Both variables or neither; one alone is an
-error at start. This is for a developer with a fresh build, not for an install.
+error at start. This is for a developer with a fresh build, not for an install. Every microVM
+substrate takes the same override: on a KVM box `SHARD_KERNEL` names a `vmlinux-amd64`, and the
+Firecracker provider boots it the way vz boots an `Image-arm64`.
 
 ## Bumping it
 
