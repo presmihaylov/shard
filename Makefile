@@ -23,7 +23,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e devbox-demo kernel kernel-reproducible
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible
 
 all: check build
 
@@ -91,6 +91,11 @@ e2e:
 # The guards in that script decide what gets deleted, so they are tested off the box, without root.
 e2e-test:
 	./scripts/e2e_test.sh
+
+# SHARD-268: the same lifecycle on Firecracker, on this host. On demand only: it needs /dev/kvm on bare metal, which
+# CI and the devbox do not have, so nothing else here calls it. Rent a KVM box, run it as root, destroy the box.
+e2e-firecracker:
+	./scripts/e2e-fc.sh
 
 # The same script on the box, over a fresh copy of this tree.
 devbox-e2e:
