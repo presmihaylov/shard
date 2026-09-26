@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/serve"
 )
 
@@ -94,6 +95,7 @@ Usage:
                            list every token the ledger records, with its id, subject, issued and expiry times, scopes and status
   shard tokens revoke [--name <sub>] --secret-file <path> <id>
                            mark a token revoked so the next request with it fails; --name revokes every token of a subject; a local verb
+  shard info               print the substrate a daemon started now over this root would run on, and why; it asks the host, not the socket, so it answers before one exists
   shard version            print the version of this binary and of the daemon; --version prints the first alone and never fails
 
 A rule is <destination> [tcp|udp[:<ports>]], with ports as a comma list of numbers and ranges.
@@ -156,7 +158,10 @@ Flags:
   --insecure-registry <host>
                            allow plaintext http to this registry host, repeatable
   --provider <name>        the substrate the daemon runs sandboxes on: gvisor, sysbox, runc, vz or firecracker
-                           (default gvisor on Linux, vz on macOS)
+                           (without it a root that holds records, or the data image they live in, keeps what made them,
+                           and a root that holds neither takes
+                           firecracker on a Linux host whose ` + daemon.KVMDevice + ` opens, gvisor on one without, vz on macOS;
+                           sysbox and runc are never picked for a host, only named here)
   --remote <url>           speak to a shard serve front, as https://box:2376, instead of the socket
   --token-file <path>      the bearer token that front checks
   --ca-file <pem>          the certificate that signed the front's own
@@ -179,7 +184,7 @@ type App struct {
 	Timeout time.Duration
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty, and stays empty on a Mac.
 	InitPath string
-	// Provider names the substrate the daemon runs sandboxes on. Empty is the platform's default: gvisor on Linux, vz on macOS.
+	// Provider names the substrate the daemon runs sandboxes on. Empty lets the root and the host pick, as shard info prints.
 	Provider string
 	// Remote is the shard serve front a verb speaks to instead of the socket, as https://box:2376.
 	Remote string
@@ -295,6 +300,8 @@ func (a App) run(ctx context.Context, args []string) error {
 		return a.serve(ctx, args[1:])
 	case "tokens":
 		return a.tokens(args[1:])
+	case "info":
+		return a.info(args[1:])
 	case "help":
 		return a.print(usage)
 	}
@@ -429,11 +436,11 @@ func (a App) version(ctx context.Context) error {
 		return err
 	}
 
-	daemon, err := a.client().Version(ctx)
+	d, err := a.client().Version(ctx)
 	if err != nil {
 		return err
 	}
-	if err := a.print("daemon " + daemon.Version); err != nil {
+	if err := a.print("daemon " + d.Version); err != nil {
 		return err
 	}
 	if line := shimLine(); line != "" {

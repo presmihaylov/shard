@@ -71,7 +71,6 @@ type front interface {
 	ListenPacket(port uint16) (net.PacketConn, error)
 }
 
-// providerName is the substrate the daemon runs: --provider, or the platform's default when it is empty.
 // logger writes where the daemon does; a test builds deps with no Out, and a fetch must not panic on it.
 func (d *deps) logger() *log.Logger {
 	out := d.cfg.Out
@@ -82,15 +81,9 @@ func (d *deps) logger() *log.Logger {
 	return log.New(out, "", log.LstdFlags)
 }
 
+// providerName is the substrate this daemon runs. Run settles it before anything here asks.
 func (d *deps) providerName() string {
-	if d.cfg.Provider != "" {
-		return d.cfg.Provider
-	}
-	if runtime.GOOS == "darwin" {
-		return vzvm.Name
-	}
-
-	return gvisor.Name
+	return d.cfg.Provider
 }
 
 func (d *deps) imagesLocked() (*image.Service, error) {

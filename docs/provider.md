@@ -9,7 +9,7 @@ code; this page says what the signatures cannot.
 host runs on it. A record names the substrate that made it. Do not switch a host's provider while
 records exist: the other substrate has never heard of those sandboxes.
 
-| | gVisor (`gvisor`, the default on Linux) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`, the default on macOS) | Firecracker (`firecracker`) |
+| | gVisor (`gvisor`) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`) | Firecracker (`firecracker`) |
 |---|---|---|---|---|---|
 | Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a VM per sandbox on Virtualization.framework, one `shard-vz-shim` each | a microVM, needs `/dev/kvm` |
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
@@ -28,6 +28,49 @@ reports and the CLI refuses on:
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
+
+### What a host picks without --provider
+
+`--provider` always wins. Without it the root decides first and the host decides second, so the same
+command runs unchanged on a box with hardware virtualization and on one without:
+
+| The root and the host | The substrate | The reason |
+|---|---|---|
+| any root that holds records | what made them | `it made the records under <root>` |
+| a root with none, beside a `<root>.xfs` image | Firecracker | `it made the data image <root>.xfs` |
+| a root with none, on Linux, `/dev/kvm` opens | Firecracker | `/dev/kvm opens` |
+| a root with none, on Linux, no `/dev/kvm` | gVisor | `no /dev/kvm` |
+| a root with none, on Linux, `/dev/kvm` will not open | gVisor | `/dev/kvm does not open: <error>` |
+| a root with none, on macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
+
+**A root keeps the substrate that made its records.** No other substrate can read them, so a daemon
+that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has.
+`--provider` still overrides that, and switching a host with records is what the warning above says
+it is.
+
+**An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
+beside it, and every record lives inside that image, so a root whose image is not mounted looks empty
+from outside it. The image itself is what says the root is Firecracker's; the daemon then mounts it
+back and the records return. Without this a host that lost `/dev/kvm` would start fresh over the
+mountpoint and hide them.
+
+**The probe opens `/dev/kvm`, it does not stat it.** A node this daemon cannot open runs no microVM,
+so a present but unusable one leaves the pick at gVisor instead of failing every create.
+
+**Sysbox and runc are never picked for a host.** One is single-tenant and the other is a plain
+container on the host kernel, so only `--provider`, or a root they already made records under, names
+either.
+
+`shard info` prints the substrate and the reason. It asks the host and the root, not the socket, so
+it answers before a daemon exists and says what one started now would run. `shard daemon status` says
+what the daemon that is already up runs on, which differs when that daemon was started with other
+flags.
+
+```
+$ shard info
+provider   firecracker
+reason     /dev/kvm opens
+```
 
 ### systemd is not a sandbox's init
 

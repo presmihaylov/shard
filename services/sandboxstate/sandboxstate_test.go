@@ -716,3 +716,50 @@ func TestARefusedReferenceIsAValidationError(t *testing.T) {
 		t.Errorf("Get of an empty id got %T %v, want a ValidationError", err, err)
 	}
 }
+
+// SHARD-46: a daemon asks the root what made its records before it picks a substrate for itself.
+func TestRecordedProviderNamesWhatMadeTheRecords(t *testing.T) {
+	r, root := repo(t)
+	create(t, r)
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if err != nil {
+		t.Fatalf("RecordedProvider: %v", err)
+	}
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider of the record", got)
+	}
+}
+
+func TestRecordedProviderOfARootWithoutRecords(t *testing.T) {
+	_, root := repo(t)
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if err != nil {
+		t.Fatalf("RecordedProvider: %v", err)
+	}
+	if got != "" {
+		t.Errorf("RecordedProvider = %q, want nothing from a root that holds no record", got)
+	}
+}
+
+// A root a daemon has never prepared holds no tree at all, and asking must neither fail nor create one.
+func TestRecordedProviderOfAFreshRootCreatesNothing(t *testing.T) {
+	root := t.TempDir()
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if err != nil {
+		t.Fatalf("RecordedProvider: %v", err)
+	}
+	if got != "" {
+		t.Errorf("RecordedProvider = %q, want nothing from a fresh root", got)
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the root holds %d entries after the ask, want it untouched", len(entries))
+	}
+}

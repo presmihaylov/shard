@@ -653,6 +653,20 @@ else
 	expect "$(status_field pause) $(status_field resume) $(status_field fork)" "false false false" "${PROVIDER} claims no optional verb"
 fi
 
+step "read what the host picks"
+# info asks the host, not the socket, so it says what a daemon started without --provider would run on.
+info_field() { shard "$@" info | awk -v name="${FIELD}" '$1 == name { $1 = ""; sub(/^ +/, ""); print }'; }
+WANT_PICK=gvisor
+WANT_REASON="no /dev/kvm"
+# The probe opens the node, so a /dev/kvm this host will not open leaves the pick at gvisor.
+if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+	WANT_PICK=firecracker
+	WANT_REASON="/dev/kvm opens"
+fi
+expect "$(FIELD=provider info_field)" "${WANT_PICK}" "the host picks ${WANT_PICK} while the root holds no record"
+expect "$(FIELD=reason info_field)" "${WANT_REASON}" "info names the reason it picked ${WANT_PICK}"
+expect "$(FIELD=provider info_field --provider sysbox)" "sysbox" "--provider overrides what the host would pick"
+
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
@@ -728,6 +742,9 @@ LISTED=$(shard ls | grep "^${ID}" || true)
 echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
+
+# SHARD-46: a root that holds records keeps what made them, so an upgrade on a KVM host switches nothing.
+expect "$(FIELD=provider info_field)" "${PROVIDER}" "the root now keeps ${PROVIDER}, which made its records"
 
 step "restart the daemon and prove the sandbox and an exec in flight outlive it"
 SANDBOX_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
@@ -2130,4 +2147,4 @@ gvisor) SNAPSHOT_STEPS="pause, resume, fork" ;;
 sysbox) SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside" ;;
 runc) SNAPSHOT_STEPS="refused pause, resume and fork" ;;
 esac
-echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
+echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, what the host picks, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"

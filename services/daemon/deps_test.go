@@ -123,17 +123,8 @@ func TestFirecrackerBuildsOnAFreshRoot(t *testing.T) {
 	}
 }
 
-// SHARD-239: an empty --provider is gVisor on Linux and vz on a Mac, and vz named anywhere else is refused, never downgraded.
-func TestTheDefaultProviderFollowsThePlatform(t *testing.T) {
-	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init"}}
-	want := "gvisor"
-	if runtime.GOOS == "darwin" {
-		want = "vz"
-	}
-	if got := d.providerName(); got != want {
-		t.Fatalf("the default provider on %s is %s, want %s", runtime.GOOS, got, want)
-	}
-
+// SHARD-239: vz named off a Mac is refused, never downgraded. What an empty --provider picks is in select_test.go.
+func TestVZIsRefusedOffAMac(t *testing.T) {
 	v := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "vz"}}
 	_, err := v.providerLocked()
 	if runtime.GOOS != "darwin" {
