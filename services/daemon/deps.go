@@ -330,15 +330,7 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Binary, err)
 	}
 
-	opts, err := kernel.FromEnv()
-	if err != nil {
-		return nil, err
-	}
-	opts = append(opts, kernel.WithLogger(d.logger()))
-	ctx, cancel := context.WithTimeout(context.Background(), kernelFetchTimeout)
-	defer cancel()
-	// The guest runs the host's arch: KVM virtualises, it never emulates.
-	guest, err := kernel.New(d.cfg.Root, opts...).Ensure(ctx, runtime.GOARCH)
+	guest, err := d.guestKernel()
 	if err != nil {
 		return nil, err
 	}
