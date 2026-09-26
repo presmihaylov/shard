@@ -278,14 +278,18 @@ func setDefaultRoute(fd int, name string, gateway net.IP) error {
 	return nil
 }
 
-// powerOff ends the VM once the stop is done; a test process is not PID 1 and just exits.
-func powerOff() error {
+// powerOff ends the VM once the stop is done, by a reboot where the vmm only exits on one; a test process is not PID 1 and just exits.
+func powerOff(reboot bool) error {
 	if os.Getpid() != 1 {
 		return nil
 	}
 	// The reboot call flushes nothing, and a clone reads the disk: what the guest wrote must reach it first.
 	unix.Sync()
-	if err := unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
+	cmd := unix.LINUX_REBOOT_CMD_POWER_OFF
+	if reboot {
+		cmd = unix.LINUX_REBOOT_CMD_RESTART
+	}
+	if err := unix.Reboot(cmd); err != nil {
 		return fmt.Errorf("power off: %w", err)
 	}
 

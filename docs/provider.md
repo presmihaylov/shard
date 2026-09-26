@@ -9,7 +9,7 @@ code; this page says what the signatures cannot.
 host runs on it. A record names the substrate that made it. Do not switch a host's provider while
 records exist: the other substrate has never heard of those sandboxes.
 
-| | gVisor (`gvisor`, the default on Linux) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`, the default on macOS) | Firecracker |
+| | gVisor (`gvisor`, the default on Linux) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`, the default on macOS) | Firecracker (`firecracker`) |
 |---|---|---|---|---|---|
 | Isolation | a user-space kernel, `runsc` | a Linux container, `sysbox-runc`, with a user namespace and virtualised `/proc` and `/sys` | **none**: a Linux container, `runc`, on the host kernel with no user namespace | a VM per sandbox on Virtualization.framework, one `shard-vz-shim` each | a microVM, needs `/dev/kvm` |
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
@@ -17,17 +17,17 @@ records exist: the other substrate has never heard of those sandboxes.
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | does not exist yet |
+| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every required verb; no snapshot verb until SHARD-44, no network until SHARD-43 |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
 reports and the CLI refuses on:
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
-| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | planned |
-| `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
-| `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
-| `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | planned |
+| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
+| `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
+| `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
+| `fork` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | **no** until SHARD-44 |
 
 ### systemd is not a sandbox's init
 
@@ -97,7 +97,9 @@ every bound. `Create` checks its spec again, so a clone or a fork is held to the
 `Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
 another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id
 and the new network. It refuses a source that is alive or still mounted, and it reads nothing of the
-source but its status and its state directory. Firecracker will copy a disk where gVisor copies an overlay layer.
+source but its status and its state directory. Firecracker reflinks `overlay.raw` where gVisor copies
+an overlay layer: the clone shares the source's blocks, and a root whose filesystem cannot (ext4,
+tmpfs) refuses the clone by name rather than copy every byte. XFS and Btrfs can.
 
 Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
 verb, and it is the only place a substrate is allowed to be unequal to another.
@@ -122,8 +124,26 @@ chains do on Linux, and every other TCP or UDP flow is judged by the same compil
 ruleset is built from, so a policy means the same on both hosts (SHARD-246); a refused flow is
 dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
-The three resource bounds below hold on the Linux substrates; `vz` has no host cgroup, and each
-section says what the VM does instead.
+The three resource bounds below hold on the Linux substrates; `vz` and `firecracker` have no host
+cgroup, and each section says what the VM does instead.
+
+### What Firecracker does and does not do
+
+`firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker`
+binary on PATH, one `firecracker` process per sandbox, driven over its API socket in the sandbox's
+state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release
+once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section
+below describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of
+the static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under
+`<root>/firecracker`. The host needs `erofs-utils` for the pull. The host speaks to the guest over
+vsock alone, through the socket firecracker proxies it on, so `exec`, `logs` and the exit come the
+way they do on `vz`. The vmm has no stop of its own: a stop tells `shard-init` to end the
+entrypoint and reboot, which is the one guest exit firecracker ends its process on (a power off
+leaves it running), and the grace runs out into a kill of the process. A guest the host can no
+longer reach over vsock is still a running VM: `inspect` says so, and `stop` kills it without a
+grace it could not hear. A daemon restart adopts a running vmm by its socket. `--memory` is required, `0` is refused by name, and 128 MiB is
+the least a guest boots with. The guest has no network until SHARD-43 wires a tap onto the bridge;
+`pause`, `resume` and `fork` refuse by name until SHARD-44 lands the snapshot.
 
 ## Refuse, never downgrade
 
@@ -218,7 +238,7 @@ that disk, mounts the overlay as the root, moves the kernel filesystems across a
 exactly as the one-disk `-root` boot does. It stays PID 1, and the host sends the entrypoint over
 vsock as before. `vz` keeps its ext4 root disk: an APFS clone is its overlay. The guest kernel must
 carry `CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`; neither shipped kernel config sets the first yet,
-which is a kernel bump the first Firecracker boot (SHARD-41) needs.
+which SHARD-265 adds; on a host whose kernel lacks it the boot fails at the base mount, and the console log says so.
 
 ## What `Status` means
 
@@ -287,8 +307,9 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
 every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
 the refuse path there and the snapshot path on gVisor and on `vz`, whose `vzvm_integration_test.go` runs
-the suite on real VMs on an Apple silicon Mac. The snapshot-shaped interface questions wait for
-Firecracker (SHARD-45).
+the suite on real VMs on an Apple silicon Mac, and Firecracker, whose `firecracker_integration_test.go` runs it on
+real microVMs on a host with `/dev/kvm`. The snapshot-shaped interface questions wait for the Firecracker
+snapshot (SHARD-44).
 
 It does not prove anything about the network: every substrate joins a namespace the network service
 built, so there is nothing to generalize yet.

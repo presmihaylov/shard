@@ -26,11 +26,12 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
              [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]
-  shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>]
+  shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
 
 The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
 With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.
--root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.`
+-root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.
+-reboot ends the VM with a reboot instead of a power off, for a vmm such as firecracker that only exits on one.`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -89,11 +90,12 @@ func run(args []string) error {
 	base := flags.String("base", "", "the read-only EROFS image to boot under an overlay, with -overlay and -transport")
 	overlay := flags.String("overlay", "", "the ext4 disk the overlay's upper layer sits on, with -base")
 	console := flags.String("console", "/dev/hvc0", "the console device the supervisor's stderr goes to once the root is in place")
+	reboot := flags.Bool("reboot", false, "end the VM with a reboot instead of a power off, for a vmm that stays up after a power off")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
-	boot := guestBoot{Root: *root, Base: *base, Overlay: *overlay, Console: *console}
+	boot := guestBoot{Root: *root, Base: *base, Overlay: *overlay, Console: *console, Reboot: *reboot}
 	if err := boot.check(); err != nil {
 		return err
 	}

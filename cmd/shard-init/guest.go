@@ -10,6 +10,8 @@ type guestBoot struct {
 	Base, Overlay string
 	// Console is the device the supervisor's stderr goes to once the root is in place; a guest without it keeps stderr where it was.
 	Console string
+	// Reboot ends the VM with a reboot instead of a power off, for a vmm that stays up after a power off.
+	Reboot bool
 }
 
 // set reports whether there is a root to move onto at all.
@@ -22,6 +24,9 @@ func (b guestBoot) check() error {
 	}
 	if (b.Base == "") != (b.Overlay == "") {
 		return errors.New("-base and -overlay go together: the read-only image and the disk written over it")
+	}
+	if b.Reboot && !b.set() {
+		return errors.New("-reboot ends a VM, so it needs the disk the VM boots from")
 	}
 
 	return nil

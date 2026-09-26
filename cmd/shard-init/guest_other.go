@@ -16,4 +16,4 @@ func confine() error { return nil }
 
 func applyAddress(supervisor.Address) error { return errNotLinux }
 
-func powerOff() error { return nil }
+func powerOff(bool) error { return nil }

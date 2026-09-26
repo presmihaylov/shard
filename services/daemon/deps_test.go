@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -68,9 +70,56 @@ func TestTheProviderIsPickedByName(t *testing.T) {
 		}
 	}
 
-	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
-	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "firecracker"`) {
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "vmware"}}
+	if _, err := d.providerLocked(); err == nil || !strings.Contains(err.Error(), `unknown provider "vmware"`) {
 		t.Errorf("an unknown provider built %v, want a refusal that names it", err)
+	}
+}
+
+// firecracker is refused by name off Linux, and on Linux without its binary, before any kernel is fetched.
+func TestFirecrackerIsRefusedWithoutItsPlatformOrItsBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	d := &deps{cfg: Config{Root: t.TempDir(), InitPath: "/usr/local/bin/shard-init", Provider: "firecracker"}}
+
+	_, err := d.providerLocked()
+	want := "needs firecracker on PATH"
+	if runtime.GOOS != "linux" {
+		want = "Linux only"
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("firecracker on %s built %v, want a refusal that says %q", runtime.GOOS, err, want)
+	}
+}
+
+// A fresh data root has no firecracker directory yet, and the provider makes its own before it writes the initrd there.
+func TestFirecrackerBuildsOnAFreshRoot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("firecracker is refused on %s before any directory is made", runtime.GOOS)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "firecracker"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a stand-in on PATH must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	kernel := filepath.Join(t.TempDir(), "vmlinux")
+	body := []byte("dev kernel")
+	if err := os.WriteFile(kernel, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHARD_KERNEL", kernel)
+	t.Setenv("SHARD_KERNEL_SHA256", fmt.Sprintf("%x", sha256.Sum256(body)))
+	init := filepath.Join(t.TempDir(), "shard-init")
+	if err := os.WriteFile(init, []byte("init"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(t.TempDir(), "root")
+	d := &deps{cfg: Config{Root: root, InitPath: init, Provider: "firecracker"}}
+	if _, err := d.providerLocked(); err != nil {
+		t.Fatalf("firecracker on a fresh root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, firecrackerDir, "initrd.cpio")); err != nil {
+		t.Fatalf("the initrd after the build: %v", err)
 	}
 }
 

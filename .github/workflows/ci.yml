@@ -36,6 +36,17 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      # A firecracker clone shares blocks or is refused, and the runner's ext4 shares none: the tests get an xfs root.
+      - name: reflink root for the clone tests
+        run: |
+          command -v mkfs.xfs >/dev/null || (sudo apt-get update -q && sudo apt-get install -y -q xfsprogs)
+          truncate -s 4G /tmp/reflink.img
+          mkfs.xfs -q -m reflink=1 /tmp/reflink.img
+          sudo mkdir -p /mnt/reflink
+          sudo mount -o loop /tmp/reflink.img /mnt/reflink
+          sudo chown "$(id -u):$(id -g)" /mnt/reflink
+          echo "TMPDIR=/mnt/reflink" >> "$GITHUB_ENV"
+
       - name: test
         run: go test ./...
 

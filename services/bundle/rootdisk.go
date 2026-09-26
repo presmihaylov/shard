@@ -37,6 +37,15 @@ func CloneFile(base, dst string) (bool, error) {
 	return false, copyFile(base, dst)
 }
 
+// Reflink copies base to dst by sharing its blocks, and refuses where the filesystem cannot: a clone that copies every byte is not a clone.
+func Reflink(base, dst string) error {
+	if err := clonefile(base, dst); err != nil {
+		return fmt.Errorf("reflink %s: %w", base, err)
+	}
+
+	return nil
+}
+
 func copyFile(src, dst string) error {
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

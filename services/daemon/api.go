@@ -36,7 +36,7 @@ type Config struct {
 	PullTimeout time.Duration
 	// InitPath is the host path of the guest supervisor; empty on a Mac boots the linux one the daemon embeds.
 	InitPath string
-	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, or empty for the platform's default.
+	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name, or empty for the platform's default.
 	Provider string
 }
 
