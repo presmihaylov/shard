@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -62,8 +64,8 @@ func run() error {
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		// The e2e reads the headers back as plain text; no browser ever sees this.
-		fmt.Fprintf(w, "host=%s\nauthorization=%s\nx-shaped=%s\n", r.Host, r.Header.Get("Authorization"), r.Header.Get("X-Shaped")) //nolint:gosec
+		// Digests, not values: the answer lands in guest memory, which the e2e greps for the secret; no browser sees it.
+		fmt.Fprintf(w, "host=%s\nauthorization=%s\nx-shaped=%s\n", r.Host, digest(r.Header.Get("Authorization")), digest(r.Header.Get("X-Shaped"))) //nolint:gosec
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	tlsServer := &http.Server{
@@ -77,6 +79,13 @@ func run() error {
 	go func() { errs <- tlsServer.ServeTLS(secure, "", "") }()
 
 	return <-errs
+}
+
+// digest is the sha256 of one header value in hex, as sha256sum prints it, so the e2e computes the same on the host.
+func digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+
+	return hex.EncodeToString(sum[:])
 }
 
 func selfSigned(names []string) (tls.Certificate, []byte, error) {

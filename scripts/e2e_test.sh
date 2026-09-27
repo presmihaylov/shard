@@ -344,10 +344,46 @@ STUB_EXEC_CODE=3
 check "an exec that matched and exited 3" "$?" "1"
 
 echo
+echo "== the echo's digests match on the host, so the guest never holds the value"
+check "seen is sha256sum in hex" "$(seen abc)" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+check "basic is the digest of the header the proxy re-encodes" "$(basic value)" "$(seen "Basic YXBpOnZhbHVl")"
+
+echo
+echo "== entrypoint_clock takes one pid and its start time, and nothing else"
+STUB_CLOCK="42 1234"
+shard() { printf '%s\n' "${STUB_CLOCK}"; }
+check "a pid and a start time" "$(entrypoint_clock tidy-otter-0102 2>/dev/null)" "42 1234"
+# What pgrep -x sleep gave: no pid, so cut read /proc/stat.
+STUB_CLOCK=$'  \n\n0'
+(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
+check "blank lines and a 0" "$?" "1"
+STUB_CLOCK=$'42 1234\n43 1235'
+(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
+check "two entrypoints" "$?" "1"
+shard() { return 1; }
+(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
+check "no entrypoint" "$?" "1"
+
+echo
+echo "== expect_env_clean greps the guest's environment on the host"
+SECRET_VALUE="e2e-self-test-value"
+shard() { printf 'PATH=/bin\nE2E_TOKEN=mock-E2E_TOKEN\n'; }
+(expect_env_clean tidy-otter-0102) >/dev/null 2>&1
+check "an environment with the placeholder" "$?" "0"
+shard() { printf 'PATH=/bin\nE2E_TOKEN=%s\n' "${SECRET_VALUE}"; }
+(expect_env_clean tidy-otter-0102) >/dev/null 2>&1
+check "an environment with the value" "$?" "1"
+shard() { printf '%s\n' "$*" >"${SHARD_CALLS}"; }
+SHARD_CALLS=$(mktemp)
+(expect_env_clean tidy-otter-0102) >/dev/null 2>&1
+check "the exec carries no value" "$(grep -c "${SECRET_VALUE}" "${SHARD_CALLS}")" "0"
+rm -f "${SHARD_CALLS}"
+
+echo
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "e2e self-test FAILED: ${FAILURES} guards broke" >&2
 
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report and the exec status"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock and the env check"

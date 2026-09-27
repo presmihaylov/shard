@@ -176,7 +176,12 @@ fronted() {
 
 # entrypoint_clock reads the guest pid and start time of the entrypoint, which only a restore keeps.
 entrypoint_clock() {
-	shard exec "$1" -- /bin/sh -c 'p=$(pgrep -x sleep); echo "$p $(cut -d" " -f22 /proc/$p/stat)"'
+	local clock
+	# busybox pgrep -x matches argv0, which is /bin/sleep here, so the whole command line finds the entrypoint.
+	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -f "[s]leep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
+		fail "the guest runs no sleep 600 entrypoint to read a clock from"
+	[[ "${clock}" =~ ^[0-9]+\ [0-9]+$ ]] || fail "the guest gave '${clock}' for the entrypoint, want one pid and its start time"
+	printf '%s\n' "${clock}"
 }
 
 # expect_network fails when the guest does not hold its address or cannot get out through the NAT.
@@ -197,6 +202,15 @@ expect_blocked() {
 	expect "${got}" "blocked" "${note}"
 }
 
+# seen is the sha256 the echo prints for one header value; shasum covers macOS, where make check runs the self-test.
+seen() {
+	if command -v sha256sum >/dev/null; then
+		printf '%s' "$1" | sha256sum | cut -d' ' -f1
+		return
+	fi
+	printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+}
+
 # fetch runs busybox wget in a sandbox against one echo name, over http or https, with the placeholder of
 # each secret in a header, and prints the lines the echo answered with.
 fetch() {
@@ -211,18 +225,29 @@ expect_fronted() {
 	if ! got=$(fetch "${id}" http "${ECHO_HOST}"); then
 		fail "the request to ${ECHO_HOST} from ${id} failed"
 	fi
-	echo "${got}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${got}', want the value in Authorization"
+	echo "${got}" | grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" || fail "the echo saw '${got}', want the value in Authorization"
 	say "${note}"
 }
 
-# basic_of prints what one echo host saw inside an HTTP Basic header, decoded. busybox has no curl, so the
+# basic_of prints the digest one echo host saw for an HTTP Basic header. busybox has no curl, so the
 # guest builds the header the way every client does: base64 of "user:placeholder".
 basic_of() {
 	local id="$1" host="$2" got line
 	got=$(shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" http://${host}/") ||
 		fail "the basic auth request to ${host} failed"
-	line=$(grep '^authorization=Basic ' <<<"${got}") || fail "the echo saw no basic header: ${got}"
-	printf '%s' "${line#authorization=Basic }" | base64 -d
+	line=$(grep '^authorization=' <<<"${got}") || fail "the echo saw no authorization header: ${got}"
+	printf '%s' "${line#authorization=}"
+}
+
+# basic is the digest of the Basic header for the user api and one password, as the proxy re-encodes it.
+basic() { seen "Basic $(printf 'api:%s' "$1" | base64 | tr -d '\n')"; }
+
+# expect_env_clean greps the guest's environment on the host: the value in an exec's argv would land in guest memory.
+expect_env_clean() {
+	local env
+	env=$(shard exec "$1" -- /bin/sh -c env) || fail "env did not run in $1"
+	grep -qF -- "${SECRET_VALUE}" <<<"${env}" && fail "the environment of $1 holds the value"
+	say "the value is not in the guest's environment"
 }
 
 # start_echo builds and starts the upstream on the host's 80 and 443. Both must be free: a server already
@@ -552,7 +577,6 @@ snapshot_steps() {
 	# time tell the two apart from outside, and the file proves the layer went with the memory.
 	shard exec "${ID}" -- /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
 	CLOCK_BEFORE=$(entrypoint_clock "${ID}")
-	[ -n "${CLOCK_BEFORE}" ] || fail "the guest has no entrypoint to read a clock from"
 	say "the entrypoint is guest pid and start time ${CLOCK_BEFORE} before the pause"
 	PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
 	RSS_BEFORE=$(rss_kib "${PID}")
@@ -1133,18 +1157,18 @@ shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST
 
 expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
 GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
-echo "${GOT}" | grep -qx "authorization=Bearer ${SECRET_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
-echo "${GOT}" | grep -qx "x-shaped=${SHAPED_VALUE}" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
+echo "${GOT}" | grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
+echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_VALUE}")" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
 say "the same holds over tls, and the chosen placeholder carries its own value"
 
 GOT=$(fetch "${ID}" http "${OTHER_HOST}") || fail "the http request to ${OTHER_HOST} failed"
-echo "${GOT}" | grep -qx "authorization=Bearer mock-E2E_TOKEN" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
-echo "${GOT}" | grep -qx "x-shaped=${SHAPED_PLACEHOLDER}" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
+echo "${GOT}" | grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
+echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
 say "a request to a host the policy allows but the grant does not keeps both placeholders"
 
 step "a client that encodes the placeholder still gets the value"
-expect "$(basic_of "${ID}" "${ECHO_HOST}")" "api:${SECRET_VALUE}" "basic auth to the granted host carries the value, decoded and re-encoded"
-expect "$(basic_of "${ID}" "${OTHER_HOST}")" "api:mock-E2E_TOKEN" "basic auth to an ungranted host keeps the placeholder"
+expect "$(basic_of "${ID}" "${ECHO_HOST}")" "$(basic "${SECRET_VALUE}")" "basic auth to the granted host carries the value, decoded and re-encoded"
+expect "$(basic_of "${ID}" "${OTHER_HOST}")" "$(basic mock-E2E_TOKEN)" "basic auth to an ungranted host keeps the placeholder"
 
 expect_exec "bad address" "a request to a host no rule allows is refused at the resolver" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o 'bad address' | head -1"
@@ -1156,7 +1180,7 @@ expect_exec "403 Forbidden" "a request to the granted host the policy denies get
 shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_fronted "${ID}" "the same grant passes again once the policy allows the host"
 
-expect_exec "" "the value is not in the guest's environment" /bin/sh -c "env | grep -F '${SECRET_VALUE}' || true"
+expect_env_clean "${ID}"
 absent "the value in the daemon log" "$(grep -l "${SECRET_VALUE}" "${DAEMON_LOG}" || true)"
 absent "the value in the sandbox tree" "$(grep -rl "${SECRET_VALUE}" "${SHARD_ROOT}/sandboxes/${ID}" 2>/dev/null || true)"
 

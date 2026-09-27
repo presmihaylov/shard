@@ -308,16 +308,16 @@ expect_fronted "${ID}" "a request to the granted host carries the value"
 if ! GOT=$(fetch "${ID}" https "${ECHO_HOST}"); then
 	fail "the https request to ${ECHO_HOST} failed"
 fi
-grep -qx "authorization=Bearer ${SECRET_VALUE}" <<<"${GOT}" || fail "the echo saw '${GOT}' over https, want the value in Authorization"
+grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" <<<"${GOT}" || fail "the echo saw '${GOT}' over https, want the value in Authorization"
 say "the same holds over https, so the guest trusts the proxy CA"
 if ! GOT=$(fetch "${ID}" http "${OTHER_HOST}"); then
 	fail "the request to ${OTHER_HOST} failed"
 fi
-grep -qx "authorization=Bearer mock-E2E_TOKEN" <<<"${GOT}" || fail "the echo saw '${GOT}' on the ungranted host, want the placeholder"
+grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" <<<"${GOT}" || fail "the echo saw '${GOT}' on the ungranted host, want the placeholder"
 say "a request to a host the policy allows but the grant does not keeps the placeholder"
 expect_exec "403 Forbidden" "a request to a host no rule allows is refused at the proxy" \
 	/bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
-expect_exec "" "the value is not in the guest's environment" /bin/sh -c "env | grep -F '${SECRET_VALUE}' || true"
+expect_env_clean "${ID}"
 absent "the value in the daemon log" "$(grep -l "${SECRET_VALUE}" "${DAEMON_LOG}" || true)"
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
 
