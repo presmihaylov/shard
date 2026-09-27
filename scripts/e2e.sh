@@ -593,7 +593,11 @@ snapshot_steps() {
 
 	# The whole point of a pause: the memory goes back to the host, so the sandbox process is gone.
 	absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
-	absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
+	case "${PROVIDER}" in
+	# A Firecracker sandbox keeps its cgroup, empty, until rm, so the start that brings it back boots into it (SHARD-267).
+	firecracker) absent "a process in the cgroup of the paused sandbox" "$(cat "/sys/fs/cgroup/shard/${ID}/cgroup.procs" 2>/dev/null || true)" ;;
+	*) absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)" ;;
+	esac
 	absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/sandboxes/${ID}" || true)"
 	[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
 
