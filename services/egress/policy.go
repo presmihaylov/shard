@@ -41,9 +41,16 @@ const (
 	GroupDNS = "dns"
 )
 
-// OpensDNS says whether the policy lets the guest resolve: a name needs one, and a rule may ask outright.
+// OpensDNS says whether the policy implies the dns rule: a name needs one, and a rule may ask outright.
 func OpensDNS(policy models.Policy) bool {
 	return slices.ContainsFunc(policy.Rules, opensDNS)
+}
+
+// Resolves says whether the resolver answers the guest: an allow any that leaves port 53 open needs no implied rule, and still resolves.
+func Resolves(policy models.Policy) bool {
+	return OpensDNS(policy) || slices.ContainsFunc(policy.Rules, func(rule models.Rule) bool {
+		return rule.Action == models.ActionAllow && anyLeavesDNS(rule)
+	})
 }
 
 func opensDNS(rule models.Rule) bool {

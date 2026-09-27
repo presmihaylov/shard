@@ -76,6 +76,11 @@ func (s *Service) DecideName(sb models.Sandbox, name string) (Decision, error) {
 	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + name}, nil
 }
 
+// anyLeavesDNS says an any rule leaves port 53 open, which is what let a guest resolve before the resolver.
+func anyLeavesDNS(rule models.Rule) bool {
+	return rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port))
+}
+
 // matchesName says whether a rule speaks for a name alone: an address rule cannot, and only a deny that closes both web ports refuses a lookup.
 func matchesName(rule models.Rule, name string) bool {
 	if rule.Action == models.ActionDeny && !closesName(rule) {
@@ -84,8 +89,7 @@ func matchesName(rule models.Rule, name string) bool {
 
 	switch rule.Destination.Kind {
 	case models.DestinationGroup:
-		// An any rule speaks for a name when it leaves port 53 open, which is what let a guest resolve before the resolver.
-		return rule.Destination.Value == GroupDNS || (rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port)))
+		return rule.Destination.Value == GroupDNS || anyLeavesDNS(rule)
 	case models.DestinationDomain:
 		return MatchHost(rule.Destination.Value, name)
 	case models.DestinationDomainSuffix:

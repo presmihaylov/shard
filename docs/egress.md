@@ -131,9 +131,10 @@ sandbox, each addition marked `implied`:
 
 - **`dns`**: a policy that names a domain or a suffix, or says `allow dns`, allows `udp` and `tcp` 53
   to shard's resolver on the bridge gateway, and to nothing else. A name is no use to a guest that
-  cannot resolve it. A policy of only address and `any` rules opens no DNS, and a secret does not
-  open it either: name the host in the policy, or say `allow dns`, if the guest must resolve it. When
-  an explicit rule opened it, the implied rule reads `dns rule` in place of `dns`.
+  cannot resolve it. An `allow any` that leaves port 53 open implies no rule, since it reaches the
+  resolver already. A policy of only address rules opens no DNS, and a secret does not open it
+  either: name the host in the policy, or say `allow dns`, if the guest must resolve it. When an
+  explicit rule opened it, the implied rule reads `dns rule` in place of `dns`.
 
 A sandbox with a policy resolves through shard's resolver alone: its `resolv.conf` names the gateway,
 and port 53 to anywhere else is turned to the gateway on the host, so a policy attached after the

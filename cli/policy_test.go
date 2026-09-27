@@ -319,22 +319,27 @@ func TestInspectShowsNoRuleImpliedByAGrant(t *testing.T) {
 // The lookup fails an hour later inside the guest, so create says it while the operator can still act.
 func TestPolicyCreateNotesAPolicyThatOpensNoDNS(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		rule string
-		note bool
+		name  string
+		rules []string
+		note  bool
 	}{
-		{"addresses", "203.0.113.7 tcp:443", true},
-		{"named", "api.example.com", false},
-		{"asked", "dns", false},
+		{"addresses", []string{"--allow", "203.0.113.7 tcp:443"}, true},
+		{"named", []string{"--allow", "api.example.com"}, false},
+		{"asked", []string{"--allow", "dns"}, false},
+		// An allow any reaches the resolver with no implied rule, so the guest resolves (SHARD-315).
+		{"any", []string{"--allow", "any"}, false},
+		{"web", []string{"--allow", "any tcp:443"}, true},
+		{"denied", []string{"--allow", "1.0.0.1", "--deny", "any"}, true},
 	} {
 		var out bytes.Buffer
 		app, _ := newLifecycleApp(t, &out, &recorder{}, stopped())
 
-		if err := app.Run(t.Context(), []string{"policy", "create", "--allow", tc.rule, tc.name}); err != nil {
+		args := append(append([]string{"policy", "create"}, tc.rules...), tc.name)
+		if err := app.Run(t.Context(), args); err != nil {
 			t.Fatalf("policy create %s: %v", tc.name, err)
 		}
 		if got := strings.Contains(out.String(), noteNoDNS); got != tc.note {
-			t.Errorf("allow %s printed %q, want the note to be %v", tc.rule, out.String(), tc.note)
+			t.Errorf("%v printed %q, want the note to be %v", tc.rules, out.String(), tc.note)
 		}
 	}
 }

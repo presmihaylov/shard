@@ -145,7 +145,7 @@ type PolicyView struct {
 
 // dnsState is the word the view carries, so show and create never disagree about what opens DNS.
 func dnsState(policy models.Policy) string {
-	if egress.OpensDNS(policy) {
+	if egress.Resolves(policy) {
 		return "open"
 	}
 
