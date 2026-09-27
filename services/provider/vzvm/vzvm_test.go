@@ -109,10 +109,14 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	}
 
 	t.Cleanup(func() {
-		// Best effort: a subtest may have stopped and removed this one already, and its errors say nothing new.
+		// Stop and Remove answer nil for a sandbox a subtest already removed, so an error here is a VM left running.
 		ctx := context.Background()
-		h.provider.Stop(ctx, id, stopGrace)
-		h.provider.Remove(ctx, id)
+		if err := h.provider.Stop(ctx, id, stopGrace); err != nil {
+			t.Errorf("stop sandbox %s at cleanup: %v", id, err)
+		}
+		if err := h.provider.Remove(ctx, id); err != nil {
+			t.Errorf("remove sandbox %s at cleanup: %v", id, err)
+		}
 	})
 
 	return models.SandboxSpec{ID: id, StateDir: dir, RootDisk: h.disk, Entrypoint: entrypoint, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}

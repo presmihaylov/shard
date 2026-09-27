@@ -31,7 +31,7 @@ type Subject struct {
 	Scratch string
 	// HostLayer says the guest's writable layer is a host directory the daemon writes; a fake VM guest execs on the host, so it stays false.
 	HostLayer bool
-	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes.
+	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes; it may close Provider.
 	Reopen func(t *testing.T) models.Provider
 }
 
@@ -512,47 +512,6 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// A daemon restart opens a new provider over what the last one left, and a running sandbox goes on as it was.
-	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
-		spec := s.NewSpec(t)
-		spec.Entrypoint = s.Shell("while true; do echo tick; sleep 0.2; done")
-		id := s.start(t, spec)
-		logged := s.awaitLog(t, id, 0)
-
-		again := s.Reopen(t)
-		status, err := again.Status(t.Context(), id)
-		if err != nil {
-			t.Fatalf("Status over the new provider: %v", err)
-		}
-		if !status.Alive() || status.PID <= 0 {
-			t.Fatalf("the new provider sees %+v, want the sandbox running with its pid", status)
-		}
-
-		// The entrypoint's output must keep landing in the log, on the connection the new provider opened.
-		s.awaitLog(t, id, logged)
-
-		out, err := os.CreateTemp(t.TempDir(), "exec-output")
-		if err != nil {
-			t.Fatalf("create a file for the exec output: %v", err)
-		}
-		defer out.Close()
-		exit, err := again.Exec(t.Context(), id, models.ExecSpec{Argv: s.Shell("echo adopted"), Stdout: out, Stderr: out})
-		if err != nil {
-			t.Fatalf("Exec over the new provider: %v", err)
-		}
-		written, err := os.ReadFile(out.Name())
-		if err != nil || exit.Code != 0 || !strings.Contains(string(written), "adopted") {
-			t.Fatalf("Exec over the new provider = %+v, %q, %v", exit, written, err)
-		}
-
-		if err := again.Stop(t.Context(), id, stopGrace); err != nil {
-			t.Fatalf("Stop over the new provider: %v", err)
-		}
-		if s.status(t, id).Alive() {
-			t.Fatal("the first provider still sees the sandbox alive after the new one stopped it")
-		}
-	})
-
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
 		err := s.Provider.Pause(t.Context(), id, s.SnapshotDir(t))
@@ -660,6 +619,47 @@ func Run(t *testing.T, s Subject) {
 		}
 		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
 			t.Fatalf("Stop the source: %v", err)
+		}
+	})
+
+	// A daemon restart opens a new provider over what the last one left; it runs last, since Reopen may close the first.
+	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell("while true; do echo tick; sleep 0.2; done")
+		id := s.start(t, spec)
+		logged := s.awaitLog(t, id, 0)
+
+		again := s.Reopen(t)
+		status, err := again.Status(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Status over the new provider: %v", err)
+		}
+		if !status.Alive() || status.PID <= 0 {
+			t.Fatalf("the new provider sees %+v, want the sandbox running with its pid", status)
+		}
+
+		// The entrypoint's output must keep landing in the log, on the connection the new provider opened.
+		s.awaitLog(t, id, logged)
+
+		out, err := os.CreateTemp(t.TempDir(), "exec-output")
+		if err != nil {
+			t.Fatalf("create a file for the exec output: %v", err)
+		}
+		defer out.Close()
+		exit, err := again.Exec(t.Context(), id, models.ExecSpec{Argv: s.Shell("echo adopted"), Stdout: out, Stderr: out})
+		if err != nil {
+			t.Fatalf("Exec over the new provider: %v", err)
+		}
+		written, err := os.ReadFile(out.Name())
+		if err != nil || exit.Code != 0 || !strings.Contains(string(written), "adopted") {
+			t.Fatalf("Exec over the new provider = %+v, %q, %v", exit, written, err)
+		}
+
+		if err := again.Stop(t.Context(), id, stopGrace); err != nil {
+			t.Fatalf("Stop over the new provider: %v", err)
+		}
+		if s.status(t, id).Alive() {
+			t.Fatal("the first provider still sees the sandbox alive after the new one stopped it")
 		}
 	})
 }
