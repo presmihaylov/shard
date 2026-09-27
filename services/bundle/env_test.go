@@ -102,7 +102,7 @@ func TestTrustProxyPlantsTheCALateAndNeverTwice(t *testing.T) {
 	if named != "/etc/ssl/certs/ca-certificates.crt" {
 		t.Errorf("SSL_CERT_FILE = %q, want the path the image already reads", named)
 	}
-	for _, key := range []string{"REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+	for _, key := range bundle.TrustEnv {
 		if envOf(t, runtimeEnv(t, b), key) != named {
 			t.Errorf("%s does not point at %s", key, named)
 		}

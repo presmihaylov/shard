@@ -15,8 +15,8 @@ import (
 )
 
 // TrustEnv names the variables a fronted sandbox has pointed at its merged CA bundle, so the guest's
-// libraries trust the proxy: every TLS client of note reads one of the three.
-var TrustEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"}
+// libraries trust the proxy; curl reads CURL_CA_BUNDLE first, and the official curl image sets its own.
+var TrustEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"}
 
 // rootPaths is where the common image families keep their CA bundle, relative to the rootfs.
 var rootPaths = []string{"etc/ssl/certs/ca-certificates.crt", "etc/pki/tls/certs/ca-bundle.crt", "etc/ssl/ca-bundle.pem"}

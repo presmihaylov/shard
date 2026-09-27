@@ -3,6 +3,7 @@ package bundle_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestBuildPlantsTheProxyCABesideTheImageRoots(t *testing.T) {
 	if named != "/etc/pki/tls/certs/ca-bundle.crt" {
 		t.Errorf("SSL_CERT_FILE moved to %q, want the path the image already reads", named)
 	}
-	for _, key := range []string{"REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+	for _, key := range bundle.TrustEnv {
 		if envOf(t, got.Process.Env, key) != named {
 			t.Errorf("%s does not point at %s: %v", key, named, got.Process.Env)
 		}
@@ -72,6 +73,27 @@ func TestBuildFindsTheDebianRootsWithoutAnEnv(t *testing.T) {
 
 	if envOf(t, got.Process.Env, "SSL_CERT_FILE") != "/etc/ssl/certs/ca-certificates.crt" {
 		t.Errorf("SSL_CERT_FILE = %v", got.Process.Env)
+	}
+	if got := readFile(t, filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); got != imageRoots+proxyCA {
+		t.Errorf("the merged bundle is:\n%s", got)
+	}
+}
+
+// The official curl image sets CURL_CA_BUNDLE to a file of its own, which curl reads ahead of SSL_CERT_FILE.
+func TestBuildPointsCurlAtTheMergedBundle(t *testing.T) {
+	spec := newSpec(t)
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), imageRoots)
+	write(t, filepath.Join(spec.RootFS, "cacert.pem"), imageRoots)
+	spec.ProxyCA = []byte(proxyCA)
+
+	b, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"curl"}, Env: []string{"CURL_CA_BUNDLE=/cacert.pem"}})
+
+	named := slices.DeleteFunc(slices.Clone(got.Process.Env), func(entry string) bool { return !strings.HasPrefix(entry, "CURL_CA_BUNDLE=") })
+	if !slices.Equal(named, []string{"CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"}) {
+		t.Errorf("CURL_CA_BUNDLE = %v, want the merged bundle once", named)
 	}
 	if got := readFile(t, filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); got != imageRoots+proxyCA {
 		t.Errorf("the merged bundle is:\n%s", got)
