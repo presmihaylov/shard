@@ -176,6 +176,8 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 		Console: filepath.Join(stateDir, consoleFile),
 		Cgroup:  group,
 	}
+	done := p.spawn(id)
+	defer done()
 	client, info, err := fcapi.Restore(ctx, p.cfg.Binary, snap)
 	if err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)

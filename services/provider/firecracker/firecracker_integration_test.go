@@ -535,6 +535,14 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 	}
 }
 
+// The real vmm a cut fork leaves answers "Not started", and the next daemon ends it, so a remove frees the host (SHARD-295).
+func TestAnUnloadedMicroVMLeftByACutForkIsEnded(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.forkSpec(t)
+	exited := h.leaveUnloaded(t, spec, firecracker.Binary)
+	requireUnloadedEnded(t, h.reopen(t), spec, exited)
+}
+
 func TestConformanceOnMicroVMs(t *testing.T) {
 	h := newVMHarness(t)
 	requireReflink(t, h.root)

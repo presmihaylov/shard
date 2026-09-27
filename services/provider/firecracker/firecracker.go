@@ -100,6 +100,8 @@ type Provider struct {
 	mu sync.Mutex
 	// machines is every vmm this daemon has spoken to; one it has not is adopted by its socket.
 	machines map[string]*machine
+	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
+	spawning map[string]bool
 }
 
 func New(cfg Config) (*Provider, error) {
@@ -116,7 +118,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }

@@ -64,6 +64,10 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if err != nil {
 		return nil, err
 	}
+	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
+	if info.State == fcapi.StateNotStarted {
+		return nil, p.endUnloaded(id, client)
+	}
 	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
 	if info.State == fcapi.StatePaused {
 		if err := client.Resume(); err != nil {
@@ -72,6 +76,18 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	}
 
 	return p.attach(ctx, id, dir, client, info)
+}
+
+// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process is still spawning is left to it.
+func (p *Provider) endUnloaded(id string, client *fcapi.Client) error {
+	p.mu.Lock()
+	spawning := p.spawning[id]
+	p.mu.Unlock()
+	if spawning {
+		return nil
+	}
+
+	return endVMM(id, client)
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
@@ -101,6 +117,19 @@ func (p *Provider) forget(m *machine) {
 	defer p.mu.Unlock()
 	if p.machines[m.id] == m {
 		delete(p.machines, m.id)
+	}
+}
+
+// spawn marks the sandbox as one this process brings a vmm up for, until the returned done.
+func (p *Provider) spawn(id string) (done func()) {
+	p.mu.Lock()
+	p.spawning[id] = true
+	p.mu.Unlock()
+
+	return func() {
+		p.mu.Lock()
+		delete(p.spawning, id)
+		p.mu.Unlock()
 	}
 }
 
@@ -137,6 +166,8 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 		Console: filepath.Join(dir, consoleFile),
 		Cgroup:  group,
 	}
+	done := p.spawn(id)
+	defer done()
 	client, info, err := fcapi.Start(ctx, p.cfg.Binary, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)

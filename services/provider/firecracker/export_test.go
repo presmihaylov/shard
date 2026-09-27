@@ -13,3 +13,8 @@ func BoundVMM(root, id string, r models.Resources) (string, error) {
 func (p *Provider) SetCgroupRoot(root string) {
 	p.cgroupRoot = root
 }
+
+// Spawning marks a sandbox as one this provider brings a vmm up for, which a test cannot hold open through Create.
+func (p *Provider) Spawning(id string) (done func()) {
+	return p.spawn(id)
+}

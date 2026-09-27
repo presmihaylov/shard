@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -683,6 +684,100 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop after the leftover came back: %v", err)
 	}
+}
+
+// A daemon cut between a fork's spawn and its load leaves a vmm with no guest; the next daemon ends it, so a remove frees the host (SHARD-295).
+func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
+	h := newHarness(t)
+	spec := h.forkSpec(t)
+	exited := h.leaveUnloaded(t, spec, os.Args[0])
+	requireUnloadedEnded(t, h.reopen(t), spec, exited)
+}
+
+// A read that lands mid-spawn is not a restart of the daemon, so the unloaded vmm is left to the spawn it belongs to.
+func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
+	h := newHarness(t)
+	spec := h.forkSpec(t)
+	h.leaveUnloaded(t, spec, os.Args[0])
+	done := h.provider.Spawning(spec.ID)
+	defer done()
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status mid-spawn = %+v, %v, want stopped", status, err)
+	}
+	if !unloaded(filepath.Join(spec.StateDir, "firecracker.sock")) {
+		t.Fatal("a read ended the vmm a spawn in this process still brings up")
+	}
+}
+
+// leaveUnloaded writes the record a fork writes and spawns a vmm that loads nothing, as a daemon cut between the two leaves them; the channel closes when the vmm exits.
+func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary string) <-chan struct{} {
+	t.Helper()
+
+	blob, err := json.Marshal(vm{BaseDisk: h.erofs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.StateDir, "vm.json"), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(spec.StateDir, "firecracker.sock")
+	vmm := exec.Command(binary, "--api-sock", socket)
+	vmm.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := vmm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		vmm.Wait()
+		close(exited)
+	}()
+	// Best effort: a pass has ended it already.
+	t.Cleanup(func() { vmm.Process.Kill() })
+
+	deadline := time.Now().Add(stopGrace)
+	for !unloaded(socket) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the vmm on %s did not answer within %s", socket, stopGrace)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return exited
+}
+
+// requireUnloadedEnded proves a reopened provider ends an unloaded leftover within the daemon's probe budget, and a remove then frees its files.
+func requireUnloadedEnded(t *testing.T, p models.Provider, spec models.SandboxSpec, exited <-chan struct{}) {
+	t.Helper()
+
+	// An attach waiting on a guest that never comes runs past this budget.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	status, err := p.Status(ctx, spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status of the unloaded leftover = %+v, %v, want stopped", status, err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopGrace):
+		t.Fatal("the unloaded vmm still runs after the new daemon read it")
+	}
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, name := range []string{"vm.json", "firecracker.sock"} {
+		if _, err := os.Stat(filepath.Join(spec.StateDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after Remove: %v, want gone", name, err)
+		}
+	}
+}
+
+// unloaded says a vmm answers on the socket with nothing booted or loaded in it.
+func unloaded(socket string) bool {
+	_, info, err := fcapi.Adopt(socket, "")
+
+	return err == nil && info.State == fcapi.StateNotStarted
 }
 
 // forkSpec is what the orchestrator hands Fork: an id, a directory and the bounds, and no entrypoint.
