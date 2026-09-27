@@ -466,6 +466,9 @@ func TestAHostWithoutSaveRefusesTheOptionalVerbs(t *testing.T) {
 
 // An exit the loop could not land is an error on every read, not a wait that never ends.
 func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a directory whatever its mode says, so no exit is lost")
+	}
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "exit 3")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
