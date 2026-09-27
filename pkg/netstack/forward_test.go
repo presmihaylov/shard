@@ -306,6 +306,48 @@ func TestAClosedLinkEndsItsFlows(t *testing.T) {
 	}
 }
 
+// A guest that resets its flow ended it, which is no fault of the link: gVisor sends the reset for a socket closed over unread bytes.
+func TestAGuestResetEndsItsFlowWithoutAFault(t *testing.T) {
+	target, _ := echoTCP(t)
+	host, _, _ := judged(t, allowed, target)
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := guest.dialTCP(ctx, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("pingping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(client, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		host.mu.Lock()
+		left, fault := len(link.flows), link.flowErr
+		host.mu.Unlock()
+		if left == 0 {
+			if fault != nil {
+				t.Fatalf("the guest's reset was kept as the link's fault: %v", fault)
+			}
+
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the reset flow still tracks %d sides", left)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // A link that holds its share of flows gets the next one dropped as limit, and a flow that ends gives its place back.
 func TestALinkAtItsFlowLimitDropsTheNextFlow(t *testing.T) {
 	target, taken := echoTCP(t)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -274,7 +275,23 @@ func (l *Link) send(ctx context.Context) error {
 // quiet reports the ends a closed link produces on either side, Linux answers a dead datagram peer with ECONNREFUSED, which are how a pump stops and not a fault.
 func quiet(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ)
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) ||
+		guestEnded(err)
+}
+
+// guestEnds are the gVisor errors of a flow the guest reset; gonet hands one on as its text alone, so the text is what matches.
+var guestEnds = []string{(&tcpip.ErrConnectionReset{}).String(), (&tcpip.ErrNotConnected{}).String()}
+
+func guestEnded(err error) bool {
+	var op *net.OpError
+	for errors.As(err, &op) && op.Err != nil {
+		if slices.Contains(guestEnds, op.Err.Error()) {
+			return true
+		}
+		err = op.Err
+	}
+
+	return false
 }
 
 // ListenTCP opens a listener on the stack address, which every link's guest can reach.
