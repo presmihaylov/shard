@@ -55,7 +55,7 @@ func replicaOf(master *os.File) (*Pty, error) {
 // ptsname fills the 128-byte name the C library hands the same ioctl; x/sys has no typed helper for it.
 func ptsname(fd int) (string, error) {
 	var name [128]byte
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TIOCPTYGNAME, uintptr(unsafe.Pointer(&name[0]))) //nolint:gosec // the ioctl fills a buffer
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TIOCPTYGNAME, uintptr(unsafe.Pointer(&name[0]))) //nolint:gosec,staticcheck // unsafe fills the name buffer; x/sys exports no libSystem wrapper for this ioctl
 	if errno != 0 {
 		return "", fmt.Errorf("read the pseudo terminal name: %w", errno)
 	}
