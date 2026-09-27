@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -142,6 +143,8 @@ type fakeMachine struct {
 	holdUntil time.Time
 	// frozen is the guest root as the host last froze or thawed it; the fake's guest is not PID 1 and freezes nothing itself.
 	frozen bool
+	// controls counts the control streams the host opened, so a reset can wait for the next one.
+	controls int
 }
 
 // unfrozenFile lands in the state directory when a pause stopped a guest whose root still took writes, so a clone could read a torn disk.
@@ -149,6 +152,12 @@ const unfrozenFile = "unfrozen-pause"
 
 // frozenFile is in the state directory while the guest's root is frozen, so a test sees a guest left unable to write.
 const frozenFile = "frozen-root"
+
+// cutFreezeFile in the state directory lets the next freeze reach the guest and loses its answer, as a reset between the two would.
+const cutFreezeFile = "cut-freeze-answer"
+
+// resetOnPauseFile in the state directory resets every stream under the next VM pause, and holds that pause until the host dialed again.
+const resetOnPauseFile = "reset-on-pause"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -261,7 +270,26 @@ func (m *fakeMachine) State() vz.State {
 
 func (m *fakeMachine) MachineID() string { return m.id }
 
+// take removes a marker the test left in the state directory, and says whether it was there.
+func (m *fakeMachine) take(name string) (bool, error) {
+	err := os.Remove(filepath.Join(filepath.Dir(m.dir), name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
 func (m *fakeMachine) Pause() error {
+	reset, err := m.take(resetOnPauseFile)
+	if err != nil {
+		return err
+	}
+	if reset {
+		if err := m.resetAndAwaitHost(); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	frozen := m.frozen
 	m.mu.Unlock()
@@ -272,6 +300,32 @@ func (m *fakeMachine) Pause() error {
 	}
 
 	return m.move(vz.StateRunning, vz.StatePaused, syscall.SIGSTOP)
+}
+
+// resetAndAwaitHost drops every stream and returns once the host opened a control stream again and had time to act on its replay.
+func (m *fakeMachine) resetAndAwaitHost() error {
+	m.mu.Lock()
+	before := m.controls
+	m.mu.Unlock()
+	m.dropStreams()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.Lock()
+		dialed := m.controls > before
+		m.mu.Unlock()
+		if dialed {
+			break
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the host did not open a control stream again after the reset")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A thaw the host sends on its replay lands well inside this, and the pause then sees the root it left.
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
 }
 
 func (m *fakeMachine) Resume() error {
@@ -326,6 +380,9 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 		return conn, conn.Close()
 	}
 	m.streams[conn] = struct{}{}
+	if port == supervisor.ControlPort {
+		m.controls++
+	}
 
 	return &stream{Conn: conn, machine: m}, nil
 }
@@ -344,6 +401,8 @@ func (m *fakeMachine) dropStreams() {
 type stream struct {
 	net.Conn
 	machine *fakeMachine
+	// cut loses the next answer the guest sends and resets every stream, once a freeze asked for it.
+	cut atomic.Bool
 }
 
 func (s *stream) Write(p []byte) (int, error) {
@@ -354,9 +413,28 @@ func (s *stream) Write(p []byte) (int, error) {
 		if err := s.machine.setFrozen(frozen); err != nil {
 			return 0, err
 		}
+		if !frozen {
+			continue
+		}
+		cut, err := s.machine.take(cutFreezeFile)
+		if err != nil {
+			return 0, err
+		}
+		s.cut.Store(cut)
 	}
 
 	return s.Conn.Write(p)
+}
+
+func (s *stream) Read(p []byte) (int, error) {
+	n, err := s.Conn.Read(p)
+	if s.cut.Load() && strings.Contains(string(p[:n]), `"kind":"`+supervisor.KindDone+`"`) {
+		s.machine.dropStreams()
+
+		return 0, net.ErrClosed
+	}
+
+	return n, err
 }
 
 func (s *stream) Close() error {

@@ -497,3 +497,27 @@ func TestAnswerStaysOnTheConnectionThatAsked(t *testing.T) {
 		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
 	}
 }
+
+// A freeze whose host was replaced before the answer is undone, since the new host's replay may have read the root before it froze.
+func TestAFreezeNoHostHeardIsUndone(t *testing.T) {
+	_, oldGuest := net.Pipe()
+	newHost, newGuest := net.Pipe()
+	defer oldGuest.Close()
+	defer newHost.Close()
+	tr := &transport{control: newGuest}
+
+	tr.freeze(oldGuest, 1)
+	if tr.frozen.Load() {
+		t.Fatal("the root stays frozen after a freeze no host heard")
+	}
+
+	go tr.freeze(newGuest, 2)
+	_ = newHost.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var reply supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &reply); err != nil || reply.ID != 2 || reply.Kind != supervisor.KindDone {
+		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
+	}
+	if !tr.frozen.Load() {
+		t.Fatal("the root is not frozen after a freeze its host heard")
+	}
+}

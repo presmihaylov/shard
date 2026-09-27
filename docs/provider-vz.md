@@ -208,12 +208,15 @@ to reach the proxy anyway.
   state file (SHARD-296). `FIFREEZE` flushes the root and then holds every write until the thaw, so
   no write lands between the flush and the pause. A sync alone left that window open, and a writer in
   a loop tore the clone's copy of its file on every try.
-- Every path that runs a frozen guest again thaws it. A pause that fails after the freeze resumes the
-  VM, then thaws. The state `shard-init` replays on a new control connection says whether the root
-  is frozen, and the host that reads it thaws: after a resume, after a fork before the re-address,
-  and after a daemon that died between the freeze and the pause. A stop thaws before it signals the
-  entrypoint. A guest whose `shard-init` predates the freeze refuses it, and the pause fails with it;
-  a snapshot taken before the freeze never says frozen, and resumes as it did.
+- Every path that runs a frozen guest again thaws it. A pause that fails at or after the freeze
+  resumes the VM if it got that far, then thaws. The state `shard-init` replays on a new control
+  connection says whether the root is frozen, and the host that reads it thaws: after a resume, after
+  a fork before the re-address, after a daemon that died between the freeze and the pause, and after
+  a control connection that dropped with the freeze's answer. A connection dialed again while a pause
+  is still in flight leaves the root frozen for it. `shard-init` undoes a freeze whose host was
+  replaced before the answer, since that host's replay may predate the freeze. A stop thaws before it
+  signals the entrypoint. A guest whose `shard-init` predates the freeze refuses it, and the pause
+  fails with it; a snapshot taken before the freeze never says frozen, and resumes as it did.
 - `resume` first replaces the live disk with a fresh APFS clone of the snapshot's `disk.img`, by a
   clone to a temporary name and a rename, then starts a new shim that restores the state file over it
   and resumes. The snapshot is not consumed, and every resume from it starts from the same pair: a

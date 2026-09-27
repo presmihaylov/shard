@@ -32,6 +32,8 @@ type transport struct {
 	rekey func([]byte) error
 	// frozen is the root held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
 	frozen atomic.Bool
+	// freezing puts one freeze and its answer before the next, so a freeze undone for want of a host never undoes a later one.
+	freezing sync.Mutex
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -253,12 +255,17 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			return
 		}
+		if m.Kind == supervisor.KindFreeze {
+			t.freeze(conn, m.ID)
+
+			continue
+		}
 		t.answer(conn, m.ID, t.handle(m))
 	}
 }
 
-// answer carries the request's id back on the connection that asked; a host replaced meanwhile never sees another's reply.
-func (t *transport) answer(conn net.Conn, id int, err error) {
+// answer carries the request's id back on the connection that asked, and says whether it went; a host replaced meanwhile never sees another's reply.
+func (t *transport) answer(conn net.Conn, id int, err error) bool {
 	reply := supervisor.Message{Kind: supervisor.KindDone, ID: id}
 	if err != nil {
 		reply = supervisor.Message{Kind: supervisor.KindFailure, ID: id, Error: err.Error()}
@@ -267,10 +274,31 @@ func (t *transport) answer(conn net.Conn, id int, err error) {
 	t.controlMu.Lock()
 	defer t.controlMu.Unlock()
 	if t.control != conn {
-		return
+		return false
 	}
 	if err := supervisor.WriteMessage(conn, reply); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)
+
+		return false
+	}
+
+	return true
+}
+
+// freeze holds the root for a pause; a host replaced before the answer may have read the root unfrozen off its replay, so the freeze is undone.
+func (t *transport) freeze(conn net.Conn, id int) {
+	t.freezing.Lock()
+	defer t.freezing.Unlock()
+
+	err := freezeRoot()
+	if err == nil {
+		t.frozen.Store(true)
+	}
+	if t.answer(conn, id, err) || err != nil {
+		return
+	}
+	if err := t.thaw(); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: thaw a freeze no host heard:", err)
 	}
 }
 
@@ -309,13 +337,6 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return t.rekey(m.Seed)
-	case supervisor.KindFreeze:
-		if err := freezeRoot(); err != nil {
-			return err
-		}
-		t.frozen.Store(true)
-
-		return nil
 	case supervisor.KindThaw:
 		return t.thaw()
 	default:

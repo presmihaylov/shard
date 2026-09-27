@@ -55,8 +55,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// A pause that crashed before its record left the VM paused, and this one carries on from there.
 	if info.State != vz.StatePaused {
 		// A clone boots from the disk alone, so the guest's root is flushed and frozen first, and no write lands between the two.
-		if err := m.control.Load().Freeze(); err != nil {
-			return fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err)
+		if err := m.freeze(); err != nil {
+			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err))
 		}
 		if _, err := m.client.Pause(); err != nil {
 			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
@@ -138,8 +138,24 @@ func abandon(m *machine, tmp string, err error) error {
 	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
 }
 
+// freeze holds the guest's root for the pause in flight, which a stream dialed again meanwhile leaves frozen.
+func (m *machine) freeze() error {
+	m.swap.Lock()
+	m.pausing = true
+	control := m.control.Load()
+	m.swap.Unlock()
+
+	return control.Freeze()
+}
+
 // runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.
 func runAgain(m *machine) error {
+	// Under the lock a stream swap takes, so either this thaw lands on the stream a reconnect put in, or that reconnect thaws.
+	m.swap.Lock()
+	m.pausing = false
+	control := m.control.Load()
+	m.swap.Unlock()
+
 	info, err := m.client.State()
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
@@ -149,7 +165,7 @@ func runAgain(m *machine) error {
 			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
 		}
 	}
-	if err := m.control.Load().Thaw(); err != nil {
+	if err := control.Thaw(); err != nil {
 		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
 	}
 

@@ -304,6 +304,73 @@ func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	thawed(dir, "a failed pause")
 }
 
+// A freeze that lands while its answer is lost fails the pause, and the guest's root is thawed over the stream the provider dials again.
+func TestAFreezeWhoseAnswerIsLostIsThawed(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cutFreezeFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "freeze the guest's root") {
+		t.Fatalf("Pause over a lost freeze answer = %v, want the freeze failure", err)
+	}
+	deadline := time.Now().Add(stopGrace)
+	for {
+		_, err := os.Stat(filepath.Join(dir, frozenFile))
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the guest's root is still frozen %s after the pause failed: %v", stopGrace, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the failed pause = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A reset while a pause that froze the root is in flight leaves the root frozen: the stream dialed again must not thaw it under the VM pause.
+func TestAResetUnderAPauseLeavesTheRootFrozen(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, resetOnPauseFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, unfrozenFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the reconnect thawed the root under the pause: %v", err)
+	}
+}
+
 // A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the snapshot whole.
 func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	h := newHarness(t)
