@@ -224,8 +224,10 @@ Every restore of one state file also wakes with the same kernel crng key, so a r
 its forks read the same `/dev/urandom` bytes until the guest's next timed reseed. VZ has no vmgenid
 device to tell the guest, so every `resume` and `fork` sends 32 bytes from the host's `crypto/rand`
 on the control port before it returns, and `shard-init` writes them into the input pool and forces
-a rekey with `RNDRESEEDCRNG` (SHARD-293). Only the kernel's generator is rekeyed: a process that
-seeded its own generator before the pause carries that state into every copy.
+a rekey with `RNDRESEEDCRNG` (SHARD-293). The seed lands 5 to 9 ms after the vCPUs resume, so a
+process already running at the pause can read the same bytes in every copy inside that window, and
+SHARD-310 freezes the guest across the restore to close it. Only the kernel's generator is rekeyed:
+a process that seeded its own generator before the pause carries that state into every copy.
 
 Rejected: an in-memory pause (the framework's `pause` alone). shard deleted the in-memory pause so
 the verb means one thing on every substrate: a snapshot on disk and the memory given back.

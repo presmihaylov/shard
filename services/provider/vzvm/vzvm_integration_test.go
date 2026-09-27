@@ -627,6 +627,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 		if len(drawn) != 64 {
 			t.Fatalf("%s read %q from /dev/urandom, want 32 bytes in hex", id, written)
 		}
+		t.Logf("%s read %s", id, drawn)
 		if other, ok := seen[drawn]; ok {
 			t.Fatalf("%s and %s read the same /dev/urandom bytes %s after a restore of one save", other, id, drawn)
 		}

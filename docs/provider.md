@@ -167,6 +167,12 @@ chains do on Linux, and every other TCP or UDP flow is judged by the same compil
 ruleset is built from, so a policy means the same on both hosts (SHARD-246); a refused flow is
 dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
+Every restore of one save wakes with the same guest crng key, so each `resume` and `fork` sends the
+guest 32 bytes of host entropy and `shard-init` rekeys from them before the verb returns (SHARD-293).
+One window stays open: the vCPUs resume 5 to 9 ms before the seed lands, so a process already running
+at the pause can read the same `/dev/urandom` bytes in every copy inside it. A process that starts
+after `resume` or `fork` returns, and every exec, reads fresh bytes. SHARD-310 closes the window by
+freezing the guest across the restore.
 The three resource bounds below hold on the Linux substrates; `vz` and `firecracker` have no host
 cgroup, and each section says what the VM does instead.
 
