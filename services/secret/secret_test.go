@@ -378,6 +378,9 @@ func TestSetRefusals(t *testing.T) {
 		{"address destination", "KEY", "v-1234567", []string{"10.0.0.1"}, "", "is an address"},
 		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
 		{"bare wildcard", "KEY", "v-1234567", []string{"*"}, "", "has no dot"},
+		{"wildcard both labels", "KEY", "v-1234567", []string{"*.*"}, "", "past the leftmost label"},
+		{"wildcard apex only", "KEY", "v-1234567", []string{"*.com"}, "", "wildcard with no apex"},
+		{"wildcard rightmost label", "KEY", "v-1234567", []string{"api.openai.*"}, "", "past the leftmost label"},
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
 		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
 		{"chosen placeholder inside the value", "KEY", "abc-sk_test_shaped01-1", []string{"example.com"}, "sk_test_shaped01", "inside its value"},
@@ -530,6 +533,26 @@ func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), dest) {
 			t.Errorf("the Set refusal echoes the destination it refused: %v", err)
+		}
+	}
+}
+
+func TestASecretDestinationTakesOnlyALeftmostWildcard(t *testing.T) {
+	// A whole-wildcard destination would bind the value to any host, so only a leftmost * over a named apex passes.
+	for _, dest := range []string{"api.openai.com", "*.openai.com", "*.github.com"} {
+		if _, err := validSecretDestination("destination", dest); err != nil {
+			t.Errorf("validSecretDestination(%q) = %v, want it taken", dest, err)
+		}
+	}
+	for _, dest := range []string{"*.*", "*.com", "api.openai.*", "*.*.*.*", "www.*.com"} {
+		_, err := validSecretDestination("destination", dest)
+		if err == nil {
+			t.Errorf("validSecretDestination(%q) took an over-broad wildcard", dest)
+
+			continue
+		}
+		if strings.Contains(err.Error(), dest) {
+			t.Errorf("the refusal echoes the destination it refused: %v", err)
 		}
 	}
 }

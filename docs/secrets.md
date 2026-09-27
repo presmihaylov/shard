@@ -136,6 +136,6 @@ secret is free.
 
 ## A grant may name a wildcard
 
-`secret set --to '*.github.com' NAME` grants the value to every host under the apex. A wildcard
-label follows the same shape as a policy name rule, and a grant of `*` alone is refused: the
-value must be bound to a name.
+`secret set --to '*.github.com' NAME` grants the value to every host under the apex. The `*` is the
+leftmost label alone and needs two literal labels under it, so `*.github.com` is taken but `*.*`,
+`*.com`, `api.github.*` and a bare `*` are refused: the value must bind to a named apex.

@@ -120,7 +120,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 	bound := make([]string, 0, len(destinations))
 	for i, dest := range destinations {
 		// The refusal names the position and never the value, so a list of destinations still says which one.
-		canonical, err := validDestination(ordinal(i+1)+" destination", dest)
+		canonical, err := validSecretDestination(ordinal(i+1)+" destination", dest)
 		if err != nil {
 			return Secret{}, err
 		}
@@ -391,6 +391,24 @@ func validDestination(subject, dest string) (string, error) {
 		if !labelShape.MatchString(label) {
 			return "", fmt.Errorf("the %s is not a host name", subject)
 		}
+	}
+
+	return canonical, nil
+}
+
+// validSecretDestination is validDestination plus the rule a grant needs: a wildcard is the leftmost
+// label alone over two literal labels, so *.*, *.com and api.openai.* never bind a value to a broad host.
+func validSecretDestination(subject, dest string) (string, error) {
+	canonical, err := validDestination(subject, dest)
+	if err != nil {
+		return "", err
+	}
+	labels := strings.Split(canonical, ".")
+	if slices.Contains(labels[1:], "*") {
+		return "", fmt.Errorf("the %s puts * past the leftmost label: only the leftmost label is a wildcard", subject)
+	}
+	if labels[0] == "*" && len(labels) < 3 {
+		return "", fmt.Errorf("the %s is a wildcard with no apex: name two labels under the *", subject)
 	}
 
 	return canonical, nil
