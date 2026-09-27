@@ -538,6 +538,10 @@ func validate(req CreateRequest) error {
 		if slices.Contains(req.Secrets[:i], name) {
 			return &RequestError{Err: fmt.Errorf("the secret %s was named twice", name)}
 		}
+		// The trust merge writes over a variable of this name, so the placeholder would never reach the guest.
+		if slices.Contains(bundle.TrustEnv, name) {
+			return &RequestError{Err: fmt.Errorf("the secret %s cannot be granted to a sandbox: the proxy sets that variable to the trust store", name)}
+		}
 	}
 
 	return nil

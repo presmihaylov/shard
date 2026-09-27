@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
@@ -355,6 +356,32 @@ func TestCreateRefusesASecretTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	}
 	if slices.Contains(r.calls, "images.Pull") {
 		t.Errorf("a missing secret still cost a pull: %v", r.calls)
+	}
+}
+
+// The proxy sets the trust variables itself, so a secret of that name is refused at create as at a grant.
+func TestCreateRefusesASecretNamedForATrustVariableBeforeThePull(t *testing.T) {
+	for _, name := range bundle.TrustEnv {
+		t.Run(name, func(t *testing.T) {
+			r := &recorder{}
+			svc, l := newService(t, r, models.Sandbox{})
+			if _, err := l.secrets.Set(name, "s3cr3t", []string{"api.example.com"}, ""); err != nil {
+				t.Fatalf("secrets.Set: %v", err)
+			}
+
+			req := alpine()
+			req.Secrets = []string{name}
+
+			_, err := svc.Create(t.Context(), req)
+
+			var refused *sandbox.RequestError
+			if !errors.As(err, &refused) || !strings.Contains(err.Error(), "trust store") {
+				t.Fatalf("create = %v, want a request error that names the trust store", err)
+			}
+			if slices.Contains(r.calls, "images.Pull") {
+				t.Errorf("a refused secret still cost a pull: %v", r.calls)
+			}
+		})
 	}
 }
 
