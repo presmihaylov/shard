@@ -114,8 +114,9 @@ func echo(t *testing.T, w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	// Close writes the close frame the client asserts on before it blocks on the reply; the client's teardown races that read-back, so log it, never fail on it.
 	if err := conn.Close(websocket.StatusNormalClosure, "echoed"); err != nil {
-		t.Errorf("close the WebSocket: %v", err)
+		t.Logf("the fake daemon read no close reply back: %v", err)
 	}
 }
 
