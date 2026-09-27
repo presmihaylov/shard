@@ -137,5 +137,11 @@ secret is free.
 ## A grant may name a wildcard
 
 `secret set --to '*.github.com' NAME` grants the value to every host under the apex. The `*` is the
-leftmost label alone and needs two literal labels under it, so `*.github.com` is taken but `*.*`,
-`*.com`, `api.github.*` and a bare `*` are refused: the value must bind to a named apex.
+leftmost label alone and must stand over a registrable domain, so `*.github.com` and `*.openai.com` are
+taken but `*.*`, `*.com`, `api.github.*`, a bare `*` and a public suffix like `*.co.uk` or `*.github.io`
+are refused: the value must bind to a domain the owner controls. The public suffix list is bundled with
+the `golang.org/x/net` version and updates on a `go.mod` bump.
+
+A secret bound before this rule to a broad or public-suffix destination stops substituting on that
+destination until you re-set it with a valid one. The store drops the unsafe destination on read, so the
+value is never put into a request for a host the owner does not control.

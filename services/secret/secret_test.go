@@ -379,7 +379,9 @@ func TestSetRefusals(t *testing.T) {
 		{"bare label", "KEY", "v-1234567", []string{"localhost"}, "", "has no dot"},
 		{"bare wildcard", "KEY", "v-1234567", []string{"*"}, "", "has no dot"},
 		{"wildcard both labels", "KEY", "v-1234567", []string{"*.*"}, "", "past the leftmost label"},
-		{"wildcard apex only", "KEY", "v-1234567", []string{"*.com"}, "", "wildcard with no apex"},
+		{"wildcard apex only", "KEY", "v-1234567", []string{"*.com"}, "", "public suffix"},
+		{"wildcard over a public suffix", "KEY", "v-1234567", []string{"*.co.uk"}, "", "public suffix"},
+		{"wildcard over a private suffix", "KEY", "v-1234567", []string{"*.github.io"}, "", "public suffix"},
 		{"wildcard rightmost label", "KEY", "v-1234567", []string{"api.openai.*"}, "", "past the leftmost label"},
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
 		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
@@ -538,13 +540,14 @@ func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
 }
 
 func TestASecretDestinationTakesOnlyALeftmostWildcard(t *testing.T) {
-	// A whole-wildcard destination would bind the value to any host, so only a leftmost * over a named apex passes.
-	for _, dest := range []string{"api.openai.com", "*.openai.com", "*.github.com"} {
+	// A wildcard binds only under a registrable domain, so a leftmost * over an owned apex passes and a
+	// whole-wildcard or public-suffix destination does not.
+	for _, dest := range []string{"api.openai.com", "openai.com", "github.com", "*.openai.com", "*.github.com", "*.api.openai.com"} {
 		if _, err := validSecretDestination("destination", dest); err != nil {
 			t.Errorf("validSecretDestination(%q) = %v, want it taken", dest, err)
 		}
 	}
-	for _, dest := range []string{"*.*", "*.com", "api.openai.*", "*.*.*.*", "www.*.com"} {
+	for _, dest := range []string{"*.*", "*.com", "api.openai.*", "*.*.*.*", "www.*.com", "*.co.uk", "*.com.au", "*.github.io"} {
 		_, err := validSecretDestination("destination", dest)
 		if err == nil {
 			t.Errorf("validSecretDestination(%q) took an over-broad wildcard", dest)
@@ -554,6 +557,43 @@ func TestASecretDestinationTakesOnlyALeftmostWildcard(t *testing.T) {
 		if strings.Contains(err.Error(), dest) {
 			t.Errorf("the refusal echoes the destination it refused: %v", err)
 		}
+	}
+}
+
+// A destination stored before the wildcard rule binds to nothing on read, so the broker never matches it
+// and the value is never substituted for a host the owner does not control (SHARD-302 P1a).
+func TestReadDropsAnUnsafeStoredDestination(t *testing.T) {
+	s, _ := newStore(t)
+
+	writeRecord := func(name string, dests []string) {
+		t.Helper()
+		blob, err := json.Marshal(record{Value: "sk-live-legacy", Destinations: dests, Placeholder: "mock-" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(s.path(name), blob, filePerm); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A pre-fix store held destinations Set refuses today, one beside a still-valid host.
+	writeRecord("MIXED", []string{"*.*", "*.com", "api.openai.*", "*.co.uk", "api.example.com"})
+	writeRecord("BROAD", []string{"*.com"})
+
+	sec, err := s.Get("MIXED")
+	if err != nil {
+		t.Fatalf("Get MIXED: %v", err)
+	}
+	if got, want := sec.Destinations, []string{"api.example.com"}; !slices.Equal(got, want) {
+		t.Errorf("Get MIXED = %v, want only the still-valid host %v", got, want)
+	}
+
+	sec, err = s.Get("BROAD")
+	if err != nil {
+		t.Fatalf("Get BROAD: %v", err)
+	}
+	if len(sec.Destinations) != 0 {
+		t.Errorf("Get BROAD = %v, want no destination so nothing substitutes", sec.Destinations)
 	}
 }
 
