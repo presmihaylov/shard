@@ -89,8 +89,8 @@ Usage:
   shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
-  shard tokens mint --name <sub> [--duration <dur>] --secret-file <path>
-                           sign one token for a subject, record it in the ledger, and print it; no --duration means it never expires; a local verb, the daemon never sees the secret
+  shard tokens mint --name <sub> [--duration <dur>] [--scopes <list>] [--tokens-file <path>] --secret-file <path>
+                           sign one token for a subject, record it in the ledger, and print it; no --duration means it never expires and no --scopes means every scope; a local verb, the daemon never sees the secret
   shard tokens ls --secret-file <path>
                            list every token the ledger records, with its id, subject, issued and expiry times, scopes and status
   shard tokens revoke [--name <sub>] --secret-file <path> <id>
@@ -149,8 +149,10 @@ Serve flags:
 
 Tokens mint flags:
   --name <sub>             the subject the token names
-  --duration <dur>         how long the token is valid (default 24h)
+  --duration <dur>         how long the token is valid; the default, 0, never expires
   --secret-file <path>     the file holding the secret that signs the token
+  --tokens-file <path>     the ledger to record the token in; overrides the one beside the secret file
+  --scopes <list>          a comma-separated list of scopes the token carries; empty is every verb
 
 Flags:
   --root <dir>             where shard keeps its state (default ` + DefaultRoot + `)

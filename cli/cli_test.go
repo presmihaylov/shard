@@ -187,3 +187,21 @@ func TestUsageListsVerbHelp(t *testing.T) {
 		t.Errorf("the top-level usage does not mention shard <verb> --help:\n%s", out.String())
 	}
 }
+
+func TestUsageStatesTheTokenMintDefaultsAndFlags(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := newApp(t, &out).Run(t.Context(), nil); err != nil {
+		t.Fatalf("Run(nil): %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, "(default 24h)") {
+		t.Errorf("the tokens mint usage still claims a 24h default:\n%s", got)
+	}
+	for _, want := range []string{"--scopes <list>", "--tokens-file <path>", "never expires"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the tokens mint usage omits %q:\n%s", want, got)
+		}
+	}
+}
