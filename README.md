@@ -61,7 +61,7 @@ always record how the entrypoint ended.
 Linux; a Mac daemon carries its own guest build and installs it under `<root>/vz`.
 
 `--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
-host, and the egress proxy puts it into a request on its way to the granted destination. See
+host, and the egress proxy puts it into an HTTPS request on its way to the granted destination. See
 `docs/secrets.md`.
 
 `--policy NAME` names the egress policy the host enforces. Without one the sandbox reaches the

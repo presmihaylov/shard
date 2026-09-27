@@ -1,10 +1,10 @@
 # Secrets
 
-A sandbox never holds a secret value. It holds a placeholder, and the value is put into a request on
-the host, on its way to the one destination the secret is granted to. Whatever runs in the sandbox,
-a prompt-injected agent included, can read its environment, dump its memory and post every byte of it
-anywhere it likes, and what it posts is the placeholder. That holds as long as the granted host never
-sends the value back: see the caution under the grant.
+A sandbox never holds a secret value. It holds a placeholder, and the value is put into an HTTPS
+request on the host, on its way to the one destination the secret is granted to. Whatever runs in the
+sandbox, a prompt-injected agent included, can read its environment, dump its memory and post every
+byte of it anywhere it likes, and what it posts is the placeholder. That holds as long as the granted
+host never sends the value back: see the caution under the grant.
 
 ## The three parts
 
@@ -63,15 +63,17 @@ sandboxes, or pass `--force`.
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
 fronted: the host turns its HTTP on 80 and 443 to the egress proxy, which is where the value goes
 in. See `docs/egress.md` for what fronting means. On the way out, the proxy replaces the placeholder with
-the value, in the URL, the headers and the body, and only when the request is bound for a granted
+the value, in the URL, the headers and the body, and only when the request goes over TLS to a granted
 destination. A request to any other host carries the placeholder as it is, so a guest that posts its
-environment to an attacker posts the placeholder. A body past 8 MiB streams through untouched: put
+environment to an attacker posts the placeholder. Plain HTTP on 80 never gets the value, not even to a
+granted host: it crosses the network in cleartext, so it carries the placeholder, the service refuses
+it, and the fix is `https://`. A body past 8 MiB streams through untouched: put
 the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
 re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
 substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
 A hop-by-hop header, `Connection`, `Upgrade`, `Keep-Alive` and any header `Connection` names, keeps
 the placeholder: it belongs to the connection, not the upstream, and the proxy can quote one back.
-Brokering covers HTTP on ports 80 and 443 today. A credential sent on any other port or protocol, a
+Brokering covers HTTPS on port 443 today. A credential sent on any other port or protocol, a
 database password on 5432 or SMTP on 587, leaves as the placeholder and the service refuses it; the
 policy still decides whether the connection is allowed at all.
 

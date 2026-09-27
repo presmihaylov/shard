@@ -142,7 +142,7 @@ func (b *Broker) record(id string, req proxy.Request, action models.Action, reco
 	return nil
 }
 
-// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder.
+// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder, on TLS only.
 func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte) ([]byte, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
@@ -165,7 +165,8 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 		if err != nil {
 			return nil, err
 		}
-		if !granted(sec, req.Host) {
+		// Plain HTTP crosses the network in cleartext, so a value goes in on TLS alone.
+		if !req.TLS || !granted(sec, req.Host) {
 			swaps = append(swaps, swap{sec.Placeholder, sec.Placeholder})
 
 			continue

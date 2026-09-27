@@ -66,7 +66,7 @@ Usage:
   shard image prune        remove every pulled image no sandbox references
   shard secret set --to <host>... [--placeholder <string>] <NAME> [VALUE]
                            store a secret granted to those hosts; set again to rotate the value
-                           the guest sees the placeholder, and the proxy puts the value in its place on a granted request
+                           the guest sees the placeholder, and the proxy puts the value in its place on a granted HTTPS request
                            the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
                            put -- before a VALUE that starts with -
                            --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key

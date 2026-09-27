@@ -340,13 +340,13 @@ expect_exec "mock-E2E_TOKEN" "the guest sees the placeholder as \$E2E_TOKEN" /bi
 expect_exec "${SHAPED_PLACEHOLDER}" "the guest sees the chosen placeholder as \$E2E_SHAPED" /bin/sh -c 'echo "$E2E_SHAPED"'
 fronted "${ID}" || fail "the host holds no dnat to the proxy for ${ADDRESS}"
 say "the host turns the guest's 80 and 443 to the proxy"
-expect_fronted "${ID}" "a request to the granted host carries the value"
-if ! GOT=$(fetch "${ID}" https "${ECHO_HOST}"); then
-	fail "the https request to ${ECHO_HOST} failed"
+expect_fronted "${ID}" "an https request to the granted host carries the value, so the guest trusts the proxy CA"
+if ! GOT=$(fetch "${ID}" http "${ECHO_HOST}"); then
+	fail "the http request to ${ECHO_HOST} failed"
 fi
-grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" <<<"${GOT}" || fail "the echo saw '${GOT}' over https, want the value in Authorization"
-say "the same holds over https, so the guest trusts the proxy CA"
-if ! GOT=$(fetch "${ID}" http "${OTHER_HOST}"); then
+grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" <<<"${GOT}" || fail "the echo saw '${GOT}' over plain http, want the placeholder, never the value in cleartext"
+say "plain http to the granted host keeps the placeholder: the value goes out over tls alone"
+if ! GOT=$(fetch "${ID}" https "${OTHER_HOST}"); then
 	fail "the request to ${OTHER_HOST} failed"
 fi
 grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" <<<"${GOT}" || fail "the echo saw '${GOT}' on the ungranted host, want the placeholder"

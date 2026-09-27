@@ -226,11 +226,11 @@ fetch() {
 	shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" --header \"X-Shaped: \$E2E_SHAPED\" ${scheme}://${host}/"
 }
 
-# expect_fronted fails when a request from the sandbox to the granted host does not carry the real value,
+# expect_fronted fails when a tls request from the sandbox to the granted host does not carry the real value,
 # which proves the request went through the proxy and the proxy put the value in.
 expect_fronted() {
 	local id="$1" note="$2" got
-	if ! got=$(fetch "${id}" http "${ECHO_HOST}"); then
+	if ! got=$(fetch "${id}" https "${ECHO_HOST}"); then
 		fail "the request to ${ECHO_HOST} from ${id} failed"
 	fi
 	echo "${got}" | grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" || fail "the echo saw '${got}', want the value in Authorization"
@@ -241,7 +241,7 @@ expect_fronted() {
 # guest builds the header the way every client does: base64 of "user:placeholder".
 basic_of() {
 	local id="$1" host="$2" got line
-	got=$(shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" http://${host}/") ||
+	got=$(shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" https://${host}/") ||
 		fail "the basic auth request to ${host} failed"
 	line=$(grep '^authorization=' <<<"${got}") || fail "the echo saw no authorization header: ${got}"
 	printf '%s' "${line#authorization=}"
@@ -1173,11 +1173,15 @@ shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST
 
 expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
 GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
-echo "${GOT}" | grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" || fail "the echo saw '${GOT}' over tls, want the value in Authorization"
 echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_VALUE}")" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
-say "the same holds over tls, and the chosen placeholder carries its own value"
+say "the chosen placeholder carries its own value"
 
-GOT=$(fetch "${ID}" http "${OTHER_HOST}") || fail "the http request to ${OTHER_HOST} failed"
+GOT=$(fetch "${ID}" http "${ECHO_HOST}") || fail "the http request to ${ECHO_HOST} failed"
+echo "${GOT}" | grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" || fail "the echo saw '${GOT}' over plain http, want the placeholder, never the value in cleartext"
+echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" || fail "the echo saw '${GOT}' over plain http, want the chosen placeholder untouched"
+say "plain http to the granted host keeps both placeholders: the value goes out over tls alone"
+
+GOT=$(fetch "${ID}" https "${OTHER_HOST}") || fail "the https request to ${OTHER_HOST} failed"
 echo "${GOT}" | grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
 echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
 say "a request to a host the policy allows but the grant does not keeps both placeholders"
