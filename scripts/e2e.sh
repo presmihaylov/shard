@@ -3,14 +3,14 @@
 # It installs the two binaries, starts shard daemon over the run's root (SHARD-124), creates a
 # sandbox, execs into it twice over the same filesystem, pauses, resumes and forks it (SHARD-36),
 # stops it, removes it, stops the daemon, and then proves the host holds nothing either left behind.
-# One sandbox holds a secret and a policy, so it is fronted: the run starts an echo server on the
-# host's 80 and 443 and proves the proxy puts the value in on the granted host only (SHARD-71).
+# One sandbox holds a secret and a policy, so it is fronted: the run starts an echo server in a
+# netns of its own and proves the proxy puts the value in on the granted host only (SHARD-71).
 #
 #   sudo ./scripts/e2e.sh
 #
-# The run keeps its own state root, but the bridge, the subnet, the veth names and the two echo
-# ports belong to the host, so it must not run beside live sandboxes from another root. It refuses
-# one that has any, and a host whose 80 or 443 is taken.
+# The run keeps its own state root, but the bridge, the subnet, the veth names and the echo's netns
+# and link belong to the host, so it must not run beside live sandboxes from another root. It refuses
+# one that has any, and a host that already holds the echo's netns or link.
 #
 # Environment:
 #   PREFIX     where the binaries are installed, and where the daemon loads shard-init from (default /usr/local/bin)
@@ -86,9 +86,10 @@ ECHO_PID=""
 ECHO_DIR=""
 # The proxy refuses a name that resolves to the host's own address (SHARD-291), so the echo holds a TEST-NET-2 address in a netns of its own.
 ECHO_NETNS_NAME="shard-e2e-echo"
-# Set only once this run made the netns, so a teardown never deletes one another run holds.
-ECHO_NETNS=""
 ECHO_LINK="e2eecho"
+# Each is set only once this run made it, so a teardown never deletes one another run holds.
+ECHO_NETNS=""
+ECHO_VETH=""
 ECHO_GATEWAY="198.51.100.1"
 ECHO_ADDRESS="198.51.100.2"
 # The echo names all resolve to its address through sslip.io: one is granted, one is only allowed, one is neither.
@@ -260,12 +261,14 @@ expect_env_clean() {
 # start_echo builds the upstream and starts it on 80 and 443 of its own netns, behind a veth pair to the host.
 start_echo() {
 	[ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the netns ${ECHO_NETNS_NAME} is already on the host: another run holds the echo, or a crashed one left it"
+	ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the link ${ECHO_LINK}0 is already on the host: another run holds the echo, or a crashed one left it"
 
 	ECHO_DIR=$(mktemp -d)
 	go build -o "${ECHO_DIR}/echo" ./scripts/echo
 	ip netns add "${ECHO_NETNS_NAME}"
 	ECHO_NETNS="${ECHO_NETNS_NAME}"
 	ip link add "${ECHO_LINK}0" type veth peer name "${ECHO_LINK}1" netns "${ECHO_NETNS}"
+	ECHO_VETH="${ECHO_LINK}0"
 	ip addr add "${ECHO_GATEWAY}/30" dev "${ECHO_LINK}0"
 	ip link set "${ECHO_LINK}0" up
 	ip -n "${ECHO_NETNS}" addr add "${ECHO_ADDRESS}/30" dev "${ECHO_LINK}1"
@@ -286,9 +289,12 @@ stop_echo() {
 		wait "${ECHO_PID}" >/dev/null 2>&1 || true
 		ECHO_PID=""
 	fi
-	[ -n "${ECHO_NETNS}" ] || return 0
 	# The kernel frees a deleted netns lazily, so the pair goes first, and at once, for the next run's ip link add.
-	ip link delete "${ECHO_LINK}0" >/dev/null 2>&1 || true
+	if [ -n "${ECHO_VETH}" ]; then
+		ip link delete "${ECHO_VETH}" >/dev/null 2>&1 || true
+		ECHO_VETH=""
+	fi
+	[ -n "${ECHO_NETNS}" ] || return 0
 	ip netns delete "${ECHO_NETNS}" >/dev/null 2>&1 || true
 	ECHO_NETNS=""
 }
