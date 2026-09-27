@@ -308,6 +308,10 @@ func readHead(r io.Reader) ([]byte, error) {
 	for {
 		n, err := r.Read(one)
 		if n > 0 {
+			// A bare LF ends the head for the daemon but not for this scan, so it hides a smuggled request the scope check never sees; refuse it.
+			if one[0] == '\n' && !bytes.HasSuffix(head, []byte("\r")) {
+				return nil, errors.New("the request head has a line feed with no carriage return")
+			}
 			head = append(head, one[0])
 			if bytes.HasSuffix(head, []byte("\r\n\r\n")) {
 				return head, nil
