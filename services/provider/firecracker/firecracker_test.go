@@ -711,6 +711,55 @@ func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
 	}
 }
 
+// A read that saw the spawn's vmm "Not started" and resumes only after the attach leaves the sandbox it became running.
+func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.EndUnloaded(spec.ID, client, pid); err != nil {
+		t.Fatalf("the late read: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status after the late read = %+v, %v, want running on vmm %d", status, err, pid)
+	}
+}
+
+// A read ends the unloaded vmm it saw, never one that answers the socket since.
+func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
+	h := newHarness(t)
+	spec := h.forkSpec(t)
+	exited := h.leaveUnloaded(t, spec, os.Args[0])
+	socket := filepath.Join(spec.StateDir, "firecracker.sock")
+	client, info, err := fcapi.Adopt(socket, filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fcapi.KillPID(info.PID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopGrace):
+		t.Fatal("the first vmm still runs after its kill")
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	h.leaveUnloaded(t, spec, os.Args[0])
+
+	if err := h.provider.EndUnloaded(spec.ID, client, info.PID); err != nil {
+		t.Fatalf("the late read: %v", err)
+	}
+	if !unloaded(socket) {
+		t.Fatal("a read ended a vmm it never saw")
+	}
+}
+
 // leaveUnloaded writes the record a fork writes and spawns a vmm that loads nothing, as a daemon cut between the two leaves them; the channel closes when the vmm exits.
 func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary string) <-chan struct{} {
 	t.Helper()

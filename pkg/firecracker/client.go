@@ -252,7 +252,7 @@ func (c *Client) Kill() error {
 	for {
 		info, err := c.State()
 		if err == nil {
-			return kill(info.PID)
+			return KillPID(info.PID)
 		}
 		if absent(err) {
 			return nil
@@ -265,8 +265,8 @@ func (c *Client) Kill() error {
 	}
 }
 
-// kill ends the vmm with the group Start made it lead, so nothing it spawned outlives it; one that leads no group dies alone.
-func kill(pid int) error {
+// KillPID ends the vmm pid with the group Start made it lead, so nothing it spawned outlives it; one that leads no group dies alone.
+func KillPID(pid int) error {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
 		return nil
 	}
@@ -413,7 +413,7 @@ func faultOf(blob []byte) string {
 
 // end kills a firecracker that never came up, so a failed start leaves no microVM behind.
 func end(cmd *exec.Cmd) error {
-	if err := kill(cmd.Process.Pid); err != nil {
+	if err := KillPID(cmd.Process.Pid); err != nil {
 		return fmt.Errorf("the firecracker that did not come up: %w", err)
 	}
 

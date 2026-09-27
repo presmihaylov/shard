@@ -66,7 +66,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	}
 	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
 	if info.State == fcapi.StateNotStarted {
-		return nil, p.endUnloaded(id, client)
+		return nil, p.endUnloaded(id, client, info.PID)
 	}
 	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
 	if info.State == fcapi.StatePaused {
@@ -78,16 +78,23 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	return p.attach(ctx, id, dir, client, info)
 }
 
-// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process is still spawning is left to it.
-func (p *Provider) endUnloaded(id string, client *fcapi.Client) error {
+// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
+func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
+	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
 	p.mu.Lock()
-	spawning := p.spawning[id]
+	_, held := p.machines[id]
+	spared := held || p.spawning[id]
 	p.mu.Unlock()
-	if spawning {
+	if spared {
 		return nil
 	}
 
-	return endVMM(id, client)
+	// The pid is the vmm judged here: the socket may answer for one a spawn began since.
+	if err := fcapi.KillPID(pid); err != nil {
+		return fmt.Errorf("sandbox %s: end the vmm a cut spawn left: %w", id, err)
+	}
+
+	return awaitEnded(&machine{id: id, client: client, pid: pid})
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
@@ -482,19 +489,23 @@ func (m *machine) close() error {
 
 // endVMM kills the vmm of a boot the provider could not finish; firecracker has no stop verb, so the kill is the only end.
 func endVMM(id string, client *fcapi.Client) error {
-	// The create's context may already be canceled, and the vmm must go either way, so the cleanup runs on its own clock.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*killGrace)
-	defer cancel()
 	if err := client.Kill(); err != nil {
 		return fmt.Errorf("sandbox %s: end the vmm after a failed boot: %w", id, err)
 	}
-	m := &machine{id: id, client: client}
+
+	return awaitEnded(&machine{id: id, client: client})
+}
+
+// awaitEnded waits out a vmm just killed on its own clock: the verb's context may already be canceled, and the vmm must go either way.
+func awaitEnded(m *machine) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*killGrace)
+	defer cancel()
 	ended, err := m.awaitGone(ctx, killGrace)
 	if err != nil {
 		return err
 	}
 	if !ended {
-		return fmt.Errorf("the vmm of sandbox %s still answers %s after a kill", id, killGrace)
+		return fmt.Errorf("the vmm of sandbox %s still answers %s after a kill", m.id, killGrace)
 	}
 
 	return nil
@@ -504,8 +515,9 @@ func endVMM(id string, client *fcapi.Client) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		_, err := m.client.State()
-		if absent(err) {
+		info, err := m.client.State()
+		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
+		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil
 		}
 		if !time.Now().Before(deadline) {
