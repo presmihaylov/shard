@@ -330,9 +330,10 @@ func TestPolicyCreateNotesAPolicyThatOpensNoDNS(t *testing.T) {
 		{"any", []string{"--allow", "any"}, false},
 		{"web", []string{"--allow", "any tcp:443"}, true},
 		{"denied", []string{"--allow", "1.0.0.1", "--deny", "any"}, true},
-		// The resolver takes the first match, so a deny any ahead of the allow refuses every name.
+		// The resolver takes the first match, so a deny ahead of the allow can refuse every name.
 		{"reversed", []string{"--deny", "any", "--allow", "any"}, true},
 		{"shadowed", []string{"--deny", "any", "--allow", "api.example.com"}, true},
+		{"narrow", []string{"--deny", "api.example.com", "--allow", "api.example.com"}, true},
 	} {
 		var out bytes.Buffer
 		app, _ := newLifecycleApp(t, &out, &recorder{}, stopped())

@@ -632,7 +632,7 @@ func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
 func TestResolvesAgreesWithTheFirstMatchingRule(t *testing.T) {
 	s := newStore(t)
 	svc := New(s, nil, gateway, nameservers, fakeResolver{})
-	names := []string{"api.example.com", "any.example.net"}
+	names := []string{"api.example.com", "www.example.com", "example.com", "any.example.net"}
 
 	for _, tc := range []struct {
 		name  string
@@ -647,6 +647,11 @@ func TestResolvesAgreesWithTheFirstMatchingRule(t *testing.T) {
 		{"half", []models.Rule{mustRule(t, models.ActionDeny, "any tcp:443"), mustRule(t, models.ActionAllow, "any")}, true},
 		{"one", []models.Rule{mustRule(t, models.ActionDeny, "api.example.com"), mustRule(t, models.ActionAllow, "any")}, true},
 		{"web", []models.Rule{mustRule(t, models.ActionAllow, "any tcp:443")}, false},
+		{"narrow", []models.Rule{mustRule(t, models.ActionDeny, "api.example.com"), mustRule(t, models.ActionAllow, "api.example.com")}, false},
+		{"pattern", []models.Rule{mustRule(t, models.ActionDeny, "api.example.com"), mustRule(t, models.ActionAllow, "*.example.com")}, true},
+		{"apex", []models.Rule{mustRule(t, models.ActionDeny, "*.example.com"), mustRule(t, models.ActionAllow, "suffix:example.com")}, true},
+		{"spelled", []models.Rule{mustRule(t, models.ActionDeny, "x.example.com"), mustRule(t, models.ActionAllow, "*.example.com")}, true},
+		{"closed", []models.Rule{mustRule(t, models.ActionDeny, "example.com"), mustRule(t, models.ActionDeny, "*.example.com"), mustRule(t, models.ActionAllow, "suffix:example.com")}, false},
 	} {
 		policy := models.Policy{Name: tc.name, Rules: tc.rules}
 		if err := s.Set(policy); err != nil {

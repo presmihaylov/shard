@@ -153,9 +153,10 @@ A policy of only address rules is the case to watch. `allow 203.0.113.7` gives t
 it can reach, and no way to resolve anything, so every tool that looks a name up first fails on the
 lookup. It is in the egress log, as a `dns` record that denies the name the tool asked for, and what
 never appears is a request to that host: a denied lookup under no request for that host is this
-case. `shard policy create` says so at the moment you store such a policy, and also when a deny of
-every name, such as `deny any`, comes before the first allow of one, since the resolver takes the
-first match. Add a name rule for the host, or add `--allow dns`, and the implied `dns` opens with it.
+case. `shard policy create` says so at the moment you store such a policy, and also when earlier
+denies cover every name an allow opens, such as `deny any` before `allow api.example.com`, since the
+resolver takes the first match. Add a name rule for the host, or add `--allow dns`, and the implied
+`dns` opens with it.
 
 A rule id is its position in the effective order, so an edit that opens DNS on a policy that had none
 puts two implied rules in front and moves every rule down by two. `shard inspect` and the `rule`

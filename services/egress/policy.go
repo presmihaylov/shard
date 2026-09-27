@@ -46,13 +46,14 @@ func OpensDNS(policy models.Policy) bool {
 	return slices.ContainsFunc(policy.Rules, opensDNS)
 }
 
-// Resolves says whether the resolver answers some name, in DecideName's first-match order: a rule for every name ends the walk.
+// Resolves says whether DecideName allows some name, asked of the names each allow rule matches.
 func Resolves(policy models.Policy) bool {
+	fresh := freshLabel(policy.Rules)
 	for _, rule := range policy.Rules {
-		if everyName(rule) {
-			return rule.Action == models.ActionAllow
+		if rule.Action != models.ActionAllow {
+			continue
 		}
-		if rule.Action == models.ActionAllow && named(rule.Destination.Kind) {
+		if slices.ContainsFunc(samples(rule, fresh), func(name string) bool { return resolves(policy.Rules, name) }) {
 			return true
 		}
 	}

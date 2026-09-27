@@ -81,16 +81,38 @@ func anyLeavesDNS(rule models.Rule) bool {
 	return rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port))
 }
 
-// everyName says a rule matches whatever name is asked, so DecideName never reads a rule after it.
-func everyName(rule models.Rule) bool {
-	if rule.Action == models.ActionDeny && !closesName(rule) {
-		return false
-	}
-	if rule.Destination.Kind == models.DestinationDomain {
-		return rule.Destination.Value == "*"
+// resolves is DecideName's walk over the stored rules: the implied rules are addresses, which never match a name.
+func resolves(rules []models.Rule, name string) bool {
+	for _, rule := range rules {
+		if matchesName(rule, name) {
+			return rule.Action == models.ActionAllow
+		}
 	}
 
-	return rule.Destination.Kind == models.DestinationGroup && (rule.Destination.Value == GroupDNS || anyLeavesDNS(rule))
+	return false
+}
+
+// samples are names a rule matches, built on a label no rule spells, so only a deny as wide as the rule shadows them all.
+func samples(rule models.Rule, fresh string) []string {
+	switch rule.Destination.Kind {
+	case models.DestinationGroup:
+		return []string{fresh}
+	case models.DestinationDomain:
+		return []string{strings.ReplaceAll(rule.Destination.Value, "*", fresh)}
+	case models.DestinationDomainSuffix:
+		return []string{rule.Destination.Value, fresh + "." + rule.Destination.Value}
+	}
+
+	return nil
+}
+
+func freshLabel(rules []models.Rule) string {
+	label := "x"
+	for slices.ContainsFunc(rules, func(rule models.Rule) bool { return slices.Contains(strings.Split(rule.Destination.Value, "."), label) }) {
+		label += "x"
+	}
+
+	return label
 }
 
 // matchesName says whether a rule speaks for a name alone: an address rule cannot, and only a deny that closes both web ports refuses a lookup.
