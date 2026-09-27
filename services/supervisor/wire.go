@@ -21,14 +21,15 @@ const (
 	FilesPort   uint32 = 5003
 )
 
-// The kinds a control message carries. The host sends the first five; the guest answers each with done or failure, and sends the rest on its own.
+// The kinds a control message carries. The host sends the first seven; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
 	KindStop      = "stop"
 	KindReaddress = "readdress"
 	KindReseed    = "reseed"
-	KindSync      = "sync"
+	KindFreeze    = "freeze"
+	KindThaw      = "thaw"
 	KindDone      = "done"
 	KindFailure   = "failure"
 	KindState     = "state"
@@ -62,6 +63,8 @@ type Message struct {
 	Restarts *models.RestartCount `json:"restarts,omitempty"`
 	// OOM on a state replay says the bound took every guest process while no host was attached to hear it.
 	OOM bool `json:"oom,omitempty"`
+	// Frozen on a state replay says the guest's root still holds its writes, as a pause left it.
+	Frozen bool `json:"frozen,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
 }

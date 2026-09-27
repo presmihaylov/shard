@@ -252,8 +252,8 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	}
 }
 
-// A clone boots from the disk alone, so a pause asks the guest to sync before it stops it (SHARD-296).
-func TestAPauseFlushesTheGuestBeforeItStopsIt(t *testing.T) {
+// A clone boots from the disk alone, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
+func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -262,17 +262,46 @@ func TestAPauseFlushesTheGuestBeforeItStopsIt(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-
 	dir, err := h.stateDir(spec.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, unflushedFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the pause stopped a guest it never asked to sync: %v", err)
+	thawed := func(dir, after string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, frozenFile)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the guest's root is still frozen after %s: %v", after, err)
+		}
 	}
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, unfrozenFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the pause stopped a guest whose root still took writes: %v", err)
+	}
+	fork := h.newSpec(t)
+	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+		t.Fatal(err)
+	}
+	forkDir, err := h.stateDir(fork.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thawed(forkDir, "a fork")
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	thawed(dir, "a resume")
+
+	// Without a disk to copy the snapshot cannot complete, and the pause gives the guest back able to write.
+	if err := os.Remove(filepath.Join(dir, "disk.img")); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err == nil || !strings.Contains(err.Error(), "copy the disk") {
+		t.Fatalf("Pause without a disk = %v, want the copy failure", err)
+	}
+	thawed(dir, "a failed pause")
 }
 
 // A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the snapshot whole.

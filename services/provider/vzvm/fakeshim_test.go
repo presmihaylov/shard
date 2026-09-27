@@ -1,12 +1,14 @@
 package vzvm_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -138,12 +140,15 @@ type fakeMachine struct {
 	streams map[net.Conn]struct{}
 	// holdUntil is how long a dial answers with a stream that ends at once, after a reset SIGUSR2 asked for.
 	holdUntil time.Time
-	// flushed says the host asked the guest to sync since the last pause; the fake has no page cache to watch.
-	flushed bool
+	// frozen is the guest root as the host last froze or thawed it; the fake's guest is not PID 1 and freezes nothing itself.
+	frozen bool
 }
 
-// unflushedFile lands in the state directory when a pause stopped a guest no one asked to sync, whose disk a clone would read short.
-const unflushedFile = "unflushed-pause"
+// unfrozenFile lands in the state directory when a pause stopped a guest whose root still took writes, so a clone could read a torn disk.
+const unfrozenFile = "unfrozen-pause"
+
+// frozenFile is in the state directory while the guest's root is frozen, so a test sees a guest left unable to write.
+const frozenFile = "frozen-root"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -158,14 +163,17 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 		id = hex.EncodeToString(b[:])
 	}
 	// The framework refuses a save made under another identifier, and so does the fake.
+	restoredFrozen := false
 	if cfg.Restore != "" {
 		saved, err := os.ReadFile(cfg.Restore)
 		if err != nil {
 			return nil, fmt.Errorf("read the saved state: %w", err)
 		}
-		if strings.TrimSpace(string(saved)) != id {
-			return nil, fmt.Errorf("the saved state belongs to machine %s, not %s", strings.TrimSpace(string(saved)), id)
+		savedID, frozen := strings.CutSuffix(strings.TrimSpace(string(saved)), "\n"+frozenFile)
+		if savedID != id {
+			return nil, fmt.Errorf("the saved state belongs to machine %s, not %s", savedID, id)
 		}
+		restoredFrozen = frozen
 	}
 
 	dir := filepath.Join(filepath.Dir(cfg.Socket), "guest")
@@ -199,8 +207,49 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 		m.state = vz.StateStopped
 		m.mu.Unlock()
 	}()
+	// A save holds the guest's memory with its root frozen; the fake's guest is a fresh process, so it is frozen again.
+	if restoredFrozen {
+		if err := errors.Join(freezeGuest(dir), m.setFrozen(true)); err != nil {
+			return nil, errors.Join(err, m.Stop())
+		}
+	}
 
 	return m, nil
+}
+
+// freezeGuest asks the guest to freeze over a control connection of its own, before any host attaches.
+func freezeGuest(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	control, err := supervisor.Connect(ctx, func(ctx context.Context, port uint32) (net.Conn, error) {
+		var d net.Dialer
+
+		return d.DialContext(ctx, "unix", filepath.Join(dir, fmt.Sprintf("%d.sock", port)))
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := control.Next(); err != nil {
+		return errors.Join(err, control.Close())
+	}
+
+	return errors.Join(control.Freeze(), control.Close())
+}
+
+// setFrozen tracks the guest's root, and marks it frozen in the state directory for a test to see.
+func (m *fakeMachine) setFrozen(frozen bool) error {
+	m.mu.Lock()
+	m.frozen = frozen
+	m.mu.Unlock()
+	marker := filepath.Join(filepath.Dir(m.dir), frozenFile)
+	if frozen {
+		return os.WriteFile(marker, nil, 0o600)
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	return nil
 }
 
 func (m *fakeMachine) State() vz.State {
@@ -214,11 +263,10 @@ func (m *fakeMachine) MachineID() string { return m.id }
 
 func (m *fakeMachine) Pause() error {
 	m.mu.Lock()
-	flushed := m.flushed
-	m.flushed = false
+	frozen := m.frozen
 	m.mu.Unlock()
-	if !flushed {
-		if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), unflushedFile), nil, 0o600); err != nil {
+	if !frozen {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), unfrozenFile), nil, 0o600); err != nil {
 			return err
 		}
 	}
@@ -245,11 +293,18 @@ func (m *fakeMachine) move(from, to vz.State, sig syscall.Signal) error {
 }
 
 func (m *fakeMachine) Save(path string) error {
-	if m.State() != vz.StatePaused {
-		return fmt.Errorf("the vm is %s, and only a paused one saves", m.State())
+	m.mu.Lock()
+	state, frozen := m.state, m.frozen
+	m.mu.Unlock()
+	if state != vz.StatePaused {
+		return fmt.Errorf("the vm is %s, and only a paused one saves", state)
+	}
+	saved := m.id
+	if frozen {
+		saved += "\n" + frozenFile
 	}
 
-	return os.WriteFile(path, []byte(m.id), 0o600)
+	return os.WriteFile(path, []byte(saved), 0o600)
 }
 
 func (m *fakeMachine) Stop() error {
@@ -292,10 +347,13 @@ type stream struct {
 }
 
 func (s *stream) Write(p []byte) (int, error) {
-	if strings.Contains(string(p), `"kind":"`+supervisor.KindSync+`"`) {
-		s.machine.mu.Lock()
-		s.machine.flushed = true
-		s.machine.mu.Unlock()
+	for kind, frozen := range map[string]bool{supervisor.KindFreeze: true, supervisor.KindThaw: false} {
+		if !strings.Contains(string(p), `"kind":"`+kind+`"`) {
+			continue
+		}
+		if err := s.machine.setFrozen(frozen); err != nil {
+			return 0, err
+		}
 	}
 
 	return s.Conn.Write(p)

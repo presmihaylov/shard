@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,8 @@ type transport struct {
 	logs     *logSink
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
+	// frozen is the root held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
+	frozen atomic.Bool
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -169,7 +172,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load()}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -288,8 +291,8 @@ func (t *transport) handle(m supervisor.Message) error {
 
 		return t.g.signal(m.PID, sig)
 	case supervisor.KindStop:
-		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace.
-		return syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace; a frozen root would hold the entrypoint's last writes.
+		return errors.Join(t.thaw(), syscall.Kill(os.Getpid(), syscall.SIGTERM))
 	case supervisor.KindReaddress:
 		if m.Address == nil {
 			return errors.New("a readdress message names no address")
@@ -306,13 +309,27 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return t.rekey(m.Seed)
-	case supervisor.KindSync:
-		flush()
+	case supervisor.KindFreeze:
+		if err := freezeRoot(); err != nil {
+			return err
+		}
+		t.frozen.Store(true)
 
 		return nil
+	case supervisor.KindThaw:
+		return t.thaw()
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}
+}
+
+func (t *transport) thaw() error {
+	if err := thawRoot(); err != nil {
+		return err
+	}
+	t.frozen.Store(false)
+
+	return nil
 }
 
 // launch starts the entrypoint the host resolved, once; its output is the log pipe from the first byte.

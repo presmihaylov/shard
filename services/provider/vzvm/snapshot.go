@@ -54,12 +54,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 	// A pause that crashed before its record left the VM paused, and this one carries on from there.
 	if info.State != vz.StatePaused {
-		// A clone boots from the disk alone, so what the guest wrote but still holds in memory goes to it first.
-		if err := m.control.Load().Sync(); err != nil {
-			return fmt.Errorf("sandbox %s: flush the guest's writes before the pause: %w", id, err)
+		// A clone boots from the disk alone, so the guest's root is flushed and frozen first, and no write lands between the two.
+		if err := m.control.Load().Freeze(); err != nil {
+			return fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err)
 		}
 		if _, err := m.client.Pause(); err != nil {
-			return fmt.Errorf("pause sandbox %s: %w", id, err)
+			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
 	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
@@ -133,11 +133,27 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	return nil
 }
 
-// abandon gives up a pause that could not complete: the VM runs on and the staging directory goes.
+// abandon gives up a pause that could not complete: the VM and its root run on and the staging directory goes.
 func abandon(m *machine, tmp string, err error) error {
-	_, resumeErr := m.client.Resume()
+	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
+}
 
-	return errors.Join(err, resumeErr, os.RemoveAll(tmp))
+// runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.
+func runAgain(m *machine) error {
+	info, err := m.client.State()
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+	if info.State == vz.StatePaused {
+		if _, err := m.client.Resume(); err != nil {
+			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
+		}
+	}
+	if err := m.control.Load().Thaw(); err != nil {
+		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // installStaged finishes a pause that crashed after its record: a staged snapshot newer than the one in dir goes in, an older one goes.

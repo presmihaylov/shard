@@ -346,8 +346,47 @@ func setDefaultRoute(fd int, name string, gateway net.IP) error {
 	return nil
 }
 
-// flush writes every dirty page back to the disk, which is all a clone of a paused VM reads.
-func flush() { unix.Sync() }
+// fifreeze and fithaw are _IOWR('X', 119, int) and _IOWR('X', 120, int), which x/sys does not name.
+const (
+	fifreeze = 0xc0045877
+	fithaw   = 0xc0045878
+)
+
+// freezeRoot flushes the root disk and holds every write to it, so a clone of a paused VM reads a whole disk.
+func freezeRoot() error {
+	err := rootIoctl(fifreeze)
+	// EBUSY is a root already frozen, by a freeze whose answer never reached the host.
+	if err == nil || errors.Is(err, unix.EBUSY) {
+		return nil
+	}
+
+	return fmt.Errorf("freeze the root: %w", err)
+}
+
+// thawRoot lets the root disk take writes again.
+func thawRoot() error {
+	err := rootIoctl(fithaw)
+	// EINVAL is a root that is not frozen.
+	if err == nil || errors.Is(err, unix.EINVAL) {
+		return nil
+	}
+
+	return fmt.Errorf("thaw the root: %w", err)
+}
+
+// rootIoctl is a test process's no-op, as it is not PID 1 and "/" is the host's.
+func rootIoctl(req uint) error {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open the root: %w", err)
+	}
+	defer unix.Close(fd)
+
+	return unix.IoctlSetInt(fd, req, 0)
+}
 
 // powerOff ends the VM once the stop is done, by a reboot where the vmm only exits on one; a test process is not PID 1 and just exits.
 func powerOff(reboot bool) error {
@@ -355,7 +394,7 @@ func powerOff(reboot bool) error {
 		return nil
 	}
 	// The reboot call flushes nothing, and a clone reads the disk: what the guest wrote must reach it first.
-	flush()
+	unix.Sync()
 	cmd := unix.LINUX_REBOOT_CMD_POWER_OFF
 	if reboot {
 		cmd = unix.LINUX_REBOOT_CMD_RESTART

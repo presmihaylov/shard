@@ -200,13 +200,20 @@ to reach the proxy anyway.
 
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
-- `pause` asks `shard-init` to sync the guest's filesystems, pauses the VM, saves its state to
+- `pause` asks `shard-init` to freeze the guest's root filesystem, pauses the VM, saves its state to
   `<snapshot dir>/vm.vzvmstate`, stops the VM, and then takes an APFS clone of the quiescent disk as
   `<snapshot dir>/disk.img` beside it; the shim exits. The memory is freed, as the verb promises on
   gVisor; the live disk stays where it is. The two files are one snapshot: the memory and the disk of
-  the same instant. The sync is for `clone`, which boots the live disk cold and never reads the state
-  file, so a write the guest still held in its page cache would otherwise never reach it (SHARD-296).
-  A guest whose `shard-init` predates the sync refuses it, and the pause fails with it.
+  the same instant. The freeze is for `clone`, which boots the live disk cold and never reads the
+  state file (SHARD-296). `FIFREEZE` flushes the root and then holds every write until the thaw, so
+  no write lands between the flush and the pause. A sync alone left that window open, and a writer in
+  a loop tore the clone's copy of its file on every try.
+- Every path that runs a frozen guest again thaws it. A pause that fails after the freeze resumes the
+  VM, then thaws. The state `shard-init` replays on a new control connection says whether the root
+  is frozen, and the host that reads it thaws: after a resume, after a fork before the re-address,
+  and after a daemon that died between the freeze and the pause. A stop thaws before it signals the
+  entrypoint. A guest whose `shard-init` predates the freeze refuses it, and the pause fails with it;
+  a snapshot taken before the freeze never says frozen, and resumes as it did.
 - `resume` first replaces the live disk with a fresh APFS clone of the snapshot's `disk.img`, by a
   clone to a temporary name and a rename, then starts a new shim that restores the state file over it
   and resumes. The snapshot is not consumed, and every resume from it starts from the same pair: a

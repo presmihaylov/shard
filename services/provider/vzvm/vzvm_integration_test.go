@@ -635,41 +635,92 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	}
 }
 
-// A clone boots from the disk alone, so a write the guest still held in its page cache at the pause must reach the clone (SHARD-296).
-func TestACloneOfAPausedSandboxKeepsItsUnsyncedWrites(t *testing.T) {
+// A clone boots from the disk alone, so a pause freezes the root under a writer in mid-loop: the clone holds every count the writer printed, and the source and a fork write again after (SHARD-296).
+func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	h := newVMHarness(t)
 	if !h.provider.Capabilities().Fork {
 		t.Skip("this Mac does not save a VM")
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	// Each count reaches the disk before the log, and a cold boot of the disk finds the file and only sleeps.
+	spec := h.newSpec(t, "/bin/sh", "-c", `[ -e /root/log ] && exec sleep 1000000; i=0; while :; do i=$((i+1)); echo $i >> /root/log || exit 1; echo $i; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo unsynced > /root/data"}}); err != nil {
+	time.Sleep(2 * time.Second)
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
+	log, err := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	lines := strings.Split(string(log), "\n")
+	printed, err := strconv.Atoi(lines[max(len(lines)-2, 0)])
+	if err != nil {
+		t.Fatalf("the writer printed no count before the pause: %v", err)
 	}
 
 	clone := h.newSpec(t)
 	if err := h.provider.Clone(t.Context(), spec.ID, clone); err != nil {
 		t.Fatal(err)
 	}
-	out, err := os.CreateTemp(t.TempDir(), "data")
+	onDisk, err := strconv.Atoi(execIn(t, h, clone.ID, `awk 'NR != $1 { print "a gap at line " NR ": " $0; exit 1 } END { print NR }' /root/log`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk < printed {
+		t.Fatalf("the clone's log ends at %d, and the source printed %d before its pause", onDisk, printed)
+	}
+	t.Logf("the source printed %d before its pause, and the clone holds %d", printed, onDisk)
+
+	fork := h.newSpec(t)
+	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+		t.Fatal(err)
+	}
+	if got := execIn(t, h, fork.ID, "echo forked > /root/forked && cat /root/forked"); got != "forked" {
+		t.Fatalf("the fork wrote %q, want forked", got)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	counted, err := strconv.Atoi(execIn(t, h, spec.ID, "sleep 1; wc -l < /root/log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counted <= onDisk {
+		t.Fatalf("the resumed writer is still at %d, where its pause froze it", counted)
+	}
+}
+
+// execIn runs one shell line under a deadline, since a write to a root left frozen never returns.
+func execIn(t *testing.T, h *vmHarness, id, line string) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	out, err := os.CreateTemp(t.TempDir(), "out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer out.Close()
-	if _, err := h.provider.Exec(t.Context(), clone.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "cat /root/data"}, Stdout: out, Stderr: out}); err != nil {
+	exit, err := h.provider.Exec(ctx, id, models.ExecSpec{Argv: []string{"/bin/sh", "-c", line}, Stdout: out, Stderr: out})
+	if err != nil {
+		t.Fatalf("exec %q in %s: %v", line, id, err)
+	}
+	written, err := os.ReadFile(out.Name())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if written, _ := os.ReadFile(out.Name()); string(written) != "unsynced\n" {
-		t.Fatalf("the clone read %q, want the write the source made before its pause", written)
+	if exit != (models.ExitStatus{}) {
+		t.Fatalf("exec %q in %s ended %+v: %s", line, id, exit, written)
 	}
+
+	return strings.TrimSpace(string(written))
 }
 
 // A guest that panics before anything listens on vsock fails the create within its grace and leaves no shim behind (SHARD-255).

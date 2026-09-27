@@ -191,6 +191,12 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
 	}
+	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its root frozen until a host thaws it.
+	if state.Frozen {
+		if err := control.Thaw(); err != nil {
+			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest's root: %w", id, err), m.close())
+		}
+	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)

@@ -367,19 +367,58 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
-// A pause waits on this answer, so a guest that never answered a sync would hold every pause.
-func TestTransportSyncAnswersAndKeepsServing(t *testing.T) {
-	_, dial := startTransport(t)
-	c, err := supervisor.Connect(testContext(t), dial)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
+// A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
+func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	attach := func(wantFrozen bool) *supervisor.Control {
+		t.Helper()
+		c, err := supervisor.Connect(ctx, dial)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		if state := awaitKind(t, c, supervisor.KindState); state.Frozen != wantFrozen {
+			t.Fatalf("the replay says frozen %t, want %t", state.Frozen, wantFrozen)
+		}
+
+		return c
 	}
-	defer c.Close()
-	if err := c.Sync(); err != nil {
-		t.Fatalf("sync: %v", err)
+
+	c := attach(false)
+	for range 2 {
+		if err := c.Freeze(); err != nil {
+			t.Fatalf("freeze: %v", err)
+		}
 	}
+	c = attach(true)
+	for range 2 {
+		if err := c.Thaw(); err != nil {
+			t.Fatalf("thaw: %v", err)
+		}
+	}
+	c = attach(false)
+
+	// A stop still ends a frozen guest.
 	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
-		t.Fatalf("run after the sync: %v", err)
+		t.Fatalf("run: %v", err)
+	}
+	if err := c.Freeze(); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if err := c.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindExit)
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the stop")
 	}
 }
 
