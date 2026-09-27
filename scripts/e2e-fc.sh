@@ -181,17 +181,8 @@ wipe_root
 mkdir -p "${SHARD_ROOT}"
 
 step "start the echo the fronted sandbox talks to"
-HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
-[ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
-case "${HOST_IPV4}" in
-10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 192.168.* | 169.254.* | 127.* | 100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*)
-	fail "this host's address ${HOST_IPV4} is inside the egress floor, which every sandbox is denied: run the suite on a host with a public address" ;;
-esac
-ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
-OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
-DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
 start_echo
-say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
+say "the echo answers on ${ECHO_ADDRESS} in the netns ${ECHO_NETNS}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
 
 step "start the daemon over a root it turns into an xfs image"
 SOCKET="${SHARD_ROOT}/shard.sock"
@@ -525,7 +516,9 @@ ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE}
 nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
 nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
 [ -z "$(run_cgroups)" ] || fail "the host still holds a cgroup of this run: $(run_cgroups)"
-say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE}, both shard nft tables and every cgroup of the run are gone"
+[ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
+ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
+say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE}, both shard nft tables, every cgroup of the run, the echo's netns and its link are gone"
 
 trap - EXIT
 echo

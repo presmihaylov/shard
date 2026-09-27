@@ -84,10 +84,17 @@ PROXY_TLS_PORT=30443
 # The echo is the upstream behind the proxy, and it lives for the whole run.
 ECHO_PID=""
 ECHO_DIR=""
-# The echo names all resolve to this host through sslip.io: one is granted, one is only allowed, one is neither.
-ECHO_HOST=""
-OTHER_HOST=""
-DENIED_HOST=""
+# The proxy refuses a name that resolves to the host's own address (SHARD-291), so the echo holds a TEST-NET-2 address in a netns of its own.
+ECHO_NETNS_NAME="shard-e2e-echo"
+# Set only once this run made the netns, so a teardown never deletes one another run holds.
+ECHO_NETNS=""
+ECHO_LINK="e2eecho"
+ECHO_GATEWAY="198.51.100.1"
+ECHO_ADDRESS="198.51.100.2"
+# The echo names all resolve to its address through sslip.io: one is granted, one is only allowed, one is neither.
+ECHO_HOST="api.${ECHO_ADDRESS//./-}.sslip.io"
+OTHER_HOST="other.${ECHO_ADDRESS//./-}.sslip.io"
+DENIED_HOST="deny.${ECHO_ADDRESS//./-}.sslip.io"
 
 # report names the step, so a red run says what broke rather than where the shell gave up. It speaks
 # once: a failure reaches it through fail and then again through the exit handler.
@@ -177,8 +184,8 @@ fronted() {
 # entrypoint_clock reads the guest pid and start time of the entrypoint, which only a restore keeps.
 entrypoint_clock() {
 	local clock
-	# busybox pgrep -x matches argv0, which is /bin/sleep here, so the whole command line finds the entrypoint.
-	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -f "[s]leep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
+	# -fx matches the whole command line exactly: shard-init's argv only contains the entrypoint's, so it never counts (SHARD-329).
+	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -fx "/bin/sleep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
 		fail "the guest runs no sleep 600 entrypoint to read a clock from"
 	[[ "${clock}" =~ ^[0-9]+\ [0-9]+$ ]] || fail "the guest gave '${clock}' for the entrypoint, want one pid and its start time"
 	printf '%s\n' "${clock}"
@@ -250,16 +257,20 @@ expect_env_clean() {
 	say "the value is not in the guest's environment"
 }
 
-# start_echo builds and starts the upstream on the host's 80 and 443. Both must be free: a server already
-# there would answer the guest instead, and the run would prove nothing.
+# start_echo builds the upstream and starts it on 80 and 443 of its own netns, behind a veth pair to the host.
 start_echo() {
-	local busy
-	busy=$(ss -Hltn '( sport = :80 or sport = :443 )' 2>/dev/null || true)
-	[ -z "${busy}" ] || fail "port 80 or 443 is taken on this host, and the echo needs both: ${busy}"
+	[ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the netns ${ECHO_NETNS_NAME} is already on the host: another run holds the echo, or a crashed one left it"
 
 	ECHO_DIR=$(mktemp -d)
 	go build -o "${ECHO_DIR}/echo" ./scripts/echo
-	"${ECHO_DIR}/echo" -address "${HOST_IPV4}" -names "${ECHO_HOST},${OTHER_HOST}" -cert-out "${ECHO_DIR}/cert.pem" -ready "${ECHO_DIR}/ready" >"${ECHO_DIR}/log" 2>&1 &
+	ip netns add "${ECHO_NETNS_NAME}"
+	ECHO_NETNS="${ECHO_NETNS_NAME}"
+	ip link add "${ECHO_LINK}0" type veth peer name "${ECHO_LINK}1" netns "${ECHO_NETNS}"
+	ip addr add "${ECHO_GATEWAY}/30" dev "${ECHO_LINK}0"
+	ip link set "${ECHO_LINK}0" up
+	ip -n "${ECHO_NETNS}" addr add "${ECHO_ADDRESS}/30" dev "${ECHO_LINK}1"
+	ip -n "${ECHO_NETNS}" link set "${ECHO_LINK}1" up
+	ip netns exec "${ECHO_NETNS}" "${ECHO_DIR}/echo" -address "${ECHO_ADDRESS}" -names "${ECHO_HOST},${OTHER_HOST}" -cert-out "${ECHO_DIR}/cert.pem" -ready "${ECHO_DIR}/ready" >"${ECHO_DIR}/log" 2>&1 &
 	ECHO_PID=$!
 	for _ in $(seq 1 50); do
 		[ -f "${ECHO_DIR}/ready" ] && return 0
@@ -270,10 +281,16 @@ start_echo() {
 }
 
 stop_echo() {
-	[ -n "${ECHO_PID}" ] || return 0
-	kill "${ECHO_PID}" >/dev/null 2>&1 || true
-	wait "${ECHO_PID}" >/dev/null 2>&1 || true
-	ECHO_PID=""
+	if [ -n "${ECHO_PID}" ]; then
+		kill "${ECHO_PID}" >/dev/null 2>&1 || true
+		wait "${ECHO_PID}" >/dev/null 2>&1 || true
+		ECHO_PID=""
+	fi
+	[ -n "${ECHO_NETNS}" ] || return 0
+	# The kernel frees a deleted netns lazily, so the pair goes first, and at once, for the next run's ip link add.
+	ip link delete "${ECHO_LINK}0" >/dev/null 2>&1 || true
+	ip netns delete "${ECHO_NETNS}" >/dev/null 2>&1 || true
+	ECHO_NETNS=""
 }
 
 # timed runs a command and prints how long it took, so the transcript carries the numbers SHARD-32 asks for.
@@ -719,19 +736,8 @@ REFUSAL=$(shard ls 2>&1) || CODE=$?
 expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "ls names the socket and this root's daemon, and nothing else"
 
 step "start the echo the fronted sandbox talks to"
-# The echo answers on this host's own address, and sslip.io turns that address into three names.
-HOST_IPV4=$(ip route get 1.1.1.1 | grep -o 'src [0-9.]*' | cut -d' ' -f2)
-[ -n "${HOST_IPV4}" ] || fail "this host has no route to 1.1.1.1 to read its address from"
-# The floor drops the host's private networks under every policy, so an echo there is denied by design and the suite fails late with nothing to learn (SHARD-229).
-case "${HOST_IPV4}" in
-	10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*|169.254.*|127.*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
-		fail "this host's address ${HOST_IPV4} is inside the egress floor, which every sandbox is denied: run the suite on a host with a public address" ;;
-esac
-ECHO_HOST="api.${HOST_IPV4//./-}.sslip.io"
-OTHER_HOST="other.${HOST_IPV4//./-}.sslip.io"
-DENIED_HOST="deny.${HOST_IPV4//./-}.sslip.io"
 start_echo
-say "the echo answers on ${HOST_IPV4}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
+say "the echo answers on ${ECHO_ADDRESS} in the netns ${ECHO_NETNS}, ports 80 and 443, as ${ECHO_HOST} and ${OTHER_HOST}"
 
 step "start the daemon in the background"
 start_daemon || fail "the daemon did not come up"
@@ -2167,7 +2173,9 @@ expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it r
 step "clean up"
 teardown
 [ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
-say "the run's own root is gone"
+[ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
+ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
+say "the run's own root, the echo's netns and its link are gone"
 
 trap - EXIT
 echo

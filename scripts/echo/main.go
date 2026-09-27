@@ -30,7 +30,7 @@ func main() {
 }
 
 func run() error {
-	address := flag.String("address", "", "the host address both listeners bind")
+	address := flag.String("address", "", "the address both listeners bind")
 	names := flag.String("names", "", "comma list of the host names the tls certificate is minted for")
 	certOut := flag.String("cert-out", "", "where the self-signed certificate is written, for the proxy to trust")
 	ready := flag.String("ready", "", "the file written once both listeners are bound")
