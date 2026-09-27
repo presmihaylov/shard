@@ -204,19 +204,21 @@ its last start clears the count, so a slow crash loop never spends a finite cap.
 `on-failure` gives up and the entrypoint stays exited, and a stop puts its last exit in `exit_status`
 as after any exit. A stop during the wait ends the sandbox at once and drops the start that was due.
 
-The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
-channel, so nothing changes it on a sandbox that runs. `shard-init` counts every start again in a
-file beside the exit file, and the `restart-policy` task reads that file every second for every
-running sandbox that has a policy and copies it onto the record, so the record is at most a second
-behind, and a `stop` reads the count once more before it writes the stopped record. The record
-carries `restart`: `{"policy", "retries", "backoff", "count", "last_at", "gave_up"}`, absent on a
-sandbox without a policy, and `retries` is omitted when the count is unlimited. `shard ls` shows it in
-the `RESTART` column beside the OOM policy, as `on-failure 2` when unlimited, `on-failure 2/5` under a
-cap, then `on-failure 5/5 gave up`, and `always 7`; each start again and the give-up are one line in
-the daemon log. The count is for one run and `shard-init` never clears it: a `start` of a stopped
-sandbox begins a new run at zero, a `resume` and a `fork` keep the count with the process, and a
-`clone` inherits the policy alone. This is a convenience for a flaky entrypoint, not a lifetime
-mechanism: `stop` stays the only thing that ends a sandbox.
+The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control channel,
+so nothing changes it on a sandbox that runs. `shard-init` counts every start again in a file, and the
+`restart-policy` task reads that file every second for every running sandbox that has a policy and
+copies it onto the record, so the record is at most a second behind, and a `stop` reads the count once
+more before it writes the stopped record. On gVisor, runc and Sysbox that file sits under `/.shard`,
+where the guest can write it, so the daemon reads only a regular file of at most 4 KiB and refuses a
+symbolic link, a fifo or a device. The record carries `restart`: `{"policy", "retries", "backoff",
+"count", "last_at", "gave_up"}`, absent on a sandbox without a policy, and `retries` is omitted when
+the count is unlimited. `shard ls` shows it in the `RESTART` column beside the OOM policy, as
+`on-failure 2` when unlimited, `on-failure 2/5` under a cap, then `on-failure 5/5 gave up`, and
+`always 7`; each start again and the give-up are one line in the daemon log. The count is for one run
+and `shard-init` never clears it: a `start` of a stopped sandbox begins a new run at zero, a `resume`
+and a `fork` keep the count with the process, and a `clone` inherits the policy alone. This is a
+convenience for a flaky entrypoint, not a lifetime mechanism: `stop` stays the only thing that ends a
+sandbox.
 
 ## The API socket
 
