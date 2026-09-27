@@ -82,3 +82,83 @@ func TestWriteFileFailsOnMissingDirectory(t *testing.T) {
 		t.Fatal("WriteFile into a missing directory returned no error")
 	}
 }
+
+// A link under the root that leads out of it is refused, and the file it leads to is left alone.
+func TestWriteFileInRefusesALinkOutOfTheRoot(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "etc")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	if err := WriteFileIn(root, "etc/hosts", []byte("x"), 0o644); err == nil {
+		t.Error("WriteFileIn followed a link out of the root")
+	}
+
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("got %d entries outside the root, want none", len(entries))
+	}
+}
+
+// The last element is replaced, never written through, so a link there cannot carry the data out either.
+func TestWriteFileInReplacesALinkAtTheTarget(t *testing.T) {
+	dir, outside := t.TempDir(), filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(outside, []byte("host"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "hosts")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	if err := WriteFileIn(root, "hosts", []byte("guest"), 0o644); err != nil {
+		t.Fatalf("WriteFileIn: %v", err)
+	}
+
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "host" {
+		t.Errorf("the file behind the link is %q, want it untouched", got)
+	}
+	if info, err := os.Lstat(filepath.Join(dir, "hosts")); err != nil || !info.Mode().IsRegular() {
+		t.Errorf("the target is %v (%v), want a regular file in place of the link", info, err)
+	}
+}
+
+func TestWriteFileInLeavesNoTempBehindWhenItFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "record.json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	if err := WriteFileIn(root, "record.json", []byte("x"), 0o644); err == nil {
+		t.Fatal("WriteFileIn over a directory returned no error")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d entries, want only the directory: the temp file stayed behind", len(entries))
+	}
+}

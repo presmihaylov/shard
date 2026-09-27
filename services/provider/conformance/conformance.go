@@ -29,8 +29,15 @@ type Subject struct {
 	Shell func(script string) []string
 	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /.
 	Scratch string
+	// HostLayer says the guest's writable layer is a host directory the daemon writes; a fake VM guest execs on the host, so it stays false.
+	HostLayer bool
 	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes.
 	Reopen func(t *testing.T) models.Provider
+}
+
+// environments is where the daemon rewrites a stopped sandbox's guest environment.
+type environments interface {
+	Environment(id string) (models.Environment, error)
 }
 
 // ReadyMarker is what an ignores-term entrypoint prints once it refuses SIGTERM. A stop sent before
@@ -447,6 +454,61 @@ func Run(t *testing.T, s Subject) {
 		}
 		if !strings.Contains(err.Error(), source) || !strings.Contains(err.Error(), string(models.StateRunning)) {
 			t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
+		}
+	})
+
+	// A guest symlink in the writable layer is a host symlink, so the root daemon must refuse one that leads out (SHARD-300).
+	t.Run("TrustProxyRefusesAGuestSymlinkOutOfTheLayer", func(t *testing.T) {
+		if !s.HostLayer {
+			t.Skip("the guest's writable layer is not a host directory")
+		}
+
+		host := t.TempDir()
+		hostBundle := path.Join(host, "certs", "ca-certificates.crt")
+		if err := os.MkdirAll(path.Dir(hostBundle), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(hostBundle, []byte("the host's own\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		envs, ok := s.Provider.(environments)
+		if !ok {
+			t.Fatal("conformance: a HostLayer provider needs Environment")
+		}
+
+		spec := s.NewSpec(t)
+		if err := s.Provider.Create(t.Context(), spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		env, err := envs.Environment(spec.ID)
+		if err != nil {
+			t.Fatalf("Environment: %v", err)
+		}
+		// The first plant proves the path is live, so the refusal below is the link and nothing else.
+		if err := env.TrustProxy([]byte("conformance proxy CA\n")); err != nil {
+			t.Fatalf("TrustProxy before the link: %v", err)
+		}
+
+		if err := s.Provider.Start(t.Context(), spec.ID); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if status, out := s.exec(t, spec.ID, models.ExecSpec{Argv: s.Shell("rm -rf /etc/ssl && ln -s " + host + " /etc/ssl")}); status.Code != 0 {
+			t.Fatalf("the guest's link exited %d: %s", status.Code, out)
+		}
+		if err := s.Provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		if err := env.TrustProxy([]byte("conformance proxy CA\n")); err == nil {
+			t.Error("TrustProxy followed a guest symlink out of the writable layer")
+		}
+		got, err := os.ReadFile(hostBundle)
+		if err != nil {
+			t.Fatalf("read the host's bundle: %v", err)
+		}
+		if string(got) != "the host's own\n" {
+			t.Errorf("TrustProxy rewrote a host file through the guest's symlink: %q", got)
 		}
 	})
 

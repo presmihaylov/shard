@@ -2,6 +2,7 @@
 package store
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,6 +33,39 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 	}
 
 	return SyncDir(dir)
+}
+
+// WriteFileIn is WriteFile with name resolved inside root, so no symlink under root leads the write out of it.
+func WriteFileIn(root *os.Root, name string, data []byte, perm fs.FileMode) error {
+	dir := filepath.Dir(name)
+	tmpName := filepath.Join(dir, "."+filepath.Base(name)+".tmp-"+rand.Text())
+
+	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create temp file in %s: %w", dir, err)
+	}
+
+	if err := writeAndSync(tmp, data, perm); err != nil {
+		return errors.Join(err, tmp.Close(), root.Remove(tmpName))
+	}
+
+	if err := tmp.Close(); err != nil {
+		return errors.Join(fmt.Errorf("close %s: %w", tmpName, err), root.Remove(tmpName))
+	}
+
+	if err := root.Rename(tmpName, name); err != nil {
+		return errors.Join(fmt.Errorf("rename %s to %s: %w", tmpName, name, err), root.Remove(tmpName))
+	}
+
+	d, err := root.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", dir, err), d.Close())
+	}
+
+	return d.Close()
 }
 
 func writeAndSync(f *os.File, data []byte, perm fs.FileMode) error {

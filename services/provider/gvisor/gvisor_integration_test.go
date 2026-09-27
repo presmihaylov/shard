@@ -52,6 +52,7 @@ func TestConformance(t *testing.T) {
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:      h.reopen,
+		HostLayer:   true,
 	})
 }
 

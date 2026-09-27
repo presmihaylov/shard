@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -69,12 +68,8 @@ func plantTrust(b Bundle, rootfs string, env []string, proxyCA []byte) ([]string
 		return nil, err
 	}
 
-	target := filepath.Join(b.Upper, filepath.FromSlash(trust.Path))
-	if err := os.MkdirAll(filepath.Dir(target), etcDirPerm); err != nil {
-		return nil, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
-	}
-	if err := store.WriteFile(target, trust.Roots, etcFilePerm); err != nil { // #nosec G306
-		return nil, fmt.Errorf("write %s: %w", target, err)
+	if err := writeLayer(b.Upper, filepath.FromSlash(strings.TrimPrefix(trust.Path, "/")), trust.Roots); err != nil {
+		return nil, err
 	}
 
 	return trust.Env, nil

@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -24,24 +25,35 @@ func writeNetworkFiles(b Bundle, spec models.SandboxSpec) error {
 		return nil
 	}
 
-	etc := filepath.Join(b.Upper, "etc")
-	if err := os.MkdirAll(etc, etcDirPerm); err != nil {
-		return fmt.Errorf("create %s: %w", etc, err)
-	}
-
 	files := map[string]string{
 		"resolv.conf": resolvConf(spec.Network.Nameservers),
 		"hosts":       hostsFile(spec),
 	}
 
 	for name, content := range files {
-		path := filepath.Join(etc, name)
-		if err := store.WriteFile(path, []byte(content), etcFilePerm); err != nil { // #nosec G306
-			return fmt.Errorf("write %s: %w", path, err)
+		if err := writeLayer(b.Upper, filepath.Join("etc", name), []byte(content)); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// writeLayer writes name under the upper layer, which the guest writes too: a guest symlink that leads out of it is refused, never followed onto the host.
+func writeLayer(upper, name string, data []byte) error {
+	root, err := os.OpenRoot(upper)
+	if err != nil {
+		return fmt.Errorf("open the writable layer %s: %w", upper, err)
+	}
+
+	if err := root.MkdirAll(filepath.Dir(name), etcDirPerm); err != nil {
+		return errors.Join(fmt.Errorf("create %s in the writable layer %s: %w", filepath.Dir(name), upper, err), root.Close())
+	}
+	if err := store.WriteFileIn(root, name, data, etcFilePerm); err != nil { // #nosec G306
+		return errors.Join(fmt.Errorf("write %s in the writable layer %s: %w", name, upper, err), root.Close())
+	}
+
+	return root.Close()
 }
 
 // resolvConf lists the nameservers the network service allocated. A sandbox with none resolves no
