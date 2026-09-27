@@ -135,13 +135,13 @@ func TestUptime(t *testing.T) {
 		started time.Time
 		want    string
 	}{
-		"a running sandbox counts from its last start or resume, not its creation": {models.StateRunning, started, "1m30s"},
-		"a record an older daemon never started again counts from its creation":    {models.StateRunning, time.Time{}, "1h0m0s"},
-		"a stopped sandbox is not up":                    {models.StateStopped, started, "-"},
-		"a paused sandbox holds no memory and is not up": {models.StatePaused, started, "-"},
-		"a pending sandbox has not started":              {models.StatePending, time.Time{}, "-"},
-		"a created sandbox has not started":              {models.StateCreated, time.Time{}, "-"},
-		"a failed sandbox is not up":                     {models.StateFailed, time.Time{}, "-"},
+		"counts from the last start":         {models.StateRunning, started, "1m30s"},
+		"an old record counts from creation": {models.StateRunning, time.Time{}, "1h0m0s"},
+		"a stopped sandbox is not up":        {models.StateStopped, started, "-"},
+		"a paused sandbox is not up":         {models.StatePaused, started, "-"},
+		"a pending sandbox has not started":  {models.StatePending, time.Time{}, "-"},
+		"a created sandbox has not started":  {models.StateCreated, time.Time{}, "-"},
+		"a failed sandbox is not up":         {models.StateFailed, time.Time{}, "-"},
 	}
 
 	for name, c := range cases {
