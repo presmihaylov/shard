@@ -241,11 +241,11 @@ func TestABootReachesPID1OverVsock(t *testing.T) {
 	awaitExit(t, info.PID)
 }
 
-func TestAZeroValuedConfigBootsOnTheDefaults(t *testing.T) {
+// Only CPUs has a zero default; memory has none, so the config keeps a valid size while CPUs asks for the host count.
+func TestAZeroCPUCountBootsOnTheDefault(t *testing.T) {
 	f := prepare(t)
 	cfg := config(t, f)
 	cfg.CPUs = 0
-	cfg.Memory = 0
 	client, info := start(t, f.shim, cfg)
 
 	if pid := guestPID(t, client); pid != 1 {
