@@ -82,10 +82,11 @@ it judged. A TLS request without a server name is refused, and one whose `Host` 
 with it gets a 400.
 
 A denied request gets a 403 with a one-line JSON body naming the host, the port, the rule and the
-reason. The proxy rewrites a body of up to 8 MiB; a longer one streams through unchanged. It reads
-the policy, the secret and the sandbox records on every request, so a change lands on the next
-request; a connection that is already open is not cut. The proxy logs one line per request and
-never a header value, a body or a secret.
+reason. A request the upstream leg fails gets a 502 with a fixed body and never the error, which can
+quote the request after a secret value went into it. The proxy rewrites a body of up to 8 MiB; a
+longer one streams through unchanged. It reads the policy, the secret and the sandbox records on
+every request, so a change lands on the next request; a connection that is already open is not cut.
+The proxy logs one line per request and never a header value, a body or a secret.
 
 The rules for a fronted sandbox follow its record like its chain: a stopped sandbox keeps them, `rm`
 removes them and `start` writes them again.

@@ -215,26 +215,47 @@ func granted(sec secret.Secret, host string) bool {
 	return false
 }
 
-// substitute edits the URL, every header value and the held body; a body that was too long to hold is nil and passes as it is.
+// substitute edits the URL, every end-to-end header value and the held body; a body that was too long to hold is nil and passes as it is.
 func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []byte {
 	out.URL.Path = replacer.Replace(out.URL.Path)
 	out.URL.RawPath = replacer.Replace(out.URL.RawPath)
 	out.URL.RawQuery = replacer.Replace(out.URL.RawQuery)
 
+	hop := hopByHop(out.Header)
 	for name, values := range out.Header {
+		if hop[name] {
+			continue
+		}
 		for i, v := range values {
 			values[i] = replacer.Replace(v)
 		}
 		out.Header[name] = values
 	}
 
-	rewriteBasic(out, replacer)
+	if !hop["Authorization"] {
+		rewriteBasic(out, replacer)
+	}
 
 	if body == nil {
 		return nil
 	}
 
 	return []byte(replacer.Replace(string(body)))
+}
+
+// hopByHop names the headers of the connection, not the request, which the proxy handles itself and can quote back to the guest (SHARD-299).
+func hopByHop(header http.Header) map[string]bool {
+	hop := map[string]bool{
+		"Connection": true, "Proxy-Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+		"Proxy-Authorization": true, "Te": true, "Trailer": true, "Transfer-Encoding": true, "Upgrade": true,
+	}
+	for _, value := range header.Values("Connection") {
+		for name := range strings.SplitSeq(value, ",") {
+			hop[http.CanonicalHeaderKey(strings.TrimSpace(name))] = true
+		}
+	}
+
+	return hop
 }
 
 // rewriteBasic substitutes inside HTTP Basic auth, which every client encodes before the placeholder can be seen.

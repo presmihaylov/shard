@@ -79,7 +79,7 @@ func TestLeafCacheStaysBounded(t *testing.T) {
 	}
 }
 
-// fakeDirector allows every host but deny.test, sends everything to upstream, and swaps the placeholder.
+// fakeDirector allows every host but deny.test, sends everything to upstream, and swaps the placeholder in every header and the body.
 type fakeDirector struct {
 	upstream netip.AddrPort
 	fail     error
@@ -104,7 +104,11 @@ func (d *fakeDirector) Decide(_ context.Context, req Request) (Decision, error) 
 }
 
 func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, body []byte) ([]byte, error) {
-	out.Header.Set("Authorization", strings.ReplaceAll(out.Header.Get("Authorization"), "mock-TOKEN", "real-TOKEN"))
+	for _, values := range out.Header {
+		for i, v := range values {
+			values[i] = strings.ReplaceAll(v, "mock-TOKEN", "real-TOKEN")
+		}
+	}
 	if body == nil {
 		return nil, nil
 	}
@@ -300,6 +304,50 @@ func TestProxyAnswers502WhenTheDirectorCannotJudge(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("a director error got %d, want 502", resp.StatusCode)
+	}
+}
+
+// A failed upstream answers the same fixed 502 whatever the director put in the request, since its error can quote it.
+func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
+	for name, tc := range map[string]struct {
+		upgrade  string
+		upstream http.HandlerFunc
+	}{
+		// A tab is a valid header byte but no protocol name, so the reverse proxy refuses it before it dials.
+		"an upgrade the proxy refuses": {"x\tmock-TOKEN", echoHandler},
+		"an upgrade the upstream answers with another": {"mock-TOKEN", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Connection", "Upgrade")
+			w.Header().Set("Upgrade", "other")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, tc.upstream)
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.test/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", tc.upgrade)
+
+			resp, err := h.client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != http.StatusBadGateway || string(body) != `{"error":"the request to the upstream failed"}`+"\n" {
+				t.Errorf("the guest got %d %s, want the fixed 502", resp.StatusCode, body)
+			}
+			if log := h.log.String(); strings.Contains(log, "real-TOKEN") {
+				t.Errorf("the log holds the value:\n%s", log)
+			}
+		})
 	}
 }
 

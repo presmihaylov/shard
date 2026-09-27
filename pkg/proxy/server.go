@@ -303,8 +303,9 @@ func (s *Server) forward() *httputil.ReverseProxy {
 		Rewrite:   func(*httputil.ProxyRequest) {},
 		Transport: s.transport,
 		ErrorLog:  s.cfg.Log,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream " + r.URL.Host + ": " + err.Error()})
+		// The error can quote the rewritten request, which holds secret values, so neither the guest nor the log reads it (SHARD-299).
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the request to the upstream failed"})
 		},
 	}
 }

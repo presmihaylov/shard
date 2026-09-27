@@ -67,6 +67,8 @@ environment to an attacker posts the placeholder. A body past 8 MiB streams thro
 the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
 re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
 substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
+A hop-by-hop header, `Connection`, `Upgrade`, `Keep-Alive` and any header `Connection` names, keeps
+the placeholder: it belongs to the connection, not the upstream, and the proxy can quote one back.
 Brokering covers HTTP on ports 80 and 443 today. A credential sent on any other port or protocol, a
 database password on 5432 or SMTP on 587, leaves as the placeholder and the service refuses it; the
 policy still decides whether the connection is allowed at all.

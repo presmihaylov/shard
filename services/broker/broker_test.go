@@ -455,6 +455,36 @@ func TestRewriteLeavesProxyAuthorizationAlone(t *testing.T) {
 	}
 }
 
+// A hop-by-hop header belongs to the connection, and the proxy can quote Upgrade back to the guest, so none gets a value.
+func TestRewriteLeavesHopByHopHeadersAlone(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
+	b := newBroker(t, records, secrets)
+
+	out := request(t, http.MethodGet, "https://api.example.com/")
+	out.Header.Set("Connection", "Upgrade, X-Named, Authorization")
+	out.Header.Set("Authorization", basic("api", "mock-TOKEN"))
+	out.Header.Set("Upgrade", "mock-TOKEN")
+	out.Header.Set("Keep-Alive", "mock-TOKEN")
+	out.Header.Set("X-Named", "mock-TOKEN")
+	out.Header.Set("X-Api-Key", "mock-TOKEN")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"Upgrade", "Keep-Alive", "X-Named"} {
+		if out.Header.Get(name) != "mock-TOKEN" {
+			t.Errorf("the hop-by-hop header %s became %q", name, out.Header.Get(name))
+		}
+	}
+	if out.Header.Get("Authorization") != basic("api", "mock-TOKEN") {
+		t.Errorf("the Basic header Connection names became %q", out.Header.Get("Authorization"))
+	}
+	if out.Header.Get("X-Api-Key") != "real-TOKEN" {
+		t.Errorf("the end-to-end header became %q, want the value", out.Header.Get("X-Api-Key"))
+	}
+}
+
 func TestDecideLogsWhatItDecided(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	web := models.Policy{Name: "web", Rules: []models.Rule{
