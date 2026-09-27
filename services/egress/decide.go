@@ -81,6 +81,18 @@ func anyLeavesDNS(rule models.Rule) bool {
 	return rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port))
 }
 
+// everyName says a rule matches whatever name is asked, so DecideName never reads a rule after it.
+func everyName(rule models.Rule) bool {
+	if rule.Action == models.ActionDeny && !closesName(rule) {
+		return false
+	}
+	if rule.Destination.Kind == models.DestinationDomain {
+		return rule.Destination.Value == "*"
+	}
+
+	return rule.Destination.Kind == models.DestinationGroup && (rule.Destination.Value == GroupDNS || anyLeavesDNS(rule))
+}
+
 // matchesName says whether a rule speaks for a name alone: an address rule cannot, and only a deny that closes both web ports refuses a lookup.
 func matchesName(rule models.Rule, name string) bool {
 	if rule.Action == models.ActionDeny && !closesName(rule) {

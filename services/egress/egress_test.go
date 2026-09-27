@@ -628,6 +628,49 @@ func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
 	}
 }
 
+// Resolves is what the view says, so it must agree with DecideName, which the resolver asks per name.
+func TestResolvesAgreesWithTheFirstMatchingRule(t *testing.T) {
+	s := newStore(t)
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
+	names := []string{"api.example.com", "any.example.net"}
+
+	for _, tc := range []struct {
+		name  string
+		rules []models.Rule
+		want  bool
+	}{
+		{"wide", []models.Rule{mustRule(t, models.ActionAllow, "any")}, true},
+		{"reversed", []models.Rule{mustRule(t, models.ActionDeny, "any"), mustRule(t, models.ActionAllow, "any")}, false},
+		{"shadowed", []models.Rule{mustRule(t, models.ActionDeny, "any"), mustRule(t, models.ActionAllow, "api.example.com")}, false},
+		{"named", []models.Rule{mustRule(t, models.ActionAllow, "api.example.com"), mustRule(t, models.ActionDeny, "any")}, true},
+		{"asked", []models.Rule{mustRule(t, models.ActionDeny, "any tcp:22"), mustRule(t, models.ActionAllow, "dns"), mustRule(t, models.ActionDeny, "any")}, true},
+		{"half", []models.Rule{mustRule(t, models.ActionDeny, "any tcp:443"), mustRule(t, models.ActionAllow, "any")}, true},
+		{"one", []models.Rule{mustRule(t, models.ActionDeny, "api.example.com"), mustRule(t, models.ActionAllow, "any")}, true},
+		{"web", []models.Rule{mustRule(t, models.ActionAllow, "any tcp:443")}, false},
+	} {
+		policy := models.Policy{Name: tc.name, Rules: tc.rules}
+		if err := s.Set(policy); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := Resolves(policy); got != tc.want {
+			t.Errorf("Resolves(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+
+		allowed := false
+		for _, name := range names {
+			got, err := svc.DecideName(models.Sandbox{ID: "sandbox1", Policy: tc.name}, name)
+			if err != nil {
+				t.Fatalf("DecideName(%s under %s): %v", name, tc.name, err)
+			}
+			allowed = allowed || got.Action == models.ActionAllow
+		}
+		if allowed != tc.want {
+			t.Errorf("DecideName under %s allows a name: %v, want %v", tc.name, allowed, tc.want)
+		}
+	}
+}
+
 func TestOpensDNSReadsWhatEachPolicyAsksFor(t *testing.T) {
 	for _, tc := range []struct {
 		rule string

@@ -46,11 +46,18 @@ func OpensDNS(policy models.Policy) bool {
 	return slices.ContainsFunc(policy.Rules, opensDNS)
 }
 
-// Resolves says whether the resolver answers the guest: an allow any that leaves port 53 open needs no implied rule, and still resolves.
+// Resolves says whether the resolver answers some name, in DecideName's first-match order: a rule for every name ends the walk.
 func Resolves(policy models.Policy) bool {
-	return OpensDNS(policy) || slices.ContainsFunc(policy.Rules, func(rule models.Rule) bool {
-		return rule.Action == models.ActionAllow && anyLeavesDNS(rule)
-	})
+	for _, rule := range policy.Rules {
+		if everyName(rule) {
+			return rule.Action == models.ActionAllow
+		}
+		if rule.Action == models.ActionAllow && named(rule.Destination.Kind) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func opensDNS(rule models.Rule) bool {
