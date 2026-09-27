@@ -358,10 +358,15 @@ func ValidDestination(dest string) (string, error) {
 	return validDestination("destination", dest)
 }
 
+// CanonicalHost is the one spelling of a host the proxy and the resolver compare: lowercase, with no trailing dot.
+func CanonicalHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
 // validDestination phrases its refusals about subject, which a caller with several destinations
 // makes an ordinal. A mistyped --to hands the value as one, so no refusal here echoes what it refused.
 func validDestination(subject, dest string) (string, error) {
-	canonical := strings.ToLower(strings.TrimSuffix(dest, "."))
+	canonical := CanonicalHost(dest)
 
 	if canonical == "" {
 		return "", fmt.Errorf("the %s is empty", subject)

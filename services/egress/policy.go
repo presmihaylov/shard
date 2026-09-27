@@ -115,6 +115,10 @@ func (s *Store) Get(name string) (models.Policy, error) {
 	if err := Validate(policy); err != nil {
 		return models.Policy{}, fmt.Errorf("policy %s: %w", name, err)
 	}
+	// A file stored before hosts were canonical, or edited by hand, would otherwise hold a deny that never matches (SHARD-303).
+	for i := range policy.Rules {
+		policy.Rules[i].Destination = canonicalHost(policy.Rules[i].Destination)
+	}
 
 	return policy, nil
 }
@@ -318,6 +322,8 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 	if err := validRule(rule); err != nil {
 		return models.Rule{}, err
 	}
+	// After the check, so a name with two trailing dots is refused and not trimmed to one that never matches.
+	rule.Destination = canonicalHost(rule.Destination)
 
 	return rule, nil
 }
@@ -325,6 +331,15 @@ func ParseRule(action models.Action, text string) (models.Rule, error) {
 // named says the rule matches a host name, which only the proxy can see.
 func named(kind models.DestinationKind) bool {
 	return kind == models.DestinationDomain || kind == models.DestinationDomainSuffix
+}
+
+// canonicalHost spells a name rule's host the way the proxy and the resolver compare one, so a rule typed in any case or with a trailing dot matches.
+func canonicalHost(dest models.Destination) models.Destination {
+	if named(dest.Kind) {
+		dest.Value = secret.CanonicalHost(dest.Value)
+	}
+
+	return dest
 }
 
 // parseDestination reads the kind from the shape: an address or a prefix is a cidr, any is the

@@ -41,6 +41,9 @@ under the apex and not the apex itself, `www.*.com` swaps exactly one label, and
 host. A wildcard inside a label, as `api*.example.com`, is refused. `suffix:example.com` is the
 apex and every name under it, and is matched by the proxy only too.
 
+A name matches in any case and with or without a trailing dot. The store keeps it lowercase with
+no trailing dot, so `policy show` prints `example.com` for a rule typed `ExAmPlE.com.`.
+
 Ports are a comma list of numbers and ranges, `tcp:22,8000-8100`. A rule with no protocol matches
 every protocol, ping included. An address or prefix rule with no ports opens every tcp and udp port
 to that destination, so name the ports when only some are wanted.

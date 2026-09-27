@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"os"
@@ -173,7 +174,7 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 		value string
 	}{
 		{"api.example.com", "tcp", []int{80, 443}, "api.example.com"},
-		{"API.example.com. tcp:443", "tcp", []int{443}, "API.example.com."},
+		{"API.example.com. tcp:443", "tcp", []int{443}, "api.example.com"},
 		{"api.example.com tcp", "tcp", []int{80, 443}, "api.example.com"},
 		{"10.0.0.0/8 tcp:22,8000-8002", "tcp", []int{22, 8000, 8001, 8002}, "10.0.0.0/8"},
 		{"1.1.1.1 udp:53", "udp", []int{53}, "1.1.1.1"},
@@ -205,6 +206,52 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	rule, err := ParseRule(models.ActionAllow, "suffix:example.com")
 	if err != nil || rule.Protocol != "tcp" || !slices.Equal(rule.Ports, []int{80, 443}) {
 		t.Errorf("a suffix rule = %+v, %v, want the web ports by default", rule, err)
+	}
+}
+
+// A deny typed in any case or with a trailing dot matches the host the proxy and the resolver compare, parsed now or stored as typed before (SHARD-303).
+func TestADenyMatchesHoweverItsHostIsTyped(t *testing.T) {
+	public := netip.MustParseAddr("93.184.216.34")
+	for _, tc := range []struct {
+		kind  models.DestinationKind
+		typed string
+		host  string
+	}{
+		{models.DestinationDomain, "ExAmPlE.com", "example.com"},
+		{models.DestinationDomain, "example.com.", "example.com"},
+		{models.DestinationDomain, "*.ExAmPlE.com.", "api.example.com"},
+		{models.DestinationDomainSuffix, "ExAmPlE.com.", "api.example.com"},
+	} {
+		text := tc.typed
+		if tc.kind == models.DestinationDomainSuffix {
+			text = "suffix:" + tc.typed
+		}
+		typed := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: tc.kind, Value: tc.typed}, Protocol: "tcp", Ports: []int{80, 443}}
+
+		for _, deny := range []models.Rule{mustRule(t, models.ActionDeny, text), typed} {
+			s := newStore(t)
+			blob, err := json.Marshal(models.Policy{Name: "web", Rules: []models.Rule{deny, mustRule(t, models.ActionAllow, "any")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(s.path("web"), blob, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			svc := New(s, nil, gateway, nameservers, fakeResolver{})
+			sb := models.Sandbox{ID: "sandbox1", Policy: "web"}
+			byAddr, err := svc.Decide(sb, tc.host, 443, public)
+			if err != nil {
+				t.Fatal(err)
+			}
+			byName, err := svc.DecideName(sb, tc.host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if byAddr.Action != models.ActionDeny || byName.Action != models.ActionDeny {
+				t.Errorf("a deny of %q stored as %q: Decide(%s) = %s, DecideName = %s, want both deny", text, deny.Destination.Value, tc.host, byAddr.Action, byName.Action)
+			}
+		}
 	}
 }
 
