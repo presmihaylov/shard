@@ -114,13 +114,19 @@ func health(sb models.Sandbox) string {
 	return fmt.Sprintf("%s %d/%d", sb.Health.Status, sb.Health.Failures, sb.HealthCheck.Retries)
 }
 
-// uptime is how long the sandbox has been up. A stopped or paused one is not, whatever its record was created.
+// uptime is how long the sandbox has run since its last start or resume; only a running one is up.
 func uptime(sb models.Sandbox, now time.Time) string {
-	if sb.State == models.StateStopped || sb.State == models.StatePaused {
+	if sb.State != models.StateRunning {
 		return "-"
 	}
 
-	return now.Sub(sb.CreatedAt).Truncate(time.Second).String()
+	// A record an older daemon created and never started again holds no StartedAt.
+	since := sb.StartedAt
+	if since.IsZero() {
+		since = sb.CreatedAt
+	}
+
+	return now.Sub(since).Truncate(time.Second).String()
 }
 
 func address(sb models.Sandbox) string {

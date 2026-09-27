@@ -127,19 +127,25 @@ func TestLsPrintsTheReadableOnesAndReportsTheRest(t *testing.T) {
 
 func TestUptime(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	created := now.Add(-90*time.Second - 300*time.Millisecond)
+	created := now.Add(-time.Hour)
+	started := now.Add(-90*time.Second - 300*time.Millisecond)
 
 	cases := map[string]struct {
-		state models.State
-		want  string
+		state   models.State
+		started time.Time
+		want    string
 	}{
-		"a running sandbox counts from its creation":     {models.StateRunning, "1m30s"},
-		"a stopped sandbox is not up":                    {models.StateStopped, "-"},
-		"a paused sandbox holds no memory and is not up": {models.StatePaused, "-"},
+		"a running sandbox counts from its last start or resume, not its creation": {models.StateRunning, started, "1m30s"},
+		"a record an older daemon never started again counts from its creation":    {models.StateRunning, time.Time{}, "1h0m0s"},
+		"a stopped sandbox is not up":                    {models.StateStopped, started, "-"},
+		"a paused sandbox holds no memory and is not up": {models.StatePaused, started, "-"},
+		"a pending sandbox has not started":              {models.StatePending, time.Time{}, "-"},
+		"a created sandbox has not started":              {models.StateCreated, time.Time{}, "-"},
+		"a failed sandbox is not up":                     {models.StateFailed, time.Time{}, "-"},
 	}
 
 	for name, c := range cases {
-		sb := models.Sandbox{State: c.state, CreatedAt: created}
+		sb := models.Sandbox{State: c.state, CreatedAt: created, StartedAt: c.started}
 		if got := uptime(sb, now); got != c.want {
 			t.Errorf("%s: uptime is %q, want %q", name, got, c.want)
 		}

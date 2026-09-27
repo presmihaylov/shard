@@ -406,6 +406,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
+		sb.StartedAt = time.Now().UTC()
 
 		return nil
 	})

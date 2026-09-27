@@ -40,6 +40,22 @@ func TestCreateAnswersTheRecordAndTearsNothingDown(t *testing.T) {
 	}
 }
 
+// ls counts UPTIME from StartedAt, so the first start records it like every later one.
+func TestCreateRecordsWhenTheSandboxStarted(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, models.Sandbox{})
+
+	before := time.Now()
+	sb, err := svc.Create(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if sb.StartedAt.Before(before) {
+		t.Errorf("create recorded StartedAt %v, want at or after %v", sb.StartedAt, before)
+	}
+}
+
 // Create reports whether the create succeeded, and it never waits for a process a sandbox may outlive.
 func TestCreateNeverWaitsForTheEntrypoint(t *testing.T) {
 	r := &recorder{}
