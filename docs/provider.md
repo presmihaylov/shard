@@ -215,10 +215,12 @@ one that cannot, so no `pause` ever fails halfway for it. And the vmm's state na
 a snapshot outlives neither a moved root nor a removed source.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
-over a root it turns into an XFS image, `create` with `--memory`, `logs`, `exec`, an entrypoint
-that exits, the policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost
-while the daemon was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop`, two clones by
-reflink, `start`, `rm`, and a host with no tap, no vmm, no image and no fstab line left. It runs on
+over a root it turns into an XFS image, `create` with `--memory`, the vmm's host cgroup and its
+bounds, `logs`, `exec`, an entrypoint that exits, a guest that outgrows its memory and comes back
+once under `--restart-on-oom`, the policy and the proxy on the tap, a daemon restart that adopts the
+vmm, a vmm lost while the daemon was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop`
+with the cgroup kept empty, two clones by reflink, `start` back into that cgroup, `rm`, and a host
+with no tap, no vmm, no cgroup, no image and no fstab line left. It runs on
 demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`,
 `make e2e` and `make devbox-e2e` never call it: rent a bare-metal KVM box, run
 `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker` and Go on it, and

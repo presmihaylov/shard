@@ -14,6 +14,10 @@ E2E_LIB_ONLY=1
 unset E2E_LIB_ONLY
 
 MEMORY=${MEMORY:-256}
+# The least memory a microVM boots with, so the fill that outgrows it is short.
+OOM_MEMORY=128
+# What services/provider/firecracker/memory.go gives the vmm on top of the guest's memory.
+VMM_OVERHEAD_MIB=64
 # The bridge and the two policy tables the daemon makes are host-wide, not per root, so two runs on one box collide over them.
 # The name is the daemon's own and takes no override: a wrong one here would delete a bridge this run never made.
 HOST_BRIDGE="shard0"
@@ -22,6 +26,7 @@ DATA_IMAGE=""
 ROOT_MARKER=""
 # The sandboxes the feature steps hold, so a step that fails mid-flight still gives them back.
 EXIT_ID=""
+OOM_ID=""
 
 # start_daemon is the library's over firecracker, and the kernel override goes through.
 start_daemon() {
@@ -106,6 +111,12 @@ wipe_root() {
 # vmm_pids lists every firecracker process driving a socket under this root, and no other root's.
 vmm_pids() { pgrep -f -- "^firecracker --api-sock ${SHARD_ROOT}/" || true; }
 
+# shard_cgroups lists the sandbox cgroups under the shard parent, which the daemon of every root on the host shares.
+shard_cgroups() { find /sys/fs/cgroup/shard -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
+
+# run_cgroups lists the sandbox cgroups this run added to the ones the host held before it.
+run_cgroups() { comm -13 <(printf '%s\n' "${CGROUPS_BEFORE}") <(shard_cgroups) | tr '\n' ' '; }
+
 # record_field reads one string field of a sandbox record.
 record_field() { grep -o "\"$2\": *\"[^\"]*\"" "${SHARD_ROOT}/sandboxes/$1/sandbox.json" | cut -d'"' -f4; }
 
@@ -140,6 +151,7 @@ say "no shard daemon holds the host-wide bridge and tables"
 check_host_is_free
 say "no other sandbox holds a link on this host"
 [ -z "$(vmm_pids)" ] || fail "a firecracker process already drives ${SHARD_ROOT}: $(vmm_pids)"
+CGROUPS_BEFORE=$(shard_cgroups)
 
 check_root
 DATA_IMAGE="${SHARD_ROOT}.xfs"
@@ -241,6 +253,15 @@ say "the tap is a bridge port and the guest has no namespace on the host"
 holds "${IMAGE%%:*}" shard image ls || fail "image ls does not list ${IMAGE}"
 say "ls shows the sandbox running, and the image is cached"
 
+step "bound the vmm in a host cgroup of its own"
+CGROUP="/sys/fs/cgroup/shard/${ID}"
+[ -d "${CGROUP}" ] || fail "there is no cgroup at ${CGROUP}"
+expect "$(cat "${CGROUP}/memory.max")" "$(((MEMORY + VMM_OVERHEAD_MIB) * 1048576))" "memory.max is the guest's ${MEMORY} MiB plus ${VMM_OVERHEAD_MIB} MiB for the vmm"
+expect "$(cat "${CGROUP}/memory.swap.max")" "0" "memory.swap.max is 0, so the host never swaps the guest out"
+expect "$(cat "${CGROUP}/memory.oom.group")" "1" "memory.oom.group is 1, so a host OOM kill takes the whole vmm"
+grep -qx "${VMM_PID}" "${CGROUP}/cgroup.procs" || fail "the vmm ${VMM_PID} is not in ${CGROUP}, which holds: $(cat "${CGROUP}/cgroup.procs")"
+say "the vmm ${VMM_PID} runs in ${CGROUP}"
+
 step "read the output of the entrypoint"
 for _ in $(seq 1 50); do
 	holds "shard-e2e-entrypoint" shard logs "${ID}" && break
@@ -272,6 +293,30 @@ shard stop --time "${GRACE}" "${EXIT_ID}" >/dev/null
 shard rm "${EXIT_ID}" >/dev/null
 EXIT_ID=""
 say "only stop ended it"
+
+step "a microVM that outgrows its memory comes back once"
+# Only the first boot fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
+OOM_ID=$(shard create --memory "${OOM_MEMORY}" --restart-on-oom --name e2e-oom "${IMAGE}" -- /bin/sh -c \
+	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done')
+OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
+for _ in $(seq 1 120); do
+	grep -q '"oom_restarts": *1' "${OOM_RECORD}" && grep -q '"state": *"running"' "${OOM_RECORD}" && break
+	sleep 1
+done
+grep -q '"oom_restarts": *1' "${OOM_RECORD}" || fail "the record of ${OOM_ID} counts no OOM restart: $(cat "${OOM_RECORD}")"
+grep -q '"state": *"running"' "${OOM_RECORD}" || fail "${OOM_ID} is not running after its OOM restart: $(cat "${OOM_RECORD}")"
+grep -q "sandbox ${OOM_ID} ran out of memory and the host ended it: started again, 1$" "${DAEMON_LOG}" || fail "the daemon log holds no OOM restart of ${OOM_ID}"
+say "the daemon read the end as an OOM, not a crash, and started the microVM again"
+for _ in $(seq 1 50); do
+	holds "e2e-oom-settled" shard logs "${OOM_ID}" && break
+	sleep 0.2
+done
+holds "e2e-oom-settled" shard logs "${OOM_ID}" || fail "the second boot of ${OOM_ID} did not get past the fill: $(shard logs "${OOM_ID}")"
+expect_exec_in "${OOM_ID}" "alive" "an exec answers in the microVM that came back" /bin/echo alive
+grep -q '"oom_restarts": *1' "${OOM_RECORD}" || fail "${OOM_ID} ran out of memory again: $(cat "${OOM_RECORD}")"
+shard rm --force "${OOM_ID}" >/dev/null
+OOM_ID=""
+say "one OOM, one restart, and the second boot skipped the fill"
 
 step "reach the network from the microVM"
 expect_network "after the create"
@@ -375,6 +420,8 @@ grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the stop dropped the
 LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
 grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record says stopped and keeps the address and its lease"
+[ -d "${CGROUP}" ] || fail "the stop removed ${CGROUP}, which the next start boots into"
+expect "$(cat "${CGROUP}/cgroup.procs")" "" "the cgroup stays, empty, for the next start"
 holds "^${ID}" shard ls && fail "shard ls still lists the stopped sandbox"
 expect "$(listed_state "${ID}")" "stopped" "ls hides the stopped sandbox and ls --all shows it stopped"
 holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" || fail "shard logs -f on a stopped sandbox did not print its output and end"
@@ -430,6 +477,8 @@ grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the start changed th
 NEW_VMM_PID=$(record_pid "${ID}")
 [ "${NEW_VMM_PID}" != "${VMM_PID}" ] || fail "the start reused the pid of the stopped vmm"
 expect "$(ps -o comm= -p "${NEW_VMM_PID}" | tr -d ' ')" "firecracker" "a new vmm ${NEW_VMM_PID} drives the same address"
+grep -qx "${NEW_VMM_PID}" "${CGROUP}/cgroup.procs" || fail "the new vmm ${NEW_VMM_PID} is not in ${CGROUP}, which holds: $(cat "${CGROUP}/cgroup.procs")"
+say "the new vmm runs in the cgroup the stop kept"
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 expect_network "after the start"
 expect_fronted "${ID}" "the proxy fronts the sandbox after the start"
@@ -443,6 +492,7 @@ absent "the address lease" "$([ -e "${LEASE}" ] && echo "${LEASE}" || true)"
 absent "the tap" "$(ip link show "${LINK}" 2>/dev/null || true)"
 absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
 absent "the egress chain" "$(nft list table inet shard | grep "chain egress_${LINK}" || true)"
+absent "the cgroup" "$([ -e "${CGROUP}" ] && echo "${CGROUP}" || true)"
 
 step "remove the secrets and the policy nothing holds any more"
 shard secret rm E2E_TOKEN >/dev/null
@@ -458,7 +508,8 @@ step "prove the host holds nothing the run left"
 absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
-say "the tap, the vmm and the mount are gone; the bridge and the policy tables go with the teardown below"
+absent "a cgroup of this run" "$(run_cgroups)"
+say "the tap, the vmm, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
@@ -473,8 +524,9 @@ grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line
 ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
 nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
 nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
-say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE} and both shard nft tables are gone"
+[ -z "$(run_cgroups)" ] || fail "the host still holds a cgroup of this run: $(run_cgroups)"
+say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE}, both shard nft tables and every cgroup of the run are gone"
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, logs, exec, an entrypoint exit, network, policy, proxy, daemon restart, reconcile, pause, a fork of the paused snapshot, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM restart, network, policy, proxy, daemon restart, reconcile, pause, a fork of the paused snapshot, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
