@@ -287,7 +287,66 @@ func (s *Stack) ListenTCP(port uint16) (net.Listener, error) {
 	s.tcpPorts[port] = true
 	s.mu.Unlock()
 
-	return ln, nil
+	return listener{Listener: ln, stack: s}, nil
+}
+
+// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects.
+type listener struct {
+	net.Listener
+	stack *Stack
+}
+
+// Accept closes a stale redirect and waits for the next flow: conntrack keeps a tuple's NAT answer for as long as the tuple lives.
+func (ln listener) Accept() (net.Conn, error) {
+	for {
+		conn, err := ln.Listener.Accept()
+		if err != nil {
+			// A server type-asserts an accept error to net.Error, so it goes on as the stack made it.
+			return nil, err
+		}
+		flow, stale, err := ln.stack.stale(conn)
+		if err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		if !stale {
+			return conn, nil
+		}
+		if l := ln.stack.linkOf(flow.Guest); l != nil {
+			l.report(flow.drop(RuleRedirect))
+		}
+		if err := conn.Close(); err != nil {
+			return nil, fmt.Errorf("close the stale redirect of %s to %s: %w", flow.Guest, flow.Destination, err)
+		}
+	}
+}
+
+// stale finds the flow the NAT table redirected onto conn for a guest it no longer redirects.
+func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
+	local, err := netip.ParseAddrPort(conn.LocalAddr().String())
+	if err != nil {
+		return Flow{}, false, fmt.Errorf("read the local address of an accepted flow: %w", err)
+	}
+	remote, err := netip.ParseAddrPort(conn.RemoteAddr().String())
+	if err != nil {
+		return Flow{}, false, fmt.Errorf("read the remote address of an accepted flow: %w", err)
+	}
+	id := stack.TransportEndpointID{
+		LocalPort:     local.Port(),
+		LocalAddress:  tcpip.AddrFrom4(local.Addr().As4()),
+		RemotePort:    remote.Port(),
+		RemoteAddress: tcpip.AddrFrom4(remote.Addr().As4()),
+	}
+	addr, port, lookupErr := s.stack.IPTables().OriginalDst(id, ipv4.ProtocolNumber, tcp.ProtocolNumber)
+	// No original destination, or the one it landed on, is a flow conntrack never rewrote: the guest dialed the listener itself.
+	if lookupErr != nil {
+		return Flow{}, false, nil
+	}
+	original := netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
+	if original == local || s.redirected(remote.Addr()) {
+		return Flow{}, false, nil
+	}
+
+	return Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: original}, true, nil
 }
 
 // ListenPacket opens a UDP socket on the stack address; a reply goes out the link that carries its guest.

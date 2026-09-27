@@ -32,6 +32,19 @@ func (s *Stack) dialTCP(ctx context.Context, remote netip.AddrPort) (net.Conn, e
 	return conn, nil
 }
 
+// dialTCPFrom dials from a fixed source port, which a restarted guest can take again.
+func (s *Stack) dialTCPFrom(ctx context.Context, port uint16, remote netip.AddrPort) (net.Conn, error) {
+	conn, err := gonet.DialTCPWithBind(ctx, s.stack, tcpip.FullAddress{Port: port}, tcpip.FullAddress{Addr: tcpip.AddrFrom4(remote.Addr().As4()), Port: remote.Port()}, ipv4.ProtocolNumber)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s from port %d: %w", remote, port, err)
+	}
+
+	return conn, nil
+}
+
+// connected counts the stack's TCP connections that are not yet fully closed.
+func (s *Stack) connected() uint64 { return s.stack.Stats().TCP.CurrentConnected.Value() }
+
 func (s *Stack) dialUDP(remote netip.AddrPort) (net.Conn, error) {
 	conn, err := gonet.DialUDP(s.stack, nil, &tcpip.FullAddress{Addr: tcpip.AddrFrom4(remote.Addr().As4()), Port: remote.Port()}, ipv4.ProtocolNumber)
 	if err != nil {

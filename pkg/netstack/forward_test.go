@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -526,5 +527,80 @@ func TestAFlowThatMissedTheRedirectIsDropped(t *testing.T) {
 		server.Close()
 		t.Error("the listener took a flow whose first SYN missed the redirect")
 	default:
+	}
+}
+
+// A tuple conntrack redirected keeps that answer after its guest stops being redirected, and the listener closes the flow rather than proxy it (SHARD-294).
+func TestAStaleRedirectOfAGuestNoLongerRedirectedIsDropped(t *testing.T) {
+	target, _ := echoTCP(t)
+	var fronted atomic.Bool
+	fronted.Store(true)
+	host, drops, accepted := redirecting(t, func(netip.Addr) bool { return fronted.Load() }, func() Verdict { return allowed }, target)
+	https := netip.AddrPortFrom(remote.Addr(), 443)
+	const port = 40443
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	first, err := attach(t, host, guestB).dialTCPFrom(ctx, port, https)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var server net.Conn
+	select {
+	case server = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the listener never took the redirected guest's flow")
+	}
+	// The guest closes first, so the listener's side ends closed and not in a TIME-WAIT that would swallow the next SYN.
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(server); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for host.connected() != 0 {
+		if ctx.Err() != nil {
+			t.Fatal("the redirected flow never closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The guest restarts without a redirect and takes its old source port again.
+	if err := host.linkOf(guestB).Close(); err != nil {
+		t.Fatal(err)
+	}
+	fronted.Store(false)
+	restarted := attach(t, host, guestB)
+	if second, err := restarted.dialTCPFrom(ctx, port, https); err == nil {
+		defer second.Close()
+	}
+	select {
+	case got := <-drops:
+		got.Time = time.Time{}
+		want := Drop{Guest: guestB, Destination: remote.Addr(), Protocol: "tcp", Port: 443, Rule: RuleRedirect}
+		if got != want {
+			t.Errorf("reported %+v, want %+v", got, want)
+		}
+	case server := <-accepted:
+		server.Close()
+		t.Fatal("the listener handed on a stale redirect of a guest no longer redirected")
+	case <-time.After(5 * time.Second):
+		t.Fatal("no drop reported")
+	}
+
+	// A dial of the listener itself passes conntrack as a no-op NAT, and stays the guest's to make.
+	direct, err := restarted.dialTCP(ctx, netip.AddrPortFrom(gateway, 30443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer direct.Close()
+	select {
+	case server := <-accepted:
+		server.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the listener never took a flow the guest dialed to it")
 	}
 }
