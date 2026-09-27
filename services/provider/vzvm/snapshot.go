@@ -140,21 +140,20 @@ func abandon(m *machine, tmp string, err error) error {
 
 // freeze holds the guest's root for the pause in flight, which a stream dialed again meanwhile leaves frozen.
 func (m *machine) freeze() error {
-	m.swap.Lock()
+	m.freezing.Lock()
+	defer m.freezing.Unlock()
 	m.pausing = true
-	control := m.control.Load()
-	m.swap.Unlock()
 
-	return control.Freeze()
+	return m.control.Load().Freeze()
 }
 
 // runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.
 func runAgain(m *machine) error {
-	// Under the lock a stream swap takes, so either this thaw lands on the stream a reconnect put in, or that reconnect thaws.
-	m.swap.Lock()
+	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
+	m.freezing.Lock()
+	defer m.freezing.Unlock()
 	m.pausing = false
 	control := m.control.Load()
-	m.swap.Unlock()
 
 	info, err := m.client.State()
 	if err != nil {

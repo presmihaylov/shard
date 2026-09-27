@@ -38,7 +38,9 @@ type machine struct {
 	swap   sync.Mutex
 	link   *netstack.Link
 	cancel context.CancelFunc
-	// pausing, under swap, is a pause that froze the guest's root and still means to stop the VM.
+	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
+	freezing sync.Mutex
+	// pausing, under freezing, is a pause that froze the guest's root and still means to stop the VM.
 	pausing bool
 	// events closes when the control connection ended, which is the guest gone.
 	events chan struct{}
@@ -356,23 +358,28 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 
 // adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
 func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
+	m.freezing.Lock()
 	m.swap.Lock()
 	if m.closed.Load() {
 		m.swap.Unlock()
+		m.freezing.Unlock()
 
 		return false, control.Close()
 	}
 	dropped := m.control.Swap(control)
-	// A root frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
-	thaw := state.Frozen && !m.pausing
 	m.swap.Unlock()
 
 	var thawed error
-	if thaw {
+	// A root frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
+	if state.Frozen && !m.pausing {
+		if p.recovering != nil {
+			p.recovering()
+		}
 		if err := control.Thaw(); err != nil {
 			thawed = fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
 		}
 	}
+	m.freezing.Unlock()
 
 	return true, errors.Join(thawed, p.reconcile(m, state), dropped.Close())
 }

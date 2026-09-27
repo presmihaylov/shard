@@ -159,6 +159,12 @@ const cutFreezeFile = "cut-freeze-answer"
 // resetOnPauseFile in the state directory resets every stream under the next VM pause, and holds that pause until the host dialed again.
 const resetOnPauseFile = "reset-on-pause"
 
+// holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
+const holdDialsFile = "hold-dials"
+
+// orderFile in the state directory, once a test creates it, takes one line per freeze and thaw in the order the guest reads them.
+const orderFile = "control-order"
+
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
 
@@ -280,6 +286,30 @@ func (m *fakeMachine) take(name string) (bool, error) {
 	return err == nil, err
 }
 
+// has says whether the test left a marker in the state directory.
+func (m *fakeMachine) has(name string) (bool, error) {
+	_, err := os.Stat(filepath.Join(filepath.Dir(m.dir), name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
+// note appends kind to the order file, when the test made one.
+func (m *fakeMachine) note(kind string) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), orderFile), os.O_WRONLY|os.O_APPEND, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(kind + "\n")
+
+	return errors.Join(err, f.Close())
+}
+
 func (m *fakeMachine) Pause() error {
 	reset, err := m.take(resetOnPauseFile)
 	if err != nil {
@@ -374,9 +404,13 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	held, err := m.has(holdDialsFile)
+	if err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if time.Now().Before(m.holdUntil) {
+	if held || time.Now().Before(m.holdUntil) {
 		return conn, conn.Close()
 	}
 	m.streams[conn] = struct{}{}
@@ -410,7 +444,7 @@ func (s *stream) Write(p []byte) (int, error) {
 		if !strings.Contains(string(p), `"kind":"`+kind+`"`) {
 			continue
 		}
-		if err := s.machine.setFrozen(frozen); err != nil {
+		if err := errors.Join(s.machine.setFrozen(frozen), s.machine.note(kind)); err != nil {
 			return 0, err
 		}
 		if !frozen {

@@ -88,6 +88,8 @@ type Provider struct {
 	mu sync.Mutex
 	// machines is every shim this daemon has spoken to; a shim it has not is adopted by its socket.
 	machines map[string]*machine
+	// recovering is nil but in a test, which holds the gap between the choice to thaw a lost freeze and that thaw.
+	recovering func()
 }
 
 func New(cfg Config) (*Provider, error) {
