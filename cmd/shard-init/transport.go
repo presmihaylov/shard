@@ -27,6 +27,8 @@ type transport struct {
 	// attached wakes a death report waiting for its first host; one token, since a report reads the connection itself.
 	attached chan struct{}
 	logs     *logSink
+	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
+	rekey func([]byte) error
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -68,9 +70,10 @@ func serveTransport(name string, boot guestBoot) error {
 
 	t := &transport{logs: logs, attached: make(chan struct{}, 1)}
 	t.g = newGuest(t, restartPolicy{})
-	// Only a VM has the bound; a test on a Linux host runs unconfined and would read its own cgroup.
+	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
 	if boot.set() {
 		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
+		t.rekey = reseed
 	}
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
@@ -298,7 +301,11 @@ func (t *transport) handle(m supervisor.Message) error {
 			return fmt.Errorf("a reseed message carries %d bytes, under the %d a crng key takes", len(m.Seed), supervisor.SeedSize)
 		}
 
-		return reseed(m.Seed)
+		if t.rekey == nil {
+			return nil
+		}
+
+		return t.rekey(m.Seed)
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}
