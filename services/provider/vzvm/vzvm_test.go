@@ -714,7 +714,7 @@ func TestCreateHandsAFrontedGuestTheMergedTrustStore(t *testing.T) {
 	if r.Run.Trust.Path != "/etc/ssl/certs/ca-certificates.crt" || string(r.Run.Trust.Roots) != "image-roots\nproxy-ca\n" {
 		t.Errorf("the record's trust = %q at %q, want the image roots then the proxy CA at the image path", r.Run.Trust.Roots, r.Run.Trust.Path)
 	}
-	for _, key := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"} {
+	for _, key := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"} {
 		if !slices.Contains(r.Run.Env, key+"=/etc/ssl/certs/ca-certificates.crt") {
 			t.Errorf("the record's env lacks %s: %q", key, r.Run.Env)
 		}

@@ -37,6 +37,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/runspec"
 )
 
 // The suite wants the shard kernel; a Mac without one skips it, and SHARD_KERNEL names one elsewhere.
@@ -47,6 +48,9 @@ const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1
 
 // dindImage ships dockerd and its runtime; the Docker-inside test boots it as the entrypoint.
 const dindImage = "docker:28-dind"
+
+// curlImage sets CURL_CA_BUNDLE in its config, the variable curl reads before SSL_CERT_FILE.
+const curlImage = "curlimages/curl:8.22.0"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
 
@@ -288,25 +292,7 @@ func TestAGuestReachesTheRedirectedPortAndNothingElse(t *testing.T) {
 // A fronted guest trusts the proxy CA: its TLS client verifies a leaf the CA signed, read through the 443 redirect.
 func TestAFrontedGuestTrustsTheProxyCA(t *testing.T) {
 	h := newVMHarness(t)
-
-	caPEM, leaf := testCA(t, net.ParseIP("93.184.216.34"))
-	inner, err := h.stack.ListenTCP(tlsPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listener := tls.NewListener(inner, &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12})
-	defer listener.Close()
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
-			return
-		}
-		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\ntrusted\n")
-	}()
+	caPEM := serveTLS(t, h)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
 	spec.ProxyCA = caPEM
@@ -329,6 +315,62 @@ func TestAFrontedGuestTrustsTheProxyCA(t *testing.T) {
 	if !strings.HasPrefix(string(read), "trusted") {
 		t.Fatalf("the guest read %q over TLS, want the listener's body", read)
 	}
+}
+
+// curlimages/curl points CURL_CA_BUNDLE at a bundle of its own, which curl reads before SSL_CERT_FILE (SHARD-297).
+func TestACurlImageTrustsTheProxyCA(t *testing.T) {
+	h := newVMHarnessFor(t, curlImage)
+	caPEM := serveTLS(t, h)
+
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	// A create resolves the image's environment into the spec, and that is where CURL_CA_BUNDLE comes from.
+	spec.Env = runspec.MergeEnv(h.image.Config.Env, spec.Env)
+	spec.ProxyCA = caPEM
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"curl", "-sS", "--max-time", "15", "https://93.184.216.34/"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	read, _ := os.ReadFile(out.Name())
+	if !strings.HasPrefix(string(read), "trusted") {
+		t.Fatalf("curl read %q over TLS, want the listener's body", read)
+	}
+}
+
+// serveTLS answers one request on the 443 redirect with a leaf a fresh CA signed, and returns that CA for the guest to trust.
+func serveTLS(t *testing.T, h *vmHarness) []byte {
+	t.Helper()
+
+	caPEM, leaf := testCA(t, net.ParseIP("93.184.216.34"))
+	inner, err := h.stack.ListenTCP(tlsPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := tls.NewListener(inner, &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12})
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+			return
+		}
+		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\ntrusted\n")
+	}()
+
+	return caPEM
 }
 
 // testCA mints a CA and a leaf for ip it signed, the shape the proxy presents to a guest.

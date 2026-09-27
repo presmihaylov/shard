@@ -60,6 +60,23 @@ func TestBuildPlantsTheProxyCABesideTheImageRoots(t *testing.T) {
 	}
 }
 
+// curlimages/curl names its own bundle in CURL_CA_BUNDLE, which curl reads before SSL_CERT_FILE (SHARD-297).
+func TestBuildPointsCurlAtTheMergedBundle(t *testing.T) {
+	spec := newSpec(t)
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), imageRoots)
+	write(t, filepath.Join(spec.RootFS, "cacert.pem"), imageRoots)
+	spec.ProxyCA = []byte(proxyCA)
+
+	_, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Env: []string{"CURL_CA_BUNDLE=/cacert.pem"}})
+
+	if curl := envOf(t, got.Process.Env, "CURL_CA_BUNDLE"); curl != "/etc/ssl/certs/ca-certificates.crt" {
+		t.Errorf("CURL_CA_BUNDLE = %q, want the merged bundle", curl)
+	}
+}
+
 func TestBuildFindsTheDebianRootsWithoutAnEnv(t *testing.T) {
 	spec := newSpec(t)
 	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
