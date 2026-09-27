@@ -37,6 +37,7 @@ func TestStackDropReadsLikeAHostDrop(t *testing.T) {
 	}{
 		{network.RuleDefault, "the stack dropped a tcp packet: no rule of the policy matches"},
 		{"no-smtp", "the stack dropped a tcp packet: the first matching rule of the policy denies it"},
+		{network.RuleRedirect, "the stack dropped a tcp packet: a fronted sandbox reaches 80 and 443 through the proxy alone"},
 	} {
 		got := StackDrop(stackGateway, netstack.Drop{Time: now, Guest: netip.MustParseAddr("10.87.0.2"), Destination: netip.MustParseAddr("203.0.113.7"), Protocol: "tcp", Port: 25, Rule: tc.rule})
 		want := Record{Time: now, Source: SourceHost, Verdict: string(models.ActionDeny), Port: 25, Address: "203.0.113.7", Rule: tc.rule, Reason: tc.want}

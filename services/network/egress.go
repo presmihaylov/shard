@@ -203,6 +203,8 @@ const (
 	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit the stack's when a sandbox holds its share of flows.
 	RuleUnapplied = "unapplied"
 	RuleLimit     = netstack.RuleLimit
+	// RuleRedirect is the stack's drop of a fronted sandbox's 80 or 443 that its connection tracking kept off the proxy.
+	RuleRedirect = netstack.RuleRedirect
 )
 
 // LogPrefix starts every line the chains write into the kernel ring, so shard logs can pick them out.

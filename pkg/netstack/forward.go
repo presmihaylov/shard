@@ -47,6 +47,9 @@ const (
 // RuleLimit names the drop of a flow the judge allowed but the link or the stack has no room for.
 const RuleLimit = "limit"
 
+// RuleRedirect names the drop of a redirected guest's flow to a redirected port that missed the redirect, which only the listener may take.
+const RuleRedirect = "redirect"
+
 // forward installs the transport handlers that take a flow to any address no listener serves, which the judge already allowed through.
 func (s *Stack) forward() {
 	s.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(s.stack, 0, maxInFlight, s.forwardTCP).HandlePacket)
@@ -91,6 +94,13 @@ func (s *Stack) forwardTCP(r *tcp.ForwarderRequest) {
 	flow := flowOf(r.ID(), "tcp")
 	l := s.linkOf(flow.Guest)
 	if l == nil {
+		r.Complete(false)
+
+		return
+	}
+	// Connection tracking keeps a tuple's first NAT answer, so a SYN resent after the guest became redirected still misses the redirect.
+	if _, ok := s.cfg.Redirects[flow.Destination.Port()]; ok && s.redirected(flow.Guest) {
+		l.report(flow.drop(RuleRedirect))
 		r.Complete(false)
 
 		return

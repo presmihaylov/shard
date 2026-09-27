@@ -221,12 +221,13 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
 	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
-	// The host chains dnat a guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
+	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
-		Address:   gateway,
-		Redirects: map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
-		Drops:     drops.report,
-		Judge:     addresses.Judge,
+		Address:    gateway,
+		Redirects:  map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
+		Redirected: addresses.Fronted,
+		Drops:      drops.report,
+		Judge:      addresses.Judge,
 	})
 	if err != nil {
 		return nil, err

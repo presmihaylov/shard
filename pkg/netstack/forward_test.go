@@ -1,8 +1,13 @@
 package netstack
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"sync/atomic"
 	"testing"
@@ -354,5 +359,172 @@ func TestALinkAtItsFlowLimitDropsTheNextFlow(t *testing.T) {
 			t.Fatalf("a closed flow still counts %d", after)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// redirecting builds a host stack that redirects 443 onto a listener for the guests redirected names, and dials every allowed flow to target.
+func redirecting(t *testing.T, redirected func(netip.Addr) bool, verdict func() Verdict, target string) (*Stack, chan Drop, chan net.Conn) {
+	t.Helper()
+
+	drops := make(chan Drop, 16)
+	s, err := New(Config{
+		Address:    gateway,
+		Redirects:  map[uint16]uint16{443: 30443},
+		Redirected: redirected,
+		Drops:      func(d Drop) { drops <- d },
+		Judge:      func(Flow) Verdict { return verdict() },
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, target)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close the host stack: %v", err)
+		}
+	})
+	ln, err := s.ListenTCP(30443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	accepted := make(chan net.Conn, 4)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn
+		}
+	}()
+
+	return s, drops, accepted
+}
+
+// A guest the stack does not redirect speaks TLS to the destination itself and sees its own certificate, while a redirected one lands on the listener (SHARD-294).
+func TestAGuestTheStackDoesNotRedirectReachesTheRedirectedPortDirectly(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer upstream.Close()
+	host, drops, accepted := redirecting(t, func(g netip.Addr) bool { return g == guestB }, func() Verdict { return allowed }, upstream.Listener.Addr().String())
+	plain := attach(t, host, guestA)
+	fronted := attach(t, host, guestB)
+	https := netip.AddrPortFrom(remote.Addr(), 443)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := plain.dialTCP(ctx, https)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	client := tls.Client(conn, &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12})
+	if err := client.HandshakeContext(ctx); err != nil {
+		t.Fatalf("the guest's TLS to the destination: %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := req.Write(client); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("the destination answered %d", resp.StatusCode)
+	}
+	select {
+	case server := <-accepted:
+		server.Close()
+		t.Fatal("the listener took the flow of a guest the stack does not redirect")
+	default:
+	}
+
+	redirected, err := fronted.dialTCP(ctx, https)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redirected.Close()
+	select {
+	case server := <-accepted:
+		defer server.Close()
+		if got := server.RemoteAddr().(*net.TCPAddr).IP.String(); got != guestB.String() {
+			t.Errorf("the listener saw source %s, want %s", got, guestB)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the listener never took the redirected guest's flow")
+	}
+	select {
+	case got := <-drops:
+		t.Fatalf("a flow was reported as a drop: %+v", got)
+	default:
+	}
+}
+
+// A SYN resent after its guest became redirected keeps the tuple's first NAT answer, and the forwarder refuses it rather than dial past the listener.
+func TestAFlowThatMissedTheRedirectIsDropped(t *testing.T) {
+	target, taken := echoTCP(t)
+	var redirected, allow atomic.Bool
+	verdict := func() Verdict {
+		if allow.Load() {
+			return allowed
+		}
+
+		return denied
+	}
+	host, drops, accepted := redirecting(t, func(netip.Addr) bool { return redirected.Load() }, verdict, target)
+	guest := attach(t, host, guestA)
+
+	dialed := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	go func() {
+		conn, err := guest.dialTCP(ctx, netip.AddrPortFrom(remote.Addr(), 443))
+		if err == nil {
+			conn.Close()
+		}
+		dialed <- err
+	}()
+	rules := func() string {
+		select {
+		case got := <-drops:
+			return got.Rule
+		case <-time.After(5 * time.Second):
+			t.Fatal("no drop reported")
+		}
+
+		return ""
+	}
+	if got := rules(); got != denied.Rule {
+		t.Fatalf("the first SYN was dropped as %q, want %q", got, denied.Rule)
+	}
+	redirected.Store(true)
+	allow.Store(true)
+	// A slow runner can resend before the flip, and that SYN is still denied.
+	for got := rules(); got != RuleRedirect; got = rules() {
+		if got != denied.Rule {
+			t.Fatalf("the resent SYN was dropped as %q, want %q", got, RuleRedirect)
+		}
+	}
+	cancel()
+	if err := <-dialed; err == nil {
+		t.Error("a flow that missed the redirect connected")
+	}
+	if n := taken.Load(); n != 0 {
+		t.Errorf("the host dialed %d flows past the listener", n)
+	}
+	select {
+	case server := <-accepted:
+		server.Close()
+		t.Error("the listener took a flow whose first SYN missed the redirect")
+	default:
 	}
 }

@@ -40,8 +40,10 @@ type Config struct {
 	Address netip.Addr
 	// MAC is the link address every link answers ARP with; the zero value takes a fixed local one.
 	MAC net.HardwareAddr
-	// Redirects maps a TCP port a guest dials, wherever it dials it, to the stack's own listener that takes the flow.
+	// Redirects maps a TCP port a redirected guest dials, wherever it dials it, to the stack's own listener that takes the flow.
 	Redirects map[uint16]uint16
+	// Redirected says whether a guest's Redirects ports go to the listener, and runs per frame under the stack's lock; nil redirects every guest.
+	Redirected func(guest netip.Addr) bool
 	// Drops receives every frame the stack refuses, on the link's own goroutine; nil keeps the refusals silent.
 	Drops func(Drop)
 	// Judge rules on a TCP or UDP flow off the address to a port no listener serves; nil keeps every such flow closed.
@@ -90,9 +92,8 @@ func New(cfg Config) (*Stack, error) {
 		return nil, fmt.Errorf("enable sack: %s", err)
 	}
 
-	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects), false)
-
 	st := &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}
+	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects, st.redirected), false)
 	if cfg.Judge != nil {
 		st.forward()
 	}

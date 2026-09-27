@@ -138,6 +138,24 @@ func TestAStalledReapplyNeverLandsOverANewerOne(t *testing.T) {
 	}
 }
 
+// A guest is fronted while the last apply holds a chain for it, with a policy or without one, and never before the first apply.
+func TestTheJudgeFrontsAGuestWithAChainAlone(t *testing.T) {
+	var j Judge
+	if j.Fronted(judgedGuest) {
+		t.Error("a guest is fronted before the first apply")
+	}
+	j.Apply([]Chain{{Address: judgedGuest, Policy: true}, {Address: otherGuest}})
+	for guest, want := range map[netip.Addr]bool{judgedGuest: true, otherGuest: true, netip.MustParseAddr("10.200.0.4"): false} {
+		if got := j.Fronted(guest); got != want {
+			t.Errorf("%s fronted %v, want %v", guest, got, want)
+		}
+	}
+	j.Apply(nil)
+	if j.Fronted(judgedGuest) {
+		t.Error("a guest stays fronted after its chain went")
+	}
+}
+
 type chainsFn func(context.Context) ([]Chain, error)
 
 func (f chainsFn) Chains(ctx context.Context) ([]Chain, error) { return f(ctx) }
@@ -162,6 +180,9 @@ func TestAddressesApplyTheChainsToTheJudge(t *testing.T) {
 	if got := a.Judge(f); got != (netstack.Verdict{Rule: RuleDefault}) {
 		t.Fatalf("after the allocate the chain is on, got %+v", got)
 	}
+	if !a.Fronted(f.Guest) {
+		t.Fatal("after the allocate the guest is not fronted")
+	}
 
 	chains = nil
 	if err := a.Reapply(t.Context(), "sb-1"); err != nil {
@@ -169,6 +190,9 @@ func TestAddressesApplyTheChainsToTheJudge(t *testing.T) {
 	}
 	if got := a.Judge(f); !got.Allow {
 		t.Fatalf("after the policy went, got %+v", got)
+	}
+	if a.Fronted(f.Guest) {
+		t.Fatal("after the policy went the guest is still fronted")
 	}
 
 	fail = errors.New("the policy store is unreadable")

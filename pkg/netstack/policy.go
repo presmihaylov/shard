@@ -49,7 +49,7 @@ func (l *Link) judge(frame []byte) (Drop, bool) {
 	proto := ip.TransportProtocol()
 	port := transportPort(ip)
 	if proto == header.TCPProtocolNumber {
-		if _, redirected := s.cfg.Redirects[port]; redirected {
+		if _, ok := s.cfg.Redirects[port]; ok && s.redirected(l.guest) {
 			return Drop{}, true
 		}
 	}
@@ -148,15 +148,20 @@ func (l *Link) report(drop Drop) {
 
 func newLimiter() *rate.Limiter { return rate.NewLimiter(dropRate, dropBurst) }
 
-// natTable sends a guest's TCP flow to a redirected port onto the stack's own listener, wherever the guest dialed, the way the host chains dnat 80 and 443.
-func natTable(redirects map[uint16]uint16) stack.Table {
+// redirected says a guest's TCP to a Redirects port belongs to the stack's listener and never leaves the stack.
+func (s *Stack) redirected(guest netip.Addr) bool {
+	return s.cfg.Redirected == nil || s.cfg.Redirected(guest)
+}
+
+// natTable sends a redirected guest's TCP flow to a redirected port onto the stack's own listener, wherever the guest dialed, the way the host chains dnat 80 and 443 for a fronted sandbox.
+func natTable(redirects map[uint16]uint16, redirected guestMatcher) stack.Table {
 	var rules []stack.Rule
 	for from, to := range redirects {
 		filter := stack.EmptyFilter4()
 		filter.Protocol, filter.CheckProtocol = header.TCPProtocolNumber, true
 		rules = append(rules, stack.Rule{
 			Filter:   filter,
-			Matchers: []stack.Matcher{portMatcher(from)},
+			Matchers: []stack.Matcher{portMatcher(from), redirected},
 			Target:   &stack.RedirectTarget{Port: to, NetworkProtocol: header.IPv4ProtocolNumber},
 		})
 	}
@@ -182,4 +187,16 @@ func (m portMatcher) Match(_ stack.Hook, pkt *stack.PacketBuffer, _, _ string) (
 	}
 
 	return tcp.DestinationPort() == uint16(m), false
+}
+
+// guestMatcher matches a packet by its source, the guest that sent it.
+type guestMatcher func(netip.Addr) bool
+
+func (m guestMatcher) Match(_ stack.Hook, pkt *stack.PacketBuffer, _, _ string) (bool, bool) {
+	ip := header.IPv4(pkt.NetworkHeader().Slice())
+	if len(ip) < header.IPv4MinimumSize {
+		return false, false
+	}
+
+	return m(netip.AddrFrom4(ip.SourceAddress().As4())), false
 }

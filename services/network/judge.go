@@ -67,6 +67,15 @@ func (j *Judge) Judge(f netstack.Flow) netstack.Verdict {
 	return netstack.Verdict{Rule: RuleDefault}
 }
 
+// Fronted says the guest's 80 and 443 go through the proxy: the last apply compiled a chain for it, as the host dnats only for a chain.
+func (j *Judge) Fronted(guest netip.Addr) bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	_, ok := j.chains[guest]
+
+	return ok
+}
+
 // local is what the input chain refuses on Linux: the host's own addresses, and what no dial should reach; a lookup that fails refuses too.
 func (j *Judge) local(addr netip.Addr) bool {
 	if addr.IsUnspecified() || addr.IsMulticast() || addr == broadcast {

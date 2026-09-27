@@ -62,6 +62,8 @@ func stackReason(rule, proto string) string {
 		return "the stack dropped a " + proto + " packet: the policy is not applied yet"
 	case network.RuleLimit:
 		return "the stack dropped a " + proto + " packet: the sandbox holds every flow the stack lets it"
+	case network.RuleRedirect:
+		return "the stack dropped a " + proto + " packet: a fronted sandbox reaches 80 and 443 through the proxy alone"
 	}
 
 	return "the stack dropped a " + proto + " packet: the first matching rule of the policy denies it"

@@ -43,6 +43,9 @@ func (a *Addresses) Gateway() netip.Addr { return a.gateway }
 // Judge is what the stack asks about a flow off its address, and it answers with the chains the last apply compiled.
 func (a *Addresses) Judge(f netstack.Flow) netstack.Verdict { return a.judge.Judge(f) }
 
+// Fronted is what the stack asks before it redirects a guest's 80 and 443 onto the proxy.
+func (a *Addresses) Fronted(guest netip.Addr) bool { return a.judge.Fronted(guest) }
+
 // Allocate leases an address, or answers the one the sandbox holds; the resolver is the gateway, since nothing else is reachable.
 func (a *Addresses) Allocate(ctx context.Context, id string) (models.NetworkSpec, error) {
 	if err := validName(id); err != nil {
