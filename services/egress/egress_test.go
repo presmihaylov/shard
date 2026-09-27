@@ -330,6 +330,29 @@ func TestDecideWalksTheEffectiveRulesByName(t *testing.T) {
 	}
 }
 
+// The proxy dials from the host, so what is local to it and not already private is refused under every policy (SHARD-291).
+func TestDecideRefusesWhatIsLocalToTheHost(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "open", Rules: []models.Rule{mustRule(t, models.ActionAllow, "any")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
+	svc.local.Addresses = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil }
+
+	for _, sb := range []models.Sandbox{{ID: "free"}, {ID: "open", Policy: "open"}} {
+		for _, addr := range []string{"0.0.0.0", "0.1.2.3", "203.0.113.9", "224.0.0.251", "255.255.255.255"} {
+			got, err := svc.Decide(sb, addr, 80, netip.MustParseAddr(addr))
+			if err != nil || got.Action != models.ActionDeny || got.ID != network.RuleLocal {
+				t.Errorf("sandbox %s to %s got %+v, %v, want a local deny", sb.ID, addr, got, err)
+			}
+		}
+		if got, err := svc.Decide(sb, "203.0.113.7", 80, netip.MustParseAddr("203.0.113.7")); err != nil || got.Action != models.ActionAllow {
+			t.Errorf("sandbox %s to an address the host does not own got %+v, %v", sb.ID, got, err)
+		}
+	}
+}
+
 // A question carries a name and no address, so an address rule is silent and a deny on one port leaves the name in use.
 func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
 	s := newStore(t)

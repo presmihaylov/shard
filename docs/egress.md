@@ -14,7 +14,9 @@ networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local and cloud
 is every other sandbox. That floor holds under every policy too: no rule opens it, and
 `policy create` refuses a rule that names `private`. The 403 and the egress log name that deny by
 its rule id, `private`, as they name `default` when no rule of a policy matches and `missing` when
-the policy does not exist.
+the policy does not exist. The proxy dials from the host itself, so under every policy it also
+refuses a host that resolves to one of the host's own addresses, to `0.0.0.0/8`, or to multicast or
+broadcast, and names that deny `local`.
 
 ## With a policy
 
@@ -243,7 +245,8 @@ There are three sources, and the daemon writes all of them into the one file,
 The `rule` field is the same id on both sides: the position of the rule in what `shard inspect`
 prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`, `missing`, `resolve`
 and, on a VM host, `stack`. A packet the guest sent to the host's own address carries `local`: the host takes the
-proxy ports and drops the rest, so that drop is logged like any other. An IPv6 packet carries
+proxy ports and drops the rest, so that drop is logged like any other. A proxied request whose host
+resolves to such an address carries `local` too. An IPv6 packet carries
 `ipv6`, and is named by the port it died on rather than by its address.
 
 Two limits are worth knowing:

@@ -31,6 +31,7 @@ type Service struct {
 	resolver Resolver
 	// gateway is where shard's resolver listens: the one DNS destination a policy sandbox may reach.
 	gateway netip.Addr
+	local   network.Local
 }
 
 // New wires a compiler over the stores. A nil resolver resolves through the nameservers.

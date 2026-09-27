@@ -115,7 +115,7 @@ func newBrokerLog(t *testing.T, records Records, secrets Secrets, policies ...mo
 		}
 	}
 
-	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}, "private.example.net": {netip.MustParseAddr("10.0.0.5")}}
+	resolver := fakeResolver{"api.example.com": {upstream}, "other.example.com": {upstream}, "evil.example.net": {upstream}, "private.example.net": {netip.MustParseAddr("10.0.0.5")}, "0.0.0.0": {netip.IPv4Unspecified()}}
 	svc := egress.New(store, records, gateway, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, resolver)
 
 	log := &fakeLog{}
@@ -174,6 +174,23 @@ func TestDecideNamesTheSandboxByAddressAndPinsTheUpstream(t *testing.T) {
 	}
 	if _, err := newBroker(t, fakeRecords{err: errors.New("disk")}, secrets).Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 80}); err == nil {
 		t.Error("unreadable records still judged")
+	}
+}
+
+// A dial to 0.0.0.0 from the host reaches the host's own listeners, so the request is refused and logged first (SHARD-291).
+func TestDecideRefusesTheUnspecifiedAddress(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "free", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	b, log := newBrokerLog(t, records, fakeSecrets{})
+
+	got, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "0.0.0.0", Port: 80})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got.Allowed || got.Rule != network.RuleLocal {
+		t.Errorf("Decide = %+v, want a local deny", got)
+	}
+	if len(log.records) != 1 || log.records[0].Rule != network.RuleLocal || log.records[0].Verdict != string(models.ActionDeny) {
+		t.Errorf("the log holds %+v, want one local deny", log.records)
 	}
 }
 

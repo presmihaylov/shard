@@ -31,6 +31,10 @@ func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Ad
 	if slices.ContainsFunc(network.Private, func(p netip.Prefix) bool { return p.Contains(addr) }) {
 		return Decision{Action: models.ActionDeny, ID: network.RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}, nil
 	}
+	// The proxy dials from the host, where no chain refuses the host's own addresses, so what the floor misses of them is refused here.
+	if s.local.Contains(addr) {
+		return Decision{Action: models.ActionDeny, ID: network.RuleLocal, Reason: fmt.Sprintf("%s resolves to %s, which is local to the host", host, addr)}, nil
+	}
 
 	if sb.Policy == "" {
 		return Decision{Action: models.ActionAllow, ID: network.RuleNone, Reason: "sandbox " + sb.ID + " has no policy"}, nil
