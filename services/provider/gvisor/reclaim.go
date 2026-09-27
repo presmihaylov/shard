@@ -33,7 +33,7 @@ func (p *Provider) Reclaim(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
-// sweep kills what a create cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
+// sweep kills what a bring-up cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
 func (p *Provider) sweep(ctx context.Context, id string) error {
 	dir := cgroupDir(p.cgroupRoot, id)
 

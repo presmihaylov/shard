@@ -2,6 +2,7 @@ package gvisor
 
 import (
 	"context"
+	"os"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
@@ -37,6 +38,11 @@ func (p *Provider) SetKill(kill func(pid int) error) {
 // Sweep is the kill Remove runs on what a cut-short create left in the cgroup, reachable without runsc.
 func (p *Provider) Sweep(ctx context.Context, id string) error {
 	return p.sweep(ctx, id)
+}
+
+// BringUp is the launch create, fork and resume share, with the runsc verb a test scripts.
+func (p *Provider) BringUp(ctx context.Context, spec models.SandboxSpec, exitFile string, up func(out, exit *os.File) error) error {
+	return p.bringUp(ctx, spec, exitFile, up)
 }
 
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.

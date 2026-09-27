@@ -172,7 +172,11 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	}
 
 	if err := up(out, exit); err != nil {
-		return err
+		if ctx.Err() == nil {
+			return err
+		}
+		// A bring-up killed past its grace never saved the state runsc deletes by, so only the cgroup still holds what it forked.
+		return errors.Join(err, p.sweep(context.WithoutCancel(ctx), spec.ID))
 	}
 
 	if err := boundMemory(p.cgroupRoot, spec); err != nil {

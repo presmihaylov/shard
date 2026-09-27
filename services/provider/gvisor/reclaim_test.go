@@ -2,6 +2,8 @@ package gvisor_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 )
@@ -224,5 +227,43 @@ func TestSweepRefusesAStranger(t *testing.T) {
 	}
 	if len(h.killed) != 0 {
 		t.Errorf("Sweep killed %v, a process that does not name %s", h.killed, sandboxID)
+	}
+}
+
+// A fork or resume cut short past the grace leaves a sentry and a gofer runsc never saved, so the bring-up kills them itself.
+func TestACancelledBringUpSweepsWhatItForked(t *testing.T) {
+	h := newHost(t)
+	h.process(1101, bundle.CgroupsPath(sandboxID), "runsc-sandbox", "boot", "--bundle="+bundleDir, sandboxID)
+	h.process(1102, bundle.CgroupsPath(sandboxID), "runsc-gofer", "gofer", "--bundle", bundleDir, sandboxID)
+	h.process(2201, bundle.CgroupsPath(sandboxID+"-2"), "runsc-sandbox", "boot", "--bundle="+bundleDir+"-2", sandboxID+"-2")
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	err := h.provider().BringUp(ctx, models.SandboxSpec{ID: sandboxID, StateDir: dir}, filepath.Join(dir, "exit"), func(*os.File, *os.File) error {
+		cancel()
+		return fmt.Errorf("runsc restore %s: %w", sandboxID, ctx.Err())
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BringUp returned %v, want the cancel", err)
+	}
+	if want := []int{1101, 1102}; !slices.Equal(h.killed, want) {
+		t.Errorf("BringUp killed %v, want the sentry and the gofer of %s alone: %v", h.killed, sandboxID, want)
+	}
+}
+
+// A failure runsc returns itself is one runsc already cleaned up, so the bring-up kills nothing.
+func TestAFailedBringUpKillsNothing(t *testing.T) {
+	h := newHost(t)
+	h.process(1101, bundle.CgroupsPath(sandboxID), "runsc-sandbox", "boot", "--bundle="+bundleDir, sandboxID)
+
+	dir := t.TempDir()
+	err := h.provider().BringUp(t.Context(), models.SandboxSpec{ID: sandboxID, StateDir: dir}, filepath.Join(dir, "exit"), func(*os.File, *os.File) error {
+		return errors.New("runsc restore: exit status 1")
+	})
+	if err == nil {
+		t.Fatal("BringUp returned no error for a runsc that failed")
+	}
+	if len(h.killed) != 0 {
+		t.Errorf("BringUp killed %v after a failure runsc returned itself", h.killed)
 	}
 }
