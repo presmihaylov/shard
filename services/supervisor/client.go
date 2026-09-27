@@ -169,6 +169,9 @@ func (c *Control) Reseed() error {
 	return c.request(Message{Kind: KindReseed, Seed: seed})
 }
 
+// Sync asks shard-init to write the guest's dirty pages back, so a disk copied while the VM is paused holds them.
+func (c *Control) Sync() error { return c.request(Message{Kind: KindSync}) }
+
 func (c *Control) Close() error { return c.conn.Close() }
 
 // request sends one message and waits for the guest's done, or its failure as an error.

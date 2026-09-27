@@ -367,6 +367,22 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
+// A pause waits on this answer, so a guest that never answered a sync would hold every pause.
+func TestTransportSyncAnswersAndKeepsServing(t *testing.T) {
+	_, dial := startTransport(t)
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run after the sync: %v", err)
+	}
+}
+
 func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
 	_, dial := startTransport(t)
 	ctx := testContext(t)

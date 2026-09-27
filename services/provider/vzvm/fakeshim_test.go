@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/vz"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The test binary plays the shim when the provider execs it with this set; the guest is the real shard-init over unix sockets.
@@ -137,7 +138,12 @@ type fakeMachine struct {
 	streams map[net.Conn]struct{}
 	// holdUntil is how long a dial answers with a stream that ends at once, after a reset SIGUSR2 asked for.
 	holdUntil time.Time
+	// flushed says the host asked the guest to sync since the last pause; the fake has no page cache to watch.
+	flushed bool
 }
+
+// unflushedFile lands in the state directory when a pause stopped a guest no one asked to sync, whose disk a clone would read short.
+const unflushedFile = "unflushed-pause"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -207,6 +213,16 @@ func (m *fakeMachine) State() vz.State {
 func (m *fakeMachine) MachineID() string { return m.id }
 
 func (m *fakeMachine) Pause() error {
+	m.mu.Lock()
+	flushed := m.flushed
+	m.flushed = false
+	m.mu.Unlock()
+	if !flushed {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), unflushedFile), nil, 0o600); err != nil {
+			return err
+		}
+	}
+
 	return m.move(vz.StateRunning, vz.StatePaused, syscall.SIGSTOP)
 }
 
@@ -273,6 +289,16 @@ func (m *fakeMachine) dropStreams() {
 type stream struct {
 	net.Conn
 	machine *fakeMachine
+}
+
+func (s *stream) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), `"kind":"`+supervisor.KindSync+`"`) {
+		s.machine.mu.Lock()
+		s.machine.flushed = true
+		s.machine.mu.Unlock()
+	}
+
+	return s.Conn.Write(p)
 }
 
 func (s *stream) Close() error {

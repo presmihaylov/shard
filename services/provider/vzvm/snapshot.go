@@ -54,6 +54,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 	// A pause that crashed before its record left the VM paused, and this one carries on from there.
 	if info.State != vz.StatePaused {
+		// A clone boots from the disk alone, so what the guest wrote but still holds in memory goes to it first.
+		if err := m.control.Load().Sync(); err != nil {
+			return fmt.Errorf("sandbox %s: flush the guest's writes before the pause: %w", id, err)
+		}
 		if _, err := m.client.Pause(); err != nil {
 			return fmt.Errorf("pause sandbox %s: %w", id, err)
 		}

@@ -200,10 +200,13 @@ to reach the proxy anyway.
 
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
-- `pause` pauses the VM, saves its state to `<snapshot dir>/vm.vzvmstate`, stops the VM, and then
-  takes an APFS clone of the quiescent disk as `<snapshot dir>/disk.img` beside it; the shim exits.
-  The memory is freed, as the verb promises on gVisor; the live disk stays where it is. The two
-  files are one snapshot: the memory and the disk of the same instant.
+- `pause` asks `shard-init` to sync the guest's filesystems, pauses the VM, saves its state to
+  `<snapshot dir>/vm.vzvmstate`, stops the VM, and then takes an APFS clone of the quiescent disk as
+  `<snapshot dir>/disk.img` beside it; the shim exits. The memory is freed, as the verb promises on
+  gVisor; the live disk stays where it is. The two files are one snapshot: the memory and the disk of
+  the same instant. The sync is for `clone`, which boots the live disk cold and never reads the state
+  file, so a write the guest still held in its page cache would otherwise never reach it (SHARD-296).
+  A guest whose `shard-init` predates the sync refuses it, and the pause fails with it.
 - `resume` first replaces the live disk with a fresh APFS clone of the snapshot's `disk.img`, by a
   clone to a temporary name and a rename, then starts a new shim that restores the state file over it
   and resumes. The snapshot is not consumed, and every resume from it starts from the same pair: a

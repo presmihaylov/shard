@@ -252,6 +252,29 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	}
 }
 
+// A clone boots from the disk alone, so a pause asks the guest to sync before it stops it (SHARD-296).
+func TestAPauseFlushesTheGuestBeforeItStopsIt(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, unflushedFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the pause stopped a guest it never asked to sync: %v", err)
+	}
+}
+
 // A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the snapshot whole.
 func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	h := newHarness(t)

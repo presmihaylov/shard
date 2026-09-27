@@ -306,6 +306,10 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return t.rekey(m.Seed)
+	case supervisor.KindSync:
+		flush()
+
+		return nil
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}

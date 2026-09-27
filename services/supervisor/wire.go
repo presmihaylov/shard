@@ -28,6 +28,7 @@ const (
 	KindStop      = "stop"
 	KindReaddress = "readdress"
 	KindReseed    = "reseed"
+	KindSync      = "sync"
 	KindDone      = "done"
 	KindFailure   = "failure"
 	KindState     = "state"

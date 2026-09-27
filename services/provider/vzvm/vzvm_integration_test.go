@@ -635,6 +635,43 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	}
 }
 
+// A clone boots from the disk alone, so a write the guest still held in its page cache at the pause must reach the clone (SHARD-296).
+func TestACloneOfAPausedSandboxKeepsItsUnsyncedWrites(t *testing.T) {
+	h := newVMHarness(t)
+	if !h.provider.Capabilities().Fork {
+		t.Skip("this Mac does not save a VM")
+	}
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo unsynced > /root/data"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	clone := h.newSpec(t)
+	if err := h.provider.Clone(t.Context(), spec.ID, clone); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.CreateTemp(t.TempDir(), "data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := h.provider.Exec(t.Context(), clone.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "cat /root/data"}, Stdout: out, Stderr: out}); err != nil {
+		t.Fatal(err)
+	}
+	if written, _ := os.ReadFile(out.Name()); string(written) != "unsynced\n" {
+		t.Fatalf("the clone read %q, want the write the source made before its pause", written)
+	}
+}
+
 // A guest that panics before anything listens on vsock fails the create within its grace and leaves no shim behind (SHARD-255).
 func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
 	h := newVMHarness(t)
