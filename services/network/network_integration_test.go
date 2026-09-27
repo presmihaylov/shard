@@ -142,7 +142,8 @@ func TestTheFirstAllocatePinsItsOwnPort(t *testing.T) {
 			spec := allocate(t, s, "amber-otter")
 
 			table := run(t, "nft", "list", "table", "bridge", "shard")
-			pin := fmt.Sprintf("iifname %q ether type ip ip saddr != %s drop", spec.HostInterface, spec.Address.Addr())
+			// nft lists the rule without the `ether type ip` the script writes, since `ip saddr` implies it.
+			pin := fmt.Sprintf("iifname %q ip saddr != %s drop", spec.HostInterface, spec.Address.Addr())
 			if !strings.Contains(table, pin) {
 				t.Errorf("the bridge table does not pin %s to %s after the first Allocate:\n%s", spec.HostInterface, spec.Address.Addr(), table)
 			}
