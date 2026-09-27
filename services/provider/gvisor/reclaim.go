@@ -30,6 +30,29 @@ func (p *Provider) Reclaim(ctx context.Context, id string) error {
 		return fmt.Errorf("sandbox %s holds no process to kill, and runsc still does not answer for it", id)
 	}
 
+	return p.killNamed(ctx, dir, id, pids)
+}
+
+// sweep kills what a create cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
+func (p *Provider) sweep(ctx context.Context, id string) error {
+	dir := cgroupDir(p.cgroupRoot, id)
+
+	pids, err := cgroup.Procs(dir)
+	if errors.Is(err, cgroup.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list the processes of sandbox %s: %w", id, err)
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+
+	return p.killNamed(ctx, dir, id, pids)
+}
+
+// killNamed SIGKILLs the processes in the cgroup that name the sandbox and waits for the cgroup to empty.
+func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) error {
 	ours, err := p.named(pids, id)
 	if err != nil {
 		return err

@@ -38,6 +38,12 @@ const diagnosticTail = 4 << 10
 // signalBudget bounds the signal a cancelled exec sends into the sandbox, which runs off its own context.
 const signalBudget = 5 * time.Second
 
+// settleGrace is how long a create or restore runs on after its caller gives up, because a kill before runsc saves its state orphans the sandbox.
+const settleGrace = 30 * time.Second
+
+// discardBudget bounds the delete that undoes a create or restore its caller gave up on.
+const discardBudget = 10 * time.Second
+
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
@@ -74,6 +80,7 @@ type Runner struct {
 	root    string
 	network string
 	execDir string
+	settle  time.Duration
 }
 
 // Option configures a Runner.
@@ -108,7 +115,7 @@ func New(root string, opts ...Option) (*Runner, error) {
 		return nil, fmt.Errorf("the runsc root must be an absolute path, got %q", root)
 	}
 
-	r := &Runner{binary: "runsc", root: root, network: NetworkNone}
+	r := &Runner{binary: "runsc", root: root, network: NetworkNone, settle: settleGrace}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -155,16 +162,22 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 		return fmt.Errorf("runsc create %s: %w", id, err)
 	}
 
-	cmd := r.command(ctx, "create", "--bundle", opts.Bundle, id)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("runsc create %s: %w", id, err)
+	}
+
+	run, stop := r.settled(ctx)
+	defer stop()
+
+	cmd := r.command(run, "create", "--bundle", opts.Bundle, id)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
 	cmd.Stdin = opts.Stdin
 
-	if err := cmd.Run(); err != nil {
-		// Our own cancellation killed it, so what it did not print says nothing about why.
-		if ctx.Err() != nil {
-			return fmt.Errorf("runsc create %s: %w: %w", id, err, ctx.Err())
-		}
-
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return r.discard(ctx, "create", id, err)
+	}
+	if err != nil {
 		return fmt.Errorf("runsc create %s: %w%s", id, err, diagnostics(opts.Stderr, start))
 	}
 
@@ -438,19 +451,48 @@ func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) er
 		return fmt.Errorf("runsc restore %s: %w", id, err)
 	}
 
-	cmd := r.command(ctx, "restore", "--detach", "--bundle", opts.Bundle, "--image-path", opts.Image, id)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("runsc restore %s: %w", id, err)
+	}
+
+	run, stop := r.settled(ctx)
+	defer stop()
+
+	cmd := r.command(run, "restore", "--detach", "--bundle", opts.Bundle, "--image-path", opts.Image, id)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
 	cmd.Stdin = opts.Stdin
 
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("runsc restore %s: %w: %w", id, err, ctx.Err())
-		}
-
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return r.discard(ctx, "restore", id, err)
+	}
+	if err != nil {
 		return fmt.Errorf("runsc restore %s: %w%s", id, err, diagnostics(opts.Stderr, start))
 	}
 
 	return nil
+}
+
+// settled outlives ctx by the settle grace, because runsc forks the sandbox before it saves the state that names it.
+func (r *Runner) settled(ctx context.Context) (context.Context, context.CancelFunc) {
+	run, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, func() { time.AfterFunc(r.settle, cancel) })
+
+	return run, func() { stop(); cancel() }
+}
+
+// discard undoes a create or restore whose caller gave up, because no record will ever name what it made.
+func (r *Runner) discard(ctx context.Context, verb, id string, err error) error {
+	// The caller gave up, so the cancel is the cause, whatever runsc printed on its way out.
+	cause := fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
+	if err != nil {
+		cause = fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
+	}
+
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
+	defer cancel()
+
+	return errors.Join(cause, r.Delete(dctx, id, true))
 }
 
 // Kill signals the container. all reaches every process in it; without it only PID 1 is signalled.

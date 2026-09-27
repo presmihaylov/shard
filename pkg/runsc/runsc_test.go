@@ -268,7 +268,7 @@ func TestCreateReportsThatRunscPrintedNothing(t *testing.T) {
 	}
 }
 
-// TestCreateNamesOurOwnCancellation: an interrupt kills runsc before it prints, and reporting that
+// TestCreateNamesOurOwnCancellation: a create cancelled before it starts never ran runsc, and reporting that
 // silence as a diagnostic reads as a runsc that crashed for no reason.
 func TestCreateNamesOurOwnCancellation(t *testing.T) {
 	r, _ := fake(t, "", "", 1)
@@ -294,6 +294,105 @@ func TestCreateNamesOurOwnCancellation(t *testing.T) {
 
 	if strings.Contains(err.Error(), "printed nothing") {
 		t.Errorf("got %q, want no diagnostic about output we cut short ourselves", err)
+	}
+}
+
+// bringUps are the two verbs that fork a sandbox, which a kill before runsc saves its state would orphan.
+var bringUps = map[string]func(ctx context.Context, r *runsc.Runner, id string) error{
+	"create": func(ctx context.Context, r *runsc.Runner, id string) error {
+		return r.Create(ctx, id, runsc.CreateOptions{Bundle: "/var/lib/shard/sandboxes/amber-otter-1a2b/bundle"})
+	},
+	"restore": func(ctx context.Context, r *runsc.Runner, id string) error {
+		return r.Restore(ctx, id, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/amber-otter-1a2b/bundle", Image: "/var/lib/shard/snapshots/amber-otter-1a2b"})
+	},
+}
+
+// settling is a fake runsc whose bring-up says it began and then waits for the test's word, logging every call it takes.
+func settling(t *testing.T, verb string, tail string) (*runsc.Runner, string) {
+	t.Helper()
+
+	r, argvFile := fakeBinary(t, `dir=$(dirname "$argv")
+echo "$*" >> "$dir/calls"
+case "$*" in *" `+verb+` "*)
+	touch "$dir/started"
+	`+tail+`
+esac
+`)
+
+	return r, filepath.Dir(argvFile)
+}
+
+// A Ctrl-C mid-create must not kill runsc before it saves its state, so the create finishes and is then deleted.
+func TestACancelledBringUpFinishesAndIsDeleted(t *testing.T) {
+	for verb, bringUp := range bringUps {
+		t.Run(verb, func(t *testing.T) {
+			r, dir := settling(t, verb, `while [ ! -e "$dir/release" ]; do sleep 0.01; done
+	touch "$dir/finished"`)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() { done <- bringUp(ctx, r, "amber-otter-1a2b") }()
+
+			waitFor(filepath.Join(dir, "started"))
+			cancel()
+
+			select {
+			case err := <-done:
+				t.Fatalf("%s returned %v while runsc was still at work, so the cancel cut it short", verb, err)
+			case <-time.After(200 * time.Millisecond):
+			}
+
+			if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
+				t.Fatalf("release the fake runsc: %v", err)
+			}
+
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s returned %v, want it to name the cancellation", verb, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "finished")); err != nil {
+				t.Errorf("runsc %s never finished: %v", verb, err)
+			}
+
+			calls := argv(t, filepath.Join(dir, "calls"))
+			if last := calls[len(calls)-1]; !strings.HasSuffix(last, "delete --force amber-otter-1a2b") {
+				t.Errorf("the last runsc call was %q, want the %s it finished deleted: %v", last, verb, calls)
+			}
+		})
+	}
+}
+
+// A runsc that outlives the grace is killed after all, so a wedged bring-up still returns.
+func TestABringUpThatOutlivesTheGraceIsKilled(t *testing.T) {
+	for verb, bringUp := range bringUps {
+		t.Run(verb, func(t *testing.T) {
+			r, dir := settling(t, verb, "exec sleep 60")
+			r.SetSettle(100 * time.Millisecond)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() { done <- bringUp(ctx, r, "amber-otter-1a2b") }()
+
+			waitFor(filepath.Join(dir, "started"))
+			cancel()
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s returned %v, want it to name the cancellation", verb, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s never returned after the grace ran out", verb)
+			}
+
+			calls := argv(t, filepath.Join(dir, "calls"))
+			if last := calls[len(calls)-1]; !strings.HasSuffix(last, "delete --force amber-otter-1a2b") {
+				t.Errorf("the last runsc call was %q, want a delete of whatever the %s left: %v", last, verb, calls)
+			}
+		})
 	}
 }
 

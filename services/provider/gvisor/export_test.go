@@ -1,6 +1,8 @@
 package gvisor
 
 import (
+	"context"
+
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
 )
@@ -30,6 +32,11 @@ func (p *Provider) SetProcRoot(root string) {
 // SetKill replaces the SIGKILL a reclaim sends, so a test records the pids instead of killing anything.
 func (p *Provider) SetKill(kill func(pid int) error) {
 	p.killProcess = kill
+}
+
+// Sweep is the kill Remove runs on what a cut-short create left in the cgroup, reachable without runsc.
+func (p *Provider) Sweep(ctx context.Context, id string) error {
+	return p.sweep(ctx, id)
 }
 
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.

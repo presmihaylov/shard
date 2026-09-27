@@ -498,6 +498,10 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := p.sweep(ctx, id); err != nil {
+		return err
+	}
+
 	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the next create of the id.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
