@@ -243,6 +243,16 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 	}
 }
 
+// A short seed would rekey the crng from little more than the state every fork of the save shares (SHARD-293).
+func TestTransportRefusesAShortReseed(t *testing.T) {
+	for _, seed := range [][]byte{nil, make([]byte, supervisor.SeedSize-1)} {
+		err := (&transport{}).handle(supervisor.Message{Kind: supervisor.KindReseed, Seed: seed})
+		if err == nil || !strings.Contains(err.Error(), "under the 32 a crng key takes") {
+			t.Fatalf("a reseed of %d bytes gave %v, want the refusal", len(seed), err)
+		}
+	}
+}
+
 func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 	_, dial := startTransport(t)
 	ctx := testContext(t)

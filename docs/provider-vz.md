@@ -115,7 +115,7 @@ connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
+| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
 | 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
 | 5002 | logs | the entrypoint's stdout and stderr, raw; with no host attached the bytes wait |
 | 5003 | files | one connection per operation: a `FileHeader` line naming `stat`, `put` or `get` and an absolute guest path, then a `FileReply` line with the file's shape or the guest's reason; a put sends its bytes after the header, a get receives them after the reply (SHARD-42) |
@@ -219,6 +219,13 @@ A restore refuses a VM whose configuration differs from the saved one, and the m
 is part of that configuration. The framework generates a fresh identifier per configuration, so the
 provider persists each sandbox's identifier in its state directory and reuses it on every resume and
 fork. The spike found this the hard way: `Code=12, invalid argument`.
+
+Every restore of one state file also wakes with the same kernel crng key, so a resumed source and
+its forks read the same `/dev/urandom` bytes until the guest's next timed reseed. VZ has no vmgenid
+device to tell the guest, so every `resume` and `fork` sends 32 bytes from the host's `crypto/rand`
+on the control port before it returns, and `shard-init` writes them into the input pool and forces
+a rekey with `RNDRESEEDCRNG` (SHARD-293). Only the kernel's generator is rekeyed: a process that
+seeded its own generator before the pause carries that state into every copy.
 
 Rejected: an in-memory pause (the framework's `pause` alone). shard deleted the in-memory pause so
 the verb means one thing on every substrate: a snapshot on disk and the memory given back.

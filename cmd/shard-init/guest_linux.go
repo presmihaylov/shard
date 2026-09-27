@@ -224,6 +224,24 @@ func writeResolverFiles(a supervisor.Address) error {
 	return writeResolverFilesIn("/etc", a)
 }
 
+// reseed mixes the host's bytes into the input pool and forces a rekey; the timed reseed can be a minute out, and forks share the key until then.
+func reseed(seed []byte) error {
+	fd, err := unix.Open("/dev/urandom", unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/urandom: %w", err)
+	}
+	defer unix.Close(fd)
+
+	if _, err := unix.Write(fd, seed); err != nil {
+		return fmt.Errorf("mix the seed into the pool: %w", err)
+	}
+	if err := unix.IoctlSetInt(fd, unix.RNDRESEEDCRNG, 0); err != nil {
+		return fmt.Errorf("rekey the crng: %w", err)
+	}
+
+	return nil
+}
+
 // setFlags writes the interface flags, which brings the link up and, with none, takes it down.
 func setFlags(fd int, name string, flags uint16) error {
 	ifr, err := unix.NewIfreq(name)

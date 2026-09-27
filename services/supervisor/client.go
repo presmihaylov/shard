@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -153,6 +154,19 @@ func (c *Control) Stop() error { return c.request(Message{Kind: KindStop}) }
 // Readdress moves a restored guest onto its own address, and returns once it answers there and nowhere else.
 func (c *Control) Readdress(a Address) error {
 	return c.request(Message{Kind: KindReaddress, Address: &a})
+}
+
+// SeedSize is the host entropy one reseed carries, the size of the kernel's crng key.
+const SeedSize = 32
+
+// Reseed gives a restored guest fresh host entropy and rekeys its crng from it, so two restores of one save draw different bytes.
+func (c *Control) Reseed() error {
+	seed := make([]byte, SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return fmt.Errorf("draw the seed: %w", err)
+	}
+
+	return c.request(Message{Kind: KindReseed, Seed: seed})
 }
 
 func (c *Control) Close() error { return c.conn.Close() }

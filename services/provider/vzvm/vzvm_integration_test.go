@@ -576,6 +576,64 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	}
 }
 
+// Every restore of one save wakes with the same crng key, so the resumed source and its forks each read their own bytes only after a reseed (SHARD-293).
+func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
+	h := newVMHarness(t)
+	if !h.provider.Capabilities().Fork {
+		t.Skip("this Mac does not save a VM")
+	}
+	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
+	// One vcpu means one per-cpu crng, so no copy reads other bytes only because its exec ran on another cpu.
+	spec.Resources.VCPUs = 1
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	// A timed reseed splits some copies by chance; among five, two shared a key in every run without the host's reseed.
+	ids := []string{spec.ID}
+	for range 4 {
+		fork := h.newSpec(t)
+		if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, fork.ID)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]string{}
+	for _, id := range ids {
+		out, err := os.CreateTemp(t.TempDir(), "urandom")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer out.Close()
+		if _, err := h.provider.Exec(t.Context(), id, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "head -c 32 /dev/urandom | od -An -tx1"}, Stdout: out, Stderr: out}); err != nil {
+			t.Fatalf("Exec in %s: %v", id, err)
+		}
+		written, err := os.ReadFile(out.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		drawn := strings.Join(strings.Fields(string(written)), "")
+		if len(drawn) != 64 {
+			t.Fatalf("%s read %q from /dev/urandom, want 32 bytes in hex", id, written)
+		}
+		if other, ok := seen[drawn]; ok {
+			t.Fatalf("%s and %s read the same /dev/urandom bytes %s after a restore of one save", other, id, drawn)
+		}
+		seen[drawn] = id
+	}
+}
+
 // A guest that panics before anything listens on vsock fails the create within its grace and leaves no shim behind (SHARD-255).
 func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
 	h := newVMHarness(t)

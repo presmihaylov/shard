@@ -293,6 +293,12 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return applyAddress(*m.Address)
+	case supervisor.KindReseed:
+		if len(m.Seed) < supervisor.SeedSize {
+			return fmt.Errorf("a reseed message carries %d bytes, under the %d a crng key takes", len(m.Seed), supervisor.SeedSize)
+		}
+
+		return reseed(m.Seed)
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}

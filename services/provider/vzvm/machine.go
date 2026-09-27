@@ -139,12 +139,17 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 		return nil, fmt.Errorf("sandbox %s: the restored guest was killed by its memory bound", id)
 	}
 
-	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
-	if restore != "" {
-		p.mu.Lock()
-		m.started = true
-		p.mu.Unlock()
+	if restore == "" {
+		return m, nil
 	}
+	// Every restore of one save wakes with the same crng key, and VZ has no vmgenid to tell the guest.
+	if err := m.control.Load().Reseed(); err != nil {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: reseed the restored guest: %w", id, err), p.end(ctx, m))
+	}
+	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
+	p.mu.Lock()
+	m.started = true
+	p.mu.Unlock()
 
 	return m, nil
 }

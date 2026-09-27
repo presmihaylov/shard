@@ -16,4 +16,7 @@ func confine() error { return nil }
 
 func applyAddress(supervisor.Address) error { return errNotLinux }
 
+// Off Linux shard-init is only the test double over unix sockets, and no guest kernel holds a crng to rekey.
+func reseed([]byte) error { return nil }
+
 func powerOff(bool) error { return nil }

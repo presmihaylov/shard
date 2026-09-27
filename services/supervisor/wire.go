@@ -21,12 +21,13 @@ const (
 	FilesPort   uint32 = 5003
 )
 
-// The kinds a control message carries. The host sends the first four; the guest answers each with done or failure, and sends the rest on its own.
+// The kinds a control message carries. The host sends the first five; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
 	KindStop      = "stop"
 	KindReaddress = "readdress"
+	KindReseed    = "reseed"
 	KindDone      = "done"
 	KindFailure   = "failure"
 	KindState     = "state"
@@ -51,6 +52,8 @@ type Message struct {
 	Signal string `json:"signal,omitempty"`
 	// Address is the new guest address after a fork restored a copy of the source.
 	Address *Address `json:"address,omitempty"`
+	// Seed is host entropy for a restored guest's crng, which woke with the key of every other restore of the same save.
+	Seed []byte `json:"seed,omitempty"`
 	// Ready says the entrypoint forked; a state replay on a new connection carries it too.
 	Ready bool `json:"ready,omitempty"`
 	// Exit is how the entrypoint last ended, and Restarts what the restart policy kept.
