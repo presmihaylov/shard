@@ -531,7 +531,7 @@ func TestRewriteLeavesHopByHopHeadersAlone(t *testing.T) {
 	out.Header.Set("Keep-Alive", "mock-TOKEN")
 	out.Header.Set("X-Named", "mock-TOKEN")
 	out.Header.Set("X-Api-Key", "mock-TOKEN")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
 		t.Fatal(err)
 	}
 
