@@ -184,8 +184,8 @@ fronted() {
 # entrypoint_clock reads the guest pid and start time of the entrypoint, which only a restore keeps.
 entrypoint_clock() {
 	local clock
-	# -fx matches the whole command line exactly: shard-init's argv only contains the entrypoint's, so it never counts (SHARD-329).
-	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -fx "/bin/sleep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
+	# Anchored to argv0: shard-init, PID 1, carries the entrypoint's command line mid-argv, so it never counts (SHARD-329).
+	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -f "^/bin/sleep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
 		fail "the guest runs no sleep 600 entrypoint to read a clock from"
 	[[ "${clock}" =~ ^[0-9]+\ [0-9]+$ ]] || fail "the guest gave '${clock}' for the entrypoint, want one pid and its start time"
 	printf '%s\n' "${clock}"
