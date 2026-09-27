@@ -66,15 +66,15 @@ in. See `docs/egress.md` for what fronting means. On the way out, the proxy repl
 the value, in the URL, the headers and the body, and only when the request goes over TLS to a granted
 destination. A request to any other host carries the placeholder as it is, so a guest that posts its
 environment to an attacker posts the placeholder. Plain HTTP on 80 never gets the value, not even to a
-granted host: it crosses the network in cleartext, so it carries the placeholder, the service refuses
-it, and the fix is `https://`. A body past 8 MiB streams through untouched: put
+granted host, because it crosses the network in cleartext: the proxy forwards it with the placeholder
+unchanged, so send the credential over `https://`. A body past 8 MiB streams through untouched: put
 the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
 re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
 substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
 A hop-by-hop header, `Connection`, `Upgrade`, `Keep-Alive` and any header `Connection` names, keeps
 the placeholder: it belongs to the connection, not the upstream, and the proxy can quote one back.
 Brokering covers HTTPS on port 443 today. A credential sent on any other port or protocol, a
-database password on 5432 or SMTP on 587, leaves as the placeholder and the service refuses it; the
+database password on 5432 or SMTP on 587, leaves as the placeholder, never the value; the
 policy still decides whether the connection is allowed at all.
 
 **The placeholder.** An SDK that checks the shape of a key before it sends it never sends
