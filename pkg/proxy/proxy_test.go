@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -136,7 +138,7 @@ type harness struct {
 	director *fakeDirector
 	plain    net.Listener
 	secure   net.Listener
-	log      *bytes.Buffer
+	log      *syncWriter
 	// stop ends Serve and returns what it returned; a second call returns the same.
 	stop func() error
 }
@@ -153,7 +155,7 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 	echo := httptest.NewServer(upstream)
 	t.Cleanup(echo.Close)
 
-	h := &harness{ca: ca, director: &fakeDirector{upstream: netip.MustParseAddrPort(echo.Listener.Addr().String())}, log: &bytes.Buffer{}}
+	h := &harness{ca: ca, director: &fakeDirector{upstream: netip.MustParseAddrPort(echo.Listener.Addr().String())}, log: &syncWriter{buf: &bytes.Buffer{}}}
 	for _, l := range []*net.Listener{&h.plain, &h.secure} {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -162,7 +164,7 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 		*l = listener
 	}
 
-	server, err := New(Config{Address: netip.MustParseAddr("127.0.0.1"), CA: ca, Director: h.director, Log: log.New(&syncWriter{buf: h.log}, "", 0)})
+	server, err := New(Config{Address: netip.MustParseAddr("127.0.0.1"), CA: ca, Director: h.director, Log: log.New(h.log, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +195,13 @@ func (w *syncWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	return w.buf.Write(p)
+}
+
+func (w *syncWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.buf.String()
 }
 
 // client dials the proxy's listener for whatever name the URL carries, trusting the proxy CA over TLS.
@@ -325,6 +334,119 @@ func TestProxyAnswers502WhenTheDirectorCannotJudge(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("a director error got %d, want 502", resp.StatusCode)
 	}
+}
+
+// SHARD-345: each request logs its host, so a host past a DNS name is refused unprinted, and a megabyte one never reaches the handler.
+func TestProxyRefusesAHostLongerThanADNSName(t *testing.T) {
+	atTheBound := strings.Repeat(strings.Repeat("a", 62)+".", 4) + "a"
+	for name, tc := range map[string]struct {
+		host   string
+		status int
+	}{
+		"a dns name at the bound": {atTheBound, http.StatusOK},
+		"one byte past it":        {atTheBound + "a", http.StatusBadRequest},
+		"a megabyte":              {strings.Repeat("a", 1_000_000), http.StatusRequestHeaderFieldsTooLarge},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(echoHandler))
+
+			status, body := sendRaw(t, h, http.MethodGet, tc.host)
+			if status != tc.status {
+				t.Fatalf("a %d-byte host got %d %s, want %d", len(tc.host), status, body, tc.status)
+			}
+			if tc.status == http.StatusOK {
+				if seen := h.director.seen[0].Host; seen != tc.host {
+					t.Errorf("the director was asked about %q, want the host at the bound", seen)
+				}
+
+				return
+			}
+
+			if len(h.director.seen) != 0 {
+				t.Errorf("the director was asked about a %d-byte host", len(tc.host))
+			}
+			if strings.Contains(body, tc.host) {
+				t.Error("the answer echoes the host")
+			}
+			if log := h.log.String(); len(log) >= 1<<10 || strings.Contains(log, tc.host) {
+				t.Errorf("a %d-byte host left %d log bytes, want under 1 KiB and no host:\n%.300s", len(tc.host), len(log), log)
+			}
+		})
+	}
+}
+
+func TestProxyClipsTheMethodItLogs(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	method := strings.Repeat("M", 10_000)
+
+	if status, _ := sendRaw(t, h, method, "deny.test"); status != http.StatusForbidden {
+		t.Fatalf("a denied request got %d, want 403", status)
+	}
+
+	log := h.log.String()
+	if !strings.Contains(log, strings.Repeat("M", maxHostLen)+"... deny.test:80 denied") || strings.Contains(log, strings.Repeat("M", maxHostLen+1)) {
+		t.Errorf("the log holds %d bytes, want the method cut at %d:\n%.300s", len(log), maxHostLen, log)
+	}
+}
+
+func TestProxyRefusesATLSServerNameLongerThanADNSName(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	name := strings.Repeat(strings.Repeat("a", 62)+".", 64) + "test"
+
+	conn, err := tls.Dial("tcp", h.secure.Addr().String(), &tls.Config{ServerName: name, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec // the refusal is the point
+	if err == nil {
+		conn.Close()
+		t.Fatal("a handshake for a server name past a dns name went through")
+	}
+
+	// The server logs the handshake error on its own goroutine, after the client already saw it.
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(h.log.String(), "longer than a dns name") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if log := h.log.String(); !strings.Contains(log, "longer than a dns name") || strings.Contains(log, name) {
+		t.Errorf("the log holds:\n%.300s", log)
+	}
+}
+
+// sendRaw writes one request with the method and host as the guest chose them, and reads the answer while it writes, since the proxy may answer a head it refused before it read all of it.
+func sendRaw(t *testing.T, h *harness, method, host string) (int, string) {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", h.plain.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	head := fmt.Sprintf("%s / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", method, host)
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(conn, head)
+		written <- err
+	}()
+	t.Cleanup(func() {
+		conn.Close()
+		// A head past the header bound is cut off mid-write, which is the refusal; a shorter one must go out whole.
+		if err := <-written; err != nil && len(head) < maxHeaderBytes {
+			t.Errorf("write the request: %v", err)
+		}
+	})
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer to a %d-byte head: %v", len(head), err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+
+	return resp.StatusCode, string(body)
 }
 
 // A failed upstream answers the same fixed 502 whatever the director put in the request, since its error can quote it.

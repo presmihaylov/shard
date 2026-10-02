@@ -28,6 +28,10 @@ const (
 	BodyCap = 8 << 20
 
 	readHeaderTimeout = 30 * time.Second
+	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
+	maxHeaderBytes = 64 << 10
+	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
+	maxHostLen = 253
 )
 
 var (
@@ -135,6 +139,9 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 			if hello.ServerName == "" {
 				return nil, errors.New("the proxy needs the server name in the tls handshake")
 			}
+			if len(hello.ServerName) > maxHostLen {
+				return nil, errors.New("the tls server name is longer than a dns name")
+			}
 
 			return s.cfg.CA.Leaf(canonicalHost(hello.ServerName))
 		},
@@ -142,8 +149,8 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 
 	stopped, stop := context.WithCancel(context.Background())
 	servers := []*http.Server{
-		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
-		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
+		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: s.cfg.Log},
+		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: s.cfg.Log},
 	}
 	listeners := []net.Listener{plain, tls.NewListener(secure, tlsConfig)}
 
@@ -208,13 +215,13 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, r.Method, req.Host, req.Port, err)
+		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 
 		return
 	}
 	if !decision.Allowed {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d denied by %s", req.Source, r.Method, req.Host, req.Port, decision.Rule)
+		s.cfg.Log.Printf("proxy: %s %s %s:%d denied by %s", req.Source, clip(r.Method), req.Host, req.Port, decision.Rule)
 		deny(w, req, decision)
 
 		return
@@ -222,7 +229,7 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 	out, err := s.outbound(ctx, r, req, decision)
 	if err != nil {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, r.Method, req.Host, req.Port, err)
+		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 
 		return
@@ -230,7 +237,7 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 	sw := &statusWriter{ResponseWriter: w}
 	s.forward().ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
-	s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, r.Method, req.Host, req.Port, sw.status)
+	s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, clip(r.Method), req.Host, req.Port, sw.status)
 }
 
 // request reads who is asking and for what; the name must be one the host can judge.
@@ -243,6 +250,10 @@ func request(r *http.Request, secure bool) (Request, error) {
 	host := canonicalHost(hostOnly(r.Host))
 	if host == "" {
 		return Request{}, errors.New("the request names no host")
+	}
+	// Checked before the tls one, whose error names the host.
+	if len(host) > maxHostLen {
+		return Request{}, errors.New("the request names a host longer than a dns name")
 	}
 
 	req := Request{Source: source.Addr().Unmap(), Host: host, Port: 80, TLS: secure}
@@ -333,7 +344,7 @@ func (s *Server) forward() *httputil.ReverseProxy {
 }
 
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
-	s.cfg.Log.Printf("proxy: %s %s: %d %s", r.RemoteAddr, r.Method, status, message)
+	s.cfg.Log.Printf("proxy: %s %s: %d %s", r.RemoteAddr, clip(r.Method), status, message)
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
@@ -389,6 +400,15 @@ func hostOnly(hostport string) string {
 	}
 
 	return host
+}
+
+// clip bounds what a log line prints of a value the guest chose.
+func clip(s string) string {
+	if len(s) <= maxHostLen {
+		return s
+	}
+
+	return s[:maxHostLen] + "..."
 }
 
 func canonicalHost(host string) string {
