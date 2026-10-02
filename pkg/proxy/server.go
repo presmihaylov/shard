@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/lograte"
 )
 
 const (
@@ -78,7 +80,9 @@ type Config struct {
 
 // Server terminates plain HTTP and TLS from fronted sandboxes and forwards what the director allows.
 type Server struct {
-	cfg       Config
+	cfg Config
+	// log bounds each source's fault and deny lines; the line of an answered request is written whole (SHARD-347).
+	log       *lograte.Log
 	transport *http.Transport
 	goneGrace time.Duration
 }
@@ -95,6 +99,7 @@ func New(cfg Config) (*Server, error) {
 
 	return &Server{
 		cfg:       cfg,
+		log:       lograte.New(cfg.Log, "proxy"),
 		goneGrace: clientGoneGrace,
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
@@ -148,9 +153,11 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 	}
 
 	stopped, stop := context.WithCancel(context.Background())
+	// net/http logs a failed tls handshake per connection, naming the guest after "from".
+	errorLog := s.log.Logger(namedSource)
 	servers := []*http.Server{
-		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: s.cfg.Log},
-		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: s.cfg.Log},
+		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
+		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
 	}
 	listeners := []net.Listener{plain, tls.NewListener(secure, tlsConfig)}
 
@@ -215,13 +222,13 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
+		s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 
 		return
 	}
 	if !decision.Allowed {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d denied by %s", req.Source, clip(r.Method), req.Host, req.Port, decision.Rule)
+		s.log.Printf(req.Source, "proxy: %s %s %s:%d denied by %s", req.Source, clip(r.Method), req.Host, req.Port, decision.Rule)
 		deny(w, req, decision)
 
 		return
@@ -229,14 +236,14 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 	out, err := s.outbound(ctx, r, req, decision)
 	if err != nil {
-		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
+		s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 
 		return
 	}
 
 	sw := &statusWriter{ResponseWriter: w}
-	s.forward().ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
+	s.forward(req.Source).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
 	s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, clip(r.Method), req.Host, req.Port, sw.status)
 }
 
@@ -330,12 +337,12 @@ type joinedBody struct {
 
 func (j *joinedBody) Close() error { return j.closer.Close() }
 
-func (s *Server) forward() *httputil.ReverseProxy {
+func (s *Server) forward(source netip.Addr) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		// The outbound request is already built, so the rewrite has nothing left to do.
 		Rewrite:   func(*httputil.ProxyRequest) {},
 		Transport: s.transport,
-		ErrorLog:  s.cfg.Log,
+		ErrorLog:  s.log.Logger(func(string) netip.Addr { return source }),
 		// The error can quote the rewritten request, which holds secret values, so neither the guest nor the log reads it (SHARD-299).
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the request to the upstream failed"})
@@ -344,7 +351,7 @@ func (s *Server) forward() *httputil.ReverseProxy {
 }
 
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
-	s.cfg.Log.Printf("proxy: %s %s: %d %s", r.RemoteAddr, clip(r.Method), status, message)
+	s.log.Printf(sourceOf(r.RemoteAddr), "proxy: %s %s: %d %s", r.RemoteAddr, clip(r.Method), status, message)
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
@@ -400,6 +407,27 @@ func hostOnly(hostport string) string {
 	}
 
 	return host
+}
+
+// namedSource reads the address net/http names after "from " in its own line.
+func namedSource(line string) netip.Addr {
+	_, rest, ok := strings.Cut(line, " from ")
+	if !ok {
+		return netip.Addr{}
+	}
+	addr, _, _ := strings.Cut(rest, ": ")
+
+	return sourceOf(addr)
+}
+
+// sourceOf is the address a connection came from, or the invalid address, whose log bound every unnamed source shares.
+func sourceOf(remote string) netip.Addr {
+	source, err := netip.ParseAddrPort(remote)
+	if err != nil {
+		return netip.Addr{}
+	}
+
+	return source.Addr().Unmap()
 }
 
 // clip bounds what a log line prints of a value the guest chose.

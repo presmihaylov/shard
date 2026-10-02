@@ -558,6 +558,37 @@ func TestAMessageThatIsNoQuestionGetsNoAnswer(t *testing.T) {
 	}
 }
 
+// SHARD-347: each packet that does not parse is a fault line, so a flood of them is held at the source's log bound and counted.
+func TestAFloodOfBrokenPacketsIsHeldAtTheLogBound(t *testing.T) {
+	upstream := newUpstream(t)
+	r := serve(t, &fakeDirector{allowed: []string{"api.example.com"}}, upstream.addr)
+
+	conn, err := net.Dial("udp", r.udp.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for range 20_000 {
+		if _, err := conn.Write([]byte{0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := parse(t, askUDP(t, r.udp, question(t, 1, "api.example.com."), 2*time.Second))
+	if got.header.RCode != dnsmessage.RCodeSuccess {
+		t.Fatalf("a question after the flood got %+v, want an answer", got.header)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(r.log.String(), "held back") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	log := r.log.String()
+	if faults := strings.Count(log, "parse a question"); faults > 20 || !strings.Contains(log, "dns: 127.0.0.1: held back") {
+		t.Errorf("a flood of 20000 broken packets left %d fault lines, want the burst and a count:\n%.500s", faults, log)
+	}
+}
+
 // One sandbox that opens more connections than the whole pool holds, each with a question that never finishes, must
 // leave its siblings answered: the per-source bound admits maxPerSource of them and closes the rest at accept.
 func TestOneSourceCannotStarveItsSiblings(t *testing.T) {

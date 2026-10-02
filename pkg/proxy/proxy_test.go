@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -406,6 +407,86 @@ func TestProxyRefusesATLSServerNameLongerThanADNSName(t *testing.T) {
 	}
 	if log := h.log.String(); !strings.Contains(log, "longer than a dns name") || strings.Contains(log, name) {
 		t.Errorf("the log holds:\n%.300s", log)
+	}
+}
+
+// SHARD-347: a guest's denied requests and broken handshakes are held at its log bound and counted, and every answered request still logs.
+func TestAFloodOfDeniedRequestsIsHeldAtTheLogBound(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	client := h.client()
+
+	for _, url := range append(slices.Repeat([]string{"http://deny.test/"}, 100), slices.Repeat([]string{"http://api.test/"}, 20)...) {
+		resp, err := client.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	log := awaitAccounted(t, h, "denied by", 100)
+	if denied := strings.Count(log, "denied by"); denied > 12 {
+		t.Errorf("100 denied requests wrote %d deny lines, want the burst", denied)
+	}
+	if answered := strings.Count(log, "GET api.test:80 200"); answered != 20 {
+		t.Errorf("20 answered requests wrote %d answer lines, want every one", answered)
+	}
+}
+
+func TestAFloodOfBrokenHandshakesIsHeldAtTheLogBound(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	name := strings.Repeat("a", maxHostLen+1)
+
+	for range 50 {
+		conn, err := tls.Dial("tcp", h.secure.Addr().String(), &tls.Config{ServerName: name, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec // the refusal is the point
+		if err == nil {
+			conn.Close()
+			t.Fatal("a handshake for a server name past a dns name went through")
+		}
+	}
+
+	log := awaitAccounted(t, h, "TLS handshake error", 50)
+	if failed := strings.Count(log, "TLS handshake error"); failed > 12 {
+		t.Errorf("50 broken handshakes wrote %d lines, want the burst", failed)
+	}
+}
+
+// awaitAccounted waits until the lines with marker and the counts of held lines add up to want, and answers the log.
+func awaitAccounted(t *testing.T, h *harness, marker string, want int) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		log := h.log.String()
+		accounted := strings.Count(log, marker)
+		for line := range strings.SplitSeq(log, "\n") {
+			var held int
+			if _, err := fmt.Sscanf(line, "proxy: 127.0.0.1: held back %d lines past the log bound", &held); err == nil {
+				accounted += held
+			}
+		}
+		if accounted == want {
+			return log
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the log accounts for %d of %d lines:\n%.1000s", accounted, want, log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestNamedSourceReadsTheGuestNetHTTPNames(t *testing.T) {
+	for line, want := range map[string]netip.Addr{
+		"http: TLS handshake error from 10.0.0.2:5555: EOF\n":        netip.MustParseAddr("10.0.0.2"),
+		"http: TLS handshake error from [fd00::2]:5555: EOF\n":       netip.MustParseAddr("fd00::2"),
+		"http: TLS handshake error from 10.0.0.2:5555: from 1.2.3.4": netip.MustParseAddr("10.0.0.2"),
+		"http: Accept error: too many open files; retrying in 5ms\n": {},
+		"http: TLS handshake error from nowhere: EOF\n":              {},
+	} {
+		if got := namedSource(line); got != want {
+			t.Errorf("namedSource(%q) = %v, want %v", line, got, want)
+		}
 	}
 }
 
