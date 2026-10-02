@@ -35,7 +35,7 @@ type imageService interface {
 
 // sandboxRepo is the part of sandboxstate.Repository the daemon drives.
 type sandboxRepo interface {
-	Create(sb models.Sandbox) (models.Sandbox, error)
+	Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error)
 	Get(id string) (models.Sandbox, error)
 	Resolve(ref string) (string, error)
 	List() ([]models.Sandbox, error)

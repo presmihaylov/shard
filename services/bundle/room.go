@@ -15,11 +15,50 @@ const diskHeadroom = 64 * bytesPerMiB
 // admitting keeps a second admission from counting the free space the first is about to take (SHARD-393).
 var admitting sync.Mutex
 
+// reserved is the bound of each disk a create admitted before its sandbox directory held it, by that directory.
+var reserved = map[string]int64{}
+
 // admitDisk runs write, which lays down a disk of bound bytes at dst, only when the disk fits the root beside every disk the other sandboxes there hold.
 func admitDisk(dst string, bound int64, write func() error) error {
 	admitting.Lock()
 	defer admitting.Unlock()
 
+	// Reserve admitted this disk before the record, and every admission since has counted it.
+	granted, ok := reserved[filepath.Dir(dst)]
+	delete(reserved, filepath.Dir(dst))
+	if ok && bound <= granted {
+		return write()
+	}
+	if err := admissible(dst, bound); err != nil {
+		return err
+	}
+
+	return write()
+}
+
+// Reserve admits a disk of bound bytes at dst before its sandbox has a record, and holds the bound until the disk lands there or Release.
+func Reserve(dst string, bound int64) error {
+	admitting.Lock()
+	defer admitting.Unlock()
+
+	if err := admissible(dst, bound); err != nil {
+		return err
+	}
+	reserved[filepath.Dir(dst)] = bound
+
+	return nil
+}
+
+// Release gives back what Reserve held for the sandbox directory dir, for a sandbox that goes before its disk lands.
+func Release(dir string) {
+	admitting.Lock()
+	defer admitting.Unlock()
+
+	delete(reserved, dir)
+}
+
+// admissible refuses a disk of bound bytes at dst that does not fit the root beside every disk the other sandboxes there hold or reserved.
+func admissible(dst string, bound int64) error {
 	sandboxes := filepath.Dir(filepath.Dir(dst))
 	held, err := heldDisks(sandboxes, filepath.Base(dst), filepath.Dir(dst))
 	if err != nil {
@@ -29,11 +68,8 @@ func admitDisk(dst string, bound int64, write func() error) error {
 	if err != nil {
 		return err
 	}
-	if err := fits(bound, held, free); err != nil {
-		return err
-	}
 
-	return write()
+	return fits(bound, held, free)
 }
 
 // AdmitCopy is admitDisk for a disk write copies from src: the copy keeps the size of src, which is its bound.
@@ -64,7 +100,7 @@ func fits(bound, held, free int64) error {
 		bound/bytesPerMiB, free/bytesPerMiB, held/bytesPerMiB, diskHeadroom/bytesPerMiB)
 }
 
-// heldDisks sums the bound of the disk named name in every sandbox directory under sandboxes but self, in any state: a stopped one can start and write.
+// heldDisks sums the bound of the disk named name, or of the one reserved there, in every sandbox directory under sandboxes but self, in any state: a stopped one can start and write.
 func heldDisks(sandboxes, name, self string) (int64, error) {
 	entries, err := os.ReadDir(sandboxes)
 	if err != nil {
@@ -79,6 +115,8 @@ func heldDisks(sandboxes, name, self string) (int64, error) {
 		}
 		st, err := os.Stat(filepath.Join(dir, name))
 		if errors.Is(err, fs.ErrNotExist) {
+			held += reserved[dir]
+
 			continue
 		}
 		if err != nil {

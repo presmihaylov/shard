@@ -313,6 +313,8 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// A create that failed before its disk landed still holds the reservation.
+	bundle.Release(dir)
 	for _, name := range []string{bundle.OverlayDiskFile, memoryFile, recordFile, socketFile, vsockFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)

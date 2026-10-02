@@ -187,3 +187,90 @@ func TestAnAdmissionWaitsOutAReplace(t *testing.T) {
 		t.Fatal("admitted a disk beside the 8 TiB one the replace put back")
 	}
 }
+
+// reserve stands in for a Reserve whose bound the host could never hold, so the test owns every number.
+func reserve(t *testing.T, dir string, bound int64) {
+	t.Helper()
+	admitting.Lock()
+	reserved[dir] = bound
+	admitting.Unlock()
+	t.Cleanup(func() { Release(dir) })
+}
+
+func reservation(t *testing.T, dir string) (int64, bool) {
+	t.Helper()
+	admitting.Lock()
+	defer admitting.Unlock()
+	bound, ok := reserved[dir]
+
+	return bound, ok
+}
+
+// A create reserves its disk before the record, so an admission while that disk is not yet written still counts it (SHARD-393).
+func TestAReservationCountsUntilItIsReleased(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	first := filepath.Join(sandboxes, "first")
+	dst := filepath.Join(sandboxes, "second", "disk.img")
+	for _, dir := range []string{first, filepath.Dir(dst)} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reserve(t, first, 8<<40)
+
+	if err := Reserve(dst, bytesPerMiB); err == nil {
+		t.Fatal("reserved a disk beside the 8 TiB one the first create reserved")
+	}
+	if err := admitDisk(dst, bytesPerMiB, func() error { return nil }); err == nil {
+		t.Fatal("admitted a disk beside the 8 TiB one the first create reserved")
+	}
+
+	Release(first)
+	if err := Reserve(dst, bytesPerMiB); err != nil {
+		t.Fatalf("a release did not give the reservation back: %v", err)
+	}
+	t.Cleanup(func() { Release(filepath.Dir(dst)) })
+}
+
+// The disk write takes the reservation without a second check, which would count the guest's own writes against it.
+func TestAWriteTakesItsReservation(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	dst := filepath.Join(sandboxes, "new", "disk.img")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Only the reservation lets this past the check: no host holds 8 TiB free.
+	reserve(t, filepath.Dir(dst), 8<<40)
+
+	wrote := false
+	if err := admitDisk(dst, 8<<40, func() error {
+		wrote = true
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Error("the write did not run")
+	}
+	if _, ok := reservation(t, filepath.Dir(dst)); ok {
+		t.Error("the reservation outlived the disk it was for")
+	}
+}
+
+// A write past what was reserved is checked again, and the reservation goes either way.
+func TestAWritePastItsReservationIsChecked(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	dst := filepath.Join(sandboxes, "new", "disk.img")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	reserve(t, filepath.Dir(dst), bytesPerMiB)
+
+	if err := admitDisk(dst, 8<<40, func() error { return nil }); err == nil {
+		t.Fatal("admitted an 8 TiB disk on a 1 MiB reservation")
+	}
+	if _, ok := reservation(t, filepath.Dir(dst)); ok {
+		t.Error("the reservation outlived the refused write")
+	}
+}
