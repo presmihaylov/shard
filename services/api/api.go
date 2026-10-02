@@ -55,7 +55,7 @@ type EgressLog interface {
 	Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error
 }
 
-// Daemon is what GET /v0/daemon answers: the process on this socket, its substrate and its proxy ports.
+// Daemon is what GET /v0/daemon answers: the process on this socket, its substrate, its proxy ports and its tasks.
 type Daemon struct {
 	Version      string              `json:"version"`
 	PID          int                 `json:"pid"`
@@ -64,6 +64,15 @@ type Daemon struct {
 	Provider     string              `json:"provider"`
 	Capabilities models.Capabilities `json:"capabilities"`
 	Proxy        Proxy               `json:"proxy"`
+	Tasks        []TaskState         `json:"tasks"`
+}
+
+// TaskState is one supervised background task: whether it runs, how many times it restarted, and its last error.
+type TaskState struct {
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	Restarts  int    `json:"restarts"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 // Proxy is where the egress proxy listens on the bridge gateway.
