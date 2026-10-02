@@ -1,10 +1,14 @@
 package api_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +104,56 @@ func TestPutFileRefusesWhatItCannotRead(t *testing.T) {
 				t.Fatalf("the refusal still reached the orchestrator: %s", s.verbs.fileOp)
 			}
 		})
+	}
+}
+
+// trickle sends a put by hand, one byte after each pause, since the client transport holds a sized body back in its buffer.
+func trickle(t *testing.T, s seeded, pauses []time.Duration) int {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", s.server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial the server: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	if _, err := fmt.Fprintf(conn, "PUT /v0/sandboxes/%s/files?path=/srv/big HTTP/1.1\r\nHost: shard\r\nContent-Length: %d\r\n\r\n", s.running.ID, len(pauses)); err != nil {
+		t.Fatalf("send the head: %v", err)
+	}
+	for _, pause := range pauses {
+		time.Sleep(pause)
+		// A server that cut the body may already have closed the connection; its answer says why.
+		if _, err := conn.Write([]byte("x")); err != nil {
+			break
+		}
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	return resp.StatusCode
+}
+
+// A put's body streams past the ReadTimeout while it keeps moving, so a large file is never cut at the bound.
+func TestAPutOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
+	s := slow(t, seed(t), 200*time.Millisecond)
+
+	status := trickle(t, s, slices.Repeat([]time.Duration{20 * time.Millisecond}, 20))
+	if status != http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 20) {
+		t.Fatalf("a body that moved for 400 ms answered %d and landed %q, want 204 and all 20 bytes", status, s.verbs.landed)
+	}
+}
+
+// The ReadTimeout still bounds a body that stalls, so a client that stops sending cannot hold the put open.
+func TestAPutWhoseBodyStallsIsCut(t *testing.T) {
+	s := slow(t, seed(t), 200*time.Millisecond)
+
+	status := trickle(t, s, append(slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), time.Second))
+	if status == http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 15) {
+		t.Fatalf("a body that stalled for 1 s answered %d and landed %q, want a failure after the 15 bytes before the stall", status, s.verbs.landed)
 	}
 }
 

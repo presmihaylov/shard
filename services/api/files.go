@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -24,13 +25,47 @@ func (h *Handler) putFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.lifecycle.WriteFile(r.Context(), r.PathValue("id"), req, r.Body); err != nil {
+	if err := h.lifecycle.WriteFile(r.Context(), r.PathValue("id"), req, idleBounded(w, r)); err != nil {
 		h.writeError(w, err)
 
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// idleBounded turns the server's ReadTimeout into an idle bound, so a large body that keeps moving is never cut and one that stalls still is.
+func idleBounded(w http.ResponseWriter, r *http.Request) io.Reader {
+	server, ok := r.Context().Value(http.ServerContextKey).(*http.Server)
+	if !ok || server.ReadTimeout <= 0 {
+		return r.Body
+	}
+
+	return &idleBody{body: r.Body, control: http.NewResponseController(w), idle: server.ReadTimeout}
+}
+
+// idleBody moves the read deadline before each read and stops at the end, since net/http clears it then for its own background read.
+type idleBody struct {
+	body    io.Reader
+	control *http.ResponseController
+	idle    time.Duration
+	ended   bool
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	if b.ended {
+		return 0, io.EOF
+	}
+	if err := b.control.SetReadDeadline(time.Now().Add(b.idle)); err != nil {
+		return 0, fmt.Errorf("move the body's read deadline: %w", err)
+	}
+
+	n, err := b.body.Read(p)
+	if errors.Is(err, io.EOF) {
+		b.ended = true
+	}
+
+	return n, err
 }
 
 func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
