@@ -86,7 +86,7 @@ func buildShim(t *testing.T) string {
 
 	shim := filepath.Join(t.TempDir(), "shard-vz-shim")
 	run(t, "", "go", "build", "-o", shim, "../../cmd/shard-vz-shim")
-	run(t, "", "codesign", "--sign", "-", "--force", "--entitlements", "shim/entitlements.plist", shim)
+	run(t, "", "codesign", "--sign", "-", "--force", "--entitlements", "../vzshim/shim/entitlements.plist", shim)
 
 	return shim
 }
