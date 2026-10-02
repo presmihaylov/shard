@@ -251,7 +251,7 @@ proxy ports and drops the rest, so that drop is logged like any other. A proxied
 resolves to such an address carries `local` too. An IPv6 packet carries
 `ipv6`, and is named by the port it died on rather than by its address.
 
-Two limits are worth knowing:
+Three limits are worth knowing:
 
 - **A drop the daemon was down for is lost once the ring drops it.** The daemon keeps the last
   kernel sequence it is past in `${root}/egress.cursor` and writes the ring's backlog when it starts,
@@ -262,3 +262,10 @@ Two limits are worth knowing:
   probe storm cannot fill the ring.
 - **The log file is rotated at 8 MiB** and one file is kept behind it, so a sandbox holds 16 MiB at
   most. The daemon does the rotation once a minute.
+- **A drop by another firewall on the host is not in the log.** The daemon reads only the lines
+  shard's own chains write into the ring, so a packet that `ufw`, `firewalld` or a rule of your own
+  drops leaves no record, and the guest just times out. A rented box with `ufw` on is the common
+  case: its default `FORWARD` policy of `DROP` stops what a sandbox sends straight out, which is all
+  of it without a policy, and an `INPUT` policy of `DROP` stops the resolver and the proxy on the
+  bridge address. Let the bridge through there, with `ufw allow in on shard0` and
+  `ufw route allow in on shard0`.
