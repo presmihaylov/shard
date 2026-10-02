@@ -220,15 +220,16 @@ corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Eve
 snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
 `resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
 before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
-in between reseeds the guest it adopts. No guest process draws from the saved key in between,
-because the snapshot holds the guest frozen: `pause` has `shard-init` freeze the sandbox cgroup and
-then the root's writes before it stops the vCPUs, and every restore reseeds the guest before it
-thaws it (SHARD-409). The root is an overlay, which takes no `FIFREEZE`, so the freeze holds its
-ext4 upper disk instead. A guest that cannot freeze refuses the pause, and the VM runs on. The thaw
-paths are the ones `docs/provider-vz.md` lists for `vz`: a failed pause, a daemon cut between the
-freeze and the snapshot, and a control connection that dropped with the freeze's answer. A VM booted
-before this change runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so,
-and the pause is refused before any freeze, with an error that says to restart the sandbox first.
+in between reseeds the guest it adopts, and ends one that refuses the reseed or the thaw. No guest
+process draws from the saved key in between, because the snapshot holds the guest frozen: `pause`
+has `shard-init` freeze the sandbox cgroup and then the root's writes before it stops the vCPUs, and
+every restore reseeds the guest before it thaws it (SHARD-409). The root is an overlay, which takes
+no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that cannot freeze refuses
+the pause, and the VM runs on. The thaw paths are the ones `docs/provider-vz.md` lists for `vz`: a
+failed pause, a daemon cut between the freeze and the snapshot, and a control connection that
+dropped with the freeze's answer. A VM booted before this change runs a `shard-init` whose freeze
+cannot reach the upper disk. Its state says so, and the pause is refused before any freeze, with an
+error that says to restart the sandbox first.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under

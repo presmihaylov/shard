@@ -38,6 +38,8 @@ const (
 	refuseFreezeFile = "refuse-freeze"
 	// loseFreezeFile has the next freeze reach the guest and a drop take its answer, once.
 	loseFreezeFile = "lose-freeze"
+	// refuseReseedFile, while it exists, has the guest refuse every reseed.
+	refuseReseedFile = "refuse-reseed"
 	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
 	oldGuestFile = "old-guest"
 )
@@ -601,17 +603,14 @@ func (c *control) intoGuest(p []byte) (int, error) {
 	if carries(p, supervisor.KindThaw) || carries(p, supervisor.KindStop) {
 		c.f.freeze(false)
 	}
+	if _, err := os.Stat(filepath.Join(c.dir, refuseReseedFile)); err == nil && carries(p, supervisor.KindReseed) {
+		return c.refuse(p, supervisor.KindReseed)
+	}
 	if !carries(p, supervisor.KindFreeze) {
 		return c.guest.Write(p)
 	}
 	if _, err := os.Stat(filepath.Join(c.dir, refuseFreezeFile)); err == nil {
-		// A kind the guest does not take draws a failure on the freeze's id.
-		refused := strings.Replace(string(p), `"kind":"`+supervisor.KindFreeze+`"`, `"kind":"refused-freeze"`, 1)
-		if _, err := io.WriteString(c.guest, refused); err != nil {
-			return 0, err
-		}
-
-		return len(p), nil
+		return c.refuse(p, supervisor.KindFreeze)
 	}
 	err := os.Remove(filepath.Join(c.dir, loseFreezeFile))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -621,6 +620,15 @@ func (c *control) intoGuest(p []byte) (int, error) {
 	c.f.freeze(true)
 
 	return c.guest.Write(p)
+}
+
+// refuse hands the guest a kind it does not take, which draws a failure on the request's id.
+func (c *control) refuse(p []byte, kind string) (int, error) {
+	if _, err := io.WriteString(c.guest, strings.Replace(string(p), `"kind":"`+kind+`"`, `"kind":"refused-`+kind+`"`, 1)); err != nil {
+		return 0, err
+	}
+
+	return len(p), nil
 }
 
 func (c *control) intoHost(p []byte) (int, error) {

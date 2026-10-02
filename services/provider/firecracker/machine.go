@@ -101,6 +101,18 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	return m, nil
 }
 
+// unfreeze reseeds a guest a snapshot left frozen, then thaws it.
+func (m *machine) unfreeze(ctx context.Context) error {
+	if err := m.reseed(ctx); err != nil {
+		return err
+	}
+	if err := m.control.Load().Thaw(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
+	}
+
+	return nil
+}
+
 // reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
 func (m *machine) reseed(ctx context.Context) error {
 	marker := filepath.Join(m.dir, reseedFile)
@@ -325,11 +337,9 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	}
 	// A snapshot holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
 	if state.Frozen {
-		if err := m.reseed(ctx); err != nil {
-			return nil, errors.Join(err, m.close())
-		}
-		if err := control.Thaw(ctx); err != nil {
-			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest: %w", id, err), m.close())
+		if err := m.unfreeze(ctx); err != nil {
+			// A guest left frozen never runs again, and an adopter that kept its vmm would retry this on every verb.
+			return nil, errors.Join(err, m.close(), endVMM(id, client))
 		}
 	}
 

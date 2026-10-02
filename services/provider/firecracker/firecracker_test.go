@@ -849,6 +849,56 @@ func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
 	}
 }
 
+// A frozen guest the next daemon cannot reseed is ended, not left frozen for every later verb to fail on (SHARD-409).
+func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is a restore's vmm whose daemon died before the reseed, over a guest that will refuse it.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{firecracker.ReseedFile, refuseReseedFile} {
+		if err := os.WriteFile(filepath.Join(spec.StateDir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := h.open(t)
+
+	if _, err := p.Status(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "reseed the restored guest") {
+		t.Fatalf("Status of a frozen guest that refuses the reseed = %v, want the refusal", err)
+	}
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after the refused reseed = %+v, %v, want the sandbox stopped", status, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindReseed}) {
+		t.Errorf("the guest read %q, want the freeze and the refused reseed, and no thaw", got)
+	}
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Errorf("Remove after the refused reseed: %v", err)
+	}
+}
+
 // Each verb refuses the state it cannot take, and says which sandbox and which state that is.
 func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	h := newHarness(t)
