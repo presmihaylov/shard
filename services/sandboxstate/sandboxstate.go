@@ -497,6 +497,7 @@ func RecordedProvider(root string) (string, error) {
 	r := &Repository{root: root}
 
 	var unreadable error
+	var provider string
 
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
@@ -509,18 +510,19 @@ func RecordedProvider(root string) (string, error) {
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
-		// @shard ruled it: skip an unreadable record the way List does, so the records a good one names still select (SHARD-343).
+		// Skip an unreadable record the way List does, so the records a good one names still select (SHARD-343).
 		if err != nil {
 			unreadable = errors.Join(unreadable, &UnreadableError{ID: entry.Name(), Err: err})
 
 			continue
 		}
-		if sb.Provider != "" {
-			return sb.Provider, unreadable
+		// Keep scanning past the first provider, so a record that sorts later and cannot be read is still reported (SHARD-343).
+		if provider == "" && sb.Provider != "" {
+			provider = sb.Provider
 		}
 	}
 
-	return "", unreadable
+	return provider, unreadable
 }
 
 // Lister is the List a ListReadable caller holds, so a package with its own narrower records interface passes it.
@@ -532,20 +534,38 @@ type Lister interface {
 // unreadable ones by file; any other list error stops the caller, so it fails closed (SHARD-343).
 func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
 	sandboxes, err := l.List()
-
-	var unreadable *UnreadableError
-	if errors.As(err, &unreadable) {
-		if logf != nil {
-			logf("some records cannot be read, so they are skipped: %v", err)
-		}
-
+	if err == nil {
 		return sandboxes, nil
 	}
-	if err != nil {
+
+	// A join carrying any error other than an unreadable record is a real failure, so fail closed (SHARD-343).
+	if !onlyUnreadable(err) {
 		return nil, err
 	}
 
+	if logf != nil {
+		logf("some records cannot be read, so they are skipped: %v", err)
+	}
+
 	return sandboxes, nil
+}
+
+// onlyUnreadable reports whether err is non-nil and every error joined into it is an UnreadableError.
+func onlyUnreadable(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		for _, e := range errs {
+			if !onlyUnreadable(e) {
+				return false
+			}
+		}
+
+		return len(errs) > 0
+	}
+
+	var unreadable *UnreadableError
+
+	return errors.As(err, &unreadable)
 }
 
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
