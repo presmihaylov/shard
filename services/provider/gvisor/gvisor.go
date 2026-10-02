@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -732,7 +734,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
 	if status.Alive() {
-		gone, err := stale(state)
+		gone, err := p.stale(id, state)
 		if err != nil {
 			return models.Status{}, err
 		}
@@ -763,19 +765,37 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return b.RestartCount()
 }
 
-// stale reports an alive runsc state that names no live process. runsc answers running for a zombie that
-// kill(pid, 0) still reaches. A clean pause deletes the container, so a paused one runsc still holds is a
-// daemon kill cut mid-pause whose sentry pid then went, and for paused alone a gone pid is stale (SHARD-411).
-func stale(state runsc.State) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", state.PID))
+// stale reports an alive runsc state whose pid is not this sandbox's live sentry (SHARD-411).
+func (p *Provider) stale(id string, state runsc.State) (bool, error) {
+	stat, err := os.ReadFile(filepath.Join(p.procRoot, strconv.Itoa(state.PID), "stat"))
 	if vanished(err) {
 		return state.Status == runsc.StatusPaused, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read the state of the sandbox process %d: %w", state.PID, err)
 	}
+	if zombieStat(string(stat)) {
+		return true, nil
+	}
+	if state.Status != runsc.StatusPaused {
+		return false, nil
+	}
 
-	return zombieStat(string(stat)), nil
+	// a clean pause deletes the container, so a paused one with a live pid is a cut pause whose pid Linux reused unless it is still in this sandbox's cgroup.
+	return p.foreignPid(state.PID, id)
+}
+
+// foreignPid reports a pid that is not in this sandbox's cgroup, so Linux reused it after the sentry exited.
+func (p *Provider) foreignPid(pid int, id string) (bool, error) {
+	pids, err := cgroup.Procs(cgroupDir(p.cgroupRoot, id))
+	if errors.Is(err, cgroup.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the processes of sandbox %s: %w", id, err)
+	}
+
+	return !slices.Contains(pids, pid), nil
 }
 
 // vanished reads the two ways a process goes away under the read: /proc holds no such directory, or
