@@ -39,8 +39,15 @@ func TestPullWithDisksBuildsOneDiskPerDigest(t *testing.T) {
 	if err := os.Remove(img.Disk); err != nil {
 		t.Fatalf("remove the disk: %v", err)
 	}
-	if _, err := svc.Pull(t.Context(), ref); err != nil {
+	again := image.NewProgress()
+	if _, err := svc.Pull(image.WithProgress(t.Context(), again), ref); err != nil {
 		t.Fatalf("second Pull: %v", err)
+	}
+	again.Close()
+	// The tree is already there, so the rebuild says building alone and never unpacking (SHARD-385).
+	want := []string{image.StatusPulling, image.StatusLayer, image.StatusBuilding, image.StatusPulled}
+	if got := statuses(events(t, again)); !slices.Equal(got, want) {
+		t.Errorf("the rebuild of the disk said %v, want %v", got, want)
 	}
 	if _, err := os.Stat(img.Disk); err != nil {
 		t.Errorf("the disk did not come back: %v", err)

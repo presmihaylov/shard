@@ -401,8 +401,6 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 	if err != nil {
 		return err
 	}
-	ProgressFrom(ctx).Add(Event{Status: StatusUnpacking, Reference: img.Reference, Digest: img.Digest, Layers: len(layers)})
-
 	if err := s.unpackDir(ctx, img, layers); err != nil {
 		return err
 	}
@@ -439,6 +437,7 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 	}
 
 	progress := ProgressFrom(ctx)
+	progress.Add(Event{Status: StatusUnpacking, Reference: img.Reference, Digest: img.Digest, Layers: len(layers)})
 	for i, layer := range layers {
 		if err := applyLayer(ctx, tmp, layer); err != nil {
 			return fmt.Errorf("apply layer %d of %s: %w", i, img.Reference, err)
