@@ -60,6 +60,8 @@ type deps struct {
 	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
 	logSvc    *egress.Log
 	runnerSvc *runsc.Runner
+
+	unreadableLogSvc *sandboxstate.UnreadableLog
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.
@@ -87,6 +89,19 @@ func (d *deps) logger() *log.Logger {
 	}
 
 	return log.New(out, "", log.LstdFlags)
+}
+
+// unreadableLog is the shared dedup for the "record cannot be read" line, so one bad record logs once
+// per daemon life across every task, not on every list (SHARD-403).
+func (d *deps) unreadableLog() *sandboxstate.UnreadableLog {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.unreadableLogSvc == nil {
+		d.unreadableLogSvc = sandboxstate.NewUnreadableLog(d.logger().Printf)
+	}
+
+	return d.unreadableLogSvc
 }
 
 // providerName is the substrate this daemon runs. Run settles it before anything here asks.
