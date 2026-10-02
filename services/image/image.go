@@ -261,16 +261,27 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
 	s.write.Lock()
 	defer s.write.Unlock()
+
+	removed := s.unindex(ref, free)
+	if removed != nil && !errors.Is(removed, ErrNotReclaimed) {
+		return removed
+	}
+
+	// The staged trees go after the removal lock, so a big image rm never stalls a cached create.
+	if err := s.sweepStaging(); err != nil {
+		return errors.Join(removed, fmt.Errorf("%w: %w", ErrNotReclaimed, err))
+	}
+
+	return removed
+}
+
+// unindex checks, moves the artifacts of what only ref needs to staging names, and drops ref from the index.
+func (s *Service) unindex(ref string, free func() error) error {
 	// A create writes its record before it pulls, so free sees that record or the create's cache hit waits for the end.
 	s.removal.Lock()
 	defer s.removal.Unlock()
 
 	if err := free(); err != nil {
-		return err
-	}
-
-	// A host whose images are all cached never reaches the sweep in Pull, so the reclaim verb runs it.
-	if err := s.sweepStaging(); err != nil {
 		return err
 	}
 
@@ -280,22 +291,13 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 		return err
 	}
 
-	// The rootfs goes first: index.json is the record of what the store holds, so it changes last.
-	// A staging name first, so a removal that dies half way leaves no rootfs that looks unpacked.
+	// The artifacts go first: index.json is the record of what the store holds, so it changes last.
 	for _, digest := range orphaned {
-		dir := s.rootfsDir(digest)
-		staged := filepath.Join(filepath.Dir(dir), stagingPrefix+"rm-"+filepath.Base(dir))
-		if err := os.Rename(dir, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stage %s for removal: %w", dir, err)
-		}
-		if err := os.RemoveAll(staged); err != nil {
-			return fmt.Errorf("remove %s: %w", dir, err)
-		}
-		if err := os.Remove(s.diskPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove the disk of %s: %w", digest, err)
-		}
-		if err := os.Remove(s.erofsPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove the erofs image of %s: %w", digest, err)
+		for _, path := range []string{s.rootfsDir(digest), s.diskPath(digest), s.erofsPath(digest)} {
+			staged := filepath.Join(filepath.Dir(path), stagingPrefix+"rm-"+filepath.Base(path))
+			if err := os.Rename(path, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stage %s for removal: %w", path, err)
+			}
 		}
 	}
 
@@ -372,7 +374,7 @@ func (s *Service) unpacked(img registry.Image) bool {
 	return true
 }
 
-// sweepStaging drops the tree a killed pull left mid-unpack. It runs under the lock and never in
+// sweepStaging drops what a removal staged and the tree a killed pull left mid-unpack. It runs under the lock and never in
 // New, because a staging tree another writer holds is a live unpack rather than debris.
 func (s *Service) sweepStaging() error {
 	for _, dir := range artifactDirs {
