@@ -139,8 +139,10 @@ func (l *reconcileLab) run(t *testing.T) error {
 		t.Fatalf("List: %v", err)
 	}
 
-	return l.svc.ReconcileAll(t.Context(), records, func(line string) { l.reports = append(l.reports, line) })
+	return l.svc.ReconcileAll(t.Context(), records, func(line string) { l.reports = append(l.reports, line) }, runOnce)
 }
+
+func runOnce(_ string, run func() error) error { return run() }
 
 func alive(pid int) models.Status {
 	return models.Status{Exists: true, State: models.StateRunning, PID: pid}
@@ -322,6 +324,38 @@ func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once: the sandbox lives though its record says pending", lab.net.applied)
+	}
+}
+
+// A full root fails the record write once, and the start's reserve gives back the room for the second try (SHARD-351).
+func TestReconcileHandsEveryRecordWriteToTheRetry(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+	lab.repo.updateErr = errors.New("write the record: no space left on device")
+
+	records, err := lab.repo.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var steps []string
+	freeRoom := func(step string, run func() error) error {
+		steps = append(steps, step)
+		if err := run(); err == nil {
+			return nil
+		}
+		lab.repo.updateErr = nil
+
+		return run()
+	}
+	if err := lab.svc.ReconcileAll(t.Context(), records, func(line string) { lab.reports = append(lab.reports, line) }, freeRoom); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if len(steps) != 1 || !strings.Contains(steps[0], "sandbox1") {
+		t.Errorf("the retry ran the steps %q, want one naming sandbox1", steps)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped {
+		t.Errorf("the record says %s, want stopped: the second try had the room", got.State)
 	}
 }
 

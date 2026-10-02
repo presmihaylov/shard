@@ -125,6 +125,21 @@ count only when the bytes on disk differ, so a start on a full root writes nothi
 A root with no records needs no substrate, so a host without `runsc` still gets a daemon that
 answers the reads and the store verbs.
 
+## A full root
+
+A daemon that cannot start on a full root cannot serve the `rm` that frees it, so it holds 64 MiB
+back in `<root>/.reserve` (SHARD-351). It writes the file under the lock, as real blocks, and only
+when the root has at least four times that free; a fuller root starts without one and logs a line.
+
+Every write a start makes goes through one retry: the reflink probe of the data dir, the initrd of
+the vz and Firecracker providers, the reconcile record writes and the socket bind. When a step
+fails with `ENOSPC`, the daemon deletes `.reserve`, runs the step once more at once and logs one
+line with the step and the free space before and after. A second `ENOSPC` fails the step. The next
+start with room writes the reserve again.
+
+Known limit: on macOS, a Time Machine local snapshot of the Data volume can keep the blocks of a
+deleted file, so the delete gives back less than the reserve. The log line says how much less.
+
 ## Liveness
 
 Every 5 s the `liveness` task asks the substrate about every record that says `running` and makes

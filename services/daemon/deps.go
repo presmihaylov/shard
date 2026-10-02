@@ -72,6 +72,11 @@ type front interface {
 	ListenPacket(port uint16) (net.PacketConn, error)
 }
 
+// reserve is the space every write a start makes may take back once on a full root.
+func (d *deps) reserve() reserve {
+	return newReserve(d.cfg.Root, d.logger())
+}
+
 // logger writes where the daemon does; a test builds deps with no Out, and a fetch must not panic on it.
 func (d *deps) logger() *log.Logger {
 	out := d.cfg.Out
@@ -173,7 +178,14 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	provider, err := d.newProvider(repo.Dir)
+	// The vz and Firecracker builds write the initrd when shard-init changed.
+	var provider models.Provider
+	err = d.reserve().retry("the provider build", func() error {
+		var err error
+		provider, err = d.newProvider(repo.Dir)
+
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

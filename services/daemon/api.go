@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -51,8 +53,11 @@ func Run(ctx context.Context, cfg Config) error {
 	cfg.Provider = selected.Provider
 
 	d := &deps{cfg: cfg}
-	// Before the lock: the lock file would be the first entry the xfs mount hides.
-	if err := datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out}); err != nil {
+	// Before the lock: the lock file would be the first entry the xfs mount hides. The reflink probe writes a file under the root.
+	err = d.reserve().retry("the data dir check", func() error {
+		return datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out})
+	})
+	if err != nil {
 		return err
 	}
 	life := &lifecycle{deps: d, base: ctx}
@@ -78,6 +83,10 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	if err := sweepExecs(filepath.Join(r.deps.cfg.Root, execDir), report); err != nil {
 		return err
 	}
+	// Under the lock, so a daemon refused on it never writes the reserve, and after the sweep gave back what it could.
+	if err := r.deps.reserve().ensure(); err != nil {
+		return err
+	}
 
 	repo, err := r.deps.repo()
 	if err != nil {
@@ -98,7 +107,7 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 		return err
 	}
 
-	return svc.ReconcileAll(ctx, sandboxes, report)
+	return svc.ReconcileAll(ctx, sandboxes, report, r.deps.reserve().retry)
 }
 
 // sweepExecs removes the exec scratch a daemon that is gone left under dir, and reports how much there was.
@@ -159,7 +168,16 @@ func (t apiTask) Run(ctx context.Context) error {
 		return err
 	}
 
-	listener, mode, group, err := api.Listen(cfg.Root)
+	// The bind makes a new entry under the root, which a full one refuses.
+	var listener net.Listener
+	var mode fs.FileMode
+	var group string
+	err = t.deps.reserve().retry("the socket bind", func() error {
+		var err error
+		listener, mode, group, err = api.Listen(cfg.Root)
+
+		return err
+	})
 	if err != nil {
 		return err
 	}
