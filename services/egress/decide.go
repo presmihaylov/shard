@@ -97,7 +97,7 @@ func (s *Service) Unresolved(sb models.Sandbox, host string, port int) (Decision
 	}
 
 	for _, rule := range effective.Rules {
-		if matchesName(rule.Rule, host) {
+		if nameDecidesHTTP(rule.Rule, host, port) {
 			// A name rule decides by name; an allow still faces the floor, so only its deny is final here.
 			if rule.Action == models.ActionDeny {
 				return Decision{Action: models.ActionDeny, Rule: rule, ID: rule.ID, Reason: "the first matching rule of policy " + sb.Policy}, true, nil
@@ -187,6 +187,27 @@ func closesName(rule models.Rule) bool {
 	}
 
 	return true
+}
+
+// nameDecidesHTTP settles an http request by name and port alone: a named host, or the any group; never the dns group or a bare address, which need resolving.
+func nameDecidesHTTP(rule models.Rule, host string, port int) bool {
+	if rule.Protocol != "" && rule.Protocol != "tcp" {
+		return false
+	}
+	if len(rule.Ports) != 0 && !slices.Contains(rule.Ports, port) {
+		return false
+	}
+
+	switch rule.Destination.Kind {
+	case models.DestinationDomain:
+		return MatchHost(rule.Destination.Value, host)
+	case models.DestinationDomainSuffix:
+		return host == rule.Destination.Value || strings.HasSuffix(host, "."+rule.Destination.Value)
+	case models.DestinationGroup:
+		return rule.Destination.Value == GroupAny
+	}
+
+	return false
 }
 
 // mightAllowByAddress is true when an allow rule could match some resolved address on this port. Only such a

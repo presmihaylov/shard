@@ -442,6 +442,12 @@ func TestUnresolvedRefusesByNameBeforeResolving(t *testing.T) {
 			mustRule(t, models.ActionDeny, "8.8.8.8/32"),
 			mustRule(t, models.ActionAllow, "api.example.com"),
 		}},
+		{Name: "dnsonly", Rules: []models.Rule{mustRule(t, models.ActionAllow, "dns")}},
+		{Name: "web80", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:80")}},
+		{Name: "denyport", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "bad.example.com tcp:443"),
+			mustRule(t, models.ActionAllow, "93.184.216.0/24"),
+		}},
 	} {
 		if err := s.Set(policy); err != nil {
 			t.Fatal(err)
@@ -467,6 +473,14 @@ func TestUnresolvedRefusesByNameBeforeResolving(t *testing.T) {
 		{"cidr443", "evil.test", 80, true, models.ActionDeny, ""},
 		{"cidr443", "evil.test", 443, false, "", ""},
 		{"denycidr", "evil.test", 443, true, models.ActionDeny, ""},
+		// An allow-dns-only policy must refuse a forged Host unresolved: the dns group is the resolver, not a web host.
+		{"dnsonly", "exfil.attacker.test", 443, true, models.ActionDeny, ""},
+		// A name rule bound to one web port must not open the other: 443 is refused unresolved, 80 goes on to resolve.
+		{"web80", "api.example.com", 443, true, models.ActionDeny, ""},
+		{"web80", "api.example.com", 80, false, "", ""},
+		// A per-port deny is final at its port before a later address allow can resolve the name.
+		{"denyport", "bad.example.com", 443, true, models.ActionDeny, "deny bad.example.com tcp:443"},
+		{"denyport", "bad.example.com", 80, false, "", ""},
 	} {
 		got, final, err := svc.Unresolved(models.Sandbox{ID: "sandbox1", Policy: tc.policy}, tc.host, tc.port)
 		if err != nil {
