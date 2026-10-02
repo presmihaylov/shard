@@ -140,7 +140,8 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 
 	var chains []network.Chain
 	for _, sb := range sandboxes {
-		if !Fronted(sb) || !sb.Address.IsValid() {
+		// A failed create is terminal and never runs, and its teardown may have given its address to another sandbox.
+		if !Fronted(sb) || !sb.Address.IsValid() || sb.State == models.StateFailed {
 			continue
 		}
 
@@ -167,6 +168,17 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	}
 
 	return chains, nil
+}
+
+// Compiles resolves every name of the policy the way an apply does, so a policy no apply could take is never stored.
+func (s *Service) Compiles(ctx context.Context, policy models.Policy) error {
+	for _, rule := range policy.Rules {
+		if _, err := s.compile(ctx, EffectiveRule{Rule: rule}); err != nil {
+			return fmt.Errorf("rule %q: %w", FormatRule(rule), err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) compile(ctx context.Context, rule EffectiveRule) (network.Compiled, error) {

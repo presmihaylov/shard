@@ -660,9 +660,15 @@ func (d *deps) stores() (*sandbox.Stores, error) {
 		return nil, err
 	}
 
+	compiler, err := d.egressLocked()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.NewStores(sandbox.StoresConfig{
 		Repo:        repo,
 		Policies:    policies,
+		Compiler:    compiler,
 		Secrets:     secrets,
 		Images:      images,
 		Network:     func() (sandbox.Reapplier, error) { return d.net() },

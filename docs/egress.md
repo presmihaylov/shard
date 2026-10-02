@@ -181,6 +181,8 @@ nothing. What that means:
   to apply it again.
 - A name in a policy rule that does not resolve fails the apply, and with it the create, the start
   or the policy command that asked for it. The host keeps the rules it had.
+- Policy create and update resolve every name first, even when no sandbox holds the policy, and
+  refuse one that does not resolve. A failed sandbox never runs, so the apply skips its policy.
 - A CDN address shared by many hosts is allowed for all of them on the host table. The proxy closes
   that for 80 and 443 by matching the name in the request.
 

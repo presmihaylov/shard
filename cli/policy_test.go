@@ -90,6 +90,7 @@ func TestPolicyCreateRefusesWhatTheHostCannotEnforce(t *testing.T) {
 	for _, args := range [][]string{
 		{"policy", "create", "--allow", "suffix:example.com tcp:22", "web"},
 		{"policy", "create", "--allow", "api.example.com tcp:22", "web"},
+		{"policy", "create", "--allow", "gone.invalid", "web"},
 		{"policy", "create", "--allow", "any", "Web"},
 		{"policy", "create", "web", "--allow", "any"},
 		{"policy", "create"},

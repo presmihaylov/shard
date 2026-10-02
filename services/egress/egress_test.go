@@ -609,6 +609,51 @@ func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
 	}
 }
 
+// A failed create is terminal, so a name of its policy that no longer resolves must not fail every other apply (SHARD-276).
+func TestChainsSkipAFailedSandbox(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "bad", Rules: []models.Rule{mustRule(t, models.ActionAllow, "gone.example.com")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	records := fakeRecords{
+		{ID: "sandbox1", Policy: "bad", State: models.StateFailed, Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "sandbox2", Policy: "web", State: models.StateRunning, Address: netip.MustParsePrefix("10.87.0.2/16")},
+	}
+
+	chains, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
+	if err != nil {
+		t.Fatalf("Chains: %v", err)
+	}
+	if len(chains) != 1 || len(chains[0].Rules) != 1 || chains[0].Rules[0].Action != models.ActionDeny {
+		t.Fatalf("Chains = %+v, want only sandbox2's chain on the address the failed sandbox gave back", chains)
+	}
+}
+
+func TestCompilesRefusesANameThatDoesNotResolve(t *testing.T) {
+	svc := New(newStore(t), fakeRecords{}, gateway, nameservers, fakeResolver{"api.example.com": {netip.MustParseAddr("93.184.216.34")}})
+
+	good := models.Policy{Name: "web", Rules: []models.Rule{
+		mustRule(t, models.ActionAllow, "api.example.com"),
+		mustRule(t, models.ActionAllow, "*.example.com"),
+		mustRule(t, models.ActionAllow, "suffix:example.org"),
+		mustRule(t, models.ActionAllow, "203.0.113.0/24"),
+		mustRule(t, models.ActionDeny, "any"),
+	}}
+	if err := svc.Compiles(t.Context(), good); err != nil {
+		t.Errorf("Compiles refused a policy whose one name resolves: %v", err)
+	}
+
+	bad := models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "gone.example.com")}}
+	err := svc.Compiles(t.Context(), bad)
+	if err == nil || !strings.Contains(err.Error(), "deny gone.example.com") {
+		t.Errorf("Compiles = %v, want the rule that names the host", err)
+	}
+}
+
 func TestValidateWildcardDomainRules(t *testing.T) {
 	good := []string{"*", "*.example.com", "www.*.com"}
 	for _, text := range good {
