@@ -30,10 +30,8 @@ type LookupError struct {
 
 func (e *LookupError) Error() string { return e.Reason }
 
-// LookPath finds the command as the guest's execve would, inside rootfs and the binds over it: a
-// slash means from workDir, a bare name is searched on pathEnv, symlinks resolve inside the tree. It
-// answers like a shell: not found, or not executable. A found file can still fail to run (missing
-// interpreter) and keeps exit 1.
+// LookPath finds the command as the guest's execve would, through rootfs and the binds over it in order.
+// It answers like a shell, not found or not executable; a found file that fails to run keeps exit 1.
 func LookPath(rootfs string, binds []Bind, workDir, pathEnv, name string) error {
 	if name == "" {
 		return &LookupError{Reason: "empty command"}
@@ -107,14 +105,13 @@ func (t tree) lookAt(guestPath, name string) error {
 	return nil
 }
 
-// tree is the container's file system as the host sees it: the rootfs, and the binds mounted over it.
+// tree is the sandbox's file system as the host sees it: the rootfs, and the binds mounted over it.
 type tree struct {
 	rootfs string
 	binds  []Bind
 }
 
-// host names a resolved guest path on the host, through the last bind that covers it, as the runtime
-// mounts them in order and a later one hides what an earlier one put under it.
+// host names a resolved guest path on the host through the last bind over it, which hides any earlier one.
 func (t tree) host(guestPath string) string {
 	for _, bind := range slices.Backward(t.binds) {
 		guest := path.Clean(bind.Guest)
