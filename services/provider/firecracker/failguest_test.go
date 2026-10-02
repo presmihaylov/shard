@@ -2,15 +2,18 @@ package firecracker_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -65,8 +68,6 @@ func failingGuest(dir string) error {
 		if err := supervisor.WriteMessage(conn, report); err != nil {
 			return fmt.Errorf("report the death: %w", err)
 		}
-		// The fake vmm proxies the stream and dies with the guest, so the report needs a moment through it first.
-		time.Sleep(200 * time.Millisecond)
 
 		return nil
 	}
@@ -115,5 +116,58 @@ func TestAShardInitThatDiesLeavesItsExitAndItsReason(t *testing.T) {
 	status, err = h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped || status.SupervisorFailed != "" {
 		t.Fatalf("Status after a clean stop = %+v, %v, want stopped with no reason", status, err)
+	}
+}
+
+// A stop lets the vmm go only once the guest's last report has landed, however soon the VM halts after it (SHARD-290).
+func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fifo is a disk slower than the halt: the report's write blocks until the test reads it.
+	reason := filepath.Join(dir, firecracker.SupervisorFailedFile)
+	if err := syscall.Mkfifo(reason, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.provider.Stop(context.WithoutCancel(t.Context()), spec.ID, stopGrace) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop = %v while the report was still unwritten, want it to wait for the report", err)
+	case <-time.After(time.Second):
+	}
+	got, err := os.ReadFile(reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A status read would block on the fifo, so it goes before the cleanup reads one.
+	if err := os.Remove(reason); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop after the report landed = %v", err)
+	}
+	if want := strings.ReplaceAll(guestFailure, "\n", " "); string(got) != want {
+		t.Fatalf("the report wrote %q, want %q", got, want)
+	}
+	exit, err := h.provider.Wait(t.Context(), spec.ID)
+	if err != nil || exit.Code != models.SupervisorFailedExitCode {
+		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
 	}
 }

@@ -37,6 +37,8 @@ type machine struct {
 	// swap orders a replacement against close, so no stream is put in after the vmm was let go.
 	swap   sync.Mutex
 	cancel context.CancelFunc
+	// followed is closed once follow has landed the guest's last event, so a stop that saw the vmm go reads all of them (SHARD-290).
+	followed chan struct{}
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
@@ -137,6 +139,21 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	}
 	if !ended {
 		return fmt.Errorf("the vmm of sandbox %s still answers %s after its guest went", m.id, killGrace)
+	}
+
+	return p.settle(ctx, m)
+}
+
+// settle lets the vmm go once follow has landed what the guest sent before it went; a boot that never followed has nothing to wait for.
+func (p *Provider) settle(ctx context.Context, m *machine) error {
+	if m.followed != nil {
+		select {
+		case <-m.followed:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the last events of sandbox %s: %w", m.id, ctx.Err())
+		case <-time.After(killGrace):
+			return fmt.Errorf("the last events of sandbox %s still land %s after its vmm went", m.id, killGrace)
+		}
 	}
 	p.forget(m)
 
@@ -303,6 +320,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
+	m.followed = make(chan struct{})
 	go p.follow(m)
 	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
 
@@ -315,6 +333,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 
 // follow lands every event the guest sends where the file readers look, until the VM is gone.
 func (p *Provider) follow(m *machine) {
+	defer close(m.followed)
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {

@@ -279,9 +279,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 	if ended {
-		p.forget(m)
-
-		return m.close()
+		return p.settle(ctx, m)
 	}
 
 	return p.end(ctx, m)
@@ -299,9 +297,8 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	if !ended {
 		return fmt.Errorf("the vmm of sandbox %s still answers %s after a kill", m.id, killGrace)
 	}
-	p.forget(m)
 
-	return m.close()
+	return p.settle(ctx, m)
 }
 
 // Remove ends the VM and drops the overlay, the memory, the record and the sockets; the state directory itself is the repository's.

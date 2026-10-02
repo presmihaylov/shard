@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -91,7 +92,7 @@ func fakeVMM() error {
 	if err != nil {
 		return err
 	}
-	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}}
+	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}, sending: map[chan struct{}]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -130,6 +131,8 @@ type fake struct {
 	// streams is every host connection through the vsock device, so a drop can end them all; severed refuses the ones after it.
 	streams map[net.Conn]struct{}
 	severed bool
+	// sending is every guest-to-host copy still open, which a guest that powers off drains through before the vmm dies.
+	sending map[chan struct{}]struct{}
 }
 
 // bootFile is written beside the api socket at the start, with what the vmm was told to boot.
@@ -430,6 +433,7 @@ func (f *fake) start() error {
 	go func() {
 		// The exit is the guest powering off, which ends firecracker; the group kill takes an entrypoint that ignored TERM along.
 		_ = cmd.Wait()
+		f.drain()
 		_ = syscall.Kill(-os.Getpid(), syscall.SIGKILL)
 	}()
 
@@ -525,13 +529,39 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		closeWrite(guest)
 		done <- struct{}{}
 	}()
+	sent := make(chan struct{})
+	f.mu.Lock()
+	f.sending[sent] = struct{}{}
+	f.mu.Unlock()
 	go func() {
 		_, _ = io.Copy(conn, guest)
 		closeWrite(conn)
+		f.mu.Lock()
+		delete(f.sending, sent)
+		f.mu.Unlock()
+		close(sent)
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
+}
+
+// drain lets what a guest wrote before it powered off reach the host, as the vsock device delivers it before firecracker exits.
+func (f *fake) drain() {
+	f.mu.Lock()
+	pending := make([]chan struct{}, 0, len(f.sending))
+	for sent := range f.sending {
+		pending = append(pending, sent)
+	}
+	f.mu.Unlock()
+	deadline := time.After(time.Second)
+	for _, sent := range pending {
+		select {
+		case <-sent:
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // closeWrite passes a half-close through, so a guest that reads to EOF sees the host's, and the host the guest's.
