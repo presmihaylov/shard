@@ -69,8 +69,9 @@ func serveTransport(name string, boot guestBoot) error {
 		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
-		defer l.Close()
-		listeners = append(listeners, l)
+		r := &retrying{Listener: l}
+		defer r.Close()
+		listeners = append(listeners, r)
 	}
 
 	logs, err := newLogSink()

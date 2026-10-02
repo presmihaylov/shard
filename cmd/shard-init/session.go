@@ -33,7 +33,9 @@ type session struct {
 	conn    net.Conn
 	writeMu sync.Mutex
 	stdin   io.WriteCloser
-	term    *pty.Pty
+	// stdinOnce lets the frame reader and the release both close stdin, and only the first one logs a failure.
+	stdinOnce sync.Once
+	term      *pty.Pty
 }
 
 func (t *transport) serveExec(conn net.Conn) {
@@ -235,7 +237,11 @@ func (s *session) closeStdin() {
 	if s.term != nil {
 		return
 	}
-	_ = s.stdin.Close()
+	s.stdinOnce.Do(func() {
+		if err := s.stdin.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: close the stdin of an exec:", err)
+		}
+	})
 }
 
 func (s *session) resize(payload []byte) {

@@ -27,6 +27,9 @@ const dialInterval = 50 * time.Millisecond
 // requestTimeout bounds a request on top of its caller's context, so a guest that never answers frees the verb (SHARD-339).
 const requestTimeout = 30 * time.Second
 
+// startTimeout bounds the wait for an exec's first frame, so an exec no guest listener took fails instead of running forever (SHARD-354).
+var startTimeout = requestTimeout
+
 // Control is the host end of the control connection. A request waits for the guest's answer; the events between them queue for Next.
 type Control struct {
 	conn net.Conn
@@ -271,6 +274,9 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	if err := WriteMessage(conn, header); err != nil {
 		return models.ExitStatus{}, err
 	}
+	if err := conn.SetReadDeadline(time.Now().Add(startTimeout)); err != nil {
+		return models.ExitStatus{}, fmt.Errorf("exec %q: bound the start: %w", header.Argv[0], err)
+	}
 
 	// A cancelled context closes the connection, which is what unblocks the frame reader below.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -283,6 +289,9 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	exit, err := readExec(conn, id, spec)
 	if err != nil && ctx.Err() != nil {
 		return models.ExitStatus{}, fmt.Errorf("exec %q: %w", header.Argv[0], ctx.Err())
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return models.ExitStatus{}, fmt.Errorf("exec %q: the guest did not start it within %s: %w", header.Argv[0], startTimeout, err)
 	}
 	if err != nil {
 		return models.ExitStatus{}, err
@@ -344,13 +353,19 @@ func feedResizes(ctx context.Context, conn net.Conn, writes *sync.Mutex, resizes
 // readExec takes the guest's frames until the exit one; the output files get their bytes as they come.
 func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus, error) {
 	r := bufio.NewReader(conn)
-	for {
+	for first := true; ; first = false {
 		stream, payload, err := ReadFrame(r)
 		if errors.Is(err, io.EOF) {
 			return models.ExitStatus{}, errors.New("the guest closed the exec before it reported an exit")
 		}
 		if err != nil {
 			return models.ExitStatus{}, err
+		}
+		// The guest took the exec, so from here the command runs as long as it runs.
+		if first {
+			if err := conn.SetReadDeadline(time.Time{}); err != nil {
+				return models.ExitStatus{}, fmt.Errorf("clear the start bound: %w", err)
+			}
 		}
 
 		switch stream {
