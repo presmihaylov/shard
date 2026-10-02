@@ -23,7 +23,7 @@ import (
 // createExec validates the command and names the exec; nothing runs until a client attaches.
 func (h *Handler) createExec(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.ExecRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -113,7 +113,7 @@ type killRequest struct {
 // killExec sends one signal to a running exec.
 func (h *Handler) killExec(w http.ResponseWriter, r *http.Request) {
 	var req killRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -332,7 +332,7 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func (h *Handler) resizeExec(w http.ResponseWriter, r *http.Request) {
 	var size sandbox.TerminalSize
-	if err := decode(r, &size); err != nil {
+	if err := decode(w, r, &size); err != nil {
 		h.writeError(w, err)
 
 		return

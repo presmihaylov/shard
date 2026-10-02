@@ -25,6 +25,9 @@ type fakeLifecycle struct {
 	created sandbox.CreateRequest
 	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
 	createdID string
+	// hold is how long Create takes, and heldErr what its context said at the end of it.
+	hold    time.Duration
+	heldErr error
 	// copied is the body a fork or a clone sent.
 	copied sandbox.CopyRequest
 	ref    string
@@ -71,8 +74,12 @@ type fakeLifecycle struct {
 	ended chan struct{}
 }
 
-func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
+	if f.hold > 0 {
+		time.Sleep(f.hold)
+		f.heldErr = ctx.Err()
+	}
 
 	id := f.createdID
 	if id == "" {
@@ -449,6 +456,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		text   string
 	}{
 		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "invalid_request", "secret NOPE"},
+		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
 		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
 		{"a name taken", &sandboxstate.NameTakenError{Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},

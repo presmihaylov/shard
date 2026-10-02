@@ -347,7 +347,7 @@ func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyAttachRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -384,7 +384,7 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req sandbox.CreateRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -433,7 +433,7 @@ type stopRequest struct {
 
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	var req stopRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -513,7 +513,7 @@ func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
 // copySandbox is the body a fork and a clone share: both name the new sandbox and answer its record.
 func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
 	var req sandbox.CopyRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -541,8 +541,11 @@ func classify(err error) (int, models.Code) {
 	var execExited *sandbox.ExecExitedError
 	var execRunning *sandbox.ExecRunningError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
+	var tooLarge *http.MaxBytesError
 
 	switch {
+	case errors.As(err, &tooLarge):
+		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
@@ -569,16 +572,16 @@ func classify(err error) (int, models.Code) {
 	}
 }
 
+// maxBody caps a JSON body, which the decoder holds whole; no route needs more than a few KiB.
+const maxBody = 1 << 20
+
 // decode reads a JSON body into out. An empty body is the zero value; a field no route knows is refused.
-func decode(r *http.Request, out any) error {
-	dec := json.NewDecoder(r.Body)
+func decode(w http.ResponseWriter, r *http.Request, out any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(out)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
 	}
 

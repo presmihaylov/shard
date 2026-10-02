@@ -432,6 +432,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | code | status | when |
 |---|---|---|
 | `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown |
+| `body_too_large` | 413 | a JSON body over 1 MiB; the daemon reads no further and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
