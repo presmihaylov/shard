@@ -245,6 +245,7 @@ func (c *Control) request(ctx context.Context, m Message) error {
 }
 
 // send writes m by ctx's deadline: a guest that stops reading would otherwise hold the write, and c.mu with it, for good.
+// The deadline stays set after the write, since every write sets its own and a clear can fail on a peer that already closed.
 func (c *Control) send(ctx context.Context, m Message) error {
 	deadline, _ := ctx.Deadline()
 	if err := c.conn.SetWriteDeadline(deadline); err != nil {
@@ -254,9 +255,6 @@ func (c *Control) send(ctx context.Context, m Message) error {
 		c.torn = err
 
 		return err
-	}
-	if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("clear the write deadline: %w", err)
 	}
 
 	return nil
