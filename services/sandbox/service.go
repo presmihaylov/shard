@@ -855,6 +855,9 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 		return err
 	}
 
+	// A paused, dead or OOM-killed sandbox reaches here with no stop behind it, and no route finds its execs once the record goes.
+	s.dropExecs(id)
+
 	if err := s.free(ctx, id); err != nil {
 		return err
 	}
