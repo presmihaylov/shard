@@ -23,7 +23,46 @@ func TestFstabAddsTheLineOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n"; strings.Count(string(got), want) != 1 || !strings.HasPrefix(string(got), "# static\n") {
+	if want := "/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n"; strings.Count(string(got), want) != 1 || !strings.HasPrefix(string(got), "# static\n") {
+		t.Errorf("fstab holds:\n%s", got)
+	}
+}
+
+// TestFstabKeepsATailWithNoNewlineOnItsOwnLine covers a host fstab whose last line has no trailing newline.
+func TestFstabKeepsATailWithNoNewlineOnItsOwnLine(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := os.WriteFile(FstabPath, []byte("/dev/sda1 / ext4 defaults 0 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Fstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n"
+	got, err := os.ReadFile(FstabPath)
+	if err != nil || string(got) != want {
+		t.Errorf("fstab holds %q, %v", got, err)
+	}
+}
+
+// TestFstabEscapesASpaceAndStaysIdempotent covers a root path with a space, which must escape and still add once.
+func TestFstabEscapesASpaceAndStaysIdempotent(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := os.WriteFile(FstabPath, []byte("# static\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := Fstab("/var/lib/my data.xfs", "/var/lib/my data"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `/var/lib/my\040data.xfs /var/lib/my\040data xfs loop,nofail 0 0` + "\n"
+	if strings.Count(string(got), want) != 1 {
 		t.Errorf("fstab holds:\n%s", got)
 	}
 }

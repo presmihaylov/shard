@@ -108,6 +108,12 @@ func Mount(ctx context.Context, image, point string) error {
 // FstabPath is where the line goes; a test points it at a file of its own.
 var FstabPath = "/etc/fstab"
 
+// fstabEscape encodes the characters getmntent reads as field separators, so a path with a space stays one field.
+var fstabEscape = strings.NewReplacer(`\`, `\134`, " ", `\040`, "\t", `\011`, "\n", `\012`)
+
+// fstabUnescape reverses fstabEscape, so InFstab matches a stored path against the real one.
+var fstabUnescape = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+
 // Fstab adds the line that mounts image at point on boot, once; a line that mounts point from anything else is a conflict.
 func Fstab(image, point string) error {
 	present, err := InFstab(image, point)
@@ -118,15 +124,44 @@ func Fstab(image, point string) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(FstabPath, os.O_WRONLY|os.O_APPEND, 0)
+	f, err := os.OpenFile(FstabPath, os.O_RDWR|os.O_APPEND, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", FstabPath, err)
 	}
-	if _, err := fmt.Fprintf(f, "%s %s xfs loop 0 0\n", image, point); err != nil {
+	// A last line with no trailing newline would glue our line onto it and break both.
+	lead, err := fstabLead(f)
+	if err != nil {
+		return errors.Join(err, f.Close())
+	}
+	// nofail keeps a missing or broken image from stopping the boot in emergency mode.
+	if _, err := fmt.Fprintf(f, "%s%s %s xfs loop,nofail 0 0\n", lead, fstabEscape.Replace(image), fstabEscape.Replace(point)); err != nil {
 		return errors.Join(fmt.Errorf("write %s: %w", FstabPath, err), f.Close())
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", FstabPath, err), f.Close())
 	}
 
 	return f.Close()
+}
+
+// fstabLead returns the newline our line needs first, so it never joins a file whose last line has none.
+func fstabLead(f *os.File) (string, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", FstabPath, err)
+	}
+	if info.Size() == 0 {
+		return "", nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil {
+		return "", fmt.Errorf("read the end of %s: %w", FstabPath, err)
+	}
+	if last[0] == '\n' {
+		return "", nil
+	}
+
+	return "\n", nil
 }
 
 // InFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
@@ -140,10 +175,10 @@ func InFstab(image, point string) (bool, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") || fields[1] != point {
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") || fstabUnescape.Replace(fields[1]) != point {
 			continue
 		}
-		if len(fields) >= 4 && fields[0] == image && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
+		if len(fields) >= 4 && fstabUnescape.Replace(fields[0]) == image && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
 			return true, nil
 		}
 
