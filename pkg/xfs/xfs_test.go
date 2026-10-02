@@ -74,6 +74,67 @@ func TestFstabNeedsTheFile(t *testing.T) {
 	}
 }
 
+// TestFstabUpgradesAnOldLineInPlace covers a host whose fstab still holds the pre-nofail line; Fstab adds nofail without a duplicate, leaves the other lines alone, and stays idempotent.
+func TestFstabUpgradesAnOldLineInPlace(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	old := "# static\n/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n"
+	if err := os.WriteFile(FstabPath, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := Fstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "# static\n/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n"
+	got, err := os.ReadFile(FstabPath)
+	if err != nil || string(got) != want {
+		t.Errorf("fstab holds %q, %v; want %q", got, err, want)
+	}
+}
+
+// TestMigrateFstabRepairsAnOldLineOnly covers the running-host path: an old line gains nofail, and anything else stays untouched.
+func TestMigrateFstabRepairsAnOldLineOnly(t *testing.T) {
+	const image, point = "/var/lib/shard.xfs", "/var/lib/shard"
+	old := "/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n"
+	upgraded := "/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"an old line gains nofail", old, upgraded},
+		{"a line with nofail is left alone", upgraded, upgraded},
+		{"a foreign mount at the point is left alone", "/dev/sdb1 /var/lib/shard btrfs defaults 0 0\n", "/dev/sdb1 /var/lib/shard btrfs defaults 0 0\n"},
+		{"no line at the point adds nothing", "# static\n", "# static\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			FstabPath = filepath.Join(t.TempDir(), "fstab")
+			if err := os.WriteFile(FstabPath, []byte(c.in), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := MigrateFstab(image, point); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := os.ReadFile(FstabPath)
+			if err != nil || string(got) != c.want {
+				t.Errorf("fstab holds %q, %v; want %q", got, err, c.want)
+			}
+		})
+	}
+}
+
+func TestMigrateFstabIgnoresAMissingFile(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := MigrateFstab("/x.xfs", "/x"); err != nil {
+		t.Errorf("a missing fstab got %v", err)
+	}
+}
+
 func TestIsImageReadsTheSuperblockMagic(t *testing.T) {
 	t.Parallel()
 

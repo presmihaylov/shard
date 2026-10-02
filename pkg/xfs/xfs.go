@@ -2,7 +2,6 @@
 package xfs
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -114,16 +113,44 @@ var fstabEscape = strings.NewReplacer(`\`, `\134`, " ", `\040`, "\t", `\011`, "\
 // fstabUnescape reverses fstabEscape, so InFstab matches a stored path against the real one.
 var fstabUnescape = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
 
-// Fstab adds the line that mounts image at point on boot, once; a line that mounts point from anything else is a conflict.
+// Fstab adds the line that mounts image at point on boot, once, with nofail; an old line that lacks nofail is upgraded in place, and a line that mounts point from anything else is a conflict.
 func Fstab(image, point string) error {
-	present, err := InFstab(image, point)
+	scan, err := scanFstab(image, point)
 	if err != nil {
 		return err
 	}
-	if present {
+	if scan.index < 0 {
+		return appendFstab(image, point)
+	}
+	if !scan.ours {
+		return fmt.Errorf("%s: %w: %q", FstabPath, ErrFstabConflict, strings.Join(strings.Fields(scan.lines[scan.index]), " "))
+	}
+	if scan.nofail {
 		return nil
 	}
 
+	return rewriteNofail(scan.lines, scan.index)
+}
+
+// MigrateFstab upgrades an old data-disk line in place to carry nofail, so a host set up before SHARD-353 survives a missing disk at the next boot; it adds nothing when no such line is there.
+func MigrateFstab(image, point string) error {
+	scan, err := scanFstab(image, point)
+	// A host without fstab has nothing to repair, so a missing file is not an error here.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if scan.index < 0 || !scan.ours || scan.nofail {
+		return nil
+	}
+
+	return rewriteNofail(scan.lines, scan.index)
+}
+
+// appendFstab writes a fresh line that mounts image at point with nofail, on its own line at the end of fstab.
+func appendFstab(image, point string) error {
 	f, err := os.OpenFile(FstabPath, os.O_RDWR|os.O_APPEND, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", FstabPath, err)
@@ -142,6 +169,42 @@ func Fstab(image, point string) error {
 	}
 
 	return f.Close()
+}
+
+// rewriteNofail adds nofail to the options of the managed line at idx and writes fstab back, leaving every other line as it was.
+func rewriteNofail(lines []string, idx int) error {
+	fields := strings.Fields(lines[idx])
+	fields[3] = strings.Join(append(strings.Split(fields[3], ","), "nofail"), ",")
+	lines[idx] = strings.Join(fields, " ")
+
+	return writeFstab(lines)
+}
+
+// writeFstab replaces fstab through a staging file and a rename, so a crash never leaves the boot file half written.
+func writeFstab(lines []string) error {
+	info, err := os.Stat(FstabPath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", FstabPath, err)
+	}
+	staging := FstabPath + stagingSuffix
+	f, err := os.OpenFile(staging, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("open %s: %w", staging, err)
+	}
+	if _, err := f.WriteString(strings.Join(lines, "\n")); err != nil {
+		return errors.Join(fmt.Errorf("write %s: %w", staging, err), f.Close(), os.Remove(staging))
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", staging, err), f.Close(), os.Remove(staging))
+	}
+	if err := f.Close(); err != nil {
+		return errors.Join(fmt.Errorf("close %s: %w", staging, err), os.Remove(staging))
+	}
+	if err := os.Rename(staging, FstabPath); err != nil {
+		return errors.Join(fmt.Errorf("rename %s to %s: %w", staging, FstabPath, err), os.Remove(staging))
+	}
+
+	return nil
 }
 
 // fstabLead returns the newline our line needs first, so it never joins a file whose last line has none.
@@ -166,27 +229,43 @@ func fstabLead(f *os.File) (string, error) {
 
 // InFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
 func InFstab(image, point string) (bool, error) {
-	f, err := os.Open(FstabPath)
+	scan, err := scanFstab(image, point)
 	if err != nil {
-		return false, fmt.Errorf("open %s: %w", FstabPath, err)
+		return false, err
 	}
-	defer f.Close()
+	if scan.index < 0 {
+		return false, nil
+	}
+	if scan.ours {
+		return true, nil
+	}
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+	return false, fmt.Errorf("%s: %w: %q", FstabPath, ErrFstabConflict, strings.Join(strings.Fields(scan.lines[scan.index]), " "))
+}
+
+// fstabScan is the file split into lines and the first line that mounts the point, so a caller can add, upgrade or refuse it.
+type fstabScan struct {
+	lines  []string
+	index  int  // -1 when no line mounts the point
+	ours   bool // the line at index mounts point from image over loop, not another source
+	nofail bool // and it already carries nofail
+}
+
+func scanFstab(image, point string) (fstabScan, error) {
+	data, err := os.ReadFile(FstabPath)
+	if err != nil {
+		return fstabScan{}, fmt.Errorf("read %s: %w", FstabPath, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
 		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") || fstabUnescape.Replace(fields[1]) != point {
 			continue
 		}
-		if len(fields) >= 4 && fstabUnescape.Replace(fields[0]) == image && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
-			return true, nil
-		}
-
-		return false, fmt.Errorf("%s: %w: %q", FstabPath, ErrFstabConflict, strings.Join(fields, " "))
-	}
-	if err := scanner.Err(); err != nil {
-		return false, fmt.Errorf("read %s: %w", FstabPath, err)
+		ours := len(fields) >= 4 && fstabUnescape.Replace(fields[0]) == image && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop")
+		nofail := ours && slices.Contains(strings.Split(fields[3], ","), "nofail")
+		return fstabScan{lines: lines, index: i, ours: ours, nofail: nofail}, nil
 	}
 
-	return false, nil
+	return fstabScan{lines: lines, index: -1}, nil
 }
