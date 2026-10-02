@@ -320,6 +320,17 @@ func (h *host) restore(pid int, exe string, args []string) {
 
 	h.process(pid, "system.slice/shard.service", args...)
 	h.binary(pid, exe)
+	h.owner(pid, os.Getuid())
+}
+
+// owner names the user that started a process, the real uid the kernel publishes in /proc/<pid>/status.
+func (h *host) owner(pid, uid int) {
+	h.t.Helper()
+
+	status := fmt.Sprintf("Name:\trunsc\nUid:\t%d\t0\t0\t0\n", uid)
+	if err := os.WriteFile(filepath.Join(h.procRoot, strconv.Itoa(pid), "status"), []byte(status), 0o600); err != nil {
+		h.t.Fatalf("write the fake status: %v", err)
+	}
 }
 
 // A restore that has not forked the sandbox yet is outside its cgroup, so the teardown finds it by binary and command line, and only it.
@@ -414,7 +425,8 @@ func TestKillRestoresSparesAPidReusedBeforeTheKill(t *testing.T) {
 	}
 }
 
-// A restore a daemon from before restore.json launched has no record, so this runsc on the sandbox's own bundle names it.
+// A restore a daemon from before restore.json launched has no record, so a process the daemon's user started with
+// the restore's command line on the sandbox's own bundle names it, whatever runsc the deploy points at now.
 func TestKillRestoresEndsARestoreAnOlderDaemonLaunched(t *testing.T) {
 	h := newHost(t)
 	p := h.restorer("exit 1")
@@ -423,18 +435,27 @@ func TestKillRestoresEndsARestoreAnOlderDaemonLaunched(t *testing.T) {
 		t.Fatalf("StateDir: %v", err)
 	}
 	bin, bundle := p.RunscExecutable(), filepath.Join(dir, "bundle")
+	old := "/opt/gvisor/20260701/runsc"
+	if old == bin {
+		t.Fatalf("the old runsc %s must differ from the one this daemon resolves", old)
+	}
 	args := p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/source"})
-	h.restore(4401, bin, args)
-	h.restore(4402, bin+" (deleted)", p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/other"}))
-	h.restore(4403, bin, p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/other/bundle", Image: "/i"}))
-	h.restore(4404, bin, p.RestoreArgs(sandboxID+"-2", runsc.RestoreOptions{Bundle: bundle, Image: "/i"}))
-	h.restore(4405, "/usr/bin/python3", args)
-	h.restore(4406, bin, append(slices.Clone(args), "--extra"))
+	h.restore(4401, old, args)
+	h.restore(4402, old+" (deleted)", p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/other"}))
+	h.restore(4403, bin, args)
+	h.restore(4404, old, p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/other/bundle", Image: "/i"}))
+	h.restore(4405, old, p.RestoreArgs(sandboxID+"-2", runsc.RestoreOptions{Bundle: bundle, Image: "/i"}))
+	h.restore(4406, old, append(slices.Clone(args), "--extra"))
+	// The exact command line, started by another user, as a setuid binary run by that user would be.
+	h.restore(4407, "/usr/bin/python3", args)
+	h.owner(4407, os.Getuid()+1)
+	// A kernel thread links no binary and publishes no status.
+	h.process(4408, "kthreadd", args...)
 
 	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
 		t.Fatalf("KillRestores: %v", err)
 	}
-	if want := []int{4401, 4402}; !slices.Equal(h.killed, want) {
+	if want := []int{4401, 4402, 4403}; !slices.Equal(h.killed, want) {
 		t.Errorf("KillRestores killed %v, want the unrecorded restores on the bundle of %s alone: %v", h.killed, sandboxID, want)
 	}
 }

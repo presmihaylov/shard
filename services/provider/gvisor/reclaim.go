@@ -112,14 +112,14 @@ const lastRestore = "restore.json"
 type launch struct {
 	Executable string   `json:"executable"`
 	Args       []string `json:"args"`
-	// anySnapshot is a restore a daemon from before restore.json launched, whose snapshot path nothing recorded.
-	anySnapshot bool
+	// unrecorded is a restore a daemon from before restore.json launched: nothing recorded its binary or its snapshot path.
+	unrecorded bool
 }
 
 // matches says whether a command line is this launch; without a record only the snapshot path may differ.
 func (l launch) matches(args []string) bool {
 	want := l.Args
-	if i := slices.Index(want, imagePathFlag); l.anySnapshot && i >= 0 && len(args) == len(want) {
+	if i := slices.Index(want, imagePathFlag); l.unrecorded && i >= 0 && len(args) == len(want) {
 		want = slices.Clone(want)
 		want[i+1] = args[i+1]
 	}
@@ -186,7 +186,7 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 }
 
 // lastRestore reads the restore recorded for the sandbox. With no record it is the restore a daemon from
-// before restore.json ran: this runsc on this sandbox's bundle, from any snapshot.
+// before restore.json ran: on this sandbox's bundle, from any snapshot and any runsc.
 func (p *Provider) lastRestore(id string) (launch, error) {
 	dir, err := p.dirs(id)
 	if err != nil {
@@ -200,7 +200,7 @@ func (p *Provider) lastRestore(id string) (launch, error) {
 			return launch{}, err
 		}
 
-		return launch{Executable: p.runsc.Executable(), Args: p.runsc.RestoreArgs(id, runsc.RestoreOptions{Bundle: b.Dir}), anySnapshot: true}, nil
+		return launch{Args: p.runsc.RestoreArgs(id, runsc.RestoreOptions{Bundle: b.Dir}), unrecorded: true}, nil
 	}
 	if err != nil {
 		return launch{}, fmt.Errorf("read the last restore of sandbox %s: %w", id, err)
@@ -244,19 +244,11 @@ func (p *Provider) restores(last launch) ([]int, error) {
 	return pids, nil
 }
 
-// runs says whether a process is the recorded restore; a kernel thread links no binary, and an exited process none either.
+// runs says whether a process is the recorded restore.
 func (p *Provider) runs(pid int, last launch) (bool, error) {
-	exe, err := os.Readlink(filepath.Join(p.procRoot, strconv.Itoa(pid), "exe"))
-	if vanished(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read the binary of process %d: %w", pid, err)
-	}
-
-	// Any process may carry a restore's arguments, so the binary decides first; one replaced on disk reads as deleted.
-	if exe != last.Executable && exe != last.Executable+" (deleted)" {
-		return false, nil
+	ok, err := p.launched(pid, last)
+	if err != nil || !ok {
+		return false, err
 	}
 
 	args, ok, err := p.argv(pid)
@@ -265,6 +257,54 @@ func (p *Provider) runs(pid int, last launch) (bool, error) {
 	}
 
 	return last.matches(args), nil
+}
+
+// launched says whether a process could be the restore, before its arguments are read; a kernel thread links no binary.
+func (p *Provider) launched(pid int, last launch) (bool, error) {
+	exe, err := os.Readlink(filepath.Join(p.procRoot, strconv.Itoa(pid), "exe"))
+	if vanished(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the binary of process %d: %w", pid, err)
+	}
+
+	// A deploy may have repointed runsc since an unrecorded restore, so its starter decides: only root can start a root process.
+	if last.unrecorded {
+		uid, ok, err := p.realUID(pid)
+
+		return ok && uid == os.Getuid(), err
+	}
+
+	// Any process may carry a restore's arguments, so the binary decides first; one replaced on disk reads as deleted.
+	return exe == last.Executable || exe == last.Executable+" (deleted)", nil
+}
+
+// realUID reads the user that started a process; false is a process that went away under the read.
+func (p *Provider) realUID(pid int) (int, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(p.procRoot, strconv.Itoa(pid), "status"))
+	if vanished(err) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read the status of process %d: %w", pid, err)
+	}
+
+	for line := range strings.Lines(string(raw)) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "Uid:" {
+			continue
+		}
+
+		uid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return 0, false, fmt.Errorf("read the user of process %d: %w", pid, err)
+		}
+
+		return uid, true, nil
+	}
+
+	return 0, false, fmt.Errorf("the status of process %d names no user", pid)
 }
 
 // awaitEmpty proves the kill landed: an exited process leaves its cgroup before it is reaped, so a zombie never holds this up.
