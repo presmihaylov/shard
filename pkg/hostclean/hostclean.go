@@ -62,6 +62,17 @@ func removeEach(left []Leftover) error {
 	return fmt.Errorf("the host still carries what this run made:\n\t%s", strings.Join(failed, "\n\t"))
 }
 
+// Unmount takes back only the mounts under the roots it is given, and touches no other host state.
+// A run uses it to give one root back while the rest of the suite still holds sandboxes of its own.
+func Unmount(prefixes ...string) error {
+	mounts, err := leftMounts(prefixes)
+	if err != nil {
+		return err
+	}
+
+	return removeEach(mounts)
+}
+
 // Refuse fails a run on a root an earlier run of the same package left, because its lease pool lives
 // in that root: a new pool would hand out an address the old one holds and delete that sandbox's veth.
 func Refuse(prefixes ...string) error {

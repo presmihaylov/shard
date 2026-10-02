@@ -35,6 +35,9 @@ const (
 // initBinary is the shard-init the fake shim runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
 
+// guardHost is the integration suite's hold on the host for the run, and its release; a plain test run leaves it nil.
+var guardHost func() (release func() error, err error)
+
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeShimEnv) == "1" {
 		if err := fakeShim(); err != nil {
@@ -48,7 +51,23 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (code int) {
+	if guardHost != nil {
+		release, err := guardHost()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vzvm tests:", err)
+
+			return 1
+		}
+		defer func() {
+			if err := release(); err != nil {
+				fmt.Fprintln(os.Stderr, "give the host back:", err)
+
+				code = 1
+			}
+		}()
+	}
+
 	initBinary = os.Getenv(fakeInitEnv)
 	if initBinary == "" {
 		dir, err := os.MkdirTemp("", "vzinit")

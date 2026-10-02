@@ -103,17 +103,6 @@ func hostNetHeld() (bool, error) {
 	return strings.TrimSpace(string(listeners)) != "", nil
 }
 
-// Unmount takes back only the mounts under the roots it is given, and touches no other host state.
-// A run uses it to give one root back while the rest of the suite still holds sandboxes of its own.
-func Unmount(prefixes ...string) error {
-	mounts, err := leftMounts(prefixes)
-	if err != nil {
-		return err
-	}
-
-	return removeEach(mounts)
-}
-
 // leftMounts names the mounts under a temp root, deepest first: an overlay pins the root beneath it.
 func leftMounts(prefixes []string) ([]Leftover, error) {
 	listed, err := os.ReadFile(mountinfo)

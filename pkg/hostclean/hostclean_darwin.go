@@ -20,6 +20,9 @@ func leftHeld(prefixes []string) ([]Leftover, error) {
 	return leftShims(prefixes)
 }
 
+// leftMounts has nothing to name: a Mac run hands its disks to the VM and mounts nothing on the host.
+func leftMounts([]string) ([]Leftover, error) { return nil, nil }
+
 // sweepHostNet has nothing to take: the guest network of a Mac run lives inside the test process.
 func sweepHostNet() error { return nil }
 
