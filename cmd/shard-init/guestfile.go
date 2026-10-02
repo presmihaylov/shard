@@ -53,6 +53,10 @@ func overwrite(f *os.File, data []byte, perm fs.FileMode) error {
 	if !ok || !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", f.Name())
 	}
+	// A second name could be a file the user wrote, which an overwrite would change under it.
+	if stat.Nlink != 1 {
+		return fmt.Errorf("%s has %d names, and an overwrite would change the others", f.Name(), stat.Nlink)
+	}
 	if held := stat.Blocks * 512; held < int64(len(data)) {
 		return fmt.Errorf("%s holds %d bytes of blocks, and %d bytes need more", f.Name(), held, len(data))
 	}

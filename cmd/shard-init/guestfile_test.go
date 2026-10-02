@@ -98,7 +98,7 @@ func TestAStartWritesNothingWhenTheFilesHoldTheContent(t *testing.T) {
 	}
 }
 
-// Only a full disk earns the in-place write, and only into a regular file whose blocks fit the new bytes.
+// Only a full disk earns the in-place write, and only into a regular file of one name whose blocks fit the new bytes.
 func TestAFullDiskKeepsTheRefusalWhenTheFileHasNoRoom(t *testing.T) {
 	denied := func(path string, _ []byte, _ fs.FileMode) error {
 		return &fs.PathError{Op: "open", Path: path, Err: syscall.EACCES}
@@ -119,6 +119,12 @@ func TestAFullDiskKeepsTheRefusalWhenTheFileHasNoRoom(t *testing.T) {
 		}},
 		"a fifo is never waited on": {replace: full, full: true, lay: func(t *testing.T, path string) {
 			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"a hard link is never shared": {replace: full, full: true, lay: func(t *testing.T, path string) {
+			writeFile(t, path+".user", "the user wrote this file\n", 0o644)
+			if err := os.Link(path+".user", path); err != nil {
 				t.Fatal(err)
 			}
 		}},
