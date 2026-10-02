@@ -411,6 +411,42 @@ func TestStopKillsAVMThatHoldsTheStreamAndNeverAnswers(t *testing.T) {
 	}
 }
 
+// A vmm that freezes after its guest answered the stop costs the grace, not a state read's callTimeout (SHARD-388).
+func TestStopEndsOnTimeWhenTheVMMFreezesAfterTheGuestAnswers(t *testing.T) {
+	h := newHarness(t)
+	pidFile := filepath.Join(t.TempDir(), "vmm.pid")
+	// TERM reaches the entrypoint after the guest answered the stop; the sleep lets that answer cross the vmm before it freezes.
+	script := fmt.Sprintf("trap 'sleep 0.3; kill -STOP $(cat %s); while true; do sleep 0.1; done' TERM; echo trapped; while true; do sleep 0.1; done", pidFile)
+	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID == 0 {
+		t.Fatalf("Status after Start = %+v, %v, want running with a pid", status, err)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(status.PID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A TERM before the trap is set ends the entrypoint, and the stop with it, before the vmm freezes.
+	awaitLog(t, h.provider, spec.ID, 0)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, 3*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Fatalf("Stop took %s on a grace of 3s", took)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)

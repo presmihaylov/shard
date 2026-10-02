@@ -449,7 +449,7 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == fcapi.StateRunning
 }
@@ -529,7 +529,10 @@ func awaitEnded(m *machine) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		info, err := m.client.State()
+		// Each read ends with the wait, so a vmm that takes the dial and never answers costs the grace and not callTimeout (SHARD-388).
+		probe, cancel := context.WithTimeout(ctx, max(time.Until(deadline), probeFloor))
+		info, err := m.client.State(probe)
+		cancel()
 		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
 		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil
