@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -23,9 +24,11 @@ import (
 	"github.com/presmihaylov/shard/services/secret"
 )
 
-// Records is the part of the sandbox repository the broker reads, on every request, so a change lands at once.
+// Records is the part of the sandbox repository the broker reads. Generation moves when the set changes,
+// so the broker lists the records only then and answers every other request from its own map (SHARD-381).
 type Records interface {
 	List() ([]models.Sandbox, error)
+	Generation() uint64
 }
 
 // Secrets is the part of the secret store the broker reads. Value is read per request and held for that request only.
@@ -45,6 +48,10 @@ type Broker struct {
 	egress  *egress.Service
 	secrets Secrets
 	log     Log
+
+	mu        sync.Mutex
+	cachedGen uint64
+	byAddr    map[netip.Addr]models.Sandbox
 }
 
 func New(records Records, egress *egress.Service, secrets Secrets, log Log) *Broker {
@@ -227,19 +234,33 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 }
 
 func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
-	// nil log: the daemon tasks already name a bad record, so a per-request log would only flood (SHARD-343, rate SHARD-347).
-	sandboxes, err := sandboxstate.ListReadable(b.records, nil)
-	if err != nil {
-		return models.Sandbox{}, fmt.Errorf("read the sandbox records: %w", err)
-	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-	for _, sb := range sandboxes {
-		if sb.Address.IsValid() && sb.Address.Addr() == source {
-			return sb, nil
+	// The map is rebuilt only when a record changed, so a flood of questions is one map read each, not one list each (SHARD-381).
+	if gen := b.records.Generation(); b.byAddr == nil || gen != b.cachedGen {
+		// nil log: the daemon tasks already name a bad record, so a per-request log would only flood (SHARD-343, rate SHARD-347).
+		sandboxes, err := sandboxstate.ListReadable(b.records, nil)
+		if err != nil {
+			return models.Sandbox{}, fmt.Errorf("read the sandbox records: %w", err)
 		}
+
+		byAddr := make(map[netip.Addr]models.Sandbox, len(sandboxes))
+		for _, sb := range sandboxes {
+			if sb.Address.IsValid() {
+				byAddr[sb.Address.Addr()] = sb
+			}
+		}
+		b.byAddr = byAddr
+		b.cachedGen = gen
 	}
 
-	return models.Sandbox{}, fmt.Errorf("no sandbox holds the address %s", source)
+	sb, ok := b.byAddr[source]
+	if !ok {
+		return models.Sandbox{}, fmt.Errorf("no sandbox holds the address %s", source)
+	}
+
+	return sb, nil
 }
 
 func granted(sec secret.Secret, host string) bool {

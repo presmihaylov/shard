@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
@@ -39,6 +40,9 @@ type Repository struct {
 	root string
 
 	mu sync.Mutex
+
+	// gen bumps on every durable change to the set, so a reader caches by it and lists the records only when it moves (SHARD-381).
+	gen atomic.Uint64
 }
 
 // New prepares the state tree under root, which is /var/lib/shard on the box.
@@ -113,7 +117,11 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	// The name is claimed last, so a crash costs this sandbox its name and never leaks the name to
 	// a record no verb can reach.
 	if err := r.claimName(sb.Name, id); err != nil {
-		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		cleanup := os.RemoveAll(r.dir(id))
+		// write bumped the generation, so bump again now the unreachable record is gone (SHARD-381).
+		r.gen.Add(1)
+
+		return models.Sandbox{}, errors.Join(err, cleanup)
 	}
 
 	return sb, nil
@@ -307,6 +315,10 @@ func (r *Repository) Delete(id string) error {
 		return err
 	}
 
+	// Past here the delete touches the disk, so bump on every exit: a remove or sync error must not leave a
+	// reader serving a record whose file is gone, which still carries its secret (SHARD-381).
+	defer r.gen.Add(1)
+
 	// The name goes first: a link that outlived its sandbox would answer for an id nothing holds.
 	if err := r.dropName(sb.Name, id); err != nil {
 		return err
@@ -425,6 +437,10 @@ func (r *Repository) Get(id string) (models.Sandbox, error) {
 }
 
 func (r *Repository) write(sb models.Sandbox) error {
+	// store.WriteFile can land the rename and then fail its dir sync, so the new record is on disk while the
+	// call returns an error. Bump on every exit, or a reader keeps the old record and serves a revoked secret (SHARD-381).
+	defer r.gen.Add(1)
+
 	data, err := json.MarshalIndent(sb, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode the record of sandbox %s: %w", sb.ID, err)
@@ -436,6 +452,13 @@ func (r *Repository) write(sb models.Sandbox) error {
 	}
 
 	return nil
+}
+
+// Generation returns a counter that moves whenever the set may have changed on disk, so a reader rebuilds
+// its own view only when it moves and never serves a stale record. It can move without a real change, on a
+// write or delete that fails after it touched the disk, but it never misses one.
+func (r *Repository) Generation() uint64 {
+	return r.gen.Load()
 }
 
 // List returns every record it can read, ordered by id, and an error naming the ones it could not.

@@ -663,6 +663,61 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	}
 }
 
+// SHARD-381: store.WriteFile can land the rename and then fail its dir sync, so a write that returns an error
+// may still have changed the record on disk. The generation must move so a reader never keeps the old record.
+func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	sb := create(t, r)
+	before := r.Generation()
+
+	// A record directory that rejects a new temp file forces store.WriteFile to return an error, the way a
+	// landed rename with a failed dir sync does.
+	dir := sandboxDir(t, r, sb.ID)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.PID = 4242
+
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("Update over a write-protected directory: want an error, got nil")
+	}
+	if r.Generation() <= before {
+		t.Errorf("the generation did not move after a failed write: before %d, now %d", before, r.Generation())
+	}
+}
+
+// SHARD-381: a delete that touches the disk must move the generation, even on a later error, and a delete of
+// a sandbox that is not there must not, so a reader rebuilds exactly when the set changed.
+func TestDeleteMovesTheGenerationButANotFoundDeleteDoesNot(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	before := r.Generation()
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if r.Generation() <= before {
+		t.Errorf("Delete did not move the generation: before %d, now %d", before, r.Generation())
+	}
+
+	steady := r.Generation()
+	if err := r.Delete(sb.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("second Delete: %v, want ErrNotFound", err)
+	}
+	if r.Generation() != steady {
+		t.Errorf("a not-found delete moved the generation: was %d, now %d", steady, r.Generation())
+	}
+}
+
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
