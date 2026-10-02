@@ -281,8 +281,9 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 	if ended {
 		p.forget(m)
+		closeDown(m)
 
-		return m.close()
+		return nil
 	}
 
 	return p.end(ctx, m)
@@ -301,8 +302,9 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 		return fmt.Errorf("the vm of sandbox %s still runs %s after a forced stop", m.id, killGrace)
 	}
 	p.forget(m)
+	closeDown(m)
 
-	return m.close()
+	return nil
 }
 
 // Remove ends the VM and drops the disk and the record; the state directory itself is the repository's.
