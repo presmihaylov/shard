@@ -478,9 +478,13 @@ func plainComponent(kind, s string) error {
 	}
 
 	for _, c := range s {
-		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		// A case-insensitive filesystem folds an upper-case letter onto another record, so ids, names and refs stay lower case (SHARD-374).
+		if c >= 'A' && c <= 'Z' {
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another sandbox", kind, s, c)}
+		}
+		alphanumeric := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)}
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a lower-case letter, a digit, - or _", kind, s, c)}
 		}
 	}
 
