@@ -231,6 +231,10 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128}); err != nil {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
+	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
+	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
+	}
 }
 
 // An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.

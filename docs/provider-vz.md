@@ -95,7 +95,9 @@ inode bitmaps, and widens every block group to 8192 inodes, mke2fs's one per 16 
 `tar2ext4` sizes the table to the tar and left a small `--disk` under 16 spare inodes (SHARD-254);
 `ext4.Grow` can add block groups to a copy offline, up to `ext4.MaxDiskSize`,
 128 MiB short of 16 TiB, where its 32-bit block count ends; `sandbox.MaxDiskMiB` is derived from it,
-so a `--disk` the daemon accepts is one the writer can grow to. Every sandbox gets an APFS clone of the base
+and the provider refuses a `--disk` whose last block group cannot hold its own metadata, so a bound
+the daemon accepts is one the writer can grow to, unless it is under the image's own disk, which only
+the clone finds (SHARD-280). Every sandbox gets an APFS clone of the base
 (`clonefile(2)`: instant, and the blocks are shared until written), grown to its `--disk` bound,
 attached as virtio-blk, and the clone is the writable layer. `bundle.CloneRootDisk` does both and
 reports whether the blocks are shared; on a volume that is not APFS it falls back to a copy, and the

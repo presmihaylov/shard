@@ -344,7 +344,11 @@ Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox: `sy
 upper layer back when the container is deleted, at the next start or at `rm`, and it must find it. Fork
 and clone copy the layers into a disk of their own, bounded the way the source was; config.json carries
 the bound for that. The record carries the resolved bound, so `inspect` shows the value the image
-enforces, not a bare `0`. `shard create` refuses a negative value. The host needs `mkfs.ext4`, which
+enforces, not a bare `0`. `shard create` refuses a negative value. On the VM providers it also
+refuses, before the record, a bound `ext4.Grow` cannot reach, and names the nearest sizes it can: under
+7 MiB on Firecracker, the empty overlay's own size, and `N*128+1` or `N*128+2` MiB on both, where the last
+128 MiB block group is too small for its own metadata. On `vz` a bound under the image's own disk fails
+after the pull, which is when its size is known (SHARD-280). The host needs `mkfs.ext4`, which
 `e2fsprogs` ships. On Sysbox the directories `sysbox-runc` backs from the host, `/var/lib/docker` among
 them, sit outside the image and so outside the bound.
 
