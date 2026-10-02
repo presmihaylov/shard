@@ -5,15 +5,12 @@ image. This page is the design of SHARD-285, as Pres ruled it. SHARD-286 to 288 
 
 ## The serving path
 
-A VM already has a channel: `shard-init` serves `stat`, `put` and `get` on vsock port 5003, one
-connection per op, a JSON header line and then the bytes (`services/supervisor/files.go`,
-`cmd/shard-init/files.go`). gVisor, Sysbox and runc have none.
-
-**`shard-init` serves every provider.** On a container substrate the daemon runs the supervisor that
-every sandbox already mounts read-only at `/.shard/init`, through `Provider.Exec` with
-`[/.shard/init, files]`, and speaks the same wire over the exec's stdin and stdout. The host side in
-`services/supervisor` takes a `Dialer`, so a VM dials the port and a container's dial starts that
-exec: one wire, one guest implementation, one set of tests.
+**`shard-init` serves every provider, through an exec.** The daemon runs `[/.shard/init, files]`
+through `Provider.Exec` and speaks one wire over the exec's stdin and stdout: a JSON header line,
+then the bytes (`services/supervisor/filesexec.go`, `cmd/shard-init/files.go`). A container sandbox
+already mounts the supervisor read-only at `/.shard/init`. A VM's `shard-init` is the initrd's
+`/init`, so it answers that path with itself. One wire, one guest implementation, one set of tests,
+and no vsock port of its own: the old port 5003 is gone.
 
 The rejected alternative was for the daemon to read and write the sandbox's rootfs mount on the host
 (`<root>/sandboxes/<id>/bundle/rootfs`, an overlay over the image). A VM would still need the guest
@@ -84,7 +81,7 @@ uid and gid it finds.
 ## Routes
 
 Under `/v0/sandboxes/{id}`, `{id}` an id or a name. An error is the daemon's one envelope,
-`{"error":{"code","message"}}`, as `docs/daemon.md` defines it. The path is absolute; shard has no
+`{"error":{"code":"<code>","message":"<message>"}}`, as `docs/daemon.md` defines it. The path is absolute; shard has no
 default directory.
 
 | Route | Body | Answer | Ticket |
