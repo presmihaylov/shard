@@ -19,6 +19,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -226,7 +227,8 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 }
 
 func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
-	sandboxes, err := b.records.List()
+	// nil log: the daemon tasks already name a bad record, so a per-request log would only flood (SHARD-343, rate SHARD-347).
+	sandboxes, err := sandboxstate.ListReadable(b.records, nil)
 	if err != nil {
 		return models.Sandbox{}, fmt.Errorf("read the sandbox records: %w", err)
 	}

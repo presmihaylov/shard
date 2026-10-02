@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
@@ -40,7 +41,7 @@ func (t liveness) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
-		sandboxes, err := repo.List()
+		sandboxes, err := sandboxstate.ListReadable(repo, logger.Printf)
 		if err != nil {
 			return err
 		}

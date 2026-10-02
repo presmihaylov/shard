@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // restartPolicy copies what the supervisor counted onto each record that has a policy, and logs each start again.
@@ -40,7 +41,7 @@ func (t restartPolicy) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
-		sandboxes, err := repo.List()
+		sandboxes, err := sandboxstate.ListReadable(repo, logger.Printf)
 		if err != nil {
 			return err
 		}

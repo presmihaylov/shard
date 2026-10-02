@@ -1101,7 +1101,12 @@ func (s *Service) free(ctx context.Context, id string) error {
 // A create that runs beside this one is no reason to keep it: the runtime takes it again on its
 // next create, and a live sandbox does not need it to stay up.
 func (s *Service) dropSubstrateRoot() error {
+	// List direct, not ListReadable: an unreadable record may name this substrate, so keep its root until an operator fixes it (SHARD-343).
 	left, err := s.cfg.Repo.List()
+	var unreadable *sandboxstate.UnreadableError
+	if errors.As(err, &unreadable) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

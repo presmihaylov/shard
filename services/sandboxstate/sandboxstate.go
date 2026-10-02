@@ -495,6 +495,9 @@ func RecordedProvider(root string) (string, error) {
 	}
 
 	r := &Repository{root: root}
+
+	var unreadable error
+
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
 		if !entry.IsDir() || ValidID(entry.Name()) != nil {
@@ -506,15 +509,43 @@ func RecordedProvider(root string) (string, error) {
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
+		// @shard ruled it: skip an unreadable record the way List does, so the records a good one names still select (SHARD-343).
 		if err != nil {
-			return "", err
+			unreadable = errors.Join(unreadable, &UnreadableError{ID: entry.Name(), Err: err})
+
+			continue
 		}
 		if sb.Provider != "" {
-			return sb.Provider, nil
+			return sb.Provider, unreadable
 		}
 	}
 
-	return "", nil
+	return "", unreadable
+}
+
+// Lister is the List a ListReadable caller holds, so a package with its own narrower records interface passes it.
+type Lister interface {
+	List() ([]models.Sandbox, error)
+}
+
+// ListReadable returns the readable records when one will not decode and, when logf is not nil, logs the
+// unreadable ones by file; any other list error stops the caller, so it fails closed (SHARD-343).
+func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
+	sandboxes, err := l.List()
+
+	var unreadable *UnreadableError
+	if errors.As(err, &unreadable) {
+		if logf != nil {
+			logf("some records cannot be read, so they are skipped: %v", err)
+		}
+
+		return sandboxes, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return sandboxes, nil
 }
 
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
