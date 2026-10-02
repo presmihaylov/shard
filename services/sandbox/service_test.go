@@ -273,6 +273,18 @@ func TestCreateFillsTheProbeSettingsItWasNotGiven(t *testing.T) {
 	}
 }
 
+// A probe as long as an hour held the health of every sandbox, so the refusal names the bound (SHARD-363).
+func TestCreateNamesTheBoundOfAProbeTimeout(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{})
+	req := alpine()
+	req.Health = &models.HealthCheck{Command: []string{"true"}, Timeout: 3600}
+
+	_, err := svc.Create(t.Context(), req)
+	if err == nil || err.Error() != "health.timeout is at most 600 seconds, got 3600" {
+		t.Errorf("create with a 1 h probe timeout = %v, want a refusal that names the 600 s bound", err)
+	}
+}
+
 // The pool is the one thing nothing frees on a timer, so its refusal names the verbs that do.
 func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
@@ -286,23 +298,25 @@ func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 
 func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 	cases := map[string]sandbox.CreateRequest{
-		"no image":                {},
-		"a name no verb takes":    {Image: "alpine", Name: "a/b"},
-		"a negative memory":       {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
-		"a memory that overflows": {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
-		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
-		"a negative disk bound":   {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
-		"a disk that overflows":   {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
-		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
-		"a negative oom limit":    {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
-		"a probe with no command": {Image: "alpine", Health: &models.HealthCheck{}},
-		"a negative probe count":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
-		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
-		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
-		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},
-		"a bad secret name":       {Image: "alpine", Secrets: []string{"api_key"}},
-		"a doubled secret":        {Image: "alpine", Secrets: []string{"KEY", "KEY"}},
-		"a secret an env shadows": {Image: "alpine", Secrets: []string{"KEY"}, Env: []string{"KEY=1"}},
+		"no image":                        {},
+		"a name no verb takes":            {Image: "alpine", Name: "a/b"},
+		"a negative memory":               {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
+		"a memory that overflows":         {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
+		"a negative cpu bound":            {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
+		"a negative disk bound":           {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
+		"a disk that overflows":           {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
+		"a restart with no bound":         {Image: "alpine", RestartOnOOM: true},
+		"a negative oom limit":            {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
+		"a probe with no command":         {Image: "alpine", Health: &models.HealthCheck{}},
+		"a negative probe count":          {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
+		"a probe interval past its bound": {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Interval: sandbox.MaxHealthInterval + 1}},
+		"a probe timeout past its bound":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Timeout: sandbox.MaxHealthTimeout + 1}},
+		"a bad policy name":               {Image: "alpine", Policy: "Bad Name"},
+		"an env with no value":            {Image: "alpine", Env: []string{"DEBUG"}},
+		"an env with no name":             {Image: "alpine", Env: []string{"=1"}},
+		"a bad secret name":               {Image: "alpine", Secrets: []string{"api_key"}},
+		"a doubled secret":                {Image: "alpine", Secrets: []string{"KEY", "KEY"}},
+		"a secret an env shadows":         {Image: "alpine", Secrets: []string{"KEY"}, Env: []string{"KEY=1"}},
 	}
 
 	for name, req := range cases {

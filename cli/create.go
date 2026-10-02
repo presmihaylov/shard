@@ -57,8 +57,8 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "the wait before the first start again, in whole seconds; it doubles each time")
 	var health healthFlags
 	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox, which passes on exit 0")
-	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds")
-	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds")
+	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds, 1h at most")
+	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds, 10m at most")
 	flags.IntVar(&health.retries, "health-retries", 0, "the failed probes in a row that make the sandbox unhealthy")
 
 	if err := parseVerb(flags, args); err != nil {

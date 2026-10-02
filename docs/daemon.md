@@ -182,7 +182,8 @@ probes found. `--health-command <cmd>` (`"health": {"command": [...]}` in the
 create body, where the flag wraps its string as `/bin/sh -c`) runs the argv in the sandbox through
 the provider's `exec` and passes on exit 0; a signal or a command that could not start fails.
 `--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
-`retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3.
+`retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3. A
+create refuses an interval over 3600 s or a timeout over 600 s, and the error names the bound.
 
 The record carries the probe in `health_check`, with every default filled in, and the result in
 `health`: `{"status", "checked_at", "failures"}`. The status is `starting` until the first probe
@@ -192,8 +193,9 @@ absent on a sandbox that has no probe. `shard ls` shows the status in its `HEALT
 count beside it while it is above zero, as `unhealthy 3/3`; each change of status is one line in
 the daemon log, with the reason for a failure.
 
-The task ticks every second, probes every due sandbox side by side and waits for the slowest, so a
-probe runs at most one timeout late. A command probe that outruns its timeout is ended inside the
+The task ticks every second and starts each due probe on its own, so a slow probe holds back no
+other sandbox. A sandbox's next probe waits for its last one to end, so it runs at most one timeout
+late. A command probe that outruns its timeout is ended inside the
 sandbox. There is no start period: the first probe runs on the first tick after the
 create, and a slow entrypoint counts its failures from the start, so set `retries` and `interval`
 for it. Every new run starts over at `starting`: a `start`, a start again after an OOM, a `clone`
