@@ -21,6 +21,12 @@ const (
 	FilesPort   uint32 = 5003
 )
 
+// A guest opens the logs port with LogsMagic and LogsVersion; an older guest sends raw output, which almost never starts with a NUL.
+const (
+	LogsMagic        = "\x00SHL"
+	LogsVersion byte = 1
+)
+
 // The kinds a control message carries. The host sends the first seven; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"

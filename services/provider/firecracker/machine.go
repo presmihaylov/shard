@@ -444,6 +444,11 @@ func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, ou
 
 			return
 		}
+		if errors.Is(err, supervisor.ErrLogsVersion) {
+			p.keep(m, fmt.Errorf("the log stopped: %w", err))
+
+			return
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			// The guest ends the connection when it powers off, which is the normal end of a log.
 			fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: %v\n", m.id, err)

@@ -113,7 +113,7 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: readOnly, Cursor: filepath.Join(dir, cursorFile)})
 		close(done)
 	}()
-	if err := binary.Write(guest, binary.BigEndian, [2]uint64{0, 6}); err != nil {
+	if _, err := guest.Write(supervisor.LogsHeader(0, 6)); err != nil {
 		t.Fatal(err)
 	}
 	var at uint64
@@ -131,6 +131,39 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 	}
 	if m.lost == nil || !strings.Contains(m.lost.Error(), "the log stopped") || !errors.Is(m.lost, syscall.EBADF) {
 		t.Fatalf("lost = %v, want the log write failure", m.lost)
+	}
+}
+
+// A guest that speaks a logs version this host cannot read marks the sandbox lost and ends the follow: a redial meets the same guest.
+func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
+	p := &Provider{}
+	m := &machine{id: "sb-1"}
+	guest, host := net.Pipe()
+	defer guest.Close()
+	dir := t.TempDir()
+	f, err := os.Create(filepath.Join(dir, logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile)})
+		close(done)
+	}()
+	head := supervisor.LogsHeader(0, 0)
+	head[len(supervisor.LogsMagic)] = supervisor.LogsVersion + 1
+	if _, err := guest.Write(head); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follow went on after an unknown logs version")
+	}
+	if !errors.Is(m.lost, supervisor.ErrLogsVersion) {
+		t.Fatalf("lost = %v, want the unknown logs version", m.lost)
 	}
 }
 

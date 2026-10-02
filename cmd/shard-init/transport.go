@@ -501,7 +501,7 @@ func (s *logSink) hold(chunk []byte) {
 func (s *logSink) serve(conn net.Conn, from, to uint64) {
 	defer s.drop(conn)
 
-	if err := binary.Write(conn, binary.BigEndian, [2]uint64{from, to}); err != nil {
+	if _, err := conn.Write(supervisor.LogsHeader(from, to)); err != nil {
 		return
 	}
 	var at uint64
