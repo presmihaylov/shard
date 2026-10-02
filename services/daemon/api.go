@@ -85,6 +85,11 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 		return err
 	}
 
+	// A pause the last daemon did not finish left a snapshot .tmp that no record reaches anymore.
+	if err := repo.SweepSnapshotTmp(report); err != nil {
+		return err
+	}
+
 	sandboxes, unreadable := repo.List()
 	if unreadable != nil {
 		// A record shard cannot read is one it cannot correct either, and refusing to start would fix none.

@@ -583,6 +583,70 @@ func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	}
 }
 
+// A pause the daemon did not finish leaves <id>.tmp beside the snapshot, so a delete must take it too (SHARD-368).
+func TestDeleteRemovesTheUnfinishedSnapshotTmp(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	tmp := snapshotDir(t, r, sb.ID) + ".tmp"
+	if err := os.MkdirAll(tmp, 0o750); err != nil {
+		t.Fatalf("create the unfinished snapshot directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "checkpoint.img"), []byte("x"), 0o640); err != nil {
+		t.Fatalf("plant the checkpoint: %v", err)
+	}
+
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s is still there after the delete", tmp)
+	}
+}
+
+// SHARD-368: the start sweep clears every .tmp, including one whose record exists; the sweep runs before any
+// pause is in flight, so a record plus .tmp is the interrupted-pause leak, not a live pause to keep.
+func TestSweepSnapshotTmpRemovesEveryTmpIncludingAHeldOne(t *testing.T) {
+	r, root := repo(t)
+	held := create(t, r)
+
+	orphan := filepath.Join(root, "snapshots", "quiet-otter-0000.tmp")
+	heldTmp := snapshotDir(t, r, held.ID) + ".tmp"
+	for _, dir := range []string{orphan, heldTmp} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("plant %s: %v", dir, err)
+		}
+	}
+
+	var lines []string
+	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("SweepSnapshotTmp: %v", err)
+	}
+
+	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the orphan %s survived the sweep", orphan)
+	}
+	if _, err := os.Stat(heldTmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the held %s survived the sweep, so the interrupted-pause leak stays", heldTmp)
+	}
+	if _, err := r.Get(held.ID); err != nil {
+		t.Errorf("the sweep touched the record of %s: %v", held.ID, err)
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 2 unfinished snapshot") }) {
+		t.Errorf("the sweep reported %q, want both .tmp in it", lines)
+	}
+
+	// A root with nothing to sweep says nothing, so a quiet start stays quiet.
+	lines = nil
+	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("second SweepSnapshotTmp: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Errorf("the second sweep reported %q, want nothing", lines)
+	}
+}
+
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)

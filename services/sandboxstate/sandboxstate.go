@@ -281,8 +281,8 @@ func (r *Repository) Delete(id string) error {
 		return err
 	}
 
-	// The snapshot goes next: it is the one a half-done delete would leave with no id to reach it.
-	for _, path := range []string{r.snapshotDir(id), r.dir(id)} {
+	// The snapshot and its unfinished .tmp go next: nothing else reaches them once the record is gone (SHARD-368).
+	for _, path := range []string{r.snapshotDir(id), r.snapshotDir(id) + ".tmp", r.dir(id)} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -294,6 +294,45 @@ func (r *Repository) Delete(id string) error {
 			return err
 		}
 	}
+
+	return nil
+}
+
+// SweepSnapshotTmp removes every unfinished snapshot .tmp under the root. It runs once at daemon start,
+// before any pause is in flight, so a .tmp is a dead daemon's staging, record or not (SHARD-368).
+func (r *Repository) SweepSnapshotTmp(report func(string)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	dir := filepath.Join(r.root, snapshotsDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the snapshots directory %s: %w", dir, err)
+	}
+
+	swept := 0
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		// A finished snapshot is the renamed <id>, so removing the <id>.tmp staging never touches it.
+		path := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+		swept++
+	}
+	if swept == 0 {
+		return nil
+	}
+
+	if err := store.SyncDir(dir); err != nil {
+		return err
+	}
+	report(fmt.Sprintf("swept %d unfinished snapshot directories the last daemon left under %s", swept, dir))
 
 	return nil
 }
