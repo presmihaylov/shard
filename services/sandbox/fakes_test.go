@@ -99,7 +99,9 @@ type fakeRepo struct {
 	r  *recorder
 	sb models.Sandbox
 	// left is what List answers with.
-	left    []models.Sandbox
+	left []models.Sandbox
+	// listErr is the non-fatal error List returns beside left, for the unreadable-record path.
+	listErr error
 	missing bool
 	deleted bool
 	// created is the record as Create was handed it, so a test says what the request put in it.
@@ -138,7 +140,7 @@ func (f *fakeRepo) List() ([]models.Sandbox, error) {
 		return nil, err
 	}
 
-	return f.left, nil
+	return f.left, f.listErr
 }
 
 func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {

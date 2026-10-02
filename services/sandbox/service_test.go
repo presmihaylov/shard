@@ -1204,6 +1204,19 @@ func TestRemoveKeepsWhatTheSubstrateSharesWhileASandboxIsLeft(t *testing.T) {
 	}
 }
 
+// SHARD-343: a record that will not read may name this substrate, so the last rm keeps the root rather than releasing it.
+func TestRemoveKeepsTheSubstrateWhileARecordIsUnreadable(t *testing.T) {
+	svc, l := stoppedOnTheHost(t, &recorder{})
+	l.repo.listErr = &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if l.substrate.dropped {
+		t.Error("the rm dropped the substrate mount while a record could not be read")
+	}
+}
+
 func TestRemoveRefusesARunningSandbox(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, running())

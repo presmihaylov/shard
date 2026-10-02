@@ -862,3 +862,50 @@ func TestRecordedProviderOfAFreshRootCreatesNothing(t *testing.T) {
 		t.Errorf("the root holds %d entries after the ask, want it untouched", len(entries))
 	}
 }
+
+// SHARD-343: one record that will not decode must not stop a daemon reading what made the rest; a good record still names the substrate.
+func TestRecordedProviderSkipsAnUndecodableRecord(t *testing.T) {
+	r, root := repo(t)
+	a, b := create(t, r), create(t, r)
+
+	// Corrupt whichever id sorts first, so the undecodable record is read before the good one.
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	brokenID := ids[0]
+
+	path := filepath.Join(sandboxDir(t, r, brokenID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider the good record names", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != brokenID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, brokenID)
+	}
+}
+
+// SHARD-343: a root where no record decodes selects as a root with no records, not a fatal read.
+func TestRecordedProviderOfARootWhereNoRecordDecodes(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	path := filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "" {
+		t.Errorf("RecordedProvider = %q, want nothing when no record decodes", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != sb.ID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, sb.ID)
+	}
+}
