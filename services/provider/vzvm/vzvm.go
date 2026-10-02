@@ -57,6 +57,8 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after a forced stop of the VM, which nothing in the guest can refuse.
 	killGrace = 10 * time.Second
+	// flushGrace bounds the best-effort flush a forced stop asks of the guest; a slower or hung guest is cut with the VM.
+	flushGrace = 5 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
 )

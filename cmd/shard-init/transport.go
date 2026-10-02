@@ -364,7 +364,7 @@ func freezeGuest(bound *os.File) error {
 	return nil
 }
 
-// forceStop ends a stop the grace outran: it kills the entrypoint and flushes the disk, so the VM the host then cuts loses nothing the entrypoint wrote.
+// forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest, and flushes, so the cut loses nothing.
 func (t *transport) forceStop() error {
 	var stopErr error
 	t.g.run(func() {
@@ -372,6 +372,10 @@ func (t *transport) forceStop() error {
 	})
 	if stopErr != nil {
 		return stopErr
+	}
+	// The kill reaches the entrypoint alone; the freeze holds every exec and child so none dirties the disk between the sync and the cut.
+	if err := freezeBound(t.bound); err != nil {
+		return err
 	}
 
 	return syncDisk()

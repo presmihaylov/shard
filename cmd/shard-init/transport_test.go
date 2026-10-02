@@ -370,6 +370,38 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
+func TestTransportKillForcesTheEntrypointDown(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// KindKill is the forced stop: it SIGKILLs the entrypoint, freezes the rest, then flushes before the host cuts the VM.
+	if err := c.Kill(t.Context()); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	exit := awaitKind(t, c, supervisor.KindExit)
+	if exit.Exit == nil || exit.Exit.Signal != int(syscall.SIGKILL) {
+		t.Fatalf("exit = %+v, want signal SIGKILL", exit.Exit)
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the kill")
+	}
+}
+
 // A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
 func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 	cmd, dial := startTransport(t)
