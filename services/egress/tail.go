@@ -54,8 +54,8 @@ func NewTailer(root string, decisions *Log, repo Sandboxes, out *log.Logger) *Ta
 	return &Tailer{root: root, log: decisions, repo: repo, out: out}
 }
 
-// refreshEvery bounds how often a miss rebuilds the address map, so a line for a sandbox that is gone
-// does not list the records once per drop.
+// refreshEvery bounds how often a miss on a line older than the last list rebuilds the address map, so
+// the backlog's strays do not list the records once per drop.
 const refreshEvery = time.Second
 
 // Run writes every host drop the ring holds into the sandbox it belongs to, then follows the ring.
@@ -134,21 +134,23 @@ func (t *Tailer) report(fresh bool, end uint64) {
 
 // sandboxFor answers whose drop this is. A routed drop names the sandbox's address, and an IPv6 one
 // dies at the port before it is routed, so the port is the only thing that names it.
-func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
+func (t *Tailer) sandboxFor(at time.Time, keys ...string) (models.Sandbox, bool) {
 	if sb, ok := t.holder(keys); ok {
 		return sb, true
 	}
-	if time.Since(t.refreshed) < refreshEvery {
+	// A create writes the address after its port is up, so a line logged since the last list can name a sandbox it missed.
+	if !at.After(t.refreshed) && time.Since(t.refreshed) < refreshEvery {
 		return models.Sandbox{}, false
 	}
 
+	listed := time.Now()
 	sandboxes, err := t.repo.List()
 	if err != nil {
 		// A record shard cannot read names no address, so the drop is counted with the rest and not lost twice.
 		t.out.Printf("egress log: the sandbox records cannot be listed: %v", err)
 	}
 
-	t.refreshed = time.Now()
+	t.refreshed = listed
 	t.holders = map[string]models.Sandbox{}
 	for _, each := range sandboxes {
 		if each.Address.IsValid() {
@@ -167,7 +169,7 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 // is the first thing that finds out, so a write that lands on no file asks the records once more.
 func (t *Tailer) attribute(record drop) (bool, error) {
 	for range 2 {
-		sb, found := t.sandboxFor(record.source, record.iface)
+		sb, found := t.sandboxFor(record.Time, record.source, record.iface)
 		if !found {
 			t.unattributed++
 

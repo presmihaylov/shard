@@ -392,3 +392,75 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 		t.Errorf("the tailer counted the drop as unattributed: %q", got)
 	}
 }
+
+// liveRing dates each line as it hands it over, the way the ring does once the tailer has caught up.
+type liveRing struct {
+	records []kmsg.Record
+}
+
+func (l liveRing) Follow(_ context.Context, yield func(kmsg.Record) error, caughtUp func()) error {
+	caughtUp()
+	for _, record := range l.records {
+		// The kernel logs a line a moment after the last, never at the instant the tailer listed.
+		time.Sleep(time.Millisecond)
+		record.Time = time.Now().UTC()
+		if err := yield(record); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// keyedLate is a create the records list once before it has written the address, then with it.
+type keyedLate struct {
+	sandbox models.Sandbox
+	listed  int
+}
+
+func (k *keyedLate) List() ([]models.Sandbox, error) {
+	k.listed++
+	if k.listed == 1 {
+		return []models.Sandbox{{ID: k.sandbox.ID, CreatedAt: k.sandbox.CreatedAt}}, nil
+	}
+
+	return []models.Sandbox{k.sandbox}, nil
+}
+
+// SHARD-327: the port's own drop lists the records mid-create, and the guest's first drop comes well inside a second.
+func TestTailListsAgainForADropNewerThanTheList(t *testing.T) {
+	sb := sandbox(t)
+	sb.CreatedAt = time.Now().Add(-time.Minute).UTC()
+	root := t.TempDir()
+	decisions := NewLog(fakeDirs{root: root})
+	repo := &keyedLate{sandbox: sb}
+	tailer := NewTailer(root, decisions, repo, log.New(io.Discard, "", 0))
+
+	ring := liveRing{records: []kmsg.Record{drops(7, 0, "ipv6"), drops(8, 0, "private")}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, err := decisions.Read(sb.ID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(records) != 1 || records[0].Rule != "private" {
+		t.Fatalf("the log holds %+v after %d lists, want the private drop", records, repo.listed)
+	}
+}
+
+func TestTailListsTheRecordsOnceForTheBacklogsStrays(t *testing.T) {
+	repo := &fakeSandboxes{}
+	root := t.TempDir()
+	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, log.New(io.Discard, "", 0))
+
+	ring := &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 111, "2"), drops(9, 112, "2")}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if repo.listed != 1 {
+		t.Errorf("three strays listed the records %d times, want once", repo.listed)
+	}
+}

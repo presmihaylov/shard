@@ -22,9 +22,8 @@ func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 		t.Fatalf("the logs follow is %q, want text/plain; charset=utf-8", contentType)
 	}
 
-	line, err := body.ReadString('\n')
-	if err != nil || line != "marker\n" {
-		t.Fatalf("the first line is %q, %v, want marker", line, err)
+	if line := awaitLine(t, body); line != "marker\n" {
+		t.Fatalf("the first line is %q, want marker", line)
 	}
 
 	if err := app.Run(t.Context(), []string{"stop", "--time", "1s", id}); err != nil {
@@ -51,9 +50,9 @@ func TestEgressLogFollowOverPlainHTTPEndsOnTheRemove(t *testing.T) {
 		t.Fatalf("exec: %v", err)
 	}
 
-	line, err := body.ReadString('\n')
-	if err != nil || !strings.HasPrefix(line, "{") || !strings.Contains(line, `"source":"host"`) {
-		t.Fatalf("the first line is %q, %v, want one JSON record of the host drop", line, err)
+	line := awaitLine(t, body)
+	if !strings.HasPrefix(line, "{") || !strings.Contains(line, `"source":"host"`) {
+		t.Fatalf("the first line is %q, want one JSON record of the host drop", line)
 	}
 
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
@@ -80,6 +79,34 @@ func (c rawClient) follow(path string) (string, *bufio.Reader) {
 	}
 
 	return resp.Header.Get("Content-Type"), bufio.NewReader(resp.Body)
+}
+
+// awaitLine reads the first line of a follow, and fails rather than hangs when none comes.
+func awaitLine(t *testing.T, body *bufio.Reader) string {
+	t.Helper()
+
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := body.ReadString('\n')
+		done <- result{line, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("the body ended with %v before its first line, after %q", r.err, r.line)
+		}
+
+		return r.line
+	case <-time.After(15 * time.Second):
+		t.Fatal("the follow carried no line in 15s")
+	}
+
+	return ""
 }
 
 // awaitEnd reads the body to its end, which the daemon must reach on its own, and answers what was left.
