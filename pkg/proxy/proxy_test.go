@@ -83,7 +83,7 @@ func TestLeafCacheStaysBounded(t *testing.T) {
 	}
 }
 
-// fakeDirector allows every host but deny.test, sends everything to upstream, and swaps the placeholder in every header and the body.
+// fakeDirector allows every host but deny.test, holds every body but stream.test's, sends everything to upstream, and swaps the placeholder in every header and the body.
 type fakeDirector struct {
 	upstream netip.AddrPort
 	fail     error
@@ -118,7 +118,7 @@ func (d *fakeDirector) Decide(ctx context.Context, req Request) (Decision, error
 		return Decision{Rule: "deny deny.test tcp:80,443", Reason: "the policy names it"}, nil
 	}
 
-	return Decision{Allowed: true, Upstream: d.upstream}, nil
+	return Decision{Allowed: true, Upstream: d.upstream, Hold: req.Host != "stream.test"}, nil
 }
 
 func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, body []byte) ([]byte, error) {
@@ -137,6 +137,7 @@ func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, 
 type harness struct {
 	ca       *CA
 	director *fakeDirector
+	server   *Server
 	plain    net.Listener
 	secure   net.Listener
 	log      *syncWriter
@@ -169,6 +170,7 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.server = server
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -574,32 +576,167 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 	}
 }
 
-func TestProxyStreamsABodyPastTheCapUnchanged(t *testing.T) {
-	var got int64
-	var placeholderSeen bool
+// A held body takes the value up to BodyCap, whether it names its length or not; past the cap it goes as it was.
+func TestProxyRewritesAHeldBodyUpToTheCap(t *testing.T) {
+	small := []byte(`{"key":"mock-TOKEN"}`)
+	large := append(bytes.Repeat([]byte("x"), BodyCap), []byte("mock-TOKEN")...)
+	unsized := func(b []byte) io.Reader { return struct{ io.Reader }{bytes.NewReader(b)} }
+
+	for name, tc := range map[string]struct {
+		body io.Reader
+		want []byte
+	}{
+		"under the cap with no length": {unsized(small), []byte(`{"key":"real-TOKEN"}`)},
+		"past the cap with a length":   {bytes.NewReader(large), large},
+		"past the cap with no length":  {unsized(large), large},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(echoHandler))
+
+			resp, err := h.client().Post("http://api.test/upload", "application/octet-stream", tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.StatusCode != http.StatusOK || !bytes.Equal(got, tc.want) {
+				t.Errorf("the upstream got %d with %d bytes, want 200 with %d", resp.StatusCode, len(got), len(tc.want))
+			}
+		})
+	}
+}
+
+// A body the director need not hold reaches the upstream as it arrives, so it costs no memory however long it stalls (SHARD-348).
+func TestProxyStreamsABodyItNeedNotHold(t *testing.T) {
+	first := make(chan string, 1)
 	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		head := make([]byte, len("mock-"))
+		if _, err := io.ReadFull(r.Body, head); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+		first <- string(head)
+		rest, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 
 			return
 		}
-		got = int64(len(body))
-		placeholderSeen = bytes.Contains(body, []byte("mock-TOKEN"))
+		_, _ = w.Write(append(head, rest...))
 	}))
 
-	large := append(bytes.Repeat([]byte("x"), BodyCap), []byte("mock-TOKEN")...)
-	resp, err := h.client().Post("http://api.test/upload", "application/octet-stream", bytes.NewReader(large))
+	conn := h.dial(t, false)
+	write(t, conn, "POST /up HTTP/1.1\r\nHost: stream.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nmock-\r\n")
+	select {
+	case head := <-first:
+		if head != "mock-" {
+			t.Errorf("the upstream got %q first", head)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream got nothing before the body ended")
+	}
+	write(t, conn, "5\r\nTOKEN\r\n0\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK || got != int64(len(large)) {
-		t.Errorf("the upstream got %d with %d bytes, want 200 with %d", resp.StatusCode, got, len(large))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !placeholderSeen {
-		t.Error("a body past the cap was rewritten, want it streamed as it was")
+	if resp.StatusCode != http.StatusOK || string(body) != "mock-TOKEN" {
+		t.Errorf("the upstream got %d %s, want the body as it was", resp.StatusCode, body)
+	}
+}
+
+// A held body that stops arriving answers 408 and closes its connection, so it pins no memory (SHARD-348).
+func TestProxyClosesAHeldBodyThatStalls(t *testing.T) {
+	previous := heldReadTimeout
+	heldReadTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { heldReadTimeout = previous })
+
+	for name, secure := range map[string]bool{"in cleartext": false, "over tls": true} {
+		t.Run(name, func(t *testing.T) {
+			arrived := make(chan struct{}, 1)
+			h := newHarness(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { arrived <- struct{}{} }))
+
+			conn := h.dial(t, secure)
+			write(t, conn, "POST /up HTTP/1.1\r\nHost: api.test\r\nContent-Length: 600\r\n\r\n"+strings.Repeat("x", 300))
+			start := time.Now()
+			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			answer, err := io.ReadAll(conn)
+			if err != nil {
+				t.Fatalf("the connection stayed open: %v, after:\n%s", err, answer)
+			}
+
+			if !strings.HasPrefix(string(answer), "HTTP/1.1 408") || !strings.Contains(string(answer), "did not arrive within 200ms") {
+				t.Errorf("the stalled body got:\n%s", answer)
+			}
+			if waited := time.Since(start); waited > 2*time.Second {
+				t.Errorf("the connection closed %s after the body stalled", waited)
+			}
+			select {
+			case <-arrived:
+				t.Error("the upstream got a request whose body stalled")
+			default:
+			}
+			if held := h.held(); held != 0 {
+				t.Errorf("the stalled body still holds %d bytes of the budget", held)
+			}
+		})
+	}
+}
+
+// One sandbox holds at most heldBudget of bodies at once; past it a request answers 503 and holds nothing (SHARD-348).
+func TestProxyHoldsABudgetOfBodiesPerSandbox(t *testing.T) {
+	previous := heldBudget
+	heldBudget = 1000
+	t.Cleanup(func() { heldBudget = previous })
+	h := newHarness(t, http.HandlerFunc(echoHandler))
+	post := func() (int, string) {
+		resp, err := h.client().Post("http://api.test/b", "application/octet-stream", strings.NewReader(strings.Repeat("y", 600)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return resp.StatusCode, string(body)
+	}
+
+	stalled := h.dial(t, false)
+	write(t, stalled, "POST /a HTTP/1.1\r\nHost: api.test\r\nContent-Length: 600\r\n\r\n"+strings.Repeat("x", 300))
+	h.waitHeld(t, 600)
+
+	if code, body := post(); code != http.StatusServiceUnavailable || !strings.Contains(body, "budget of 1000 bytes") {
+		t.Errorf("a body past the budget got %d %s, want a 503 that names it", code, body)
+	}
+
+	write(t, stalled, strings.Repeat("x", 300))
+	resp, err := http.ReadResponse(bufio.NewReader(stalled), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("the held body got %d once it ended, want 200", resp.StatusCode)
+	}
+
+	h.waitHeld(t, 0)
+	if code, body := post(); code != http.StatusOK {
+		t.Errorf("a body after the budget came back got %d %s, want 200", code, body)
 	}
 }
 
@@ -705,4 +842,49 @@ func sendAndHalfClose(t *testing.T, h *harness) string {
 	}
 
 	return string(answer)
+}
+
+// dial opens one connection to the proxy, over tls for api.test when secure.
+func (h *harness) dial(t *testing.T, secure bool) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", h.plain.Addr().String())
+	if secure {
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(h.ca.CertPEM())
+		conn, err = tls.Dial("tcp", h.secure.Addr().String(), &tls.Config{RootCAs: pool, ServerName: "api.test", MinVersion: tls.VersionTLS12})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return conn
+}
+
+func write(t *testing.T, conn net.Conn, s string) {
+	t.Helper()
+
+	if _, err := io.WriteString(conn, s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// held is what the loopback source holds of the budget now.
+func (h *harness) held() int {
+	h.server.held.mu.Lock()
+	defer h.server.held.mu.Unlock()
+
+	return h.server.held.by[netip.MustParseAddr("127.0.0.1")]
+}
+
+func (h *harness) waitHeld(t *testing.T, want int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if h.held() == want {
+			return
+		}
+	}
+	t.Fatalf("the budget holds %d bytes, want %d", h.held(), want)
 }

@@ -228,6 +228,51 @@ func TestDecideDeniesAGrantedHostThePolicyDoesNotAllow(t *testing.T) {
 	}
 }
 
+// Only a body Rewrite could put a value in is held, so every other one streams and holds no memory (SHARD-348).
+func TestDecideHoldsTheBodyOnlyWhereAValueCanGoIn(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{
+		{ID: "locked", Policy: "web", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "free", Secrets: []string{"GONE", "TOKEN"}, Address: netip.MustParsePrefix("10.87.0.3/16")},
+	}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com", "evil.example.net"}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+		{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}},
+	}}
+	b := newBroker(t, records, secrets, web)
+	free := netip.MustParseAddr("10.87.0.3")
+
+	for name, tc := range map[string]struct {
+		req  proxy.Request
+		want bool
+	}{
+		"a granted host over tls":                       {proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, true},
+		"a granted host in cleartext":                   {proxy.Request{Source: source, Host: "api.example.com", Port: 80}, false},
+		"a granted host the policy denies":              {proxy.Request{Source: source, Host: "evil.example.net", Port: 443, TLS: true}, false},
+		"a host no secret is granted to":                {proxy.Request{Source: free, Host: "other.example.com", Port: 443, TLS: true}, false},
+		"a granted host past a secret that was removed": {proxy.Request{Source: free, Host: "evil.example.net", Port: 443, TLS: true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := b.Decide(t.Context(), tc.req)
+			if err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			if got.Hold != tc.want {
+				t.Errorf("Decide = %+v, want Hold %v", got, tc.want)
+			}
+		})
+	}
+
+	broken := newBroker(t, records, failingSecrets{}, web)
+	if _, err := broken.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}); err == nil {
+		t.Error("an unreadable secret still judged whether to hold the body")
+	}
+}
+
+type failingSecrets struct{ fakeSecrets }
+
+func (failingSecrets) Get(string) (secret.Secret, error) { return secret.Secret{}, errors.New("disk") }
+
 func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "GONE"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"*.example.com"}}}

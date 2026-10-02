@@ -84,13 +84,45 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		return proxy.Decision{}, err
 	}
 
+	allowed := decision.Action == models.ActionAllow
+	hold := false
+	if allowed {
+		hold, err = b.holds(sb, req)
+		if err != nil {
+			return proxy.Decision{}, err
+		}
+	}
+
 	// The floor, the default and a missing policy have no rule text, so the 403 and the proxy log name the id instead (SHARD-229).
 	return proxy.Decision{
-		Allowed:  decision.Action == models.ActionAllow,
+		Allowed:  allowed,
 		Upstream: upstream,
+		Hold:     hold,
 		Rule:     cmp.Or(rule, decision.ID),
 		Reason:   decision.Reason,
 	}, nil
+}
+
+// holds says whether Rewrite could put a value in the body: on TLS, with a secret of the sandbox granted to the host.
+func (b *Broker) holds(sb models.Sandbox, req proxy.Request) (bool, error) {
+	if !req.TLS {
+		return false, nil
+	}
+
+	for _, name := range sb.Secrets {
+		sec, err := b.secrets.Get(name)
+		if errors.Is(err, secret.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if granted(sec, req.Host) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // Resolve judges one DNS question by its name alone, before any resolver is asked, and logs it under source dns.
@@ -216,7 +248,7 @@ func granted(sec secret.Secret, host string) bool {
 	return false
 }
 
-// substitute edits the URL, every end-to-end header value and the held body; a body that was too long to hold is nil and passes as it is.
+// substitute edits the URL, every end-to-end header value and the held body; a body that was not held is nil and passes as it is.
 func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []byte {
 	out.URL.Path = replacer.Replace(out.URL.Path)
 	out.URL.RawPath = replacer.Replace(out.URL.RawPath)

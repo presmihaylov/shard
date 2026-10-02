@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ const (
 
 	// BodyCap bounds the body the proxy holds to rewrite; a longer one streams through unchanged.
 	BodyCap = 8 << 20
+	// heldChunk is the first buffer of a held body that names no length.
+	heldChunk = 32 << 10
 
 	readHeaderTimeout = 30 * time.Second
 	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
@@ -40,6 +43,15 @@ var (
 	// clientGoneGrace is how long a request goes on after its client hung up; none goes on for ever.
 	clientGoneGrace = 30 * time.Second
 	shutdownGrace   = 5 * time.Second
+	// heldReadTimeout bounds the read of a held body alone; a server ReadTimeout would also cut a long upload that streams.
+	heldReadTimeout = 30 * time.Second
+	// heldBudget bounds the body bytes one source holds at once, so its stalled uploads cannot fill the daemon (SHARD-348).
+	heldBudget = 32 << 20
+)
+
+var (
+	errStalled    = errors.New("the request body stalled")
+	errOverBudget = errors.New("the request bodies this sandbox holds are at their budget")
 )
 
 // Request is what the proxy knows about one request before it asks the director.
@@ -57,6 +69,8 @@ type Request struct {
 type Decision struct {
 	Allowed  bool
 	Upstream netip.AddrPort
+	// Hold says the director could put a secret in the body, so the proxy reads it first; every other body streams (SHARD-348).
+	Hold bool
 	// Rule and Reason name what decided, and go into the 403 body.
 	Rule   string
 	Reason string
@@ -65,7 +79,7 @@ type Decision struct {
 // Director judges every request and rewrites the allowed ones; the proxy itself knows no policy and no secret.
 type Director interface {
 	Decide(ctx context.Context, req Request) (Decision, error)
-	// Rewrite edits the outbound request in place; body is nil when it was too long to hold, and what comes back is sent.
+	// Rewrite edits the outbound request in place; body is nil when none was held, and what comes back is sent.
 	Rewrite(ctx context.Context, req Request, out *http.Request, body []byte) ([]byte, error)
 }
 
@@ -85,6 +99,7 @@ type Server struct {
 	log       *lograte.Log
 	transport *http.Transport
 	goneGrace time.Duration
+	held      budget
 }
 
 func New(cfg Config) (*Server, error) {
@@ -101,6 +116,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:       cfg,
 		log:       lograte.New(cfg.Log, "proxy"),
 		goneGrace: clientGoneGrace,
+		held:      budget{limit: heldBudget, by: map[netip.Addr]int{}},
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -234,13 +250,14 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 
-	out, err := s.outbound(ctx, r, req, decision)
+	out, charged, err := s.outbound(ctx, w, r, req, decision)
 	if err != nil {
 		s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeJSON(w, statusOf(err), map[string]string{"error": err.Error()})
 
 		return
 	}
+	defer s.held.give(req.Source, charged)
 
 	sw := &statusWriter{ResponseWriter: w}
 	s.forward(req.Source).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
@@ -277,11 +294,11 @@ func request(r *http.Request, secure bool) (Request, error) {
 	return req, nil
 }
 
-// outbound builds the request the upstream sees: the guest's, with the director's edits and the body it may hold.
-func (s *Server) outbound(ctx context.Context, r *http.Request, req Request, decision Decision) (*http.Request, error) {
-	held, rest, err := readBody(r.Body)
+// outbound builds the request the upstream sees, and returns the bytes it charged the source, for the caller to give back.
+func (s *Server) outbound(ctx context.Context, w http.ResponseWriter, r *http.Request, req Request, decision Decision) (*http.Request, int, error) {
+	held, rest, charged, err := s.hold(w, r, req.Source, decision.Hold)
 	if err != nil {
-		return nil, fmt.Errorf("read the request body: %w", err)
+		return nil, 0, err
 	}
 
 	out := r.Clone(context.WithValue(ctx, upstreamKey{}, decision.Upstream))
@@ -294,40 +311,135 @@ func (s *Server) outbound(ctx context.Context, r *http.Request, req Request, dec
 
 	body, err := s.cfg.Director.Rewrite(out.Context(), req, out, held)
 	if err != nil {
-		return nil, err
+		s.held.give(req.Source, charged)
+
+		return nil, 0, err
 	}
 
 	if rest != nil {
 		out.Body = rest
 
-		return out, nil
+		return out, charged, nil
 	}
 	if held == nil {
-		return out, nil
+		return out, charged, nil
 	}
 
 	out.Body = io.NopCloser(bytes.NewReader(body))
 	out.ContentLength = int64(len(body))
 	out.Header.Set("Content-Length", strconv.Itoa(len(body)))
 
-	return out, nil
+	return out, charged, nil
 }
 
-// readBody holds up to BodyCap; past that it hands back a reader over what was read and what is still coming.
-func readBody(body io.ReadCloser) ([]byte, io.ReadCloser, error) {
-	if body == nil || body == http.NoBody {
-		return nil, nil, nil
+// hold reads a body the director may put a secret in, under a deadline and the source's budget; past BodyCap the body streams on.
+func (s *Server) hold(w http.ResponseWriter, r *http.Request, source netip.Addr, wanted bool) ([]byte, io.ReadCloser, int, error) {
+	// A body that says it is past the cap can never take a secret, so it streams with nothing held.
+	if !wanted || r.Body == nil || r.Body == http.NoBody || r.ContentLength > BodyCap {
+		return nil, nil, 0, nil
 	}
 
-	held, err := io.ReadAll(io.LimitReader(body, BodyCap+1))
+	control := http.NewResponseController(w)
+	if err := control.SetReadDeadline(time.Now().Add(heldReadTimeout)); err != nil {
+		return nil, nil, 0, fmt.Errorf("set the deadline of the request body: %w", err)
+	}
+
+	held, charged, err := s.read(r.Body, r.ContentLength, source)
 	if err != nil {
-		return nil, nil, err
+		s.held.give(source, charged)
+
+		return nil, nil, 0, err
+	}
+	// Only a read that ended clears its deadline: a stalled one keeps it, so net/http closes that connection rather than read on.
+	if err := control.SetReadDeadline(time.Time{}); err != nil {
+		s.held.give(source, charged)
+
+		return nil, nil, 0, fmt.Errorf("clear the deadline of the request body: %w", err)
 	}
 	if len(held) <= BodyCap {
-		return held, nil, nil
+		return held, nil, charged, nil
 	}
 
-	return nil, &joinedBody{Reader: io.MultiReader(bytes.NewReader(held), body), closer: body}, nil
+	return nil, &joinedBody{Reader: io.MultiReader(bytes.NewReader(held), r.Body), closer: r.Body}, charged, nil
+}
+
+// read fills a buffer to the body's length, or to BodyCap+1 when it names none, taking every growth from the budget first.
+func (s *Server) read(body io.Reader, length int64, source netip.Addr) ([]byte, int, error) {
+	limit, first := BodyCap+1, heldChunk
+	if length >= 0 {
+		limit, first = int(length), int(length)
+	}
+
+	var buf []byte
+	charged := 0
+	for len(buf) < limit {
+		if len(buf) == cap(buf) {
+			size := min(max(2*cap(buf), first), limit)
+			if !s.held.take(source, size-cap(buf)) {
+				return nil, charged, fmt.Errorf("%w of %d bytes, the most the proxy holds per sandbox to put secrets in; retry once one ends", errOverBudget, s.held.limit)
+			}
+			charged += size - cap(buf)
+			grown := make([]byte, len(buf), size)
+			copy(grown, buf)
+			buf = grown
+		}
+
+		n, err := body.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if errors.Is(err, io.EOF) {
+			return buf, charged, nil
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, charged, fmt.Errorf("%w: it did not arrive within %s", errStalled, heldReadTimeout)
+		}
+		if err != nil {
+			return nil, charged, fmt.Errorf("read the request body: %w", err)
+		}
+	}
+
+	return buf, charged, nil
+}
+
+// statusOf tells a stalled body and a spent budget apart from the upstream failures every other error is.
+func statusOf(err error) int {
+	if errors.Is(err, errStalled) {
+		return http.StatusRequestTimeout
+	}
+	if errors.Is(err, errOverBudget) {
+		return http.StatusServiceUnavailable
+	}
+
+	return http.StatusBadGateway
+}
+
+// budget counts the body bytes each source holds at once.
+type budget struct {
+	limit int
+
+	mu sync.Mutex
+	by map[netip.Addr]int
+}
+
+func (b *budget) take(source netip.Addr, n int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.by[source]+n > b.limit {
+		return false
+	}
+	b.by[source] += n
+
+	return true
+}
+
+func (b *budget) give(source netip.Addr, n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.by[source] -= n
+	if b.by[source] <= 0 {
+		delete(b.by, source)
+	}
 }
 
 type joinedBody struct {
