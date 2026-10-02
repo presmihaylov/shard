@@ -9,7 +9,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// OOMHealthyRun is how long a sandbox must run after a start before the next OOM resets its count (Docker's number).
+// OOMHealthyRun is how long a sandbox must run under its memory throttle before the next OOM resets its count (Docker's number).
 const OOMHealthyRun = 10 * time.Second
 
 // OOMRestartBackoff is the wait before the second start again; it doubles after each one, up to a minute.
@@ -69,13 +69,58 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
 	if status.Alive() {
+		if err := s.recordCalm(sb.ID, current, status.Throttles, now); err != nil {
+			return err
+		}
+
 		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
 	if status.OOMKilled {
-		return s.handleOOMKilled(ctx, sb.ID, current, now, report)
+		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
 	}
 
 	return s.recordDied(sb.ID, report)
+}
+
+// recordCalm keeps the tick's throttle count on the record, and latches a healthy run there, so a daemon restart keeps both.
+func (s *Service) recordCalm(id string, sb models.Sandbox, throttles int64, now time.Time) error {
+	if !sb.RestartOnOOM {
+		return nil
+	}
+
+	healthy := healthyRun(sb, throttles, now)
+	if throttles == sb.MemoryThrottles && healthy == sb.HealthyRun {
+		return nil
+	}
+
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.MemoryThrottles = throttles
+		rec.HealthyRun = healthy
+		if throttles > sb.MemoryThrottles {
+			rec.CalmSince = now
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: record its memory throttle count: %w", id, err)
+	}
+
+	return nil
+}
+
+// healthyRun reports a run seen OOMHealthyRun in a row under its memory throttle; with no throttle that is the time since the start.
+func healthyRun(sb models.Sandbox, throttles int64, now time.Time) bool {
+	if sb.HealthyRun {
+		return true
+	}
+
+	since := sb.CalmSince
+	if since.IsZero() {
+		since = sb.StartedAt
+	}
+
+	return !since.IsZero() && throttles <= sb.MemoryThrottles && now.Sub(since) >= OOMHealthyRun
 }
 
 // recordEntrypointExit writes the entrypoint's exit onto a still-running record, so ls tells a crash from a
@@ -125,10 +170,10 @@ func (s *Service) recordDied(id string, report func(string)) error {
 
 // handleOOMKilled runs the memory decision: start the sandbox again when its record asks and the limit allows,
 // else stop it with the reason. The record counts the start before the run, so one that fails leaves no loop.
-func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sandbox, now time.Time, report func(string)) error {
-	// A run that lasted the healthy window since its last start begins the count over, so a rare OOM never spends the limit.
+func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sandbox, throttles int64, now time.Time, report func(string)) error {
+	// A healthy run begins the count over, so a rare OOM never spends the limit and a throttled loop always does.
 	restarts := sb.OOMRestarts
-	if !sb.StartedAt.IsZero() && now.Sub(sb.StartedAt) >= OOMHealthyRun {
+	if healthyRun(sb, throttles, now) {
 		restarts = 0
 	}
 

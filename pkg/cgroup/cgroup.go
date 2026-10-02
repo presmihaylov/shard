@@ -79,6 +79,8 @@ type Events struct {
 	OOM int64
 	// OOMKill counts processes killed here by any OOM killer, this cgroup's or the host's.
 	OOMKill int64
+	// High counts the times the kernel held this cgroup at memory.high and reclaimed against it.
+	High int64
 }
 
 // MemoryEvents reads memory.events. A cgroup that is gone answers ErrNotFound, which is the ordinary
@@ -115,6 +117,8 @@ func memoryEvents(dir, file string) (Events, error) {
 			events.OOM = count
 		case "oom_kill":
 			events.OOMKill = count
+		case "high":
+			events.High = count
 		}
 	}
 

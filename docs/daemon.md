@@ -153,16 +153,20 @@ address, and the entrypoint runs from the beginning. Its memory, its processes a
 gone, which is why the policy is opt-in and needs a bound: the host never counts an OOM against a
 sandbox that has none.
 
-`--restart-on-oom` alone starts it again without end; `--restart-on-oom=N` (`max_oom_restarts` in the
-create body, 0 for unlimited) caps the starts in a row at N. A run that lasts ten seconds since the
-daemon last started it clears the count first, so a sandbox that only overruns now and then never
-spends a finite cap. The record counts the starts in `oom_restarts`, with the last one in
-`oom_restarted_at`, and `shard ls` shows the policy in its `RESTART` column as `on-oom 2` when the
-count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from the last, then 2, 4
-and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds `the N starts again
-the limit allows are spent`. A `shard start` by hand still works, and clears the reason. A sandbox
-the record says `stopped` is never started again by the daemon, so a `stop` in the window is final.
-A `fork` or `clone` inherits the policy with a fresh count.
+`--restart-on-oom` alone starts it again without end; `--restart-on-oom=N` (`max_oom_restarts` in
+the create body, 0 for unlimited) caps the starts in a row at N. A run the daemon has seen ten
+seconds in a row under its memory throttle clears the count first, so a sandbox that only overruns
+now and then never spends a finite cap, and one held at the throttle until the host ends it always
+does. The throttle is `memory.high`, which only gVisor sets; on the other providers this is ten
+seconds since the start. The daemon looks every 5 s and keeps what it saw in the record, so a daemon
+restart keeps it. Host page cache counts against the throttle too, so heavy file reads near the
+bound also keep a run from counting as calm. The record counts the starts in `oom_restarts`, with
+the last one in `oom_restarted_at`, and `shard ls` shows the policy in its `RESTART` column as
+`on-oom 2` when the count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from
+the last, then 2, 4 and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds
+`the N starts again the limit allows are spent`. A `shard start` by hand still works, and clears the
+reason. A sandbox the record says `stopped` is never started again by the daemon, so a `stop` in the
+window is final. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 

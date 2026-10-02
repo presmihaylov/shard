@@ -151,8 +151,8 @@ func TestReadingTheEventCounters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MemoryEvents: %v", err)
 	}
-	if got != (cgroup.Events{OOM: 3, OOMKill: 1}) {
-		t.Fatalf("MemoryEvents = %+v, want {OOM:3 OOMKill:1}", got)
+	if got != (cgroup.Events{OOM: 3, OOMKill: 1, High: 355}) {
+		t.Fatalf("MemoryEvents = %+v, want {OOM:3 OOMKill:1 High:355}", got)
 	}
 }
 

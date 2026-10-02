@@ -309,6 +309,21 @@ shard rm --force "${OOM_ID}" >/dev/null
 OOM_ID=""
 say "one OOM, one restart, and the second boot skipped the fill"
 
+step "a microVM that outgrows its memory on every boot spends its cap"
+OOM_ID=$(shard create --memory "${OOM_MEMORY}" --restart-on-oom=2 --name e2e-oom-cap "${IMAGE}" -- /bin/sh -c \
+	'mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done')
+OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
+for _ in $(seq 1 180); do
+	grep -q '"state": *"stopped"' "${OOM_RECORD}" && grep -q 'the 2 starts again the limit allows are spent' "${OOM_RECORD}" && break
+	sleep 1
+done
+grep -q "sandbox ${OOM_ID} ran out of memory and the host ended it: started again, 2 of 2$" "${DAEMON_LOG}" || fail "the capped OOM loop of ${OOM_ID} never reached 2 of 2"
+grep -q '"state": *"stopped"' "${OOM_RECORD}" || fail "${OOM_ID} never stopped at its cap: $(cat "${OOM_RECORD}")"
+grep -q 'the 2 starts again the limit allows are spent' "${OOM_RECORD}" || fail "the stop of ${OOM_ID} names no spent limit: $(cat "${OOM_RECORD}")"
+shard rm --force "${OOM_ID}" >/dev/null
+OOM_ID=""
+say "two starts again, then the microVM stays stopped with the limit spent"
+
 step "reach the network from the microVM"
 expect_network "after the create"
 expect_exec "resolved" "the guest resolves a name through the daemon's resolver" \

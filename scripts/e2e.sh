@@ -1688,7 +1688,7 @@ OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s 
 # OOM_POLLS bounds the wait for several kills at one 5 s tick each, with their backoff, like the integration test's budget.
 OOM_POLLS="${OOM_POLLS:-360}"
 
-# oom_restart_steps refuses an OOM restart with no bound, brings one back, and asserts the restart cap per provider (SHARD-56). It runs on every provider (SHARD-191).
+# oom_restart_steps refuses an OOM restart with no bound, brings one back, and spends the restart cap (SHARD-56). It runs on every provider (SHARD-191).
 oom_restart_steps() {
 	local id rec
 
@@ -1714,26 +1714,11 @@ oom_restart_steps() {
 	say "an OOM-killed sandbox that asked for restart comes back and runs"
 	drop_sandbox "${id}"
 
-	step "the OOM restart cap: reset on gvisor, spent on sysbox and runc"
-	# The cap outcome differs by death speed, so each provider asserts its own (Pres rules memory.high in tasks.md; that PR changes this step).
-	# gvisor deaths take ~30s under memory.high, past the 10s reset, so the count resets and the cap never spends.
-	# sysbox and runc deaths take ~5s, inside the 10s reset, so the count never resets and the cap spends.
+	step "the OOM restart cap spends on a loop that never runs calm"
+	# A gvisor death sits ~30s at memory.high, past the 10s window, but only a calm run resets the count (SHARD-332).
 	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" -- /bin/sh -c "${OOM_BOMB}")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
-	if [ "${PROVIDER}" = "gvisor" ]; then
-		marker="sandbox ${id} ran out of memory and the host ended it: started again, 1 of 2"
-		for _ in $(seq 1 "${OOM_POLLS}"); do
-			[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] && break
-			sleep 1
-		done
-		[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] || fail "the capped OOM loop did not come back three times on gvisor: $(cat "${rec}")"
-		grep -q 'are spent' "${rec}" && fail "the capped OOM loop gave up on gvisor, but the reset must keep it unspent: $(cat "${rec}")"
-		grep -q '"state": *"running"' "${rec}" || fail "the capped OOM loop did not settle running on gvisor: $(cat "${rec}")"
-		say "on gvisor the capped OOM loop resets across healthy runs and never spends the limit"
-		drop_sandbox "${id}"
-		return
-	fi
 	for _ in $(seq 1 "${OOM_POLLS}"); do
 		grep -q '"state": *"stopped"' "${rec}" && grep -q 'the 2 starts again the limit allows are spent' "${rec}" && break
 		sleep 1

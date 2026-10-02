@@ -41,11 +41,16 @@ type Sandbox struct {
 
 	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
-	// MaxOOMRestarts caps those starts in a row, 0 for unlimited; a healthy run of ten seconds resets the count.
+	// MaxOOMRestarts caps those starts in a row, 0 for unlimited; ten seconds under the memory throttle resets the count.
 	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
 	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
 	OOMRestarts    int       `json:"oom_restarts,omitempty"`
 	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
+	// MemoryThrottles is the host's throttle count the daemon last saw this run, and CalmSince the tick it last grew, zero for none.
+	MemoryThrottles int64     `json:"memory_throttles,omitempty"`
+	CalmSince       time.Time `json:"calm_since,omitzero"`
+	// HealthyRun latches once the daemon saw this run OOMHealthyRun in a row under its memory throttle.
+	HealthyRun bool `json:"healthy_run,omitempty"`
 
 	// HealthCheck is the probe the daemon runs while the sandbox runs, and Health what it found, both nil without one.
 	HealthCheck *HealthCheck `json:"health_check,omitempty"`

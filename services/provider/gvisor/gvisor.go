@@ -738,6 +738,12 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		status.OOMKilled = p.oomKilled(id)
 	}
 
+	throttles, err := p.throttles(id)
+	if err != nil {
+		return models.Status{}, err
+	}
+	status.Throttles = throttles
+
 	return status, nil
 }
 
@@ -791,6 +797,20 @@ func (p *Provider) oomKilled(id string) bool {
 	}
 
 	return events.OOM > 0
+}
+
+// throttles counts how often the host held the sandbox at memory.high, so the OOM reset can tell a calm run from a throttled one.
+func (p *Provider) throttles(id string) (int64, error) {
+	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
+	// A cgroup that is gone, or one with no memory controller, has no memory.high to be held at.
+	if errors.Is(err, cgroup.ErrNotFound) || errors.Is(err, cgroup.ErrNoController) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the memory throttle count of sandbox %s: %w", id, err)
+	}
+
+	return events.High, nil
 }
 
 // stateOf maps the five runsc statuses onto the four shard states. A container runsc is still

@@ -86,6 +86,8 @@ type Status struct {
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
 	// A stop leaves the same leftovers, so a record that says stopped outranks it.
 	OOMKilled bool
+	// Throttles counts the times the host held the sandbox at its memory throttle, 0 on a substrate with none.
+	Throttles int64
 }
 
 // Alive is the assertion the keep-alive default rests on: only Stop and Pause take a sandbox out of it.
