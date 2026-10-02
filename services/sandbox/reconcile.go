@@ -33,6 +33,10 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 			// A daemon that refused to start could not stop or remove this sandbox, nor serve the others (SHARD-341).
 			report(fmt.Sprintf("sandbox %s: %v, the record is left as it is", sb.ID, err))
 			state = sb.State
+			// A live sandbox whose record write failed still needs its host rules back.
+			if probes[i].err == nil && probes[i].status.Alive() {
+				state = models.StateRunning
+			}
 		}
 		if state == models.StateRunning {
 			running++

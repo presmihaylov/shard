@@ -18,6 +18,8 @@ import (
 type recRepo struct {
 	t       *testing.T
 	records map[string]*models.Sandbox
+	// updateErr fails every record write, the way a full root does.
+	updateErr error
 }
 
 func (r *recRepo) Get(id string) (models.Sandbox, error) {
@@ -43,6 +45,9 @@ func (r *recRepo) List() ([]models.Sandbox, error) {
 func (r *recRepo) Create(sb models.Sandbox) (models.Sandbox, error) { return sb, nil }
 
 func (r *recRepo) Update(id string, mutate func(*models.Sandbox) error) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	sb, ok := r.records[id]
 	if !ok {
 		return errors.New("no sandbox " + id)
@@ -297,6 +302,26 @@ func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)
+	}
+}
+
+// A full root fails the write that says running, and the live sandbox still needs its egress policy (SHARD-341).
+func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
+	lab.repo.updateErr = errors.New("write the record: no space left on device")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll = %v, want nil so one record does not stop the daemon", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StatePending {
+		t.Errorf("the record says %s, want pending: the write failed, so the record is left as it is", got.State)
+	}
+	if !reported(lab.reports, "sandbox sandbox1", "no space left on device") {
+		t.Errorf("the reports %q name no line with sandbox1 and its error", lab.reports)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once: the sandbox lives though its record says pending", lab.net.applied)
 	}
 }
 
