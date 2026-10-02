@@ -82,7 +82,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	if err != nil {
 		return nil, err
 	}
-	if err := resumeCut(id, client, info, r); err != nil {
+	if err := resumeCut(id, dir, client, info, &r); err != nil {
 		return nil, err
 	}
 
@@ -112,20 +112,27 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
 	}
 	// A VM that will not run again cannot take the guest's stop either, so it is cut by its socket.
-	if err := resumeCut(id, client, info, r); err != nil {
+	if err := resumeCut(id, dir, client, info, &r); err != nil {
 		return nil, p.end(ctx, &machine{id: id, dir: dir, client: client})
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
 }
 
-// resumeCut runs a VM that only a daemon killed between a pause and its record leaves paused, and attach then thaws its root (SHARD-375).
-func resumeCut(id string, client *vz.Client, info vz.Info, r record) error {
-	if info.State != vz.StatePaused || r.Paused {
+// resumeCut runs a VM a daemon killed inside a pause left paused, before or after its record said so, and attach then thaws its root (SHARD-375, SHARD-402).
+func resumeCut(id, dir string, client *vz.Client, info vz.Info, r *record) error {
+	if info.State != vz.StatePaused {
 		return nil
 	}
+	// The pause never returned, so the service still says running; Pauses stays, so the next save outranks one the swap installed.
+	if r.Paused {
+		r.Paused = false
+		if err := writeRecord(dir, *r); err != nil {
+			return fmt.Errorf("sandbox %s: undo the paused record a cut pause left: %w", id, err)
+		}
+	}
 	if _, err := client.Resume(); err != nil {
-		return fmt.Errorf("resume sandbox %s, which a pause cut before its record left paused: %w", id, err)
+		return fmt.Errorf("resume sandbox %s, which a cut pause left paused: %w", id, err)
 	}
 
 	return nil
