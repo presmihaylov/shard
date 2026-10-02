@@ -86,7 +86,8 @@ Usage:
                            hand a created or stopped sandbox a stored policy, replacing the one it holds
   shard policy detach <id|name>
                            leave the sandbox with no policy, and with its secrets untouched
-  shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
+  shard daemon [--log <path>]
+                           run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd, or launchd on a Mac, starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
   shard tokens mint --name <sub> [--duration <dur>] [--scopes <list>] [--tokens-file <path>] --secret-file <path>
@@ -140,6 +141,9 @@ Stop flags, which must precede the id or name:
 Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
+
+Daemon flags:
+  --log <path>             the file to write the daemon's output to, reopened on SIGHUP so newsyslog can rotate it; a Mac only
 
 Serve flags:
   --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)
