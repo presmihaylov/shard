@@ -45,6 +45,10 @@ LONE_PORT=${LONE_PORT:-12377}
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
 HOST_LINK_PREFIX="shardv"
+# The bridge the daemon makes, host-wide like its two policy tables, and its own name with no override: a wrong one would delete a bridge this run never made.
+HOST_BRIDGE="shard0"
+# Who held the bridge and the tables when the teardown had to keep them, and empty when it dropped them.
+HOST_NET_KEPT=""
 
 STEP="startup"
 ID=""
@@ -385,6 +389,58 @@ unmount_under() {
 wipe_root() {
 	unmount_under "${SHARD_ROOT}"
 	rm -rf "${SHARD_ROOT}" || true
+	clear_host_net
+}
+
+# bridge_ports lists the links on the host bridge, which on a veth or a tap is a sandbox of any root.
+bridge_ports() { find "/sys/class/net/${HOST_BRIDGE}/brif" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true; }
+
+# proxy_listeners lists what serves the proxy ports, which every daemon binds whatever its root.
+proxy_listeners() { ss -Hltnp "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )" 2>/dev/null || true; }
+
+# host_net_holder names what still uses the bridge and the tables, and prints nothing once nothing does.
+host_net_holder() {
+	local ports listeners
+	ports=$(bridge_ports | tr '\n' ' ')
+	if [ -n "${ports% }" ]; then
+		echo "the bridge still has the ports ${ports% }"
+
+		return
+	fi
+	listeners=$(proxy_listeners)
+	[ -z "${listeners}" ] || echo "a daemon still serves the proxy: ${listeners}"
+}
+
+# clear_host_net drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them.
+clear_host_net() {
+	local table
+	HOST_NET_KEPT=$(host_net_holder)
+	if [ -n "${HOST_NET_KEPT}" ]; then
+		echo "teardown: kept the bridge ${HOST_BRIDGE} and the shard nft tables, because ${HOST_NET_KEPT}" >&2
+
+		return 0
+	fi
+	for table in inet bridge; do
+		if nft list table "${table}" shard >/dev/null 2>&1; then
+			nft delete table "${table}" shard
+		fi
+	done
+	if ip link show "${HOST_BRIDGE}" >/dev/null 2>&1; then
+		ip link del "${HOST_BRIDGE}"
+	fi
+}
+
+# check_host_net_clear fails a run that left the bridge or a table nothing held, and names the holder of one it had to keep.
+check_host_net_clear() {
+	if [ -n "${HOST_NET_KEPT}" ]; then
+		say "the bridge ${HOST_BRIDGE} and the shard nft tables stay, because ${HOST_NET_KEPT}"
+
+		return
+	fi
+	ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
+	nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
+	nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
+	say "the bridge ${HOST_BRIDGE} and both shard nft tables are gone"
 }
 
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
@@ -2186,6 +2242,7 @@ teardown
 [ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
 ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
 say "the run's own root, the echo's netns and its link are gone"
+check_host_net_clear
 
 trap - EXIT
 echo

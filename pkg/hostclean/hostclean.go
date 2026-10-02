@@ -5,15 +5,18 @@ package hostclean
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
 // sandboxDir and recordFile are where the daemon keeps a sandbox record, under a root of its own.
@@ -30,6 +33,14 @@ var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc", "ru
 
 // mountinfo is where the kernel lists what is mounted, and the only account of a mount a run leaked.
 const mountinfo = "/proc/self/mountinfo"
+
+// The bridge and the policy tables every root on the host shares, by the names services/network gives them.
+const (
+	hostBridge = "shard0"
+	hostTable  = "shard"
+)
+
+var hostTableFamilies = []string{"inet", "bridge"}
 
 // Leftover is one thing a run left on the host, with the way to take it back.
 type Leftover struct {
@@ -62,14 +73,62 @@ func Find(prefixes ...string) ([]Leftover, error) {
 	return append(append(mounts, sandboxes...), roots...), nil
 }
 
-// Sweep takes back everything Find names, and what it could not take is what the error names.
+// Sweep takes back everything Find names, then the host network once nothing holds it, and what it could not take is what the error names.
 func Sweep(prefixes ...string) error {
 	left, err := Find(prefixes...)
 	if err != nil {
 		return err
 	}
 
+	return errors.Join(removeEach(left), sweepHostNet())
+}
+
+// sweepHostNet drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them.
+func sweepHostNet() error {
+	held, err := hostNetHeld()
+	if err != nil {
+		return err
+	}
+	if held {
+		return nil
+	}
+
+	listed, err := exec.Command("nft", "list", "tables").Output()
+	if err != nil {
+		return fmt.Errorf("list the nft tables: %w", err)
+	}
+	tables := strings.Split(string(listed), "\n")
+
+	var left []Leftover
+	for _, family := range hostTableFamilies {
+		if slices.Contains(tables, "table "+family+" "+hostTable) {
+			left = append(left, Leftover{What: "the " + family + " table", Path: hostTable, remove: run("nft", "delete", "table", family, hostTable)})
+		}
+	}
+	if shown(hostBridge) {
+		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})
+	}
+
 	return removeEach(left)
+}
+
+// hostNetHeld is whether a sandbox of any root still has a port on the bridge, or a daemon still serves the proxy.
+func hostNetHeld() (bool, error) {
+	ports, err := os.ReadDir(filepath.Join("/sys/class/net", hostBridge, "brif"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("list the ports of the bridge %s: %w", hostBridge, err)
+	}
+	if len(ports) > 0 {
+		return true, nil
+	}
+
+	filter := fmt.Sprintf("( sport = :%d or sport = :%d )", proxy.PlainPort, proxy.TLSPort)
+	listeners, err := exec.Command("ss", "-Hltn", filter).Output()
+	if err != nil {
+		return false, fmt.Errorf("list the listeners on the proxy ports: %w", err)
+	}
+
+	return strings.TrimSpace(string(listeners)) != "", nil
 }
 
 // removeEach stops at nothing: a step that fails still leaves the steps below it to run.

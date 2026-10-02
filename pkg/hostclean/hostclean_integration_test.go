@@ -3,6 +3,7 @@
 package hostclean
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,79 @@ func TestALinkThatIsThereIsTaken(t *testing.T) {
 		if shown(name) {
 			t.Fatalf("%s is still on the host", name)
 		}
+	}
+}
+
+// SHARD-272: every root shares the bridge and the tables, so a port on the bridge keeps them, and once it goes they go.
+func TestSweepTakesTheHostNetOnlyOnceNothingHoldsIt(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("ip link and nft want root")
+	}
+	for _, binary := range []string{"ip", "nft", "ss"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("no %s on PATH", binary)
+		}
+	}
+	held, err := hostNetHeld()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Skip("a sandbox or a daemon on this host holds the bridge and the tables")
+	}
+
+	const port = "shardvt272"
+	if !shown(hostBridge) {
+		mustRun(t, "ip", "link", "add", hostBridge, "type", "bridge")
+	}
+	for _, family := range hostTableFamilies {
+		mustRun(t, "nft", "add", "table", family, hostTable)
+	}
+	mustRun(t, "ip", "link", "add", port, "type", "veth", "peer", "name", port+"p")
+	t.Cleanup(func() {
+		if err := errors.Join(deleteLink(port)(), sweepHostNet()); err != nil {
+			t.Error(err)
+		}
+	})
+	mustRun(t, "ip", "link", "set", port, "master", hostBridge)
+
+	if err := sweepHostNet(); err != nil {
+		t.Fatalf("sweep with a port on the bridge: %v", err)
+	}
+	if !shown(hostBridge) || tablesListed(t) != len(hostTableFamilies) {
+		t.Fatalf("the sweep took the bridge or a table while %s was a port of %s", port, hostBridge)
+	}
+
+	if err := deleteLink(port)(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sweepHostNet(); err != nil {
+		t.Fatalf("sweep with no port on the bridge: %v", err)
+	}
+	if shown(hostBridge) || tablesListed(t) != 0 {
+		t.Errorf("the bridge or a table outlived a sweep that nothing held")
+	}
+}
+
+// tablesListed counts the shard tables the host lists.
+func tablesListed(t *testing.T) int {
+	t.Helper()
+
+	count := 0
+	for _, family := range hostTableFamilies {
+		if exec.Command("nft", "list", "table", family, hostTable).Run() == nil {
+			count++
+		}
+	}
+
+	return count
+}
+
+func mustRun(t *testing.T, binary string, args ...string) {
+	t.Helper()
+
+	if err := run(binary, args...)(); err != nil {
+		t.Fatal(err)
 	}
 }
 

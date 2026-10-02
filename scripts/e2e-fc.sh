@@ -18,9 +18,6 @@ MEMORY=${MEMORY:-256}
 OOM_MEMORY=128
 # What services/provider/firecracker/memory.go gives the vmm on top of the guest's memory.
 VMM_OVERHEAD_MIB=64
-# The bridge and the two policy tables the daemon makes are host-wide, not per root, so two runs on one box collide over them.
-# The name is the daemon's own and takes no override: a wrong one here would delete a bridge this run never made.
-HOST_BRIDGE="shard0"
 # The image the daemon provisions beside the root (services/datadir). check_root normalises SHARD_ROOT first, so this waits for it.
 DATA_IMAGE=""
 ROOT_MARKER=""
@@ -83,19 +80,6 @@ own_root() {
 	[ -e "${SHARD_ROOT}" ] || return 0
 	[ -d "${SHARD_ROOT}" ] || fail "${SHARD_ROOT} is not a directory: name a root of this suite's own"
 	[ -z "$(/bin/ls -A "${SHARD_ROOT}")" ] || fail "${SHARD_ROOT} holds files and ${ROOT_MARKER} does not exist: this run deletes no directory it did not make, so name an empty or absent root"
-}
-
-# clear_host_net drops the host-wide network state the daemon leaves: a run that keeps it collides with the next run and with the other suites.
-clear_host_net() {
-	local table
-	for table in inet bridge; do
-		if nft list table "${table}" shard >/dev/null 2>&1; then
-			nft delete table "${table}" shard
-		fi
-	done
-	if ip link show "${HOST_BRIDGE}" >/dev/null 2>&1; then
-		ip link del "${HOST_BRIDGE}"
-	fi
 }
 
 # wipe_root is the library's plus what the firecracker daemon put beside the root and on the host: the mount over it, the image, its fstab line, the bridge and the policy tables.
@@ -512,13 +496,11 @@ rm -f "${ROOT_MARKER}"
 [ ! -e "${SHARD_ROOT}" ] || fail "the run's own root ${SHARD_ROOT} is still on the host"
 [ ! -e "${DATA_IMAGE}" ] || fail "the run's own image ${DATA_IMAGE} is still on the host"
 grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line for ${SHARD_ROOT}"
-ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
-nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
-nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
+check_host_net_clear
 [ -z "$(run_cgroups)" ] || fail "the host still holds a cgroup of this run: $(run_cgroups)"
 [ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
 ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
-say "the root, the image, the fstab line, the bridge ${HOST_BRIDGE}, both shard nft tables, every cgroup of the run, the echo's netns and its link are gone"
+say "the root, the image, the fstab line, every cgroup of the run, the echo's netns and its link are gone"
 
 trap - EXIT
 echo
