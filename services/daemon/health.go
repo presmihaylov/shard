@@ -28,6 +28,7 @@ func (t healthCheck) Run(ctx context.Context) error {
 	}
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
+	failures := sandboxErrors{logger: logger, task: t.Name()}
 
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
@@ -45,6 +46,8 @@ func (t healthCheck) Run(ctx context.Context) error {
 		}
 		// A root with nothing to probe needs no substrate, so a host without runsc keeps its daemon.
 		if !slices.ContainsFunc(sandboxes, probed) {
+			failures.tick(ctx, nil)
+
 			continue
 		}
 
@@ -52,9 +55,8 @@ func (t healthCheck) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := svc.CheckHealth(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }); err != nil {
-			return err
-		}
+		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
+		failures.tick(ctx, svc.CheckHealth(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }))
 	}
 }
 

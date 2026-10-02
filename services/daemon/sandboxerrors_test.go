@@ -1,0 +1,136 @@
+package daemon
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
+)
+
+func TestSandboxErrorsLogsAnErrorOnceWhileItLasts(t *testing.T) {
+	var out bytes.Buffer
+	failures := sandboxErrors{logger: log.New(&out, "", 0), task: "liveness"}
+	a, b := errors.New("sandbox a: broken"), errors.New("sandbox b: broken")
+
+	lineA, lineB := "task liveness: sandbox a: broken; the task goes on\n", "task liveness: sandbox b: broken; the task goes on\n"
+
+	ticks := []struct {
+		err  error
+		want string
+	}{
+		{errors.Join(a, b), lineA + lineB},
+		{errors.Join(a, b), ""},
+		{errors.Join(a), ""},
+		{nil, ""},
+		{errors.Join(a), lineA},
+	}
+	for i, tick := range ticks {
+		out.Reset()
+		failures.tick(t.Context(), tick.err)
+		if out.String() != tick.want {
+			t.Fatalf("tick %d logged %q, want %q", i, out.String(), tick.want)
+		}
+	}
+}
+
+func TestSandboxErrorsKeepsQuietOnTheWayDown(t *testing.T) {
+	var out bytes.Buffer
+	failures := sandboxErrors{logger: log.New(&out, "", 0), task: "liveness"}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	failures.tick(ctx, errors.New("sandbox a: context canceled"))
+
+	if out.Len() != 0 {
+		t.Fatalf("a tick the shutdown cut short logged %q, want nothing", out.String())
+	}
+}
+
+// One sandbox whose exit never decodes failed the whole tick, so the task backed off up to a minute and every other sandbox waited (SHARD-376).
+func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
+	var out bytes.Buffer
+	d := &deps{cfg: Config{Root: t.TempDir(), Out: &out, Provider: "gvisor"}}
+	repo, err := d.repo()
+	if err != nil {
+		t.Fatalf("build the repository: %v", err)
+	}
+	broken, err := repo.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, PID: 42})
+	if err != nil {
+		t.Fatalf("create the broken record: %v", err)
+	}
+	exits, err := repo.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, PID: 43})
+	if err != nil {
+		t.Fatalf("create the record that exits: %v", err)
+	}
+
+	p := &exitProvider{broken: broken.ID, exits: exits.ID}
+	task := liveness{deps: d, lifecycle: &lifecycle{deps: d, svc: sandbox.New(sandbox.Config{Repo: repo, Provider: p})}, interval: time.Millisecond}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- task.Run(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		sb, err := repo.Get(exits.ID)
+		if err != nil {
+			t.Fatalf("read the record that exits: %v", err)
+		}
+		if sb.ExitStatus != nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Run = %v before the exit of %s was recorded, want the task to go on past %s", err, exits.ID, broken.ID)
+		case <-deadline:
+			t.Fatalf("the exit of %s was not recorded within 5s", exits.ID)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want a quiet end", err)
+	}
+
+	if got := strings.Count(out.String(), "exit report does not decode"); got != 1 {
+		t.Fatalf("the error of %s was logged %d times over %d ticks, want once:\n%s", broken.ID, got, p.reads.Load(), out.String())
+	}
+	if !strings.Contains(out.String(), broken.ID) {
+		t.Fatalf("the log does not name %s:\n%s", broken.ID, out.String())
+	}
+}
+
+// exitProvider runs every sandbox: one fails its exit read every tick, and the other exits once that failure has repeated.
+type exitProvider struct {
+	models.Provider
+	broken, exits string
+	reads         atomic.Int32
+}
+
+func (*exitProvider) Name() string { return "fake" }
+
+func (*exitProvider) Status(context.Context, string) (models.Status, error) {
+	return models.Status{Exists: true, State: models.StateRunning, PID: 42}, nil
+}
+
+func (p *exitProvider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
+	if id == p.broken {
+		p.reads.Add(1)
+
+		return nil, errors.New("the exit report does not decode")
+	}
+	// On main the first failed tick ended the task, so an exit that lands after the second one went unseen for up to a minute.
+	if id == p.exits && p.reads.Load() >= 2 {
+		return &models.ExitStatus{Code: 3}, nil
+	}
+
+	return nil, nil
+}
