@@ -23,6 +23,8 @@ const (
 	OpList   = "ls"
 	OpMkdir  = "mkdir"
 	OpDelete = "delete"
+	OpPack   = "pack"
+	OpUnpack = "unpack"
 )
 
 // The codes a refusal carries, so the host answers 404 or 400 for what the guest refused and 500 for the rest.
@@ -166,6 +168,57 @@ func Put(conn io.ReadWriter, header FileHeader, src io.Reader) error {
 		return fmt.Errorf("put %s: send %d bytes: %w", header.Path, header.Size, err)
 	}
 	if _, err := readReply(r, OpPut, header.Path); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// FilesConn is one files exec's stdio; CloseWrite ends the guest's stdin, which is how an unpack knows the archive is all in.
+type FilesConn interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
+// GetArchive answers the stat of one guest path and a tar of it, whose top entry is the path's base name; the tar runs to the end of the exec.
+func GetArchive(conn io.ReadWriter, path string) (models.FileStat, io.Reader, error) {
+	r, err := open(conn, FileHeader{Op: OpPack, Path: path})
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	reply, err := readReply(r, OpPack, path)
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return *reply.Stat, r, nil
+}
+
+// PutArchive unpacks the tar src under the guest directory path; the guest answers once its stdin ends and everything is on disk.
+func PutArchive(conn FilesConn, path string, src io.Reader) error {
+	r, err := open(conn, FileHeader{Op: OpUnpack, Path: path})
+	if err != nil {
+		return err
+	}
+
+	noted := &notedReader{Reader: src}
+	_, err = io.Copy(conn, noted)
+	if noted.err != nil && !errors.Is(noted.err, io.EOF) {
+		return fmt.Errorf("unpack into %s: read the archive: %w", path, noted.err)
+	}
+	if err != nil {
+		// A guest that refused an entry stopped reading, and its reason beats the broken pipe.
+		if _, replyErr := readReply(r, OpUnpack, path); replyErr != nil {
+			return replyErr
+		}
+
+		return fmt.Errorf("unpack into %s: send the archive: %w", path, err)
+	}
+	if err := conn.CloseWrite(); err != nil {
+		return fmt.Errorf("unpack into %s: end the archive: %w", path, err)
+	}
+	if _, err := readReply(r, OpUnpack, path); err != nil {
 		return err
 	}
 

@@ -69,7 +69,8 @@ internet and nothing private; see `docs/egress.md`.
 
 `shard cp ./app.conf <id>:/srv/` and `shard cp <id>:/srv/app.conf .` copy one file into or out of a
 running sandbox, streamed and byte exact. A copy in keeps the mode and is atomic in the guest;
-`--user` names who writes and owns it.
+`--user` names who writes and owns it. A directory goes as a tar, with its modes and symlinks, and a
+copy out refuses anything in it that would land outside the destination.
 
 ## Snapshots
 

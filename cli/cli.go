@@ -53,7 +53,7 @@ Usage:
                            start a new sandbox over a copy of the files a stopped or paused one kept
   shard cp [--user <user>] <src> <id|name>:<path>
   shard cp <id|name>:<path> <dst>
-                           copy one file into or out of a running sandbox; a directory destination takes the file under its own name
+                           copy a file or a directory into or out of a running sandbox; a directory destination takes it under its own name
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>

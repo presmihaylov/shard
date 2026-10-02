@@ -388,6 +388,11 @@ func rootIoctl(req uint) error {
 	return unix.IoctlSetInt(fd, req, 0)
 }
 
+// syncDisks flushes every filesystem, since a write the guest answered for must be on the disk a clone copies.
+func syncDisks() {
+	unix.Sync()
+}
+
 // powerOff ends the VM once the stop is done, by a reboot where the vmm only exits on one; a test process is not PID 1 and just exits.
 func powerOff(reboot bool) error {
 	if os.Getpid() != 1 {

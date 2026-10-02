@@ -114,8 +114,8 @@ func TestPutFileRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// trickle sends a put by hand, one byte after each pause, since the client transport holds a sized body back in its buffer.
-func trickle(t *testing.T, s seeded, pauses []time.Duration) int {
+// trickle sends a put to route by hand, one byte after each pause, since the client transport holds a sized body back in its buffer.
+func trickle(t *testing.T, s seeded, route string, pauses []time.Duration) int {
 	t.Helper()
 
 	conn, err := net.Dial("tcp", s.server.Listener.Addr().String())
@@ -124,7 +124,7 @@ func trickle(t *testing.T, s seeded, pauses []time.Duration) int {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	if _, err := fmt.Fprintf(conn, "PUT /v0/sandboxes/%s/files?path=/srv/big HTTP/1.1\r\nHost: shard\r\nContent-Length: %d\r\n\r\n", s.running.ID, len(pauses)); err != nil {
+	if _, err := fmt.Fprintf(conn, "PUT /v0/sandboxes/%s/%s HTTP/1.1\r\nHost: shard\r\nContent-Length: %d\r\n\r\n", s.running.ID, route, len(pauses)); err != nil {
 		t.Fatalf("send the head: %v", err)
 	}
 	for _, pause := range pauses {
@@ -148,7 +148,7 @@ func trickle(t *testing.T, s seeded, pauses []time.Duration) int {
 func TestAPutOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
 
-	status := trickle(t, s, slices.Repeat([]time.Duration{20 * time.Millisecond}, 20))
+	status := trickle(t, s, "files?path=/srv/big", slices.Repeat([]time.Duration{20 * time.Millisecond}, 20))
 	if status != http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 20) {
 		t.Fatalf("a body that moved for 400 ms answered %d and landed %q, want 204 and all 20 bytes", status, s.verbs.landed)
 	}
@@ -158,7 +158,7 @@ func TestAPutOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 func TestAPutWhoseBodyStallsIsCut(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
 
-	status := trickle(t, s, append(slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), time.Second))
+	status := trickle(t, s, "files?path=/srv/big", append(slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), time.Second))
 	if status == http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 15) {
 		t.Fatalf("a body that stalled for 1 s answered %d and landed %q, want a failure after the 15 bytes before the stall", status, s.verbs.landed)
 	}
