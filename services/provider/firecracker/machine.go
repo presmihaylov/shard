@@ -32,8 +32,12 @@ type machine struct {
 	// closed says this process let the vmm go, so a stream that ends after it is not dialed again.
 	closed atomic.Bool
 	// swap orders a replacement against close, so no stream is put in after the vmm was let go.
-	swap   sync.Mutex
-	cancel context.CancelFunc
+	swap sync.Mutex
+	// freezing, taken before swap, holds each freeze and thaw of the guest until the guest answers, so none lands inside another.
+	freezing sync.Mutex
+	// pausing, under freezing, is a pause that froze the guest and still means to snapshot it.
+	pausing bool
+	cancel  context.CancelFunc
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
@@ -316,6 +320,15 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
 	}
+	// A snapshot holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
+	if state.Frozen {
+		if err := m.reseed(ctx); err != nil {
+			return nil, errors.Join(err, m.close())
+		}
+		if err := control.Thaw(ctx); err != nil {
+			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest: %w", id, err), m.close())
+		}
+	}
 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)
@@ -432,16 +445,27 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 
 // adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
 func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
+	m.freezing.Lock()
 	m.swap.Lock()
 	if m.closed.Load() {
 		m.swap.Unlock()
+		m.freezing.Unlock()
 
 		return false, control.Close()
 	}
 	dropped := m.control.Swap(control)
 	m.swap.Unlock()
 
-	return true, errors.Join(p.reconcile(m, state), dropped.Close())
+	var thawed error
+	// A guest frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
+	if state.Frozen && !m.pausing {
+		if err := control.Thaw(context.Background()); err != nil {
+			thawed = fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
+		}
+	}
+	m.freezing.Unlock()
+
+	return true, errors.Join(thawed, p.reconcile(m, state), dropped.Close())
 }
 
 // reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.

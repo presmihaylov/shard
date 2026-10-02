@@ -37,6 +37,8 @@ type transport struct {
 	freezing sync.Mutex
 	// bound is the sandbox cgroup a freeze stops before it holds the root; nil off a VM.
 	bound *os.File
+	// root is the disk a freeze holds; nil off a VM.
+	root *os.File
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -55,9 +57,13 @@ func serveTransport(name string, boot guestBoot) error {
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
-	var bound *os.File
+	var bound, root *os.File
 	if os.Getpid() == 1 {
 		bound, err = confine()
+		if err != nil {
+			return fmt.Errorf("%w: %w", errSupervisor, err)
+		}
+		root, err = rootDisk()
 		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
@@ -78,7 +84,7 @@ func serveTransport(name string, boot guestBoot) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
-	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound}
+	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound, root: root}
 	t.g = newGuest(t, restartPolicy{})
 	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
@@ -296,7 +302,7 @@ func (t *transport) freeze(conn net.Conn, id int) {
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 
-	err := freezeGuest(t.bound)
+	err := freezeGuest(t.bound, t.root)
 	if err == nil {
 		t.frozen.Store(true)
 	}
@@ -351,11 +357,11 @@ func (t *transport) handle(m supervisor.Message) error {
 }
 
 // freezeGuest stops the guest's processes, then holds the root: a writer the root held first would sleep where no cgroup freeze reaches it.
-func freezeGuest(bound *os.File) error {
+func freezeGuest(bound, root *os.File) error {
 	if err := freezeBound(bound); err != nil {
 		return err
 	}
-	if err := freezeRoot(); err != nil {
+	if err := freezeRoot(root); err != nil {
 		return errors.Join(err, thawBound(bound))
 	}
 
@@ -364,7 +370,7 @@ func freezeGuest(bound *os.File) error {
 
 // thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.
 func (t *transport) thaw() error {
-	if err := errors.Join(thawRoot(), thawBound(t.bound)); err != nil {
+	if err := errors.Join(thawRoot(t.root), thawBound(t.bound)); err != nil {
 		return err
 	}
 	t.frozen.Store(false)

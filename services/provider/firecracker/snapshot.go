@@ -56,8 +56,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
+		// A guest process the snapshot held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
+		if err := m.freeze(ctx); err != nil {
+			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
+		}
 		if err := m.client.Pause(); err != nil {
-			return fmt.Errorf("pause sandbox %s: %w", id, err)
+			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
 	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
@@ -91,9 +95,42 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	return nil
 }
 
-// abandon gives up a pause that could not complete: the VM runs on and the staging directory goes.
+// abandon gives up a pause that could not complete: the VM and its guest run on and the staging directory goes.
 func abandon(m *machine, tmp string, err error) error {
-	return errors.Join(err, m.client.Resume(), os.RemoveAll(tmp))
+	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
+}
+
+// freeze holds the guest for the pause in flight, which a stream dialed again meanwhile leaves frozen.
+func (m *machine) freeze(ctx context.Context) error {
+	m.freezing.Lock()
+	defer m.freezing.Unlock()
+	m.pausing = true
+
+	return m.control.Load().Freeze(ctx)
+}
+
+// runAgain resumes the VM if the pause got that far, then thaws the guest, which a paused VM could never answer.
+func runAgain(m *machine) error {
+	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
+	m.freezing.Lock()
+	defer m.freezing.Unlock()
+	m.pausing = false
+
+	info, err := m.client.State()
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+	if info.State == fcapi.StatePaused {
+		if err := m.client.Resume(); err != nil {
+			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
+		}
+	}
+	// The thaw outlives the pause's caller: a guest left frozen runs nothing again.
+	if err := m.control.Load().Thaw(context.Background()); err != nil {
+		return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // Resume brings the sandbox back from the snapshot in dir, in a fresh vmm over its own copy of the snapshot's overlay; the snapshot stays for the next one.
