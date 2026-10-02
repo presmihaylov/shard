@@ -98,6 +98,9 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	if err := <-stopped; err != nil {
 		t.Fatalf("stop: %v", err)
 	}
+	if n := lab.svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the stop and the pass that skipped it", n)
+	}
 }
 
 func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {

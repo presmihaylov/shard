@@ -700,6 +700,126 @@ func TestTheVerbsOnOneSandboxAreSerialized(t *testing.T) {
 	}
 }
 
+// A verb that waits on a sandbox another verb holds gives up when its own deadline ends (SHARD-370).
+func TestAVerbStopsWaitingForTheSandboxWhenItsContextEnds(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, stopped())
+
+	gate := make(chan struct{})
+	l.provider.gate = gate
+	l.provider.entered = make(chan struct{})
+	entered := l.provider.entered
+
+	started := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(t.Context(), "sandbox1")
+		started <- err
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "busy with another verb") {
+		t.Errorf("stop = %v, want the busy sandbox and the deadline", err)
+	}
+
+	close(gate)
+	if err := <-started; err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the start and the stop that gave up", n)
+	}
+}
+
+// pullingCreate starts a create whose pull never ends on its own, and returns once the pull is reached.
+func pullingCreate(t *testing.T) (*sandbox.Service, layers, *recorder, <-chan error) {
+	t.Helper()
+
+	r := &recorder{}
+	entered := make(chan struct{})
+	svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.Images = stalledImages{r: r, entered: entered} })
+	// The create never reached the substrate, so the substrate holds nothing for it.
+	l.provider.status = models.Status{}
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := svc.Create(t.Context(), alpine())
+		created <- err
+	}()
+	<-entered
+
+	return svc, l, r, created
+}
+
+// An rm of a sandbox still pulling its image ends the pull, rather than wait for the registry (SHARD-370).
+func TestRemoveEndsTheCreateStillPulling(t *testing.T) {
+	svc, l, r, created := pullingCreate(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := svc.Remove(ctx, "sandbox1", false, time.Second); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+
+	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard rm") {
+		t.Errorf("create = %v, want it cancelled by shard rm", err)
+	}
+	if !l.repo.deleted {
+		t.Error("rm left the record of the create it ended")
+	}
+	for _, step := range []string{"provider.Create", "provider.Start"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran after rm ended the create: %v", step, r.calls)
+		}
+	}
+	if n := svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the create and the rm", n)
+	}
+}
+
+// A stop of a sandbox still pulling ends the create, and the failed record it leaves is one only rm takes.
+func TestStopEndsTheCreateStillPulling(t *testing.T) {
+	svc, l, _, created := pullingCreate(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+
+	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("create = %v, want it cancelled by shard stop", err)
+	}
+	if l.repo.sb.State != models.StateFailed {
+		t.Errorf("the record says %q, want failed", l.repo.sb.State)
+	}
+}
+
+// A create whose record an rm freed before it took the sandbox builds nothing for the id.
+func TestCompleteOfARemovedSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	l.repo.missing = true
+
+	if err := svc.Complete(t.Context(), sb.ID, alpine()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, step := range []string{"images.Pull", "provider.Create", "repo.Update"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a sandbox rm had freed: %v", step, r.calls)
+		}
+	}
+}
+
 // A stop ends the processes and keeps the record, the lease, the address and the writable layer.
 func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 	r := &recorder{}
