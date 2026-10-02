@@ -91,6 +91,10 @@ holds entries the mount would hide, when a file at `<root>.xfs` is not an XFS im
 free space is under 10 GiB. It never falls back to a full copy. No other provider provisions or
 probes anything (SHARD-264).
 
+To undo the bootstrap by hand, unmount the image from the root, remove the `/etc/fstab` line whose
+device is `<root>.xfs`, then delete `<root>.xfs` and the root. Remove the fstab line before the next
+boot, or it mounts the image again.
+
 ## Reconcile at start
 
 The daemon checks every record against the substrate after it takes the lock and before it listens,
