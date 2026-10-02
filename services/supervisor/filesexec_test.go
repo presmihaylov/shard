@@ -79,8 +79,33 @@ func TestAGuestThatDiesReadsAsItsReason(t *testing.T) {
 	}
 }
 
-// A get whose stream ends before the size the stat promised is an error, never a short file.
-func TestAShortGetIsAnError(t *testing.T) {
+// A /proc file states a size of 0, so a get reads to the end of the stream and never stops at the stat.
+func TestAGetReadsPastTheSizeItsStatStates(t *testing.T) {
+	conn := openFake(t, t.Context(), fakeGuest(func(_ FileHeader, spec models.ExecSpec) models.ExitStatus {
+		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: 0}}); err != nil {
+			t.Errorf("reply: %v", err)
+		}
+		if _, err := spec.Stdout.WriteString("Name:\tsh\n"); err != nil {
+			t.Errorf("write: %v", err)
+		}
+
+		return models.ExitStatus{}
+	}))
+
+	_, body, err := Get(conn, "/proc/self/status")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got, err := io.ReadAll(body); err != nil || string(got) != "Name:\tsh\n" {
+		t.Fatalf("read %q, %v, want the whole stream", got, err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+// A guest that dies midway through a get reads as its reason at the end of the stream, never as a short file.
+func TestAGetCutByTheGuestIsAnError(t *testing.T) {
 	conn := openFake(t, t.Context(), fakeGuest(func(_ FileHeader, spec models.ExecSpec) models.ExitStatus {
 		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: 10}}); err != nil {
 			t.Errorf("reply: %v", err)
@@ -88,8 +113,11 @@ func TestAShortGetIsAnError(t *testing.T) {
 		if _, err := spec.Stdout.WriteString("hello"); err != nil {
 			t.Errorf("write: %v", err)
 		}
+		if _, err := spec.Stderr.WriteString("shard-init: send /srv/blob: input/output error\n"); err != nil {
+			t.Errorf("write stderr: %v", err)
+		}
 
-		return models.ExitStatus{}
+		return models.ExitStatus{Code: 1}
 	}))
 	defer func() { _ = conn.Close() }()
 
@@ -97,8 +125,8 @@ func TestAShortGetIsAnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got, err := io.ReadAll(body); !errors.Is(err, io.ErrUnexpectedEOF) || string(got) != "hello" {
-		t.Fatalf("read %q, %v, want the five bytes and io.ErrUnexpectedEOF", got, err)
+	if got, err := io.ReadAll(body); err == nil || !strings.Contains(err.Error(), "input/output error") || string(got) != "hello" {
+		t.Fatalf("read %q, %v, want the five bytes and the guest's reason", got, err)
 	}
 }
 

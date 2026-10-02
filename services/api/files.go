@@ -92,7 +92,7 @@ func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
 	return sandbox.FileWrite{Path: query.Get("path"), Mode: uint32(mode), User: query.Get("user"), Parents: parents, Size: r.ContentLength}, nil
 }
 
-// getFile streams the guest file at ?path= with its length and stat up front, so a client knows a short body is a cut one.
+// getFile streams the guest file at ?path= with its stat up front and chunked to its end, since a /proc file's size is not its length.
 func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 	stat, body, err := h.lifecycle.ReadFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
 	if err != nil {
@@ -107,13 +107,15 @@ func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size, 10))
 	w.WriteHeader(http.StatusOK)
 
-	// The 200 is out, so a failure now goes to the daemon's log; the short body against Content-Length tells the client.
+	// The stat goes out before the bytes, so a guest that fails later cuts a chunked body rather than dropping the whole answer.
+	flushErr := http.NewResponseController(w).Flush()
 	_, err = io.Copy(w, body)
-	if err := errors.Join(err, body.Close()); err != nil {
+	if err := errors.Join(flushErr, err, body.Close()); err != nil {
 		h.log.Printf("api: get %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		// The 200 is out, so only a body cut before its last chunk tells the client the file is short.
+		panic(http.ErrAbortHandler)
 	}
 }
 

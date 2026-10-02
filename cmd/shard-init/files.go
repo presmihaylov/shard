@@ -55,7 +55,8 @@ func serveFiles(r io.Reader, w io.Writer) error {
 	if src == nil {
 		return nil
 	}
-	if _, err := io.CopyN(w, src, stat.Size); err != nil {
+	// Plain reads to EOF: a /proc or sysfs file's size is not its length, and a zero-copy path would trust it.
+	if _, err := io.Copy(struct{ io.Writer }{w}, struct{ io.Reader }{src}); err != nil {
 		return errors.Join(fmt.Errorf("send %s: %w", header.Path, err), src.Close())
 	}
 
@@ -185,7 +186,21 @@ func receiveFile(r io.Reader, header supervisor.FileHeader) error {
 			return err
 		}
 	}
-	f, err := os.CreateTemp(dir, ".shard-put-*")
+	// The dir opens first, so a user who may not read it is refused before the old file changes.
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := placeFile(d, r, header); err != nil {
+		return errors.Join(err, d.Close())
+	}
+
+	return d.Close()
+}
+
+// placeFile renames the filled temp over the target and syncs the dir, or a VM stopped past its grace can lose the rename.
+func placeFile(d *os.File, r io.Reader, header supervisor.FileHeader) error {
+	f, err := os.CreateTemp(d.Name(), ".shard-put-*")
 	if err != nil {
 		return err
 	}
@@ -194,6 +209,9 @@ func receiveFile(r io.Reader, header supervisor.FileHeader) error {
 	}
 	if err := os.Rename(f.Name(), header.Path); err != nil {
 		return errors.Join(err, removeTemp(f.Name()))
+	}
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("sync %s after the rename: %w", d.Name(), err)
 	}
 
 	return nil

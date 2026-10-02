@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"strings"
@@ -96,6 +97,55 @@ func TestWriteFileSendsTheBytesAsTheUser(t *testing.T) {
 	if l.provider.execSpec.User != "app" {
 		t.Fatalf("the put ran as %q, want app", l.provider.execSpec.User)
 	}
+}
+
+// net/http cancels a request whose body ends short, and the guest still needs its exec to remove the temp name; the grace bounds the wait.
+func TestWriteFileKeepsTheExecForTheGuestCleanupAfterTheRequestEnds(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(c *sandbox.Config) { c.PutCleanupGrace = 50 * time.Millisecond })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var cleanedUp bool
+	l.provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+		var header supervisor.FileHeader
+		if err := supervisor.ReadHeader(spec.Stdin, &header); err != nil {
+			return models.ExitStatus{}, err
+		}
+		if _, err := io.Copy(io.Discard, spec.Stdin); err != nil {
+			return models.ExitStatus{}, err
+		}
+		// The stream ended short, and an exec still alive here is one the guest can remove its temp name in.
+		execCtx := l.provider.execCtx
+		cleanedUp = execCtx.Err() == nil
+		<-execCtx.Done()
+
+		return models.ExitStatus{Code: 1}, nil
+	}
+
+	req := sandbox.FileWrite{Path: "/srv/blob", Mode: 0o600, Size: 10}
+	if err := svc.WriteFile(ctx, "sandbox1", req, &cutBody{r: strings.NewReader("hello"), cancel: cancel}); err == nil {
+		t.Fatal("a put whose body ended at 5 of 10 bytes succeeded")
+	}
+	if !cleanedUp {
+		t.Fatal("the exec ended with the request, before the guest could remove its temp name")
+	}
+}
+
+// cutBody hands over its bytes, then fails and cancels the request, as net/http does with a body that ends short.
+type cutBody struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (b *cutBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		b.cancel()
+
+		return n, io.ErrUnexpectedEOF
+	}
+
+	return n, err
 }
 
 func TestReadFileStreamsTheWholeFile(t *testing.T) {

@@ -36,7 +36,7 @@ type FileHeader struct {
 	Parents bool   `json:"parents,omitempty"`
 }
 
-// FileReply answers the header with the path's stat, or with why not. On a get the file's Size bytes follow the line.
+// FileReply answers the header with the path's stat, or with why not. On a get the file's bytes follow the line, to the end of the stream.
 type FileReply struct {
 	Stat  *models.FileStat `json:"stat,omitempty"`
 	Error string           `json:"error,omitempty"`
@@ -110,7 +110,7 @@ func (n *notedReader) Read(p []byte) (int, error) {
 	return count, err
 }
 
-// Get answers one guest file's stat and a reader of exactly its Size bytes; a stream that ends short reads as an error, never a short file.
+// Get answers one guest file's stat and a reader of its bytes to the end of the stream, since a /proc file's Size is not its length; conn tells a cut end from a whole one.
 func Get(conn io.ReadWriter, path string) (models.FileStat, io.Reader, error) {
 	r, err := open(conn, FileHeader{Op: OpGet, Path: path})
 	if err != nil {
@@ -122,33 +122,7 @@ func Get(conn io.ReadWriter, path string) (models.FileStat, io.Reader, error) {
 		return models.FileStat{}, nil, err
 	}
 
-	return stat, &exactReader{r: r, left: stat.Size}, nil
-}
-
-// exactReader ends at left bytes, and turns an EOF before them into io.ErrUnexpectedEOF.
-type exactReader struct {
-	r    io.Reader
-	left int64
-}
-
-func (e *exactReader) Read(p []byte) (int, error) {
-	if e.left <= 0 {
-		return 0, io.EOF
-	}
-	if int64(len(p)) > e.left {
-		p = p[:e.left]
-	}
-
-	n, err := e.r.Read(p)
-	e.left -= int64(n)
-	if err == io.EOF && e.left > 0 {
-		return n, io.ErrUnexpectedEOF
-	}
-	if err == io.EOF {
-		return n, nil
-	}
-
-	return n, err
+	return stat, r, nil
 }
 
 // open sends the header and answers a reader of what the guest says back.

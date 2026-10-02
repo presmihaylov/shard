@@ -390,9 +390,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   the missing directories. The body needs a `Content-Length`. 400 for a relative path, a chunked
   body, a bad mode or a write the guest refuses; 404 for no sandbox or a missing directory; 409 when
   the sandbox is not running.
-- `GET /v0/sandboxes/{id}/files?path=` answers 200 `application/octet-stream` with the file, its
-  `Content-Length` and its `X-Shard-Stat`, streamed. A guest that fails after the 200 cuts the body
-  short of that length. 400 for a directory or anything else not a regular file; 404; 409 as above.
+- `GET /v0/sandboxes/{id}/files?path=` answers 200 `application/octet-stream` with the file and its
+  `X-Shard-Stat`, chunked to the end of the file and never cut at the stat's size, which a `/proc`
+  file states as 0. A guest that fails after the 200 cuts the chunked body before its last chunk, so
+  the client reads an unexpected EOF. 400 for a directory or anything else not a regular file; 404;
+  409 as above.
 - `HEAD /v0/sandboxes/{id}/files?path=` answers 200 with no body and `X-Shard-Stat:
   {"type", "size", "mode", "uid", "gid", "mtime"}`, `type` one of `file`, `dir`, `symlink` or
   `other`. It never follows a final symlink. A refusal has the status alone. `shard cp` speaks all

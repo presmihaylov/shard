@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -13,6 +14,9 @@ import (
 
 // DefaultFileMode is what a put sets when it names no mode.
 const DefaultFileMode = 0o644
+
+// DefaultPutCleanupGrace is how long a put's exec outlives its request, so a guest that got a short stream removes its temp name.
+const DefaultPutCleanupGrace = 10 * time.Second
 
 // FileWrite is what a put names: where the file lands, its mode, who owns it, and how many bytes follow.
 type FileWrite struct {
@@ -90,7 +94,15 @@ func (s *Service) WriteFile(ctx context.Context, ref string, req FileWrite, src 
 		return &RequestError{Err: fmt.Errorf("a put needs the size of its body, got %d", req.Size)}
 	}
 
-	conn, err := s.openFiles(ctx, ref, req.User)
+	// net/http cancels a request whose body ends short, and an exec cancelled with it dies before the guest removes its temp name.
+	execCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, func() { time.AfterFunc(s.putCleanupGrace(), cancel) })
+	defer func() {
+		stop()
+		cancel()
+	}()
+
+	conn, err := s.openFiles(execCtx, ref, req.User)
 	if err != nil {
 		return err
 	}
@@ -98,6 +110,14 @@ func (s *Service) WriteFile(ctx context.Context, ref string, req FileWrite, src 
 	err = supervisor.Put(conn, supervisor.FileHeader{Path: req.Path, Size: req.Size, Mode: req.Mode, Parents: req.Parents}, src)
 
 	return fileError(errors.Join(err, conn.Close()))
+}
+
+func (s *Service) putCleanupGrace() time.Duration {
+	if s.cfg.PutCleanupGrace != 0 {
+		return s.cfg.PutCleanupGrace
+	}
+
+	return DefaultPutCleanupGrace
 }
 
 // openFiles starts one files exec in a running sandbox, as user; every provider runs the same shard-init mode.

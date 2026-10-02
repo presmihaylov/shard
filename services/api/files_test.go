@@ -163,8 +163,8 @@ func TestGetFileStreamsTheFileWithItsStat(t *testing.T) {
 	s.verbs.content = "hello"
 
 	resp := fileRequest(t, s, http.MethodGet, "path=/srv/run.sh", nil) //nolint:bodyclose // fileRequest closes the body in a cleanup
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" || resp.ContentLength != 5 {
-		t.Fatalf("the get answered %d %s with length %d, want 200 application/octet-stream of 5", resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" || !slices.Equal(resp.TransferEncoding, []string{"chunked"}) {
+		t.Fatalf("the get answered %d %s with encoding %v, want 200 application/octet-stream, chunked", resp.StatusCode, resp.Header.Get("Content-Type"), resp.TransferEncoding)
 	}
 	if got := statOf(t, resp); got != s.verbs.stat {
 		t.Fatalf("the stat header is %+v, want %+v", got, s.verbs.stat)
@@ -178,7 +178,20 @@ func TestGetFileStreamsTheFileWithItsStat(t *testing.T) {
 	}
 }
 
-// A guest that dies midway leaves the body short of its Content-Length, which the client reads as an error.
+// A /proc file states a size of 0, so the body runs to the end of the stream and never stops at the stat.
+func TestGetFileStreamsPastTheSizeItsStatStates(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileRegular, Size: 0}
+	s.verbs.content = "Name:\tsh\nState:\tS (sleeping)\n"
+
+	resp := fileRequest(t, s, http.MethodGet, "path=/proc/self/status", nil) //nolint:bodyclose // fileRequest closes the body in a cleanup
+	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || err != nil || string(body) != s.verbs.content {
+		t.Fatalf("the get answered %d with %q, %v, want 200 with the whole stream", resp.StatusCode, body, err)
+	}
+}
+
+// A guest that dies midway cuts the chunked body before its last chunk, which the client reads as an error.
 func TestGetFileThatDiesMidwayCutsTheBody(t *testing.T) {
 	s := seed(t)
 	s.verbs.stat = models.FileStat{Type: models.FileRegular, Size: 10}
