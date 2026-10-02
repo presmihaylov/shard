@@ -175,7 +175,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load()}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load(), Logs: supervisor.LogsVersion}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil

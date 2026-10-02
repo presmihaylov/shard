@@ -94,14 +94,9 @@ func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T)
 
 	done := make(chan struct{})
 	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile)})
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile)}, supervisor.LogsVersion+1)
 		close(done)
 	}()
-	head := supervisor.LogsHeader(0, 0)
-	head[len(supervisor.LogsMagic)] = supervisor.LogsVersion + 1
-	if _, err := guest.Write(head); err != nil {
-		t.Fatal(err)
-	}
 
 	select {
 	case <-done:

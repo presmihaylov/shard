@@ -72,7 +72,7 @@ func (l *pipeLog) Resume(from, to uint64) (uint64, error) {
 }
 
 // followGuest runs guest on one end of a pipe and Logs on the other, which fails any read or write still waiting at the deadline.
-func followGuest(t *testing.T, sink *pipeLog, guest func(net.Conn) error) error {
+func followGuest(t *testing.T, sink *pipeLog, version int, guest func(net.Conn) error) error {
 	t.Helper()
 	host, g := net.Pipe()
 	if err := host.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -83,7 +83,7 @@ func followGuest(t *testing.T, sink *pipeLog, guest func(net.Conn) error) error 
 		defer g.Close()
 		done <- guest(g)
 	}()
-	err := supervisor.Logs(context.Background(), func(context.Context, uint32) (net.Conn, error) { return host, nil }, sink)
+	err := supervisor.Logs(context.Background(), func(context.Context, uint32) (net.Conn, error) { return host, nil }, sink, version)
 	if gerr := <-done; gerr != nil {
 		t.Errorf("guest: %v", gerr)
 	}
@@ -91,10 +91,10 @@ func followGuest(t *testing.T, sink *pipeLog, guest func(net.Conn) error) error 
 	return err
 }
 
-// A guest with the header gets the host's resume byte, and an ack after each write with the output offset after it.
-func TestAGuestWithTheHeaderResumesAndGetsAcks(t *testing.T) {
+// A guest whose state names the logs version gets the host's resume byte, and an ack after each write with the output offset after it.
+func TestAGuestWithTheLogsVersionResumesAndGetsAcks(t *testing.T) {
 	sink := &pipeLog{at: 4}
-	err := followGuest(t, sink, func(g net.Conn) error {
+	err := followGuest(t, sink, supervisor.LogsVersion, func(g net.Conn) error {
 		if _, err := g.Write(supervisor.LogsHeader(2, 8)); err != nil {
 			return err
 		}
@@ -125,41 +125,36 @@ func TestAGuestWithTheHeaderResumesAndGetsAcks(t *testing.T) {
 	}
 }
 
-// An older guest sends raw output with no header: every byte is output, the host sends nothing back, and a one-byte first write is never held for more.
+// An older guest names no logs version and sends raw output: every byte is output, even one shaped like offsets, and the host sends nothing back.
 func TestAnOlderGuestsRawOutputLandsWithNoAcks(t *testing.T) {
 	sink := &pipeLog{wrote: make(chan struct{}, 1)}
-	err := followGuest(t, sink, func(g net.Conn) error {
-		if _, err := g.Write([]byte("o")); err != nil {
+	raw := string(supervisor.LogsHeader(0, 6))
+	err := followGuest(t, sink, 0, func(g net.Conn) error {
+		if _, err := g.Write([]byte(raw)); err != nil {
 			return err
 		}
 		select {
 		case <-sink.wrote:
 		case <-time.After(5 * time.Second):
-			return errors.New("the host held the first byte back")
+			return errors.New("the host held the first write back")
 		}
 		// The host never acks, so a write here would block on an ack nobody reads if it did.
-		_, err := g.Write([]byte("ld\nline two\n"))
+		_, err := g.Write([]byte("line two\n"))
 
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sink.got.String(); got != "old\nline two\n" || len(sink.resumes) != 0 {
+	if got := sink.got.String(); got != raw+"line two\n" || len(sink.resumes) != 0 {
 		t.Fatalf("landed %q after resumes %v, want every raw byte and no resume", got, sink.resumes)
 	}
 }
 
-// A header with a version this host does not read fails the stream with an error that names it, before the host answers anything.
+// A logs version this host does not read fails the stream with an error that names it, before the host reads or answers anything.
 func TestAnUnknownLogsVersionFailsTheStreamAndNamesIt(t *testing.T) {
 	sink := &pipeLog{}
-	head := supervisor.LogsHeader(0, 6)
-	head[len(supervisor.LogsMagic)] = 9
-	err := followGuest(t, sink, func(g net.Conn) error {
-		_, err := g.Write(head)
-
-		return err
-	})
+	err := followGuest(t, sink, 9, func(net.Conn) error { return nil })
 	if !errors.Is(err, supervisor.ErrLogsVersion) || !strings.Contains(err.Error(), "version 9") {
 		t.Fatalf("Logs = %v, want the unknown version 9", err)
 	}

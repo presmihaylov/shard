@@ -276,7 +276,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)})
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -429,12 +429,12 @@ func (m *machine) alive() bool {
 	return err == nil && info.State == fcapi.StateRunning
 }
 
-// followLogs appends what the logs connection carries to the log file, and opens it again after a drop while the VM runs.
-func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog) {
+// followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
+func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
 	defer out.File.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
-		err := supervisor.Logs(ctx, opened, out)
+		err := supervisor.Logs(ctx, opened, out, version)
 		if ctx.Err() != nil {
 			return
 		}

@@ -1,7 +1,6 @@
 package supervisor
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -21,8 +20,8 @@ type LogSink interface {
 	Resume(from, to uint64) (uint64, error)
 }
 
-// Logs lands the entrypoint's output in sink until the guest, or ctx, ends the connection.
-func Logs(ctx context.Context, dial Dialer, sink LogSink) error {
+// Logs lands the entrypoint's output in sink until the guest, or ctx, ends the connection; version is the one the guest's state named.
+func Logs(ctx context.Context, dial Dialer, sink LogSink, version int) error {
 	conn, err := dial(ctx, LogsPort)
 	if err != nil {
 		return fmt.Errorf("open the logs connection: %w", err)
@@ -32,40 +31,31 @@ func Logs(ctx context.Context, dial Dialer, sink LogSink) error {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
-	if err := followLogs(conn, sink); err != nil && ctx.Err() == nil {
+	if err := followLogs(conn, sink, version); err != nil && ctx.Err() == nil {
 		return err
 	}
 
 	return nil
 }
 
-// ErrLogsVersion is a guest whose logs header this host cannot read; a redial meets the same guest again.
+// ErrLogsVersion is a guest whose logs protocol this host cannot read; a redial meets the same guest again.
 var ErrLogsVersion = errors.New("unknown guest logs version")
 
 // followLogs reads the output offsets the guest holds, answers where to resume, then acks each write so the guest lets it go.
-func followLogs(conn net.Conn, sink LogSink) error {
-	r := bufio.NewReader(conn)
-	ok, err := framed(r)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read the guest logs header: %w", err)
-	}
-	if !ok {
+func followLogs(conn net.Conn, sink LogSink, version int) error {
+	if version == 0 {
 		// An older guest sends raw output with no header and reads no acks.
-		return pump(r, sink, nil, 0)
+		return pump(conn, sink, nil, 0)
+	}
+	if version != LogsVersion {
+		return fmt.Errorf("%w %d: this host reads %d", ErrLogsVersion, version, LogsVersion)
 	}
 
-	var head struct {
-		Magic   [len(LogsMagic)]byte
-		Version byte
-		Held    [2]uint64
-	}
-	if err := binary.Read(r, binary.BigEndian, &head); err != nil {
+	var held [2]uint64
+	if err := binary.Read(conn, binary.BigEndian, &held); err != nil {
 		return fmt.Errorf("read the output the guest holds: %w", err)
 	}
-	if head.Version != LogsVersion {
-		return fmt.Errorf("%w %d: this host reads %d", ErrLogsVersion, head.Version, LogsVersion)
-	}
-	at, err := sink.Resume(head.Held[0], head.Held[1])
+	at, err := sink.Resume(held[0], held[1])
 	if err != nil {
 		return fmt.Errorf("resume the guest logs: %w", err)
 	}
@@ -73,30 +63,12 @@ func followLogs(conn net.Conn, sink LogSink) error {
 		return fmt.Errorf("resume the guest logs: %w", err)
 	}
 
-	return pump(r, sink, conn, at)
+	return pump(conn, sink, conn, at)
 }
 
-// LogsHeader is what a guest sends first on the logs port: the magic, the version, and the output bytes [from, to) it holds.
+// LogsHeader is what a guest sends first on the logs port: the output bytes [from, to) it holds.
 func LogsHeader(from, to uint64) []byte {
-	head := append([]byte(LogsMagic), LogsVersion)
-	head = binary.BigEndian.AppendUint64(head, from)
-
-	return binary.BigEndian.AppendUint64(head, to)
-}
-
-// framed peeks one byte at a time, so the first write of an older guest is never held back; what it peeks stays in r.
-func framed(r *bufio.Reader) (bool, error) {
-	for i := range len(LogsMagic) {
-		b, err := r.Peek(i + 1)
-		if len(b) > i && b[i] != LogsMagic[i] {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-
-	return true, nil
+	return binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(nil, from), to)
 }
 
 // pump lands what r carries in sink and, when ack is set, answers each write with the output offset after it.

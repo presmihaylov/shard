@@ -134,8 +134,8 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the state: %v", err)
 	}
-	if state.Kind != supervisor.KindState || !state.Ready || state.Exit == nil || state.Exit.Code != 7 {
-		t.Fatalf("state = %+v, want ready with exit code 7", state)
+	if state.Kind != supervisor.KindState || !state.Ready || state.Exit == nil || state.Exit.Code != 7 || state.Logs != supervisor.LogsVersion {
+		t.Fatalf("state = %+v, want ready with exit code 7 and logs version %d", state, supervisor.LogsVersion)
 	}
 	if err := again.Run(supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
 		t.Fatalf("a second run gave %v, want ErrEntrypointNotStarted", err)
@@ -330,7 +330,7 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 	defer cancel()
 	var logs syncBuffer
 	done := make(chan error, 1)
-	go func() { done <- supervisor.Logs(logsCtx, dial, &logs) }()
+	go func() { done <- supervisor.Logs(logsCtx, dial, &logs, supervisor.LogsVersion) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "first line") {
 		time.Sleep(20 * time.Millisecond)

@@ -50,8 +50,9 @@ that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes 
 root; the records or the data image name the one to give.
 
 **A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
-before the logs header sends raw output, and a newer daemon lands it as it comes, with no resume. A
-newer guest under an older daemon is unsupported: that daemon misreads the header and lands no output.
+before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
+every byte as it comes, with no resume. A newer guest under an older daemon is unsupported: that
+daemon lands the guest's opening offsets as output and never answers them, so no output follows.
 
 **An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
 beside it, and every record lives inside that image, so a root whose image is not mounted looks empty
