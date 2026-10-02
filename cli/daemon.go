@@ -26,7 +26,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	logPath := flags.String("log", "", "the file to write the daemon's output to and reopen on SIGHUP; a Mac only")
-	logMax := flags.Int64("log-max", daemon.DefaultLogCap>>20, "the MiB past which the daemon moves --log aside itself")
+	logMax := flags.Int64("log-max", daemon.DefaultLogCap>>20, "the MiB past which the daemon moves --log to <path>.overflow itself")
 
 	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the daemon flags: %w", err)
