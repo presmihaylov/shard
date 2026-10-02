@@ -228,6 +228,7 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 		Redirects:  map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
 		Redirected: addresses.Fronted,
 		Drops:      drops.report,
+		Overflow:   drops.overflow,
 		Judge:      addresses.Judge,
 	})
 	if err != nil {
@@ -253,6 +254,11 @@ func (s *stackDrops) report(d netstack.Drop) {
 		// The frame is refused already, so a log that cannot be written closes no door; the daemon log carries it.
 		s.out.Printf("egress log: sandbox at %s: %v", d.Guest, err)
 	}
+}
+
+// overflow counts the frames a guest's network device had no room for; TCP sends them again, and UDP loses them.
+func (s *stackDrops) overflow(guest netip.Addr, dropped uint64) {
+	s.out.Printf("stack: sandbox at %s had no room for %d frames so far, and the stack dropped them", guest, dropped)
 }
 
 // frontLocked is what the proxy and the resolver listen through, so one task serves either host the same way.

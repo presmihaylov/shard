@@ -192,6 +192,13 @@ serves reached on an address other than the gateway. The bound is the same two a
 of ten the chains log at. Nothing reaches the Mac, the LAN or the internet except through the proxy
 or a flow the policy allowed, and `docs/egress.md` has the per-substrate row.
 
+Each end of the socketpair has a 1 MiB send buffer and a 4 MiB receive buffer, the four to one
+Apple asks for. At the macOS default of 4 KiB a full peer refuses the third 1514 byte frame with
+`ENOBUFS`, and a 1 MB download filled it (SHARD-384). A frame the guest end still has no room for is
+back-pressure, not a fault: the link tries it five times over about 1.5 ms, then drops it for TCP to
+send again. The pump never ends on `ENOBUFS` or `EAGAIN`. The daemon log counts the dropped frames
+per sandbox, at the first drop, at most once in ten seconds after it, and when the link closes.
+
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state
 shard does not own. hypeman uses it and had a whole-egress outage from it (their issue 358). Also
