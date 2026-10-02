@@ -23,34 +23,28 @@ var ErrSandboxGone = errors.New("the sandbox was removed")
 // rename, so a poll on the size and the inode is enough and there is no inotify to depend on.
 const followPoll = 250 * time.Millisecond
 
-// Follow yields the records the log already holds, oldest first, and then every record appended after
-// it, until the context ends or the sandbox is removed.
+// Follow yields the newest records the log holds, at most TailRecords, then every record appended after them, until the context ends or the sandbox is removed.
 func (r *LogReader) Follow(ctx context.Context, sb models.Sandbox, yield func(Record) error) error {
 	dir, err := r.log.dirs.Dir(sb.ID)
 	if err != nil {
 		return err
 	}
 
-	older, err := readRecords(filepath.Join(dir, LogRotated))
+	// The current file is opened before its lines are read, so a line appended in between is tailed rather than lost.
+	rotated, current, err := r.log.open(dir)
 	if err != nil {
 		return err
 	}
 
-	// The current file is opened before its lines are read, so a line appended in between is tailed
-	// rather than lost.
 	tail := &tailFile{path: filepath.Join(dir, LogFile)}
 	defer tail.close()
 
-	if err := tail.open(); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-
-	current, err := tail.records()
+	start, err := tail.start(rotated, current)
 	if err != nil {
 		return err
 	}
 
-	for _, record := range Merge(append(older, current...)) {
+	for _, record := range Merge(start) {
 		if err := yield(record); err != nil {
 			return err
 		}
@@ -118,14 +112,45 @@ func (t *tailFile) open() error {
 		return fmt.Errorf("open %s: %w", t.path, err)
 	}
 
+	return t.use(file)
+}
+
+// use makes file the one the tail reads, from where its offset stands.
+func (t *tailFile) use(file *os.File) error {
 	ino, err := inode(file)
 	if err != nil {
-		return err
+		return errors.Join(err, closeAll(file))
 	}
 
 	t.file, t.reader, t.partial, t.ino = file, bufio.NewReader(file), "", ino
 
 	return nil
+}
+
+// start reads the newest whole lines of both files, and leaves the tail at the end of the current one.
+func (t *tailFile) start(rotated, current *os.File) ([]Record, error) {
+	newest := newTail(TailRecords)
+
+	if rotated != nil {
+		_, readErr := newest.read(bufio.NewReader(rotated), rotated.Name())
+		if err := errors.Join(readErr, closeAll(rotated)); err != nil {
+			return nil, errors.Join(err, closeAll(current))
+		}
+	}
+
+	if current != nil {
+		if err := t.use(current); err != nil {
+			return nil, err
+		}
+
+		partial, err := newest.read(t.reader, t.path)
+		if err != nil {
+			return nil, err
+		}
+		t.partial = string(partial)
+	}
+
+	return newest.records()
 }
 
 // reopen moves to the file that took the name, once the renamed one has been read to its end.

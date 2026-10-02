@@ -276,7 +276,9 @@ Three limits are worth knowing:
   sandbox that no longer exists. Each chain rule logs at 2 lines per second, with a burst of 10, so a
   probe storm cannot fill the ring.
 - **The log file is rotated at 8 MiB** and one file is kept behind it, so a sandbox holds 16 MiB at
-  most. The daemon does the rotation once a minute.
+  most. The write that would pass 8 MiB renames the file first. `shard logs --egress` prints the
+  newest 10000 records at most, and says on stderr how many older ones it left out. A follow starts
+  from the same newest 10000.
 - **A drop by another firewall on the host is not in the log.** The daemon reads only the lines
   shard's own chains write into the ring, so a packet that `ufw`, `firewalld` or a rule of your own
   drops leaves no record, and the guest just times out. A rented box with `ufw` on is the common
