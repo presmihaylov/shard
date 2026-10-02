@@ -16,11 +16,6 @@ func WithSeccomp(profile func(*specs.Spec) (*specs.LinuxSeccomp, error)) Option 
 	return func(s *Service) { s.seccomp = profile }
 }
 
-// WithAppArmor confines every bundle's process under profile, which the host must already have loaded.
-func WithAppArmor(profile string) Option {
-	return func(s *Service) { s.apparmor = profile }
-}
-
 // keyringCalls reach the kernel keyring, whose quota is per host uid, so one guest that spends it fails every create that shares the uid (SHARD-367).
 var keyringCalls = []string{"add_key", "keyctl", "request_key"}
 

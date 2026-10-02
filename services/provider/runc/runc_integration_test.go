@@ -98,11 +98,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("open the runc runner: %v", err)
 	}
 
-	confinement, err := bundle.DockerDefault()
-	if err != nil {
-		t.Fatalf("load Docker's default confinement: %v", err)
-	}
-	bundles, err := bundle.New(hostInitPath, confinement...)
+	bundles, err := bundle.New(hostInitPath, bundle.WithSeccomp(bundle.DockerProfile))
 	if err != nil {
 		t.Fatalf("open the bundle service: %v", err)
 	}

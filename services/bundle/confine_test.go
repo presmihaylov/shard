@@ -40,14 +40,11 @@ func TestTheKeyringProfileDeniesOnlyTheKeyringWithENOSYS(t *testing.T) {
 	}
 }
 
-func TestBuildWritesTheSeccompFilterAndTheAppArmorProfile(t *testing.T) {
-	got := buildWith(t, bundle.WithSeccomp(bundle.KeyringProfile), bundle.WithAppArmor("shard-default"))
+func TestBuildWritesTheSeccompFilter(t *testing.T) {
+	got := buildWith(t, bundle.WithSeccomp(bundle.KeyringProfile))
 
 	if got.Linux.Seccomp == nil || len(got.Linux.Seccomp.Syscalls) != 1 {
 		t.Errorf("got the filter %+v, want the keyring rule", got.Linux.Seccomp)
-	}
-	if got.Process.ApparmorProfile != "shard-default" {
-		t.Errorf("got the AppArmor profile %q, want shard-default", got.Process.ApparmorProfile)
 	}
 }
 
@@ -55,8 +52,8 @@ func TestBuildWritesTheSeccompFilterAndTheAppArmorProfile(t *testing.T) {
 func TestBuildConfinesNothingUnlessAsked(t *testing.T) {
 	got := buildWith(t)
 
-	if got.Linux.Seccomp != nil || got.Process.ApparmorProfile != "" {
-		t.Errorf("got the filter %+v and the profile %q, want neither", got.Linux.Seccomp, got.Process.ApparmorProfile)
+	if got.Linux.Seccomp != nil {
+		t.Errorf("got the filter %+v, want none", got.Linux.Seccomp)
 	}
 }
 

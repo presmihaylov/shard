@@ -305,12 +305,7 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 		if err != nil {
 			return nil, err
 		}
-		confinement, err := bundle.DockerDefault()
-		if err != nil {
-			return nil, err
-		}
-
-		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) }, confinement...)
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) }, bundle.WithSeccomp(bundle.DockerProfile))
 	case vzvm.Name:
 		return d.newVZ(dirs)
 	case firecracker.Name:
