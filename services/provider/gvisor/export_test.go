@@ -45,6 +45,16 @@ func (p *Provider) BringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	return p.bringUp(ctx, spec, exitFile, up)
 }
 
+// RunscRoot is the root the provider's runner passes runsc, which a restore's command line names.
+func (p *Provider) RunscRoot() string {
+	return p.runsc.Root()
+}
+
+// KillRestores is the kill Remove runs first on a runsc restore of the sandbox on root, reachable without runsc.
+func (p *Provider) KillRestores(ctx context.Context, root, id string) error {
+	return p.killRestores(ctx, root, id)
+}
+
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.
 func RemoveCgroup(root, id string) error {
 	return cgroup.Remove(cgroupDir(root, id))

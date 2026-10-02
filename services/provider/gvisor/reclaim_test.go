@@ -88,6 +88,10 @@ func (h *host) kill(pid int) error {
 	h.killed = append(h.killed, pid)
 	delete(h.placed, pid)
 	h.render()
+	// A killed process reads an empty command line until it is reaped.
+	if err := os.WriteFile(filepath.Join(h.procRoot, strconv.Itoa(pid), "cmdline"), nil, 0o600); err != nil {
+		h.t.Fatalf("empty the fake command line: %v", err)
+	}
 	if h.gone[pid] {
 		return syscall.ESRCH
 	}
@@ -265,5 +269,75 @@ func TestAFailedBringUpKillsNothing(t *testing.T) {
 	}
 	if len(h.killed) != 0 {
 		t.Errorf("BringUp killed %v after a failure runsc returned itself", h.killed)
+	}
+}
+
+const runscRoot = "/var/lib/shard/runsc"
+
+// restore is the argv the runner gives runsc restore, from a daemon now dead, so the process sits in that daemon's cgroup.
+func (h *host) restore(pid int, root, id string) {
+	h.t.Helper()
+
+	h.process(pid, "system.slice/shard.service", "runsc", "--root", root, "--network=sandbox", "--overlay2=none",
+		"restore", "--detach", "--bundle", "/var/lib/shard/sandboxes/"+id+"/bundle", "--image-path", "/var/lib/shard/sandboxes/"+id+"/checkpoint", id)
+}
+
+// A restore that has not forked the sandbox yet is outside its cgroup, so the teardown finds it by its command line, and only it.
+func TestKillRestoresEndsARestoreOutsideTheSandboxCgroup(t *testing.T) {
+	h := newHost(t)
+	h.restore(4401, runscRoot, sandboxID)
+	h.restore(4402, runscRoot, sandboxID+"-2")
+	h.restore(4403, "/run/other/runsc", sandboxID)
+	h.process(4404, "system.slice/shard.service", "runsc", "--root", runscRoot, "--network=sandbox", "--overlay2=none", "delete", "--force", sandboxID)
+
+	if err := h.provider().KillRestores(t.Context(), runscRoot, sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if want := []int{4401}; !slices.Equal(h.killed, want) {
+		t.Errorf("KillRestores killed %v, want the restore of %s on %s alone: %v", h.killed, sandboxID, runscRoot, want)
+	}
+}
+
+// A restore still there after the SIGKILL fails the teardown, so the record stays for the next start to try again.
+func TestKillRestoresFailsWhileTheRestoreStillRuns(t *testing.T) {
+	h := newHost(t)
+	h.restore(4401, runscRoot, sandboxID)
+	p := h.provider()
+	p.SetKill(func(int) error { return nil })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	err := p.KillRestores(ctx, runscRoot, sandboxID)
+	if err == nil || !strings.Contains(err.Error(), "the runsc restore [4401] of sandbox "+sandboxID+" still runs") {
+		t.Fatalf("KillRestores returned %v, want it to name the restore that survived", err)
+	}
+}
+
+// Remove kills the restore before any runsc call, so the restore cannot bring the sandbox up after the teardown.
+func TestRemoveKillsAnInFlightRestoreBeforeItRunsRunsc(t *testing.T) {
+	h := newHost(t)
+	ran := filepath.Join(t.TempDir(), "runsc-ran")
+	p := newProviderOver(t, "touch "+ran+"; exit 1")
+	p.SetCgroupRoot(h.cgroupRoot)
+	p.SetProcRoot(h.procRoot)
+	h.restore(4401, p.RunscRoot(), sandboxID)
+
+	var runscFirst []int
+	p.SetKill(func(pid int) error {
+		if _, err := os.Stat(ran); err == nil {
+			runscFirst = append(runscFirst, pid)
+		}
+
+		return h.kill(pid)
+	})
+
+	if err := p.Remove(t.Context(), sandboxID); err == nil {
+		t.Fatal("Remove passed over a runsc delete that failed")
+	}
+	if want := []int{4401}; !slices.Equal(h.killed, want) {
+		t.Errorf("Remove killed %v, want the in-flight restore %v", h.killed, want)
+	}
+	if len(runscFirst) > 0 {
+		t.Errorf("Remove ran runsc before it killed the restore %v", runscFirst)
 	}
 }
