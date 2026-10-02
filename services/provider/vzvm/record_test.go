@@ -3,13 +3,16 @@ package vzvm
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,11 +97,29 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 	guest, host := net.Pipe()
 	defer guest.Close()
 
+	dir := t.TempDir()
+	path := filepath.Join(dir, logFile)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A file open only for reading refuses every write, as a full disk would.
+	readOnly, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	done := make(chan struct{})
 	go func() {
-		p.followLogs(context.Background(), m, host, brokenLog{})
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: readOnly, Cursor: filepath.Join(dir, cursorFile)})
 		close(done)
 	}()
+	if err := binary.Write(guest, binary.BigEndian, [2]uint64{0, 6}); err != nil {
+		t.Fatal(err)
+	}
+	var at uint64
+	if err := binary.Read(guest, binary.BigEndian, &at); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := guest.Write([]byte("hello\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -108,18 +129,10 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the follow went on after the log refused a write")
 	}
-	if m.lost == nil || !strings.Contains(m.lost.Error(), "the log stopped") || !errors.Is(m.lost, errNoSpace) {
+	if m.lost == nil || !strings.Contains(m.lost.Error(), "the log stopped") || !errors.Is(m.lost, syscall.EBADF) {
 		t.Fatalf("lost = %v, want the log write failure", m.lost)
 	}
 }
-
-var errNoSpace = errors.New("no space left on device")
-
-type brokenLog struct{}
-
-func (brokenLog) Write([]byte) (int, error) { return 0, errNoSpace }
-
-func (brokenLog) Close() error { return nil }
 
 // A guest that answers every request, and counts the stops, so a test proves the host said stop only once the marker was down.
 func stoppableGuest(t *testing.T) (*supervisor.Control, *atomic.Int32) {

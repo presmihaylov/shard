@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -424,11 +425,17 @@ func signalOf(name string) (syscall.Signal, error) {
 	}
 }
 
-// logSink copies the entrypoint's pipe to the live logs connection, and waits with no host attached so no byte is lost.
+// logHold is the most output the guest keeps for a host that has not acked it; a full hold blocks the entrypoint on its pipe.
+const logHold = 1 << 20
+
+// logSink keeps the entrypoint's output until a host acks it, so a host that comes back resumes where its log file ends.
 type logSink struct {
 	pipe *os.File
 	mu   sync.Mutex
 	cond *sync.Cond
+	// held is the output no host has acked yet, and its first byte is output byte from.
+	held []byte
+	from uint64
 	conn net.Conn
 }
 
@@ -438,7 +445,7 @@ func newLogSink() (*logSink, error) {
 		return nil, fmt.Errorf("open the log pipe: %w", err)
 	}
 
-	s := &logSink{pipe: w}
+	s := &logSink{pipe: w, held: make([]byte, 0, logHold)}
 	s.cond = sync.NewCond(&s.mu)
 	go s.copy(r)
 
@@ -454,17 +461,20 @@ func (s *logSink) accept(l net.Listener) {
 			return
 		}
 
+		// An ack still in flight on the old connection is dropped with it, so what the new host is offered holds until it answers.
 		s.mu.Lock()
 		if s.conn != nil {
 			_ = s.conn.Close()
 		}
 		s.conn = conn
+		from, to := s.from, s.from+uint64(len(s.held))
 		s.cond.Broadcast()
 		s.mu.Unlock()
+		go s.serve(conn, from, to)
 	}
 }
 
-// copy moves each chunk to the live connection, and what is left of it to the next one when a write fails midway.
+// copy holds each chunk of the pipe for the host, and waits for its acks while the hold is full.
 func (s *logSink) copy(r io.Reader) {
 	buf := make([]byte, 32<<10)
 	for {
@@ -472,24 +482,111 @@ func (s *logSink) copy(r io.Reader) {
 		if err != nil {
 			return
 		}
-		s.write(buf[:n])
+		s.hold(buf[:n])
 	}
 }
 
-func (s *logSink) write(chunk []byte) {
+func (s *logSink) hold(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for len(chunk) > 0 {
-		for s.conn == nil {
-			s.cond.Wait()
-		}
-		n, err := s.conn.Write(chunk)
-		chunk = chunk[n:]
-		if err == nil {
-			continue
-		}
-		_ = s.conn.Close()
-		s.conn = nil
+	for len(s.held)+len(chunk) > cap(s.held) {
+		s.cond.Wait()
 	}
+	s.held = append(s.held, chunk...)
+	s.cond.Broadcast()
+}
+
+// serve offers the host the output bytes [from, to), sends on from the one it answers, and lets go of what it acks.
+func (s *logSink) serve(conn net.Conn, from, to uint64) {
+	defer s.drop(conn)
+
+	if err := binary.Write(conn, binary.BigEndian, [2]uint64{from, to}); err != nil {
+		return
+	}
+	var at uint64
+	if err := binary.Read(conn, binary.BigEndian, &at); err != nil {
+		return
+	}
+	if at < from || at > to {
+		fmt.Fprintf(os.Stderr, "shard-init: the host resumes the logs at %d, outside the held %d..%d\n", at, from, to)
+
+		return
+	}
+	go s.acks(conn)
+
+	buf := make([]byte, 32<<10)
+	for {
+		chunk, ok := s.next(conn, at, buf)
+		if !ok {
+			return
+		}
+		if _, err := conn.Write(chunk); err != nil {
+			return
+		}
+		at += uint64(len(chunk))
+	}
+}
+
+// next copies the held output from byte at into buf once there is some, and says false once conn is no longer the live one.
+func (s *logSink) next(conn net.Conn, at uint64, buf []byte) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for s.conn == conn && at == s.from+uint64(len(s.held)) {
+		s.cond.Wait()
+	}
+	// A host that acked past what it was sent has nothing left here to send from.
+	if s.conn != conn || at < s.from {
+		return nil, false
+	}
+
+	return buf[:copy(buf, s.held[at-s.from:])], true
+}
+
+func (s *logSink) acks(conn net.Conn) {
+	defer s.drop(conn)
+
+	for {
+		var ack uint64
+		if err := binary.Read(conn, binary.BigEndian, &ack); err != nil {
+			return
+		}
+		if err := s.release(conn, ack); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
+
+			return
+		}
+	}
+}
+
+// release lets go of the output before byte ack, which the host's log file now holds.
+func (s *logSink) release(conn net.Conn, ack uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return nil
+	}
+	if ack < s.from || ack > s.from+uint64(len(s.held)) {
+		return fmt.Errorf("the host acked the logs at %d, outside the held %d..%d", ack, s.from, s.from+uint64(len(s.held)))
+	}
+	s.held = s.held[:copy(s.held, s.held[ack-s.from:])]
+	s.from = ack
+	s.cond.Broadcast()
+
+	return nil
+}
+
+// drop ends conn, unless a newer host already took its place.
+func (s *logSink) drop(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return
+	}
+	_ = conn.Close()
+	s.conn = nil
+	s.cond.Broadcast()
 }

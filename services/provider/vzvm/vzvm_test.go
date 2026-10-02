@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1151,6 +1152,54 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	}
 	if !status.Exists || status.Alive() || status.PID != 0 {
 		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid", status)
+	}
+}
+
+// Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
+func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do echo $i; i=$((i+1)); done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+	for range 5 {
+		if err := h.provider.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.open(t).Status(t.Context(), spec.ID); err != nil {
+			t.Fatal(err)
+		}
+		logged = awaitLog(t, h.provider, spec.ID, logged)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+	logged = awaitLog(t, h.provider, spec.ID, logged)
+	awaitLog(t, h.provider, spec.ID, logged)
+
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last line may still be on its way.
+	lines := strings.Split(string(out), "\n")
+	lines = lines[:len(lines)-1]
+	for i, line := range lines {
+		if line != strconv.Itoa(i) {
+			t.Fatalf("line %d of %d is %q, want %d: the log lost or repeated output across a restart", i, len(lines), line, i)
+		}
 	}
 }
 

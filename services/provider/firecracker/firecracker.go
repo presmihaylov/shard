@@ -48,6 +48,8 @@ const (
 	initrdFile = "initrd.cpio"
 	// memoryFile is the guest memory a restore mapped, a hard link to the snapshot's own; a fresh boot has none.
 	memoryFile = "memory"
+	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
+	cursorFile = "output.cursor"
 )
 
 // The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.

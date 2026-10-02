@@ -74,7 +74,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}

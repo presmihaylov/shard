@@ -357,21 +357,3 @@ func writeTo(f *os.File, payload []byte) error {
 
 	return nil
 }
-
-// Logs copies the entrypoint's output into w until the guest, or ctx, ends the connection.
-func Logs(ctx context.Context, dial Dialer, w io.Writer) error {
-	conn, err := dial(ctx, LogsPort)
-	if err != nil {
-		return fmt.Errorf("open the logs connection: %w", err)
-	}
-	defer conn.Close()
-
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-
-	if _, err := io.Copy(w, conn); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("follow the guest logs: %w", err)
-	}
-
-	return nil
-}

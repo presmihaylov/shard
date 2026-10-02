@@ -39,6 +39,8 @@ const (
 	oomFile    = "oom"
 	logFile    = "output.log"
 	initrdFile = "initrd.cpio"
+	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
+	cursorFile = "output.cursor"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.

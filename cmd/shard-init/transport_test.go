@@ -302,6 +302,9 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
+// Resume takes all the guest holds, as a log that never saw this guest does.
+func (b *syncBuffer) Resume(from, _ uint64) (uint64, error) { return from, nil }
+
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

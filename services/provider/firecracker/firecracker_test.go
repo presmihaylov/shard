@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -962,4 +963,70 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	if err := h.open(t).Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
+func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do echo $i; i=$((i+1)); done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+	for range 5 {
+		if _, err := h.reopen(t).Status(t.Context(), spec.ID); err != nil {
+			t.Fatal(err)
+		}
+		logged = awaitLog(t, h.provider, spec.ID, logged)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR2); err != nil {
+		t.Fatalf("drop the fake vmm's streams: %v", err)
+	}
+	logged = awaitLog(t, h.provider, spec.ID, logged)
+	awaitLog(t, h.provider, spec.ID, logged)
+
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last line may still be on its way.
+	lines := strings.Split(string(out), "\n")
+	lines = lines[:len(lines)-1]
+	for i, line := range lines {
+		if line != strconv.Itoa(i) {
+			t.Fatalf("line %d of %d is %q, want %d: the log lost or repeated output across a restart", i, len(lines), line, i)
+		}
+	}
+}
+
+// awaitLog blocks until the sandbox log holds more than seen bytes, and answers how many it holds.
+func awaitLog(t *testing.T, p *firecracker.Provider, id string, seen int) int {
+	t.Helper()
+
+	path, err := p.LogPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(stopGrace)
+	for time.Now().Before(deadline) {
+		out, _ := os.ReadFile(path)
+		if len(out) > seen {
+			return len(out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the log of %s did not grow past %d bytes", id, seen)
+
+	return seen
 }
