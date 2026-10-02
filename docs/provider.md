@@ -6,8 +6,8 @@ code; this page says what the signatures cannot.
 ## The substrates
 
 `shard daemon --provider <name>` picks one substrate for the whole host, and every sandbox on that
-host runs on it. A record names the substrate that made it. Do not switch a host's provider while
-records exist: the other substrate has never heard of those sandboxes.
+host runs on it. A record names the substrate that made it, and a root that holds records refuses
+another `--provider`: the other substrate has never heard of those sandboxes.
 
 | | gVisor (`gvisor`) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`) | Firecracker (`firecracker`) |
 |---|---|---|---|---|---|
@@ -31,8 +31,9 @@ reports and the CLI refuses on:
 
 ### What a host picks without --provider
 
-`--provider` always wins. Without it the root decides first and the host decides second, so the same
-command runs unchanged on a box with hardware virtualization and on one without:
+`--provider` wins over the host, and over a root it must name what made the root. Without it the
+root decides first and the host decides second, so the same command runs unchanged on a box with
+hardware virtualization and on one without:
 
 | The root and the host | The substrate | The reason |
 |---|---|---|
@@ -44,9 +45,9 @@ command runs unchanged on a box with hardware virtualization and on one without:
 | a root with none, on macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
 
 **A root keeps the substrate that made its records.** No other substrate can read them, so a daemon
-that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has.
-`--provider` still overrides that, and switching a host with records is what the warning above says
-it is.
+that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has. A
+`--provider` that names another substrate is refused, by both names, before the daemon touches the
+root; the records or the data image name the one to give.
 
 **An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
 beside it, and every record lives inside that image, so a root whose image is not mounted looks empty

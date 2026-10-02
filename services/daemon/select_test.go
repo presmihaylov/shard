@@ -129,16 +129,56 @@ func TestAnUnmountedDataImageKeepsFirecracker(t *testing.T) {
 	}
 }
 
-// --provider outranks the records too: an operator who names one is not guessing.
-func TestTheNamedProviderWinsOverTheHostAndTheRecords(t *testing.T) {
+// --provider outranks the host: an operator who names one is not guessing.
+func TestTheNamedProviderWinsOverTheHost(t *testing.T) {
 	kvm := openable(t)
-	root := recordUnder(t, "gvisor")
 
 	for _, name := range []string{"gvisor", "sysbox", "runc", "vz", "firecracker"} {
-		got := pick(t, name, root, kvm)
+		got := pick(t, name, t.TempDir(), kvm)
 		if got.Provider != name || !strings.Contains(got.Reason, "--provider") {
 			t.Errorf("--provider %s picks %+v, want %s named by the flag", name, got, name)
 		}
+	}
+}
+
+// SHARD-275: a root is bound to what made it, so --provider may only name that one again.
+func TestTheNamedProviderMustMatchTheRecords(t *testing.T) {
+	kvm := openable(t)
+
+	for _, made := range []string{"gvisor", "sysbox", "runc", "vz", "firecracker"} {
+		root := recordUnder(t, made)
+		if got := pick(t, made, root, kvm); got.Provider != made {
+			t.Errorf("--provider %s over its own records picks %+v", made, got)
+		}
+
+		for _, name := range []string{"gvisor", "sysbox", "runc", "vz", "firecracker"} {
+			if name == made {
+				continue
+			}
+			_, err := selectProvider(name, root, kvm)
+			if err == nil || !strings.Contains(err.Error(), "--provider "+name) || !strings.Contains(err.Error(), made+"'s") {
+				t.Errorf("--provider %s over %s records: %v, want a refusal naming both", name, made, err)
+			}
+		}
+	}
+}
+
+// The data image names firecracker even while it is unmounted, so another --provider is refused there too.
+func TestTheNamedProviderMustMatchTheDataImage(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "shard")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(root+".xfs", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := selectProvider("gvisor", root, filepath.Join(t.TempDir(), "gone"))
+	if err == nil || !strings.Contains(err.Error(), "firecracker's") || !strings.Contains(err.Error(), root+".xfs") {
+		t.Errorf("--provider gvisor beside a data image: %v, want a refusal naming firecracker and the image", err)
+	}
+	if got := pick(t, "firecracker", root, filepath.Join(t.TempDir(), "gone")); got.Provider != "firecracker" {
+		t.Errorf("--provider firecracker beside its own data image picks %+v", got)
 	}
 }
 
