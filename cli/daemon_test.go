@@ -26,6 +26,23 @@ func TestDaemonTakesNoArgumentButStatus(t *testing.T) {
 	}
 }
 
+func TestDaemonRefusesALogCapItCannotApply(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"zero":       {[]string{"daemon", "--log", "/var/log/shard/daemon.log", "--log-max", "0"}, "--log-max is 0 MiB, want 1 to 1048576"},
+		"past 1 TiB": {[]string{"daemon", "--log", "/var/log/shard/daemon.log", "--log-max", "1048577"}, "--log-max is 1048577 MiB, want 1 to 1048576"},
+		"no log":     {[]string{"daemon", "--log-max", "8"}, "--log-max caps the file --log names, so it needs --log"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := (App{Out: io.Discard}).Run(t.Context(), tc.args); err == nil || err.Error() != tc.want {
+				t.Errorf("Run = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // The provider is built on the first ask, so the status is the one read that can say why there is none.
 func TestDaemonStatusSaysWhyTheProviderCannotBeBuilt(t *testing.T) {
 	root := shortRoot(t)

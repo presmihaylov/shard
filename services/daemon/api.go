@@ -47,6 +47,8 @@ type Config struct {
 	Provider string
 	// LogPath is the file a Mac daemon writes its output to and reopens on SIGHUP, so newsyslog can rotate it.
 	LogPath string
+	// LogCap is the size in bytes past which the daemon moves LogPath aside itself; zero means DefaultLogCap.
+	LogCap int64
 }
 
 // Run supervises the daemon's tasks over one root until ctx ends.
@@ -61,7 +63,11 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := openLog(cfg.LogPath); err != nil {
 			return err
 		}
-		extra = append(extra, logReopen{path: cfg.LogPath, hangups: hangups, out: cfg.Out, reopen: openLog})
+		limit := cfg.LogCap
+		if limit == 0 {
+			limit = DefaultLogCap
+		}
+		extra = append(extra, logReopen{path: cfg.LogPath, limit: limit, interval: logCapInterval, hangups: hangups, out: cfg.Out, reopen: openLog})
 	}
 
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
