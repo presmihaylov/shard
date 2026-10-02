@@ -201,4 +201,22 @@ func TestAStopFailsWhenTheSupervisorsReportCannotLand(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
 		t.Fatalf("Stop = %v, want the lost report", err)
 	}
+
+	// The vmm is gone and forgotten, and every later verb still answers with the loss until rm.
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Errorf("a second Stop = %v, want the lost report", err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Errorf("Start = %v, want the lost report", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Alive() || !strings.Contains(status.SupervisorFailed, "lost its lifecycle state") {
+		t.Errorf("Status = %+v, want a dead sandbox whose supervisor failure names the loss", status)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove = %v, want the loss dropped with the sandbox", err)
+	}
 }

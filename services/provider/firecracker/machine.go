@@ -155,23 +155,24 @@ func (p *Provider) settle(ctx context.Context, m *machine) error {
 			return fmt.Errorf("the last events of sandbox %s still land %s after its vmm went", m.id, killGrace)
 		}
 	}
-	p.mu.Lock()
-	lost := m.lost
-	p.mu.Unlock()
 	p.forget(m)
-	// The forget takes the only place a later verb reads lost from, so the verb that ended the VM answers with it.
-	if lost != nil {
-		return errors.Join(fmt.Errorf("sandbox %s lost its lifecycle state: %w", m.id, lost), m.close())
+	if err := m.close(); err != nil {
+		return err
 	}
 
-	return m.close()
+	return p.lost(m.id)
 }
 
+// forget drops the machine and keeps what its loop could not land, which the files would otherwise answer for.
 func (p *Provider) forget(m *machine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.machines[m.id] == m {
-		delete(p.machines, m.id)
+	if p.machines[m.id] != m {
+		return
+	}
+	delete(p.machines, m.id)
+	if m.lost != nil {
+		p.lostRuns[m.id] = m.lost
 	}
 }
 

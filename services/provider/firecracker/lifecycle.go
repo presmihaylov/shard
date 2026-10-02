@@ -182,6 +182,9 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := p.lost(id); err != nil {
+		return err
+	}
 
 	m, err := p.lookup(ctx, id, dir)
 	if err != nil {
@@ -252,8 +255,11 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 
 	m, err := p.lookup(ctx, id, dir)
-	if err != nil || m == nil {
+	if err != nil {
 		return err
+	}
+	if m == nil {
+		return p.lost(id)
 	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
@@ -303,7 +309,8 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 
 // Remove ends the VM and drops the overlay, the memory, the record and the sockets; the state directory itself is the repository's.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	if err := p.Stop(ctx, id, 0); err != nil {
+	// A loss comes back only once the vmm is gone, and rm drops it with the files that cannot answer for the run.
+	if err := p.Stop(ctx, id, 0); err != nil && !errors.Is(err, errLostState) {
 		return err
 	}
 	dir, err := p.dir(id)
@@ -315,6 +322,9 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}
 	}
+	p.mu.Lock()
+	delete(p.lostRuns, id)
+	p.mu.Unlock()
 
 	// A stopped sandbox keeps its cgroup, empty, because the start that brings it back boots into that one.
 	return p.sweep(ctx, id)
@@ -444,16 +454,22 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return bundle.Bundle{RestartFile: filepath.Join(dir, restartsFile)}.RestartCount()
 }
 
+// errLostState marks a run whose files say nothing true, since the loop could not land one of its events.
+var errLostState = errors.New("lost its lifecycle state")
+
 // lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.
 func (p *Provider) lost(id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	m, held := p.machines[id]
-	if !held || m.lost == nil {
+	cause := p.lostRuns[id]
+	if m, held := p.machines[id]; held && m.lost != nil {
+		cause = m.lost
+	}
+	if cause == nil {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox %s lost its lifecycle state: %w", id, m.lost)
+	return fmt.Errorf("sandbox %s %w: %w", id, errLostState, cause)
 }
 
 // Status asks the vmm, because a record saying running can outlive a restart of the daemon.
@@ -479,6 +495,12 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		status = m.status(p)
 	}
 	if status.Alive() {
+		return status, nil
+	}
+	// A run whose last report never landed has nothing true on file, so it ends as a supervisor failure and never as an ordinary death.
+	if lost := p.lost(id); lost != nil {
+		status.SupervisorFailed = lost.Error()
+
 		return status, nil
 	}
 	status.SupervisorFailed, err = supervisorFailed(dir)

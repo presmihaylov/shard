@@ -108,6 +108,8 @@ type Provider struct {
 	machines map[string]*machine
 	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
 	spawning map[string]bool
+	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
+	lostRuns map[string]error
 }
 
 func New(cfg Config) (*Provider, error) {
@@ -124,7 +126,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
