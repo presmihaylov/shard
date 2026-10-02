@@ -22,9 +22,9 @@ func (p *Provider) Spawning(id string) (done func()) {
 	return p.spawn(id)
 }
 
-// EndUnloaded resumes a read that saw pid answer "Not started", which a test cannot pause inside Status.
-func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int) error {
-	return p.endUnloaded(id, client, pid)
+// EndJudged resumes a read that judged pid dead weight, which a test cannot pause inside Status.
+func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int) error {
+	return p.endJudged(id, client, pid)
 }
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.

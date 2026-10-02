@@ -227,23 +227,23 @@ func (c *Client) configure(cfg Config) error {
 // Open names the vmm on its sockets and asks it nothing, so a caller can still kill one that never answers.
 func Open(socket, vsock string) *Client { return &Client{socket: socket, vsock: vsock} }
 
-// Adopt takes a firecracker that is already running, by its sockets, and proves it answers by ctx's deadline.
+// Adopt takes a firecracker that is already running, by its sockets, and proves it answers by ctx's deadline; one that fails after the dial is still named in the Info.
 func Adopt(ctx context.Context, socket, vsock string) (*Client, Info, error) {
 	client := Open(socket, vsock)
 	info, err := client.State(ctx)
 	if err != nil {
-		return nil, Info{}, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+		return nil, info, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
 	}
 
 	return client, info, nil
 }
 
-// State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first.
+// State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first; a read that fails after the dial still names that peer.
 func (c *Client) State(ctx context.Context) (Info, error) {
 	var got instance
 	pid, err := c.call(ctx, http.MethodGet, "/", nil, &got)
 	if err != nil {
-		return Info{}, err
+		return Info{PID: pid}, err
 	}
 
 	return Info{State: got.State, PID: pid}, nil
@@ -356,7 +356,7 @@ func (c *Client) patch(path string, body any) error {
 	return err
 }
 
-// call is one request on its own connection, bounded from dial to reply, and the pid of the process that answered it.
+// call is one request on its own connection, bounded from dial to reply, and the pid of the peer that took the dial, kept on a later failure.
 func (c *Client) call(ctx context.Context, method, path string, body, reply any) (int, error) {
 	conn, err := c.dial(ctx, c.socket)
 	if err != nil {
@@ -372,36 +372,36 @@ func (c *Client) call(ctx context.Context, method, path string, body, reply any)
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, fmt.Errorf("%s %s: marshal the request: %w", method, path, err)
+			return pid, fmt.Errorf("%s %s: marshal the request: %w", method, path, err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, payload)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return pid, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if err := req.Write(conn); err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return pid, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return pid, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	blob, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: read the reply: %w", method, path, err)
+		return pid, fmt.Errorf("%s %s: read the reply: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return 0, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, faultOf(blob))
+		return pid, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, faultOf(blob))
 	}
 	if reply == nil {
 		return pid, nil
 	}
 	if err := json.Unmarshal(blob, reply); err != nil {
-		return 0, fmt.Errorf("%s %s: decode the reply: %w", method, path, err)
+		return pid, fmt.Errorf("%s %s: decode the reply: %w", method, path, err)
 	}
 
 	return pid, nil

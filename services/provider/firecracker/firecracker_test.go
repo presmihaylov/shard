@@ -883,7 +883,7 @@ func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.provider.EndUnloaded(spec.ID, client, pid); err != nil {
+	if err := h.provider.EndJudged(spec.ID, client, pid); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
@@ -915,11 +915,53 @@ func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	}
 	h.leaveUnloaded(t, spec, os.Args[0])
 
-	if err := h.provider.EndUnloaded(spec.ID, client, info.PID); err != nil {
+	if err := h.provider.EndJudged(spec.ID, client, info.PID); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	if !unloaded(socket) {
 		t.Fatal("a read ended a vmm it never saw")
+	}
+}
+
+// A read that timed out on a frozen vmm ends it by the pid it waited on, never a vmm that took the socket since (SHARD-392).
+func TestAReadThatTimedOutEndsOnlyTheVMMItWaitedOn(t *testing.T) {
+	h := newHarness(t)
+	spec := h.forkSpec(t)
+	exited := h.leaveUnloaded(t, spec, os.Args[0])
+	socket, vsock := filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock")
+	_, frozen, err := fcapi.Adopt(t.Context(), socket, vsock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(frozen.PID, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_, info, err := fcapi.Adopt(ctx, socket, vsock)
+	if err == nil || info.PID != frozen.PID {
+		t.Fatalf("Adopt of the frozen vmm = pid %d, %v, want a timeout that names pid %d", info.PID, err, frozen.PID)
+	}
+	// The frozen vmm exits and a spawn takes the socket between the timeout and the kill.
+	if err := fcapi.KillPID(frozen.PID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopGrace):
+		t.Fatal("the frozen vmm still runs after its kill")
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	h.leaveUnloaded(t, spec, os.Args[0])
+
+	if err := h.provider.EndJudged(spec.ID, fcapi.Open(socket, vsock), info.PID); err != nil {
+		t.Fatalf("the late kill: %v", err)
+	}
+	if !unloaded(socket) {
+		t.Fatal("a read that timed out ended a vmm that took the socket since")
 	}
 }
 

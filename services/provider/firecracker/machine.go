@@ -65,16 +65,16 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if absent(err) {
 		return nil, nil
 	}
-	// A vmm silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-392).
-	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
-		return nil, p.end(ctx, &machine{id: id, client: fcapi.Open(socket, vsock)})
+	// A vmm silent for the whole bound answers no verb either, so the peer that took the dial is killed and reads stopped (SHARD-392).
+	if err != nil && info.PID > 0 && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
+		return nil, p.endJudged(id, fcapi.Open(socket, vsock), info.PID)
 	}
 	if err != nil {
 		return nil, err
 	}
 	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
 	if info.State == fcapi.StateNotStarted {
-		return nil, p.endUnloaded(id, client, info.PID)
+		return nil, p.endJudged(id, client, info.PID)
 	}
 	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before it swapped off the source's overlay.
 	if info.State == fcapi.StatePaused {
@@ -84,7 +84,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		}
 		// A fork's restore was in flight, so this vmm may hold the source's live disk: end it, never resume it onto the source (SHARD-321).
 		if restoring {
-			return nil, p.endUnloaded(id, client, info.PID)
+			return nil, p.endJudged(id, client, info.PID)
 		}
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
@@ -94,15 +94,15 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	return p.attach(ctx, id, dir, client, info)
 }
 
-// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
-func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
+// endJudged ends the vmm a read judged dead weight, by the pid it judged; one this process still spawns, or holds since, is left to it.
+func (p *Provider) endJudged(id string, client *fcapi.Client, pid int) error {
 	if p.spared(id) {
 		return nil
 	}
 
 	// The pid is the vmm judged here: the socket may answer for one a spawn began since.
 	if err := fcapi.KillPID(pid); err != nil {
-		return fmt.Errorf("sandbox %s: end the vmm a cut spawn left: %w", id, err)
+		return fmt.Errorf("sandbox %s: end the vmm a read judged: %w", id, err)
 	}
 
 	return awaitEnded(&machine{id: id, client: client, pid: pid})

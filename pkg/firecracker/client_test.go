@@ -436,7 +436,7 @@ func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 	awaitRefused(t, client)
 }
 
-// A state read ends by its context's deadline, so a wait on a vmm that takes the dial and never answers ends on time (SHARD-388).
+// A state read ends by its context's deadline and names the peer it waited on, so a kill reaches that vmm and no owner since (SHARD-388, SHARD-392).
 func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	cfg := config(shortRoot(t))
 	client, info := start(t, cfg)
@@ -447,10 +447,14 @@ func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	begun := time.Now()
-	if _, err := client.State(ctx); err == nil {
+	got, err := client.State(ctx)
+	if err == nil {
 		t.Fatal("State of a stopped vmm answered")
 	}
 	if took := time.Since(begun); took > 5*time.Second {
 		t.Errorf("State took %s on a deadline of 200ms", took)
+	}
+	if got.PID != info.PID {
+		t.Errorf("State timed out naming pid %d, want the peer %d", got.PID, info.PID)
 	}
 }
