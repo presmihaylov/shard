@@ -43,10 +43,13 @@ type fakeLifecycle struct {
 	execID string
 	// attachedExec is the exec the client attached to, and resizedExec the one it resized.
 	attachedExec string
-	// out and errOut are what the command writes on each stream, and exit how it ended.
+	// out and errOut are what the command writes on each stream, exit how it ended, and lost what it evicted unread.
 	out    string
 	errOut string
 	exit   models.ExitStatus
+	lost   int64
+	// stall detaches the client the way the buffer does once it took no output for the bound.
+	stall bool
 	// execErr is how the command failed, apart from err, which is a refusal before the 101.
 	execErr     error
 	resizedExec string
@@ -219,32 +222,38 @@ func (f *fakeLifecycle) DeleteExec(_ context.Context, ref, execID string) error 
 }
 
 // Attach answers the client the way the orchestrator does: it starts the session, writes, and then exits.
-func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error) {
 	f.ref, f.attachedExec = ref, execID
 
 	if f.err != nil {
-		return models.ExitStatus{}, f.err
+		return sandbox.Attached{}, f.err
 	}
 
 	if streams.Started != nil {
 		if err := streams.Started(execID); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 
 	// A command that never ran reads nothing, the way the substrate answers one it could not start.
 	if f.execErr != nil {
-		return models.ExitStatus{}, f.execErr
+		return sandbox.Attached{}, f.execErr
+	}
+
+	if f.stall {
+		streams.Detach()
+
+		return sandbox.Attached{}, &sandbox.StalledError{ID: execID}
 	}
 
 	if f.out != "" {
 		if _, err := streams.Stdout.Write([]byte(f.out)); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 	if f.errOut != "" {
 		if _, err := streams.Stderr.Write([]byte(f.errOut)); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 
@@ -255,7 +264,7 @@ func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams 
 		select {
 		case <-f.stops:
 		case <-ctx.Done():
-			return models.ExitStatus{}, ctx.Err()
+			return sandbox.Attached{}, ctx.Err()
 		}
 	}
 
@@ -263,12 +272,12 @@ func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams 
 	if f.exec.Stdin && streams.Stdin != nil {
 		read, err := io.ReadAll(streams.Stdin)
 		if err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 		f.input = string(read)
 	}
 
-	return f.exit, nil
+	return sandbox.Attached{Exit: f.exit, LostBytes: f.lost}, nil
 }
 
 func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size sandbox.TerminalSize) error {

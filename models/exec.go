@@ -22,4 +22,6 @@ type Exec struct {
 	ExitedAt   *time.Time  `json:"exited_at"`
 	// Truncated says the 8 MiB output buffer dropped its oldest bytes, so a replay is not the whole output.
 	Truncated bool `json:"truncated"`
+	// LostBytes counts the output the buffer evicted before any client took it, so a nonzero value is a gap.
+	LostBytes int64 `json:"lost_bytes"`
 }

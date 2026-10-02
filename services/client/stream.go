@@ -39,10 +39,23 @@ type execsResult struct {
 	Execs []models.Exec `json:"execs"`
 }
 
+// LostOutputError is a command that ended with output the daemon's buffer evicted before any client took it.
+type LostOutputError struct {
+	Sandbox string
+	Exit    models.ExitStatus
+	Bytes   int64
+}
+
+func (e *LostOutputError) Error() string {
+	return fmt.Sprintf("the exec in sandbox %s exited with code %d, and %d bytes of its output were lost before any client read them", e.Sandbox, e.Exit.Code, e.Bytes)
+}
+
 // Exec starts the command, then attaches over a WebSocket; a command that never ran is a CommandNotStartedError.
 func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams ExecStreams) (models.ExitStatus, error) {
 	// The daemon gives the command no stdin unless this client has one to type into it.
 	req.Stdin = streams.Stdin != nil
+	// The attach follows at once, so the daemon keeps the output for it rather than evict any.
+	req.Attach = true
 
 	exec, err := c.CreateExec(ctx, ref, req)
 	if err != nil {
@@ -82,7 +95,23 @@ func (c *Client) AttachExec(ctx context.Context, ref, execID string, streams Exe
 	// Nothing waits for this copier: it blocks on a terminal this process does not own.
 	go sendInput(ctx, conn, streams)
 
-	return readExec(ctx, conn, ref, streams)
+	exit, err = readExec(ctx, conn, ref, streams)
+	var cut *cutError
+	if errors.As(err, &cut) {
+		return models.ExitStatus{}, c.cutShort(ctx, ref, execID, cut)
+	}
+
+	return exit, err
+}
+
+// cutShort asks the record why a stream ended early, since a daemon that detaches a stalled client says nothing on the wire.
+func (c *Client) cutShort(ctx context.Context, ref, execID string, cut *cutError) error {
+	rec, err := c.GetExec(ctx, ref, execID)
+	if err != nil {
+		return errors.Join(cut, err)
+	}
+
+	return fmt.Errorf("%w; the daemon detaches a client that takes no output for %s, and exec %s is %s with %d bytes of output lost", cut, sandbox.ExecStallBound, execID, rec.State, rec.LostBytes)
 }
 
 // ListExecs answers every exec the sandbox holds, oldest id first.
@@ -261,13 +290,25 @@ func readExec(ctx context.Context, conn *websocket.Conn, ref string, streams Exe
 	}
 }
 
+// cutError is a session that ended before its exit with no interrupt on this side.
+type cutError struct {
+	ref string
+	err error
+}
+
+func (e *cutError) Error() string {
+	return fmt.Sprintf("the exec in sandbox %s ended without an exit status: %v", e.ref, e.err)
+}
+
+func (e *cutError) Unwrap() error { return e.err }
+
 // ended names a session that ended before its exit, which only an interrupt on this side does on purpose.
 func ended(ctx context.Context, err error, ref string) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("the exec in sandbox %s: %w", ref, ctx.Err())
 	}
 
-	return fmt.Errorf("the exec in sandbox %s ended without an exit status: %w", ref, err)
+	return &cutError{ref: ref, err: err}
 }
 
 // exitOf reads the exit message; one that carries an error is a command the sandbox never ran, with a shell's code.
@@ -281,7 +322,12 @@ func exitOf(payload []byte, ref string) (models.ExitStatus, error) {
 		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: ref, Reason: exit.Error, Code: exit.Code}
 	}
 
-	return models.ExitStatus{Code: exit.Code, Signal: exit.Signal}, nil
+	status := models.ExitStatus{Code: exit.Code, Signal: exit.Signal}
+	if exit.LostBytes > 0 {
+		return status, &LostOutputError{Sandbox: ref, Exit: status, Bytes: exit.LostBytes}
+	}
+
+	return status, nil
 }
 
 // failureOf reads a failure message into the error a refusal before the 101 would have been.

@@ -33,16 +33,18 @@ func execOf(t *testing.T, _ layers, svc *sandbox.Service, ref string, req sandbo
 		return models.ExitStatus{}, &out, &errOut, err
 	}
 
-	status, err := svc.Attach(t.Context(), ref, exec.ID, streams)
+	attached, err := svc.Attach(t.Context(), ref, exec.ID, streams)
 
-	return status, &out, &errOut, err
+	return attached.Exit, &out, &errOut, err
 }
 
 // attach is the second step alone, for a test that holds the exec id itself.
 func attach(t *testing.T, svc *sandbox.Service, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
 	t.Helper()
 
-	return svc.Attach(t.Context(), ref, execID, streams)
+	attached, err := svc.Attach(t.Context(), ref, execID, streams)
+
+	return attached.Exit, err
 }
 
 // notifyWriter closes wrote the first time it is written to, so a test can wait for the replay to land.
@@ -459,8 +461,8 @@ func TestAttachReplaysAfterADropAndReturnsTheExit(t *testing.T) {
 	second := make(chan error, 1)
 	status := make(chan models.ExitStatus, 1)
 	go func() {
-		exit, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out2})
-		status <- exit
+		attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out2})
+		status <- attached.Exit
 		second <- err
 	}()
 
@@ -713,6 +715,37 @@ func TestExecKeepsTheLastBytesAndMarksItTruncated(t *testing.T) {
 	if !got.Truncated {
 		t.Error("the record is not marked truncated, and the replay lost its oldest bytes")
 	}
+	if got.LostBytes != int64(cap+(1<<20)-out.Len()) {
+		t.Errorf("the record says %d bytes lost, want the %d no client took", got.LostBytes, cap+(1<<20)-out.Len())
+	}
+}
+
+// A create that says a client attaches next holds the output for it, so a command that writes more than
+// the buffer holds still reaches that client byte for byte.
+func TestExecHoldsTheOutputForTheAttachThatFollows(t *testing.T) {
+	const cap = 8 << 20
+
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execOut = strings.Repeat("0123456789abcdef", (cap+(1<<20))/16)
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"cat", "big"}, Attach: true})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	var out bytes.Buffer
+	attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if out.String() != l.provider.execOut {
+		t.Errorf("the attach got %d bytes, want all %d the command wrote, byte for byte", out.Len(), len(l.provider.execOut))
+	}
+	if attached.LostBytes != 0 {
+		t.Errorf("the attach reports %d bytes lost, want none", attached.LostBytes)
+	}
 }
 
 // A command with stdin reads nothing until a client attaches and types, then ends the input.
@@ -735,11 +768,11 @@ func TestExecStdinReachesTheCommandOnlyThroughAnAttach(t *testing.T) {
 	}
 
 	streams := sandbox.Streams{Stdin: strings.NewReader("hi\n"), Stdout: io.Discard}
-	status, err := svc.Attach(t.Context(), "sandbox1", exec.ID, streams)
+	attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, streams)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if status.Code != 5 {
+	if status := attached.Exit; status.Code != 5 {
 		t.Errorf("the command ended with code %d, want 5", status.Code)
 	}
 	if l.provider.execInput != "hi\n" {

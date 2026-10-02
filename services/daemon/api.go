@@ -419,10 +419,10 @@ func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.Exec
 	return svc.CreateExec(ctx, ref, req)
 }
 
-func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error) {
 	svc, err := l.service()
 	if err != nil {
-		return models.ExitStatus{}, err
+		return sandbox.Attached{}, err
 	}
 
 	return svc.Attach(ctx, ref, execID, streams)

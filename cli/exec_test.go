@@ -2,7 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/api"
 )
 
 func TestParseExecTheGoalCommand(t *testing.T) {
@@ -121,6 +128,56 @@ func TestExecReportsTheCommandExitCodeAsAnExitError(t *testing.T) {
 	}
 	if exit.Code != 7 {
 		t.Errorf("exit code = %d, want 7", exit.Code)
+	}
+}
+
+// A command that exited 0 with a gap in its output must not look like a clean run to a script.
+func TestExecFailsACleanExitWhoseOutputWasLost(t *testing.T) {
+	var out bytes.Buffer
+
+	root := shortRoot(t)
+	app := App{Version: "test", Root: root, Out: &out}
+
+	listener, err := net.Listen("unix", filepath.Join(root, api.SocketFile))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"exec":"1a2b3c4d5e6f7a8b","state":"running"}`))
+
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept the attach: %v", err)
+
+			return
+		}
+		defer conn.CloseNow()
+
+		if err := api.Send(context.Background(), conn, api.StreamExit, []byte(`{"code":0,"lost_bytes":512}`)); err != nil {
+			t.Errorf("send the exit: %v", err)
+		}
+		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+			t.Errorf("close the attach: %v", err)
+		}
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	err = app.Run(t.Context(), []string{"exec", "sandbox1", "--", "cat", "big"})
+
+	var exit *ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("Run returned %v, want an ExitError", err)
+	}
+	if exit.Code != 1 || !strings.Contains(exit.Message, "512 bytes of its output were lost") {
+		t.Errorf("exec exited %d with %q, want 1 and the lost bytes named", exit.Code, exit.Message)
 	}
 }
 
