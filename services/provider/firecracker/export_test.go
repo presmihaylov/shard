@@ -29,3 +29,6 @@ func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int) error {
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.
 const RestoringFile = restoringFile
+
+// ReseedFile is the marker a restore keeps until its guest is reseeded, which a test writes to stand in for a daemon cut before the reseed.
+const ReseedFile = reseedFile

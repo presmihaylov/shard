@@ -219,9 +219,10 @@ own and not the source's. Firecracker has no pause of the wall clock, so the gue
 corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of one
 snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
 `resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
-before the verb returns (SHARD-266). The vCPUs run from the load until the seed lands, so a process
-the snapshot held can still draw from the saved key in those few milliseconds; freezing the guest
-before the save, as `vz` does, is the Firecracker half of SHARD-310.
+before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
+in between reseeds the guest it adopts. The vCPUs run from the load until the seed lands, so a
+process the snapshot held can still draw from the saved key in those few milliseconds; freezing the
+guest before the save, as `vz` does, is SHARD-409.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under

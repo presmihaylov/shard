@@ -83,7 +83,36 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		}
 	}
 
-	return p.attach(ctx, id, dir, client, info)
+	m, err = p.attach(ctx, id, dir, client, info)
+	if err != nil || m == nil {
+		return m, err
+	}
+	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
+	}
+
+	return m, nil
+}
+
+// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
+func (m *machine) reseed(ctx context.Context) error {
+	marker := filepath.Join(m.dir, reseedFile)
+	pending, err := exists(marker)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: read the reseed marker: %w", m.id, err)
+	}
+	if !pending {
+		return nil
+	}
+	if err := m.control.Load().Reseed(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: reseed the restored guest: %w", m.id, err)
+	}
+	if err := os.Remove(marker); err != nil {
+		return fmt.Errorf("sandbox %s: clear the reseed marker: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.

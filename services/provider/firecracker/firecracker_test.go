@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -618,6 +619,60 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 		}
 		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed}) {
 			t.Errorf("the guest of %s read %q, want one reseed", s.ID, got)
+		}
+		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the reseed marker of %s after the restore: %v, want it gone", s.ID, err)
+		}
+	}
+}
+
+// A daemon cut between a restore's attach and its reseed leaves the marker, so the next daemon reseeds the guest it adopts, and the one after does not again.
+func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	fork := h.forkSpec(t)
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		if err := os.WriteFile(filepath.Join(s.StateDir, firecracker.ReseedFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range 2 {
+		p := h.reopen(t)
+		for _, s := range []models.SandboxSpec{spec, fork} {
+			status, err := p.Status(t.Context(), s.ID)
+			if err != nil || !status.Alive() {
+				t.Fatalf("Status of %s after the restart = %+v, %v, want it adopted", s.ID, status, err)
+			}
+		}
+	}
+
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
+			t.Errorf("the guest of %s read %q, want the restore's reseed and the first adopter's", s.ID, got)
+		}
+		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the reseed marker of %s after the adopt: %v, want it gone", s.ID, err)
 		}
 	}
 }

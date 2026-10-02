@@ -52,6 +52,8 @@ const (
 	cursorFile = "output.cursor"
 	// restoringFile marks a fork's restore in flight: its vmm loaded the source's overlay and may not have swapped to this one's yet (SHARD-321).
 	restoringFile = "restoring"
+	// reseedFile marks a restored guest still on the snapshot's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
+	reseedFile = "reseed"
 )
 
 // The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.
