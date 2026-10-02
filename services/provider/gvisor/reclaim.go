@@ -2,8 +2,10 @@ package gvisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // Reclaim is the raw kill behind rm --force once runsc stops answering: SIGKILL to the sandbox's own processes, by cgroup and id.
@@ -100,15 +104,48 @@ func (p *Provider) argv(pid int) ([]string, bool, error) {
 	return strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00"), true, nil
 }
 
+// lastRestore records the restore a fork or resume launched, so a later daemon can find it even after the runsc on disk changed.
+const lastRestore = "restore.json"
+
+// launch is a restore as the kernel publishes it: the binary /proc/<pid>/exe links, and the command line.
+type launch struct {
+	Executable string   `json:"executable"`
+	Args       []string `json:"args"`
+}
+
+// restore records the launch before runsc restore runs, because a daemon that dies during it takes what it ran with it.
+func (p *Provider) restore(ctx context.Context, id string, opts runsc.RestoreOptions) error {
+	dir, err := p.dirs(id)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(launch{Executable: p.runsc.Executable(), Args: p.runsc.RestoreArgs(id, opts)})
+	if err != nil {
+		return fmt.Errorf("encode the restore of sandbox %s: %w", id, err)
+	}
+	if err := store.WriteFile(filepath.Join(dir, lastRestore), data, 0o600); err != nil {
+		return fmt.Errorf("record the restore of sandbox %s: %w", id, err)
+	}
+
+	return p.runsc.Restore(ctx, id, opts)
+}
+
 // killRestores ends a restore a dropped fork left outside the cgroup, where no sweep looks; this daemon holds the root, so none starts after.
 func (p *Provider) killRestores(ctx context.Context, id string) error {
-	pids, err := p.restores(id)
+	last, ok, err := p.lastRestore(id)
+	if err != nil || !ok {
+		return err
+	}
+
+	pids, err := p.restores(last)
 	if err != nil || len(pids) == 0 {
 		return err
 	}
 
 	for _, pid := range pids {
-		if err := p.killProcess(pid); err != nil && !errors.Is(err, syscall.ESRCH) {
+		err := p.killPinned(pid, func() (bool, error) { return p.runs(pid, last) })
+		if err != nil && !errors.Is(err, syscall.ESRCH) {
 			return fmt.Errorf("kill the runsc restore %d of sandbox %s: %w", pid, id, err)
 		}
 	}
@@ -124,7 +161,7 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 		case <-time.After(pollInterval):
 		}
 
-		if pids, err = p.restores(id); err != nil {
+		if pids, err = p.restores(last); err != nil {
 			return err
 		}
 	}
@@ -132,8 +169,31 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 	return nil
 }
 
-// restores lists the processes of this runner's runsc binary that carry the command line it gives a restore of the sandbox.
-func (p *Provider) restores(id string) ([]int, error) {
+// lastRestore reads the restore recorded for the sandbox; false is a sandbox no fork or resume ever brought up.
+func (p *Provider) lastRestore(id string) (launch, bool, error) {
+	dir, err := p.dirs(id)
+	if err != nil {
+		return launch{}, false, err
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, lastRestore))
+	if errors.Is(err, fs.ErrNotExist) {
+		return launch{}, false, nil
+	}
+	if err != nil {
+		return launch{}, false, fmt.Errorf("read the last restore of sandbox %s: %w", id, err)
+	}
+
+	var last launch
+	if err := json.Unmarshal(raw, &last); err != nil {
+		return launch{}, false, fmt.Errorf("decode the last restore of sandbox %s: %w", id, err)
+	}
+
+	return last, true, nil
+}
+
+// restores lists the host processes that are the recorded restore.
+func (p *Provider) restores(last launch) ([]int, error) {
 	entries, err := os.ReadDir(p.procRoot)
 	if err != nil {
 		return nil, fmt.Errorf("list the host processes: %w", err)
@@ -150,20 +210,11 @@ func (p *Provider) restores(id string) ([]int, error) {
 			return nil, fmt.Errorf("read the process id %s: %w", e.Name(), err)
 		}
 
-		// Any process may carry a restore's arguments, so the binary decides first.
-		runsc, err := p.runsRunsc(pid)
+		ok, err := p.runs(pid, last)
 		if err != nil {
 			return nil, err
 		}
-		if !runsc {
-			continue
-		}
-
-		args, ok, err := p.argv(pid)
-		if err != nil {
-			return nil, err
-		}
-		if ok && p.runsc.IsRestore(args, id) {
+		if ok {
 			pids = append(pids, pid)
 		}
 	}
@@ -171,8 +222,8 @@ func (p *Provider) restores(id string) ([]int, error) {
 	return pids, nil
 }
 
-// runsRunsc says whether a process runs this runner's runsc; a kernel thread names no binary, and an exited process none either.
-func (p *Provider) runsRunsc(pid int) (bool, error) {
+// runs says whether a process is the recorded restore; a kernel thread links no binary, and an exited process none either.
+func (p *Provider) runs(pid int, last launch) (bool, error) {
 	exe, err := os.Readlink(filepath.Join(p.procRoot, strconv.Itoa(pid), "exe"))
 	if vanished(err) {
 		return false, nil
@@ -181,7 +232,17 @@ func (p *Provider) runsRunsc(pid int) (bool, error) {
 		return false, fmt.Errorf("read the binary of process %d: %w", pid, err)
 	}
 
-	return exe == p.runsc.Executable(), nil
+	// Any process may carry a restore's arguments, so the binary decides first; one replaced on disk reads as deleted.
+	if exe != last.Executable && exe != last.Executable+" (deleted)" {
+		return false, nil
+	}
+
+	args, ok, err := p.argv(pid)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	return slices.Equal(args, last.Args), nil
 }
 
 // awaitEmpty proves the kill landed: an exited process leaves its cgroup before it is reaped, so a zombie never holds this up.

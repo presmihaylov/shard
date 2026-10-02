@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -150,17 +149,9 @@ func (r *Runner) Root() string { return r.root }
 // Executable is the runsc file this runner runs, by the path the kernel gives it in /proc/<pid>/exe.
 func (r *Runner) Executable() string { return r.executable }
 
-// IsRestore says whether a runsc command line is the restore this runner gives the container id, flag for flag.
-func (r *Runner) IsRestore(args []string, id string) bool {
-	global := r.global()
-	if len(args) != 1+len(global)+len(restoreArgs("", "", id)) || !slices.Equal(args[1:1+len(global)], global) {
-		return false
-	}
-
-	// The bundle and the image path are the two values a restore varies.
-	verb := args[1+len(global):]
-
-	return slices.Equal(verb, restoreArgs(verb[3], verb[5], id))
+// RestoreArgs is the command line Restore gives runsc for the container id, as /proc/<pid>/cmdline publishes it.
+func (r *Runner) RestoreArgs(id string, opts RestoreOptions) []string {
+	return append(append([]string{r.binary}, r.global()...), restoreArgs(opts.Bundle, opts.Image, id)...)
 }
 
 // resolve follows every symlink, because the kernel names a running binary by the file it opened.
@@ -599,7 +590,7 @@ func (r *Runner) global() []string {
 	return []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
 }
 
-// restoreArgs is the restore verb and its flags, which IsRestore matches in the same positions.
+// restoreArgs is the restore verb and its flags, which Restore runs and RestoreArgs reports.
 func restoreArgs(bundle, image, id string) []string {
 	return []string{"restore", "--detach", "--bundle", bundle, "--image-path", image, id}
 }

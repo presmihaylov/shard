@@ -142,29 +142,17 @@ func TestTheSnapshotVerbsSpellTheirFlags(t *testing.T) {
 	}
 }
 
-// IsRestore matches the command line Restore really runs, and nothing that only shares its arguments.
-func TestIsRestoreMatchesTheRestoreThisRunnerRuns(t *testing.T) {
+// RestoreArgs is the command line Restore really runs, so a later daemon can find that restore by it.
+func TestRestoreArgsIsTheCommandLineRestoreRuns(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
-	if err := r.Restore(t.Context(), "amber-otter-1a2b", runsc.RestoreOptions{Bundle: "/b", Image: "/snap"}); err != nil {
+	opts := runsc.RestoreOptions{Bundle: "/b", Image: "/snap"}
+	if err := r.Restore(t.Context(), "amber-otter-1a2b", opts); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	ran := append([]string{"runsc"}, argv(t, recorded)...)
 
-	if !r.IsRestore(ran, "amber-otter-1a2b") {
-		t.Errorf("IsRestore refused the restore the runner ran: %v", ran)
-	}
-	if r.IsRestore(ran, "amber-otter-1a2b-2") {
-		t.Errorf("IsRestore took the restore of amber-otter-1a2b for a sibling: %v", ran)
-	}
-	if extra := append(slices.Clone(ran), "--detach"); r.IsRestore(extra, "amber-otter-1a2b") {
-		t.Errorf("IsRestore took a command line with an argument the runner never gives: %v", extra)
-	}
-
-	if err := r.Checkpoint(t.Context(), "amber-otter-1a2b", "/snap"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
-	if checkpoint := append([]string{"runsc"}, argv(t, recorded)...); r.IsRestore(checkpoint, "amber-otter-1a2b") {
-		t.Errorf("IsRestore took a checkpoint for a restore: %v", checkpoint)
+	ran := append([]string{filepath.Join(filepath.Dir(recorded), "runsc")}, argv(t, recorded)...)
+	if got := r.RestoreArgs("amber-otter-1a2b", opts); !slices.Equal(got, ran) {
+		t.Errorf("RestoreArgs is %v, want the command line the restore ran: %v", got, ran)
 	}
 }
 

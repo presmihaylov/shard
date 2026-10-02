@@ -60,6 +60,8 @@ type Provider struct {
 	procRoot string
 	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
 	killProcess func(pid int) error
+	// killPinned is the SIGKILL a restore gets, sent only if still holds once the process is pinned. A test records it too.
+	killPinned func(pid int, still func() (bool, error)) error
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -70,7 +72,7 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
 	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
 
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill}, nil
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill, killPinned: pidfdKill}, nil
 }
 
 func sigkill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
@@ -930,7 +932,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
-		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
+		return p.restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())
@@ -989,7 +991,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	spec.Resources = rt.Resources
 
 	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
-		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
+		return p.restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())

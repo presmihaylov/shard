@@ -273,16 +273,36 @@ func TestAFailedBringUpKillsNothing(t *testing.T) {
 	}
 }
 
-// restorer is a provider over a fake runsc on this host, so a restore can be matched against the binary its runner runs.
-func (h *host) restorer() *gvisor.Provider {
+// restorer is a provider over a fake runsc on this host, so a restore can be recorded the way a fork records it.
+func (h *host) restorer(script string) *gvisor.Provider {
 	h.t.Helper()
 
-	p := newProviderOver(h.t, "exit 1", runsc.WithNetwork(runsc.NetworkSandbox))
+	p := newProviderOver(h.t, script, runsc.WithNetwork(runsc.NetworkSandbox))
 	p.SetCgroupRoot(h.cgroupRoot)
 	p.SetProcRoot(h.procRoot)
 	p.SetKill(h.kill)
 
 	return p
+}
+
+// launch records a restore of id through the provider, as a fork does before runsc runs, and returns its command line.
+func (h *host) launch(p *gvisor.Provider, id string) []string {
+	h.t.Helper()
+
+	dir, err := p.StateDir(id)
+	if err != nil {
+		h.t.Fatalf("StateDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		h.t.Fatalf("make the state directory: %v", err)
+	}
+
+	opts := runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/" + id + "/bundle", Image: "/var/lib/shard/sandboxes/" + id + "/checkpoint"}
+	if err := p.Restore(h.t.Context(), id, opts); err == nil {
+		h.t.Fatal("the fake runsc restore passed, want the exit 1 it scripts")
+	}
+
+	return p.RestoreArgs(id, opts)
 }
 
 // binary names the file a process runs, the link the kernel publishes as /proc/<pid>/exe.
@@ -294,30 +314,29 @@ func (h *host) binary(pid int, exe string) {
 	}
 }
 
-// restore is the argv the runner gives runsc restore, from a daemon now dead, so the process sits in that daemon's cgroup.
-func (h *host) restore(pid int, exe, root, id string) {
+// restore is a process with a restore's command line, from a daemon now dead, so it sits in that daemon's cgroup.
+func (h *host) restore(pid int, exe string, args []string) {
 	h.t.Helper()
 
-	h.process(pid, "system.slice/shard.service", "runsc", "--root", root, "--network=sandbox", "--overlay2=none",
-		"restore", "--detach", "--bundle", "/var/lib/shard/sandboxes/"+id+"/bundle", "--image-path", "/var/lib/shard/sandboxes/"+id+"/checkpoint", id)
+	h.process(pid, "system.slice/shard.service", args...)
 	h.binary(pid, exe)
 }
 
 // A restore that has not forked the sandbox yet is outside its cgroup, so the teardown finds it by binary and command line, and only it.
 func TestKillRestoresEndsARestoreOutsideTheSandboxCgroup(t *testing.T) {
 	h := newHost(t)
-	p := h.restorer()
-	bin, root := p.RunscExecutable(), p.RunscRoot()
-	h.restore(4401, bin, root, sandboxID)
-	h.restore(4402, bin, root, sandboxID+"-2")
-	h.restore(4403, bin, "/run/other/runsc", sandboxID)
-	h.process(4404, "system.slice/shard.service", "runsc", "--root", root, "--network=sandbox", "--overlay2=none", "delete", "--force", sandboxID)
-	h.binary(4404, bin)
+	p := h.restorer("exit 1")
+	bin, args := p.RunscExecutable(), h.launch(p, sandboxID)
+	h.restore(4401, bin, args)
+	h.restore(4402, bin, h.launch(p, sandboxID+"-2"))
+	other := slices.Clone(args)
+	other[2] = "/run/other/runsc"
+	h.restore(4403, bin, other)
+	h.restore(4404, bin, append(slices.Clone(args[:4]), "delete", "--force", sandboxID))
 	// Every argument a restore has, but the verb is exec and the restore is only its command.
-	h.process(4405, "system.slice/shard.service", "runsc", "--root", root, "--network=sandbox", "--overlay2=none", "exec", sandboxID, "restore")
-	h.binary(4405, bin)
+	h.restore(4405, bin, append(append(slices.Clone(args[:4]), "exec", sandboxID), args[4:]...))
 	// The restore's exact command line on a binary that is not runsc must never be killed.
-	h.restore(4406, "/usr/bin/python3", root, sandboxID)
+	h.restore(4406, "/usr/bin/python3", args)
 	// A kernel thread links no binary at all.
 	h.process(4407, "kthreadd", "")
 
@@ -325,15 +344,95 @@ func TestKillRestoresEndsARestoreOutsideTheSandboxCgroup(t *testing.T) {
 		t.Fatalf("KillRestores: %v", err)
 	}
 	if want := []int{4401}; !slices.Equal(h.killed, want) {
-		t.Errorf("KillRestores killed %v, want the restore of %s on %s alone: %v", h.killed, sandboxID, root, want)
+		t.Errorf("KillRestores killed %v, want the restore of %s alone: %v", h.killed, sandboxID, want)
+	}
+}
+
+// The record names the binary the restore ran, so neither a runsc replaced on disk nor a repointed link hides it.
+func TestKillRestoresEndsARestoreOfARunscSinceReplaced(t *testing.T) {
+	h := newHost(t)
+	p := h.restorer("exit 1")
+	args := h.launch(p, sandboxID)
+	h.restore(4401, p.RunscExecutable()+" (deleted)", args)
+
+	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if want := []int{4401}; !slices.Equal(h.killed, want) {
+		t.Errorf("KillRestores killed %v, want the restore whose runsc was replaced: %v", h.killed, want)
+	}
+
+	// A daemon started on a repointed runsc reads the old binary from the record, not from its own runner.
+	h = newHost(t)
+	p = h.restorer("exit 1")
+	dir, err := p.StateDir(sandboxID)
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("make the state directory: %v", err)
+	}
+	old := `{"executable":"/opt/gvisor/20260701/runsc","args":["runsc","--root","/run/shard/runsc","restore","--detach","--bundle","/b","--image-path","/i","` + sandboxID + `"]}`
+	if err := os.WriteFile(filepath.Join(dir, gvisor.LastRestore), []byte(old), 0o600); err != nil {
+		t.Fatalf("write the record of the old daemon: %v", err)
+	}
+	h.restore(4501, "/opt/gvisor/20260701/runsc", []string{"runsc", "--root", "/run/shard/runsc", "restore", "--detach", "--bundle", "/b", "--image-path", "/i", sandboxID})
+
+	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if want := []int{4501}; !slices.Equal(h.killed, want) {
+		t.Errorf("KillRestores killed %v, want the restore on the runsc the record names: %v", h.killed, want)
+	}
+}
+
+// A pid whose process changes between the scan and the kill is checked again once pinned, and the stranger lives.
+func TestKillRestoresSparesAPidReusedBeforeTheKill(t *testing.T) {
+	h := newHost(t)
+	p := h.restorer("exit 1")
+	h.restore(4401, p.RunscExecutable(), h.launch(p, sandboxID))
+	p.SetKillPinned(func(pid int, still func() (bool, error)) error {
+		if err := os.RemoveAll(filepath.Join(h.procRoot, strconv.Itoa(pid))); err != nil {
+			t.Fatalf("end the fake restore: %v", err)
+		}
+		h.process(pid, "user.slice", "/usr/bin/python3", "-m", "http.server")
+		h.binary(pid, "/usr/bin/python3")
+
+		ok, err := still()
+		if err != nil || !ok {
+			return err
+		}
+
+		return h.kill(pid)
+	})
+
+	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if len(h.killed) != 0 {
+		t.Errorf("KillRestores killed %v, a process that took the pid of the restore", h.killed)
+	}
+}
+
+// A sandbox no fork or resume brought up has no restore to find, so the teardown reads no process at all.
+func TestKillRestoresLeavesASandboxNeverRestored(t *testing.T) {
+	h := newHost(t)
+	p := h.restorer("exit 1")
+	h.restore(4401, p.RunscExecutable(), p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: "/b", Image: "/i"}))
+
+	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if len(h.killed) != 0 {
+		t.Errorf("KillRestores killed %v for a sandbox with no recorded restore", h.killed)
 	}
 }
 
 // A restore still there after the SIGKILL fails the teardown, so the record stays for the next start to try again.
 func TestKillRestoresFailsWhileTheRestoreStillRuns(t *testing.T) {
 	h := newHost(t)
-	p := h.restorer()
-	h.restore(4401, p.RunscExecutable(), p.RunscRoot(), sandboxID)
+	p := h.restorer("exit 1")
+	h.restore(4401, p.RunscExecutable(), h.launch(p, sandboxID))
 	p.SetKill(func(int) error { return nil })
 
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
@@ -348,10 +447,11 @@ func TestKillRestoresFailsWhileTheRestoreStillRuns(t *testing.T) {
 func TestRemoveKillsAnInFlightRestoreBeforeItRunsRunsc(t *testing.T) {
 	h := newHost(t)
 	ran := filepath.Join(t.TempDir(), "runsc-ran")
-	p := newProviderOver(t, "touch "+ran+"; exit 1", runsc.WithNetwork(runsc.NetworkSandbox))
-	p.SetCgroupRoot(h.cgroupRoot)
-	p.SetProcRoot(h.procRoot)
-	h.restore(4401, p.RunscExecutable(), p.RunscRoot(), sandboxID)
+	p := h.restorer("touch " + ran + "; exit 1")
+	h.restore(4401, p.RunscExecutable(), h.launch(p, sandboxID))
+	if err := os.Remove(ran); err != nil {
+		t.Fatalf("forget the restore the launch ran: %v", err)
+	}
 
 	var runscFirst []int
 	p.SetKill(func(pid int) error {

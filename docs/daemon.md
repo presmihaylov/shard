@@ -113,8 +113,10 @@ one:
   stopped first, because `rm` refuses a live sandbox and `stop` refuses a failed one. Then the daemon
   tears down the copy's substrate, as `rm` does, because a restore the old daemon started can run on
   where the runtime cannot see it. On gVisor that teardown first kills any `runsc restore` of the
-  copy by its command line, because until it starts the sandbox it is outside the sandbox's cgroup,
-  and the daemon lock means no new one can start. A teardown that fails leaves the record as it is, with a line in
+  copy, because until it starts the sandbox it is outside the sandbox's cgroup, and the daemon lock
+  means no new one can start. A fork or resume records the binary and the command line of its restore
+  in `restore.json` before it runs, so the kill finds the restore even after runsc was replaced, and
+  it signals through a pidfd, so a pid reused in between is never hit. A teardown that fails leaves the record as it is, with a line in
   the log, and the next start of the daemon tries again.
 - A record that says `pending` becomes `running` when the substrate holds its process, because a
   start that took before the daemon stopped did reach `running`. With no process behind it the record
