@@ -581,11 +581,23 @@ func decode(w http.ResponseWriter, r *http.Request, out any) error {
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(out)
-	if err != nil && !errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
 		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
 	}
 
-	return nil
+	// The decoder stops after one value, so the rest is read to its end and padding meets the cap before a verb runs.
+	err = dec.Decode(&json.RawMessage{})
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
+	}
+
+	return &sandbox.RequestError{Err: errors.New("decode the request body: it holds more than one JSON value")}
 }
 
 // graceQuery reads ?grace= in seconds, for the stop an rm --force does; absent is the default.

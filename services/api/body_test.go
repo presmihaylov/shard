@@ -18,58 +18,83 @@ import (
 
 // A body far past the cap is refused with 413 after the cap, so the daemon never holds the rest of it.
 func TestABodyPastTheCapIs413AndAllocatesFlat(t *testing.T) {
+	cases := []struct {
+		name, prefix string
+		pad          byte
+	}{
+		{"one value", `{"x":"`, 'a'},
+		{"a valid value and padding", `{}`, ' '},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := seed(t)
+
+			const size = 64 << 20
+			conn, err := net.Dial("tcp", s.server.Listener.Addr().String())
+			if err != nil {
+				t.Fatalf("dial the server: %v", err)
+			}
+			t.Cleanup(func() { conn.Close() })
+
+			var before runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+
+			head := fmt.Sprintf("PUT /v0/policies/p HTTP/1.1\r\nHost: shard\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", size+len(c.prefix), c.prefix)
+			if _, err := io.WriteString(conn, head); err != nil {
+				t.Fatalf("write the request head: %v", err)
+			}
+
+			// One chunk written again and again keeps the client's own allocation out of the measure.
+			written := make(chan struct{})
+			go func() {
+				defer close(written)
+
+				chunk := bytes.Repeat([]byte{c.pad}, 64<<10)
+				for sent := 0; sent < size; sent += len(chunk) {
+					if _, err := conn.Write(chunk); err != nil {
+						return
+					}
+				}
+			}()
+
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("read the answer: %v", err)
+			}
+			defer resp.Body.Close()
+
+			var got map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("decode the answer: %v", err)
+			}
+
+			var after runtime.MemStats
+			runtime.ReadMemStats(&after)
+			conn.Close()
+			<-written
+
+			if resp.StatusCode != http.StatusRequestEntityTooLarge || errorOf(t, got).code != "body_too_large" {
+				t.Errorf("a %d byte body answered %d %v, want 413 body_too_large", size, resp.StatusCode, got)
+			}
+			if grew := after.TotalAlloc - before.TotalAlloc; grew > 16<<20 {
+				t.Errorf("a %d byte body allocated %d bytes, want under 16 MiB whatever the size", size, grew)
+			}
+			if s.stores.name != "" {
+				t.Errorf("the refused body still reached the store as %q", s.stores.name)
+			}
+		})
+	}
+}
+
+// A second value after the first is refused, so a body is one value and no verb runs on its head alone.
+func TestASecondValueIsRefused(t *testing.T) {
 	s := seed(t)
 
-	const size = 64 << 20
-	conn, err := net.Dial("tcp", s.server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial the server: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-
-	var before runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-
-	head := fmt.Sprintf("PUT /v0/policies/p HTTP/1.1\r\nHost: shard\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n{\"x\":\"", size+6)
-	if _, err := io.WriteString(conn, head); err != nil {
-		t.Fatalf("write the request head: %v", err)
-	}
-
-	// One chunk written again and again keeps the client's own allocation out of the measure.
-	written := make(chan struct{})
-	go func() {
-		defer close(written)
-
-		chunk := bytes.Repeat([]byte("a"), 64<<10)
-		for sent := 0; sent < size; sent += len(chunk) {
-			if _, err := conn.Write(chunk); err != nil {
-				return
-			}
-		}
-	}()
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil {
-		t.Fatalf("read the answer: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var got map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode the answer: %v", err)
-	}
-
-	var after runtime.MemStats
-	runtime.ReadMemStats(&after)
-	conn.Close()
-	<-written
-
-	if resp.StatusCode != http.StatusRequestEntityTooLarge || errorOf(t, got).code != "body_too_large" {
-		t.Errorf("a %d byte body answered %d %v, want 413 body_too_large", size, resp.StatusCode, got)
-	}
-	if grew := after.TotalAlloc - before.TotalAlloc; grew > 16<<20 {
-		t.Errorf("a %d byte body allocated %d bytes, want under 16 MiB whatever the size", size, grew)
+	status, got := send(t, s.server, http.MethodPut, "/v0/policies/p", `{} {}`)
+	if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
+		t.Errorf("two values answered %d %v, want 400 invalid_request", status, got)
 	}
 	if s.stores.name != "" {
 		t.Errorf("the refused body still reached the store as %q", s.stores.name)
