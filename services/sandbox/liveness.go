@@ -130,6 +130,11 @@ func healthyRun(sb models.Sandbox, throttles int64, now time.Time) bool {
 // clean exit and the sandbox stays up for another exec. It is idempotent: a recorded exit is left alone.
 func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models.Sandbox, report func(string)) error {
 	exit, err := s.cfg.Provider.ExitStatus(ctx, id)
+	// A failed task backs off liveness for every sandbox, so the one whose guest grew its exit file only gets a line.
+	if errors.Is(err, models.ErrExitFileTooLarge) {
+		report(fmt.Sprintf("sandbox %s: %v; its entrypoint exit is unknown until the next one", id, err))
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("read the exit of sandbox %s: %w", id, err)
 	}

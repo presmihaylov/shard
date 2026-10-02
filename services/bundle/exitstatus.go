@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"slices"
@@ -12,14 +13,17 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
+// exitFileCap bounds the read: shard-init keeps one record of a few dozen bytes, and sysbox guest root can append to the file.
+const exitFileCap = 4 << 10
+
 // ReadExitStatus reads shard-init's exit channel: the last complete newline-framed record, or not found.
 func ReadExitStatus(path string) (models.ExitStatus, bool, error) {
-	blob, err := os.ReadFile(path)
+	blob, err := readExitFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return models.ExitStatus{}, false, nil
 	}
 	if err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("read %s: %w", path, err)
+		return models.ExitStatus{}, false, err
 	}
 
 	line := lastCompleteLine(blob)
@@ -37,6 +41,29 @@ func ReadExitStatus(path string) (models.ExitStatus, bool, error) {
 	}
 
 	return models.ExitStatus{Code: report.Code, Signal: report.Signal}, true, nil
+}
+
+// readExitFile empties a file past the cap, so a guest that writes to it cannot fill the host between two reads.
+func readExitFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open the exit file: %w", err)
+	}
+	defer f.Close()
+
+	blob, err := io.ReadAll(io.LimitReader(f, exitFileCap+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(blob) <= exitFileCap {
+		return blob, nil
+	}
+
+	if err := os.Truncate(path, 0); err != nil {
+		return nil, fmt.Errorf("empty the exit file %s: %w", path, err)
+	}
+
+	return nil, fmt.Errorf("%s was over %d bytes, and the host emptied it: %w", path, exitFileCap, models.ErrExitFileTooLarge)
 }
 
 // lastCompleteLine returns the last newline-terminated non-empty line, so a write still in flight,

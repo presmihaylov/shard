@@ -115,8 +115,9 @@ root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE` include
 controls PID 1 and the entrypoint: it can write a forged record, drive the exit value or pick the
 signal, and a background write after the real exit makes `inspect` report the forged code. No channel
 on Sysbox is host-readable and guest-unwritable, so there is no mechanism fix: the exit code of a
-Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. Firecracker
-will verify it behind the VM boundary the way gVisor does behind the sentry.
+Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. The same
+write can grow the file, so the host reads at most 4 KiB of it and empties a larger one, which costs
+that sandbox its exit record until the next exit. Firecracker will verify it behind the VM boundary the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
 and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a
