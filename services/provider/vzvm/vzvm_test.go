@@ -1232,8 +1232,8 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Exists || status.Alive() || status.PID != 0 {
-		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid", status)
+	if !status.Exists || status.Alive() || status.PID != 0 || status.Unresponsive {
+		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid, and not killed for its silence", status)
 	}
 }
 
@@ -1258,12 +1258,12 @@ func stopsAFrozenShim(t *testing.T, restart bool) {
 	}
 	awaitExit(t, shim)
 	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.Alive() || status.State != models.StateStopped {
-		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	if err != nil || status.Alive() || status.State != models.StateStopped || status.Unresponsive {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped by the stop, not killed for its silence", status, err)
 	}
 }
 
-// After a daemon restart a shim too frozen to answer is cut by its socket, so the first probe ends on time and nothing frozen is left (SHARD-387).
+// After a daemon restart a shim too frozen to answer is cut by its socket, so the first probe ends on time and nothing frozen is left (SHARD-387), and every later probe says why (SHARD-398).
 func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
 	h, spec, shim := frozenShim(t, true)
 
@@ -1279,6 +1279,14 @@ func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
 		t.Errorf("Status over a frozen shim took %s, want under 8 s", took)
 	}
 	awaitExit(t, shim)
+	if !status.Unresponsive {
+		t.Errorf("Status over a frozen shim after a restart = %+v, want it killed for its silence", status)
+	}
+	// A probe that timed out before the record was written comes back, and must still read the kill.
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || !status.Unresponsive {
+		t.Errorf("the next Status = %+v, %v; want stopped and killed for its silence", status, err)
+	}
 }
 
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.

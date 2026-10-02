@@ -77,7 +77,14 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	}
 	// A shim silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-387).
 	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil {
-		return nil, p.kill(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
+		if err := p.kill(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)}); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, unresponsiveFile), nil, 0o600); err != nil {
+			return nil, fmt.Errorf("mark the shim of sandbox %s as killed for its silence: %w", id, err)
+		}
+
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
@@ -145,7 +152,7 @@ func (p *Provider) forget(m *machine) {
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	stales := []string{exitFile, restartsFile, oomFile}
+	stales := []string{exitFile, restartsFile, oomFile, unresponsiveFile}
 	// A restored guest still holds the output its cursor places; a fresh one starts its output again.
 	if restore == "" {
 		stales = append(stales, cursorFile)

@@ -41,6 +41,8 @@ const (
 	initrdFile = "initrd.cpio"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// unresponsiveFile marks a shim the daemon killed for its silence, so the record names that cause and not a lost process.
+	unresponsiveFile = "unresponsive"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.

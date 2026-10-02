@@ -37,7 +37,8 @@ socket in the sandbox's state directory. The shim holds the VM; the daemon holds
 restart re-adopts every running sandbox by that socket (SHARD-235), and only the shim carries the
 `com.apple.security.virtualization` entitlement (SHARD-214, `docs/macos-signing.md`). A sandbox whose
 shim is gone at that restart is `stopped` with the reason every provider uses, `daemon restarted and
-found no process`. A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
+found no process`. A shim still there that does not answer within 5 s is killed (SHARD-387), and its
+sandbox is `stopped` with `the daemon killed a sandbox process that did not answer` (SHARD-398). A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
 daemon dials the control and the logs streams again while the shim says the VM runs, so `logs -f`
 and the events resume where they stopped. The new control connection opens with the guest's state,
 and an exit or a restart that landed while no stream was open is recorded from that replay, so
