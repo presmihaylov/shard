@@ -299,8 +299,8 @@ func (r *Repository) Delete(id string) error {
 }
 
 // SweepSnapshotTmp removes an orphan snapshot .tmp under the root: staging no record reaches. It runs once
-// at daemon start. A .tmp a record still names is a provider's own staging, so the sweep keeps it and the
-// provider frees it at its next pause, resume or adopt (SHARD-368).
+// at daemon start. A .tmp a record still names is kept, because the provider that wrote it owns the staging:
+// it clears the .tmp at its next pause, and vz also finishes or discards it on resume or adopt (SHARD-368).
 func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
