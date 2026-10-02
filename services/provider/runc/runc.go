@@ -557,6 +557,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, er
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		RootFS:  b.RootFS,
+		Binds:   runtime.Binds,
 		TTY:     spec.TTY,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
