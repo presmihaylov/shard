@@ -732,11 +732,11 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
 	if status.Alive() {
-		dead, err := zombie(state.PID)
+		gone, err := stale(state)
 		if err != nil {
 			return models.Status{}, err
 		}
-		if dead {
+		if gone {
 			status.State, status.PID = models.StateStopped, 0
 		}
 	}
@@ -763,15 +763,16 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return b.RestartCount()
 }
 
-// zombie reports a sandbox process that exited and waits for its reaper. runsc probes it with
-// kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
-func zombie(pid int) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+// stale reports an alive runsc state that names no live process. runsc answers running for a zombie that
+// kill(pid, 0) still reaches. A clean pause deletes the container, so a paused one runsc still holds is a
+// daemon kill cut mid-pause whose sentry pid then went, and for paused alone a gone pid is stale (SHARD-411).
+func stale(state runsc.State) (bool, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", state.PID))
 	if vanished(err) {
-		return false, nil
+		return state.Status == runsc.StatusPaused, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the state of the sandbox process %d: %w", pid, err)
+		return false, fmt.Errorf("read the state of the sandbox process %d: %w", state.PID, err)
 	}
 
 	return zombieStat(string(stat)), nil

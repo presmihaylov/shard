@@ -65,6 +65,25 @@ func TestStatusCallsAZombieSandboxStopped(t *testing.T) {
 	}
 }
 
+// A daemon kill during a pause leaves runsc answering paused for a sentry that then goes, naming a
+// pid that runs nothing. Status must read it stopped, or a later start and an rm both act on a ghost.
+func TestStatusCallsACutPauseWhoseProcessIsGoneStopped(t *testing.T) {
+	// 2147483646 is above every pid_max, so /proc never holds it, on Linux or on a /proc-less macOS.
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"paused","pid":2147483646}'`)
+	p.SetCgroupRoot(t.TempDir())
+
+	status, err := p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Alive() || status.State != models.StateStopped {
+		t.Errorf("a cut pause whose process is gone reads as %+v, want it stopped", status)
+	}
+	if !status.Exists {
+		t.Errorf("runsc still holds the state, so Exists must stay true: %+v", status)
+	}
+}
+
 func awaitZombie(t *testing.T, pid int) {
 	t.Helper()
 
