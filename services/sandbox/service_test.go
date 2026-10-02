@@ -1016,6 +1016,37 @@ func TestRemoveRefusesAPausedSandbox(t *testing.T) {
 	}
 }
 
+// The record alone decides a paused rm, so a probe that fails or wedges never turns the 409 into a 500 or a 504.
+func TestRemoveOfAPausedSandboxNeverProbesTheSubstrate(t *testing.T) {
+	r := &recorder{fail: []string{"provider.Status"}}
+	svc, _ := newService(t, r, pausedSandbox())
+
+	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+
+	var refused *sandbox.StateError
+	if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped {
+		t.Fatalf("rm with a failing status probe returned %v, want the sandbox_not_stopped refusal", err)
+	}
+
+	if slices.Contains(r.calls, "provider.Status") {
+		t.Errorf("the refused rm of a paused sandbox probed the substrate: %v", r.calls)
+	}
+
+	wedged := &recorder{}
+	svc, l := newService(t, wedged, pausedSandbox())
+	l.provider.statusGate = make(chan struct{})
+	l.provider.stopUnwedges = true
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm --force with a wedged status probe: %v", err)
+	}
+	stopped := slices.Index(wedged.calls, "provider.Stop")
+	probed := slices.Index(wedged.calls, "provider.Status")
+	if l.provider.reclaimed || stopped < 0 || probed < stopped {
+		t.Errorf("rm --force of a paused sandbox ran %v and reclaimed %t, want the stop before any probe and no kill", wedged.calls, l.provider.reclaimed)
+	}
+}
+
 func TestRemoveForceStopsAPausedSandboxThenRemoves(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())

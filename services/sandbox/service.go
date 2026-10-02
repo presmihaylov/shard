@@ -723,7 +723,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	// force arrives from rm, after its probe answered live or its kill freed the runtime, so it skips the probe.
+	// force arrives from rm, after its probe answered live, its kill freed the runtime or the record said paused, so it skips the probe.
 	if !force {
 		// The opening probe is bounded like rm's, so a plain stop of a wedged sandbox fails fast and typed, not at the client timeout.
 		status, err := s.status(ctx, id, "stop")
@@ -874,6 +874,11 @@ type reclaimer interface {
 
 // endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
 func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
+	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot, and no probe can wedge that answer.
+	if state == models.StatePaused {
+		return s.refuseOrStop(ctx, id, state, force, grace)
+	}
+
 	status, err := s.status(ctx, id, "rm")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
@@ -886,16 +891,17 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 	if err != nil {
 		return err
 	}
-	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot.
-	if state == models.StatePaused {
-		status = models.Status{Exists: true, State: models.StatePaused}
-	}
 	if !status.Alive() {
 		return nil
 	}
 
+	return s.refuseOrStop(ctx, id, status.State, force, grace)
+}
+
+// refuseOrStop ends a live or paused sandbox for rm when force says so, and refuses it otherwise.
+func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
 	if !force {
-		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
+		return &StateError{ID: id, State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
 	return s.stop(ctx, id, grace, force)
