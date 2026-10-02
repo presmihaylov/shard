@@ -586,6 +586,42 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 	}
 }
 
+// Every restore of one snapshot wakes with the same crng key, so the source's resume and each fork are reseeded once, and only on a restore.
+func TestEveryRestoreReseedsTheGuest(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
+	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
+		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	for _, fork := range forks {
+		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+			t.Fatalf("Fork: %v", err)
+		}
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
+		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed}) {
+			t.Errorf("the guest of %s read %q, want one reseed", s.ID, got)
+		}
+	}
+}
+
 // Each verb refuses the state it cannot take, and says which sandbox and which state that is.
 func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	h := newHarness(t)
