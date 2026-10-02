@@ -142,6 +142,49 @@ func TestTheSnapshotVerbsSpellTheirFlags(t *testing.T) {
 	}
 }
 
+// IsRestore matches the command line Restore really runs, and nothing that only shares its arguments.
+func TestIsRestoreMatchesTheRestoreThisRunnerRuns(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+	if err := r.Restore(t.Context(), "amber-otter-1a2b", runsc.RestoreOptions{Bundle: "/b", Image: "/snap"}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	ran := append([]string{"runsc"}, argv(t, recorded)...)
+
+	if !r.IsRestore(ran, "amber-otter-1a2b") {
+		t.Errorf("IsRestore refused the restore the runner ran: %v", ran)
+	}
+	if r.IsRestore(ran, "amber-otter-1a2b-2") {
+		t.Errorf("IsRestore took the restore of amber-otter-1a2b for a sibling: %v", ran)
+	}
+	if extra := append(slices.Clone(ran), "--detach"); r.IsRestore(extra, "amber-otter-1a2b") {
+		t.Errorf("IsRestore took a command line with an argument the runner never gives: %v", extra)
+	}
+
+	if err := r.Checkpoint(t.Context(), "amber-otter-1a2b", "/snap"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	if checkpoint := append([]string{"runsc"}, argv(t, recorded)...); r.IsRestore(checkpoint, "amber-otter-1a2b") {
+		t.Errorf("IsRestore took a checkpoint for a restore: %v", checkpoint)
+	}
+}
+
+// The kernel names a running binary by the file it opened, so a runner given a symlink names the target.
+func TestExecutableFollowsASymlink(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+	link := filepath.Join(t.TempDir(), "runsc")
+	if err := os.Symlink(filepath.Join(filepath.Dir(recorded), "runsc"), link); err != nil {
+		t.Fatalf("link the fake runsc: %v", err)
+	}
+
+	linked, err := runsc.New(r.Root(), runsc.WithBinary(link))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if linked.Executable() != r.Executable() {
+		t.Errorf("Executable over a symlink is %q, want the file it names, %q", linked.Executable(), r.Executable())
+	}
+}
+
 func TestTheSnapshotVerbsRefuseWithNoPath(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
 

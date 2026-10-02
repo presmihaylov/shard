@@ -101,8 +101,8 @@ func (p *Provider) argv(pid int) ([]string, bool, error) {
 }
 
 // killRestores ends a restore a dropped fork left outside the cgroup, where no sweep looks; this daemon holds the root, so none starts after.
-func (p *Provider) killRestores(ctx context.Context, root, id string) error {
-	pids, err := p.restores(root, id)
+func (p *Provider) killRestores(ctx context.Context, id string) error {
+	pids, err := p.restores(id)
 	if err != nil || len(pids) == 0 {
 		return err
 	}
@@ -124,7 +124,7 @@ func (p *Provider) killRestores(ctx context.Context, root, id string) error {
 		case <-time.After(pollInterval):
 		}
 
-		if pids, err = p.restores(root, id); err != nil {
+		if pids, err = p.restores(id); err != nil {
 			return err
 		}
 	}
@@ -132,8 +132,8 @@ func (p *Provider) killRestores(ctx context.Context, root, id string) error {
 	return nil
 }
 
-// restores lists the processes that carry the command line the runner gives a restore of the sandbox on root.
-func (p *Provider) restores(root, id string) ([]int, error) {
+// restores lists the processes of this runner's runsc binary that carry the command line it gives a restore of the sandbox.
+func (p *Provider) restores(id string) ([]int, error) {
 	entries, err := os.ReadDir(p.procRoot)
 	if err != nil {
 		return nil, fmt.Errorf("list the host processes: %w", err)
@@ -150,11 +150,20 @@ func (p *Provider) restores(root, id string) ([]int, error) {
 			return nil, fmt.Errorf("read the process id %s: %w", e.Name(), err)
 		}
 
+		// Any process may carry a restore's arguments, so the binary decides first.
+		runsc, err := p.runsRunsc(pid)
+		if err != nil {
+			return nil, err
+		}
+		if !runsc {
+			continue
+		}
+
 		args, ok, err := p.argv(pid)
 		if err != nil {
 			return nil, err
 		}
-		if ok && restoring(args, root, id) {
+		if ok && p.runsc.IsRestore(args, id) {
 			pids = append(pids, pid)
 		}
 	}
@@ -162,11 +171,17 @@ func (p *Provider) restores(root, id string) ([]int, error) {
 	return pids, nil
 }
 
-// restoring matches --root and the root as two arguments, the restore verb, and the id as one whole argument.
-func restoring(args []string, root, id string) bool {
-	i := slices.Index(args, "--root")
+// runsRunsc says whether a process runs this runner's runsc; a kernel thread names no binary, and an exited process none either.
+func (p *Provider) runsRunsc(pid int) (bool, error) {
+	exe, err := os.Readlink(filepath.Join(p.procRoot, strconv.Itoa(pid), "exe"))
+	if vanished(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the binary of process %d: %w", pid, err)
+	}
 
-	return i >= 0 && i+1 < len(args) && args[i+1] == root && slices.Contains(args, "restore") && slices.Contains(args, id)
+	return exe == p.runsc.Executable(), nil
 }
 
 // awaitEmpty proves the kill landed: an exited process leaves its cgroup before it is reaped, so a zombie never holds this up.

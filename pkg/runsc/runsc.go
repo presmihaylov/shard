@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -76,11 +77,13 @@ type State struct {
 // Runner runs one runsc root. Every container under it is reachable from any shard process, so
 // nothing here is held in memory between commands.
 type Runner struct {
-	binary  string
-	root    string
-	network string
-	execDir string
-	settle  time.Duration
+	binary string
+	// executable is the binary resolved the way /proc/<pid>/exe names it, so a process can be proved to be this runsc.
+	executable string
+	root       string
+	network    string
+	execDir    string
+	settle     time.Duration
 }
 
 // Option configures a Runner.
@@ -120,8 +123,12 @@ func New(root string, opts ...Option) (*Runner, error) {
 		opt(r)
 	}
 
-	if _, err := exec.LookPath(r.binary); err != nil {
+	path, err := exec.LookPath(r.binary)
+	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", r.binary, err)
+	}
+	if r.executable, err = resolve(path); err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", r.binary, err)
 	}
 
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -139,6 +146,32 @@ func New(root string, opts ...Option) (*Runner, error) {
 
 // Root is where runsc keeps its own container state, which outlives the process that created it.
 func (r *Runner) Root() string { return r.root }
+
+// Executable is the runsc file this runner runs, by the path the kernel gives it in /proc/<pid>/exe.
+func (r *Runner) Executable() string { return r.executable }
+
+// IsRestore says whether a runsc command line is the restore this runner gives the container id, flag for flag.
+func (r *Runner) IsRestore(args []string, id string) bool {
+	global := r.global()
+	if len(args) != 1+len(global)+len(restoreArgs("", "", id)) || !slices.Equal(args[1:1+len(global)], global) {
+		return false
+	}
+
+	// The bundle and the image path are the two values a restore varies.
+	verb := args[1+len(global):]
+
+	return slices.Equal(verb, restoreArgs(verb[3], verb[5], id))
+}
+
+// resolve follows every symlink, because the kernel names a running binary by the file it opened.
+func resolve(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.EvalSymlinks(abs)
+}
 
 // CreateOptions carries the fds the guest inherits. runsc create hands them over and exits; the
 // sandbox keeps them, which is what makes the guest output stream after the command has returned.
@@ -458,7 +491,7 @@ func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) er
 	run, stop := r.settled(ctx)
 	defer stop()
 
-	cmd := r.command(run, "restore", "--detach", "--bundle", opts.Bundle, "--image-path", opts.Image, id)
+	cmd := r.command(run, restoreArgs(opts.Bundle, opts.Image, id)...)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
 	cmd.Stdin = opts.Stdin
 
@@ -552,15 +585,23 @@ func (r *Runner) run(ctx context.Context, stdout io.Writer, args ...string) erro
 }
 
 func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
-	// --overlay2=none because runsc otherwise writes into a filestore it throws away on a stop, and
-	// the sandbox's writable layer is the overlayfs mount services/bundle owns.
-	global := []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
-
-	cmd := exec.CommandContext(ctx, r.binary, append(global, args...)...)
+	cmd := exec.CommandContext(ctx, r.binary, append(r.global(), args...)...)
 	// Without this a cancelled call still blocks until every child runsc forked closes the pipes it inherited.
 	cmd.WaitDelay = waitDelay
 
 	return cmd
+}
+
+// global is the flags every runsc call takes before its verb.
+func (r *Runner) global() []string {
+	// --overlay2=none because runsc otherwise writes into a filestore it throws away on a stop, and
+	// the sandbox's writable layer is the overlayfs mount services/bundle owns.
+	return []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
+}
+
+// restoreArgs is the restore verb and its flags, which IsRestore matches in the same positions.
+func restoreArgs(bundle, image, id string) []string {
+	return []string{"restore", "--detach", "--bundle", bundle, "--image-path", image, id}
 }
 
 // sentinel turns the two failures a caller must act on into errors it can match.

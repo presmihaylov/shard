@@ -492,7 +492,7 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 // Remove deletes runsc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
 	// First, so a restore cannot bring the sandbox up again after the teardown below.
-	if err := p.killRestores(ctx, p.runsc.Root(), id); err != nil {
+	if err := p.killRestores(ctx, id); err != nil {
 		return err
 	}
 

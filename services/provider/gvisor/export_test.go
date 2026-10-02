@@ -50,9 +50,14 @@ func (p *Provider) RunscRoot() string {
 	return p.runsc.Root()
 }
 
-// KillRestores is the kill Remove runs first on a runsc restore of the sandbox on root, reachable without runsc.
-func (p *Provider) KillRestores(ctx context.Context, root, id string) error {
-	return p.killRestores(ctx, root, id)
+// RunscExecutable is the binary a restore's /proc/<pid>/exe must name for the kill to touch it.
+func (p *Provider) RunscExecutable() string {
+	return p.runsc.Executable()
+}
+
+// KillRestores is the kill Remove runs first on a runsc restore of the sandbox, reachable without runsc.
+func (p *Provider) KillRestores(ctx context.Context, id string) error {
+	return p.killRestores(ctx, id)
 }
 
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.
