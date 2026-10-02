@@ -290,8 +290,12 @@ func (s *Service) cancelPull(id, verb string) {
 	defer s.mu.Unlock()
 
 	if cancel, ok := s.pulls[id]; ok {
-		cancel(fmt.Errorf("%w by %s", errCreateCancelled, verb))
+		cancel(cancelled(verb))
 	}
+}
+
+func cancelled(verb string) error {
+	return fmt.Errorf("%w by %s", errCreateCancelled, verb)
 }
 
 // probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.
@@ -406,13 +410,16 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	}
 	defer unlock()
 
-	// An rm that took the lock first has freed the record, so nothing is left to create.
-	_, err = s.cfg.Repo.Get(id)
+	// An rm that took the lock first has freed the record, and a stop has failed it, so nothing is left to create.
+	sb, err := s.cfg.Repo.Get(id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if sb.State != models.StatePending {
+		return nil
 	}
 
 	// Past the commit point the sandbox is live, so a later error names it and never marks it failed.
@@ -551,18 +558,22 @@ func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
 // fail records why a create never reached running. It keeps the record so a get reads the reason and rm
 // frees it, and it returns the cause so the synchronous caller still sees the failure.
 func (s *Service) fail(ctx context.Context, id string, cause error) error {
-	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	if err := s.cfg.Repo.Update(id, failed(cause)); err != nil {
+		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
+	}
+
+	return cause
+}
+
+// failed is the record of a create that ended in cause.
+func failed(cause error) func(*models.Sandbox) error {
+	return func(sb *models.Sandbox) error {
 		sb.State = models.StateFailed
 		sb.FailedReason = cause.Error()
 		sb.PID = 0
 
 		return nil
-	})
-	if err != nil {
-		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
 	}
-
-	return cause
 }
 
 // ValidName, ValidSecretName and ValidPolicyName let a client refuse a spelling before it asks the daemon.
@@ -690,7 +701,8 @@ func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (imag
 	}
 
 	img, err := s.cfg.Images.Pull(ctx, req.Image)
-	if cause := context.Cause(ctx); err != nil && errors.Is(cause, errCreateCancelled) {
+	// A cached image answers even on an ended context, so a cancel that landed before the pull still fails the create.
+	if cause := context.Cause(ctx); errors.Is(cause, errCreateCancelled) {
 		return image.Image{}, "", cause
 	}
 	if err != nil {
@@ -805,6 +817,16 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
 		return models.Sandbox{}, err
+	}
+
+	// A create that has not taken the lock yet builds nothing once its record is failed, not stopped.
+	if sb.State == models.StatePending {
+		if err := s.cfg.Repo.Update(id, failed(cancelled("shard stop"))); err != nil {
+			return models.Sandbox{}, err
+		}
+		if sb, err = s.cfg.Repo.Get(id); err != nil {
+			return models.Sandbox{}, err
+		}
 	}
 
 	if err := FailedGuard(id, sb); err != nil {

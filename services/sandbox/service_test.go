@@ -820,6 +820,94 @@ func TestCompleteOfARemovedSandboxBuildsNothing(t *testing.T) {
 	}
 }
 
+// A stop that lands before the create takes the sandbox fails the record, and the create then builds nothing.
+func TestStopBeforeTheCreateTakesTheSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	_, err = svc.Stop(t.Context(), sb.ID, time.Second)
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+
+	if err := svc.Complete(t.Context(), sb.ID, alpine()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, step := range []string{"images.Pull", "provider.Create", "provider.Start", "provider.Stop"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a create the stop had ended: %v", step, r.calls)
+		}
+	}
+	if l.repo.sb.State != models.StateFailed || !strings.Contains(l.repo.sb.FailedReason, "cancelled by shard stop") {
+		t.Errorf("the record says %q (%q), want failed by the stop", l.repo.sb.State, l.repo.sb.FailedReason)
+	}
+}
+
+// A stop that lands while the create waits for the sandbox fails it, even when the image is already cached.
+func TestStopWhileTheCreateWaitsForTheSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.status = models.Status{}
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	unlock, err := svc.Hold(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	created := make(chan error, 1)
+	go func() { created <- svc.Complete(t.Context(), sb.ID, alpine()) }()
+	waitForWaiters(t, svc, sb.ID, 2)
+
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := svc.Stop(t.Context(), sb.ID, time.Second)
+		stopped <- err
+	}()
+	waitForWaiters(t, svc, sb.ID, 3)
+	unlock()
+
+	err = <-stopped
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+	if err := <-created; err != nil && !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("create = %v, want nothing built or it cancelled by shard stop", err)
+	}
+	for _, step := range []string{"provider.Create", "provider.Start"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a create the stop had ended: %v", step, r.calls)
+		}
+	}
+	if l.repo.sb.State != models.StateFailed {
+		t.Errorf("the record says %q, want failed", l.repo.sb.State)
+	}
+}
+
+// waitForWaiters polls until want verbs hold or wait on the sandbox's lock, and fails the test past the deadline.
+func waitForWaiters(t *testing.T, svc *sandbox.Service, id string, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.Waiters(id) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d verbs on the lock of %s, want %d", svc.Waiters(id), id, want)
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // A stop ends the processes and keeps the record, the lease, the address and the writable layer.
 func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 	r := &recorder{}
