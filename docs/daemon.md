@@ -43,8 +43,9 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
   records. One writer owns them, so they need no lock between processes: the daemon serializes its
   own writes in memory and every client asks it. The value of a secret crosses the socket once, on
   the `PUT`, and is never written anywhere but the secret store, never logged and never listed back.
-  A create pulls the image and writes its sandbox record under the image lock, so `image rm` and
-  `image prune`, which both free by reachability over the records, never sweep a rootfs mid create.
+  A create writes its sandbox record before it pulls, and a cached pull waits for a removal in
+  flight, so `image rm` and `image prune`, which both free by reachability over the records, never
+  sweep a rootfs mid create.
 - **The sandbox lifecycle**: `create`, `start`, `stop`, `rm`, `exec`, `logs`, `pause`, `resume`,
   `fork` and `clone` run inside the daemon, in `services/sandbox`. The image pull of a create happens there too, and the client waits for it with
   no deadline; the pull's progress is not streamed back to the client yet. The daemon serializes the

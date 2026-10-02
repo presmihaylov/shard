@@ -47,6 +47,8 @@ type Service struct {
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
 	// pull's rollback deletes the blobs another pull has written but not yet indexed.
 	write sync.Mutex
+	// removal holds a cache hit back while a removal is past its check, so a create never gets a rootfs that is going.
+	removal sync.RWMutex
 }
 
 // Image is one pulled image, unpacked and ready for a bundle. It crosses the daemon socket as JSON.
@@ -110,7 +112,9 @@ func New(root string, opts ...Option) (*Service, error) {
 // Pull fetches ref and unpacks it. A second pull of the same reference needs no network.
 func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 	// The cache is read before the lock, so a pulled image still runs while another pull downloads.
+	s.removal.RLock()
 	img, found, err := s.cached(ref)
+	s.removal.RUnlock()
 	if err != nil {
 		return Image{}, err
 	}
@@ -257,6 +261,9 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
 	s.write.Lock()
 	defer s.write.Unlock()
+	// A create writes its record before it pulls, so free sees that record or the create's cache hit waits for the end.
+	s.removal.Lock()
+	defer s.removal.Unlock()
 
 	if err := free(); err != nil {
 		return err
