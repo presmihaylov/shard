@@ -18,13 +18,24 @@ var selfBinary = "/proc/self/exe"
 
 // runFiles is the files mode main runs, exit code included: 0 once the host has its answer, 1 when the wire broke.
 func runFiles() int {
-	if err := serveFiles(os.Stdin, os.Stdout); err != nil {
+	if err := filesAsUser(); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)
 
 		return 1
 	}
 
 	return 0
+}
+
+// filesAsUser sheds what a runtime handed a non-root user, so the guest kernel checks that user alone: a VM raises PID 1's set into the ambient one.
+func filesAsUser() error {
+	if os.Geteuid() != 0 {
+		if err := dropCapabilities(); err != nil {
+			return err
+		}
+	}
+
+	return serveFiles(os.Stdin, os.Stdout)
 }
 
 // serveFiles does the one operation the header names, as the user the exec runs as, and answers with the path's stat or with why not.
