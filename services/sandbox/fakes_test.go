@@ -289,6 +289,8 @@ type fakeProvider struct {
 	lose bool
 	// pauseCtxErr is what the pause's context said when the pause began, so a test sees a client's cancel.
 	pauseCtxErr error
+	// spendBudget makes the pause write its checkpoint and then wait out its deadline, the way a wedged delete does.
+	spendBudget bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -414,6 +416,12 @@ func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
 
 		return &models.LostError{Sandbox: id, Err: fmt.Errorf("checkpoint sandbox %s: no space left on device", id)}
 	}
+	if f.spendBudget {
+		<-ctx.Done()
+		f.status = models.Status{}
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: %w", id, ctx.Err())
+	}
 	f.paused, f.snapshotDir = true, dir
 	f.status = models.Status{Exists: true, State: models.StatePaused}
 
@@ -529,6 +537,10 @@ func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
 }
 
 func (f *fakeProvider) Status(ctx context.Context, _ string) (models.Status, error) {
+	// A real provider runs its probe under ctx, so after a wedged pause a done ctx fails it at once.
+	if err := ctx.Err(); f.spendBudget && err != nil {
+		return models.Status{}, fmt.Errorf("status: %w", err)
+	}
 	if f.statusGate != nil {
 		select {
 		case <-f.statusGate:

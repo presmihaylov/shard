@@ -15,9 +15,6 @@ import (
 // checkpointFile is the one file every snapshot holds, and the provider writes it last before it deletes.
 const checkpointFile = "checkpoint.img"
 
-// pauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.
-const pauseBudget = 10 * time.Minute
-
 // CopyRequest names the sandbox a fork or a clone makes. It is the JSON body of both routes.
 type CopyRequest struct {
 	Name string `json:"name,omitempty"`
@@ -58,16 +55,18 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	// A client that hangs up mid-checkpoint would cut a save the guest does not survive (SHARD-336).
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseBudget)
+	base := context.WithoutCancel(ctx)
+	pctx, cancel := context.WithTimeout(base, s.pauseBudget())
 	defer cancel()
 
-	if err := s.cfg.Provider.Pause(ctx, id, dir); err != nil {
+	if err := s.cfg.Provider.Pause(pctx, id, dir); err != nil {
 		var lost *models.LostError
 		if errors.As(err, &lost) {
-			return models.Sandbox{}, s.fail(ctx, id, err)
+			return models.Sandbox{}, s.fail(base, id, err)
 		}
 
-		return models.Sandbox{}, errors.Join(err, s.reconcileGone(ctx, id, dir))
+		// A pause that spent its budget leaves pctx done, so the reconcile probes under a budget of its own.
+		return models.Sandbox{}, errors.Join(err, s.reconcileGone(base, id, dir))
 	}
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
@@ -87,7 +86,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 // reconcileGone is for a pause that failed: the sandbox still runs and the record is right, or the
 // snapshot is complete and only the host cleanup failed, or the substrate lost it on the way.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
-	status, err := s.cfg.Provider.Status(ctx, id)
+	status, err := s.status(ctx, id, "pause")
 	if err != nil {
 		return err
 	}

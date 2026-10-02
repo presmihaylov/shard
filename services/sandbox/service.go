@@ -33,6 +33,9 @@ const DefaultProbeBudget = 10 * time.Second
 // task. It exceeds gvisor's start grace, so a slow but live start is not cut short.
 const DefaultStartBudget = 60 * time.Second
 
+// DefaultPauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.
+const DefaultPauseBudget = 10 * time.Minute
+
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
@@ -103,6 +106,8 @@ type Config struct {
 	ProbeBudget time.Duration
 	// StartBudget overrides DefaultStartBudget, which only a test has a reason to do.
 	StartBudget time.Duration
+	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
+	PauseBudget time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -220,6 +225,15 @@ func (s *Service) startBudget() time.Duration {
 	}
 
 	return DefaultStartBudget
+}
+
+// pauseBudget is how long one pause's checkpoint and delete get, whether or not the client still waits.
+func (s *Service) pauseBudget() time.Duration {
+	if s.cfg.PauseBudget != 0 {
+		return s.cfg.PauseBudget
+	}
+
+	return DefaultPauseBudget
 }
 
 // status asks the substrate about a sandbox on a bounded context, so a wedged runtime cannot pin a verb.
