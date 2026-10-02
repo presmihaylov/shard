@@ -91,6 +91,8 @@ type fakeDirector struct {
 	resolve time.Duration
 	// deciding gets the context of each decision as it starts.
 	deciding chan context.Context
+	// grow is what each rewrite reserves, as a value longer than its placeholder does.
+	grow int
 
 	mu   sync.Mutex
 	seen []Request
@@ -121,7 +123,10 @@ func (d *fakeDirector) Decide(ctx context.Context, req Request) (Decision, error
 	return Decision{Allowed: true, Upstream: d.upstream, Hold: req.Host != "stream.test"}, nil
 }
 
-func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, body []byte) ([]byte, error) {
+func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, body []byte, reserve Reserve) ([]byte, error) {
+	if err := reserve(d.grow); err != nil {
+		return nil, fmt.Errorf("put the secrets in: %w", err)
+	}
 	for _, values := range out.Header {
 		for i, v := range values {
 			values[i] = strings.ReplaceAll(v, "mock-TOKEN", "real-TOKEN")
@@ -738,6 +743,55 @@ func TestProxyHoldsABudgetOfBodiesPerSandbox(t *testing.T) {
 	if code, body := post(); code != http.StatusOK {
 		t.Errorf("a body after the budget came back got %d %s, want 200", code, body)
 	}
+}
+
+// What a value adds is charged with the body until the request is forwarded, so a rewrite past the budget is a 503 that sends nothing (SHARD-348).
+func TestProxyChargesWhatARewriteReservesUntilItIsForwarded(t *testing.T) {
+	previous := heldBudget
+	heldBudget = 1000
+	t.Cleanup(func() { heldBudget = previous })
+	forwarding, release := make(chan struct{}), make(chan struct{})
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarding <- struct{}{}
+		<-release
+		echoHandler(w, r)
+	}))
+	post := func(answer chan<- int) {
+		resp, err := h.client().Post("http://api.test/b", "application/octet-stream", strings.NewReader(strings.Repeat("y", 300)))
+		if err != nil {
+			t.Error(err)
+			answer <- 0
+
+			return
+		}
+		defer resp.Body.Close()
+		answer <- resp.StatusCode
+	}
+
+	h.director.grow = 800
+	answer := make(chan int, 1)
+	go post(answer)
+	select {
+	case code := <-answer:
+		if code != http.StatusServiceUnavailable {
+			t.Errorf("a rewrite past the budget got %d, want 503", code)
+		}
+	case <-forwarding:
+		t.Fatal("a rewrite past the budget reached the upstream")
+	}
+	h.waitHeld(t, 0)
+
+	h.director.grow = 600
+	go post(answer)
+	<-forwarding
+	if held := h.held(); held != 900 {
+		t.Errorf("the budget holds %d bytes while the request is forwarded, want the body and the rewrite, 900", held)
+	}
+	close(release)
+	if code := <-answer; code != http.StatusOK {
+		t.Errorf("a rewrite inside the budget got %d, want 200", code)
+	}
+	h.waitHeld(t, 0)
 }
 
 // A fire-and-forget client half-closes once its request is written, and net/http cancels the request context on that EOF (SHARD-238).

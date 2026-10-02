@@ -45,13 +45,13 @@ var (
 	shutdownGrace   = 5 * time.Second
 	// heldReadTimeout bounds the read of a held body alone; a server ReadTimeout would also cut a long upload that streams.
 	heldReadTimeout = 30 * time.Second
-	// heldBudget bounds the body bytes one source holds at once, so its stalled uploads cannot fill the daemon (SHARD-348).
+	// heldBudget bounds what one source holds at once to put secrets in, its bodies and what a value adds, so it cannot fill the daemon (SHARD-348).
 	heldBudget = 32 << 20
 )
 
 var (
 	errStalled    = errors.New("the request body stalled")
-	errOverBudget = errors.New("the request bodies this sandbox holds are at their budget")
+	errOverBudget = errors.New("the requests of this sandbox hold the most the proxy keeps to put secrets in")
 )
 
 // Request is what the proxy knows about one request before it asks the director.
@@ -76,11 +76,14 @@ type Decision struct {
 	Reason string
 }
 
+// Reserve charges n more bytes to the source of the request, and fails past its budget.
+type Reserve func(n int) error
+
 // Director judges every request and rewrites the allowed ones; the proxy itself knows no policy and no secret.
 type Director interface {
 	Decide(ctx context.Context, req Request) (Decision, error)
-	// Rewrite edits the outbound request in place; body is nil when none was held, and what comes back is sent.
-	Rewrite(ctx context.Context, req Request, out *http.Request, body []byte) ([]byte, error)
+	// Rewrite edits the outbound request in place and reserves each byte a value adds before it exists; body is nil when none was held, and what comes back is sent.
+	Rewrite(ctx context.Context, req Request, out *http.Request, body []byte, reserve Reserve) ([]byte, error)
 }
 
 // Config is what a Server is built from.
@@ -309,7 +312,16 @@ func (s *Server) outbound(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	out.URL.Host = req.Host
 
-	body, err := s.cfg.Director.Rewrite(out.Context(), req, out, held)
+	// What the rewrite reserves stays charged with the body until the request is forwarded.
+	reserve := func(n int) error {
+		if err := s.held.reserve(req.Source, n); err != nil {
+			return err
+		}
+		charged += n
+
+		return nil
+	}
+	body, err := s.cfg.Director.Rewrite(out.Context(), req, out, held, reserve)
 	if err != nil {
 		s.held.give(req.Source, charged)
 
@@ -363,7 +375,7 @@ func (s *Server) hold(w http.ResponseWriter, r *http.Request, source netip.Addr,
 	return nil, &joinedBody{Reader: io.MultiReader(bytes.NewReader(held), r.Body), closer: r.Body}, charged, nil
 }
 
-// read fills a buffer to the body's length, or to BodyCap+1 when it names none, taking every growth from the budget first.
+// read fills a buffer to the body's length, or to BodyCap+1 when it names none; the budget was charged the buffer's whole capacity.
 func (s *Server) read(body io.Reader, length int64, source netip.Addr) ([]byte, int, error) {
 	limit, first := BodyCap+1, heldChunk
 	if length >= 0 {
@@ -371,33 +383,43 @@ func (s *Server) read(body io.Reader, length int64, source netip.Addr) ([]byte, 
 	}
 
 	var buf []byte
-	charged := 0
 	for len(buf) < limit {
-		if len(buf) == cap(buf) {
-			size := min(max(2*cap(buf), first), limit)
-			if !s.held.take(source, size-cap(buf)) {
-				return nil, charged, fmt.Errorf("%w of %d bytes, the most the proxy holds per sandbox to put secrets in; retry once one ends", errOverBudget, s.held.limit)
-			}
-			charged += size - cap(buf)
-			grown := make([]byte, len(buf), size)
-			copy(grown, buf)
-			buf = grown
+		grown, err := s.room(buf, first, limit, source)
+		if err != nil {
+			return nil, cap(buf), err
 		}
+		buf = grown
 
 		n, err := body.Read(buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+n]
 		if errors.Is(err, io.EOF) {
-			return buf, charged, nil
+			return buf, cap(buf), nil
 		}
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return nil, charged, fmt.Errorf("%w: it did not arrive within %s", errStalled, heldReadTimeout)
+			return nil, cap(buf), fmt.Errorf("%w: it did not arrive within %s", errStalled, heldReadTimeout)
 		}
 		if err != nil {
-			return nil, charged, fmt.Errorf("read the request body: %w", err)
+			return nil, cap(buf), fmt.Errorf("read the request body: %w", err)
 		}
 	}
 
-	return buf, charged, nil
+	return buf, cap(buf), nil
+}
+
+// room grows a full buffer toward limit, taking the growth from the source's budget before it allocates it.
+func (s *Server) room(buf []byte, first, limit int, source netip.Addr) ([]byte, error) {
+	if len(buf) < cap(buf) {
+		return buf, nil
+	}
+
+	size := min(max(2*cap(buf), first), limit)
+	if err := s.held.reserve(source, size-cap(buf)); err != nil {
+		return nil, err
+	}
+	grown := make([]byte, len(buf), size)
+	copy(grown, buf)
+
+	return grown, nil
 }
 
 // statusOf tells a stalled body and a spent budget apart from the upstream failures every other error is.
@@ -412,7 +434,7 @@ func statusOf(err error) int {
 	return http.StatusBadGateway
 }
 
-// budget counts the body bytes each source holds at once.
+// budget counts the bytes each source holds at once to put secrets in.
 type budget struct {
 	limit int
 
@@ -420,16 +442,16 @@ type budget struct {
 	by map[netip.Addr]int
 }
 
-func (b *budget) take(source netip.Addr, n int) bool {
+func (b *budget) reserve(source netip.Addr, n int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.by[source]+n > b.limit {
-		return false
+		return fmt.Errorf("%w, a budget of %d bytes per sandbox; retry once one ends", errOverBudget, b.limit)
 	}
 	b.by[source] += n
 
-	return true
+	return nil
 }
 
 func (b *budget) give(source netip.Addr, n int) {
