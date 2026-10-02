@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/lograte"
 	"github.com/presmihaylov/shard/services/api"
 )
 
@@ -31,8 +32,11 @@ const DefaultListen = ":2376"
 const (
 	// headBytes bounds the request head the front reads before it decides, so no client grows one forever.
 	headBytes = 64 * 1024
-	// headTimeout bounds a client that connects and then sends nothing.
-	headTimeout = 10 * time.Second
+	// defaultHeadTimeout bounds a client that connects and then sends nothing.
+	defaultHeadTimeout = 10 * time.Second
+	// acceptBackoffMin and acceptBackoffMax bound the wait after an Accept that ran out of a resource, as net/http's do.
+	acceptBackoffMin = 5 * time.Millisecond
+	acceptBackoffMax = time.Second
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
@@ -59,13 +63,17 @@ type Config struct {
 
 // Server is one front, over one secret and one daemon socket.
 type Server struct {
-	listen string
-	socket string
-	secret []byte
-	tokens *ledger
-	caps   *capMux
-	tls    *tls.Config
-	log    *log.Logger
+	listen      string
+	socket      string
+	secret      []byte
+	tokens      *ledger
+	caps        *capMux
+	tls         *tls.Config
+	preAuth     *preAuth
+	headTimeout time.Duration
+	log         *log.Logger
+	// refusals bounds the lines a flood past the pre-auth cap writes, per source.
+	refusals *lograte.Log
 }
 
 // New reads the secret and the TLS pair, so every reason to refuse is known before anything binds.
@@ -107,14 +115,19 @@ func New(cfg Config) (*Server, error) {
 		out = io.Discard
 	}
 
+	logger := log.New(out, "", log.LstdFlags)
+
 	return &Server{
-		listen: listen,
-		socket: filepath.Join(cfg.Root, api.SocketFile),
-		secret: secret,
-		tokens: tokens,
-		caps:   caps,
-		tls:    &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
-		log:    log.New(out, "", log.LstdFlags),
+		listen:      listen,
+		socket:      filepath.Join(cfg.Root, api.SocketFile),
+		secret:      secret,
+		tokens:      tokens,
+		caps:        caps,
+		tls:         &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
+		preAuth:     newPreAuth(preAuthTotal, preAuthPerSource),
+		headTimeout: defaultHeadTimeout,
+		log:         logger,
+		refusals:    lograte.New(logger, "serve"),
 	}, nil
 }
 
@@ -213,27 +226,63 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	return nil
 }
 
-// accept takes connections until the listener dies, and answers each on its own goroutine.
+// accept takes connections until the listener dies, and answers each within the pre-auth cap on its own goroutine.
 func (s *Server) accept(ctx context.Context, listener net.Listener) error {
 	var live sync.WaitGroup
 	defer live.Wait()
 
+	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if !exhausted(err) {
+				return fmt.Errorf("accept on %s: %w", listener.Addr(), err)
+			}
+			backoff = s.waitOut(ctx, err, backoff)
 
-			return fmt.Errorf("accept on %s: %w", listener.Addr(), err)
+			continue
+		}
+		backoff = 0
+
+		source := sourceOf(conn.RemoteAddr())
+		if !s.preAuth.enter(source) {
+			s.refusals.Printf(source, "refused a connection from %s: it is past the cap on connections that show no token yet, %d in total and %d per source", source, s.preAuth.total, s.preAuth.perSource)
+			if err := conn.Close(); !quiet(err) {
+				s.log.Printf("close the connection from %s past the cap: %v", source, err)
+			}
+
+			continue
 		}
 
-		live.Go(func() { s.handle(ctx, conn) })
+		live.Go(func() { s.handle(ctx, conn, sync.OnceFunc(func() { s.preAuth.leave(source) })) })
 	}
 }
 
-// handle checks the token, then stops reading: the rest is bytes both ways, WebSocket included.
-func (s *Server) handle(ctx context.Context, conn net.Conn) {
+// exhausted reports an Accept error that a connection closing elsewhere cures, which net/http waits out rather than dies on.
+func exhausted(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
+}
+
+// waitOut sleeps the next step of the backoff after an Accept that ran out of a resource, and answers that step.
+func (s *Server) waitOut(ctx context.Context, err error, last time.Duration) time.Duration {
+	next := min(max(2*last, acceptBackoffMin), acceptBackoffMax)
+	s.log.Printf("%v; accepting again in %s", err, next)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(next):
+	}
+
+	return next
+}
+
+// handle checks the token, then stops reading: the rest is bytes both ways. leave frees the pre-auth slot.
+func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
+	defer leave()
+
 	closeConn := func() {
 		if err := conn.Close(); !quiet(err) {
 			s.log.Printf("close the connection from %s: %v", conn.RemoteAddr(), err)
@@ -263,6 +312,8 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), sub)
+	// A logs -f or an exec attach holds its connection for long, and a valid client must not be refused for that.
+	leave()
 
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socket)
 	if err != nil {
@@ -284,7 +335,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 // readHead reads up to the blank line that ends the headers, which is all the front ever parses.
 func (s *Server) readHead(conn net.Conn) ([]byte, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(headTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(s.headTimeout)); err != nil {
 		return nil, fmt.Errorf("set the deadline of the request head: %w", err)
 	}
 
