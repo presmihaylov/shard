@@ -156,7 +156,7 @@ func confine() (*os.File, error) {
 		return nil, fmt.Errorf("clear the dumpable flag: %w", err)
 	}
 	if err := upLoopback(); err != nil {
-		return err
+		return nil, err
 	}
 
 	return remountCgroup()
