@@ -393,9 +393,17 @@ func requestLine(head []byte) (string, *url.URL, bool) {
 		return "", nil, false
 	}
 
+	// A CONNECT to a host:port is an authority alone, which net/http parses behind a scheme it then drops.
+	authority := method == http.MethodConnect && !strings.HasPrefix(uri, "/")
+	if authority {
+		uri = "http://" + uri
+	}
 	target, err := url.ParseRequestURI(uri)
 	if err != nil {
 		return "", nil, false
+	}
+	if authority {
+		target.Scheme = ""
 	}
 
 	return method, target, true

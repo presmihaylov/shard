@@ -30,6 +30,8 @@ func TestTheFrontReadsTheRequestLineAsTheDaemonDoes(t *testing.T) {
 		"GET /v0/sandboxes SHARD/1.1",
 		"G@T /v0/sandboxes HTTP/1.1",
 		"GET  /v0/sandboxes HTTP/1.1",
+		"CONNECT example.com:443 HTTP/1.1",
+		"CONNECT /v0/sandboxes HTTP/1.1",
 	} {
 		t.Run(line, func(t *testing.T) {
 			head := []byte(line + "\r\nHost: shard\r\n\r\n")
