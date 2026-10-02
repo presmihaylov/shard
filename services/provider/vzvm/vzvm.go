@@ -228,3 +228,13 @@ func (p *Provider) HeldLogs(id string) ([]string, error) {
 
 	return []string{filepath.Join(dir, consoleFile)}, nil
 }
+
+// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+func (p *Provider) BoundOutputLog(id string, max int64) error {
+	dir, err := p.dir(id)
+	if err != nil {
+		return err
+	}
+
+	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
+}

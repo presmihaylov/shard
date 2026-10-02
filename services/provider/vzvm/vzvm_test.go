@@ -1322,3 +1322,30 @@ func awaitExit(t *testing.T, pid int) {
 	}
 	t.Fatalf("process %d did not exit", pid)
 }
+
+// An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
+func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
+	h := newHarness(t)
+	dir, err := h.stateDir("sb-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "output.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.BoundOutputLog("sb-legacy", 10); err != nil {
+		t.Fatalf("BoundOutputLog: %v", err)
+	}
+
+	for name, want := range map[string]int64{path: 0, path + ".1": 10} {
+		info, err := os.Stat(name)
+		if err != nil || info.Size() != want {
+			t.Errorf("%s: %v, want %d bytes", filepath.Base(name), err, want)
+		}
+	}
+}

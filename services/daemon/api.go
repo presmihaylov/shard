@@ -24,6 +24,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // Config is the wiring one resident daemon needs.
@@ -92,6 +93,16 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	}
 	if len(sandboxes) == 0 {
 		return nil
+	}
+
+	provider, err := r.deps.provider()
+	if err != nil {
+		return err
+	}
+	// No probe has attached a VM yet, so no FileLog writes the output logs this bounds.
+	if err := boundOutputLogs(provider, sandboxes, supervisor.MaxLog); err != nil {
+		// A log it cannot bound is no reason to refuse the daemon, which would then serve no sandbox (SHARD-341).
+		report(fmt.Sprintf("some output logs stay past their bound: %v", err))
 	}
 
 	svc, err := r.lifecycle.service()

@@ -175,6 +175,25 @@ func (l *FileLog) restartCursor(size uint64) error {
 	return l.writeCursor(logCursor{Offset: 0, Output: c.Output + size - c.Offset})
 }
 
+// BoundLog bounds a log no FileLog writes now, which a daemon before the bound left past max: its last max bytes move to the rotated file, and the cursor follows the output into the emptied log.
+func BoundLog(path, cursor string, max int64) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("measure the log: %w", err)
+	}
+	if info.Size() <= max {
+		return nil
+	}
+	if err := logfile.Truncate(path, max); err != nil {
+		return err
+	}
+
+	return (&FileLog{Cursor: cursor}).restartCursor(uint64(info.Size())) //nolint:gosec // a file size is never negative
+}
+
 func (l *FileLog) writeCursor(c logCursor) error {
 	encoded, err := json.Marshal(c)
 	if err != nil {

@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,5 +42,40 @@ func TestTruncateHeldLogsBoundsOnlyALogPastMax(t *testing.T) {
 	}
 	if _, err := os.Stat(small + ".1"); !os.IsNotExist(err) {
 		t.Errorf("small.log.1 exists: %v", err)
+	}
+}
+
+// fakeOutputLogs is a substrate whose daemon writes the output log itself; it bounds every id but the one named to fail.
+type fakeOutputLogs struct {
+	models.Provider
+
+	fail    string
+	bounded []string
+}
+
+func (f *fakeOutputLogs) BoundOutputLog(id string, _ int64) error {
+	if id == f.fail {
+		return errors.New("read-only file system")
+	}
+	f.bounded = append(f.bounded, id)
+
+	return nil
+}
+
+// One output log it cannot bound leaves the others bounded, and a substrate that writes none is left alone.
+func TestBoundOutputLogsBoundsEverySandboxBeforeItReports(t *testing.T) {
+	sandboxes := []models.Sandbox{{ID: "one"}, {ID: "broken"}, {ID: "two"}}
+	provider := &fakeOutputLogs{fail: "broken"}
+
+	err := boundOutputLogs(provider, sandboxes, 10)
+	if err == nil || !strings.Contains(err.Error(), "broken") {
+		t.Errorf("boundOutputLogs returned %v, want the broken sandbox named", err)
+	}
+	if !slices.Equal(provider.bounded, []string{"one", "two"}) {
+		t.Errorf("bounded %v, want one and two", provider.bounded)
+	}
+
+	if err := boundOutputLogs(struct{ models.Provider }{}, sandboxes, 10); err != nil {
+		t.Errorf("boundOutputLogs on a substrate with no output log: %v", err)
 	}
 }
