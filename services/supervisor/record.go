@@ -40,7 +40,7 @@ func WriteRestarts(path string, count models.RestartCount) error {
 	if err != nil {
 		return fmt.Errorf("marshal the restart count: %w", err)
 	}
-	if err := store.WriteFile(path, encoded, 0o600); err != nil {
+	if err := store.WriteFileIfChanged(path, encoded, 0o600); err != nil {
 		return fmt.Errorf("write the restart count: %w", err)
 	}
 

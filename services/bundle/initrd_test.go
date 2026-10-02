@@ -43,3 +43,32 @@ func TestWriteInitrdNamesAMissingShardInit(t *testing.T) {
 		t.Fatal("WriteInitrd packed a shard-init that is not there")
 	}
 }
+
+// A daemon start on a full root packs the same shard-init again, and writes nothing (SHARD-341).
+func TestWriteInitrdLeavesTheSameArchiveAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	init := filepath.Join(t.TempDir(), "shard-init")
+	if err := os.WriteFile(init, []byte("#!/bin/sh\necho init\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "initrd.cpio")
+	if err := bundle.WriteInitrd(init, dst); err != nil {
+		t.Fatalf("WriteInitrd: %v", err)
+	}
+
+	// A directory that refuses a new file fails the write the way a full disk does.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := bundle.WriteInitrd(init, dst); err != nil {
+		t.Fatalf("WriteInitrd of the same shard-init = %v, want no write at all", err)
+	}
+}

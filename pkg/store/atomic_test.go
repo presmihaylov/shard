@@ -162,3 +162,60 @@ func TestWriteFileInLeavesNoTempBehindWhenItFails(t *testing.T) {
 		t.Errorf("got %d entries, want only the directory: the temp file stayed behind", len(entries))
 	}
 }
+
+// readOnly makes dir refuse a new file, the way a full disk refuses one, and gives it back for the cleanup.
+func readOnly(t *testing.T, dir string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Errorf("Chmod back: %v", err)
+		}
+	})
+}
+
+func TestWriteFileIfChangedWritesNothingWhenTheFileMatches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "initrd.cpio")
+	if err := WriteFile(path, []byte("same"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	readOnly(t, dir)
+
+	if err := WriteFileIfChanged(path, []byte("same"), 0o600); err != nil {
+		t.Fatalf("WriteFileIfChanged of the bytes already there = %v, want no write at all", err)
+	}
+	if err := WriteFileIfChanged(path, []byte("else"), 0o600); err == nil {
+		t.Fatal("WriteFileIfChanged of other bytes wrote into a directory that refuses a new file")
+	}
+}
+
+func TestWriteFileIfChangedReplacesOtherBytesOrMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "restarts.json")
+	if err := WriteFileIfChanged(path, []byte("first"), 0o600); err != nil {
+		t.Fatalf("WriteFileIfChanged of an absent file: %v", err)
+	}
+	if err := WriteFileIfChanged(path, []byte("second"), 0o600); err != nil {
+		t.Fatalf("WriteFileIfChanged of other bytes: %v", err)
+	}
+	if err := WriteFileIfChanged(path, []byte("second"), 0o644); err != nil {
+		t.Fatalf("WriteFileIfChanged of another mode: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if string(got) != "second" || info.Mode().Perm() != 0o644 {
+		t.Errorf("got %q at %v, want %q at 0644", got, info.Mode().Perm(), "second")
+	}
+}

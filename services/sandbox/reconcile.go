@@ -21,19 +21,18 @@ const InterruptedReason = "the daemon restarted before the create finished"
 const ReconcileConcurrency = 16
 
 // ReconcileAll makes the records agree with the substrate, before the daemon serves its first verb.
-// It corrects a record and never deletes one, and it reports one line per record it corrected.
+// It corrects a record and never deletes one, and it reports one line per record it corrected or could not check.
 func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
 	// The probe is the slow part, so run every probe concurrently, then apply the corrections one at a time.
 	probes := s.probeAll(ctx, sandboxes)
 
-	var errs []error
 	running := 0
 	for i, sb := range sandboxes {
 		state, err := s.applyReconcile(ctx, sb, probes[i].status, probes[i].err, report)
 		if err != nil {
-			errs = append(errs, err)
-
-			continue
+			// A daemon that refused to start could not stop or remove this sandbox, nor serve the others (SHARD-341).
+			report(fmt.Sprintf("sandbox %s: %v, the record is left as it is", sb.ID, err))
+			state = sb.State
 		}
 		if state == models.StateRunning {
 			running++
@@ -43,11 +42,11 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 	// Host netfilter is the policy of record, and nothing re-applied it while the last daemon was down.
 	if running > 0 {
 		if err := s.cfg.Network.ReapplyAll(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("re-apply the host rules for %d running sandboxes: %w", running, err))
+			return fmt.Errorf("re-apply the host rules for %d running sandboxes: %w", running, err)
 		}
 	}
 
-	return errors.Join(errs...)
+	return nil
 }
 
 // probeResult is one sandbox's Status and the error its probe answered, held by the sandbox's index.

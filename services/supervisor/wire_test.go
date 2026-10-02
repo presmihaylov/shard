@@ -133,6 +133,36 @@ func TestWriteRestartsReadsBackThroughBundle(t *testing.T) {
 	}
 }
 
+// A replay that brings the count already on disk writes nothing, so a full root fails no attach (SHARD-341).
+func TestWriteRestartsLeavesTheSameCountAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restarts.json")
+	count := models.RestartCount{Count: 2, LastAt: time.Date(2026, 10, 2, 19, 0, 0, 0, time.UTC)}
+	if err := supervisor.WriteRestarts(path, count); err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory that refuses a new file fails the write the way a full disk does.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := supervisor.WriteRestarts(path, count); err != nil {
+		t.Fatalf("WriteRestarts of the same count = %v, want no write at all", err)
+	}
+	count.Count++
+	if err := supervisor.WriteRestarts(path, count); err == nil {
+		t.Fatal("WriteRestarts of a new count wrote into a directory that refuses a new file")
+	}
+}
+
 func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 	// A unix socket half-closed by the guest still takes the host's write, so only the reader's end can refuse the request.
 	dir := shortDir(t)

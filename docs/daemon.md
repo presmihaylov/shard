@@ -101,7 +101,7 @@ one:
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
-  checkpoint counts as gone: a read that fails for any other reason refuses the start instead, so
+  checkpoint counts as gone: a read that fails for any other reason leaves the record `paused`, so
   one bad boot cannot end every future `resume` while the checkpoint sits on disk.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
@@ -114,11 +114,16 @@ one:
 - Host netfilter is the policy of record and nothing re-applied it while the daemon was down, so
   the whole table goes back on once when any sandbox runs.
 
-Each corrected record is one line in the journal. A daemon that cannot check the records refuses to
-start rather than serve verbs over state it has not seen; systemd restarts it. A record the daemon
+Each corrected record is one line in the journal. A record the daemon cannot check, because the
+substrate refused the probe or a write failed on a full root, is one line that names the sandbox
+and the error, and the record is left as it is. A daemon that refused to start could not serve the
+other sandboxes, nor `rm` the one that fills the root (SHARD-341). A daemon that cannot list the
+records or put the host rules back refuses to start; systemd restarts it. A record the daemon
 cannot read is named in the log and left as it is, because a record shard cannot read is one it
-cannot correct either. A root with no records needs no substrate, so a host without `runsc` still
-gets a daemon that answers the reads and the store verbs.
+cannot correct either. The vz and Firecracker providers write the initrd and a replayed restart
+count only when the bytes on disk differ, so a start on a full root writes nothing it already has.
+A root with no records needs no substrate, so a host without `runsc` still gets a daemon that
+answers the reads and the store verbs.
 
 ## Liveness
 
