@@ -165,7 +165,7 @@ type record struct {
 	// Nameservers and Hostname are the resolver files the guest writes itself, as a VM has no upper layer.
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
-	// RootFS is the image tree an exec resolves a named user against.
+	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`

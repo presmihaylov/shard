@@ -117,6 +117,8 @@ type ExecHeader struct {
 	WorkDir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
 	Groups  []uint32 `json:"groups,omitempty"`
+	// Lookup says User is what the caller named, for the guest to resolve against its live passwd; an older guest refuses a name.
+	Lookup bool `json:"lookup,omitempty"`
 	// TTY gives the command a pseudo terminal the guest allocates; Rows and Cols size it.
 	TTY  bool   `json:"tty,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`

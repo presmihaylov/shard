@@ -62,7 +62,7 @@ func (s *session) run(g *guest, header supervisor.ExecHeader) (models.ExitStatus
 		return models.ExitStatus{}, errors.New("the exec header has no argv")
 	}
 
-	credential, err := credentialOf(header.User, header.Groups)
+	credential, err := execCredential(header)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
