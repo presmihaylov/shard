@@ -1,24 +1,23 @@
 # Files
 
 The file API puts a file into a running sandbox and reads one out, with no `tar` and no shell in the
-image. This page is the design ruling of SHARD-285. Nothing on it is built yet: SHARD-286 to 288 build
-it after Pres rules on the serving path.
+image. This page is the design of SHARD-285, as Pres ruled it. SHARD-286 to 288 build it.
 
 ## The serving path
 
 A VM already has a channel: `shard-init` serves `stat`, `put` and `get` on vsock port 5003, one
 connection per op, a JSON header line and then the bytes (`services/supervisor/files.go`,
-`cmd/shard-init/files.go`). gVisor, Sysbox and runc have none. Two ways to give them one:
+`cmd/shard-init/files.go`). gVisor, Sysbox and runc have none.
 
-**Option A: `shard-init` serves every provider.** On a container substrate the daemon runs the
-supervisor that every sandbox already mounts read-only at `/.shard/init`, through `Provider.Exec`
-with `[/.shard/init, files]`, and speaks the same wire over the exec's stdin and stdout. The host
-side in `services/supervisor` takes a `Dialer`, so a VM dials the port and a container's dial starts
-that exec: one wire, one guest implementation, one set of tests.
+**`shard-init` serves every provider.** On a container substrate the daemon runs the supervisor that
+every sandbox already mounts read-only at `/.shard/init`, through `Provider.Exec` with
+`[/.shard/init, files]`, and speaks the same wire over the exec's stdin and stdout. The host side in
+`services/supervisor` takes a `Dialer`, so a VM dials the port and a container's dial starts that
+exec: one wire, one guest implementation, one set of tests.
 
-**Option B: the host reads and writes the rootfs.** The daemon opens the sandbox's rootfs mount on the
-host (`<root>/sandboxes/<id>/bundle/rootfs`, an overlay over the image) and writes there directly.
-A VM still needs option A, so B means two code paths.
+The rejected alternative was for the daemon to read and write the sandbox's rootfs mount on the host
+(`<root>/sandboxes/<id>/bundle/rootfs`, an overlay over the image). A VM would still need the guest
+path, so it meant two code paths, and gVisor does not see it.
 
 ### What gVisor does with a host write
 
@@ -36,16 +35,16 @@ lets the sentry cache the file tree. "Host" is a write into the rootfs mount, "g
 | The host makes a file in a directory the guest never listed | the new file |
 | The host appends to the file of the rename case | **the old file** with no append |
 
-So option B on gVisor is refuted. The atomic put that SHARD-286 needs (temp name, sync, rename) is
+So a host write is refuted on gVisor. The atomic put that SHARD-286 needs (temp name, sync, rename) is
 exactly the case the guest never sees, and a host-made file in a directory the guest has listed stays
-invisible. Making B work needs `--file-access=shared`, which revalidates on every file op of every
+invisible. Making it work needs `--file-access=shared`, which revalidates on every file op of every
 workload to serve a call that is rare.
 
 Sysbox and runc were not probed. They share the host kernel, so a host write would be coherent, but
 Sysbox runs the sandbox in a user namespace, so a host write must pick the shifted uid itself, which
-A gets for free.
+the guest path gets for free.
 
-### The transport A rides
+### The transport
 
 `exec` stdio carries the bytes, so it was measured on the same sandbox:
 
@@ -55,11 +54,11 @@ A gets for free.
 | `shard exec` through the daemon | 2.16 s, sha matches | **sha differs** |
 
 The daemon's exec record keeps the last 8 MiB of output and never blocks the guest, so a client that
-lags past it loses the middle of the stream (SHARD-333). Option A must therefore not ride that
+lags past it loses the middle of the stream (SHARD-333). The file API therefore never rides that
 record: the daemon calls `Provider.Exec` itself and pipes the exec's stdio straight into the HTTP
 body, with the backpressure of the HTTP connection.
 
-### Ruling asked for: option A
+### Why the guest serves it
 
 One wire and one guest implementation on every provider, no `tar` in any image, no gVisor cache
 change, and the uid of a written file comes from the guest the way an exec's does. The cost is one
@@ -68,8 +67,8 @@ end, start included.
 
 ## Stopped and paused sandboxes
 
-**First cut: 409 `sandbox_not_running`, with `start it first`, for both.** Every file op needs a
-running guest under option A. Host access to a stopped sandbox's writable layer, the way `clone`
+**409 `sandbox_not_running`, with `start it first`, for both.** Every file op needs a running
+guest. Host access to a stopped sandbox's writable layer, the way `clone`
 reads it, is a different layout on each provider (an overlay upper on gVisor, Sysbox and runc, a disk
 image on Firecracker and vz), and on a paused gVisor sandbox a host write would meet the cached tree
 of the restored sentry, the stale case above. A later cut can add it per provider.
