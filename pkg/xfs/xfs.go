@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -204,7 +205,21 @@ func writeFstab(lines []string) error {
 		return errors.Join(fmt.Errorf("rename %s to %s: %w", staging, FstabPath, err), os.Remove(staging))
 	}
 
-	return nil
+	// Fsync the directory, or a power loss after the rename can lose it and leave the old fstab.
+	return syncDir(filepath.Dir(FstabPath))
+}
+
+// syncDir flushes a directory's own metadata, so a rename or create in it survives a power loss.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", dir, err), d.Close())
+	}
+
+	return d.Close()
 }
 
 // fstabLead returns the newline our line needs first, so it never joins a file whose last line has none.
