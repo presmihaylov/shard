@@ -29,11 +29,12 @@ func (s *Service) Decide(sb models.Sandbox, host string, port int, addr netip.Ad
 	// The floor comes before every policy, on the host and here, so no name opens what the host hides.
 	// It reads the resolved address on purpose: on the Host header a private-resolving name would pass.
 	if slices.ContainsFunc(network.Private, func(p netip.Prefix) bool { return p.Contains(addr) }) {
-		return Decision{Action: models.ActionDeny, ID: network.RulePrivate, Reason: fmt.Sprintf("%s resolves to %s, which is private", host, addr)}, nil
+		// The reason drops the resolved address: the 403 body reaches the guest, and the egress log keeps the address (SHARD-342).
+		return Decision{Action: models.ActionDeny, ID: network.RulePrivate, Reason: host + " resolves to a private address"}, nil
 	}
 	// The proxy dials from the host, where no chain refuses the host's own addresses, so what the floor misses of them is refused here.
 	if s.local.Contains(addr) {
-		return Decision{Action: models.ActionDeny, ID: network.RuleLocal, Reason: fmt.Sprintf("%s resolves to %s, which is local to the host", host, addr)}, nil
+		return Decision{Action: models.ActionDeny, ID: network.RuleLocal, Reason: host + " resolves to an address local to the host"}, nil
 	}
 
 	if sb.Policy == "" {

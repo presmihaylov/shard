@@ -354,6 +354,29 @@ func TestDecideRefusesWhatIsLocalToTheHost(t *testing.T) {
 	}
 }
 
+// The 403 body reaches the guest, so a floor deny names only the host and never the address it resolved to (SHARD-342).
+func TestDecideFloorReasonCarriesNoResolvedAddress(t *testing.T) {
+	svc := New(newStore(t), nil, gateway, nameservers, fakeResolver{})
+	svc.local.Addresses = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil }
+
+	for _, tc := range []struct {
+		name string
+		addr netip.Addr
+		id   string
+	}{
+		{"private", netip.MustParseAddr("10.0.0.5"), network.RulePrivate},
+		{"local", netip.MustParseAddr("203.0.113.9"), network.RuleLocal},
+	} {
+		got, err := svc.Decide(models.Sandbox{ID: "sb"}, "forged.example.com", 80, tc.addr)
+		if err != nil || got.ID != tc.id {
+			t.Fatalf("%s floor: got %+v, %v", tc.name, got, err)
+		}
+		if strings.Contains(got.Reason, tc.addr.String()) {
+			t.Errorf("%s floor reason %q carries the resolved address %s (SHARD-342)", tc.name, got.Reason, tc.addr)
+		}
+	}
+}
+
 // A question carries a name and no address, so an address rule is silent and a deny on one port leaves the name in use.
 func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
 	s := newStore(t)
