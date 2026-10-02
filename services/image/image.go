@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/containerd/containerd/v2/pkg/archive"
@@ -46,7 +45,7 @@ type Service struct {
 
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
 	// pull's rollback deletes the blobs another pull has written but not yet indexed.
-	write sync.Mutex
+	write chan struct{}
 }
 
 // Image is one pulled image, unpacked and ready for a bundle. It crosses the daemon socket as JSON.
@@ -87,7 +86,7 @@ func WithErofs() Option {
 
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
 func New(root string, opts ...Option) (*Service, error) {
-	s := &Service{root: root}
+	s := &Service{root: root, write: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -120,8 +119,11 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 		return img, nil
 	}
 
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return Image{}, err
+	}
+	defer unlock()
 
 	return s.pullLocked(ctx, ref)
 }
@@ -129,8 +131,11 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 // Claim pulls ref and runs record before it lets go of the tree, so a removal that sweeps by
 // reachability cannot delete a rootfs whose sandbox record is still on its way to disk.
 func (s *Service) Claim(ctx context.Context, ref string, record func(Image) error) (Image, error) {
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return Image{}, err
+	}
+	defer unlock()
 
 	img, err := s.pullLocked(ctx, ref)
 	if err != nil {
@@ -247,16 +252,29 @@ func (s *Service) List() ([]Image, error) {
 	return images, nil
 }
 
+// lock takes the write lock, or gives up when ctx ends first, so an rm of a pending create is not held by another pull.
+func (s *Service) lock(ctx context.Context) (func(), error) {
+	select {
+	case s.write <- struct{}{}:
+		return func() { <-s.write }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for the image write in flight: %w", ctx.Err())
+	}
+}
+
 // Orphaned names the digests whose rootfs a Remove of ref would delete.
 func (s *Service) Orphaned(ref string) ([]string, error) {
 	return s.store.Orphaned(ref)
 }
 
 // Remove deletes ref and the rootfs nothing else in the index names, once free says no sandbox needs it.
-func (s *Service) Remove(_ context.Context, ref string, free func() error) error {
+func (s *Service) Remove(ctx context.Context, ref string, free func() error) error {
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	if err := free(); err != nil {
 		return err
