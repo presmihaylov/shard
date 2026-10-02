@@ -160,7 +160,7 @@ func TestAdoptFindsTheRunningVmmAndKillEndsIt(t *testing.T) {
 	cfg := config(root)
 	client, info := start(t, cfg)
 
-	adopted, again, err := firecracker.Adopt(cfg.Socket, cfg.Vsock)
+	adopted, again, err := firecracker.Adopt(t.Context(), cfg.Socket, cfg.Vsock)
 	if err != nil {
 		t.Fatalf("Adopt = %v", err)
 	}
@@ -250,7 +250,7 @@ func TestARefusalCarriesTheVmmsOwnWordsAndEndsIt(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, _, err := firecracker.Adopt(cfg.Socket, cfg.Vsock)
+		_, _, err := firecracker.Adopt(t.Context(), cfg.Socket, cfg.Vsock)
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
 			return
 		}
@@ -407,7 +407,7 @@ func TestRestoreReportsARefusedLoadAndEndsTheVmm(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, _, err := firecracker.Adopt(snap.Socket, snap.Vsock)
+		_, _, err := firecracker.Adopt(t.Context(), snap.Socket, snap.Vsock)
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
 			return
 		}

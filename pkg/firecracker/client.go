@@ -224,10 +224,13 @@ func (c *Client) configure(cfg Config) error {
 	return c.put("/actions", action{Type: "InstanceStart"})
 }
 
-// Adopt takes a firecracker that is already running, by its sockets, and proves it answers.
-func Adopt(socket, vsock string) (*Client, Info, error) {
-	client := &Client{socket: socket, vsock: vsock}
-	info, err := client.State(context.Background())
+// Open names the vmm on its sockets and asks it nothing, so a caller can still kill one that never answers.
+func Open(socket, vsock string) *Client { return &Client{socket: socket, vsock: vsock} }
+
+// Adopt takes a firecracker that is already running, by its sockets, and proves it answers by ctx's deadline.
+func Adopt(ctx context.Context, socket, vsock string) (*Client, Info, error) {
+	client := Open(socket, vsock)
+	info, err := client.State(ctx)
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
 	}

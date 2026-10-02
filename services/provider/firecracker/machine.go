@@ -57,9 +57,17 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		return m, nil
 	}
 
-	client, info, err := fcapi.Adopt(filepath.Join(dir, socketFile), filepath.Join(dir, vsockFile))
+	socket, vsock := filepath.Join(dir, socketFile), filepath.Join(dir, vsockFile)
+	began := time.Now()
+	probe, cancel := context.WithTimeout(ctx, adoptBound)
+	client, info, err := fcapi.Adopt(probe, socket, vsock)
+	cancel()
 	if absent(err) {
 		return nil, nil
+	}
+	// A vmm silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-392).
+	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
+		return nil, p.end(ctx, &machine{id: id, client: fcapi.Open(socket, vsock)})
 	}
 	if err != nil {
 		return nil, err
@@ -88,12 +96,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 
 // endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
 func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
-	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
-	p.mu.Lock()
-	_, held := p.machines[id]
-	spared := held || p.spawning[id]
-	p.mu.Unlock()
-	if spared {
+	if p.spared(id) {
 		return nil
 	}
 
@@ -103,6 +106,16 @@ func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
 	}
 
 	return awaitEnded(&machine{id: id, client: client, pid: pid})
+}
+
+// spared is a vmm this process still spawns, or holds since, which a read leaves to its spawn.
+func (p *Provider) spared(id string) bool {
+	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, held := p.machines[id]
+
+	return held || p.spawning[id]
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.

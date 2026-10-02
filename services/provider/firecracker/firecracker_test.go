@@ -22,6 +22,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -447,6 +448,73 @@ func TestStopEndsOnTimeWhenTheVMMFreezesAfterTheGuestAnswers(t *testing.T) {
 	}
 }
 
+// frozenAfterARestart is a running vmm frozen while no daemon holds it, so the new daemon meets it only by its socket.
+func (h *harness) frozenAfterARestart(t *testing.T) (models.SandboxSpec, int) {
+	t.Helper()
+
+	spec, pid := h.runLong(t)
+	h.reopen(t)
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+
+	return spec, pid
+}
+
+// awaitReaped proves the kill reached the vmm, not only that a read said stopped.
+func awaitReaped(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(stopGrace)
+	for {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("the vmm %d still exists %s after it read stopped: %v", pid, stopGrace, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// The startup probe of a new daemon kills a vmm too frozen to answer and reads it stopped, inside the probe budget (SHARD-392).
+func TestStatusAfterARestartKillsAVMMTooFrozenToAnswer(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
+	defer cancel()
+	began := time.Now()
+	status, err := h.provider.Status(ctx, spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after %s = %+v, %v, want stopped", time.Since(began), status, err)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Fatalf("Status took %s on a frozen vmm", took)
+	}
+	awaitReaped(t, pid)
+}
+
+// A stop that meets a frozen vmm only by its socket kills it by the adopt bound, not by callTimeout (SHARD-392).
+func TestStopAfterARestartKillsAVMMTooFrozenToAnswer(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
+		t.Fatalf("Stop after %s: %v", time.Since(began), err)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Fatalf("Stop took %s on a grace of 1s", took)
+	}
+	awaitReaped(t, pid)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)
@@ -735,7 +803,7 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	// The vCPUs are stopped and no snapshot was written: this is the pause of a daemon that died before it ended the vmm.
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(t.Context(), filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +827,7 @@ func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	// The vCPUs are stopped as a cut fork leaves them, and the marker says the load may still point the overlay at the source.
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(t.Context(), filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +844,7 @@ func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
 		t.Fatalf("Status of the half-forked leftover = %+v, %v, want stopped", status, err)
 	}
 	// The refuse ended the vmm, so nothing answers the socket as a live VM; a blind resume would have left it running on the source.
-	if _, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
+	if _, _, err := fcapi.Adopt(t.Context(), filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
 		t.Fatal("the vmm a cut fork left still answers; the refuse must end it, not resume it")
 	}
 }
@@ -810,7 +878,7 @@ func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
 func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
 	h := newHarness(t)
 	spec, pid := h.runLong(t)
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(t.Context(), filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +898,7 @@ func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	spec := h.forkSpec(t)
 	exited := h.leaveUnloaded(t, spec, os.Args[0])
 	socket := filepath.Join(spec.StateDir, "firecracker.sock")
-	client, info, err := fcapi.Adopt(socket, filepath.Join(spec.StateDir, "vsock.sock"))
+	client, info, err := fcapi.Adopt(t.Context(), socket, filepath.Join(spec.StateDir, "vsock.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -919,7 +987,7 @@ func requireUnloadedEnded(t *testing.T, p models.Provider, spec models.SandboxSp
 
 // unloaded says a vmm answers on the socket with nothing booted or loaded in it.
 func unloaded(socket string) bool {
-	_, info, err := fcapi.Adopt(socket, "")
+	_, info, err := fcapi.Adopt(context.Background(), socket, "")
 
 	return err == nil && info.State == fcapi.StateNotStarted
 }
