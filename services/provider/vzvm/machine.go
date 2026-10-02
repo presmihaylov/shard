@@ -111,7 +111,7 @@ func (p *Provider) forget(m *machine) {
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	stales := []string{exitFile, restartsFile, oomFile}
+	stales := []string{exitFile, restartsFile, oomFile, supervisorFailedFile}
 	// A restored guest still holds the output its cursor places; a fresh one starts its output again.
 	if restore == "" {
 		stales = append(stales, cursorFile)
@@ -185,6 +185,9 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	state, err := control.Next()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: read the supervisor state: %w", id, err), m.close())
+	}
+	if state.Kind == supervisor.KindSupervisorFailed {
+		return nil, errors.Join(m.failedAtBoot(state), m.close())
 	}
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
@@ -334,6 +337,22 @@ func (m *machine) markOOM() error {
 	}
 
 	return nil
+}
+
+// failedAtBoot lands a death from before the guest listened as the sandbox exit, and makes its reason the answer to the start (SHARD-418).
+func (m *machine) failedAtBoot(event supervisor.Message) error {
+	if event.Exit == nil {
+		return fmt.Errorf("sandbox %s: a supervisor-failed event carries no status", m.id)
+	}
+	reason := supervisor.OneLine(event.Error)
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(reason), 0o600); err != nil {
+		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
+	}
+	if err := supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit); err != nil {
+		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, reason)
 }
 
 // reconnect dials the control stream again after a drop, which a sleep of the host can cause, while the shim says the VM runs.

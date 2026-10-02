@@ -10,13 +10,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -417,7 +414,7 @@ func (m *machine) markSupervisorFailed(event supervisor.Message) error {
 	if event.Exit == nil {
 		return errors.New("a supervisor-failed event carries no status")
 	}
-	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(oneLine(event.Error)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(event.Error)), 0o600); err != nil {
 		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
 	}
 
@@ -430,30 +427,7 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 
-	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, oneLine(event.Error))
-}
-
-// maxReason bounds what a guest's reason may take of a record, a log line and a column of ls.
-const maxReason = 256
-
-// oneLine makes the guest's reason safe for a record and a log line: no control bytes, valid UTF-8, at most maxReason bytes.
-func oneLine(reason string) string {
-	clean := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-
-		return r
-	}, strings.ToValidUTF8(reason, "?"))
-	if len(clean) <= maxReason {
-		return clean
-	}
-	cut := maxReason
-	for !utf8.RuneStart(clean[cut]) {
-		cut--
-	}
-
-	return clean[:cut]
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
 // reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.

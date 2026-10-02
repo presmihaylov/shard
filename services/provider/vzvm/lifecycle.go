@@ -74,7 +74,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, logFile, cursorFile, recordFile, diskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -479,11 +479,19 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	if err != nil {
 		return models.Status{}, err
 	}
-	if m == nil {
-		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}, nil
+	status := models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}
+	if m != nil {
+		status = m.status(p)
+	}
+	if status.Alive() {
+		return status, nil
+	}
+	status.SupervisorFailed, err = supervisorFailed(dir)
+	if err != nil {
+		return models.Status{}, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	return m.status(p), nil
+	return status, nil
 }
 
 // oomKilled reads the marker the last boot left; only the next boot clears it.
@@ -491,4 +499,17 @@ func oomKilled(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, oomFile))
 
 	return err == nil
+}
+
+// supervisorFailed reads the reason the last boot's shard-init gave for its own death, empty when it did not die.
+func supervisorFailed(dir string) (string, error) {
+	reason, err := os.ReadFile(filepath.Join(dir, supervisorFailedFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read why the supervisor failed: %w", err)
+	}
+
+	return string(reason), nil
 }

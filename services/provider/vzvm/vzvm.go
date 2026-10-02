@@ -41,6 +41,8 @@ const (
 	initrdFile = "initrd.cpio"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// supervisorFailedFile holds the reason shard-init gave for a death at boot, which the end of the shim would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
