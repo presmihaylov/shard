@@ -94,7 +94,7 @@ func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T)
 
 	done := make(chan struct{})
 	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile)}, supervisor.LogsVersion+1)
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion+1)
 		close(done)
 	}()
 

@@ -218,3 +218,13 @@ func (p *Provider) LogPath(id string) (string, error) {
 
 	return filepath.Join(dir, logFile), nil
 }
+
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+func (p *Provider) HeldLogs(id string) ([]string, error) {
+	dir, err := p.dir(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{filepath.Join(dir, consoleFile)}, nil
+}

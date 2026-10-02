@@ -326,6 +326,10 @@ func (f *fakeProvider) LogPath(string) (string, error) {
 	return f.logPath, nil
 }
 
+func (f *fakeProvider) HeldLogs(string) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
 	if err := f.r.record("provider.Exec"); err != nil {
 		return models.ExitStatus{}, err

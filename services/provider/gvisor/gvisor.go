@@ -1100,6 +1100,16 @@ func (p *Provider) LogPath(id string) (string, error) {
 	return filepath.Join(dir, logFile), nil
 }
 
+// HeldLogs is the output log: the runtime holds it, so the daemon bounds it by copy and truncate.
+func (p *Provider) HeldLogs(id string) ([]string, error) {
+	path, err := p.LogPath(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{path}, nil
+}
+
 // Environment is the bundle: its config.json is the one record of what the entrypoint runs with.
 func (p *Provider) Environment(id string) (models.Environment, error) {
 	return bundle.Opener(p.dirs).Environment(id)

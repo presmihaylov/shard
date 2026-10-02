@@ -23,7 +23,7 @@ func TestAFileLogResumesWhereTheFileEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor")}
+	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor"), Max: supervisor.MaxLog}
 	// An earlier boot left its output in the file.
 	if _, err := log.Write([]byte("old\n")); err != nil {
 		t.Fatal(err)
@@ -42,6 +42,43 @@ func TestAFileLogResumesWhereTheFileEnds(t *testing.T) {
 	}
 	resume(2, 10, 4)
 	resume(0, 3, 0)
+	if log.Err != nil {
+		t.Fatalf("Err = %v, want none", log.Err)
+	}
+}
+
+// A write that would take the file past Max renames it first, and the cursor follows the output into the new file.
+func TestAFileLogRotatesBeforeItPassesMax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "output.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor"), Max: 8}
+	defer log.Close()
+	if _, err := log.Write([]byte("old\n")); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := log.Resume(0, 100); err != nil || at != 0 {
+		t.Fatalf("Resume(0, 100) = %d, %v, want 0", at, err)
+	}
+	for _, b := range []string{"0123", "4567"} {
+		if _, err := log.Write([]byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, want := range map[string]string{path: "4567", path + ".1": "old\n0123"} {
+		got, err := os.ReadFile(name)
+		if err != nil || string(got) != want {
+			t.Errorf("%s holds %q, %v, want %q", filepath.Base(name), got, err, want)
+		}
+	}
+	// The guest landed output bytes 0 to 7, so a host that comes back resumes it at 8.
+	if at, err := log.Resume(2, 12); err != nil || at != 8 {
+		t.Fatalf("Resume(2, 12) after the rotation = %d, %v, want 8", at, err)
+	}
 	if log.Err != nil {
 		t.Fatalf("Err = %v, want none", log.Err)
 	}

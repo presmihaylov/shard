@@ -31,6 +31,13 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
 - **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
   passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
+- **Output log rotation**: a sandbox's `output.log` and a VM's `console.log` keep 16 MiB each,
+  with one older file of up to 16 MiB beside them as `<file>.1`, which `shard logs` prints first.
+  The daemon writes a VM's `output.log` itself and renames it before it passes 16 MiB, so that
+  bound is exact. runsc and runc hold their `output.log` and the VMM holds `console.log`, so the
+  `held-log-rotation` task copies the last 16 MiB of each to `.1` and truncates it in place, every
+  second and at once on a start. That bound is soft by one second of output, nothing bounds a log
+  while the daemon is down, and what a sandbox writes between the copy and the truncate is lost.
 - **The liveness loop**: the `liveness` task asks the substrate about every record that says
   `running`, every 5 s, and makes the record agree. It records an entrypoint that exited, stops a
   sandbox whose process is gone, and brings back one the host ended for its memory. See below.
