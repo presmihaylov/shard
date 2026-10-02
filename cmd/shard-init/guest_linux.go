@@ -155,8 +155,22 @@ func confine() error {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		return fmt.Errorf("clear the dumpable flag: %w", err)
 	}
+	if err := upLoopback(); err != nil {
+		return err
+	}
 
 	return remountCgroup()
+}
+
+// upLoopback is the guest's own job: no host reaches into a VM to set lo up, as it does in a netns, and 127.0.0.1 needs it.
+func upLoopback() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open the ioctl socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	return setFlags(fd, "lo", unix.IFF_UP|unix.IFF_RUNNING)
 }
 
 // applyAddress sets the interface by ioctl, as the image has no iproute2 to shell out to.

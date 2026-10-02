@@ -977,6 +977,8 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+expect_exec "pong" "a listener on 127.0.0.1 answers, so lo is up" \
+	/bin/sh -c '(echo pong | nc -l -p 7077 -s 127.0.0.1 -w 3 &); sleep 1; nc -w 3 127.0.0.1 7077 </dev/null'
 
 step "reach the daemon through the tcp front"
 SERVE_DIR=$(mktemp -d /tmp/shard-e2e-serve.XXXXXX)
