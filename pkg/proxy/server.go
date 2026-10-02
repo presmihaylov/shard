@@ -31,6 +31,9 @@ const (
 	shutdownGrace     = 5 * time.Second
 )
 
+// clientGoneGrace is how long a request goes on after its client hung up; none goes on for ever.
+var clientGoneGrace = 30 * time.Second
+
 // Request is what the proxy knows about one request before it asks the director.
 type Request struct {
 	// Source is the address the connection came from, which is the sandbox's own.
@@ -71,6 +74,7 @@ type Config struct {
 type Server struct {
 	cfg       Config
 	transport *http.Transport
+	goneGrace time.Duration
 }
 
 func New(cfg Config) (*Server, error) {
@@ -84,7 +88,8 @@ func New(cfg Config) (*Server, error) {
 	var dialer net.Dialer
 
 	return &Server{
-		cfg: cfg,
+		cfg:       cfg,
+		goneGrace: clientGoneGrace,
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -184,7 +189,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, secure bool) {
 		return
 	}
 
-	decision, err := s.cfg.Director.Decide(r.Context(), req)
+	// net/http cancels r.Context() on a half-close, which a fire-and-forget client sends right after its request (SHARD-238).
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer cancel()
+	stop := context.AfterFunc(r.Context(), func() {
+		grace := time.AfterFunc(s.goneGrace, cancel)
+		context.AfterFunc(ctx, func() { grace.Stop() })
+	})
+	defer stop()
+
+	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
 		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, r.Method, req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -198,7 +212,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, secure bool) {
 		return
 	}
 
-	out, err := s.outbound(r, req, decision)
+	out, err := s.outbound(ctx, r, req, decision)
 	if err != nil {
 		s.cfg.Log.Printf("proxy: %s %s %s:%d: %v", req.Source, r.Method, req.Host, req.Port, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -238,13 +252,13 @@ func request(r *http.Request, secure bool) (Request, error) {
 }
 
 // outbound builds the request the upstream sees: the guest's, with the director's edits and the body it may hold.
-func (s *Server) outbound(r *http.Request, req Request, decision Decision) (*http.Request, error) {
+func (s *Server) outbound(ctx context.Context, r *http.Request, req Request, decision Decision) (*http.Request, error) {
 	held, rest, err := readBody(r.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read the request body: %w", err)
 	}
 
-	out := r.Clone(context.WithValue(r.Context(), upstreamKey{}, decision.Upstream))
+	out := r.Clone(context.WithValue(ctx, upstreamKey{}, decision.Upstream))
 	out.RequestURI = ""
 	out.URL.Scheme = "http"
 	if req.TLS {
