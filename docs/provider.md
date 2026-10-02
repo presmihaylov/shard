@@ -107,6 +107,14 @@ sandbox's netns (`services/provider/sysbox.Userns`), which is why the guest hold
 its own interface and nothing else. The upstream fix is an exclusive-range allocator in
 `sysbox-mgr`, and until it lands this limit stands.
 
+**A Sysbox guest gets no kernel keyring.** The keyring quota is per host uid, and every Sysbox guest
+root is host uid 165536, so one guest that filled it would fail every later create (SHARD-367). Each
+bundle carries a seccomp filter that answers `add_key`, `keyctl` and `request_key` with `ENOSYS`, and
+`sysbox-runc create` runs with `--no-new-keyring`. It is a deny-list and not Docker's default profile
+because `sysbox-runc` rewrites an allow-list to admit those three again and drops the AppArmor
+profile. `ENOSYS` and not `EPERM`, because `runc` inside the guest skips its session keyring on
+`ENOSYS`, so nested Docker still starts.
+
 **Sysbox does not verify the entrypoint's exit code.** `shard-init` reports the exit record on its
 fd 0, which the host holds, and clears its dumpable flag so `/proc/1/fd` is out of the guest's reach.
 On gVisor that holds: the sentry enforces the capability set the bundle grants, which has no
@@ -131,6 +139,12 @@ is never picked by default; `--provider runc` is the only way onto it. It has no
 no fork, because shard drives no checkpoint on it, and each verb refuses by name: `provider runc does
 not support pause on this host`. It runs where the `runc` package is installed, root, and there is no
 fallback to gVisor.
+
+**runc carries Docker's default confinement.** Each bundle has Docker's default seccomp profile, which
+answers the keyring calls with `EPERM`, and `runc create` runs with `--no-new-keyring`. Where the host
+runs AppArmor (the module is on and `apparmor_parser` is on PATH), the daemon loads Docker's default
+AppArmor profile as `shard-default` and every guest runs under it; it never replaces a Docker's
+`docker-default` on the same host.
 
 ## Required verbs against optional verbs
 
