@@ -3,6 +3,7 @@ package ext4
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/binary"
 	"math/bits"
 	"os"
 	"os/exec"
@@ -48,6 +49,25 @@ func writeImageWith(t *testing.T, path string, bigSize int) {
 	must(err)
 	must(Write(&buf, f))
 	must(f.Close())
+}
+
+// writeEmptyImage lays down the smallest image Write makes, the shape WriteOverlayDisk grows from.
+func writeEmptyImage(t *testing.T, path string) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := tar.NewWriter(&buf).Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(&buf, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type summary struct {
@@ -152,6 +172,9 @@ func TestGrowAddsGroupsAndKeepsTheCountsConsistent(t *testing.T) {
 		if s.free <= before.free {
 			t.Fatalf("grow to %d left %d free blocks, before %d", size, s.free, before.free)
 		}
+		if s.sb.FeatureCompat&CompatHasJournal == 0 {
+			t.Fatalf("grow to %d left no journal", size)
+		}
 		fsck(t, img)
 		before = s
 	}
@@ -178,8 +201,12 @@ func TestGrowRefusesTheWrongSizes(t *testing.T) {
 			t.Fatalf("grow to %d: %v, want %q", tc.size, err, tc.want)
 		}
 	}
-	if err := Grow(img, st.Size()); err != nil {
-		t.Fatalf("grow to the same size: %v", err)
+	// A packed image has no run for a journal at its own size; a grow that makes room succeeds.
+	if err := Grow(img, 64*mib); err != nil {
+		t.Fatalf("grow to a valid size: %v", err)
+	}
+	if err := Grow(img, 64*mib); err != nil {
+		t.Fatalf("grow to the same size, journal already present: %v", err)
 	}
 }
 
@@ -244,6 +271,83 @@ func TestWriteReservesAFullGroupOfInodes(t *testing.T) {
 			fsck(t, img)
 			if err := Grow(img, tc.grow); err != nil {
 				t.Fatal(err)
+			}
+			fsck(t, img)
+		})
+	}
+}
+
+func TestGrowAddsAJournal(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(*testing.T, string)
+	}{
+		{"empty", writeEmptyImage},
+		{"with data", writeImage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := filepath.Join(t.TempDir(), "rootfs.ext4")
+			tc.write(t, img)
+			if err := Grow(img, 64*mib); err != nil {
+				t.Fatal(err)
+			}
+			s := summarize(t, img)
+			if s.sb.FeatureCompat&CompatHasJournal == 0 {
+				t.Fatal("no has_journal flag")
+			}
+			if s.sb.JournalInum != journalInode || s.sb.JournalBackupType != 1 {
+				t.Fatalf("journal inode %d, backup type %d", s.sb.JournalInum, s.sb.JournalBackupType)
+			}
+
+			f, err := os.Open(img)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			var gd GroupDescriptor
+			if err := readAt(f, descriptorOffset(0), &gd); err != nil {
+				t.Fatal(err)
+			}
+			var inode [inodeSize]byte
+			if _, err := f.ReadAt(inode[:], int64(gd.InodeTableLow)*BlockSize+(journalInode-1)*inodeSize); err != nil {
+				t.Fatal(err)
+			}
+			n := journalBlocks(s.sb.BlocksCountLow)
+			if got := binary.LittleEndian.Uint16(inode[0x00:]); got != journalMode {
+				t.Fatalf("journal inode mode %#x, want %#x", got, journalMode)
+			}
+			if got := binary.LittleEndian.Uint16(inode[0x1a:]); got != 1 {
+				t.Fatalf("journal inode links %d, want 1", got)
+			}
+			if got := binary.LittleEndian.Uint32(inode[0x20:]); got&extentsFlag == 0 {
+				t.Fatalf("journal inode flags %#x lack extents", got)
+			}
+			if got := binary.LittleEndian.Uint32(inode[0x04:]); got != n*BlockSize {
+				t.Fatalf("journal inode size %d, want %d", got, n*BlockSize)
+			}
+			if got := binary.LittleEndian.Uint16(inode[0x28:]); got != extentMagic {
+				t.Fatalf("extent header magic %#x, want %#x", got, extentMagic)
+			}
+			if got := binary.LittleEndian.Uint16(inode[0x38:]); uint32(got) != n {
+				t.Fatalf("extent length %d, want %d", got, n)
+			}
+			phys := binary.LittleEndian.Uint32(inode[0x3c:])
+
+			var jsb [64]byte
+			if _, err := f.ReadAt(jsb[:], int64(phys)*BlockSize); err != nil {
+				t.Fatal(err)
+			}
+			if got := binary.BigEndian.Uint32(jsb[0:]); got != jbd2Magic {
+				t.Fatalf("jbd2 magic %#x, want %#x", got, jbd2Magic)
+			}
+			if got := binary.BigEndian.Uint32(jsb[4:]); got != jbd2SuperblockV2 {
+				t.Fatalf("jbd2 blocktype %d, want %d", got, jbd2SuperblockV2)
+			}
+			if got := binary.BigEndian.Uint32(jsb[16:]); got != n {
+				t.Fatalf("jbd2 maxlen %d, want %d", got, n)
+			}
+			if got := binary.BigEndian.Uint32(jsb[28:]); got != 0 {
+				t.Fatalf("jbd2 start %d, want 0 for an empty journal", got)
 			}
 			fsck(t, img)
 		})
