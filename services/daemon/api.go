@@ -50,6 +50,10 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	cfg.Provider = selected.Provider
+	// Before the datadir, so a root that is too long gets no image and no mount.
+	if err := checkSocketPaths(cfg.Root, cfg.Provider); err != nil {
+		return err
+	}
 
 	d := &deps{cfg: cfg}
 	// Before the lock: the lock file would be the first entry the xfs mount hides.

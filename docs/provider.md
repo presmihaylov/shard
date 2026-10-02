@@ -49,6 +49,11 @@ that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes 
 `--provider` that names another substrate is refused, by both names, before the daemon touches the
 root; the records or the data image name the one to give.
 
+**A root leaves room for the sockets under it.** A unix socket path holds at most 107 bytes on Linux
+and 103 on macOS, and a microVM's sockets sit under `<root>/sandboxes/<id>/`. So the daemon refuses at
+start a root longer than 55 bytes for Firecracker, 58 for vz, or 96 for the container substrates (92
+on macOS), and the refusal names the longest root that fits (SHARD-358).
+
 **A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
 before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
 every byte as it comes, with no resume. A newer guest under an older daemon is unsupported: that

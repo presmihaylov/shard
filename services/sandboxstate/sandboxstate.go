@@ -79,6 +79,11 @@ func (r *Repository) dir(id string) string {
 	return filepath.Join(r.root, sandboxesDir, id)
 }
 
+// LongestDir is the longest StateDir a sandbox under root gets, so a caller can check that what it puts there fits.
+func LongestDir(root string) string {
+	return filepath.Join(root, sandboxesDir, strings.Repeat("x", maxIDLength()))
+}
+
 func (r *Repository) snapshotDir(id string) string {
 	return filepath.Join(r.root, snapshotsDir, id)
 }

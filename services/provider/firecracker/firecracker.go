@@ -77,6 +77,9 @@ const (
 	startGrace = 30 * time.Second
 )
 
+// SocketFiles names every socket the provider binds in a sandbox's state directory, so the daemon refuses a root they do not fit under.
+func SocketFiles() []string { return []string{socketFile, vsockFile} }
+
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes.
 type StateDirs func(id string) (string, error)
 
