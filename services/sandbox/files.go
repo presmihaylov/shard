@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -17,6 +18,24 @@ const DefaultFileMode = 0o644
 
 // DefaultPutCleanupGrace is how long a put's exec outlives its request, so a guest that got a short stream removes its temp name.
 const DefaultPutCleanupGrace = 10 * time.Second
+
+// DefaultDirMode is what a mkdir sets when it names no mode.
+const DefaultDirMode = 0o755
+
+// MkdirRequest is the body of POST /mkdir. Mode is octal, as a put's mode= is, so "700" reads the way chmod takes it.
+type MkdirRequest struct {
+	Path    string `json:"path"`
+	Mode    string `json:"mode,omitempty"`
+	Parents bool   `json:"parents,omitempty"`
+	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the entrypoint's.
+	User string `json:"user,omitempty"`
+}
+
+// Listing is an ls's entries as they stream: Next answers io.EOF after the last, and Close ends the exec and says whether the guest sent them all.
+type Listing interface {
+	Next() (models.FileEntry, error)
+	Close() error
+}
 
 // FileWrite is what a put names: where the file lands, its mode, who owns it, and how many bytes follow.
 type FileWrite struct {
@@ -118,6 +137,89 @@ func (s *Service) putCleanupGrace() time.Duration {
 	}
 
 	return DefaultPutCleanupGrace
+}
+
+// ListDir streams the entries of one guest directory, sorted by name and each with its own lstat.
+func (s *Service) ListDir(ctx context.Context, ref, guestPath string) (Listing, error) {
+	if err := checkGuestPath(guestPath); err != nil {
+		return nil, err
+	}
+
+	conn, err := s.openFiles(ctx, ref, "")
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := supervisor.List(conn, guestPath)
+	if err != nil {
+		return nil, fileError(errors.Join(err, conn.Close()))
+	}
+
+	return &listing{entries: entries, conn: conn}, nil
+}
+
+type listing struct {
+	entries *supervisor.Entries
+	conn    io.Closer
+}
+
+func (l *listing) Next() (models.FileEntry, error) { return l.entries.Next() }
+
+func (l *listing) Close() error { return l.conn.Close() }
+
+// MakeDir makes one guest directory as req.User, at req.Mode past the umask.
+func (s *Service) MakeDir(ctx context.Context, ref string, req MkdirRequest) error {
+	if err := checkGuestPath(req.Path); err != nil {
+		return err
+	}
+	mode, err := dirModeOf(req.Mode)
+	if err != nil {
+		return err
+	}
+
+	conn, err := s.openFiles(ctx, ref, req.User)
+	if err != nil {
+		return err
+	}
+
+	err = supervisor.Mkdir(conn, supervisor.FileHeader{Path: req.Path, Mode: mode, Parents: req.Parents})
+
+	return fileError(errors.Join(err, conn.Close()))
+}
+
+func dirModeOf(raw string) (uint32, error) {
+	if raw == "" {
+		return DefaultDirMode, nil
+	}
+
+	mode, err := strconv.ParseUint(raw, 8, 32)
+	if err != nil {
+		return 0, &RequestError{Err: fmt.Errorf("a mkdir's mode %q is not an octal mode", raw)}
+	}
+	if mode > 0o777 {
+		return 0, &RequestError{Err: fmt.Errorf("a mkdir's mode is the permission bits, at most 0777, got %#o", mode)}
+	}
+
+	return uint32(mode), nil
+}
+
+// DeleteFile removes one guest path as the entrypoint user; a directory with anything in it needs recursive, and / is never deleted.
+func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursive bool) error {
+	if err := checkGuestPath(guestPath); err != nil {
+		return err
+	}
+	if path.Clean(guestPath) == "/" {
+		return &RequestError{Err: fmt.Errorf("a delete of %q would take the sandbox's whole root; name what is under it", guestPath)}
+	}
+
+	conn, err := s.openFiles(ctx, ref, "")
+	if err != nil {
+		return err
+	}
+
+	err = supervisor.Delete(conn, guestPath, recursive)
+
+	return fileError(errors.Join(err, conn.Close()))
 }
 
 // openFiles starts one files exec in a running sandbox, as user; every provider runs the same shard-init mode.

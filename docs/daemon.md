@@ -270,6 +270,9 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id o
 curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf&mode=600'
 curl --unix-socket /var/lib/shard/shard.sock -o app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
 curl --unix-socket /var/lib/shard/shard.sock -I 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/ls?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"path":"/srv/cache","mode":"700","parents":true}' http://localhost/v0/sandboxes/<id or name>/mkdir
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/cache&recursive=true'
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -399,6 +402,19 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   {"type", "size", "mode", "uid", "gid", "mtime"}`, `type` one of `file`, `dir`, `symlink` or
   `other`. It never follows a final symlink. A refusal has the status alone. `shard cp` speaks all
   three.
+- `GET /v0/sandboxes/{id}/ls?path=` answers 200 `{"entries": [{"name", "type", "size", "mode", "uid",
+  "gid", "mtime"}]}`, sorted by name, each entry its own lstat. It follows a final symlink to the
+  directory. A guest that fails after the 200 leaves the closing `]}` off, so a cut listing never
+  parses. 400 for a path that is not a directory; 404; 409 as above.
+- `POST /v0/sandboxes/{id}/mkdir` takes `{"path", "mode", "parents", "user"}` and answers 204. `mode`
+  is an octal string, `"755"` by default and at most `"777"`, set past the umask. `parents: true` is
+  `mkdir -p`: it makes what leads to the path and takes a directory already there. `user` is as a
+  put's. 400 for a bad mode, or a path already there unless `parents` is set and it is a directory;
+  404 for a missing parent; 409 as above.
+- `DELETE /v0/sandboxes/{id}/files?path=&recursive=` removes the path and answers 204. A symlink goes,
+  never its target. A directory with anything in it needs `recursive=true`, and `/` is never
+  deleted. It runs as the entrypoint user. 400 for `/` or a full directory without `recursive`; 404;
+  409 as above.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -548,7 +564,7 @@ agree on what each request is, and an unknown route is a `403` too. The eight ca
 | `sandbox:read` | list, get, `logs` and `egress-log` |
 | `sandbox:write` | create, start, stop, pause, resume, fork and clone |
 | `sandbox:delete` | `rm` |
-| `exec` | every `exec` route, and every `files` route |
+| `exec` | every `exec` route, and every `files`, `ls` and `mkdir` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |
