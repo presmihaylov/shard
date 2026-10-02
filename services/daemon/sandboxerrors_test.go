@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -36,6 +37,33 @@ func TestSandboxErrorsLogsAnErrorOnceWhileItLasts(t *testing.T) {
 		failures.tick(t.Context(), tick.err)
 		if out.String() != tick.want {
 			t.Fatalf("tick %d logged %q, want %q", i, out.String(), tick.want)
+		}
+	}
+}
+
+func TestSandboxErrorsKeepsAJoinInsideOneSandboxUnderItsWrapper(t *testing.T) {
+	inner := errors.Join(errors.New("dial failed"), errors.New("kill failed"))
+	a, b := fmt.Errorf("ask gvisor about sandbox a: %w", inner), fmt.Errorf("ask gvisor about sandbox b: %w", inner)
+
+	ticks := []struct {
+		err  error
+		want []string
+	}{
+		{errors.Join(a, b), []string{"sandbox a", "sandbox b"}},
+		{a, []string{"sandbox a"}},
+	}
+	for i, tick := range ticks {
+		var out bytes.Buffer
+		failures := sandboxErrors{logger: log.New(&out, "", 0), task: "liveness"}
+		failures.tick(t.Context(), tick.err)
+
+		if got := strings.Count(out.String(), "the task goes on"); got != len(tick.want) {
+			t.Fatalf("tick %d logged %d errors, want one per sandbox: %q", i, got, out.String())
+		}
+		for _, id := range tick.want {
+			if !strings.Contains(out.String(), id) {
+				t.Errorf("tick %d: the log %q lost %s", i, out.String(), id)
+			}
 		}
 	}
 }

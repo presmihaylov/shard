@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"log"
 )
 
@@ -31,14 +30,13 @@ func (e *sandboxErrors) tick(ctx context.Context, err error) {
 	e.last = seen
 }
 
-// parts takes an errors.Join apart, one error per sandbox.
+// parts takes the tick's own errors.Join apart, one error per sandbox; a join inside one sandbox's error stays under its wrapper.
 func parts(err error) []error {
 	if err == nil {
 		return nil
 	}
 
-	var joined interface{ Unwrap() []error }
-	if errors.As(err, &joined) {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		return joined.Unwrap()
 	}
 
