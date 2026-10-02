@@ -49,6 +49,8 @@ HOST_LINK_PREFIX="shardv"
 HOST_BRIDGE="shard0"
 # Who held the bridge and the tables when the teardown had to keep them, and empty when it dropped them.
 HOST_NET_KEPT=""
+# The failed probe that made the teardown keep them without knowing, which fails the run.
+HOST_NET_PROBE_ERROR=""
 
 STEP="startup"
 ID=""
@@ -392,29 +394,40 @@ wipe_root() {
 	clear_host_net
 }
 
-# bridge_ports lists the links on the host bridge, which on a veth or a tap is a sandbox of any root.
-bridge_ports() { find "/sys/class/net/${HOST_BRIDGE}/brif" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true; }
+# bridge_ports lists the links on the host bridge, which on a veth or a tap is a sandbox of any root, and fails when it cannot read them.
+bridge_ports() { [ ! -e "/sys/class/net/${HOST_BRIDGE}" ] || ls -A "/sys/class/net/${HOST_BRIDGE}/brif"; }
 
 # proxy_listeners lists what serves the proxy ports, which every daemon binds whatever its root.
-proxy_listeners() { ss -Hltnp "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )" 2>/dev/null || true; }
+proxy_listeners() { ss -Hltnp "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )"; }
 
-# host_net_holder names what still uses the bridge and the tables, and prints nothing once nothing does.
+# host_net_holder names what still uses the bridge and the tables, prints nothing once nothing does, and fails on a probe it could not run.
 host_net_holder() {
 	local ports listeners
-	ports=$(bridge_ports | tr '\n' ' ')
-	if [ -n "${ports% }" ]; then
-		echo "the bridge still has the ports ${ports% }"
+	if ! ports=$(bridge_ports); then
+		echo "the ports of the bridge ${HOST_BRIDGE} could not be listed"
+
+		return 1
+	fi
+	if [ -n "${ports}" ]; then
+		echo "the bridge still has the ports $(printf '%s' "${ports}" | tr '\n' ' ')"
 
 		return
 	fi
-	listeners=$(proxy_listeners)
+	if ! listeners=$(proxy_listeners); then
+		echo "the listeners on the proxy ports could not be listed"
+
+		return 1
+	fi
 	[ -z "${listeners}" ] || echo "a daemon still serves the proxy: ${listeners}"
 }
 
-# clear_host_net drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them.
+# clear_host_net drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them or a probe cannot tell.
 clear_host_net() {
 	local table
-	HOST_NET_KEPT=$(host_net_holder)
+	HOST_NET_PROBE_ERROR=""
+	if ! HOST_NET_KEPT=$(host_net_holder); then
+		HOST_NET_PROBE_ERROR="${HOST_NET_KEPT}"
+	fi
 	if [ -n "${HOST_NET_KEPT}" ]; then
 		echo "teardown: kept the bridge ${HOST_BRIDGE} and the shard nft tables, because ${HOST_NET_KEPT}" >&2
 
@@ -430,8 +443,9 @@ clear_host_net() {
 	fi
 }
 
-# check_host_net_clear fails a run that left the bridge or a table nothing held, and names the holder of one it had to keep.
+# check_host_net_clear fails a run that left the bridge or a table nothing held, or kept them on a failed probe, and names the holder of one it had to keep.
 check_host_net_clear() {
+	[ -z "${HOST_NET_PROBE_ERROR}" ] || fail "the teardown could not tell whether another run holds the bridge ${HOST_BRIDGE}: ${HOST_NET_PROBE_ERROR}"
 	if [ -n "${HOST_NET_KEPT}" ]; then
 		say "the bridge ${HOST_BRIDGE} and the shard nft tables stay, because ${HOST_NET_KEPT}"
 
