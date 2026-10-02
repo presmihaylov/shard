@@ -45,6 +45,8 @@ type Tailer struct {
 	// that has just started is the ordinary miss, and a drop names one of those and never an id.
 	holders   map[string]models.Sandbox
 	refreshed time.Time
+	// live is set once the backlog is spent, and a line read after it can name a create the last list missed.
+	live bool
 
 	// unattributed counts the drops of one Run that name no sandbox of this root, for the one line it prints.
 	unattributed int
@@ -54,8 +56,7 @@ func NewTailer(root string, decisions *Log, repo Sandboxes, out *log.Logger) *Ta
 	return &Tailer{root: root, log: decisions, repo: repo, out: out}
 }
 
-// refreshEvery bounds how often a miss on a line older than the last list rebuilds the address map, so
-// the backlog's strays do not list the records once per drop.
+// refreshEvery bounds how often a backlog miss rebuilds the address map, so its strays do not list the records once per drop.
 const refreshEvery = time.Second
 
 // Run writes every host drop the ring holds into the sandbox it belongs to, then follows the ring.
@@ -71,6 +72,7 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 	var read bool
 
 	t.unattributed = 0
+	t.live = false
 	err := ring.Follow(ctx, func(line kmsg.Record) error {
 		if seen && line.Sequence <= cursor {
 			return nil
@@ -95,6 +97,7 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 
 		return t.writeCursor(line.Sequence)
 	}, func() {
+		t.live = true
 		if !read {
 			return
 		}
@@ -134,12 +137,12 @@ func (t *Tailer) report(fresh bool, end uint64) {
 
 // sandboxFor answers whose drop this is. A routed drop names the sandbox's address, and an IPv6 one
 // dies at the port before it is routed, so the port is the only thing that names it.
-func (t *Tailer) sandboxFor(at time.Time, keys ...string) (models.Sandbox, bool) {
+func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	if sb, ok := t.holder(keys); ok {
 		return sb, true
 	}
-	// A create writes the address after its port is up, so a line logged since the last list can name a sandbox it missed.
-	if !at.After(t.refreshed) && time.Since(t.refreshed) < refreshEvery {
+	// A create writes the address after its port is up, so a live miss always lists; each log statement's limit bounds the rate.
+	if !t.live && time.Since(t.refreshed) < refreshEvery {
 		return models.Sandbox{}, false
 	}
 
@@ -169,7 +172,7 @@ func (t *Tailer) sandboxFor(at time.Time, keys ...string) (models.Sandbox, bool)
 // is the first thing that finds out, so a write that lands on no file asks the records once more.
 func (t *Tailer) attribute(record drop) (bool, error) {
 	for range 2 {
-		sb, found := t.sandboxFor(record.Time, record.source, record.iface)
+		sb, found := t.sandboxFor(record.source, record.iface)
 		if !found {
 			t.unattributed++
 

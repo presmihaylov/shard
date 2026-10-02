@@ -393,7 +393,7 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	}
 }
 
-// liveRing dates each line as it hands it over, the way the ring does once the tailer has caught up.
+// liveRing hands its lines once the backlog is spent, dated by a wall mark that can trail the tailer's own clock.
 type liveRing struct {
 	records []kmsg.Record
 }
@@ -401,9 +401,6 @@ type liveRing struct {
 func (l liveRing) Follow(_ context.Context, yield func(kmsg.Record) error, caughtUp func()) error {
 	caughtUp()
 	for _, record := range l.records {
-		// The kernel logs a line a moment after the last, never at the instant the tailer listed.
-		time.Sleep(time.Millisecond)
-		record.Time = time.Now().UTC()
 		if err := yield(record); err != nil {
 			return err
 		}
@@ -428,15 +425,14 @@ func (k *keyedLate) List() ([]models.Sandbox, error) {
 }
 
 // SHARD-327: the port's own drop lists the records mid-create, and the guest's first drop comes well inside a second.
-func TestTailListsAgainForADropNewerThanTheList(t *testing.T) {
+func TestTailListsAgainForALiveDrop(t *testing.T) {
 	sb := sandbox(t)
-	sb.CreatedAt = time.Now().Add(-time.Minute).UTC()
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
 	repo := &keyedLate{sandbox: sb}
 	tailer := NewTailer(root, decisions, repo, log.New(io.Discard, "", 0))
 
-	ring := liveRing{records: []kmsg.Record{drops(7, 0, "ipv6"), drops(8, 0, "private")}}
+	ring := liveRing{records: []kmsg.Record{drops(7, 110, "ipv6"), drops(8, 110, "private")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
