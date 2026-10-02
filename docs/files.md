@@ -83,8 +83,9 @@ uid and gid it finds.
 
 ## Routes
 
-Under `/v0/sandboxes/{id}`, JSON errors `{"error", "code"}`, `{id}` an id or a name. The path is
-absolute; shard has no default directory.
+Under `/v0/sandboxes/{id}`, `{id}` an id or a name. An error is the daemon's one envelope,
+`{"error":{"code","message"}}`, as `docs/daemon.md` defines it. The path is absolute; shard has no
+default directory.
 
 | Route | Body | Answer | Ticket |
 | --- | --- | --- | --- |
@@ -95,10 +96,18 @@ absolute; shard has no default directory.
 | `POST /mkdir` | `{path,mode?,parents?,user?}` | 204 | 287 |
 | `DELETE /files?path=&recursive=` | | 204; a non-empty dir without `recursive` refuses | 287 |
 | `PUT /archive?path=&user=` | a tar, streamed | 204 | 288 |
-| `GET /archive?path=` | | 200, a tar, streamed | 288 |
+| `GET /archive?path=` | | 200, a tar, streamed; the client unpacks it under the rule below | 288 |
 
 Errors: `not_found`, `invalid_request` (a relative path, a bad tar, a tar entry that escapes `path`),
-`sandbox_not_running`, `internal`. No new code.
+`sandbox_not_running`, `internal`. No new code. A client that refuses an entry of a `GET /archive`
+tar fails with an error that names the entry and writes nothing more.
+
+**The client unpacks a `GET /archive` tar as hostile.** The guest packs it, so `shard cp
+<id>:<dir> <dst>` guards the operator's machine the way the guest guards its own unpack. It unpacks
+under `os.OpenRoot(dst)`, so no symlink and no name that differs only in case on a Mac reaches out
+of `dst`. It refuses an absolute name, a `..`, a hardlink to a name outside the archive and a device
+node. It drops setuid and setgid, and it never chowns. The same rule binds the Python and the
+TypeScript clients.
 
 **Scope: `exec` for every route.** A write can replace what the entrypoint runs and a read sees what
 an exec `cat` sees, so a file route is as strong as exec (`services/serve/scopes.go`). A separate
