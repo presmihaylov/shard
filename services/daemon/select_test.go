@@ -219,3 +219,29 @@ func TestARootWithAnUnreadableRecordStillSelectsAndNotes(t *testing.T) {
 		t.Errorf("the selection note is %q, want it to name the unreadable record", got.Unreadable)
 	}
 }
+
+// SHARD-343: when no record reads, the root's substrate is unknown, so a probe must refuse rather than relabel a
+// runc or gvisor root as something the host happens to support; only --provider recovers it.
+func TestARootWhereNoRecordReadsRefusesAutoSelection(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "abcdef012345")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sandbox.json"), []byte("{not json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := selectProvider("", root, openable(t))
+	if err == nil || !strings.Contains(err.Error(), "--provider") {
+		t.Fatalf("auto-selection over an all-unreadable root: %v, want a refusal that points at --provider", err)
+	}
+
+	got := pick(t, "runc", root, openable(t))
+	if got.Provider != "runc" {
+		t.Errorf("--provider over an all-unreadable root picks %+v, want runc as the recovery", got)
+	}
+	if !strings.Contains(got.Unreadable, "abcdef012345") {
+		t.Errorf("the recovery selection note is %q, want it to name the unreadable record", got.Unreadable)
+	}
+}

@@ -59,6 +59,11 @@ func selectProvider(named, root, kvm string) (Selection, error) {
 		return made, nil
 	}
 
+	// A root whose every record is unreadable still belongs to one substrate, so a probe must not relabel it; only --provider recovers it (SHARD-343).
+	if made.Unreadable != "" {
+		return Selection{}, fmt.Errorf("the root %s holds records that cannot be read, so its substrate is unknown; pass --provider to name it: %s", root, made.Unreadable)
+	}
+
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.
 	if runtime.GOOS == "darwin" {
 		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}.withNote(made.Unreadable), nil
