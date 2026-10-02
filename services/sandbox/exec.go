@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -143,9 +142,8 @@ type execBuffer struct {
 	released  bool
 	discarded bool
 
-	// follower is the client a write waits for rather than evict what it has not taken, which is lag bytes.
+	// follower is the client a write waits for rather than evict what it has not taken.
 	follower *follower
-	lag      int
 	stall    time.Duration
 	// evicted is the offset of the oldest byte held, taken the furthest any client read to, lost what none read.
 	evicted int64
@@ -161,8 +159,9 @@ type follower struct {
 	// detach ends the attach from the daemon's side; the hold has no attach to end.
 	detach  func()
 	stalled bool
-	// emitted counts the chunks this client accepted, which is the progress the stall bound measures.
-	emitted atomic.Uint64
+	// at is the offset the client accepted the output up to, and progress when it last accepted a chunk.
+	at       int64
+	progress time.Time
 }
 
 // newExecBuffer answers an empty buffer; hold keeps the output for a client that attaches right after the create.
@@ -186,9 +185,6 @@ func (b *execBuffer) append(data []byte, stderr bool) {
 	copy(kept, data)
 	b.chunks = append(b.chunks, chunk{data: kept, stderr: stderr})
 	b.size += len(kept)
-	if b.follower != nil {
-		b.lag += len(kept)
-	}
 
 	for b.size > execBufferCap && len(b.chunks) > 1 {
 		n := len(b.chunks[0].data)
@@ -208,7 +204,17 @@ func (b *execBuffer) append(data []byte, stderr bool) {
 
 // full says a write of n bytes would evict what the follower has not taken; before the release no stream can take any.
 func (b *execBuffer) full(n int) bool {
-	return b.released && b.follower != nil && b.lag > 0 && b.lag+n > execBufferCap
+	if !b.released || b.follower == nil {
+		return false
+	}
+	owed := b.owed()
+
+	return owed > 0 && owed+int64(n) > execBufferCap
+}
+
+// owed is what the buffer holds past the follower's offset; what it evicted before the follower took it is lost, not owed.
+func (b *execBuffer) owed() int64 {
+	return b.evicted + int64(b.size) - max(b.follower.at, b.evicted)
 }
 
 // await holds a write until the follower takes what it owes, and detaches one that accepted nothing for the stall bound.
@@ -221,39 +227,31 @@ func (b *execBuffer) await(n int) {
 	b.waiting++
 	defer func() { b.waiting-- }()
 
-	f, seen := b.follower, b.follower.emitted.Load()
+	start := time.Now()
 	timer := time.NewTimer(b.stall)
 	defer timer.Stop()
 
 	for b.full(n) {
-		if b.follower != f {
-			f, seen = b.follower, b.follower.emitted.Load()
-			timer.Reset(b.stall)
+		// The bound runs from the wait or the follower's last accepted chunk, whichever is later.
+		since := start
+		if b.follower.progress.After(since) {
+			since = b.follower.progress
 		}
+		left := b.stall - time.Since(since)
+		if left <= 0 {
+			b.detach()
+
+			continue
+		}
+		timer.Reset(left)
 
 		changed := b.changed
 		b.mu.Unlock()
-
-		expired := false
 		select {
 		case <-changed:
 		case <-timer.C:
-			expired = true
 		}
-
 		b.mu.Lock()
-
-		if !expired || b.follower != f {
-			continue
-		}
-		if moved := f.emitted.Load(); moved != seen {
-			seen = moved
-			timer.Reset(b.stall)
-
-			continue
-		}
-
-		b.detach()
 	}
 }
 
@@ -262,7 +260,6 @@ func (b *execBuffer) detach() {
 	f := b.follower
 	f.stalled = true
 	b.follower = nil
-	b.lag = 0
 	if f.detach != nil {
 		f.detach()
 	}
@@ -275,9 +272,8 @@ func (b *execBuffer) follow(detach func()) *follower {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	f := &follower{detach: detach}
+	f := &follower{detach: detach, progress: time.Now()}
 	b.follower = f
-	b.lag = b.size
 
 	return f
 }
@@ -291,19 +287,19 @@ func (b *execBuffer) unfollow(f *follower) {
 		return
 	}
 	b.follower = nil
-	b.lag = 0
 	b.wake()
 }
 
-// take records that a stream holds the output up to at, so a write waiting on its client has room again.
+// take records that f's client accepted the output up to at, so a write waiting on it has room again and a fresh bound.
 func (b *execBuffer) take(f *follower, at int64) {
-	b.taken = max(b.taken, at)
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-	if b.follower != f || b.lag == 0 {
-		return
+	b.taken = max(b.taken, at)
+	f.at, f.progress = at, time.Now()
+	if b.follower == f && b.waiting > 0 {
+		b.wake()
 	}
-	b.lag = 0
-	b.wake()
 }
 
 // close says the command ended and no more output will come, so a stream drains and returns.
@@ -360,7 +356,6 @@ func (b *execBuffer) discard() {
 	b.discarded = true
 	b.chunks = nil
 	b.size = 0
-	b.lag = 0
 	b.wake()
 }
 
@@ -394,10 +389,6 @@ func (b *execBuffer) stream(ctx context.Context, detach func(), emit func(chunk)
 			batch = make([]chunk, len(pending))
 			copy(batch, pending)
 			next += len(batch)
-			for _, c := range batch {
-				at += int64(len(c.data))
-			}
-			b.take(f, at)
 		}
 		closed := b.closed
 		changed := b.changed
@@ -407,7 +398,9 @@ func (b *execBuffer) stream(ctx context.Context, detach func(), emit func(chunk)
 			if err := emit(c); err != nil {
 				return b.cause(f, err)
 			}
-			f.emitted.Add(1)
+			// Only a chunk the client accepted is taken, so one cut midway leaves the rest owed and counted lost.
+			at += int64(len(c.data))
+			b.take(f, at)
 		}
 
 		if closed {

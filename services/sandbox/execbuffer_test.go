@@ -89,7 +89,7 @@ func TestAFollowerThatTakesNothingIsDetached(t *testing.T) {
 		})
 	}()
 
-	// The client takes the first chunk and then wedges on it, so it owes everything after.
+	// The client wedges on the first chunk, so it accepts nothing and owes everything.
 	waitFollower(t, b)
 	b.append(pattern(0, size), false)
 	<-emitting
@@ -103,9 +103,103 @@ func TestAFollowerThatTakesNothingIsDetached(t *testing.T) {
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("the command waited %s on a wedged client, want about the %s bound", took, testStall)
 	}
-	// Twelve chunks over an 8 MiB cap evict four, and the client took only the first of them.
+	// Twelve chunks over an 8 MiB cap evict four, and the client accepted none of them.
+	if lost := b.lostBytes(); lost != 4*size {
+		t.Errorf("the buffer lost %d bytes, want %d", lost, 4*size)
+	}
+}
+
+// A client cut midway through a batch it copied owes the rest of it, so those bytes count as lost once evicted.
+func TestADetachMidBatchCountsTheUnsentBytesLost(t *testing.T) {
+	const size = 1 << 20
+
+	b := newExecBuffer(false)
+	b.stall = testStall
+	b.release()
+	<-write(b, 4, size)
+
+	detached := make(chan struct{})
+	streamed := make(chan error, 1)
+	go func() {
+		accepted := 0
+		streamed <- b.stream(t.Context(), func() { close(detached) }, func(chunk) error {
+			if accepted == 0 {
+				accepted++
+
+				return nil
+			}
+			// A buffer that credits the batch unsent never waits, so never detaches; the wedge gives up rather than hang.
+			select {
+			case <-detached:
+			case <-time.After(5 * time.Second):
+			}
+
+			return errors.New("the socket closed under the write")
+		})
+	}()
+
+	waitFollower(t, b)
+	<-write(b, 8, size)
+
+	if err := <-streamed; !errors.Is(err, errStalled) {
+		t.Fatalf("stream returned %v, want the stall", err)
+	}
+	// The first batch held four chunks and the client accepted one; the eviction of all four loses the other three.
 	if lost := b.lostBytes(); lost != 3*size {
-		t.Errorf("the buffer lost %d bytes, want %d", lost, 3*size)
+		t.Errorf("the buffer lost %d bytes, want the %d of the batch the client never accepted", lost, 3*size)
+	}
+}
+
+// The bound runs from the client's last accepted chunk, so progress just after a write began to wait buys one bound, not two.
+func TestTheStallBoundRunsFromTheLastProgress(t *testing.T) {
+	const stall = 400 * time.Millisecond
+
+	b := newExecBuffer(false)
+	b.stall = stall
+	b.release()
+
+	accept := make(chan struct{})
+	gone := make(chan struct{})
+	var progressed, detachedAt time.Time
+	streamed := make(chan error, 1)
+	go func() {
+		first := true
+		streamed <- b.stream(t.Context(), func() { detachedAt = time.Now(); close(gone) }, func(chunk) error {
+			if !first {
+				select {
+				case <-gone:
+				case <-time.After(5 * time.Second):
+				}
+
+				return errors.New("the socket closed under the write")
+			}
+			first = false
+			<-accept
+			progressed = time.Now()
+
+			return nil
+		})
+	}()
+
+	// A small first chunk, then the cap's worth after it, so accepting the small one is progress that frees too little room.
+	waitFollower(t, b)
+	b.append(pattern(0, 1<<10), false)
+	<-write(b, 7, 1<<20)
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		b.append(pattern(9, 2<<20), false)
+	}()
+	waitWaiting(t, b)
+	time.Sleep(stall / 10)
+	close(accept)
+
+	if err := <-streamed; !errors.Is(err, errStalled) {
+		t.Fatalf("stream returned %v, want the stall", err)
+	}
+	<-written
+	if since := detachedAt.Sub(progressed); since > stall*3/2 {
+		t.Errorf("the detach came %s after the last progress, want about the %s bound", since, stall)
 	}
 }
 
