@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -40,6 +41,9 @@ const unauthorized = `{"error":{"code":"unauthorized","message":"the request car
 
 // forbidden is the answer to a valid token whose scopes do not reach the route: the socket is never dialed for it.
 const forbidden = `{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}`
+
+// badRequestLine is the answer to a request line net/http would not parse, so the front never checks a route the daemon reads otherwise.
+const badRequestLine = `{"error":{"code":"invalid_request","message":"the request line does not parse"}}`
 
 // Config is the wiring one front needs.
 type Config struct {
@@ -251,7 +255,14 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	sub, ok, forbid, reason := s.authorize(head)
+	method, target, ok := requestLine(head)
+	if !ok {
+		s.reject(conn)
+
+		return
+	}
+
+	sub, ok, forbid, reason := s.authorize(head, method, target)
 	if !ok {
 		if forbid {
 			s.forbid(conn, sub)
@@ -329,7 +340,7 @@ func readHead(r io.Reader) ([]byte, error) {
 // authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
 // reach the route; nothing is dialed without all three. It answers the subject, whether the request is
 // authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
-func (s *Server) authorize(head []byte) (string, bool, bool, string) {
+func (s *Server) authorize(head []byte, method string, target *url.URL) (string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
 		return "", false, false, "no valid token"
@@ -358,11 +369,6 @@ func (s *Server) authorize(head []byte) (string, bool, bool, string) {
 		return sub, false, false, "the token is revoked"
 	}
 
-	method, target, ok := requestLine(head)
-	if !ok {
-		return "", false, false, "no valid token"
-	}
-
 	need, known := s.caps.capability(method, target)
 	if !known || !covers(scopes, need) {
 		return sub, false, true, ""
@@ -371,24 +377,42 @@ func (s *Server) authorize(head []byte) (string, bool, bool, string) {
 	return sub, true, false, ""
 }
 
-// requestLine parses the method and the target of the head, so the front can find the route's capability.
+// requestLine parses the method and the target as net/http does, on the ASCII space alone, so the front checks the route the daemon serves.
 func requestLine(head []byte) (string, *url.URL, bool) {
 	line, _, found := bytes.Cut(head, []byte("\r\n"))
 	if !found {
 		return "", nil, false
 	}
 
-	parts := bytes.Fields(line)
-	if len(parts) < 2 {
+	method, rest, found := strings.Cut(string(line), " ")
+	uri, proto, both := strings.Cut(rest, " ")
+	if !found || !both || !validMethod(method) {
+		return "", nil, false
+	}
+	if _, _, ok := http.ParseHTTPVersion(proto); !ok {
 		return "", nil, false
 	}
 
-	target, err := url.ParseRequestURI(string(parts[1]))
+	target, err := url.ParseRequestURI(uri)
 	if err != nil {
 		return "", nil, false
 	}
 
-	return string(parts[0]), target, true
+	return method, target, true
+}
+
+// methodChars are the bytes RFC 9110 allows in a method, the set net/http checks.
+const methodChars = "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// validMethod reports whether method is an RFC 9110 token: Trim leaves nothing only when every byte is in the set.
+func validMethod(method string) bool {
+	return method != "" && strings.Trim(method, methodChars) == ""
+}
+
+// reject answers 400 and closes. The daemon would refuse the line too, so nothing is dialed.
+func (s *Server) reject(conn net.Conn) {
+	s.log.Printf("rejected the connection from %s: the request line does not parse", conn.RemoteAddr())
+	s.answer(conn, "400 Bad Request", badRequestLine)
 }
 
 // refuse answers 401 and closes. Nothing is dialed, so a request with no valid token never reaches the daemon.

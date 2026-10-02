@@ -452,7 +452,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 
 | code | status | when |
 |---|---|---|
-| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown |
+| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it; nothing is dialed |
 | `body_too_large` | 413 | a JSON body over 1 MiB; the daemon reads no further and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
@@ -502,7 +502,11 @@ shard --root /var/lib/shard serve --listen :2376 \
 It is a byte proxy and not an API. It reads the request line and the headers of a request only as
 far as the auth header, replays those bytes onto the socket and then splices the two connections, so
 the WebSocket handshake of an exec, a `logs` follow or an `egress-log` follow, and every message
-after it, pass through untouched and every route above works unchanged. A bad or missing token is a
+after it, pass through untouched and every route above works unchanged. The front splits the request
+line on the ASCII space alone and checks the method and the version as net/http does, so it reads the
+route the daemon serves; a line that does not parse that way, such as one split by a non-breaking
+space, is a `400` with the code `invalid_request`, written before the token check and before anything
+is dialed. A bad or missing token is a
 `401` with the code `unauthorized`, written before anything is dialed, so an unauthenticated client
 never reaches the daemon. A socket that does not answer is a `502` with the code `internal`. The
 front verifies HS256 alone: a token signed by another algorithm, a token signed by another secret, a
