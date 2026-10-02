@@ -227,8 +227,8 @@ thaws it (SHARD-409). The root is an overlay, which takes no `FIFREEZE`, so the 
 ext4 upper disk instead. A guest that cannot freeze refuses the pause, and the VM runs on. The thaw
 paths are the ones `docs/provider-vz.md` lists for `vz`: a failed pause, a daemon cut between the
 freeze and the snapshot, and a control connection that dropped with the freeze's answer. A VM booted
-before this change runs a `shard-init` whose freeze cannot reach the upper disk, so its pause is
-refused until the sandbox restarts.
+before this change runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so,
+and the pause is refused before any freeze, with an error that says to restart the sandbox first.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under

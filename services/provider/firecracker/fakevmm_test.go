@@ -38,6 +38,8 @@ const (
 	refuseFreezeFile = "refuse-freeze"
 	// loseFreezeFile has the next freeze reach the guest and a drop take its answer, once.
 	loseFreezeFile = "lose-freeze"
+	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
+	oldGuestFile = "old-guest"
 )
 
 // initBinary is the shard-init the fake vmm runs in place of a VM, built once per test run unless the env names one.
@@ -626,6 +628,13 @@ func (c *control) intoHost(p []byte) (int, error) {
 		c.f.drop(false)
 
 		return 0, errors.New("the drop took the answer to the freeze")
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, oldGuestFile)); err == nil && carries(p, supervisor.KindState) {
+		if _, err := io.WriteString(c.host, strings.Replace(string(p), `,"freezes_overlay":true`, "", 1)); err != nil {
+			return 0, err
+		}
+
+		return len(p), nil
 	}
 
 	return c.host.Write(p)

@@ -37,7 +37,9 @@ type machine struct {
 	freezing sync.Mutex
 	// pausing, under freezing, is a pause that froze the guest and still means to snapshot it.
 	pausing bool
-	cancel  context.CancelFunc
+	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
+	freezesOverlay bool
+	cancel         context.CancelFunc
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
@@ -309,6 +311,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
+	m.freezesOverlay = state.FreezesOverlay
 	// The guest answered, so a fork's restore swapped off the source and resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
 	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())

@@ -70,6 +70,8 @@ type Message struct {
 	Frozen bool `json:"frozen,omitempty"`
 	// Logs on a state replay is the logs port protocol the guest speaks; zero is a guest from before it, which sends raw output and reads no acks.
 	Logs int `json:"logs,omitempty"`
+	// FreezesOverlay on a state replay says the guest freezes an overlay root by its upper; a guest from before it fails every freeze on one.
+	FreezesOverlay bool `json:"freezes_overlay,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
 }

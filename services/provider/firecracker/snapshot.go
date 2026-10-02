@@ -41,6 +41,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if state != models.StateRunning {
 		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
+	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
+	if !m.freezesOverlay {
+		return fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
+	}
 
 	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
 	tmp := dir + ".tmp"

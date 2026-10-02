@@ -731,6 +731,52 @@ func TestAPauseTheGuestCannotFreezeForIsRefused(t *testing.T) {
 	}
 }
 
+// A VM booted before the guest froze its overlay root keeps that shard-init, so its pause is refused with the restart that fixes it, and no freeze reaches the guest (SHARD-409).
+func TestAPauseOfAGuestFromBeforeTheFreezeIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	old := filepath.Join(spec.StateDir, oldGuestFile)
+	if err := os.WriteFile(old, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon of an upgrade attaches to a VM the one before it booted.
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.open(t)
+	dir := t.TempDir()
+
+	err := p.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "restart the sandbox, then pause it") {
+		t.Fatalf("Pause of a guest from before the freeze = %v, want the refusal that names the restart", err)
+	}
+	status, statusErr := p.Status(t.Context(), spec.ID)
+	if statusErr != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused Pause = %+v, %v, want running", status, statusErr)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s.tmp after the refused Pause: %v, want none", dir, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); len(got) != 0 {
+		t.Errorf("the guest read %q, want no freeze sent to a guest that cannot take it", got)
+	}
+
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the restart: %v", err)
+	}
+}
+
 // A drop that takes the guest's answer to a freeze leaves it frozen, so the pause's undo or the stream dialed again thaws it, once, and the next pause goes through (SHARD-409).
 func TestAFreezeWhoseAnswerADropTookIsThawed(t *testing.T) {
 	h := newHarness(t)
