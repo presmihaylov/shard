@@ -299,17 +299,29 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	if err != nil {
 		return err
 	}
-	if !ended {
-		if err := m.client.Kill(); err != nil && !absent(err) {
-			return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err))
-		}
-		ended, err = m.awaitGone(ctx, killGrace/2)
-		if err != nil {
-			return err
-		}
+	if ended {
+		p.forget(m)
+
+		return m.close()
+	}
+	if err := p.kill(ctx, m); err != nil {
+		return errors.Join(stopErr, err)
+	}
+
+	return nil
+}
+
+// kill ends the shim by the pid the kernel attests behind its socket, never by a name.
+func (p *Provider) kill(ctx context.Context, m *machine) error {
+	if err := m.client.Kill(); err != nil && !absent(err) {
+		return fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err)
+	}
+	ended, err := m.awaitGone(ctx, killGrace/2)
+	if err != nil {
+		return err
 	}
 	if !ended {
-		return errors.Join(stopErr, fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2))
+		return fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2)
 	}
 	p.forget(m)
 
