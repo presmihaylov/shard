@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/presmihaylov/shard/models"
 )
 
 // The test binary plays firecracker when the provider execs it with this set; the guest is the real shard-init over unix sockets.
@@ -30,6 +32,14 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
+	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
+	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeVMMEnv) == "1" {
 		if err := fakeVMM(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake firecracker:", err)

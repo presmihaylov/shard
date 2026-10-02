@@ -43,9 +43,11 @@ const (
 	exitFile     = "exit.json"
 	restartsFile = "restarts.json"
 	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
-	oomFile    = "oom"
-	logFile    = "output.log"
-	initrdFile = "initrd.cpio"
+	oomFile = "oom"
+	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
+	logFile              = "output.log"
+	initrdFile           = "initrd.cpio"
 	// memoryFile is the guest memory a restore mapped, a hard link to the snapshot's own; a fresh boot has none.
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.

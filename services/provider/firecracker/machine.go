@@ -10,10 +10,13 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -164,7 +167,7 @@ func (p *Provider) spawn(id string) (done func()) {
 // boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile, oomFile, cursorFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, cursorFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -360,6 +363,8 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
 	case supervisor.KindOOM:
 		return m.markOOM()
+	case supervisor.KindSupervisorFailed:
+		return m.markSupervisorFailed(event)
 	}
 
 	return nil
@@ -375,6 +380,41 @@ func (m *machine) markOOM() error {
 	}
 
 	return nil
+}
+
+// markSupervisorFailed lands shard-init's own death as the sandbox exit, with its reason, before the halt takes the guest.
+func (m *machine) markSupervisorFailed(event supervisor.Message) error {
+	if event.Exit == nil {
+		return errors.New("a supervisor-failed event carries no status")
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(oneLine(event.Error)), 0o600); err != nil {
+		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
+	}
+
+	return supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit)
+}
+
+// maxReason bounds what a guest's reason may take of a record, a log line and a column of ls.
+const maxReason = 256
+
+// oneLine makes the guest's reason safe for a record and a log line: no control bytes, valid UTF-8, at most maxReason bytes.
+func oneLine(reason string) string {
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+
+		return r
+	}, strings.ToValidUTF8(reason, "?"))
+	if len(clean) <= maxReason {
+		return clean
+	}
+	cut := maxReason
+	for !utf8.RuneStart(clean[cut]) {
+		cut--
+	}
+
+	return clean[:cut]
 }
 
 // reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.
