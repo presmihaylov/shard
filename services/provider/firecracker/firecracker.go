@@ -50,6 +50,8 @@ const (
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// restoringFile marks a fork's restore in flight: its vmm loaded the source's overlay and may not have swapped to this one's yet (SHARD-321).
+	restoringFile = "restoring"
 )
 
 // The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.

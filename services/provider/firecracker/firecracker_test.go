@@ -708,6 +708,34 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	}
 }
 
+// A daemon cut mid-fork leaves a paused VM its load may still hold on the source's overlay; the marker makes the next daemon end it, never resume it onto the live source (SHARD-321).
+func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+
+	// The vCPUs are stopped as a cut fork leaves them, and the marker says the load may still point the overlay at the source.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.StateDir, firecracker.RestoringFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := h.reopen(t)
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status of the half-forked leftover = %+v, %v, want stopped", status, err)
+	}
+	// The refuse ended the vmm, so nothing answers the socket as a live VM; a blind resume would have left it running on the source.
+	if _, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
+		t.Fatal("the vmm a cut fork left still answers; the refuse must end it, not resume it")
+	}
+}
+
 // A daemon cut between a fork's spawn and its load leaves a vmm with no guest; the next daemon ends it, so a remove frees the host (SHARD-295).
 func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
 	h := newHarness(t)
