@@ -515,10 +515,12 @@ TCP mode to fall back to. The secret file must not be readable by everyone on th
 refuses one that is. The secret must be at least 32 bytes, the width an HS256 key needs, and the front
 refuses a shorter one; `openssl rand -hex 32` prints a secret that passes.
 
-A connection is bounded before its token is checked. The front holds at most 256 connections that
-have not shown a valid token yet, and at most 32 of them from one source address; it closes the next
-one at once and logs the refusal, a few lines a second per source at most. A connection leaves that
-count once its token passes, so a client that holds many `logs` follows or exec sessions open is never
+A connection is bounded before its token is checked. The front holds at most 32 connections that
+have not shown a valid token yet from one source address, and at most (soft `RLIMIT_NOFILE` - 64) / 2
+in total, read at start and never fewer than 32: a held connection costs two file descriptors once it
+dials the daemon socket, and 64 stay for the listener, the logs and the dials. It closes the next one
+at once and logs the refusal, a few lines a second per source at most. A connection leaves that count
+once its token passes, so a client that holds many `logs` follows or exec sessions open is never
 refused for them. A connection must send its whole request head, the TLS handshake included, within
 10 s, or the front closes it. An accept that runs out of file descriptors or memory waits from 5 ms up
 to 1 s and tries again, so a flood of connections never ends the front.

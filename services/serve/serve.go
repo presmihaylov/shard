@@ -115,6 +115,11 @@ func New(cfg Config) (*Server, error) {
 		out = io.Discard
 	}
 
+	total, err := preAuthTotal()
+	if err != nil {
+		return nil, err
+	}
+
 	logger := log.New(out, "", log.LstdFlags)
 
 	return &Server{
@@ -124,7 +129,7 @@ func New(cfg Config) (*Server, error) {
 		tokens:      tokens,
 		caps:        caps,
 		tls:         &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
-		preAuth:     newPreAuth(preAuthTotal, preAuthPerSource),
+		preAuth:     newPreAuth(total, preAuthPerSource),
 		headTimeout: defaultHeadTimeout,
 		log:         logger,
 		refusals:    lograte.New(logger, "serve"),

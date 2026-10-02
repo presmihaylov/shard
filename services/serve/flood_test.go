@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -160,6 +161,28 @@ func TestThePreAuthCapCountsInTotalAndPerSource(t *testing.T) {
 	gate.leave(a)
 	if !gate.enter(b) {
 		t.Error("the slot a connection left was not given to the next one")
+	}
+}
+
+func TestThePreAuthTotalFollowsTheFdLimit(t *testing.T) {
+	for _, c := range []struct {
+		soft uint64
+		want int
+	}{
+		{soft: 0, want: preAuthPerSource},
+		{soft: 127, want: preAuthPerSource},
+		{soft: 128, want: 32},
+		{soft: 256, want: 96},
+		{soft: 4096, want: 2016},
+		{soft: 524287, want: 262111},
+	} {
+		if got := preAuthTotalFor(c.soft); got != c.want {
+			t.Errorf("a soft fd limit of %d gave a total cap of %d, want %d", c.soft, got, c.want)
+		}
+	}
+
+	if got := preAuthTotalFor(math.MaxUint64); got <= 0 {
+		t.Errorf("an unlimited soft fd limit gave a total cap of %d", got)
 	}
 }
 
