@@ -989,6 +989,49 @@ func TestRemoveForceStopsThenRemoves(t *testing.T) {
 	}
 }
 
+// A pause ends the process, so the substrate answers gone (gVisor) or stopped (Firecracker, vz); only the record says paused (SHARD-281).
+func TestRemoveRefusesAPausedSandbox(t *testing.T) {
+	for name, status := range map[string]models.Status{
+		"the container is gone": {},
+		"the vmm is stopped":    {Exists: true, State: models.StateStopped},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &recorder{}
+			svc, l := newService(t, r, pausedSandbox())
+			l.provider.status = status
+
+			err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+
+			var refused *sandbox.StateError
+			if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || err.Error() != "sandbox sandbox1 is paused: stop it first with shard stop sandbox1, or pass --force" {
+				t.Fatalf("rm failed with %v, want a sandbox_not_stopped error that names the pause and the stop", err)
+			}
+
+			for _, step := range []string{"provider.Stop", "provider.Remove", "net.Release", "repo.Delete"} {
+				if slices.Contains(r.calls, step) {
+					t.Errorf("the refused rm still ran %s: %v", step, r.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoveForceStopsAPausedSandboxThenRemoves(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, pausedSandbox())
+	l.provider.status = models.Status{}
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm --force: %v", err)
+	}
+
+	stopped := slices.Index(r.calls, "provider.Stop")
+	removed := slices.Index(r.calls, "provider.Remove")
+	if stopped < 0 || removed < stopped {
+		t.Errorf("rm --force of a paused sandbox ran %v, want the stop before the remove", r.calls)
+	}
+}
+
 // The record dies last, so an id with no record has nothing else left either.
 func TestRemoveOfAMissingSandboxIsNotFound(t *testing.T) {
 	r := &recorder{}

@@ -456,7 +456,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `body_too_large` | 413 | a JSON body over 1 MiB; the daemon reads no further and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
-| `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
+| `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up, and rm without force on a paused one, whose snapshot a resume needs |
 | `sandbox_not_paused` | 409 | resume or fork on a sandbox that is not paused |
 | `sandbox_failed` | 409 | any verb but a get or an `rm` on a create that ended `failed`; the message carries the `failed_reason`, and `rm` frees it |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |

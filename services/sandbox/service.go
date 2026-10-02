@@ -835,8 +835,8 @@ func (s *Service) lastExit(ctx context.Context, id string) (*models.ExitStatus, 
 	return &status, nil
 }
 
-// Remove frees everything a stopped sandbox holds. A sandbox that is still up is refused unless
-// force says to stop it first, with grace as the stop's.
+// Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused
+// unless force says to stop it first, with grace as the stop's.
 func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
@@ -847,11 +847,12 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 	defer unlock()
 
 	// The record dies last below, so an id with no record has nothing else left on the host either.
-	if _, err := s.cfg.Repo.Get(id); err != nil {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
 		return err
 	}
 
-	if err := s.endIfAlive(ctx, id, force, grace); err != nil {
+	if err := s.endIfAlive(ctx, id, sb.State, force, grace); err != nil {
 		return err
 	}
 
@@ -871,8 +872,8 @@ type reclaimer interface {
 	Reclaim(ctx context.Context, id string) error
 }
 
-// endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps; --force stops it first, and on a wedge kills it first.
-func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace time.Duration) error {
+// endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
+func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
 	status, err := s.status(ctx, id, "rm")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
@@ -884,6 +885,10 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 	}
 	if err != nil {
 		return err
+	}
+	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot.
+	if state == models.StatePaused {
+		status = models.Status{Exists: true, State: models.StatePaused}
 	}
 	if !status.Alive() {
 		return nil
