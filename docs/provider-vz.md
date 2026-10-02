@@ -243,9 +243,10 @@ vmgenid device to tell the guest, so every `resume` and `fork` sends 32 bytes fr
 `crypto/rand` on the control port, and `shard-init` writes them into the input pool and forces a
 rekey with `RNDRESEEDCRNG` (SHARD-293). The seed goes in while every guest process is still frozen
 from the pause, and the thaw only after it, so no process reads a byte of the saved key in any copy
-(SHARD-310). `shard-init` itself sits in a sibling cgroup, `init`, so it answers while the guest is
-frozen. Only the kernel's generator is rekeyed: a process that seeded its own generator before the
-pause carries that state into every copy.
+(SHARD-310). A save from an older `shard-init` restores unfrozen: it still gets the seed, with the
+5 to 9 ms window of SHARD-293. `shard-init` itself sits in a sibling cgroup, `init`, so it answers
+while the guest is frozen. Only the kernel's generator is rekeyed: a process that seeded its own
+generator before the pause carries that state into every copy.
 
 Rejected: an in-memory pause (the framework's `pause` alone). shard deleted the in-memory pause so
 the verb means one thing on every substrate: a snapshot on disk and the memory given back.

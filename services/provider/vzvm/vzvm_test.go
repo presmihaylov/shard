@@ -577,6 +577,53 @@ func TestAResumeReseedsTheGuestBeforeItThaws(t *testing.T) {
 	}
 }
 
+// A save made by an older guest restores with its processes unfrozen, and the restore still reseeds it.
+func TestAResumeOfAnUnfrozenSaveStillReseeds(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(snap, "vm.vzvmstate")
+	held, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unfrozen, cut := strings.CutSuffix(string(held), "\n"+frozenFile)
+	if !cut {
+		t.Fatalf("the save holds %q, want a frozen guest to strip", held)
+	}
+	if err := os.WriteFile(saved, []byte(unfrozen), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, orderFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	order, err := os.ReadFile(filepath.Join(dir, orderFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(order)), []string{supervisor.KindReseed}; !slices.Equal(got, want) {
+		t.Fatalf("the guest read %q, want a reseed and no thaw", got)
+	}
+}
+
 // A stopped sandbox starts again over the disk the stop kept, and a wait then answers the new run.
 func TestStartBootsAgainAfterAStop(t *testing.T) {
 	h := newHarness(t)
