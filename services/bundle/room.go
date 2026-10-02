@@ -46,6 +46,14 @@ func AdmitCopy(src, dst string, write func() error) error {
 	return admitDisk(dst, st.Size(), write)
 }
 
+// ReplaceDisk runs write, which swaps a disk in place for one of the same bound, under the admission lock: an admission inside the swap would miss that bound.
+func ReplaceDisk(write func() error) error {
+	admitting.Lock()
+	defer admitting.Unlock()
+
+	return write()
+}
+
 // fits counts every held disk at its full bound, never at what it has written: a fresh clone's blocks are shared, so its allocation undercounts.
 func fits(bound, held, free int64) error {
 	if bound <= free-diskHeadroom-held {

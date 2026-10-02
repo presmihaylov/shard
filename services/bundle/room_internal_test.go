@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,16 +53,18 @@ func sparse(t *testing.T, path string, size int64) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeSparse(path, size); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSparse(path string, size int64) error {
 	f, err := os.Create(path)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := f.Truncate(size); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+
+	return errors.Join(f.Truncate(size), f.Close())
 }
 
 // A stopped sandbox is counted like a running one, and a directory with no disk yet is not.
@@ -140,5 +143,47 @@ func TestAdmitCopyTakesTheBoundFromTheSource(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "8388608 MiB disk") {
 		t.Fatalf("got %v, want a refusal of the 8 TiB copy", err)
+	}
+}
+
+// A resume drops its disk before it clones the save back, and an admission in that gap would miss the disk's bound (SHARD-393).
+func TestAnAdmissionWaitsOutAReplace(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	paused := filepath.Join(sandboxes, "paused", "disk.img")
+	sparse(t, paused, 8<<40)
+	dst := filepath.Join(sandboxes, "new", "disk.img")
+	if err := os.Mkdir(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	dropped, release := make(chan struct{}), make(chan struct{})
+	replaced := make(chan error, 1)
+	go func() {
+		replaced <- ReplaceDisk(func() error {
+			if err := os.Remove(paused); err != nil {
+				return err
+			}
+			close(dropped)
+			<-release
+
+			return writeSparse(paused, 8<<40)
+		})
+	}()
+	<-dropped
+	if admitting.TryLock() {
+		admitting.Unlock()
+		t.Fatal("the admission lock is free while the paused disk is gone")
+	}
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- admitDisk(dst, bytesPerMiB, func() error { return nil })
+	}()
+	close(release)
+	if err := <-replaced; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-admitted; err == nil {
+		t.Fatal("admitted a disk beside the 8 TiB one the replace put back")
 	}
 }

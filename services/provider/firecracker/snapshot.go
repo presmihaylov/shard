@@ -112,7 +112,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if err := p.endLeftover(ctx, m); err != nil {
 		return err
 	}
-	if err := restoreFiles(dir, stateDir); err != nil {
+	if err := bundle.ReplaceDisk(func() error { return restoreFiles(dir, stateDir) }); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
