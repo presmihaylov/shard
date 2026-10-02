@@ -684,10 +684,35 @@ func (s *Service) startWithin(ctx context.Context, id string) error {
 	}
 
 	if err := s.cfg.Provider.Start(ctx, id); err != nil {
-		return errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false))
+		if reconcileErr := Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false); reconcileErr != nil {
+			return errors.Join(err, reconcileErr)
+		}
+
+		return errors.Join(err, s.recordFailedStart(ctx, id))
 	}
 
 	return RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false)
+}
+
+// recordFailedStart lands a shard-init that died before the start ran anything, so inspect shows its 125 and its reason (SHARD-416).
+func (s *Service) recordFailedStart(ctx context.Context, id string) error {
+	status, err := s.cfg.Provider.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if status.Alive() || status.SupervisorFailed == "" {
+		return nil
+	}
+	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		supervisorFailed(rec, status.SupervisorFailed)
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %s, but its record was not updated: %w", id, SupervisorFailedReason, err)
+	}
+
+	return nil
 }
 
 // Stop ends the processes and keeps everything rm frees: the record, the lease, the address and the

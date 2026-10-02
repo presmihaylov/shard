@@ -437,6 +437,10 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Start(r.Context(), r.PathValue("id"))
 	if err != nil {
+		// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
+		if status, _ := classify(err); status >= http.StatusInternalServerError {
+			h.log.Printf("api: start sandbox %s: %v", r.PathValue("id"), err)
+		}
 		h.writeError(w, err)
 
 		return
