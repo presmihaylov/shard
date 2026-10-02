@@ -1,12 +1,12 @@
 module github.com/presmihaylov/shard
 
-go 1.26.6
+go 1.26.8
 
 require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/Microsoft/hcsshim v0.15.0-rc.1
 	github.com/coder/websocket v1.8.15
-	github.com/containerd/containerd/v2 v2.3.5
+	github.com/containerd/containerd/v2 v2.3.6
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.9
 	github.com/opencontainers/runtime-spec v1.3.0
