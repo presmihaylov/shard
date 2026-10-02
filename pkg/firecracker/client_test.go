@@ -173,20 +173,26 @@ func TestAdoptFindsTheRunningVmmAndKillEndsIt(t *testing.T) {
 	if err := client.Kill(); err != nil {
 		t.Fatalf("Kill = %v", err)
 	}
+	awaitRefused(t, client)
+	// A second kill finds nobody, and says nothing of it.
+	if err := client.Kill(); err != nil {
+		t.Fatalf("Kill of an ended vmm = %v, want nil", err)
+	}
+}
+
+func awaitRefused(t *testing.T, client *firecracker.Client) {
+	t.Helper()
+
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		_, err := client.State()
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("State after Kill = %v, want the socket refused", err)
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	// A second kill finds nobody, and says nothing of it.
-	if err := client.Kill(); err != nil {
-		t.Fatalf("Kill of an ended vmm = %v, want nil", err)
 	}
 }
 
@@ -411,46 +417,20 @@ func TestRestoreReportsARefusedLoadAndEndsTheVmm(t *testing.T) {
 	}
 }
 
-// resetting is a socket whose owner ends every connection unanswered, as a vmm mid-exit does; gone closes the listener after the first.
-func resetting(t *testing.T, socket string, gone bool) {
-	t.Helper()
-
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
+// TestKillEndsAVmmTooWedgedToAnswer is SHARD-339: a stopped vmm takes the dial and never the call, so the kill must not wait for an answer.
+func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
+	cfg := config(shortRoot(t))
+	client, info := start(t, cfg)
+	if err := syscall.Kill(info.PID, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { listener.Close() })
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			conn.Close()
-			if gone {
-				listener.Close()
 
-				return
-			}
-		}
-	}()
-}
-
-func TestKillOutwaitsAVmmThatResetsTheCallOnItsWayOut(t *testing.T) {
-	cfg := config(shortRoot(t))
-	resetting(t, cfg.Socket, true)
-
-	if err := firecracker.Over(cfg.Socket, cfg.Vsock).Kill(); err != nil {
-		t.Fatalf("Kill over a vmm that left after the reset = %v, want nil", err)
+	begun := time.Now()
+	if err := client.Kill(); err != nil {
+		t.Fatalf("Kill of a stopped vmm = %v", err)
 	}
-}
-
-func TestKillReportsASocketThatKeepsResetting(t *testing.T) {
-	cfg := config(shortRoot(t))
-	resetting(t, cfg.Socket, false)
-
-	err := firecracker.Over(cfg.Socket, cfg.Vsock).Kill()
-	if err == nil || !strings.Contains(err.Error(), "kill: GET /") {
-		t.Fatalf("Kill over a socket that never answers = %v, want the failed call named", err)
+	if took := time.Since(begun); took > 5*time.Second {
+		t.Errorf("Kill took %s, want it done at the dial", took)
 	}
+	awaitRefused(t, client)
 }

@@ -246,23 +246,39 @@ func (c *Client) State() (Info, error) {
 	return Info{State: got.State, PID: pid}, nil
 }
 
-// Kill ends the vmm by the pid behind its socket, the only forced stop firecracker has; a socket nobody answers is already ended.
+// Kill ends the vmm by the pid behind its socket, the only forced stop firecracker has; a socket nobody listens on is already ended.
 func (c *Client) Kill() error {
 	deadline := time.Now().Add(resetGrace)
 	for {
-		info, err := c.State()
+		pid, err := c.owner()
 		if err == nil {
-			return KillPID(info.PID)
+			return KillPID(pid)
 		}
 		if absent(err) {
 			return nil
 		}
-		// A reset mid-request is a vmm on its way out, which leaves its socket or answers again; only one that does neither is an error.
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("kill: %w", err)
 		}
 		time.Sleep(resetPoll)
 	}
+}
+
+// owner is the pid that listens on the API socket, which the kernel attests at the dial: a vmm too wedged to answer HTTP still owns it (SHARD-339).
+func (c *Client) owner() (int, error) {
+	conn, err := c.dial(c.socket)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := peerPID(conn)
+	if err != nil {
+		return 0, errors.Join(fmt.Errorf("read the peer of the api socket: %w", err), conn.Close())
+	}
+	if err := conn.Close(); err != nil {
+		return 0, fmt.Errorf("close the api socket: %w", err)
+	}
+
+	return pid, nil
 }
 
 // KillPID ends the vmm pid with the group Start made it lead, so nothing it spawned outlives it; one that leads no group dies alone.

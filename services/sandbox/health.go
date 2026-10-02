@@ -91,7 +91,10 @@ func (s *Service) probeAndRecord(ctx context.Context, sb models.Sandbox, now tim
 		return nil
 	}
 
-	unlock := s.lock(sb.ID)
+	unlock, ok := s.tryLock(sb.ID)
+	if !ok {
+		return nil
+	}
 	defer unlock()
 
 	// A stop, or a stop and a start, landed while the probe ran: the result is about a run that is over.

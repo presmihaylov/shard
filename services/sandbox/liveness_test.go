@@ -64,6 +64,42 @@ func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T)
 	}
 }
 
+// A stop on a guest that never answers holds its sandbox, and the pass must go on to the rest (SHARD-339).
+func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+	gate := make(chan struct{})
+	lab.l.provider.stopGate = gate
+	lab.l.provider.stopEntered = make(chan struct{})
+	entered := lab.l.provider.stopEntered
+
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second)
+		stopped <- err
+	}()
+	<-entered
+
+	ticked := make(chan error, 1)
+	go func() { ticked <- lab.tick(t, running(), time.Now()) }()
+	select {
+	case err := <-ticked:
+		if err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the liveness pass waited on the sandbox the stop holds")
+	}
+	if lab.l.repo.sb.ExitStatus != nil {
+		t.Errorf("the pass wrote exit %+v to the record the stop holds", lab.l.repo.sb.ExitStatus)
+	}
+
+	close(gate)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
 func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
 	lab := newLivenessLab(t, running(), alive(42))
 

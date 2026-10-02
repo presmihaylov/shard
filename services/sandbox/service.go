@@ -191,17 +191,33 @@ func (e *SubstrateTimeoutError) Error() string {
 
 // lock serializes the verbs on one sandbox; a mutex outlives its id, which is small and never contended.
 func (s *Service) lock(id string) func() {
+	m := s.mutex(id)
+	m.Lock()
+
+	return m.Unlock
+}
+
+// tryLock is the lock for a background loop, which skips a sandbox a verb holds rather than stall every other sandbox behind it (SHARD-339).
+func (s *Service) tryLock(id string) (func(), bool) {
+	m := s.mutex(id)
+	if !m.TryLock() {
+		return nil, false
+	}
+
+	return m.Unlock, true
+}
+
+func (s *Service) mutex(id string) *sync.Mutex {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	m, ok := s.locks[id]
 	if !ok {
 		m = &sync.Mutex{}
 		s.locks[id] = m
 	}
-	s.mu.Unlock()
 
-	m.Lock()
-
-	return m.Unlock
+	return m
 }
 
 // probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.

@@ -248,7 +248,7 @@ func freezeGuest(dir string) error {
 		return errors.Join(err, control.Close())
 	}
 
-	return errors.Join(control.Freeze(), control.Close())
+	return errors.Join(control.Freeze(ctx), control.Close())
 }
 
 // setFrozen tracks the guest's root, and marks it frozen in the state directory for a test to see.

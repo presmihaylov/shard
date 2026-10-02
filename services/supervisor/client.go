@@ -24,12 +24,17 @@ type Dialer func(ctx context.Context, port uint32) (net.Conn, error)
 // The guest's listener comes up a moment after the kernel boots, so a refused dial is retried at this pace.
 const dialInterval = 50 * time.Millisecond
 
+// requestTimeout bounds a request on top of its caller's context, so a guest that never answers frees the verb (SHARD-339).
+const requestTimeout = 30 * time.Second
+
 // Control is the host end of the control connection. A request waits for the guest's answer; the events between them queue for Next.
 type Control struct {
 	conn net.Conn
-	// mu orders the writes, and guards the request counter with them.
+	// mu orders the writes, and guards the request counter and torn with them.
 	mu     sync.Mutex
 	nextID int
+	// torn is the write that failed, which may have left half a frame on the stream for the guest to read.
+	torn error
 
 	pending   map[int]chan Message
 	pendingMu sync.Mutex
@@ -135,8 +140,8 @@ func (c *Control) Next() (Message, error) {
 }
 
 // Run sends the entrypoint and waits until the guest says it forked, or says why it could not.
-func (c *Control) Run(spec RunSpec) error {
-	if err := c.request(Message{Kind: KindRun, Run: &spec}); err != nil {
+func (c *Control) Run(ctx context.Context, spec RunSpec) error {
+	if err := c.request(ctx, Message{Kind: KindRun, Run: &spec}); err != nil {
 		return fmt.Errorf("%w: %w", ErrEntrypointNotStarted, err)
 	}
 
@@ -144,44 +149,52 @@ func (c *Control) Run(spec RunSpec) error {
 }
 
 // Signal sends one signal to a process shard-init started, the entrypoint or an exec, by its guest pid.
-func (c *Control) Signal(pid int, signal string) error {
-	return c.request(Message{Kind: KindSignal, PID: pid, Signal: signal})
+func (c *Control) Signal(ctx context.Context, pid int, signal string) error {
+	return c.request(ctx, Message{Kind: KindSignal, PID: pid, Signal: signal})
 }
 
 // Stop asks shard-init to forward the stop to the entrypoint; the caller waits out the grace and kills the VM.
-func (c *Control) Stop() error { return c.request(Message{Kind: KindStop}) }
+func (c *Control) Stop(ctx context.Context) error { return c.request(ctx, Message{Kind: KindStop}) }
 
 // Readdress moves a restored guest onto its own address, and returns once it answers there and nowhere else.
-func (c *Control) Readdress(a Address) error {
-	return c.request(Message{Kind: KindReaddress, Address: &a})
+func (c *Control) Readdress(ctx context.Context, a Address) error {
+	return c.request(ctx, Message{Kind: KindReaddress, Address: &a})
 }
 
 // SeedSize is the host entropy one reseed carries, the size of the kernel's crng key.
 const SeedSize = 32
 
 // Reseed gives a restored guest fresh host entropy and rekeys its crng from it, so two restores of one save draw different bytes.
-func (c *Control) Reseed() error {
+func (c *Control) Reseed(ctx context.Context) error {
 	seed := make([]byte, SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return fmt.Errorf("draw the seed: %w", err)
 	}
 
-	return c.request(Message{Kind: KindReseed, Seed: seed})
+	return c.request(ctx, Message{Kind: KindReseed, Seed: seed})
 }
 
 // Freeze flushes the guest's root and holds every write to it, so a disk copied while the VM is paused is whole.
-func (c *Control) Freeze() error { return c.request(Message{Kind: KindFreeze}) }
+func (c *Control) Freeze(ctx context.Context) error { return c.request(ctx, Message{Kind: KindFreeze}) }
 
 // Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
-func (c *Control) Thaw() error { return c.request(Message{Kind: KindThaw}) }
+func (c *Control) Thaw(ctx context.Context) error { return c.request(ctx, Message{Kind: KindThaw}) }
 
 func (c *Control) Close() error { return c.conn.Close() }
 
-// request sends one message and waits for the guest's done, or its failure as an error.
-func (c *Control) request(m Message) error {
+// request sends one message and waits for the guest's done, its failure as an error, or the end of ctx.
+func (c *Control) request(ctx context.Context, m Message) error {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
 	reply := make(chan Message, 1)
 
 	c.mu.Lock()
+	if c.torn != nil {
+		c.mu.Unlock()
+
+		return fmt.Errorf("%s: an earlier write broke the stream: %w", m.Kind, c.torn)
+	}
 	c.nextID++
 	m.ID = c.nextID
 	// Registered under the lock end takes, so a reader already gone cannot leave the reply unanswered.
@@ -196,7 +209,7 @@ func (c *Control) request(m Message) error {
 
 		return fmt.Errorf("%s: the guest went away: %w", m.Kind, ended)
 	}
-	err := WriteMessage(c.conn, m)
+	err := c.send(ctx, m)
 	c.mu.Unlock()
 	if err != nil {
 		c.pendingMu.Lock()
@@ -206,7 +219,18 @@ func (c *Control) request(m Message) error {
 		return fmt.Errorf("%s: %w", m.Kind, err)
 	}
 
-	answer, ok := <-reply
+	var answer Message
+	var ok bool
+	select {
+	case answer, ok = <-reply:
+	case <-ctx.Done():
+		// The reader drops an answer whose id is no longer pending, so a late one cannot reach the next request.
+		c.pendingMu.Lock()
+		delete(c.pending, m.ID)
+		c.pendingMu.Unlock()
+
+		return fmt.Errorf("%s: the guest did not answer: %w", m.Kind, ctx.Err())
+	}
 	if !ok {
 		return fmt.Errorf("%s: the guest went away before it answered", m.Kind)
 	}
@@ -215,6 +239,24 @@ func (c *Control) request(m Message) error {
 	}
 	if answer.Kind != KindDone {
 		return fmt.Errorf("%s: the guest answered with %q, not done", m.Kind, answer.Kind)
+	}
+
+	return nil
+}
+
+// send writes m by ctx's deadline: a guest that stops reading would otherwise hold the write, and c.mu with it, for good.
+func (c *Control) send(ctx context.Context, m Message) error {
+	deadline, _ := ctx.Deadline()
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set the write deadline: %w", err)
+	}
+	if err := WriteMessage(c.conn, m); err != nil {
+		c.torn = err
+
+		return err
+	}
+	if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear the write deadline: %w", err)
 	}
 
 	return nil

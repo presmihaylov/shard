@@ -116,7 +116,7 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	}
 	defer c.Close()
 
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("exit:7"), Env: os.Environ()}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:7"), Env: os.Environ()}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	exit := awaitKind(t, c, supervisor.KindExit)
@@ -137,7 +137,7 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	if state.Kind != supervisor.KindState || !state.Ready || state.Exit == nil || state.Exit.Code != 7 {
 		t.Fatalf("state = %+v, want ready with exit code 7", state)
 	}
-	if err := again.Run(supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
+	if err := again.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
 		t.Fatalf("a second run gave %v, want ErrEntrypointNotStarted", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestTransportRunFailureNamesTheBinary(t *testing.T) {
 	}
 	defer c.Close()
 
-	err = c.Run(supervisor.RunSpec{Argv: []string{"/nonexistent/entrypoint"}})
+	err = c.Run(t.Context(), supervisor.RunSpec{Argv: []string{"/nonexistent/entrypoint"}})
 	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), "/nonexistent/entrypoint") {
 		t.Fatalf("run gave %v, want ErrEntrypointNotStarted naming the binary", err)
 	}
@@ -164,7 +164,7 @@ func TestTransportExecMovesTheStreams(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestTransportExecNotStartedReports127(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -233,11 +233,11 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	err = c.Signal(os.Getpid(), "KILL")
+	err = c.Signal(t.Context(), os.Getpid(), "KILL")
 	if err == nil || !strings.Contains(err.Error(), "not a process shard-init started") {
 		t.Fatalf("signal gave %v, want the refusal", err)
 	}
@@ -261,7 +261,7 @@ func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -318,7 +318,7 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 	}
 	defer c.Close()
 	// The entrypoint speaks before any logs connection exists, so the bytes must wait for one.
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("say:first line")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("say:first line")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -347,10 +347,10 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := c.Stop(); err != nil {
+	if err := c.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -387,26 +387,26 @@ func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 
 	c := attach(false)
 	for range 2 {
-		if err := c.Freeze(); err != nil {
+		if err := c.Freeze(t.Context()); err != nil {
 			t.Fatalf("freeze: %v", err)
 		}
 	}
 	c = attach(true)
 	for range 2 {
-		if err := c.Thaw(); err != nil {
+		if err := c.Thaw(t.Context()); err != nil {
 			t.Fatalf("thaw: %v", err)
 		}
 	}
 	c = attach(false)
 
 	// A stop still ends a frozen guest.
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := c.Freeze(); err != nil {
+	if err := c.Freeze(t.Context()); err != nil {
 		t.Fatalf("freeze: %v", err)
 	}
-	if err := c.Stop(); err != nil {
+	if err := c.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -430,7 +430,7 @@ func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -455,7 +455,7 @@ func TestTransportRefusedExecsLeakNoDescriptor(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

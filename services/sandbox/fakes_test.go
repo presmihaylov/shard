@@ -256,6 +256,9 @@ type fakeProvider struct {
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
 	entered chan struct{}
+	// stopGate holds Stop the way gate holds Start, and stopEntered is closed when Stop is reached.
+	stopGate    <-chan struct{}
+	stopEntered chan struct{}
 	// wedgeStartOf is the id whose Start hangs until the caller's deadline, the way a wedged runtime does.
 	wedgeStartOf string
 	// statusGate, when set, holds Status until it is closed or the context ends, so a test wedges the substrate.
@@ -473,7 +476,17 @@ func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) error {
+func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) error {
+	if f.stopEntered != nil {
+		close(f.stopEntered)
+	}
+	if f.stopGate != nil {
+		select {
+		case <-f.stopGate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if err := f.r.record("provider.Stop"); err != nil {
 		return err
 	}

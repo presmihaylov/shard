@@ -380,6 +380,27 @@ func TestStopKillsAVMWhoseGuestNoLongerAnswers(t *testing.T) {
 	}
 }
 
+// A stopped vmm holds the control stream open and answers nothing: Stop waits its grace, not forever, then kills it (SHARD-339).
+func TestStopKillsAVMThatHoldsTheStreamAndNeverAnswers(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Fatalf("Stop took %s on a grace of 1s", took)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)

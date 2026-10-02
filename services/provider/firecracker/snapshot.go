@@ -226,7 +226,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 	// The restored guest still answers to the source's address and MAC, which the readdress replaces in place.
-	if err := m.readdress(r); err != nil {
+	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 

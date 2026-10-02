@@ -3,6 +3,7 @@ package supervisor_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -95,7 +96,7 @@ func TestRunReportsAFailureAsNotStarted(t *testing.T) {
 	}()
 
 	c := supervisor.ControlOver(host)
-	err := c.Run(supervisor.RunSpec{Argv: []string{"/missing"}})
+	err := c.Run(t.Context(), supervisor.RunSpec{Argv: []string{"/missing"}})
 	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), "no such file") {
 		t.Fatalf("err = %v, want ErrEntrypointNotStarted with the guest's reason", err)
 	}
@@ -166,7 +167,7 @@ func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- c.Signal(1, "KILL") }()
+	go func() { done <- c.Signal(t.Context(), 1, "KILL") }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "went away") {
@@ -174,6 +175,61 @@ func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("signal blocked after the reader ended")
+	}
+}
+
+// A guest whose vmm is stopped reads the request and never answers: the request ends at its deadline (SHARD-339).
+func TestARequestTheGuestNeverAnswersEndsAtItsDeadline(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	asked := make(chan supervisor.Message, 2)
+	go func() {
+		r := bufio.NewReader(guest)
+		for {
+			var m supervisor.Message
+			if err := supervisor.ReadMessage(r, &m); err != nil {
+				return
+			}
+			asked <- m
+		}
+	}()
+
+	c := supervisor.ControlOver(host)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop = %v, want the deadline", err)
+	}
+
+	stop := <-asked
+	if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindFailure, ID: stop.ID, Error: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Thaw(t.Context()) }()
+	thaw := <-asked
+	if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindDone, ID: thaw.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("thaw = %v, want its own answer, not the stop's late one", err)
+	}
+}
+
+func TestARequestTheGuestNeverReadsEndsAtItsDeadline(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+
+	c := supervisor.ControlOver(host)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Stop(ctx); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("stop = %v, want the write deadline", err)
+	}
+	if err := c.Thaw(t.Context()); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("thaw after a failed write = %v, want the same refusal", err)
 	}
 }
 

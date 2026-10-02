@@ -147,7 +147,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 		return m, nil
 	}
 	// Every restore of one save wakes with the same crng key, and VZ has no vmgenid to tell the guest.
-	if err := m.control.Load().Reseed(); err != nil {
+	if err := m.control.Load().Reseed(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: reseed the restored guest: %w", id, err), p.end(ctx, m))
 	}
 	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
@@ -197,7 +197,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	}
 	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its root frozen until a host thaws it.
 	if state.Frozen {
-		if err := control.Thaw(); err != nil {
+		if err := control.Thaw(ctx); err != nil {
 			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest's root: %w", id, err), m.close())
 		}
 	}
@@ -242,7 +242,7 @@ func (p *Provider) linkOf(client *vz.Client, r record) (*netstack.Link, error) {
 }
 
 // readdress gives the guest the address the record names, so a fresh boot and a restored fork both take it.
-func (m *machine) readdress(r record) error {
+func (m *machine) readdress(ctx context.Context, r record) error {
 	if r.Address == "" {
 		return nil
 	}
@@ -254,7 +254,7 @@ func (m *machine) readdress(r record) error {
 		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
 		Nameservers: r.Nameservers, Hostname: r.Hostname,
 	}
-	if err := m.control.Load().Readdress(address); err != nil {
+	if err := m.control.Load().Readdress(ctx, address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
 	}
 
@@ -322,7 +322,7 @@ func (m *machine) markOOM() error {
 	if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
 		return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
 	}
-	if err := m.control.Load().Stop(); err != nil {
+	if err := m.control.Load().Stop(context.Background()); err != nil {
 		return fmt.Errorf("end sandbox %s after its memory bound: %w", m.id, err)
 	}
 
@@ -375,7 +375,7 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 		if p.recovering != nil {
 			p.recovering()
 		}
-		if err := control.Thaw(); err != nil {
+		if err := control.Thaw(context.Background()); err != nil {
 			thawed = fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
 		}
 	}

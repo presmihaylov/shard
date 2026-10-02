@@ -55,7 +55,10 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
 	}
 
-	unlock := s.lock(sb.ID)
+	unlock, ok := s.tryLock(sb.ID)
+	if !ok {
+		return nil
+	}
 	defer unlock()
 
 	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: StartedAt catches it.

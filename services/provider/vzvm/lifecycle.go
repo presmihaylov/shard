@@ -62,14 +62,14 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 	if err := writeRecord(dir, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
-	if err := m.readdress(r); err != nil {
+	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 	if !run {
 		return nil
 	}
 
-	return p.run(m, r)
+	return p.run(ctx, m, r)
 }
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
@@ -186,7 +186,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 	if m != nil && m.status(p).Alive() {
-		return p.run(m, r)
+		return p.run(ctx, m, r)
 	}
 	if err := p.release(ctx, m); err != nil {
 		return err
@@ -196,22 +196,22 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.readdress(r); err != nil {
+	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 
-	return p.run(m, r)
+	return p.run(ctx, m, r)
 }
 
 // run asks the guest to fork the entrypoint; the guest answers once it has, or with why it could not.
-func (p *Provider) run(m *machine, r record) error {
+func (p *Provider) run(ctx context.Context, m *machine, r record) error {
 	p.mu.Lock()
 	started := m.started
 	p.mu.Unlock()
 	if started {
 		return fmt.Errorf("the entrypoint of sandbox %s already runs", m.id)
 	}
-	if err := m.control.Load().Run(r.Run); err != nil {
+	if err := m.control.Load().Run(ctx, r.Run); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 	p.mu.Lock()
@@ -263,11 +263,19 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
+	// One deadline covers the request and the wait, so a guest that never answers still gets its forced stop on time (SHARD-339).
+	deadline := time.Now().Add(grace)
+	stopCtx, cancel := context.WithDeadline(ctx, deadline)
+	err = m.control.Load().Stop(stopCtx)
+	cancel()
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
+	}
 	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
-	if err := m.control.Load().Stop(); err != nil && !m.status(p).Alive() {
+	if err != nil && !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
-	ended, err := m.awaitGone(ctx, grace)
+	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
 		return err
 	}
