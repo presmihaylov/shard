@@ -94,7 +94,7 @@ func TestListenRefusesALiveShimAndReplacesADeadOne(t *testing.T) {
 	if _, err := Listen(socket); !errors.Is(err, ErrSocketInUse) {
 		t.Fatalf("Listen over a live shim = %v, want ErrSocketInUse", err)
 	}
-	if _, _, err := Adopt(socket); err != nil {
+	if _, _, err := Adopt(t.Context(), socket); err != nil {
 		t.Fatalf("the first shim is no longer answering: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestAnIdleConnectionDoesNotKeepServeFromReturning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer idle.Close()
-	if _, _, err := Adopt(socket); err != nil {
+	if _, _, err := Adopt(t.Context(), socket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -507,7 +507,7 @@ func TestNetworkRefusesAVMWithoutOne(t *testing.T) {
 }
 
 func TestAdoptRefusesASocketNobodyAnswers(t *testing.T) {
-	_, _, err := Adopt(filepath.Join(t.TempDir(), "gone.sock"))
+	_, _, err := Adopt(t.Context(), filepath.Join(t.TempDir(), "gone.sock"))
 	if err == nil || !strings.Contains(err.Error(), "adopt the shim") {
 		t.Fatalf("Adopt() = %v", err)
 	}

@@ -266,7 +266,7 @@ func TestASecondStartOnTheSameSocketIsRefusedAndTheFirstVMStays(t *testing.T) {
 	if !errors.Is(err, ErrSocketInUse) {
 		t.Fatalf("a second Start on the socket: %v", err)
 	}
-	_, again, err := Adopt(cfg.Socket)
+	_, again, err := Adopt(t.Context(), cfg.Socket)
 	if err != nil || again.PID != info.PID {
 		t.Fatalf("the first shim after the refused start: %+v, %v", again, err)
 	}
@@ -441,7 +441,7 @@ func TestTheVMOutlivesItsStarterAndANewClientReAdoptsIt(t *testing.T) {
 		t.Fatal("the shim died with its starter")
 	}
 
-	client, info, err := Adopt(cfg.Socket)
+	client, info, err := Adopt(t.Context(), cfg.Socket)
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}

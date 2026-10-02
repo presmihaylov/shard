@@ -87,10 +87,13 @@ func Start(ctx context.Context, shim string, cfg Config) (*Client, Info, error) 
 	}
 }
 
-// Adopt takes a shim that is already running, by its socket, and proves it answers.
-func Adopt(socket string) (*Client, Info, error) {
-	client := &Client{socket: socket}
-	info, err := client.State(context.Background())
+// Open names the shim on a socket and asks it nothing, so a stop can still kill one that never answers.
+func Open(socket string) *Client { return &Client{socket: socket} }
+
+// Adopt takes a shim that is already running, by its socket, and proves it answers by ctx's deadline.
+func Adopt(ctx context.Context, socket string) (*Client, Info, error) {
+	client := Open(socket)
+	info, err := client.State(ctx)
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("adopt the shim on %s: %w", socket, err)
 	}

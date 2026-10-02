@@ -102,7 +102,7 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	if held {
 		return p.end(ctx, m)
 	}
-	client, _, err := vz.Adopt(filepath.Join(stateDir, socketFile))
+	client, _, err := vz.Adopt(ctx, filepath.Join(stateDir, socketFile))
 	if absent(err) {
 		return nil
 	}

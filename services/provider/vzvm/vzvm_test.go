@@ -901,7 +901,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 2)
 	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
 	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
-	shim, _, err := vz.Adopt(filepath.Join(dir, "shim.sock"))
+	shim, _, err := vz.Adopt(t.Context(), filepath.Join(dir, "shim.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1236,8 +1236,16 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	}
 }
 
-// A shim that takes the dial and never answers still ends on a stop: the provider kills it by the pid behind its socket (SHARD-349).
+// A shim that takes the dial and never answers still ends on a stop, held or adopted after a restart: the provider kills it by the pid behind its socket (SHARD-349).
 func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			stopsAFrozenShim(t, restart)
+		})
+	}
+}
+
+func stopsAFrozenShim(t *testing.T, restart bool) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1286,8 +1294,17 @@ func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
 			t.Errorf("end the frozen shim %d: %v", shim, err)
 		}
 	})
+	// The daemon goes before the freeze, so the next one meets the frozen shim only by its socket.
+	if restart {
+		if err := h.provider.Close(); err != nil {
+			t.Fatalf("close the provider: %v", err)
+		}
+	}
 	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
 		t.Fatalf("freeze the fake shim: %v", err)
+	}
+	if restart {
+		h.open(t)
 	}
 
 	began := time.Now()

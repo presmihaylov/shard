@@ -67,12 +67,38 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		return m, nil
 	}
 
-	client, info, err := vz.Adopt(filepath.Join(dir, socketFile))
+	client, info, err := vz.Adopt(ctx, filepath.Join(dir, socketFile))
 	if absent(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	return p.attach(ctx, id, dir, r, client, info, false)
+}
+
+// lookupToStop is lookup whose adoption ends by the grace; a shim too frozen to answer is cut by its socket at once (SHARD-349).
+func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, grace time.Duration) (*machine, error) {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+	if held {
+		return m, nil
+	}
+
+	socket := filepath.Join(dir, socketFile)
+	probe, cancel := context.WithTimeout(ctx, max(grace, probeFloor))
+	client, info, err := vz.Adopt(probe, socket)
+	cancel()
+	if absent(err) {
+		return nil, nil
+	}
+	if err != nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
+	}
+	if err != nil {
+		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)

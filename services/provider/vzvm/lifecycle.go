@@ -256,7 +256,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	m, err := p.lookup(ctx, id, dir, r)
+	m, err := p.lookupToStop(ctx, id, dir, r, grace)
 	if err != nil || m == nil {
 		return err
 	}
