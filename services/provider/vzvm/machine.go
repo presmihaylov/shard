@@ -425,7 +425,7 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == vz.StateRunning
 }
@@ -494,7 +494,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
 	var stopErr error
-	if _, err := client.Stop(); err != nil && !absent(err) {
+	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
 	m := &machine{id: id, client: client}
@@ -523,7 +523,14 @@ func endShim(id string, client *vz.Client, pid int) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		_, err := m.client.State()
+		// Each read ends with the wait, so a shim that takes the dial and never answers costs the grace and not callTimeout (SHARD-349).
+		probeEnd := deadline
+		if floor := time.Now().Add(probeFloor); floor.After(probeEnd) {
+			probeEnd = floor
+		}
+		probe, cancel := context.WithDeadline(ctx, probeEnd)
+		_, err := m.client.State(probe)
+		cancel()
 		if absent(err) {
 			return true, nil
 		}

@@ -914,7 +914,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := shim.State(); err == nil {
+	if _, err := shim.State(t.Context()); err == nil {
 		t.Fatal("the shim the crashed pause left still answers")
 	}
 	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
@@ -1233,6 +1233,74 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	}
 	if !status.Exists || status.Alive() || status.PID != 0 {
 		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid", status)
+	}
+}
+
+// A shim that takes the dial and never answers still ends on a stop: the provider kills it by the pid behind its socket (SHARD-349).
+func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLog(t, h.provider, spec.ID, 0)
+	// The fake's guest is a host process the shim's kill leaves behind, which a VM's guest is not.
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entrypoint, guest int
+	if _, err := fmt.Sscanf(string(out), "pids %d %d", &entrypoint, &guest); err != nil {
+		t.Fatalf("read the guest pids from %q: %v", out, err)
+	}
+	// A pid of 1 or less would signal every process this user owns, or this test's own group.
+	if entrypoint <= 1 || guest <= 1 {
+		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
+	}
+	t.Cleanup(func() {
+		for _, pid := range []int{-entrypoint, -guest, guest} {
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest %d: %v", pid, err)
+			}
+		}
+	})
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pid of 0 would signal this test's own group.
+	shim := status.PID
+	if shim <= 0 {
+		t.Fatalf("Status = %+v, want the shim's pid", status)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the frozen shim %d: %v", shim, err)
+		}
+	})
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim: %v", err)
+	}
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop with a frozen shim: %v", err)
+	}
+	if took := time.Since(began); took > stopGrace+10*time.Second {
+		t.Errorf("Stop with a frozen shim took %s, want under the grace plus 10 s", took)
+	}
+	awaitExit(t, shim)
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
 	}
 }
 

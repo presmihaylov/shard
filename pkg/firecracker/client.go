@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/peercred"
 )
 
 // Client speaks to one firecracker over its API socket. It holds no connection between calls, so a daemon restart loses nothing.
@@ -270,7 +271,7 @@ func (c *Client) owner() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	pid, err := peerPID(conn)
+	pid, err := peercred.PID(conn)
 	if err != nil {
 		return 0, errors.Join(fmt.Errorf("read the peer of the api socket: %w", err), conn.Close())
 	}
@@ -360,7 +361,7 @@ func (c *Client) call(method, path string, body, reply any) (int, error) {
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer conn.Close()
-	pid, err := peerPID(conn)
+	pid, err := peercred.PID(conn)
 	if err != nil {
 		return 0, fmt.Errorf("%s %s: read the peer of the api socket: %w", method, path, err)
 	}
