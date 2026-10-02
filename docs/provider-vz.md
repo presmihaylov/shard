@@ -186,13 +186,14 @@ out after thirty idle seconds; a refused one gets no answer, as a netfilter drop
 drop is written into the sandbox's egress log with the shape of a host drop: `rule` is the rule that
 refused a judged flow, `private` for the floor, `local` for the gateway's own ports and for any
 address the Mac owns, which the input chain refuses on Linux, `unapplied` for a flow that arrived
-before the daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow
-past the 1024 a sandbox may hold open or the 4096 the stack may, `redirect` for a fronted guest's 80
-or 443 that connection tracking kept off the proxy since it first saw the flow before the guest was
-fronted, and `stack` for a frame the forwarders never take, ICMP, a fragment, or a port the daemon
-serves reached on an address other than the gateway. The bound is the same two a second with a burst
-of ten the chains log at. Nothing reaches the Mac, the LAN or the internet except through the proxy
-or a flow the policy allowed, and `docs/egress.md` has the per-substrate row.
+before the daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow, a
+proxied connection included, past the 1024 a sandbox may hold open or the 4096 the stack may,
+`redirect` for a fronted guest's 80 or 443 that connection tracking kept off the proxy since it
+first saw the flow before the guest was fronted, and `stack` for a frame the forwarders never take,
+ICMP, a fragment, or a port the daemon serves reached on an address other than the gateway. The
+bound is the same two a second with a burst of ten the chains log at. Nothing reaches the Mac, the
+LAN or the internet except through the proxy or a flow the policy allowed, and `docs/egress.md` has
+the per-substrate row.
 
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state

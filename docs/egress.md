@@ -100,6 +100,11 @@ reads the policy, the secret and the sandbox records on every request, so a chan
 request; a connection that is already open is not cut.
 The proxy logs one line per request and never a header value, a body or a secret.
 
+A keep-alive connection that sends no next request is closed after 60 seconds. A sandbox holds at
+most 1024 connections open to the proxy, over both ports: on Linux the host's input chain drops the
+next one and writes it to the egress log as `limit`, on a VM host the stack does (SHARD-350). The
+proxy also counts by source and refuses past 1024, with a daemon log line that names the cap.
+
 The rules for a fronted sandbox follow its record like its chain: a stopped sandbox keeps them, `rm`
 removes them and `start` writes them again.
 
