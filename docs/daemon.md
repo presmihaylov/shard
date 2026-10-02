@@ -421,9 +421,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 **A streamed pull says each step as it lands.** An event is `cached` (the image is already on disk),
 `pulling` (the reference, the digest, the layer count and their bytes), one `layer` per layer with
-its bytes and whether it was already on disk, then `pulled` with where the image went. A refusal
-before the first line keeps its status and its JSON body. After the first line the status is sent,
-so a failure is a last `{"error"}` line with the same `code` and `message`.
+its bytes and whether it was already on disk, `unpacking` with the layer count, one `unpacked` per
+layer in manifest order with its position, a `building` with the path of each disk or EROFS image a
+VM provider boots from, then `pulled` with where the image went. A refusal before the first line
+keeps its status and its JSON body. After the first line the status is sent, so a failure is a last
+`{"error"}` line with the same `code` and `message`.
 - `DELETE /v0/images/{ref}` takes the whole reference, slashes and all, and answers 200 with a
   `warnings` array of what it could not delete under the store. 404; 409 naming every sandbox that
   references it, unless `?force=true`.

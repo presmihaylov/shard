@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,12 +31,17 @@ func TestPullWithErofsBuildsOneImagePerDigestFromTheTree(t *testing.T) {
 	root := t.TempDir()
 	svc := newServiceAt(t, root, server, image.WithErofs())
 
-	img, err := svc.Pull(t.Context(), ref)
+	progress := image.NewProgress()
+	img, err := svc.Pull(image.WithProgress(t.Context(), progress), ref)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
+	progress.Close()
 	if img.Erofs == "" || filepath.Dir(img.Erofs) != filepath.Join(root, "erofs") || filepath.Ext(img.Erofs) != ".erofs" {
 		t.Fatalf("Erofs is %q", img.Erofs)
+	}
+	if !slices.Contains(events(t, progress), image.Event{Status: image.StatusBuilding, Path: img.Erofs}) {
+		t.Errorf("the pull never said it was building the erofs image %s", img.Erofs)
 	}
 	body, err := os.ReadFile(img.Erofs)
 	if err != nil {

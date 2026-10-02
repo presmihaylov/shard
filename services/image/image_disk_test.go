@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/presmihaylov/shard/services/image"
@@ -14,12 +15,17 @@ func TestPullWithDisksBuildsOneDiskPerDigest(t *testing.T) {
 	root := t.TempDir()
 	svc := newServiceAt(t, root, server, image.WithDisks())
 
-	img, err := svc.Pull(t.Context(), ref)
+	progress := image.NewProgress()
+	img, err := svc.Pull(image.WithProgress(t.Context(), progress), ref)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
+	progress.Close()
 	if img.Disk == "" || filepath.Dir(img.Disk) != filepath.Join(root, "disks") {
 		t.Fatalf("Disk is %q", img.Disk)
+	}
+	if !slices.Contains(events(t, progress), image.Event{Status: image.StatusBuilding, Path: img.Disk}) {
+		t.Errorf("the pull never said it was building the disk %s", img.Disk)
 	}
 	info, err := os.Stat(img.Disk)
 	if err != nil {
