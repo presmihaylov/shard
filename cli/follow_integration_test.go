@@ -50,18 +50,40 @@ func TestEgressLogFollowOverPlainHTTPEndsOnTheRemove(t *testing.T) {
 		t.Fatalf("exec: %v", err)
 	}
 
-	line := awaitLine(t, body)
-	if !strings.HasPrefix(line, "{") || !strings.Contains(line, `"source":"host"`) {
-		t.Fatalf("the first line is %q, want one JSON record of the host drop", line)
-	}
+	awaitDrop(t, body, `"address":"169.254.169.254"`)
 
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
 		t.Fatalf("rm --force: %v", err)
 	}
 
-	if rest := awaitEnd(t, body); rest != "" {
-		t.Errorf("the body carried %q after the rm, want nothing", rest)
+	// The guest's own IPv6 drops can still be unread at the rm, so the body ends on whole records, not on nothing.
+	for _, line := range strings.SplitAfter(awaitEnd(t, body), "\n") {
+		if line != "" && !isHostDrop(line) {
+			t.Errorf("the body carried %q after the rm, want whole records of host drops", line)
+		}
 	}
+}
+
+// awaitDrop reads host drops until one carries want, since the guest's own IPv6 traffic drops before the ping does.
+func awaitDrop(t *testing.T, body *bufio.Reader, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		line := awaitLine(t, body)
+		if !isHostDrop(line) {
+			t.Fatalf("the follow carried %q, want one JSON record of a host drop", line)
+		}
+		if strings.Contains(line, want) {
+			return
+		}
+	}
+
+	t.Fatalf("the follow carried no record with %s in 15s", want)
+}
+
+func isHostDrop(line string) bool {
+	return strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}\n") && strings.Contains(line, `"source":"host"`)
 }
 
 // follow opens a plain GET of a follow, which must answer 200 before the first byte, and leaves the body open.
