@@ -2,8 +2,11 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,9 +16,63 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
-// EgressSource says what every fronted sandbox compiles to; nil is no policy and no secret anywhere.
+// EgressSource says what every fronted sandbox compiles to; nil is no policy and no secret anywhere. A *HeldChains error comes with every chain.
 type EgressSource interface {
 	Chains(ctx context.Context) ([]Chain, error)
+}
+
+// HeldChains is a compile that held some sandboxes on their last good chain or a closed one; the chains that come with it are whole.
+type HeldChains struct {
+	// Errs is why each held sandbox did not compile, by id.
+	Errs map[string]error
+}
+
+func (h *HeldChains) Error() string {
+	ids := slices.Sorted(maps.Keys(h.Errs))
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("sandbox %s: %v", id, h.Errs[id]))
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+// splitHeld keeps the chains of a held compile, which are whole, and drops those of a compile that failed outright.
+func splitHeld(chains []Chain, err error) ([]Chain, *HeldChains, error) {
+	var held *HeldChains
+	if errors.As(err, &held) {
+		return chains, held, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return chains, nil, nil
+}
+
+// heldFor narrows an apply's error to one sandbox: a held compile fails only the sandbox it held.
+func heldFor(err error, id string) error {
+	var held *HeldChains
+	if !errors.As(err, &held) {
+		return err
+	}
+	if cause, found := held.Errs[id]; found {
+		return fmt.Errorf("compile the egress policy of sandbox %s: %w", id, cause)
+	}
+
+	return nil
+}
+
+// heldReported is what ReapplyAll answers for an apply that held some sandboxes; a nil report keeps the error.
+func heldReported(err error, report func(format string, v ...any)) error {
+	var held *HeldChains
+	if !errors.As(err, &held) || report == nil {
+		return err
+	}
+	// shard ruled log-and-continue (SHARD-335): a held sandbox gets a closed chain; one sandbox must not block the rest.
+	report("egress: held %v", held)
+
+	return nil
 }
 
 // Chain is the egress of one fronted sandbox, keyed by its address: its web ports go to the proxy, and when

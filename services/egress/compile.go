@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/network"
@@ -32,6 +34,16 @@ type Service struct {
 	// gateway is where shard's resolver listens: the one DNS destination a policy sandbox may reach.
 	gateway netip.Addr
 	local   network.Local
+
+	// mu guards good, the last chain each policy sandbox compiled whole, by id; it lives in memory, so a restart forgets it.
+	mu   sync.Mutex
+	good map[string]goodChain
+}
+
+// goodChain is a policy sandbox's last whole chain and the rules it compiled from.
+type goodChain struct {
+	rules []EffectiveRule
+	chain network.Chain
 }
 
 // New wires a compiler over the stores. A nil resolver resolves through the nameservers.
@@ -40,7 +52,7 @@ func New(policies *Store, records Records, gateway netip.Addr, nameservers []net
 		resolver = &net.Resolver{PreferGo: true, Dial: dialNameservers(nameservers)}
 	}
 
-	return &Service{policies: policies, records: records, resolver: resolver, gateway: gateway}
+	return &Service{policies: policies, records: records, resolver: resolver, gateway: gateway, good: map[string]goodChain{}}
 }
 
 // dialNameservers sends every lookup to the sandbox nameservers, and not to whatever the host resolves through.
@@ -131,14 +143,19 @@ func Fronted(sb models.Sandbox) bool {
 	return sb.Policy != "" || len(sb.Secrets) != 0
 }
 
-// Chains compiles one chain per fronted sandbox with an address; a lease outlives a stop, so the chain does too.
+// Chains compiles one chain per fronted sandbox with an address, since a lease outlives a stop; a held sandbox's *network.HeldChains comes with every chain.
 func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	sandboxes, err := s.records.List()
 	if err != nil {
 		return nil, err
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var chains []network.Chain
+	held := map[string]error{}
+	compiled := map[string]bool{}
 	for _, sb := range sandboxes {
 		// A failed create is terminal and never runs, and its teardown may have given its address to another sandbox.
 		if !Fronted(sb) || !sb.Address.IsValid() || sb.State == models.StateFailed {
@@ -157,17 +174,56 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 			return nil, fmt.Errorf("sandbox %s: %w", sb.ID, err)
 		}
 
-		for _, rule := range effective.Rules {
-			compiled, err := s.compile(ctx, rule)
-			if err != nil {
-				return nil, fmt.Errorf("sandbox %s policy %s: %w", sb.ID, sb.Policy, err)
-			}
-			chain.Rules = append(chain.Rules, compiled)
+		compiled[sb.ID] = true
+		whole, err := s.compileChain(ctx, chain, effective.Rules)
+		if err == nil {
+			s.good[sb.ID] = goodChain{rules: effective.Rules, chain: whole}
+			chains = append(chains, whole)
+
+			continue
 		}
+		// A shutdown fails every lookup at once, and that is no reason to hold anyone.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("sandbox %s policy %s: %w", sb.ID, sb.Policy, err)
+		}
+
+		// Old rules with old addresses could open what the policy now closes, so only an unchanged policy keeps its chain.
+		last, found := s.good[sb.ID]
+		if found && last.chain.Address == chain.Address && reflect.DeepEqual(last.rules, effective.Rules) {
+			chains = append(chains, last.chain)
+			held[sb.ID] = fmt.Errorf("policy %s, on its last good chain: %w", sb.Policy, err)
+
+			continue
+		}
+		// A chain with no rules is closed: web goes to the proxy, DNS to the resolver, and the rest is dropped.
 		chains = append(chains, chain)
+		held[sb.ID] = fmt.Errorf("policy %s, on a closed chain: %w", sb.Policy, err)
+	}
+
+	for id := range s.good {
+		if !compiled[id] {
+			delete(s.good, id)
+		}
+	}
+
+	if len(held) != 0 {
+		return chains, &network.HeldChains{Errs: held}
 	}
 
 	return chains, nil
+}
+
+// compileChain resolves every rule into the chain, or none: a chain missing one rule may have lost a deny.
+func (s *Service) compileChain(ctx context.Context, chain network.Chain, rules []EffectiveRule) (network.Chain, error) {
+	for _, rule := range rules {
+		compiled, err := s.compile(ctx, rule)
+		if err != nil {
+			return network.Chain{}, err
+		}
+		chain.Rules = append(chain.Rules, compiled)
+	}
+
+	return chain, nil
 }
 
 // Compiles resolves every name of the policy the way an apply does, so a policy no apply could take is never stored.

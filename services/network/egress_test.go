@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 func TestEnsureRefusesAChainOutsideTheSubnet(t *testing.T) {
 	s := newService(t, Config{Egress: fakeEgress{chains: []Chain{{Address: netip.MustParseAddr("192.168.1.1")}}}})
 
-	_, err := s.chains(t.Context())
+	_, _, err := s.chains(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "outside the sandbox subnet") {
 		t.Errorf("chains = %v", err)
 	}
@@ -79,7 +80,51 @@ func TestEnsureRefusesAChainOutsideTheSubnet(t *testing.T) {
 func TestEnsureFailsWhenThePoliciesDoNotCompile(t *testing.T) {
 	s := newService(t, Config{Egress: fakeEgress{err: errors.New("no resolver")}})
 
-	if _, err := s.chains(t.Context()); err == nil {
+	if _, _, err := s.chains(t.Context()); err == nil {
 		t.Error("a source that failed still yielded a ruleset, which would be applied without the policies")
+	}
+}
+
+func TestChainsKeepAHeldCompileAndItsChains(t *testing.T) {
+	held := &HeldChains{Errs: map[string]error{"sb-2": errors.New("no such host")}}
+	source := fakeEgress{chains: []Chain{{Address: netip.MustParseAddr("10.87.0.2")}, {Address: netip.MustParseAddr("10.87.0.3"), Policy: true}}, err: held}
+	s := newService(t, Config{Egress: source})
+
+	chains, got, err := s.chains(t.Context())
+	if err != nil || got != held || len(chains) != 2 {
+		t.Errorf("chains = %+v, %v, %v; want both chains and the held error", chains, got, err)
+	}
+}
+
+func TestHeldForFailsOnlyTheSandboxItHeld(t *testing.T) {
+	cause := errors.New("no such host")
+	held := &HeldChains{Errs: map[string]error{"sb-2": cause}}
+
+	if err := heldFor(held, "sb-1"); err != nil {
+		t.Errorf("heldFor(sb-1) = %v, want nil", err)
+	}
+	if err := heldFor(held, "sb-2"); !errors.Is(err, cause) {
+		t.Errorf("heldFor(sb-2) = %v, want its cause", err)
+	}
+	whole := errors.New("the policy store is unreadable")
+	if err := heldFor(whole, "sb-1"); !errors.Is(err, whole) {
+		t.Errorf("heldFor(a whole failure) = %v, want it kept", err)
+	}
+}
+
+func TestHeldReportedSwallowsOnlyAHeldCompile(t *testing.T) {
+	var lines []string
+	report := func(format string, v ...any) { lines = append(lines, fmt.Sprintf(format, v...)) }
+	held := &HeldChains{Errs: map[string]error{"sb-2": errors.New("resolve gone.example.com: no such host")}}
+
+	if err := heldReported(held, report); err != nil || len(lines) != 1 || !strings.Contains(lines[0], "sandbox sb-2: resolve gone.example.com") {
+		t.Errorf("heldReported = %v, lines %q", err, lines)
+	}
+	whole := errors.New("the policy store is unreadable")
+	if err := heldReported(whole, report); !errors.Is(err, whole) || len(lines) != 1 {
+		t.Errorf("a whole failure was reported, not returned: %v, lines %q", err, lines)
+	}
+	if err := heldReported(nil, report); err != nil || len(lines) != 1 {
+		t.Errorf("a clean apply reported %q", lines)
 	}
 }

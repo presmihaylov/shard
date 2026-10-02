@@ -179,8 +179,14 @@ nothing. What that means:
 
 - A host whose addresses rotate can drift from the rule until the next apply. Store the policy again
   to apply it again.
-- A name in a policy rule that does not resolve fails the apply, and with it the create, the start
-  or the policy command that asked for it. The host keeps the rules it had.
+- A name in a policy rule that does not resolve holds only the sandboxes whose policy names it. The
+  create or the start of such a sandbox fails. One that runs keeps its last good chain while its
+  policy is unchanged, and otherwise gets a closed chain: web goes to the proxy, DNS to the resolver,
+  and the rest is dropped. The last good chain lives in memory, so after a daemon restart it is the
+  closed one. Every other sandbox, the daemon start, the proxy and the resolver go on, and the daemon
+  log names each held sandbox and the name.
+- A held sandbox comes back on the first apply after the name resolves again: a create, start, rm or
+  policy edit of any sandbox, or a daemon restart. Nothing retries on a timer.
 - Policy create and update resolve every name first, even when no sandbox holds the policy, and
   refuse one that does not resolve. A failed sandbox never runs, so the apply skips its policy.
 - A CDN address shared by many hosts is allowed for all of them on the host table. The proxy closes

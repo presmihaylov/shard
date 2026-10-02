@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -595,18 +596,121 @@ func TestChainsKeepAStoppedSandboxesChain(t *testing.T) {
 	}
 }
 
-func TestChainsFailWhenANameDoesNotResolve(t *testing.T) {
+// A name that does not resolve closes its sandbox's chain and holds no other sandbox (SHARD-335).
+func TestChainsCloseASandboxWhoseNameDoesNotResolve(t *testing.T) {
 	s := newStore(t)
 	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}}); err != nil {
 		t.Fatal(err)
 	}
-
-	records := fakeRecords{{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}
-
-	_, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "api.example.com") {
-		t.Errorf("Chains = %v, want the sandbox and the name", err)
+	if err := s.Set(models.Policy{Name: "closed", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
+		t.Fatal(err)
 	}
+
+	records := fakeRecords{
+		{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "sandbox2", Policy: "closed", Address: netip.MustParsePrefix("10.87.0.3/16")},
+	}
+
+	chains, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
+	held := heldOf(t, err)
+	if len(held.Errs) != 1 || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "api.example.com") || !strings.Contains(err.Error(), "closed chain") {
+		t.Errorf("Chains = %v, want sandbox1 on a closed chain, naming the host", err)
+	}
+	if len(chains) != 2 || !chains[0].Policy || chains[0].Rules != nil {
+		t.Fatalf("Chains = %+v, want sandbox1 closed and sandbox2 whole", chains)
+	}
+	if len(chains[1].Rules) == 0 {
+		t.Errorf("sandbox2 compiled to %+v, want its rules", chains[1])
+	}
+}
+
+// A sandbox whose name stops resolving keeps its last good chain while its policy is unchanged, and gets a closed one once it changes.
+func TestChainsHoldTheLastGoodChainOfAnUnchangedPolicy(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:443")}}); err != nil {
+		t.Fatal(err)
+	}
+	records := fakeRecords{{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}
+	resolver := fakeResolver{"api.example.com": {netip.MustParseAddr("93.184.216.34")}}
+	svc := New(s, records, gateway, nameservers, resolver)
+
+	good, err := svc.Chains(t.Context())
+	if err != nil || len(good) != 1 || len(good[0].Rules) != 3 {
+		t.Fatalf("Chains = %+v, %v", good, err)
+	}
+
+	delete(resolver, "api.example.com")
+	chains, err := svc.Chains(t.Context())
+	if heldOf(t, err); !strings.Contains(err.Error(), "last good chain") || !reflect.DeepEqual(chains, good) {
+		t.Errorf("Chains = %+v, %v; want the last good chain", chains, err)
+	}
+
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:80")}}); err != nil {
+		t.Fatal(err)
+	}
+	chains, err = svc.Chains(t.Context())
+	if heldOf(t, err); !strings.Contains(err.Error(), "closed chain") || len(chains) != 1 || chains[0].Rules != nil {
+		t.Errorf("Chains = %+v, %v; want a closed chain once the policy changed", chains, err)
+	}
+
+	resolver["api.example.com"] = []netip.Addr{netip.MustParseAddr("93.184.216.34")}
+	if chains, err := svc.Chains(t.Context()); err != nil || len(chains) != 1 || len(chains[0].Rules) != 3 {
+		t.Errorf("Chains = %+v, %v; want the sandbox whole once the name resolves", chains, err)
+	}
+}
+
+// A sandbox that left the records forgets its last good chain, so a later one with the same id never inherits it.
+func TestChainsForgetASandboxThatWent(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:443")}}); err != nil {
+		t.Fatal(err)
+	}
+	sandbox1 := models.Sandbox{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}
+	records := fakeRecords{sandbox1}
+	resolver := fakeResolver{"api.example.com": {netip.MustParseAddr("93.184.216.34")}}
+	svc := New(s, &records, gateway, nameservers, resolver)
+
+	if _, err := svc.Chains(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	records = nil
+	if _, err := svc.Chains(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	records = fakeRecords{sandbox1}
+	delete(resolver, "api.example.com")
+	chains, err := svc.Chains(t.Context())
+	if heldOf(t, err); !strings.Contains(err.Error(), "closed chain") || len(chains) != 1 || chains[0].Rules != nil {
+		t.Errorf("Chains = %+v, %v; want a closed chain, not the forgotten one", chains, err)
+	}
+}
+
+// A shutdown fails every lookup at once, so it fails the compile whole and holds nobody.
+func TestChainsFailWholeOnACancelledContext(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}}); err != nil {
+		t.Fatal(err)
+	}
+	records := fakeRecords{{ID: "sandbox1", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var held *network.HeldChains
+	if _, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(ctx); err == nil || errors.As(err, &held) {
+		t.Errorf("Chains = %v, want a whole failure", err)
+	}
+}
+
+func heldOf(t *testing.T, err error) *network.HeldChains {
+	t.Helper()
+
+	var held *network.HeldChains
+	if !errors.As(err, &held) {
+		t.Fatalf("Chains = %v, want a held compile", err)
+	}
+
+	return held
 }
 
 // A failed create is terminal, so a name of its policy that no longer resolves must not fail every other apply (SHARD-276).

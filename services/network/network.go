@@ -64,6 +64,8 @@ type Config struct {
 	// Tap gives each sandbox a tap on the host instead of a veth into a namespace, for a vmm to open.
 	// The spec then names no netns, and the provider addresses the guest itself.
 	Tap bool
+	// Report takes the held sandboxes of a ReapplyAll, which then succeeds; nil fails it instead.
+	Report func(format string, v ...any)
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -166,7 +168,7 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	chains, err := s.chains(ctx)
+	chains, held, err := s.chains(ctx)
 	if err != nil {
 		return err
 	}
@@ -176,26 +178,33 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	return s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases))
-}
-
-func (s *Service) chains(ctx context.Context) ([]Chain, error) {
-	if s.cfg.Egress == nil {
-		return nil, nil
+	if err := s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases)); err != nil {
+		return err
+	}
+	if held != nil {
+		return held
 	}
 
-	chains, err := s.cfg.Egress.Chains(ctx)
+	return nil
+}
+
+func (s *Service) chains(ctx context.Context) ([]Chain, *HeldChains, error) {
+	if s.cfg.Egress == nil {
+		return nil, nil, nil
+	}
+
+	chains, held, err := splitHeld(s.cfg.Egress.Chains(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("compile the egress policies: %w", err)
+		return nil, nil, fmt.Errorf("compile the egress policies: %w", err)
 	}
 
 	for _, chain := range chains {
 		if !s.cfg.Subnet.Contains(chain.Address) {
-			return nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
+			return nil, nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
 		}
 	}
 
-	return chains, nil
+	return chains, held, nil
 }
 
 // conflict reports the first host route the subnet overlaps. Claiming a range the host already routes
@@ -228,7 +237,7 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 	}
 
 	// The lease goes first, so the ruleset Ensure renders pins the port before the guest sends a frame.
-	if err := s.Ensure(ctx); err != nil {
+	if err := heldFor(s.Ensure(ctx), id); err != nil {
 		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
 	}
 
@@ -376,11 +385,13 @@ func (s *Service) Reapply(ctx context.Context, id string) error {
 		return err
 	}
 
-	return s.Ensure(ctx)
+	return heldFor(s.Ensure(ctx), id)
 }
 
 // ReapplyAll is Reapply for a change that names no sandbox, which is what a policy edit is.
-func (s *Service) ReapplyAll(ctx context.Context) error { return s.Ensure(ctx) }
+func (s *Service) ReapplyAll(ctx context.Context) error {
+	return heldReported(s.Ensure(ctx), s.cfg.Report)
+}
 
 // Release drops the namespace, the link and the lease. It is idempotent, and delete is what calls it:
 // the lease must outlive a stop, because a stopped sandbox that starts again keeps its address.
