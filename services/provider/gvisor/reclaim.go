@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // Reclaim is the raw kill behind rm --force once runsc stops answering: SIGKILL to the sandbox's own processes, by cgroup and id.
@@ -111,7 +112,22 @@ const lastRestore = "restore.json"
 type launch struct {
 	Executable string   `json:"executable"`
 	Args       []string `json:"args"`
+	// anySnapshot is a restore a daemon from before restore.json launched, whose snapshot path nothing recorded.
+	anySnapshot bool
 }
+
+// matches says whether a command line is this launch; without a record only the snapshot path may differ.
+func (l launch) matches(args []string) bool {
+	want := l.Args
+	if i := slices.Index(want, imagePathFlag); l.anySnapshot && i >= 0 && len(args) == len(want) {
+		want = slices.Clone(want)
+		want[i+1] = args[i+1]
+	}
+
+	return slices.Equal(args, want)
+}
+
+const imagePathFlag = "--image-path"
 
 // restore records the launch before runsc restore runs, because a daemon that dies during it takes what it ran with it.
 func (p *Provider) restore(ctx context.Context, id string, opts runsc.RestoreOptions) error {
@@ -133,8 +149,8 @@ func (p *Provider) restore(ctx context.Context, id string, opts runsc.RestoreOpt
 
 // killRestores ends a restore a dropped fork left outside the cgroup, where no sweep looks; this daemon holds the root, so none starts after.
 func (p *Provider) killRestores(ctx context.Context, id string) error {
-	last, ok, err := p.lastRestore(id)
-	if err != nil || !ok {
+	last, err := p.lastRestore(id)
+	if err != nil {
 		return err
 	}
 
@@ -169,27 +185,33 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 	return nil
 }
 
-// lastRestore reads the restore recorded for the sandbox; false is a sandbox no fork or resume ever brought up.
-func (p *Provider) lastRestore(id string) (launch, bool, error) {
+// lastRestore reads the restore recorded for the sandbox. With no record it is the restore a daemon from
+// before restore.json ran: this runsc on this sandbox's bundle, from any snapshot.
+func (p *Provider) lastRestore(id string) (launch, error) {
 	dir, err := p.dirs(id)
 	if err != nil {
-		return launch{}, false, err
+		return launch{}, err
 	}
 
 	raw, err := os.ReadFile(filepath.Join(dir, lastRestore))
 	if errors.Is(err, fs.ErrNotExist) {
-		return launch{}, false, nil
+		b, err := bundle.Open(dir)
+		if err != nil {
+			return launch{}, err
+		}
+
+		return launch{Executable: p.runsc.Executable(), Args: p.runsc.RestoreArgs(id, runsc.RestoreOptions{Bundle: b.Dir}), anySnapshot: true}, nil
 	}
 	if err != nil {
-		return launch{}, false, fmt.Errorf("read the last restore of sandbox %s: %w", id, err)
+		return launch{}, fmt.Errorf("read the last restore of sandbox %s: %w", id, err)
 	}
 
 	var last launch
 	if err := json.Unmarshal(raw, &last); err != nil {
-		return launch{}, false, fmt.Errorf("decode the last restore of sandbox %s: %w", id, err)
+		return launch{}, fmt.Errorf("decode the last restore of sandbox %s: %w", id, err)
 	}
 
-	return last, true, nil
+	return last, nil
 }
 
 // restores lists the host processes that are the recorded restore.
@@ -242,7 +264,7 @@ func (p *Provider) runs(pid int, last launch) (bool, error) {
 		return false, err
 	}
 
-	return slices.Equal(args, last.Args), nil
+	return last.matches(args), nil
 }
 
 // awaitEmpty proves the kill landed: an exited process leaves its cgroup before it is reaped, so a zombie never holds this up.

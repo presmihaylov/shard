@@ -414,7 +414,32 @@ func TestKillRestoresSparesAPidReusedBeforeTheKill(t *testing.T) {
 	}
 }
 
-// A sandbox no fork or resume brought up has no restore to find, so the teardown reads no process at all.
+// A restore a daemon from before restore.json launched has no record, so this runsc on the sandbox's own bundle names it.
+func TestKillRestoresEndsARestoreAnOlderDaemonLaunched(t *testing.T) {
+	h := newHost(t)
+	p := h.restorer("exit 1")
+	dir, err := p.StateDir(sandboxID)
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	bin, bundle := p.RunscExecutable(), filepath.Join(dir, "bundle")
+	args := p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/source"})
+	h.restore(4401, bin, args)
+	h.restore(4402, bin+" (deleted)", p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/other"}))
+	h.restore(4403, bin, p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/other/bundle", Image: "/i"}))
+	h.restore(4404, bin, p.RestoreArgs(sandboxID+"-2", runsc.RestoreOptions{Bundle: bundle, Image: "/i"}))
+	h.restore(4405, "/usr/bin/python3", args)
+	h.restore(4406, bin, append(slices.Clone(args), "--extra"))
+
+	if err := p.KillRestores(t.Context(), sandboxID); err != nil {
+		t.Fatalf("KillRestores: %v", err)
+	}
+	if want := []int{4401, 4402}; !slices.Equal(h.killed, want) {
+		t.Errorf("KillRestores killed %v, want the unrecorded restores on the bundle of %s alone: %v", h.killed, sandboxID, want)
+	}
+}
+
+// A sandbox no fork or resume brought up has no restore on its bundle, so the teardown kills nothing.
 func TestKillRestoresLeavesASandboxNeverRestored(t *testing.T) {
 	h := newHost(t)
 	p := h.restorer("exit 1")
@@ -424,7 +449,7 @@ func TestKillRestoresLeavesASandboxNeverRestored(t *testing.T) {
 		t.Fatalf("KillRestores: %v", err)
 	}
 	if len(h.killed) != 0 {
-		t.Errorf("KillRestores killed %v for a sandbox with no recorded restore", h.killed)
+		t.Errorf("KillRestores killed %v for a sandbox with no restore on its bundle", h.killed)
 	}
 }
 
