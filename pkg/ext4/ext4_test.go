@@ -354,6 +354,69 @@ func TestGrowAddsAJournal(t *testing.T) {
 	}
 }
 
+// A crashed Grow leaves inode 8 populated with has_journal clear; a re-run must refuse, not allocate a second journal (SHARD-382).
+func TestGrowRefusesAHalfAddedJournal(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "rootfs.ext4")
+	writeImage(t, img)
+	// A clean grow journals the image; clearing has_journal on disk forges the state a crash leaves: inode 8 populated, the flag not yet written.
+	if err := Grow(img, 64*mib); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(img, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb SuperBlock
+	if err := readAt(f, superBlockOffset, &sb); err != nil {
+		t.Fatal(err)
+	}
+	sb.FeatureCompat &^= CompatHasJournal
+	if err := writeAt(f, superBlockOffset, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := os.Stat(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := sumFreeBlocks(t, img)
+
+	err = Grow(img, st.Size())
+	if err == nil || !strings.Contains(err.Error(), "half-built") {
+		t.Fatalf("Grow of a half-built image = %v, want it refused and named half-built", err)
+	}
+	if got := sumFreeBlocks(t, img); got != free {
+		t.Fatalf("free blocks moved from %d to %d; the refused grow claimed a second run", free, got)
+	}
+}
+
+// sumFreeBlocks totals the free-block count across every group descriptor on disk.
+func sumFreeBlocks(t *testing.T, path string) uint32 {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var sb SuperBlock
+	if err := readAt(f, superBlockOffset, &sb); err != nil {
+		t.Fatal(err)
+	}
+	groups := (sb.BlocksCountLow-1)/blocksPerGroup + 1
+	var total uint32
+	for g := range groups {
+		var gd GroupDescriptor
+		if err := readAt(f, descriptorOffset(g), &gd); err != nil {
+			t.Fatal(err)
+		}
+		total += uint32(gd.FreeBlocksCountLow)
+	}
+	return total
+}
+
 func TestWidenRefusesALayoutPastTheLastGroup(t *testing.T) {
 	limit := uint32(MaxDiskSize / BlockSize)
 	if _, _, _, err := widen(limit/blocksPerGroup, limit-tableBlocks, limit); err == nil || !strings.Contains(err.Error(), "past the maximum") {

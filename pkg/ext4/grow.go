@@ -56,7 +56,7 @@ func Grow(path string, size int64) (err error) {
 		}
 	}
 
-	// The journal is written before has_journal, so a crash here leaves a valid journal-less fs.
+	// Grow is not crash-atomic: a half-built image is never consumed, since the caller records the sandbox only after Grow returns.
 	if sb.FeatureCompat&CompatHasJournal == 0 {
 		if err := ensureJournal(f, &sb); err != nil {
 			return fmt.Errorf("ext4: grow %s: add the journal: %w", path, err)

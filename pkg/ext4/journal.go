@@ -27,10 +27,18 @@ const (
 )
 
 // ensureJournal adds a jbd2 journal to an image that has none, so an fsync on a crashing guest commits the dentry, not only the inode and the data (SHARD-382).
-// It writes the journal, the inode and the bitmap, but never the has_journal flag: the caller sets that last, so a crash here leaves a valid journal-less fs.
+// Grow is not crash-atomic and need not be: every caller builds the disk fresh and records the sandbox only after Grow returns, so a half-built image is never consumed.
 func ensureJournal(f *os.File, sb *SuperBlock) error {
 	if sb.FeatureRoCompat&roCompatMetadataCsum != 0 {
 		return fmt.Errorf("the image carries metadata_csum, which this package does not write")
+	}
+	// A populated inode 8 with has_journal clear is a crashed grow's half-built image; refuse it so a re-run never allocates a second run.
+	populated, err := journalInodePopulated(f)
+	if err != nil {
+		return err
+	}
+	if populated {
+		return fmt.Errorf("inode %d already holds a journal while has_journal is clear: a crashed grow left the image half-built, rebuild it", journalInode)
 	}
 	n := journalBlocks(sb.BlocksCountLow)
 	groups := (sb.BlocksCountLow-1)/blocksPerGroup + 1
@@ -59,12 +67,21 @@ func ensureJournal(f *os.File, sb *SuperBlock) error {
 	sb.JournalBlocks[15] = 0
 	sb.JournalBlocks[16] = n * BlockSize
 
-	// Flush the journal, the inode and the bitmap before the caller writes the superblock that sets has_journal.
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync the journal: %w", err)
+	return nil
+}
+
+// journalInodePopulated says whether inode 8 already carries a journal; with has_journal clear that marks an image a crashed grow left half-built.
+func journalInodePopulated(f *os.File) (bool, error) {
+	var gd GroupDescriptor
+	if err := readAt(f, descriptorOffset(0), &gd); err != nil {
+		return false, fmt.Errorf("read descriptor 0: %w", err)
+	}
+	var mode [2]byte
+	if _, err := f.ReadAt(mode[:], int64(gd.InodeTableLow)*BlockSize+(journalInode-1)*inodeSize); err != nil {
+		return false, fmt.Errorf("read the journal inode mode: %w", err)
 	}
 
-	return nil
+	return binary.LittleEndian.Uint16(mode[:]) != 0, nil
 }
 
 // journalBlocks picks the journal length from mke2fs's default table on the final block count, capped at 16384 so one extent fits one group.
@@ -95,20 +112,29 @@ func findRun(f *os.File, groups, n uint32) (uint32, uint32, error) {
 		if _, err := f.ReadAt(bitmap[:], int64(gd.BlockBitmapLow)*BlockSize); err != nil {
 			return 0, 0, fmt.Errorf("read block bitmap %d: %w", g, err)
 		}
-		var run uint32
-		for j := range uint32(blocksPerGroup) {
-			if bitmap[j/8]&(1<<(j%8)) != 0 {
-				run = 0
-				continue
-			}
-			run++
-			if run == n {
-				return g, j - n + 1, nil
-			}
+		if start, ok := freeRun(bitmap[:], n); ok {
+			return g, start, nil
 		}
 	}
 
 	return 0, 0, fmt.Errorf("no run of %d contiguous free blocks for the journal; the disk is too small", n)
+}
+
+// freeRun returns the offset of the first run of n contiguous free blocks in a group's block bitmap, and whether it found one.
+func freeRun(bitmap []byte, n uint32) (uint32, bool) {
+	var run uint32
+	for j := range uint32(blocksPerGroup) {
+		if bitmap[j/8]&(1<<(j%8)) != 0 {
+			run = 0
+			continue
+		}
+		run++
+		if run == n {
+			return j - n + 1, true
+		}
+	}
+
+	return 0, false
 }
 
 // claimRun marks blocks [start, start+n) of the group used and drops its descriptor's free count to match.
