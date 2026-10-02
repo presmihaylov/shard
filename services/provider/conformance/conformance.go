@@ -276,6 +276,10 @@ func Run(t *testing.T, s Subject) {
 		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
+		// The daemon records the count after the stop, so the stop must leave it readable (SHARD-401).
+		if after := s.restarts(t, id); after.Count != count.Count || after.GaveUp != count.GaveUp || !after.LastAt.Equal(count.LastAt) {
+			t.Errorf("Restarts reads %+v after Stop, want %+v as at the give-up", after, count)
+		}
 		if err := s.Provider.Remove(t.Context(), id); err != nil {
 			t.Fatalf("Remove: %v", err)
 		}
