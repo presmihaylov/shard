@@ -28,11 +28,13 @@ const (
 	BodyCap = 8 << 20
 
 	readHeaderTimeout = 30 * time.Second
-	shutdownGrace     = 5 * time.Second
 )
 
-// clientGoneGrace is how long a request goes on after its client hung up; none goes on for ever.
-var clientGoneGrace = 30 * time.Second
+var (
+	// clientGoneGrace is how long a request goes on after its client hung up; none goes on for ever.
+	clientGoneGrace = 30 * time.Second
+	shutdownGrace   = 5 * time.Second
+)
 
 // Request is what the proxy knows about one request before it asks the director.
 type Request struct {
@@ -138,9 +140,10 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 		},
 	}
 
+	stopped, stop := context.WithCancel(context.Background())
 	servers := []*http.Server{
-		{Handler: s.handler(false), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
-		{Handler: s.handler(true), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
+		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
+		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, ErrorLog: s.cfg.Log},
 	}
 	listeners := []net.Listener{plain, tls.NewListener(secure, tlsConfig)}
 
@@ -170,18 +173,20 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 			err = errors.Join(err, srv.Close())
 		}
 	}
+	// Close leaves its handlers running, and a request whose client left no longer ends with the connection.
+	stop()
 	wg.Wait()
 
 	return err
 }
 
-func (s *Server) handler(secure bool) http.Handler {
+func (s *Server) handler(stopped context.Context, secure bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.handle(w, r, secure)
+		s.handle(stopped, w, r, secure)
 	})
 }
 
-func (s *Server) handle(w http.ResponseWriter, r *http.Request, secure bool) {
+func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.Request, secure bool) {
 	req, err := request(r, secure)
 	if err != nil {
 		s.refuse(w, r, http.StatusBadRequest, err.Error())
@@ -192,11 +197,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, secure bool) {
 	// net/http cancels r.Context() on a half-close, which a fire-and-forget client sends right after its request (SHARD-238).
 	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 	defer cancel()
-	stop := context.AfterFunc(r.Context(), func() {
+	afterGone := context.AfterFunc(r.Context(), func() {
 		grace := time.AfterFunc(s.goneGrace, cancel)
 		context.AfterFunc(ctx, func() { grace.Stop() })
 	})
-	defer stop()
+	defer afterGone()
+	// The grace is the client's, never the server's: a stopped proxy cuts the request at once.
+	afterStop := context.AfterFunc(stopped, cancel)
+	defer afterStop()
 
 	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
