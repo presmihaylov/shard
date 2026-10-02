@@ -271,33 +271,39 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	}
 	defer conn.Close()
 
-	if err := WriteMessage(conn, header); err != nil {
-		return models.ExitStatus{}, err
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(startTimeout)); err != nil {
-		return models.ExitStatus{}, fmt.Errorf("exec %q: bound the start: %w", header.Argv[0], err)
-	}
-
-	// A cancelled context closes the connection, which is what unblocks the frame reader below.
+	// A cancelled context closes the connection, which is what unblocks the header write and the frame reader below.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
+	// The bound runs from the header to the first frame, so a guest that never reads the exec fails it too.
+	if err := conn.SetDeadline(time.Now().Add(startTimeout)); err != nil {
+		return models.ExitStatus{}, fmt.Errorf("exec %q: bound the start: %w", header.Argv[0], err)
+	}
+	if err := WriteMessage(conn, header); err != nil {
+		return models.ExitStatus{}, execFailure(ctx, header, err)
+	}
 
 	var writes sync.Mutex
 	go feedStdin(conn, &writes, spec.Stdin)
 	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
 	exit, err := readExec(conn, id, spec)
-	if err != nil && ctx.Err() != nil {
-		return models.ExitStatus{}, fmt.Errorf("exec %q: %w", header.Argv[0], ctx.Err())
-	}
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return models.ExitStatus{}, fmt.Errorf("exec %q: the guest did not start it within %s: %w", header.Argv[0], startTimeout, err)
-	}
 	if err != nil {
-		return models.ExitStatus{}, err
+		return models.ExitStatus{}, execFailure(ctx, header, err)
 	}
 
 	return exit, nil
+}
+
+// execFailure names why an exec ended early: the caller's context, the start bound, or the guest's own error.
+func execFailure(ctx context.Context, header ExecHeader, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("exec %q: %w", header.Argv[0], ctx.Err())
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return fmt.Errorf("exec %q: the guest did not start it within %s: %w", header.Argv[0], startTimeout, err)
+	}
+
+	return err
 }
 
 // feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed write is the guest gone, which the frame reader reports.
@@ -361,9 +367,9 @@ func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus
 		if err != nil {
 			return models.ExitStatus{}, err
 		}
-		// The guest took the exec, so from here the command runs as long as it runs.
+		// The guest took the exec, so from here the command and its stdin run as long as they run.
 		if first {
-			if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			if err := conn.SetDeadline(time.Time{}); err != nil {
 				return models.ExitStatus{}, fmt.Errorf("clear the start bound: %w", err)
 			}
 		}

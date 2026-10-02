@@ -74,3 +74,41 @@ func TestExecOutlivesTheStartBoundOnceStarted(t *testing.T) {
 		t.Fatalf("exec gave %+v, %v, want code 7", exit, err)
 	}
 }
+
+// A guest that took the connection and never reads the header holds the write, which the start bound ends by name too.
+func TestExecFailsByNameWhenTheGuestNeverReadsTheHeader(t *testing.T) {
+	supervisor.SetStartTimeout(t, 100*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := supervisor.Exec(ctx, unreadDialer(t), "sb", supervisor.ExecHeader{Argv: []string{"true"}}, models.ExecSpec{})
+	if !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "the guest did not start it within 100ms") {
+		t.Fatalf("exec gave %v, want the start bound by name", err)
+	}
+}
+
+// The caller's deadline ends a header write no guest reads, well before the start bound would.
+func TestExecEndsByItsContextWhileTheHeaderWaits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, err := supervisor.Exec(ctx, unreadDialer(t), "sb", supervisor.ExecHeader{Argv: []string{"true"}}, models.ExecSpec{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("exec gave %v, want the caller's deadline", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("exec took %s on a deadline of 100ms", took)
+	}
+}
+
+// unreadDialer hands Exec one end of a pipe whose guest end nobody reads, so the header write blocks.
+func unreadDialer(t *testing.T) supervisor.Dialer {
+	t.Helper()
+
+	return func(context.Context, uint32) (net.Conn, error) {
+		host, guest := net.Pipe()
+		t.Cleanup(func() { guest.Close() })
+
+		return host, nil
+	}
+}
