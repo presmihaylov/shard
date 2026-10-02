@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -72,6 +73,8 @@ type fakeLifecycle struct {
 	reason   string
 	// ended is closed when a verb that waited on stops or on the client returns.
 	ended chan struct{}
+	// pulled is what a create reports to the progress on its context.
+	pulled []image.Event
 }
 
 func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
@@ -79,6 +82,9 @@ func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (
 	if f.hold > 0 {
 		time.Sleep(f.hold)
 		f.heldErr = ctx.Err()
+	}
+	for _, e := range f.pulled {
+		image.ProgressFrom(ctx).Add(e)
 	}
 
 	id := f.createdID

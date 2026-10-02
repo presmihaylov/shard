@@ -111,8 +111,13 @@ func New(root string, opts ...Option) (*Service, error) {
 func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 	// The cache is read before the lock, so a pulled image still runs while another pull downloads.
 	img, found, err := s.cached(ref)
-	if err != nil || found {
-		return img, err
+	if err != nil {
+		return Image{}, err
+	}
+	if found {
+		ProgressFrom(ctx).Add(landed(StatusCached, img))
+
+		return img, nil
 	}
 
 	s.write.Lock()
@@ -140,17 +145,24 @@ func (s *Service) Claim(ctx context.Context, ref string, record func(Image) erro
 }
 
 func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
+	progress := ProgressFrom(ctx)
+
 	// Whoever held the lock may have been pulling this very reference.
 	img, found, err := s.cached(ref)
-	if err != nil || found {
-		return img, err
+	if err != nil {
+		return Image{}, err
+	}
+	if found {
+		progress.Add(landed(StatusCached, img))
+
+		return img, nil
 	}
 
 	if err := s.sweepStaging(); err != nil {
 		return Image{}, err
 	}
 
-	pulled, err := s.store.Pull(ctx, ref)
+	pulled, err := s.store.Pull(ctx, ref, pullReport{p: progress})
 	if err != nil {
 		return Image{}, errors.Join(err, s.reclaim())
 	}
@@ -160,7 +172,13 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, errors.Join(err, s.store.Remove(ref))
 	}
 
-	return s.describe(pulled)
+	img, err = s.describe(pulled)
+	if err != nil {
+		return Image{}, err
+	}
+	progress.Add(landed(StatusPulled, img))
+
+	return img, nil
 }
 
 // cached answers with the image the store already holds unpacked. A tag we hold is not re-resolved:

@@ -322,7 +322,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   or `failed` with a one-line `failed_reason`, so a background pull or start that fails is read from
   the record, not an error. With `?wait=true` the create holds until the record leaves `pending` and
   answers the `running` or `failed` it reached, so a caller reads the settled record without a poll;
-  the plain create answers at once. 400 when the body does not decode or a field does not validate, or
+  the plain create answers at once. A wait that sends `Accept: application/x-ndjson` streams the
+  pull instead: one `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled
+  record. 400 when the body does not decode or a field does not validate, or
   when it names a secret or a policy the host does not hold; 409 `name_taken` when another sandbox
   already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
@@ -411,7 +413,14 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/images` answers `{"images": [...], "next"}` as `shard image ls` prints them; an entry the daemon
   could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls it and answers 200 with the image. 400 for a
-  reference that does not parse; 500 when the registry or the unpack failed.
+  reference that does not parse; 500 when the registry or the unpack failed. With `Accept:
+  application/x-ndjson` it streams one `{"event"}` line per step, then `{"image"}`.
+
+**A streamed pull says each step as it lands.** An event is `cached` (the image is already on disk),
+`pulling` (the reference, the digest, the layer count and their bytes), one `layer` per layer with
+its bytes and whether it was already on disk, then `pulled` with where the image went. A refusal
+before the first line keeps its status and its JSON body. After the first line the status is sent,
+so a failure is a last `{"error"}` line with the same `code` and `message`.
 - `DELETE /v0/images/{ref}` takes the whole reference, slashes and all, and answers 200 with a
   `warnings` array of what it could not delete under the store. 404; 409 naming every sandbox that
   references it, unless `?force=true`.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -391,17 +392,18 @@ const (
 	ndjson    = "application/x-ndjson"
 )
 
-// logWriter answers 200 on the first byte and flushes every write, so the body arrives as it is read.
+// logWriter answers its status, 200 when unset, on the first byte and flushes every write, so the body arrives as it is read.
 type logWriter struct {
 	w           http.ResponseWriter
 	contentType string
+	status      int
 	wrote       bool
 }
 
-// header commits the 200 and flushes it, so curl -N sees the response before the first record.
+// header commits the status and flushes it, so curl -N sees the response before the first record.
 func (l *logWriter) header() error {
 	l.w.Header().Set("Content-Type", l.contentType)
-	l.w.WriteHeader(http.StatusOK)
+	l.w.WriteHeader(cmp.Or(l.status, http.StatusOK))
 	l.wrote = true
 
 	if err := http.NewResponseController(l.w).Flush(); err != nil {

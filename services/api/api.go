@@ -108,7 +108,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	}
 	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: errorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
+		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: ErrorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
 	})
 
 	return mux
@@ -195,11 +195,11 @@ type listResponse struct {
 
 // errorResponse is every refusal, one object under error and nothing else at the root.
 type errorResponse struct {
-	Error errorObject `json:"error"`
+	Error ErrorObject `json:"error"`
 }
 
-// errorObject is a code for a program, a line for a human, and the holders an in_use names.
-type errorObject struct {
+// ErrorObject is a code for a program, a line for a human, and the holders an in_use names.
+type ErrorObject struct {
 	Code    models.Code `json:"code"`
 	Message string      `json:"message"`
 	Holders []string    `json:"holders,omitempty"`
@@ -374,7 +374,7 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, sb)
 }
 
-// createSandbox answers the new record two ways: ?wait=true blocks until it leaves pending, the default at once.
+// createSandbox answers the new record at once, or with ?wait=true once it leaves pending, streaming the pull when asked.
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	wait, err := boolQuery(r, "wait")
 	if err != nil {
@@ -386,6 +386,25 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.CreateRequest
 	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
+
+		return
+	}
+
+	if wait && streamed(r) {
+		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
+			sb, err := h.lifecycle.Create(ctx, req)
+			if err != nil {
+				return ProgressLine{}, err
+			}
+
+			if err := h.lifecycle.WaitState(ctx, sb.ID); err != nil {
+				return ProgressLine{}, err
+			}
+
+			sb, err = sandbox.Get(h.repo, sb.ID)
+
+			return ProgressLine{Sandbox: &sb}, err
+		})
 
 		return
 	}
@@ -666,15 +685,21 @@ func partial(err error) ([]string, error) {
 
 // writeError answers err with the status and the code its type says, and the holders when a store entry is held.
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
+	status, body := errorBody(err)
+	h.writeJSON(w, status, body)
+}
+
+// errorBody is the status and the object err answers; a stream that already sent its status writes only the object.
+func errorBody(err error) (int, errorResponse) {
 	status, code := classify(err)
-	body := errorResponse{Error: errorObject{Code: code, Message: err.Error()}}
+	body := errorResponse{Error: ErrorObject{Code: code, Message: err.Error()}}
 
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
 		body.Error.Holders = held.Users
 	}
 
-	h.writeJSON(w, status, body)
+	return status, body
 }
 
 // writeJSON encodes first, so a value that cannot be encoded never leaves a 200 with half a body.

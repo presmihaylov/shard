@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/secret"
@@ -124,11 +125,15 @@ func (c *Client) ListImages(ctx context.Context) ([]Image, error) {
 	return out.Images, nil
 }
 
-// PullImage has no bound of its own: a pull takes as long as the registry and the disk it writes.
-func (c *Client) PullImage(ctx context.Context, ref string) (Image, error) {
+// PullImage has no bound of its own, as a pull takes as long as the registry; a nil report asks for the image alone.
+func (c *Client) PullImage(ctx context.Context, ref string, report func(PullEvent)) (Image, error) {
 	req := struct {
 		Ref string `json:"ref"`
 	}{Ref: ref}
+
+	if report != nil {
+		return progress(ctx, c, "/v0/images/pull", req, report, func(line api.ProgressLine) *Image { return line.Image })
+	}
 
 	var out Image
 	if err := c.call(ctx, http.MethodPost, "/v0/images/pull", req, &out, 0); err != nil {

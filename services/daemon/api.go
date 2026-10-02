@@ -20,6 +20,7 @@ import (
 	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -264,9 +265,10 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 	l.pending[sb.ID] = done
 	l.mu.Unlock()
 
-	// The pull outlives the request, so it runs under base, not the caller's context, and ends with the daemon.
+	// The pull outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
+	background := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	l.wg.Go(func() {
-		completeErr := svc.Complete(l.base, sb.ID, req)
+		completeErr := svc.Complete(background, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)

@@ -39,11 +39,16 @@ func (r *recorder) record(name string) error {
 type fakeImages struct {
 	imageService
 	r *recorder
+	// pulled is what a pull reports to the progress on its context.
+	pulled []image.Event
 }
 
-func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
+func (f fakeImages) Pull(ctx context.Context, ref string) (image.Image, error) {
 	if err := f.r.record("images.Pull"); err != nil {
 		return image.Image{}, err
+	}
+	for _, e := range f.pulled {
+		image.ProgressFrom(ctx).Add(e)
 	}
 
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
