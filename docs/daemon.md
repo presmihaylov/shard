@@ -107,7 +107,13 @@ one:
   one bad boot cannot end every future `resume` while the checkpoint sits on disk.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
-- A record that says `created` is left alone: it never ran.
+- A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
+  before the fork or clone finished`. No verb leaves a record in `created`: only a fork or clone's
+  copy passes through it, and the caller got an error, not the id. A copy whose process still runs is
+  stopped first, because `rm` refuses a live sandbox and `stop` refuses a failed one. Then the daemon
+  tears down the copy's substrate, as `rm` does, because a restore the old daemon started can run on
+  where the runtime cannot see it. A teardown that fails leaves the record as it is, with a line in
+  the log, and the next start of the daemon tries again.
 - A record that says `pending` becomes `running` when the substrate holds its process, because a
   start that took before the daemon stopped did reach `running`. With no process behind it the record
   becomes `failed`, and its `failed_reason` says `the daemon restarted before the create finished`: a

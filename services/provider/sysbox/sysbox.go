@@ -436,12 +436,6 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 
 // Remove deletes sysbox-runc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	// sysbox-runc delete --force exits 0 for an id it never held, so only a status read says who owns the rootfs.
-	status, err := p.Status(ctx, id)
-	if err != nil {
-		return err
-	}
-
 	// --force, because a running sandbox holds the rootfs.
 	if err := p.runner.Delete(ctx, id, true); err != nil {
 		return err
@@ -452,8 +446,13 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
-	// The repository removes the directory after this, and it must never remove a live mount.
-	return p.unmount(id, status.Exists)
+	// The cgroup is gone, so no process of the sandbox holds the rootfs, whether or not the runtime knew it.
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	return b.Unmount()
 }
 
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
