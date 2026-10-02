@@ -67,7 +67,7 @@ func TestReconcileSweepsTheUnfinishedSnapshotTheLastDaemonLeft(t *testing.T) {
 	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("stat %s after the sweep: %v, want it gone", left, err)
 	}
-	if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "swept 1 unfinished snapshot") }) {
+	if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "swept 1 orphan snapshot") }) {
 		t.Errorf("the reconcile reported %q, want the snapshot sweep in it", lines)
 	}
 }

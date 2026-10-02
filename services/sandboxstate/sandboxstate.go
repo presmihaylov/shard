@@ -298,8 +298,9 @@ func (r *Repository) Delete(id string) error {
 	return nil
 }
 
-// SweepSnapshotTmp removes every unfinished snapshot .tmp under the root. It runs once at daemon start,
-// before any pause is in flight, so a .tmp is a dead daemon's staging, record or not (SHARD-368).
+// SweepSnapshotTmp removes an orphan snapshot .tmp under the root: staging no record reaches. It runs once
+// at daemon start. A .tmp a record still names is a provider's own staging, so the sweep keeps it and the
+// provider frees it at its next pause, resume or adopt (SHARD-368).
 func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -313,28 +314,58 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 		return fmt.Errorf("read the snapshots directory %s: %w", dir, err)
 	}
 
-	swept := 0
+	swept, kept := 0, 0
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
 		}
-		// A finished snapshot is the renamed <id>, so removing the <id>.tmp staging never touches it.
+		id := strings.TrimSuffix(entry.Name(), ".tmp")
+
+		keep, note := r.recordedTmp(id)
+		if note != "" {
+			report(note)
+		}
+		if keep {
+			kept++
+			continue
+		}
+
 		path := filepath.Join(dir, entry.Name())
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 		swept++
 	}
-	if swept == 0 {
+	if swept == 0 && kept == 0 {
 		return nil
 	}
 
-	if err := store.SyncDir(dir); err != nil {
-		return err
+	if swept > 0 {
+		if err := store.SyncDir(dir); err != nil {
+			return err
+		}
 	}
-	report(fmt.Sprintf("swept %d unfinished snapshot directories the last daemon left under %s", swept, dir))
+	report(fmt.Sprintf("swept %d orphan snapshot staging directories the last daemon left under %s, and kept %d a record still names", swept, dir, kept))
 
 	return nil
+}
+
+// recordedTmp reports whether a snapshot .tmp still has a record, so the start sweep keeps it (SHARD-368).
+// A record that will not read may still name the staging, so it is kept too, with a note that names it.
+func (r *Repository) recordedTmp(id string) (bool, string) {
+	if ValidID(id) != nil {
+		return false, ""
+	}
+
+	_, err := r.Get(id)
+	if err == nil {
+		return true, ""
+	}
+	if errors.Is(err, ErrNotFound) {
+		return false, ""
+	}
+
+	return true, fmt.Sprintf("kept the snapshot staging %s.tmp, because its record will not read: %v", id, err)
 }
 
 // Get returns the record, or ErrNotFound. It takes no lock, so it never blocks and never blocks a
