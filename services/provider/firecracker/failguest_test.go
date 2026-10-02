@@ -171,3 +171,34 @@ func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
 		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
 	}
 }
+
+// A report the host could not write fails the stop, so a lost 125 never reads as an ordinary stop (SHARD-290).
+func TestAStopFailsWhenTheSupervisorsReportCannotLand(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the reason goes fails its write for root too.
+	if err := os.Mkdir(filepath.Join(dir, firecracker.SupervisorFailedFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err = h.provider.Stop(t.Context(), spec.ID, stopGrace)
+	if err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("Stop = %v, want the lost report", err)
+	}
+}
