@@ -1,0 +1,110 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
+)
+
+// StatHeader carries a guest path's models.FileStat as JSON, on a HEAD and on a GET of /files.
+const StatHeader = "X-Shard-Stat"
+
+// putFile lands the body at ?path= as one file; the length must be known, since the guest takes exactly that many bytes.
+func (h *Handler) putFile(w http.ResponseWriter, r *http.Request) {
+	req, err := fileWriteOf(r)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := h.lifecycle.WriteFile(r.Context(), r.PathValue("id"), req, r.Body); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
+	if r.ContentLength < 0 {
+		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("a put needs a Content-Length: the guest lands exactly that many bytes")}
+	}
+
+	mode := uint64(sandbox.DefaultFileMode)
+	if raw := r.URL.Query().Get("mode"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 8, 32)
+		if err != nil {
+			return sandbox.FileWrite{}, &sandbox.RequestError{Err: fmt.Errorf("the query mode=%q is not an octal mode", raw)}
+		}
+		mode = parsed
+	}
+
+	parents, err := boolQuery(r, "parents")
+	if err != nil {
+		return sandbox.FileWrite{}, err
+	}
+
+	query := r.URL.Query()
+
+	return sandbox.FileWrite{Path: query.Get("path"), Mode: uint32(mode), User: query.Get("user"), Parents: parents, Size: r.ContentLength}, nil
+}
+
+// getFile streams the guest file at ?path= with its length and stat up front, so a client knows a short body is a cut one.
+func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
+	stat, body, err := h.lifecycle.ReadFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := setStat(w, stat); err != nil {
+		h.writeError(w, errors.Join(err, body.Close()))
+
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size, 10))
+	w.WriteHeader(http.StatusOK)
+
+	// The 200 is out, so a failure now goes to the daemon's log; the short body against Content-Length tells the client.
+	_, err = io.Copy(w, body)
+	if err := errors.Join(err, body.Close()); err != nil {
+		h.log.Printf("api: get %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+	}
+}
+
+// statFile answers the shape of the guest path at ?path= in a header, with no body.
+func (h *Handler) statFile(w http.ResponseWriter, r *http.Request) {
+	stat, err := h.lifecycle.StatFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := setStat(w, stat); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func setStat(w http.ResponseWriter, stat models.FileStat) error {
+	encoded, err := json.Marshal(stat)
+	if err != nil {
+		return fmt.Errorf("encode the stat: %w", err)
+	}
+	w.Header().Set(StatHeader, string(encoded))
+
+	return nil
+}

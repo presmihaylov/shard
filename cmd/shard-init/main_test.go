@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The supervisor is a process, so the tests re-execute this binary as both halves of the pair.
@@ -31,6 +32,17 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// macOS has no /proc, so the files path runs the test binary, which answers it below as main does.
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "locate the test binary:", err)
+		os.Exit(1)
+	}
+	selfBinary = exe
+	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
+		os.Exit(runFiles())
+	}
+
 	// The child inherits the supervisor environment, so its role comes from argv and wins here.
 	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], childPrefix) {
 		os.Exit(runChild(strings.TrimPrefix(os.Args[1], childPrefix)))

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -20,17 +21,71 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// startFiles brings the guest up and attaches a control connection first, as a host does, so the files port is listening.
-func startFiles(t *testing.T) supervisor.Dialer {
+// startFiles brings the guest up with an entrypoint running, as a host does, and answers a way to open one files exec.
+func startFiles(t *testing.T) func() io.ReadWriteCloser {
 	t.Helper()
 	_, dial := startTransport(t)
-	c, err := supervisor.Connect(testContext(t), dial)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
+	if err := c.Run(ctx, supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
 
-	return dial
+	// The path through the guest exec a VM takes: no /.shard/init exists here, so the guest must answer it with itself.
+	run := func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
+		return supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: spec.Argv, WorkDir: spec.WorkDir}, spec)
+	}
+
+	return func() io.ReadWriteCloser {
+		conn, err := supervisor.OpenFiles(ctx, run, "")
+		if err != nil {
+			t.Fatalf("open a files exec: %v", err)
+		}
+
+		return conn
+	}
+}
+
+// closeFiles ends a files exec and fails the test unless the guest exited cleanly.
+func closeFiles(t *testing.T, conn io.Closer) {
+	t.Helper()
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close the files exec: %v", err)
+	}
+}
+
+func statFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models.FileStat, error) {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	return supervisor.Stat(conn, path)
+}
+
+func getFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models.FileStat, []byte, error) {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	stat, body, err := supervisor.Get(conn, path)
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+	got, err := io.ReadAll(body)
+
+	return stat, got, err
+}
+
+func putFile(t *testing.T, open func() io.ReadWriteCloser, header supervisor.FileHeader, src io.Reader) error {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	return supervisor.Put(conn, header, src)
 }
 
 // payload crosses the frame bound several times, so a copy that lands whole did not fit in one write.
@@ -44,37 +99,62 @@ func payload(t *testing.T) []byte {
 	return b
 }
 
-func TestTransportStatReportsTheShape(t *testing.T) {
-	dial := startFiles(t)
+// refusedAs fails the test unless err is the guest's refusal with code and a message holding text.
+func refusedAs(t *testing.T, what string, err error, code, text string) {
+	t.Helper()
+	var refusal *supervisor.FileError
+	if !errors.As(err, &refusal) || refusal.Code != code || !strings.Contains(refusal.Message, text) {
+		t.Fatalf("%s gave %v, want a %q refusal that says %q", what, err, code, text)
+	}
+}
+
+func TestFilesStatReportsTheShape(t *testing.T) {
+	open := startFiles(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hello.txt")
 	if err := os.WriteFile(path, []byte("hello"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(path, 0o750|fs.ModeSetuid); err != nil {
+		t.Fatal(err)
+	}
 
-	stat, err := supervisor.Stat(testContext(t), dial, path)
+	stat, err := statFile(t, open, path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if stat.Name != "hello.txt" || stat.Size != 5 || fs.FileMode(stat.Mode).Perm() != 0o640 || stat.Dir {
-		t.Fatalf("stat = %+v, want hello.txt, 5 bytes, 0640, a file", stat)
+	if stat.Type != models.FileRegular || stat.Size != 5 || stat.Mode != 0o4750 {
+		t.Fatalf("stat = %+v, want a 5 byte file with mode 4750", stat)
 	}
-	folder, err := supervisor.Stat(testContext(t), dial, dir)
+	info, err := os.Lstat(path)
 	if err != nil {
-		t.Fatalf("stat the dir: %v", err)
+		t.Fatal(err)
 	}
-	if !folder.Dir {
-		t.Fatalf("stat = %+v, want a directory", folder)
+	sys, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.UID != sys.Uid || stat.GID != sys.Gid || !stat.MTime.Equal(info.ModTime()) {
+		t.Fatalf("stat = %+v, want the owner and mtime the host sees, %+v", stat, info)
+	}
+
+	folder, err := statFile(t, open, dir)
+	if err != nil || folder.Type != models.FileDir {
+		t.Fatalf("stat of the dir = %+v, %v, want a dir", folder, err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := statFile(t, open, link); err != nil || got.Type != models.FileSymlink {
+		t.Fatalf("stat of a symlink = %+v, %v, want the link itself", got, err)
 	}
 }
 
-func TestTransportPutLandsAWholeFile(t *testing.T) {
-	dial := startFiles(t)
+func TestFilesPutLandsAWholeFile(t *testing.T) {
+	open := startFiles(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "blob")
 	want := payload(t)
 
-	if err := supervisor.Put(testContext(t), dial, path, 0o600, int64(len(want)), bytes.NewReader(want)); err != nil {
+	if err := putFile(t, open, supervisor.FileHeader{Path: path, Size: int64(len(want)), Mode: 0o600}, bytes.NewReader(want)); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -94,59 +174,68 @@ func TestTransportPutLandsAWholeFile(t *testing.T) {
 	assertNoTemp(t, dir)
 }
 
-func TestTransportGetStreamsTheFile(t *testing.T) {
-	dial := startFiles(t)
+func TestFilesPutMakesTheParentsOnlyWhenAsked(t *testing.T) {
+	open := startFiles(t)
+	path := filepath.Join(t.TempDir(), "a", "b", "note")
+
+	err := putFile(t, open, supervisor.FileHeader{Path: path, Size: 2, Mode: 0o644}, strings.NewReader("hi"))
+	refusedAs(t, "a put under a missing dir", err, supervisor.FileNotFound, "no such file")
+
+	if err := putFile(t, open, supervisor.FileHeader{Path: path, Size: 2, Mode: 0o644, Parents: true}, strings.NewReader("hi")); err != nil {
+		t.Fatalf("put with parents: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "hi" {
+		t.Fatalf("the file reads %q (%v), want hi", got, err)
+	}
+}
+
+func TestFilesGetStreamsTheFile(t *testing.T) {
+	open := startFiles(t)
 	path := filepath.Join(t.TempDir(), "blob")
 	want := payload(t)
 	if err := os.WriteFile(path, want, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	var got bytes.Buffer
-	stat, err := supervisor.Get(testContext(t), dial, path, &got)
+	stat, got, err := getFile(t, open, path)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if stat.Size != int64(len(want)) || !bytes.Equal(got.Bytes(), want) {
-		t.Fatalf("get gave %d bytes with stat %+v, want %d equal ones", got.Len(), stat, len(want))
+	if stat.Size != int64(len(want)) || !bytes.Equal(got, want) {
+		t.Fatalf("get gave %d bytes with stat %+v, want %d equal ones", len(got), stat, len(want))
 	}
 }
 
-func TestTransportFilesRefuseWhatTheyCannotCopy(t *testing.T) {
-	dial := startFiles(t)
-	ctx := testContext(t)
+func TestFilesRefuseWhatTheyCannotCopy(t *testing.T) {
+	open := startFiles(t)
 	dir := t.TempDir()
 
-	if _, err := supervisor.Get(ctx, dial, dir, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "is a directory") {
-		t.Fatalf("get of a directory gave %v, want it named as one", err)
-	}
-	if _, err := supervisor.Stat(ctx, dial, "relative/name"); err == nil || !strings.Contains(err.Error(), "must be absolute") {
-		t.Fatalf("stat of a relative path gave %v, want a refusal", err)
-	}
-	if _, err := supervisor.Stat(ctx, dial, filepath.Join(dir, "missing")); err == nil || !strings.Contains(err.Error(), "no such file") {
-		t.Fatalf("stat of a missing path gave %v, want the guest's not-exist", err)
-	}
+	_, _, err := getFile(t, open, dir)
+	refusedAs(t, "a get of a directory", err, supervisor.FileInvalid, "is a directory")
+	_, err = statFile(t, open, "relative/name")
+	refusedAs(t, "a stat of a relative path", err, supervisor.FileInvalid, "must be absolute")
+	_, err = statFile(t, open, filepath.Join(dir, "missing"))
+	refusedAs(t, "a stat of a missing path", err, supervisor.FileNotFound, "no such file")
+
 	// A fifo would block the guest's open forever, so the get refuses it before the reply.
 	fifo := filepath.Join(dir, "pipe")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := supervisor.Get(ctx, dial, fifo, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("get of a fifo gave %v, want a refusal", err)
+	_, _, err = getFile(t, open, fifo)
+	refusedAs(t, "a get of a fifo", err, supervisor.FileInvalid, "not a regular file")
+	if got, err := statFile(t, open, fifo); err != nil || got.Type != models.FileOther {
+		t.Fatalf("stat of a fifo gave %+v, %v, want other", got, err)
 	}
-	if got, err := supervisor.Stat(ctx, dial, fifo); err != nil || fs.FileMode(got.Mode).Type() != fs.ModeNamedPipe || got.Dir {
-		t.Fatalf("stat of a fifo gave %+v, %v, want its mode", got, err)
-	}
+
 	// The guest refuses the header, so its reason must beat the broken pipe the rest of the payload meets.
 	want := payload(t)
-	err := supervisor.Put(ctx, dial, filepath.Join(dir, "nowhere", "blob"), 0o600, int64(len(want)), bytes.NewReader(want))
-	if err == nil || !strings.Contains(err.Error(), "no such file") {
-		t.Fatalf("put under a missing dir gave %v, want the guest's not-exist", err)
-	}
+	err = putFile(t, open, supervisor.FileHeader{Path: filepath.Join(dir, "nowhere", "blob"), Size: int64(len(want)), Mode: 0o600}, bytes.NewReader(want))
+	refusedAs(t, "a put under a missing dir", err, supervisor.FileNotFound, "no such file")
 }
 
-func TestTransportPutThatDiesMidwayLeavesTheOldFile(t *testing.T) {
-	dial := startFiles(t)
+func TestFilesPutThatDiesMidwayLeavesTheOldFile(t *testing.T) {
+	open := startFiles(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "blob")
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
@@ -155,20 +244,25 @@ func TestTransportPutThatDiesMidwayLeavesTheOldFile(t *testing.T) {
 
 	// The source runs out before the promised size, so the host hangs up with the guest's copy short.
 	want := payload(t)
-	err := supervisor.Put(testContext(t), dial, path, 0o600, int64(len(want))+1, bytes.NewReader(want))
+	conn := open()
+	err := supervisor.Put(conn, supervisor.FileHeader{Path: path, Size: int64(len(want)) + 1, Mode: 0o600}, bytes.NewReader(want))
 	if err == nil {
 		t.Fatal("a short put succeeded")
 	}
+	// Whether the guest's refusal of the short copy lands depends on the transport, so only the file is checked.
+	_ = conn.Close()
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "old" {
 		t.Fatalf("the old file reads %q (%v), want it untouched", got, err)
 	}
-	// The guest removes its temp name once the connection drops; give it the moment that takes.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && hasTemp(t, dir) {
-		time.Sleep(20 * time.Millisecond)
-	}
 	assertNoTemp(t, dir)
+}
+
+func TestLookPathAnswersTheInitPathWithItself(t *testing.T) {
+	got, err := lookPath(entrypoint{argv: []string{supervisor.InitPath, supervisor.FilesMode}})
+	if err != nil || got != selfBinary {
+		t.Fatalf("lookPath = %q, %v, want this binary %q", got, err, selfBinary)
+	}
 }
 
 func hasTemp(t *testing.T, dir string) bool {

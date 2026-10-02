@@ -18,7 +18,6 @@ const (
 	ControlPort uint32 = 5000
 	ExecPort    uint32 = 5001
 	LogsPort    uint32 = 5002
-	FilesPort   uint32 = 5003
 )
 
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.

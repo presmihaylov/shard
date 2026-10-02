@@ -84,6 +84,8 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 		{"fork", "one", "two"},
 		{"clone"},
 		{"clone", "one", "two"},
+		{"cp"},
+		{"cp", "one", "two"},
 		{"image"},
 		{"image", "rm"},
 		{"image", "prune", "extra"},

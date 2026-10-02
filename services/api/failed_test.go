@@ -31,6 +31,14 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 		walked++
 
 		path := subst.Replace(route.Pattern)
+		// A HEAD answer carries no body, so its status is all there is to check.
+		if route.Method == http.MethodHead {
+			if status := head(t, s.server, path); status != http.StatusConflict {
+				t.Errorf("%s %s on a failed sandbox answered %d, want 409", route.Method, route.Pattern, status)
+			}
+
+			continue
+		}
 		status, body := send(t, s.server, route.Method, path, "")
 		if status != http.StatusConflict {
 			t.Errorf("%s %s on a failed sandbox answered %d, want 409", route.Method, route.Pattern, status)
