@@ -2224,8 +2224,11 @@ holds "${IMAGE%%:*}" shard image ls && fail "image ls still lists the pruned ima
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
-shard rm "${ID}" >/dev/null 2>&1
-say "a second rm is idempotent"
+CODE=0
+REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "a second rm exited 0 on an id that does not exist"
+expect "${REFUSAL}" "shard: no sandbox ${ID}" "a second rm fails on the id it no longer finds"
+expect "$(shard rm --force "${ID}" 2>&1)" "shard: warning: sandbox ${ID} does not exist, so there is nothing to remove" "a second rm --force only warns, so a teardown stays idempotent"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"

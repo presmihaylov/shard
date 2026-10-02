@@ -97,18 +97,34 @@ func TestRmForceStopsThenRemovesThroughTheDaemon(t *testing.T) {
 	}
 }
 
-// The record dies last, so an id with no record has nothing else left either: rm of it is a warning, not a failure.
-func TestRmOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
+// A plain rm of an id with no record fails like every other verb (SHARD-282).
+func TestRmOfAMissingSandboxFails(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
-	if err := app.Run(t.Context(), []string{"rm", "ghost"}); err != nil {
-		t.Fatalf("rm of an id that is already gone: %v", err)
+	err := app.Run(t.Context(), []string{"rm", "ghost"})
+	if err == nil || err.Error() != "no sandbox ghost" {
+		t.Errorf("rm returned %v, want 'no sandbox ghost'", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("rm printed %q, want nothing", out.String())
+	}
+}
+
+// The record dies last, so an id with no record has nothing else left either: rm --force of it is a warning, as rm -f is.
+func TestRmForceOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newClientApp(t, &out, running())
+	d.repoSvc.(*fakeLifecycleRepo).missing = true
+
+	if err := app.Run(t.Context(), []string{"rm", "--force", "ghost"}); err != nil {
+		t.Fatalf("rm --force of an id that is already gone: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != "shard: warning: sandbox ghost does not exist, so there is nothing to remove" {
-		t.Errorf("rm printed %q, want the warning alone", out.String())
+		t.Errorf("rm --force printed %q, want the warning alone", out.String())
 	}
 }
 
