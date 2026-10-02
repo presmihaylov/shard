@@ -27,7 +27,13 @@ func newProvider(t *testing.T) *gvisor.Provider {
 func newProviderOver(t *testing.T, script string) *gvisor.Provider {
 	t.Helper()
 
-	dir := t.TempDir()
+	return newProviderIn(t, t.TempDir(), script)
+}
+
+// newProviderIn is newProviderOver with the state directory of sandbox id at dir/id, for a test that lays a bundle there.
+func newProviderIn(t *testing.T, dir, script string) *gvisor.Provider {
+	t.Helper()
+
 	binary := filepath.Join(dir, "runsc")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatalf("write the fake runsc: %v", err)
@@ -125,6 +131,34 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 	}
 	if _, err := os.Stat(dir + ".tmp"); err == nil {
 		t.Error("the failed checkpoint left its temporary directory behind")
+	}
+}
+
+// The service bounds a pause the client let go of, and the delete after a good checkpoint must keep that bound.
+func TestAWedgedDeleteAfterACheckpointEndsAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "amber-otter-1a2b")
+	for _, layer := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, layer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderIn(t, dir, `case "$*" in *delete*) exec sleep 60;; esac
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	p.SetCgroupRoot(t.TempDir())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := p.Pause(ctx, "amber-otter-1a2b", filepath.Join(t.TempDir(), "snap"))
+	if err == nil {
+		t.Fatal("Pause returned nil, want the delete cut at the deadline")
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("Pause took %s over a wedged delete, want it ended near the 500ms deadline", took)
 	}
 }
 

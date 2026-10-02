@@ -877,8 +877,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.
-	return p.release(context.WithoutCancel(ctx), id, b, tmp)
+	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged delete holds no lock.
+	return p.release(ctx, id, b, tmp)
 }
 
 // lose ends a pause that broke off after the checkpoint began: the sentry has exited, so nothing is left to thaw.
