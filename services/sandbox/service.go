@@ -97,6 +97,8 @@ type Config struct {
 	ProxyCA func() ([]byte, error)
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
+	// HostMemoryMiB is the most memory a create may ask for, the host's total; zero is no bound, which only a test sets.
+	HostMemoryMiB int64
 	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
 	StopSettle time.Duration
 	// ProbeBudget overrides DefaultProbeBudget, which only a test has a reason to do.
@@ -249,6 +251,10 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
 	if err := s.cfg.Provider.CheckResources(req.Resources); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
+	}
+	// A bound past the host's memory never binds: the host runs out of memory first.
+	if s.cfg.HostMemoryMiB > 0 && req.Resources.MemoryMiB > s.cfg.HostMemoryMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %d MiB is more than the %d MiB of memory this host has", req.Resources.MemoryMiB, s.cfg.HostMemoryMiB)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	req.Resources.DiskMiB = bundle.DiskBound(req.Resources)

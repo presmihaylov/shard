@@ -132,6 +132,38 @@ func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	}
 }
 
+// A bound past the host's memory never binds, so it is refused by name before anything is pulled or recorded.
+func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
+	req := alpine()
+	req.Resources.MemoryMiB = 4097
+
+	_, err := svc.Create(t.Context(), req)
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097 MiB is more than the 4096 MiB") {
+		t.Fatalf("create = %v, want a request error that names the bound and the host", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+	if l.repo.sb.ID != "" {
+		t.Errorf("a refused create left the record %+v", l.repo.sb)
+	}
+}
+
+func TestCreateTakesTheWholeHostMemory(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
+	req := alpine()
+	req.Resources.MemoryMiB = 4096
+
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("create with the host's whole memory: %v", err)
+	}
+}
+
 // A cancelled context would fail every give-back at once, so the unwind builds its own.
 func TestCreateTearsDownAfterAnInterrupt(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Create"}}

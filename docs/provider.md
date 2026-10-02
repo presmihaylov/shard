@@ -267,8 +267,12 @@ needed a context and an error would be a fourth thing to get wrong.
 ## What a memory bound means
 
 `--memory` bounds a sandbox the same way on every substrate: past the bound the whole sandbox dies,
-not one process inside it, and the daemon restarts it when the record set `restart_on_oom`. gVisor
-sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
+not one process inside it, and the daemon restarts it when the record set `restart_on_oom`.
+`create` refuses a bound above the host's total memory by name (`MemTotal` on Linux, `hw.memsize`
+on a Mac), because such a bound never binds: the host OOM killer acts first. The host's whole
+memory is still taken, so leaving room for the host is the operator's call.
+
+gVisor sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
 pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/proxy"
@@ -621,17 +622,23 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		return nil, err
 	}
 
+	hostMemory, err := hostmem.Total()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.New(sandbox.Config{
-		Repo:         repo,
-		Images:       images,
-		Network:      net,
-		Provider:     provider,
-		Secrets:      secrets,
-		Policies:     policies,
-		Substrate:    sub,
-		Environments: envs,
-		ProxyCA:      d.proxyCA,
-		PullTimeout:  d.cfg.PullTimeout,
+		Repo:          repo,
+		Images:        images,
+		Network:       net,
+		Provider:      provider,
+		Secrets:       secrets,
+		Policies:      policies,
+		Substrate:     sub,
+		Environments:  envs,
+		ProxyCA:       d.proxyCA,
+		PullTimeout:   d.cfg.PullTimeout,
+		HostMemoryMiB: hostMemory >> 20,
 	}), nil
 }
 
