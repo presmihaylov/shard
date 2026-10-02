@@ -328,7 +328,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. 404; 409 when the sandbox is still up,
   unless `?force=true`, which stops it first with `grace=<seconds>` from the query.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. 404; 409
-  when the sandbox is not running, or when the provider does not claim the verb.
+  when the sandbox is not running, or when the provider does not claim the verb. A client that hangs
+  up does not cut the pause. A pause the substrate lost after its checkpoint began answers 500 and
+  leaves the record `failed` with the reason.
 - `POST /v0/sandboxes/{id}/resume` takes no body and answers 200 with the running record. 404; 409
   when the sandbox is not paused, when its record names no snapshot, or for an unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, run from the

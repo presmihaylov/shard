@@ -285,6 +285,10 @@ type fakeProvider struct {
 	source  string
 	paused  bool
 	resumed bool
+	// lose makes the pause end the sandbox the way a checkpoint that broke off does.
+	lose bool
+	// pauseCtxErr is what the pause's context said when the pause began, so a test sees a client's cancel.
+	pauseCtxErr error
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -400,9 +404,15 @@ func (f *fakeProvider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
 }
 
-func (f *fakeProvider) Pause(_ context.Context, _ string, dir string) error {
+func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
+	f.pauseCtxErr = ctx.Err()
 	if err := f.r.record("provider.Pause"); err != nil {
 		return err
+	}
+	if f.lose {
+		f.status = models.Status{}
+
+		return &models.LostError{Sandbox: id, Err: fmt.Errorf("checkpoint sandbox %s: no space left on device", id)}
 	}
 	f.paused, f.snapshotDir = true, dir
 	f.status = models.Status{Exists: true, State: models.StatePaused}

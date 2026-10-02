@@ -15,6 +15,9 @@ import (
 // checkpointFile is the one file every snapshot holds, and the provider writes it last before it deletes.
 const checkpointFile = "checkpoint.img"
 
+// pauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.
+const pauseBudget = 10 * time.Minute
+
 // CopyRequest names the sandbox a fork or a clone makes. It is the JSON body of both routes.
 type CopyRequest struct {
 	Name string `json:"name,omitempty"`
@@ -54,7 +57,16 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
+	// A client that hangs up mid-checkpoint would cut a save the guest does not survive (SHARD-336).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseBudget)
+	defer cancel()
+
 	if err := s.cfg.Provider.Pause(ctx, id, dir); err != nil {
+		var lost *models.LostError
+		if errors.As(err, &lost) {
+			return models.Sandbox{}, s.fail(ctx, id, err)
+		}
+
 		return models.Sandbox{}, errors.Join(err, s.reconcileGone(ctx, id, dir))
 	}
 
@@ -83,7 +95,7 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 		return nil
 	}
 
-	// The checkpoint is the last file the provider writes before it deletes, so its presence means paused.
+	// The checkpoint is the last file the provider writes before it deletes, and a pause that lost the guest ended failed above.
 	held, err := hasCheckpoint(dir)
 	if err != nil {
 		return err

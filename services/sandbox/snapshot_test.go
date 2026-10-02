@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os"
@@ -83,6 +84,50 @@ func TestPauseRecordsASandboxTheProviderLost(t *testing.T) {
 
 	if sb := l.repo.sb; sb.State != models.StateStopped || sb.PID != 0 {
 		t.Errorf("the record is %s with pid %d, want stopped with pid 0", sb.State, sb.PID)
+	}
+}
+
+// A client that hangs up mid-checkpoint must not cut the save, because the guest does not survive one that broke off.
+func TestPauseOutlivesTheClientThatAskedForIt(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	sb, err := svc.Pause(ctx, "sandbox1")
+	if err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	if l.provider.pauseCtxErr != nil {
+		t.Errorf("the provider paused under a context that said %v, want one the client cannot cancel", l.provider.pauseCtxErr)
+	}
+	if sb.State != models.StatePaused {
+		t.Errorf("the record is %s, want paused", sb.State)
+	}
+}
+
+// A pause that lost the guest leaves nothing to stop or resume, so the record ends failed with the reason.
+func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, l := newService(t, &recorder{}, running())
+	l.repo.snapshotDir = dir
+	l.provider.lose = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	var lost *models.LostError
+	if !errors.As(err, &lost) {
+		t.Fatalf("pause returned %v, want the lost sandbox", err)
+	}
+
+	// The checkpoint an earlier pause left must not pass for this one.
+	sb := l.repo.sb
+	if sb.State != models.StateFailed || sb.PID != 0 || !strings.Contains(sb.FailedReason, "no space left on device") {
+		t.Errorf("the record is %s with pid %d and reason %q, want failed with pid 0 and the checkpoint's reason", sb.State, sb.PID, sb.FailedReason)
 	}
 }
 
