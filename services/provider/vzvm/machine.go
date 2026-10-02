@@ -151,10 +151,6 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	if restore == "" {
 		return m, nil
 	}
-	// Every restore of one save wakes with the same crng key, and VZ has no vmgenid to tell the guest.
-	if err := m.control.Load().Reseed(ctx); err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: reseed the restored guest: %w", id, err), p.end(ctx, m))
-	}
 	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
 	p.mu.Lock()
 	m.started = true
@@ -200,8 +196,12 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
 	}
-	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its root frozen until a host thaws it.
+	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its processes frozen until a host thaws it.
 	if state.Frozen {
+		// Every restore of one save wakes with the same crng key and VZ has no vmgenid, so no guest process draws before the reseed.
+		if err := control.Reseed(ctx); err != nil {
+			return nil, errors.Join(fmt.Errorf("sandbox %s: reseed the restored guest: %w", id, err), m.close())
+		}
 		if err := control.Thaw(ctx); err != nil {
 			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest's root: %w", id, err), m.close())
 		}

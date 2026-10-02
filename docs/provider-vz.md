@@ -200,20 +200,22 @@ to reach the proxy anyway.
 
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
-- `pause` asks `shard-init` to freeze the guest's root filesystem, pauses the VM, saves its state to
+- `pause` asks `shard-init` to freeze the guest, pauses the VM, saves its state to
   `<snapshot dir>/vm.vzvmstate`, stops the VM, and then takes an APFS clone of the quiescent disk as
   `<snapshot dir>/disk.img` beside it; the shim exits. The memory is freed, as the verb promises on
   gVisor; the live disk stays where it is. The two files are one snapshot: the memory and the disk of
   the same instant. The freeze is for `clone`, which boots the live disk cold and never reads the
-  state file (SHARD-296). `FIFREEZE` flushes the root and then holds every write until the thaw, so
-  no write lands between the flush and the pause. A sync alone left that window open, and a writer in
-  a loop tore the clone's copy of its file on every try.
+  state file (SHARD-296). `shard-init` freezes the guest's processes first, through `cgroup.freeze`
+  on the sandbox cgroup, and then the root: `FIFREEZE` flushes it and holds every write until the
+  thaw, so no write lands between the flush and the pause. A sync alone left that window open, and a
+  writer in a loop tore the clone's copy of its file on every try. The order matters, since a writer
+  the root held first sleeps where no cgroup freeze reaches it. The thaw goes the other way round.
 - Every path that runs a frozen guest again thaws it. A pause that fails at or after the freeze
   resumes the VM if it got that far, then thaws. The state `shard-init` replays on a new control
-  connection says whether the root is frozen, and the host that reads it thaws: after a resume, after
+  connection says whether the guest is frozen, and the host that reads it thaws: after a resume, after
   a fork before the re-address, after a daemon that died between the freeze and the pause, and after
   a control connection that dropped with the freeze's answer. A connection dialed again while a pause
-  is still in flight leaves the root frozen for it. `shard-init` undoes a freeze whose host was
+  is still in flight leaves the guest frozen for it. `shard-init` undoes a freeze whose host was
   replaced before the answer, since that host's replay may predate the freeze. A stop thaws before it
   signals the entrypoint. A guest whose `shard-init` predates the freeze refuses it, and the pause
   fails with it; a snapshot taken before the freeze never says frozen, and resumes as it did.
@@ -236,13 +238,14 @@ provider persists each sandbox's identifier in its state directory and reuses it
 fork. The spike found this the hard way: `Code=12, invalid argument`.
 
 Every restore of one state file also wakes with the same kernel crng key, so a resumed source and
-its forks read the same `/dev/urandom` bytes until the guest's next timed reseed. VZ has no vmgenid
-device to tell the guest, so every `resume` and `fork` sends 32 bytes from the host's `crypto/rand`
-on the control port before it returns, and `shard-init` writes them into the input pool and forces
-a rekey with `RNDRESEEDCRNG` (SHARD-293). The seed lands 5 to 9 ms after the vCPUs resume, so a
-process already running at the pause can read the same bytes in every copy inside that window, and
-SHARD-310 freezes the guest across the restore to close it. Only the kernel's generator is rekeyed:
-a process that seeded its own generator before the pause carries that state into every copy.
+its forks would read the same `/dev/urandom` bytes until the guest's next timed reseed. VZ has no
+vmgenid device to tell the guest, so every `resume` and `fork` sends 32 bytes from the host's
+`crypto/rand` on the control port, and `shard-init` writes them into the input pool and forces a
+rekey with `RNDRESEEDCRNG` (SHARD-293). The seed goes in while every guest process is still frozen
+from the pause, and the thaw only after it, so no process reads a byte of the saved key in any copy
+(SHARD-310). `shard-init` itself sits in a sibling cgroup, `init`, so it answers while the guest is
+frozen. Only the kernel's generator is rekeyed: a process that seeded its own generator before the
+pause carries that state into every copy.
 
 Rejected: an in-memory pause (the framework's `pause` alone). shard deleted the in-memory pause so
 the verb means one thing on every substrate: a snapshot on disk and the memory given back.

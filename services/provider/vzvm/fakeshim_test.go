@@ -162,7 +162,7 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
-// orderFile in the state directory, once a test creates it, takes one line per freeze and thaw in the order the guest reads them.
+// orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
@@ -440,6 +440,11 @@ type stream struct {
 }
 
 func (s *stream) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), `"kind":"`+supervisor.KindReseed+`"`) {
+		if err := s.machine.note(supervisor.KindReseed); err != nil {
+			return 0, err
+		}
+	}
 	for kind, frozen := range map[string]bool{supervisor.KindFreeze: true, supervisor.KindThaw: false} {
 		if !strings.Contains(string(p), `"kind":"`+kind+`"`) {
 			continue

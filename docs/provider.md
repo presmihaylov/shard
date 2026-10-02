@@ -175,10 +175,8 @@ dropped in the stack and written to the sandbox's egress log, which `docs/provid
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
 Every restore of one save wakes with the same guest crng key, so each `resume` and `fork` sends the
 guest 32 bytes of host entropy and `shard-init` rekeys from them before the verb returns (SHARD-293).
-One window stays open: the vCPUs resume 5 to 9 ms before the seed lands, so a process already running
-at the pause can read the same `/dev/urandom` bytes in every copy inside it. A process that starts
-after `resume` or `fork` returns, and every exec, reads fresh bytes. SHARD-310 closes the window by
-freezing the guest across the restore.
+The guest's processes are still frozen from the pause when the seed lands, and thaw only after it,
+so no copy reads a `/dev/urandom` byte of the saved key (SHARD-310).
 The three resource bounds below hold on the Linux substrates; `vz` and `firecracker` have no host
 cgroup, and each section says what the VM does instead.
 
@@ -283,9 +281,11 @@ pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither kn
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
 guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
-itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` moves into that cgroup and
-unshares a cgroup namespace rooted there, so everything a guest starts, a Docker daemon and its
-containers included, lands under the bound; `shard-init` alone is exempt, through
+itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares a cgroup namespace
+rooted at that cgroup, then moves itself to a sibling, `init`, so a pause can freeze every guest
+process and leave the supervisor to answer. Each process it starts is born into the bounded cgroup
+by `CLONE_INTO_CGROUP`, so everything a guest starts, a Docker daemon and its containers included,
+lands under the bound. `shard-init` alone is exempt from the killer, through
 `oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
 exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
 `memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds

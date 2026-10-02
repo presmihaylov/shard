@@ -138,22 +138,22 @@ func mountOnce(source, target, fstype string, flags uintptr) error {
 
 // confine takes CAP_SYS_PTRACE out of the bounding set, so no guest process can open PID 1's fds, and
 // puts the guest in its own cgroup namespace, so a runtime inside it makes cgroups under the sandbox's bound.
-func confine() error {
+func confine() (*os.File, error) {
 	if os.Getenv(capbsetEnv) == "" {
 		// The bounding set and the namespace are per thread, and exec carries the calling thread's, so a re-exec gives them to the whole runtime.
 		runtime.LockOSThread()
 		if err := unix.Prctl(unix.PR_CAPBSET_DROP, unix.CAP_SYS_PTRACE, 0, 0, 0); err != nil {
-			return fmt.Errorf("drop CAP_SYS_PTRACE from the bounding set: %w", err)
+			return nil, fmt.Errorf("drop CAP_SYS_PTRACE from the bounding set: %w", err)
 		}
 		if err := unix.Unshare(unix.CLONE_NEWCGROUP); err != nil {
-			return fmt.Errorf("unshare the cgroup namespace: %w", err)
+			return nil, fmt.Errorf("unshare the cgroup namespace: %w", err)
 		}
 
-		return syscall.Exec("/proc/self/exe", os.Args, append(os.Environ(), capbsetEnv+"=1"))
+		return nil, syscall.Exec("/proc/self/exe", os.Args, append(os.Environ(), capbsetEnv+"=1"))
 	}
 	// PID 1 stays undumpable, so a root exec cannot read the supervisor's sockets through /proc/1/fd.
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-		return fmt.Errorf("clear the dumpable flag: %w", err)
+		return nil, fmt.Errorf("clear the dumpable flag: %w", err)
 	}
 
 	return remountCgroup()

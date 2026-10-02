@@ -543,6 +543,40 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	}
 }
 
+// A restored guest is reseeded while its processes are still frozen, so no fork of one save draws from the key the save holds.
+func TestAResumeReseedsTheGuestBeforeItThaws(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, orderFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	order, err := os.ReadFile(filepath.Join(dir, orderFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(order)), []string{supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw}; !slices.Equal(got, want) {
+		t.Fatalf("the guest read %q, want the pause's freeze, then the reseed before the thaw", got)
+	}
+}
+
 // A stopped sandbox starts again over the disk the stop kept, and a wait then answers the new run.
 func TestStartBootsAgainAfterAStop(t *testing.T) {
 	h := newHarness(t)
