@@ -107,8 +107,9 @@ func (c *Client) AttachExec(ctx context.Context, ref, execID string, streams Exe
 // cutShort asks the record why a stream ended early, since a daemon that detaches a stalled client says nothing on the wire.
 func (c *Client) cutShort(ctx context.Context, ref, execID string, cut *cutError) error {
 	rec, err := c.GetExec(ctx, ref, execID)
+	// shard ruled in SHARD-283 (29e34095) that a record the daemon cannot answer leaves the cut line alone, as logs -f prints it.
 	if err != nil {
-		return errors.Join(cut, err)
+		return cut
 	}
 
 	return fmt.Errorf("%w; the daemon detaches a client that takes no output for %s, and exec %s is %s with %d bytes of output lost", cut, sandbox.ExecStallBound, execID, rec.State, rec.LostBytes)

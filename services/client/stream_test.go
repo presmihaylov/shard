@@ -298,8 +298,8 @@ func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
 	}
 }
 
-// A record the client cannot read leaves the cut stream named on its own, with why the record is missing.
-func TestExecReportsACutStreamWhenTheRecordIsGone(t *testing.T) {
+// A record the client cannot read leaves the cut stream named on its own, one line as logs -f prints it.
+func TestExecReportsOnlyTheCutWhenTheRecordIsGone(t *testing.T) {
 	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", hangUp: true}
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.Header.Get("Upgrade") == "" {
@@ -311,8 +311,9 @@ func TestExecReportsACutStreamWhenTheRecordIsGone(t *testing.T) {
 	})
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
-	if err == nil || !strings.Contains(err.Error(), "without an exit status") || !strings.Contains(err.Error(), "no sandbox sandbox1") {
-		t.Fatalf("Exec returned %v, want the cut stream and the missing record both named", err)
+	want := "the exec in sandbox sandbox1 ended without an exit status: the stream to the daemon dropped"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Exec returned %q, want %q", err, want)
 	}
 }
 
