@@ -265,8 +265,8 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneFile(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the snapshot disk for sandbox %s: %w", spec.ID, err)
+	if err := cloneDisk(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
+		return fmt.Errorf("copy the snapshot disk for sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	// The saved memory restores under its own identifier and size only; the network, and the name the guest answers to, are what the fork changes.

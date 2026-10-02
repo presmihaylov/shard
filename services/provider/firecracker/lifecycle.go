@@ -35,7 +35,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 	if err := bundle.WriteOverlayDisk(filepath.Join(spec.StateDir, bundle.OverlayDiskFile), spec.Resources); err != nil {
-		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	r, err := recordOf(spec)
@@ -352,7 +352,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 	// A clone shares the source's blocks or is refused: a full copy of the overlay is not what the verb promises.
-	if err := bundle.Reflink(filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)); err != nil {
+	from, to := filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
+	if err := bundle.AdmitCopy(from, to, func() error { return bundle.Reflink(from, to) }); err != nil {
 		return fmt.Errorf("clone the overlay of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 

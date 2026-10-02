@@ -35,7 +35,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 	if _, err := bundle.CloneRootDisk(spec.RootDisk, filepath.Join(spec.StateDir, diskFile), spec.Resources); err != nil {
-		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	r, err := recordOf(spec)
@@ -354,8 +354,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneFile(filepath.Join(sourceDir, diskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the disk of sandbox %s: %w", sourceID, err)
+	if err := cloneDisk(filepath.Join(sourceDir, diskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
+		return fmt.Errorf("copy the disk of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
 	// The spec names the copy and its lease alone; the run is the source's, as the bundle it copies is on Linux.
@@ -363,6 +363,15 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	r.network(spec)
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
+}
+
+// cloneDisk copies the disk at src to dst once the root has room for all of it beside the disk of every other sandbox.
+func cloneDisk(src, dst string) error {
+	return bundle.AdmitCopy(src, dst, func() error {
+		_, err := bundle.CloneFile(src, dst)
+
+		return err
+	})
 }
 
 // Wait blocks until the entrypoint exits, by the file the event loop lands each exit in.
