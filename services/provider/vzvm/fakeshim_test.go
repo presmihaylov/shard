@@ -162,6 +162,9 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
+// refuseResumeFile in the state directory fails every resume of the VM, until the test removes it.
+const refuseResumeFile = "refuse-resume"
+
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
 
@@ -359,6 +362,14 @@ func (m *fakeMachine) resetAndAwaitHost() error {
 }
 
 func (m *fakeMachine) Resume() error {
+	refused, err := m.has(refuseResumeFile)
+	if err != nil {
+		return err
+	}
+	if refused {
+		return errors.New("the vm refuses to resume")
+	}
+
 	return m.move(vz.StatePaused, vz.StateRunning, syscall.SIGCONT)
 }
 

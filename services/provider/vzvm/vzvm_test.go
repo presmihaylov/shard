@@ -1284,6 +1284,26 @@ func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
 func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
 	t.Helper()
+	h, spec, shim := runningShim(t)
+	// The daemon goes before the freeze, so the next one meets the frozen shim only by its socket.
+	if restart {
+		if err := h.provider.Close(); err != nil {
+			t.Fatalf("close the provider: %v", err)
+		}
+	}
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim: %v", err)
+	}
+	if restart {
+		h.open(t)
+	}
+
+	return h, spec, shim
+}
+
+// runningShim starts a sandbox whose fake guest and shim the test kills at its end, whatever a verb left, and answers the shim's pid.
+func runningShim(t *testing.T) (*harness, models.SandboxSpec, int) {
+	t.Helper()
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1329,23 +1349,113 @@ func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) 
 	}
 	t.Cleanup(func() {
 		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			t.Errorf("end the frozen shim %d: %v", shim, err)
+			t.Errorf("end the fake shim %d: %v", shim, err)
 		}
 	})
-	// The daemon goes before the freeze, so the next one meets the frozen shim only by its socket.
-	if restart {
-		if err := h.provider.Close(); err != nil {
-			t.Fatalf("close the provider: %v", err)
-		}
-	}
-	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
-		t.Fatalf("freeze the fake shim: %v", err)
-	}
-	if restart {
-		h.open(t)
-	}
 
 	return h, spec, shim
+}
+
+// A daemon killed inside a pause, after the VM paused and before the record, leaves a paused VM under a record that says running; stop and rm still end it (SHARD-375).
+func TestStopAndRemoveEndASandboxACutPauseLeft(t *testing.T) {
+	for _, verb := range []string{"stop", "rm", "stop a vm that refuses to resume"} {
+		t.Run(verb, func(t *testing.T) {
+			h, spec, shim := cutPause(t)
+			dir, err := h.stateDir(spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verb == "stop a vm that refuses to resume" {
+				if err := os.WriteFile(filepath.Join(dir, refuseResumeFile), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			within(t, stopGrace+10*time.Second, verb+" after a cut pause", func() error {
+				if verb == "rm" {
+					return h.provider.Remove(t.Context(), spec.ID)
+				}
+
+				return h.provider.Stop(t.Context(), spec.ID, stopGrace)
+			})
+			awaitExit(t, shim)
+		})
+	}
+}
+
+// The first probe after the restart resumes the VM and thaws the root, so the sandbox runs as its record says (SHARD-375).
+func TestStatusAfterACutPauseRunsTheSandboxAgain(t *testing.T) {
+	h, spec, _ := cutPause(t)
+
+	var status models.Status
+	within(t, 10*time.Second, "Status after a cut pause", func() error {
+		var err error
+		status, err = h.provider.Status(t.Context(), spec.ID)
+
+		return err
+	})
+	if status.State != models.StateRunning {
+		t.Fatalf("Status after a cut pause = %+v, want running", status)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, info, err := vz.Adopt(t.Context(), filepath.Join(dir, "shim.sock"))
+	if err != nil || info.State != vz.StateRunning {
+		t.Fatalf("the shim says %+v, %v; want its VM running", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, frozenFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the guest's root is still frozen after the probe: %v", err)
+	}
+}
+
+// cutPause leaves what a daemon killed between the VM pause and the record leaves: the root frozen, the VM paused, and a new provider.
+func cutPause(t *testing.T) (*harness, models.SandboxSpec, int) {
+	t.Helper()
+	h, spec, shim := runningShim(t)
+	if err := h.provider.Close(); err != nil {
+		t.Fatalf("close the provider: %v", err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _, err := vz.Adopt(t.Context(), filepath.Join(dir, "shim.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatalf("read the guest's state: %v", err)
+	}
+	if err := errors.Join(control.Freeze(t.Context()), control.Close()); err != nil {
+		t.Fatalf("freeze the guest's root: %v", err)
+	}
+	if _, err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	h.open(t)
+
+	return h, spec, shim
+}
+
+// within fails the test when verb errs or has not returned by d; the test's cleanup kills the guest a stuck verb waits on.
+func within(t *testing.T, d time.Duration, what string, verb func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- verb() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	case <-time.After(d):
+		t.Fatalf("%s has not returned in %s", what, d)
+	}
 }
 
 // Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
