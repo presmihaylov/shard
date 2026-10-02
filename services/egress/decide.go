@@ -80,6 +80,40 @@ func (s *Service) DecideName(sb models.Sandbox, name string) (Decision, error) {
 	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + name}, nil
 }
 
+// Unresolved judges an http request by name, before any resolver is asked, so a host the policy never allows
+// is refused without a lookup and its reason names only the host (SHARD-342). The bool is true when the deny
+// is final; false means the verdict needs the resolved address, so the caller resolves and asks Decide.
+func (s *Service) Unresolved(sb models.Sandbox, host string, port int) (Decision, bool, error) {
+	if sb.Policy == "" {
+		return Decision{}, false, nil
+	}
+
+	effective, err := s.Effective(sb)
+	if err != nil {
+		return Decision{}, false, fmt.Errorf("sandbox %s: %w", sb.ID, err)
+	}
+	if effective.Missing {
+		return Decision{Action: models.ActionDeny, ID: network.RuleMissing, Reason: "policy " + sb.Policy + " does not exist"}, true, nil
+	}
+
+	for _, rule := range effective.Rules {
+		if matchesName(rule.Rule, host) {
+			// A name rule decides by name; an allow still faces the floor, so only its deny is final here.
+			if rule.Action == models.ActionDeny {
+				return Decision{Action: models.ActionDeny, Rule: rule, ID: rule.ID, Reason: "the first matching rule of policy " + sb.Policy}, true, nil
+			}
+
+			return Decision{}, false, nil
+		}
+		// An allow rule an address could match is the only way a lookup turns the default deny into an allow.
+		if mightAllowByAddress(rule.Rule, port) {
+			return Decision{}, false, nil
+		}
+	}
+
+	return Decision{Action: models.ActionDeny, ID: network.RuleDefault, Reason: "no rule of policy " + sb.Policy + " matches " + host}, true, nil
+}
+
 // anyLeavesDNS says an any rule leaves port 53 open, which is what let a guest resolve before the resolver.
 func anyLeavesDNS(rule models.Rule) bool {
 	return rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupAny && (len(rule.Ports) == 0 || slices.Contains(rule.Ports, dns.Port))
@@ -153,6 +187,30 @@ func closesName(rule models.Rule) bool {
 	}
 
 	return true
+}
+
+// mightAllowByAddress is true when an allow rule could match some resolved address on this port. Only such a
+// rule lets a lookup turn the default deny into an allow, so the http path resolves for these and refuses
+// every other unmatched host unresolved (SHARD-342). A dns group is the resolver, never a web host.
+func mightAllowByAddress(rule models.Rule, port int) bool {
+	if rule.Action != models.ActionAllow {
+		return false
+	}
+	if rule.Protocol != "" && rule.Protocol != "tcp" {
+		return false
+	}
+	if len(rule.Ports) != 0 && !slices.Contains(rule.Ports, port) {
+		return false
+	}
+
+	switch rule.Destination.Kind {
+	case models.DestinationCIDR:
+		return true
+	case models.DestinationGroup:
+		return rule.Destination.Value != GroupDNS
+	}
+
+	return false
 }
 
 func matches(rule models.Rule, host string, port int, addr netip.Addr) bool {

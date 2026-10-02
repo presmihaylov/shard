@@ -425,6 +425,79 @@ func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
 	}
 }
 
+// The http path judges the name before any lookup: a host no rule allows is refused unresolved, and only an
+// allow rule an address could match on the port forces a resolve (SHARD-342).
+func TestUnresolvedRefusesByNameBeforeResolving(t *testing.T) {
+	s := newStore(t)
+	for _, policy := range []models.Policy{
+		{Name: "denyall", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}},
+		{Name: "namelist", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}},
+		{Name: "namedeny", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "bad.example.com"),
+			mustRule(t, models.ActionAllow, "suffix:example.com"),
+		}},
+		{Name: "cidr", Rules: []models.Rule{mustRule(t, models.ActionAllow, "93.184.216.0/24")}},
+		{Name: "cidr443", Rules: []models.Rule{mustRule(t, models.ActionAllow, "93.184.216.0/24 tcp:443")}},
+		{Name: "denycidr", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "8.8.8.8/32"),
+			mustRule(t, models.ActionAllow, "api.example.com"),
+		}},
+	} {
+		if err := s.Set(policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
+
+	for _, tc := range []struct {
+		policy string
+		host   string
+		port   int
+		final  bool
+		action models.Action
+		rule   string
+	}{
+		{"denyall", "0a1402.t.attacker.test", 80, true, models.ActionDeny, "deny any"},
+		{"namelist", "api.example.com", 443, false, "", ""},
+		{"namelist", "evil.test", 443, true, models.ActionDeny, ""},
+		{"namedeny", "bad.example.com", 443, true, models.ActionDeny, "deny bad.example.com tcp:80,443"},
+		{"namedeny", "sub.example.com", 443, false, "", ""},
+		{"cidr", "evil.test", 443, false, "", ""},
+		{"cidr443", "evil.test", 80, true, models.ActionDeny, ""},
+		{"cidr443", "evil.test", 443, false, "", ""},
+		{"denycidr", "evil.test", 443, true, models.ActionDeny, ""},
+	} {
+		got, final, err := svc.Unresolved(models.Sandbox{ID: "sandbox1", Policy: tc.policy}, tc.host, tc.port)
+		if err != nil {
+			t.Fatalf("Unresolved(%s under %s:%d): %v", tc.host, tc.policy, tc.port, err)
+		}
+		if final != tc.final {
+			t.Errorf("Unresolved(%s under %s:%d) final = %v, want %v", tc.host, tc.policy, tc.port, final, tc.final)
+		}
+		if !final {
+			continue
+		}
+		rule := ""
+		if got.Rule.Destination.Kind != "" {
+			rule = FormatRule(got.Rule.Rule)
+		}
+		if got.Action != tc.action || rule != tc.rule {
+			t.Errorf("Unresolved(%s under %s:%d) = %s by %q, want %s by %q", tc.host, tc.policy, tc.port, got.Action, rule, tc.action, tc.rule)
+		}
+		if strings.Contains(got.Reason, "resolves to") {
+			t.Errorf("Unresolved(%s under %s:%d) reason carried an address: %q", tc.host, tc.policy, tc.port, got.Reason)
+		}
+	}
+
+	if _, final, err := svc.Unresolved(models.Sandbox{ID: "free"}, "any.example.net", 443); err != nil || final {
+		t.Errorf("a sandbox with no policy was refused unresolved (final=%v, %v)", final, err)
+	}
+	if got, final, err := svc.Unresolved(models.Sandbox{ID: "lost", Policy: "gone"}, "any.example.net", 443); err != nil || !final || got.ID != network.RuleMissing {
+		t.Errorf("a sandbox whose policy is gone got %+v (final=%v), %v", got, final, err)
+	}
+}
+
 type fakeRecords []models.Sandbox
 
 func (f fakeRecords) List() ([]models.Sandbox, error) { return f, nil }
