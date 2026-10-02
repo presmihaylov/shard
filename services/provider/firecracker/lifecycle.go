@@ -283,6 +283,10 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 		return m.close()
 	}
+	// The grace outran the stop, so the guest flushes its disk before the cut; a guest that does not answer is killed with the VM anyway (SHARD-344, shard ruling f4b0942e).
+	if err := m.control.Load().Kill(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: flush before the forced stop: %v\n", m.id, err)
+	}
 
 	return p.end(ctx, m)
 }

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -13,6 +14,9 @@ import (
 
 	"github.com/presmihaylov/shard/services/supervisor"
 )
+
+// overlayFDEnv carries the overlay's ext4 fd across the confine re-exec, so rootIoctl freezes the writable layer the pivot made unreachable by path.
+const overlayFDEnv = "SHARD_INIT_OVERLAY_FD"
 
 // bootGuest moves PID 1 from the initrd onto the root disk, with the kernel filesystems carried across.
 func bootGuest(boot guestBoot) error {
@@ -111,6 +115,12 @@ func mountRoot(boot guestBoot) error {
 	if err := unix.Mount(boot.Overlay, "/overlay", "ext4", 0, ""); err != nil {
 		return fmt.Errorf("mount %s on /overlay: %w", boot.Overlay, err)
 	}
+	if err := refuseReadOnlyOverlay(boot.Overlay); err != nil {
+		return err
+	}
+	if err := holdOverlayForFreeze(); err != nil {
+		return err
+	}
 	// The guest lays the upper and work directories itself, so the host and shard-init share no name for them.
 	for _, dir := range []string{"/overlay/upper", "/overlay/work"} {
 		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // the upper is the root every guest process traverses
@@ -119,6 +129,32 @@ func mountRoot(boot guestBoot) error {
 	}
 	if err := unix.Mount("overlay", "/newroot", "overlay", 0, "lowerdir=/base,upperdir=/overlay/upper,workdir=/overlay/work"); err != nil {
 		return fmt.Errorf("mount the overlay of %s over %s on /newroot: %w", boot.Overlay, boot.Base, err)
+	}
+
+	return nil
+}
+
+// refuseReadOnlyOverlay fails the boot when the overlay's ext4 mounted read-only, which a corrupt disk does, since the overlayfs would then drop every write.
+func refuseReadOnlyOverlay(device string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs("/overlay", &st); err != nil {
+		return fmt.Errorf("statfs the overlay %s: %w", device, err)
+	}
+	if st.Flags&unix.ST_RDONLY != 0 {
+		return fmt.Errorf("the overlay %s mounted read-only, which a corrupt disk does; the sandbox cannot persist writes", device)
+	}
+
+	return nil
+}
+
+// holdOverlayForFreeze opens the overlay's ext4 with no O_CLOEXEC and records its fd, so a freeze survives the confine re-exec that the pivot leaves the path behind.
+func holdOverlayForFreeze() error {
+	fd, err := unix.Open("/overlay", unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open the overlay to freeze it: %w", err)
+	}
+	if err := os.Setenv(overlayFDEnv, strconv.Itoa(fd)); err != nil {
+		return fmt.Errorf("record the overlay fd: %w", err)
 	}
 
 	return nil
@@ -393,6 +429,15 @@ func rootIoctl(req uint) error {
 	if os.Getpid() != 1 {
 		return nil
 	}
+	// An overlay root freezes its writable ext4 by the held fd; freezing the overlayfs "/" is EOPNOTSUPP, and the pivot took its path.
+	if held := os.Getenv(overlayFDEnv); held != "" {
+		fd, err := strconv.Atoi(held)
+		if err != nil {
+			return fmt.Errorf("read %s %q: %w", overlayFDEnv, held, err)
+		}
+
+		return unix.IoctlSetInt(fd, req, 0)
+	}
 	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("open the root: %w", err)
@@ -416,6 +461,16 @@ func powerOff(reboot bool) error {
 	if err := unix.Reboot(cmd); err != nil {
 		return fmt.Errorf("power off: %w", err)
 	}
+
+	return nil
+}
+
+// syncDisk flushes every filesystem before the host cuts the VM, so an unsynced kill loses nothing the entrypoint wrote; a test process is not PID 1.
+func syncDisk() error {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	unix.Sync()
 
 	return nil
 }

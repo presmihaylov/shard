@@ -345,6 +345,8 @@ func (t *transport) handle(m supervisor.Message) error {
 		return t.rekey(m.Seed)
 	case supervisor.KindThaw:
 		return t.thaw()
+	case supervisor.KindKill:
+		return t.forceStop()
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}
@@ -360,6 +362,19 @@ func freezeGuest(bound *os.File) error {
 	}
 
 	return nil
+}
+
+// forceStop ends a stop the grace outran: it kills the entrypoint and flushes the disk, so the VM the host then cuts loses nothing the entrypoint wrote.
+func (t *transport) forceStop() error {
+	var stopErr error
+	t.g.run(func() {
+		_, stopErr = t.g.stop(syscall.SIGKILL)
+	})
+	if stopErr != nil {
+		return stopErr
+	}
+
+	return syncDisk()
 }
 
 // thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.
