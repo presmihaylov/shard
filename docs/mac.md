@@ -39,8 +39,8 @@ provider by itself, and `shard info` prints that choice and the reason for it be
 A root that already holds records keeps whatever made them. The daemon builds the provider on the first verb that needs it, not at boot:
 that verb writes the signed VM shim and the guest supervisor under the root (`docs/macos-signing.md`)
 and fetches the release kernel for this Mac into the root, checked against its hash
-(`docs/kernel.md`). A daemon of the same build finds all three in place; a new build replaces the
-shim and the supervisor, and the kernel is fetched again only when its tag moves.
+(`docs/kernel.md`). A daemon of the same build hashes all three and keeps them; a new build replaces the
+shim and the supervisor, and the kernel is fetched again when its tag moves or its bytes changed.
 
 In a second terminal:
 
@@ -110,8 +110,8 @@ again, so `shard stop` each one first when the Mac is to be clean.
 ## If it does not start
 
 - `provider vz does not support pause on this host`: macOS 13, or an Intel Mac. The verb needs Apple silicon on 14.
-- `kernel checksum mismatch`: a file under `<root>/kernel/` changed. Delete that directory and
-  `create` again; the daemon fetches a fresh one.
+- `kernel checksum mismatch`: the release no longer serves the bytes this build expects, or the
+  `SHARD_KERNEL` file changed. A cut file under `<root>/kernel/` is fetched again on its own.
 - A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The
   error names `Virtualization.framework`; there is no workaround short of the profile.
 - `codesign: command not found`: the shim is signed on first use with the Command Line Tools.
