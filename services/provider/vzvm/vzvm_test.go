@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -37,8 +38,30 @@ type harness struct {
 	root        string
 	disk        string
 	saveRestore bool
+	// log is what the provider logged, read while it still writes.
+	log *safeBuffer
 
 	next atomic.Int64
+}
+
+// safeBuffer is a log sink the test reads while the provider still writes it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
 }
 
 func newHarness(t *testing.T) *harness {
@@ -57,7 +80,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 
-	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore}
+	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore, log: &safeBuffer{}}
 	h.open(t)
 
 	return h
@@ -74,6 +97,7 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 		Dir:         h.root,
 		Dirs:        h.stateDir,
 		SaveRestore: h.saveRestore,
+		Log:         log.New(h.log, "", 0),
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -1142,6 +1166,72 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	}
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A guest that floods its control stream past the bound is cut off with one log line, and the sandbox goes on (SHARD-390).
+func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+
+	// The marker floods the stream the provider dials after the reset, past the state line that stream opens with.
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, floodFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	line := "sandbox " + spec.ID + ": refused a control message from the guest"
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(h.log.String(), line) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no refusal was logged within 10s; the log reads %q", h.log.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(h.log.String(), "1 MiB") {
+		t.Errorf("the refusal does not name the bound: %q", h.log.String())
+	}
+	awaitLog(t, h.provider, spec.ID, logged)
+
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo again"}, Stdout: out})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec after the refusal = %+v, %v", exit, err)
+	}
+	written, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(written), "again") {
+		t.Fatalf("the exec after the refusal wrote %q, %v", written, err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refusal = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(h.log.String(), "refused"); n != 1 {
+		t.Errorf("the provider logged %d refusals for one flood, want 1:\n%s", n, h.log.String())
 	}
 }
 

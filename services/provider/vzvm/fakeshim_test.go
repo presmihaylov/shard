@@ -1,6 +1,7 @@
 package vzvm_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -164,6 +165,9 @@ const holdDialsFile = "hold-dials"
 
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
+
+// floodFile in the state directory floods the next control stream past its state line, as guest root writing to PID 1's control fd would.
+const floodFile = "flood-control"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -408,6 +412,12 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Join(err, conn.Close())
 	}
+	flood := false
+	if port == supervisor.ControlPort {
+		if flood, err = m.take(floodFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if held || time.Now().Before(m.holdUntil) {
@@ -417,8 +427,12 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if port == supervisor.ControlPort {
 		m.controls++
 	}
+	s := &stream{Conn: conn, machine: m}
+	if flood {
+		return &flooded{stream: s}, nil
+	}
 
-	return &stream{Conn: conn, machine: m}, nil
+	return s, nil
 }
 
 // dropStreams ends every stream to the guest at once, which is what a reset of the transport looks like to both ends.
@@ -471,6 +485,26 @@ func (s *stream) Read(p []byte) (int, error) {
 		s.machine.dropStreams()
 
 		return 0, net.ErrClosed
+	}
+
+	return n, err
+}
+
+// flooded passes the guest's state line, then reads as one line that never ends.
+type flooded struct {
+	*stream
+	passed bool
+}
+
+func (f *flooded) Read(p []byte) (int, error) {
+	if f.passed {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+	}
+	n, err := f.stream.Read(p)
+	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
+		f.passed = true
+
+		return end + 1, err
 	}
 
 	return n, err

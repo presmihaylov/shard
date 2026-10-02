@@ -339,6 +339,7 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 		Init:   d.cfg.InitPath,
 		Dir:    filepath.Join(d.cfg.Root, firecrackerDir),
 		Dirs:   dirs,
+		Log:    d.logger(),
 	})
 }
 
@@ -411,6 +412,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 		Stack:       stack,
 		Dirs:        dirs,
 		SaveRestore: vz.HostSaveRestore(),
+		Log:         d.logger(),
 	})
 }
 

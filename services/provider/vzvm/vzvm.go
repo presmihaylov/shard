@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,6 +80,8 @@ type Config struct {
 	Dirs  StateDirs
 	// SaveRestore says the framework on this host saves and restores a VM, which is what a fork needs; vz.HostSaveRestore probes it.
 	SaveRestore bool
+	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
+	Log *log.Logger
 }
 
 var _ models.Provider = (*Provider)(nil)
@@ -102,6 +106,9 @@ func New(cfg Config) (*Provider, error) {
 	initrd := filepath.Join(cfg.Dir, initrdFile)
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err
+	}
+	if cfg.Log == nil {
+		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
 	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil

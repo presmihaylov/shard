@@ -41,6 +41,8 @@ type machine struct {
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the vmm: one vsock connection per call.
@@ -259,7 +261,7 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 
 // attach opens the control connection to the guest and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
@@ -315,6 +317,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -389,6 +392,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try.
 			p.keep(m, control.Close())
 			time.Sleep(pollInterval)
