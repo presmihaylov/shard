@@ -115,7 +115,7 @@ func mountRoot(boot guestBoot) error {
 	if err := unix.Mount(boot.Overlay, "/overlay", "ext4", 0, ""); err != nil {
 		return fmt.Errorf("mount %s on /overlay: %w", boot.Overlay, err)
 	}
-	if err := refuseReadOnlyOverlay(boot.Overlay); err != nil {
+	if err := refuseReadOnlyMount("/overlay", boot.Overlay); err != nil {
 		return err
 	}
 	if err := holdOverlayForFreeze(); err != nil {
@@ -130,18 +130,22 @@ func mountRoot(boot guestBoot) error {
 	if err := unix.Mount("overlay", "/newroot", "overlay", 0, "lowerdir=/base,upperdir=/overlay/upper,workdir=/overlay/work"); err != nil {
 		return fmt.Errorf("mount the overlay of %s over %s on /newroot: %w", boot.Overlay, boot.Base, err)
 	}
+	// A corrupt disk leaves the ext4 rw but makes overlayfs fall back to a read-only root, so re-check the merged mount, not just the ext4.
+	if err := refuseReadOnlyMount("/newroot", boot.Overlay); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-// refuseReadOnlyOverlay fails the boot when the overlay's ext4 mounted read-only, which a corrupt disk does, since the overlayfs would then drop every write.
-func refuseReadOnlyOverlay(device string) error {
+// refuseReadOnlyMount fails the boot when mountPath mounted read-only, which a corrupt disk does, since the sandbox would then drop every write.
+func refuseReadOnlyMount(mountPath, device string) error {
 	var st unix.Statfs_t
-	if err := unix.Statfs("/overlay", &st); err != nil {
-		return fmt.Errorf("statfs the overlay %s: %w", device, err)
+	if err := unix.Statfs(mountPath, &st); err != nil {
+		return fmt.Errorf("statfs the overlay %s at %s: %w", device, mountPath, err)
 	}
 	if st.Flags&unix.ST_RDONLY != 0 {
-		return fmt.Errorf("the overlay %s mounted read-only, which a corrupt disk does; the sandbox cannot persist writes", device)
+		return fmt.Errorf("the overlay %s mounted read-only at %s, which a corrupt disk does; the sandbox cannot persist writes", device, mountPath)
 	}
 
 	return nil
