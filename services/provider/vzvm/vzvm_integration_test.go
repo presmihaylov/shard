@@ -639,6 +639,69 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	}
 }
 
+// A process that runs across the save draws its next bytes after the restore, so two forks share no draw past the first line they differ on (SHARD-310).
+func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
+	h := newVMHarness(t)
+	if !h.provider.Capabilities().Fork {
+		t.Skip("this Mac does not save a VM")
+	}
+	spec := h.newSpec(t, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
+	// One vcpu means one per-cpu crng, so no fork reads other bytes only because a draw ran on another cpu.
+	spec.Resources.VCPUs = 1
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	var forks []models.SandboxSpec
+	for range 2 {
+		fork := h.newSpec(t)
+		if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+			t.Fatal(err)
+		}
+		forks = append(forks, fork)
+	}
+	time.Sleep(time.Second)
+	var draws [2][]string
+	for i, fork := range forks {
+		data, err := os.ReadFile(filepath.Join(fork.StateDir, "output.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		draws[i] = strings.Fields(string(data))
+	}
+
+	// Both forks print the lines the save held in one order, so the first line they differ on, and every line after it, came after the restore.
+	past := 0
+	for past < min(len(draws[0]), len(draws[1])) && draws[0][past] == draws[1][past] {
+		past++
+	}
+	if len(draws[0])-past < 10 || len(draws[1])-past < 10 {
+		t.Fatalf("the forks drew %d and %d lines past line %d, the first they differ on, want 10 or more each", len(draws[0])-past, len(draws[1])-past, past)
+	}
+	drawn := map[string]int{}
+	for i, d := range draws[0][past:] {
+		drawn[d] = past + i
+	}
+	shared := 0
+	for i, d := range draws[1][past:] {
+		if at, ok := drawn[d]; ok {
+			shared++
+			t.Logf("fork 0 line %d and fork 1 line %d are both %s", at, past+i, d)
+		}
+	}
+	if shared > 0 {
+		t.Fatalf("the two forks share %d draws past line %d, the first they differ on, want none", shared, past)
+	}
+}
+
 // A clone boots from the disk alone, so a pause freezes the root under a writer in mid-loop: the clone holds every count the writer printed, and the source and a fork write again after (SHARD-296).
 func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	h := newVMHarness(t)
