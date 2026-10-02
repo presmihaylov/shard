@@ -9,6 +9,7 @@ require (
 	github.com/containerd/containerd/v2 v2.3.6
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.9
+	github.com/moby/profiles/apparmor v0.2.3
 	github.com/moby/profiles/seccomp v0.2.4
 	github.com/opencontainers/runtime-spec v1.3.0
 	golang.org/x/net v0.59.0
