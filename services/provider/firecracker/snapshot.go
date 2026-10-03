@@ -169,7 +169,7 @@ func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 			return err
 		}
 	}
-	// The create reads and clears the log, so whatever it comes to, the next snapshot of this vmm is a Full.
+	// Once shard attempts a create, it conservatively treats the next snapshot as Full.
 	m.wholeLog = false
 	if err := m.client.Snapshot(kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
 		return fmt.Errorf("snapshot the vm: %w", err)
