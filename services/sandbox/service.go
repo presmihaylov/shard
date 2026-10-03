@@ -440,8 +440,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Policy:         req.Policy,
 		RestartOnOOM:   req.RestartOnOOM,
 		MaxOOMRestarts: req.MaxOOMRestarts,
-		HealthCheck:    withHealthDefaults(req.Health),
-		Health:         startingHealth(req.Health),
 		Restart:        withRestartDefaults(req.Restart),
 		CreatedAt:      time.Now().UTC(),
 	}, admit...)

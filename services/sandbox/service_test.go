@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -362,25 +361,6 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 	}
 	if l.repo.sb.State != models.StatePending {
 		t.Errorf("the record says %s before the start was recorded, want pending", l.repo.sb.State)
-	}
-}
-
-func TestCreateFillsTheProbeSettingsItWasNotGiven(t *testing.T) {
-	svc, l := newService(t, &recorder{}, models.Sandbox{})
-	req := alpine()
-	req.Health = &models.HealthCheck{Command: []string{"true"}}
-
-	sb, err := svc.Create(t.Context(), req)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	want := &models.HealthCheck{Command: []string{"true"}, Interval: 30, Timeout: 10, Retries: 3}
-	if !reflect.DeepEqual(sb.HealthCheck, want) || !reflect.DeepEqual(l.repo.sb.HealthCheck, want) {
-		t.Errorf("the record holds the probe %+v, want %+v with the defaults filled", sb.HealthCheck, want)
-	}
-	if sb.Health == nil || sb.Health.Status != models.HealthStarting {
-		t.Errorf("the record holds the health %+v, want starting", sb.Health)
 	}
 }
 
