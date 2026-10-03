@@ -2,11 +2,13 @@ package vz
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -92,7 +94,7 @@ func TestListenRefusesALiveShimAndReplacesADeadOne(t *testing.T) {
 	if _, err := Listen(socket); !errors.Is(err, ErrSocketInUse) {
 		t.Fatalf("Listen over a live shim = %v, want ErrSocketInUse", err)
 	}
-	if _, _, err := Adopt(socket); err != nil {
+	if _, _, err := Adopt(t.Context(), socket); err != nil {
 		t.Fatalf("the first shim is no longer answering: %v", err)
 	}
 
@@ -130,12 +132,97 @@ func TestAShimThatAcceptsAndNeverAnswersIsGivenUpOn(t *testing.T) {
 
 	client := &Client{socket: socket, timeout: 200 * time.Millisecond}
 	started := time.Now()
-	_, err = client.State()
+	_, err = client.State(t.Context())
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("State() = %v, want the deadline", err)
 	}
 	if time.Since(started) > 5*time.Second {
 		t.Fatal("the deadline did not bound the call")
+	}
+}
+
+// SHARD-349: a stop must end on its own clock, so the caller's earlier deadline wins over callTimeout.
+func TestTheCallersDeadlineBoundsACallToAShimThatNeverAnswers(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = (&Client{socket: socket}).Stop(ctx)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Stop() = %v, want the deadline", err)
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Fatalf("Stop took %s, want the caller's 200ms", took)
+	}
+}
+
+// frozenShimEnv names the socket a re-run of this test binary listens on and never accepts, as a shim stopped by SIGSTOP would.
+const frozenShimEnv = "VZ_TEST_FROZEN_SHIM"
+
+func TestFrozenShimHelper(t *testing.T) {
+	socket := os.Getenv(frozenShimEnv)
+	if socket == "" {
+		t.Skip("a helper process for TestKillEndsAShimTooFrozenToAnswer")
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	select {}
+}
+
+// SHARD-349: a frozen shim takes the dial and never the call, so the kill names it by the kernel's peer pid and never waits for an answer.
+func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFrozenShimHelper$")
+	cmd.Env = append(os.Environ(), frozenShimEnv+"="+socket)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Error(err)
+		}
+	})
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("the helper exited before it listened: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &Client{socket: socket}
+	started := time.Now()
+	if err := client.Kill(); err != nil {
+		t.Fatalf("Kill of a frozen shim = %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the frozen shim still runs 5s after Kill")
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Errorf("Kill took %s, want it done at the dial", took)
+	}
+	if err := client.Kill(); !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ENOENT) {
+		t.Errorf("Kill of an ended shim = %v, want the socket refused", err)
 	}
 }
 
@@ -153,7 +240,7 @@ func TestAnIdleConnectionDoesNotKeepServeFromReturning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer idle.Close()
-	if _, _, err := Adopt(socket); err != nil {
+	if _, _, err := Adopt(t.Context(), socket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -331,7 +418,7 @@ func TestTheVerbsReachTheMachineAndTheReplyCarriesItsState(t *testing.T) {
 	if info, err := client.Resume(); err != nil || info.State != StateRunning {
 		t.Fatalf("Resume() = %+v, %v", info, err)
 	}
-	if info, err := client.Stop(); err != nil || info.State != StateStopped {
+	if info, err := client.Stop(t.Context()); err != nil || info.State != StateStopped {
 		t.Fatalf("Stop() = %+v, %v", info, err)
 	}
 	if got := strings.Join(machine.verbs, " "); got != "pause resume stop" {
@@ -420,7 +507,7 @@ func TestNetworkRefusesAVMWithoutOne(t *testing.T) {
 }
 
 func TestAdoptRefusesASocketNobodyAnswers(t *testing.T) {
-	_, _, err := Adopt(filepath.Join(t.TempDir(), "gone.sock"))
+	_, _, err := Adopt(t.Context(), filepath.Join(t.TempDir(), "gone.sock"))
 	if err == nil || !strings.Contains(err.Error(), "adopt the shim") {
 		t.Fatalf("Adopt() = %v", err)
 	}

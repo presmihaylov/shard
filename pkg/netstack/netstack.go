@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/time/rate"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -36,6 +37,14 @@ const maxFrame = MTU + header.EthernetMinimumSize
 // queueLen is how many outbound packets a link holds before the stack sees back-pressure.
 const queueLen = 512
 
+// A guest socket with no room is back-pressure: a frame waits busyWait, doubled per try, busyTries times, then drops for TCP to send again (SHARD-384).
+const (
+	busyTries = 5
+	busyWait  = 100 * time.Microsecond
+	// overflowEvery bounds the overflow report to one a link per interval, after the first.
+	overflowEvery = 10 * time.Second
+)
+
 // Config is the one address the stack answers for, which every link's guest sees as its gateway.
 type Config struct {
 	Address netip.Addr
@@ -47,6 +56,8 @@ type Config struct {
 	Redirected func(guest netip.Addr) bool
 	// Drops receives every frame the stack refuses, on the link's own goroutine; nil keeps the refusals silent.
 	Drops func(Drop)
+	// Overflow receives a link's running count of frames its guest had no room for: at the first, at most once an overflowEvery, and when the link closes.
+	Overflow func(guest netip.Addr, dropped uint64)
 	// Judge rules on a TCP or UDP flow off the address to a port no listener serves; nil keeps every such flow closed.
 	Judge func(Flow) Verdict
 	// Dial opens the host side of a flow the judge allowed; nil dials from the host's own stack.
@@ -117,6 +128,9 @@ type Link struct {
 	done    chan struct{}
 	pumpErr error
 	limiter *rate.Limiter
+	// overflowed counts the frames the guest had no room for, and reported is the count Overflow saw last; only send touches them.
+	overflowed, reported uint64
+	overflowLimit        *rate.Limiter
 	// flows are the two sides of every forwarded connection the link carries, and flowErr the first fault among them.
 	flows map[io.Closer]struct{}
 	// active counts the flows admitted on this link, against maxLinkFlows.
@@ -168,7 +182,7 @@ func (s *Stack) Attach(frames io.ReadWriteCloser, guest netip.Addr) (*Link, erro
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, ctx: ctx, cancel: cancel, done: make(chan struct{}), limiter: newLimiter(), flows: map[io.Closer]struct{}{}}
+	l := &Link{stack: s, id: id, guest: guest, frames: frames, ep: ep, ctx: ctx, cancel: cancel, done: make(chan struct{}), limiter: newLimiter(), overflowLimit: rate.NewLimiter(rate.Every(overflowEvery), 1), flows: map[io.Closer]struct{}{}}
 	s.links[id] = l
 	go l.pump(ctx)
 
@@ -253,6 +267,7 @@ func (l *Link) fromGuest(frame []byte) bool {
 }
 
 func (l *Link) send(ctx context.Context) error {
+	defer l.reportOverflow(true)
 	for {
 		pkt := l.ep.ReadContext(ctx)
 		if pkt == nil {
@@ -260,16 +275,51 @@ func (l *Link) send(ctx context.Context) error {
 		}
 		// The view is the caller's to release; the packet's own reference does not cover it.
 		view := pkt.ToView()
-		_, err := l.frames.Write(view.AsSlice())
+		err := l.write(view.AsSlice())
 		view.Release()
 		pkt.DecRef()
 		if quiet(err) {
 			return nil
 		}
+		if busy(err) {
+			l.overflowed++
+			l.reportOverflow(false)
+
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("write a frame to the guest: %w", err)
 		}
 	}
+}
+
+// write tries a frame again while the guest's socket has no room for it, waiting longer each time, and returns the last error.
+func (l *Link) write(frame []byte) error {
+	wait := busyWait
+	for try := 1; ; try++ {
+		_, err := l.frames.Write(frame)
+		if !busy(err) || try == busyTries {
+			return err
+		}
+		time.Sleep(wait)
+		wait *= 2
+	}
+}
+
+// busy reports a guest socket with no room for the frame: macOS refuses a full datagram peer with ENOBUFS, and a non-blocking socket may say EAGAIN.
+func busy(err error) bool {
+	return errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.EAGAIN)
+}
+
+func (l *Link) reportOverflow(final bool) {
+	if l.stack.cfg.Overflow == nil || l.overflowed == l.reported {
+		return
+	}
+	if !final && !l.overflowLimit.Allow() {
+		return
+	}
+	l.reported = l.overflowed
+	l.stack.cfg.Overflow(l.guest, l.overflowed)
 }
 
 // quiet reports the ends a closed link produces on either side, Linux answers a dead datagram peer with ECONNREFUSED, which are how a pump stops and not a fault.
@@ -307,7 +357,7 @@ func (s *Stack) ListenTCP(port uint16) (net.Listener, error) {
 	return listener{Listener: ln, stack: s}, nil
 }
 
-// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects.
+// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects, or one past the guest's share.
 type listener struct {
 	net.Listener
 	stack *Stack
@@ -325,19 +375,25 @@ func (ln listener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
-		if !stale {
-			return conn, nil
+		l := ln.stack.linkOf(flow.Guest)
+		// What the listener serves holds a goroutine and an upstream for its life, so it spends the guest's share like a forwarded flow (SHARD-350).
+		if !stale && l != nil && l.admit() {
+			return &admitted{Conn: conn, release: sync.OnceFunc(l.release)}, nil
 		}
-		if l := ln.stack.linkOf(flow.Guest); l != nil {
-			l.report(flow.drop(RuleRedirect))
+		rule := RuleLimit
+		if stale {
+			rule = RuleRedirect
+		}
+		if l != nil {
+			l.report(flow.drop(rule))
 		}
 		if err := conn.Close(); err != nil {
-			return nil, fmt.Errorf("close the stale redirect of %s to %s: %w", flow.Guest, flow.Destination, err)
+			return nil, fmt.Errorf("close the %s drop of %s to %s: %w", rule, flow.Guest, flow.Destination, err)
 		}
 	}
 }
 
-// stale finds the flow the NAT table redirected onto conn for a guest it no longer redirects.
+// stale reads the flow on conn, and whether the NAT table redirected it for a guest it no longer redirects.
 func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 	local, err := netip.ParseAddrPort(conn.LocalAddr().String())
 	if err != nil {
@@ -347,6 +403,7 @@ func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 	if err != nil {
 		return Flow{}, false, fmt.Errorf("read the remote address of an accepted flow: %w", err)
 	}
+	flow := Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: local}
 	id := stack.TransportEndpointID{
 		LocalPort:     local.Port(),
 		LocalAddress:  tcpip.AddrFrom4(local.Addr().As4()),
@@ -354,16 +411,35 @@ func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 		RemoteAddress: tcpip.AddrFrom4(remote.Addr().As4()),
 	}
 	addr, port, lookupErr := s.stack.IPTables().OriginalDst(id, ipv4.ProtocolNumber, tcp.ProtocolNumber)
-	// No original destination, or the one it landed on, is a flow conntrack never rewrote: the guest dialed the listener itself.
+	// No original destination is a flow conntrack never rewrote: the guest dialed the listener itself.
 	if lookupErr != nil {
-		return Flow{}, false, nil
+		return flow, false, nil
 	}
-	original := netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
-	if original == local || s.redirected(remote.Addr()) {
-		return Flow{}, false, nil
+	flow.Destination = netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
+
+	return flow, flow.Destination != local && !s.redirected(remote.Addr()), nil
+}
+
+// admitted gives back the share its Accept took, on the first Close.
+type admitted struct {
+	net.Conn
+	release func()
+}
+
+func (c *admitted) Close() error {
+	c.release()
+
+	return c.Conn.Close()
+}
+
+// CloseWrite passes on the half-close net/http sends before it closes, which the embedded net.Conn hides.
+func (c *admitted) CloseWrite() error {
+	cw, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("the accepted flow cannot half-close")
 	}
 
-	return Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: original}, true, nil
+	return cw.CloseWrite()
 }
 
 // ListenPacket opens a UDP socket on the stack address; a reply goes out the link that carries its guest.

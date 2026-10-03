@@ -16,6 +16,9 @@ func pullOfTwoLayers() []image.Event {
 		{Status: image.StatusPulling, Reference: "docker.io/library/alpine:3.20", Digest: pulledDigest, Layers: 2, Bytes: 3_600_000},
 		{Status: image.StatusLayer, Digest: "sha256:9f8e7d6c5b4a99999999", Bytes: 3_500_000},
 		{Status: image.StatusLayer, Digest: "sha256:0123456789ab88888888", Bytes: 100_000, Present: true},
+		{Status: image.StatusUnpacking, Reference: "docker.io/library/alpine:3.20", Digest: pulledDigest, Layers: 2},
+		{Status: image.StatusUnpacked, Digest: "sha256:9f8e7d6c5b4a99999999", Layer: 1, Layers: 2},
+		{Status: image.StatusUnpacked, Digest: "sha256:0123456789ab88888888", Layer: 2, Layers: 2},
 		{Status: image.StatusPulled, Reference: "docker.io/library/alpine:3.20", Digest: pulledDigest, Path: "/var/lib/shard/images/alpine/rootfs"},
 	}
 }
@@ -23,6 +26,9 @@ func pullOfTwoLayers() []image.Event {
 const pullOfTwoLayersText = `pulling docker.io/library/alpine:3.20 ` + pulledDigest + `, 2 layers, 3.6 MB
   9f8e7d6c5b4a  3.5 MB
   0123456789ab  100.0 kB, already on disk
+unpacking docker.io/library/alpine:3.20, 2 layers
+  9f8e7d6c5b4a  unpacked, 1 of 2
+  0123456789ab  unpacked, 2 of 2
 pulled docker.io/library/alpine:3.20 into /var/lib/shard/images/alpine/rootfs
 `
 
@@ -33,6 +39,8 @@ func TestPullLineSaysEachStep(t *testing.T) {
 	}{
 		{client.PullEvent{Status: client.PullCached, Reference: "alpine:3.20", Digest: "sha256:beef", Path: "/images/alpine"}, "alpine:3.20 sha256:beef is already on disk at /images/alpine"},
 		{client.PullEvent{Status: client.PullPulling, Reference: "alpine:3.20", Digest: "sha256:beef", Layers: 1, Bytes: 999}, "pulling alpine:3.20 sha256:beef, 1 layer, 999 B"},
+		{client.PullEvent{Status: client.PullUnpacking, Reference: "alpine:3.20", Layers: 1}, "unpacking alpine:3.20, 1 layer"},
+		{client.PullEvent{Status: client.PullBuilding, Path: "/images/disks/sha256-beef.ext4"}, "  building /images/disks/sha256-beef.ext4"},
 		{client.PullEvent{Status: "verifying"}, "pull: verifying"},
 	}
 

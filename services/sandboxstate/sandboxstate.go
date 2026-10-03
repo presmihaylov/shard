@@ -79,6 +79,11 @@ func (r *Repository) dir(id string) string {
 	return filepath.Join(r.root, sandboxesDir, id)
 }
 
+// LongestDir is the longest StateDir a sandbox under root gets, so a caller can check that what it puts there fits.
+func LongestDir(root string) string {
+	return filepath.Join(root, sandboxesDir, strings.Repeat("x", maxIDLength()))
+}
+
 func (r *Repository) snapshotDir(id string) string {
 	return filepath.Join(r.root, snapshotsDir, id)
 }
@@ -281,8 +286,8 @@ func (r *Repository) Delete(id string) error {
 		return err
 	}
 
-	// The snapshot goes next: it is the one a half-done delete would leave with no id to reach it.
-	for _, path := range []string{r.snapshotDir(id), r.dir(id)} {
+	// The snapshot and its unfinished .tmp go next: nothing else reaches them once the record is gone (SHARD-368).
+	for _, path := range []string{r.snapshotDir(id), r.snapshotDir(id) + ".tmp", r.dir(id)} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -296,6 +301,76 @@ func (r *Repository) Delete(id string) error {
 	}
 
 	return nil
+}
+
+// SweepSnapshotTmp removes an orphan snapshot .tmp under the root: staging no record reaches. It runs once
+// at daemon start. A .tmp a record still names is kept, because the provider that wrote it owns the staging:
+// it clears the .tmp at its next pause, and vz also finishes or discards it on resume or adopt (SHARD-368).
+func (r *Repository) SweepSnapshotTmp(report func(string)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	dir := filepath.Join(r.root, snapshotsDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the snapshots directory %s: %w", dir, err)
+	}
+
+	swept, kept := 0, 0
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".tmp")
+
+		keep, note := r.recordedTmp(id)
+		if note != "" {
+			report(note)
+		}
+		if keep {
+			kept++
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+		swept++
+	}
+	if swept == 0 && kept == 0 {
+		return nil
+	}
+
+	if swept > 0 {
+		if err := store.SyncDir(dir); err != nil {
+			return err
+		}
+	}
+	report(fmt.Sprintf("swept %d orphan snapshot staging directories the last daemon left under %s, and kept %d a record still names", swept, dir, kept))
+
+	return nil
+}
+
+// recordedTmp reports whether a snapshot .tmp still has a record, so the start sweep keeps it (SHARD-368).
+// A record that will not read may still name the staging, so it is kept too, with a note that names it.
+func (r *Repository) recordedTmp(id string) (bool, string) {
+	if ValidID(id) != nil {
+		return false, ""
+	}
+
+	_, err := r.Get(id)
+	if err == nil {
+		return true, ""
+	}
+	if errors.Is(err, ErrNotFound) {
+		return false, ""
+	}
+
+	return true, fmt.Sprintf("kept the snapshot staging %s.tmp, because its record will not read: %v", id, err)
 }
 
 // Get returns the record, or ErrNotFound. It takes no lock, so it never blocks and never blocks a
