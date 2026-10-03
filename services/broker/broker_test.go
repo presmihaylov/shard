@@ -32,8 +32,7 @@ func (f fakeRecords) List() ([]models.Sandbox, error) { return f.sandboxes, f.er
 
 func (f fakeRecords) Generation() uint64 { return f.gen }
 
-// countingRecords counts List calls and lets a test move the generation, so a test proves the broker
-// reads the records once per generation and not once per request (SHARD-381).
+// countingRecords counts List calls and lets a test move the generation, so a test proves the broker reads once per generation, not once per request (SHARD-381).
 type countingRecords struct {
 	mu        sync.Mutex
 	sandboxes []models.Sandbox

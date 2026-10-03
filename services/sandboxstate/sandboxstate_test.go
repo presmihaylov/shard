@@ -663,8 +663,7 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	}
 }
 
-// SHARD-381: store.WriteFile can land the rename and then fail its dir sync, so a write that returns an error
-// may still have changed the record on disk. The generation must move so a reader never keeps the old record.
+// SHARD-381: a write that returns an error may still have landed the rename, so the generation must move or a reader keeps the old record.
 func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory mode this test uses to force the write to fail")
@@ -674,8 +673,7 @@ func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
 	sb := create(t, r)
 	before := r.Generation()
 
-	// A record directory that rejects a new temp file forces store.WriteFile to return an error, the way a
-	// landed rename with a failed dir sync does.
+	// A record directory that rejects a new temp file forces store.WriteFile to return an error, as a landed rename with a failed dir sync does.
 	dir := sandboxDir(t, r, sb.ID)
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod %s: %v", dir, err)
@@ -695,8 +693,7 @@ func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
 	}
 }
 
-// SHARD-381: a delete that touches the disk must move the generation, even on a later error, and a delete of
-// a sandbox that is not there must not, so a reader rebuilds exactly when the set changed.
+// SHARD-381: a delete that touches the disk must move the generation even on a later error, and a delete of an absent sandbox must not, so a reader rebuilds exactly when the set changed.
 func TestDeleteMovesTheGenerationButANotFoundDeleteDoesNot(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)

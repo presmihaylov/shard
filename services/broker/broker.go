@@ -24,8 +24,7 @@ import (
 	"github.com/presmihaylov/shard/services/secret"
 )
 
-// Records is the part of the sandbox repository the broker reads. Generation moves when the set changes,
-// so the broker lists the records only then and answers every other request from its own map (SHARD-381).
+// Records is the sandbox repository the broker reads; generation moves when the set changes, so the broker lists only then and serves every other request from its own map (SHARD-381).
 type Records interface {
 	List() ([]models.Sandbox, error)
 	Generation() uint64
