@@ -178,6 +178,20 @@ func TestFrozenShimHelper(t *testing.T) {
 	select {}
 }
 
+// dialed reports whether the socket takes a dial: the file exists at bind(), before listen(), so only a dial proves the shim listens.
+func dialed(t *testing.T, socket string) bool {
+	t.Helper()
+	probe, err := net.Dial("unix", socket)
+	if err != nil {
+		return false
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return true
+}
+
 // SHARD-349: a frozen shim takes the dial and never the call, so the kill names it by the kernel's peer pid and never waits for an answer.
 func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
 	socket := filepath.Join(shortRoot(t), "shim.sock")
@@ -194,15 +208,7 @@ func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	// The socket file exists at bind(), before listen(), so only a dial that connects proves the backlog takes one.
-	for {
-		probe, err := net.Dial("unix", socket)
-		if err == nil {
-			if err := probe.Close(); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
+	for !dialed(t, socket) {
 		select {
 		case err := <-exited:
 			t.Fatalf("the helper exited before it listened: %v", err)
