@@ -96,7 +96,7 @@ func (p *Provider) KillRestores(ctx context.Context, id string) error {
 	return p.killRestores(ctx, id)
 }
 
-// RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.
+// RemoveCgroup is the cgroup rmdir a teardown runs, reachable without runsc.
 func RemoveCgroup(root, id string) error {
 	return cgroup.Remove(cgroupDir(root, id))
 }

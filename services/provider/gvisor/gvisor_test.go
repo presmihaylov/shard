@@ -380,7 +380,7 @@ func TestReleaseEndsAWedgedProbeAtItsOwnBound(t *testing.T) {
 	}
 }
 
-// Pause is the one verb that deletes a sandbox from runsc, so it must never take one it did not see running.
+// Pause is the one verb that ends a sandbox in runsc, so it must never take one it did not see running.
 func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 	cases := map[string]string{
 		"stopped": `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`,
@@ -415,7 +415,7 @@ func TestResumeTakesOnlyASnapshotOfAPausedSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A running sandbox is one the pause never deleted, and a restore over it would fail late inside runsc.
+	// A running sandbox is one the pause never ended, and a restore over it would fail late inside runsc.
 	err = p.Resume(t.Context(), "amber-otter-1a2b", dir)
 	if err == nil || !strings.Contains(err.Error(), "running") {
 		t.Errorf("Resume of a running sandbox returned %v, want a refusal that names the state", err)
