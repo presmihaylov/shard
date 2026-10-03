@@ -624,6 +624,19 @@ func TestCreateIs400ForABodyItCannotDecode(t *testing.T) {
 	}
 }
 
+// The daemon runs no health probe, so a body that still asks for one is refused, never run without it (SHARD-455).
+func TestCreateIs400ForABodyThatNamesAHealthCheck(t *testing.T) {
+	s := seed(t)
+
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", `{"image":"alpine","health":{"command":["/bin/true"],"interval":30}}`)
+	if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" || !strings.Contains(errorOf(t, got).message, `unknown field "health"`) {
+		t.Errorf("POST with a health check answered %d %v, want 400 invalid_request that names the field", status, got)
+	}
+	if s.verbs.created.Image != "" {
+		t.Errorf("a body with a health check still reached the orchestrator: %+v", s.verbs.created)
+	}
+}
+
 // 400 for the request, 404 for the reference, 409 for the state, 500 for the host; the code says which refusal.
 func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 	cases := []struct {
