@@ -87,9 +87,11 @@ not answer within 5s)`, and `shard inspect` holds the state and the reason. `exe
 shard stop <id>`. An `exec` or a `pause` that finds the shim silent writes `unresponsive` at once,
 not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When a later probe
 answers, the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one
-more probe of 1 s, then kill it by its pid with no grace (SHARD-421). On Firecracker the same holds
-for a vmm that a restart meets only by its socket, with a bound of 4 s and a reason that names the
-vmm's pid (SHARD-392).
+more probe of 1 s, then kill it with no grace (SHARD-421). The kill goes through a pin that the
+kernel holds on the process, never through a bare pid, so a process that took the pid since is never
+hit. On Firecracker the same holds for a vmm that a restart meets only by its socket, with a bound
+of 4 s and a reason that names the vmm's pid (SHARD-392). There the pin is a pidfd that the adopt
+took on the connection that the vmm never answered.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the
