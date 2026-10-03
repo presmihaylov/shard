@@ -1,5 +1,5 @@
 // Package broker is the proxy's director: it names the sandbox behind a connection, judges the request by
-// the same rules the host enforces, and puts a secret value where the guest put a placeholder.
+// the same rules the host enforces, and puts a secret value where the guest put a placeholder in a request header.
 package broker
 
 import (
@@ -50,11 +50,22 @@ func New(records Records, egress *egress.Service, secrets Secrets, log Log) *Bro
 	return &Broker{records: records, egress: egress, secrets: secrets, log: log}
 }
 
-// Decide names the sandbox by its address, resolves the host once, and asks the policy about that address.
+// Decide names the sandbox by its address, judges the host by name first so a host the policy never allows is
+// refused unresolved, then resolves and asks the policy about that address (SHARD-342).
 func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
 		return proxy.Decision{}, err
+	}
+
+	// Judge the name before any lookup, so a host no rule allows never reaches the resolver and no resolved
+	// address rides back in the reason (SHARD-342).
+	decision, final, err := b.egress.Unresolved(sb, req.Host, req.Port)
+	if err != nil {
+		return proxy.Decision{}, err
+	}
+	if final {
+		return b.denied(sb.ID, req, decision)
 	}
 
 	addrs, err := b.egress.Lookup(ctx, req.Host)
@@ -69,7 +80,7 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 	}
 	upstream := netip.AddrPortFrom(addrs[0], uint16(req.Port)) //nolint:gosec // the port is 80 or 443
 
-	decision, err := b.egress.Decide(sb, req.Host, req.Port, addrs[0])
+	decision, err = b.egress.Decide(sb, req.Host, req.Port, addrs[0])
 	if err != nil {
 		return proxy.Decision{}, err
 	}
@@ -91,6 +102,22 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		Rule:     cmp.Or(rule, decision.ID),
 		Reason:   decision.Reason,
 	}, nil
+}
+
+// denied records and returns a deny reached before any lookup, so its record carries no resolved address and
+// the 403 reason names only the host the guest sent (SHARD-342).
+func (b *Broker) denied(id string, req proxy.Request, decision egress.Decision) (proxy.Decision, error) {
+	rule := ""
+	if decision.Rule.Destination.Kind != "" {
+		rule = egress.FormatRule(decision.Rule.Rule)
+	}
+
+	record := egress.Record{Rule: decision.ID, RuleText: rule, Reason: decision.Reason}
+	if err := b.record(id, req, decision.Action, record); err != nil {
+		return proxy.Decision{}, err
+	}
+
+	return proxy.Decision{Rule: cmp.Or(rule, decision.ID), Reason: decision.Reason}, nil
 }
 
 // Resolve judges one DNS question by its name alone, before any resolver is asked, and logs it under source dns.
@@ -142,15 +169,14 @@ func (b *Broker) record(id string, req proxy.Request, action models.Action, reco
 	return nil
 }
 
-// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder, on TLS only.
-func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte) ([]byte, error) {
+// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder in a request header, on TLS only.
+func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte, reserve proxy.Reserve) ([]byte, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
 		return nil, err
 	}
 
 	// A placeholder that is not substituted still maps to itself, so a longer one cannot be eaten by a shorter.
-	type swap struct{ placeholder, with string }
 	swaps := make([]swap, 0, len(sb.Secrets))
 
 	for _, name := range sb.Secrets {
@@ -184,11 +210,19 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 	slices.SortStableFunc(swaps, func(a, b swap) int { return len(b.placeholder) - len(a.placeholder) })
 
 	pairs := make([]string, 0, len(swaps)*2)
+	var changes []swap
 	for _, s := range swaps {
 		pairs = append(pairs, s.placeholder, s.with)
+		if s.with != s.placeholder {
+			changes = append(changes, s)
+		}
 	}
 
-	return substitute(out, body, strings.NewReplacer(pairs...)), nil
+	if err := substitute(out, substitution{replacer: strings.NewReplacer(pairs...), changes: changes, reserve: reserve}); err != nil {
+		return nil, err
+	}
+
+	return body, nil
 }
 
 func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
@@ -216,32 +250,70 @@ func granted(sec secret.Secret, host string) bool {
 	return false
 }
 
-// substitute edits the URL, every end-to-end header value and the held body; a body that was too long to hold is nil and passes as it is.
-func substitute(out *http.Request, body []byte, replacer *strings.Replacer) []byte {
-	out.URL.Path = replacer.Replace(out.URL.Path)
-	out.URL.RawPath = replacer.Replace(out.URL.RawPath)
-	out.URL.RawQuery = replacer.Replace(out.URL.RawQuery)
+// swap is a placeholder and what goes out in its place.
+type swap struct{ placeholder, with string }
 
+// substitution reserves what each rewrite will hold before it allocates it, since a value can be 8192 times its placeholder (SHARD-348).
+type substitution struct {
+	replacer *strings.Replacer
+	changes  []swap
+	reserve  proxy.Reserve
+}
+
+// substitute edits every end-to-end header value alone, since an upstream quotes the path, the query and the body back in an error (SHARD-337).
+func substitute(out *http.Request, sub substitution) error {
 	hop := hopByHop(out.Header)
 	for name, values := range out.Header {
 		if hop[name] {
 			continue
 		}
 		for i, v := range values {
-			values[i] = replacer.Replace(v)
+			swapped, err := sub.rewrite(v)
+			if err != nil {
+				return err
+			}
+			values[i] = swapped
 		}
-		out.Header[name] = values
 	}
 
-	if !hop["Authorization"] {
-		rewriteBasic(out, replacer)
-	}
-
-	if body == nil {
+	if hop["Authorization"] {
 		return nil
 	}
 
-	return []byte(replacer.Replace(string(body)))
+	return rewriteBasic(out, sub)
+}
+
+// bound is the most a rewrite of s can come to; false when no placeholder that changes occurs in it.
+func (sub substitution) bound(s string) (int, bool) {
+	length, found := len(s), false
+	for _, c := range sub.changes {
+		n := strings.Count(s, c.placeholder)
+		if n == 0 {
+			continue
+		}
+		found = true
+		length += n * max(0, len(c.with)-len(c.placeholder))
+	}
+
+	return length, found
+}
+
+func (sub substitution) rewrite(s string) (string, error) {
+	size, found := sub.bound(s)
+	if !found {
+		return s, nil
+	}
+	if err := sub.reserve(size); err != nil {
+		return "", fmt.Errorf("put the secrets in: %w", err)
+	}
+
+	var out strings.Builder
+	out.Grow(size)
+	if _, err := sub.replacer.WriteString(&out, s); err != nil {
+		return "", fmt.Errorf("put the secrets in: %w", err)
+	}
+
+	return out.String(), nil
 }
 
 // hopByHop names the headers of the connection, not the request, which the proxy handles itself and can quote back to the guest (SHARD-299).
@@ -260,28 +332,39 @@ func hopByHop(header http.Header) map[string]bool {
 }
 
 // rewriteBasic substitutes inside HTTP Basic auth, which every client encodes before the placeholder can be seen.
-func rewriteBasic(out *http.Request, replacer *strings.Replacer) {
+func rewriteBasic(out *http.Request, sub substitution) error {
 	const scheme = "Basic "
 
 	value := out.Header.Get("Authorization")
 	if len(value) <= len(scheme) || !strings.EqualFold(value[:len(scheme)], scheme) {
-		return
+		return nil
 	}
 
+	// A header that is not base64 is the guest's own, and it goes out as it is.
 	decoded, err := base64.StdEncoding.DecodeString(value[len(scheme):])
 	if err != nil {
-		return
+		return nil
 	}
 
 	// A strange but valid-for-its-client header is left alone: a 400 here would break the guest, not protect it.
 	if !strings.Contains(string(decoded), ":") {
-		return
+		return nil
 	}
 
-	swapped := replacer.Replace(string(decoded))
+	swapped, err := sub.rewrite(string(decoded))
+	if err != nil {
+		return err
+	}
 	if swapped == string(decoded) {
-		return
+		return nil
 	}
 
+	// The bytes of the value, then the encoding, its string and the header each hold it once.
+	encoded := len(scheme) + base64.StdEncoding.EncodedLen(len(swapped))
+	if err := sub.reserve(len(swapped) + 3*encoded); err != nil {
+		return fmt.Errorf("put the secrets in: %w", err)
+	}
 	out.Header.Set("Authorization", value[:len(scheme)]+base64.StdEncoding.EncodeToString([]byte(swapped)))
+
+	return nil
 }

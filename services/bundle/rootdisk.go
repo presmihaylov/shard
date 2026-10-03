@@ -12,6 +12,15 @@ import (
 
 // CloneRootDisk gives one sandbox its own copy of the image disk at dst, grown to its bound; shared says the blocks are an APFS clone.
 func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error) {
+	st, err := os.Stat(base)
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", base, err)
+	}
+	// The image size is known only after the pull, so the provider cannot refuse this bound up front.
+	if need := ceilMiB(st.Size()); st.Size() > DiskBytes(r) {
+		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set --disk %d or more", need, DiskBound(r), need)
+	}
+
 	shared, err = CloneFile(base, dst)
 	if err != nil {
 		return false, err
@@ -81,4 +90,8 @@ func fill(out *os.File, src string) (err error) {
 	}
 
 	return nil
+}
+
+func ceilMiB(n int64) int64 {
+	return (n + bytesPerMiB - 1) / bytesPerMiB
 }

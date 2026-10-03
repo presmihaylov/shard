@@ -96,6 +96,13 @@ func checkResources(res models.Resources) error {
 	if res.VCPUs > MaxVCPUs {
 		return fmt.Errorf("%s gives a guest at most %d vcpus, got %d", Name, MaxVCPUs, res.VCPUs)
 	}
+	disk := bundle.DiskBound(res)
+	if disk < bundle.MinOverlayDiskMiB {
+		return fmt.Errorf("%s needs at least %d MiB of disk, got %d", Name, bundle.MinOverlayDiskMiB, disk)
+	}
+	if err := bundle.CheckGrowBound(disk); err != nil {
+		return fmt.Errorf("%s: %w", Name, err)
+	}
 
 	return nil
 }

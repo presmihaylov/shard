@@ -32,21 +32,16 @@ func (a App) remove(ctx context.Context, args []string) error {
 
 	var missing *client.NotFoundError
 	if errors.As(err, &missing) {
-		// The warning names what the operator typed, which is a name that resolved to nothing.
-		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
-
-		return nil
+		return a.removeMissing(opts, err)
 	}
 	if err != nil {
 		return err
 	}
 
-	// An rm that waited on another rm finds the same nothing, and that is still nothing to report.
+	// An rm that waited on another rm finds the same nothing.
 	err = c.RemoveSandbox(ctx, sb.ID, opts.force, opts.grace)
 	if errors.As(err, &missing) {
-		a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
-
-		return nil
+		return a.removeMissing(opts, err)
 	}
 	if err != nil {
 		return err
@@ -55,12 +50,24 @@ func (a App) remove(ctx context.Context, args []string) error {
 	return a.print(sb.ID)
 }
 
+// removeMissing fails a plain rm of an id with no record, and lets --force pass it with a warning, as rm -f does.
+func (a App) removeMissing(opts rmOptions, err error) error {
+	if !opts.force {
+		return err
+	}
+
+	// The warning names what the operator typed, which is a name that resolved to nothing.
+	a.warn(fmt.Sprintf("sandbox %s does not exist, so there is nothing to remove", opts.id))
+
+	return nil
+}
+
 func parseRm(args []string) (rmOptions, error) {
 	var opts rmOptions
 
 	flags := flag.NewFlagSet("shard rm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up")
+	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up, and warn rather than fail on an id that does not exist")
 	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
 
 	if err := parseVerb(flags, args); err != nil {

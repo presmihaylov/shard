@@ -21,7 +21,7 @@ import (
 // because it already wrote whatever it had to write, and main prints nothing for that one.
 type ExitError struct {
 	Code int
-	// Message is what shard has to say about a command that never ran at all.
+	// Message is what shard has to say about a command that never ran at all, or one whose output was cut.
 	Message string
 }
 
@@ -72,6 +72,11 @@ func (a App) exec(ctx context.Context, args []string) error {
 	}
 
 	status, err := a.runExec(ctx, opts, req, streams)
+	// A gap in the output fails the verb even when the command passed, so a caller never takes a cut stream as whole.
+	var lost *client.LostOutputError
+	if errors.As(err, &lost) {
+		return &ExitError{Code: max(lost.Exit.Code, 1), Message: lost.Error()}
+	}
 	if err != nil {
 		return shellCode(err)
 	}

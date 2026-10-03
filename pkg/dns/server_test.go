@@ -574,7 +574,12 @@ func TestAFloodOfBrokenPacketsIsHeldAtTheLogBound(t *testing.T) {
 		}
 	}
 
-	got := parse(t, askUDP(t, r.udp, question(t, 1, "api.example.com."), 2*time.Second))
+	// The flood can fill the socket's receive buffer, where the kernel drops a question like any datagram, so ask again until one lands.
+	var answer []byte
+	for asked := time.Now(); answer == nil && time.Since(asked) < 10*time.Second; {
+		answer = askUDP(t, r.udp, question(t, 1, "api.example.com."), 500*time.Millisecond)
+	}
+	got := parse(t, answer)
 	if got.header.RCode != dnsmessage.RCodeSuccess {
 		t.Fatalf("a question after the flood got %+v, want an answer", got.header)
 	}

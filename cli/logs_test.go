@@ -93,7 +93,7 @@ func TestLogsTakesAName(t *testing.T) {
 	if out.String() != "named\n" {
 		t.Errorf("logs printed %q", out.String())
 	}
-	if calls := d.providerSvc.(*fakeLifecycleProvider).r.calls; !slices.Contains(calls, "provider.LogPath") {
+	if calls := d.providerSvc.(*fakeLifecycleProvider).r.seen(); !slices.Contains(calls, "provider.LogPath") {
 		t.Errorf("logs never asked the provider for the path: %v", calls)
 	}
 }
