@@ -18,7 +18,7 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 	}
 	// The image size is known only after the pull, so the provider cannot refuse this bound up front.
 	if need := ceilMiB(st.Size()); st.Size() > DiskBytes(r) {
-		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set --disk %d or more", need, DiskBound(r), need)
+		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set --disk %dMiB or more", need, DiskBound(r), need)
 	}
 
 	err = admitDisk(dst, DiskBytes(r), func() error {

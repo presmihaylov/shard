@@ -1851,7 +1851,7 @@ oom_stop_steps() {
 
 	step "an OOM stops the sandbox with its reason, and nothing starts it again"
 	# The bomb overruns the bound on the first run only, so the run a start brings back sleeps and can be used.
-	id=$(shard create --memory 64 "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	id=$(shard create --memory 64MiB "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do

@@ -41,7 +41,7 @@ type flagHelp struct {
 
 // wants is what a placeholder stands for, which a refusal of a value that does not parse names.
 var wants = map[string]string{
-	"<size>":     "a whole size such as 512MiB or 2GiB, or a bare number of MiB",
+	"<size>":     "a whole size with a unit, such as 512MiB or 2GiB; only 0 goes without one",
 	"<duration>": "a duration such as 10s",
 	"<n>":        "a whole number",
 }
@@ -106,7 +106,7 @@ var helps = map[string]verbHelp{
 			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
-			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal). A bare number is MiB, and a part of a MiB rounds up.",
+			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal), and a part of a MiB rounds up. Only 0 goes without a unit.",
 		},
 		example: "shard create --name web --memory 512MiB python:3.12 python -m http.server",
 	},

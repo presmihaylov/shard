@@ -28,7 +28,7 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 
 	app, d, r := newDaemonCreateApp(t, &out)
 
-	if err := app.Run(t.Context(), []string{"create", "--name", "builder", "--memory", "512", "alpine:3.20", "--", "echo", "1"}); err != nil {
+	if err := app.Run(t.Context(), []string{"create", "--name", "builder", "--memory", "512MiB", "alpine:3.20", "--", "echo", "1"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 

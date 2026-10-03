@@ -247,7 +247,7 @@ holds "memory" echo "${REFUSAL}" || fail "create said '${REFUSAL}', want it to n
 say "create refuses a microVM with no --memory: ${REFUSAL#shard: }"
 
 step "create a microVM"
-create_it() { ID=$(shard create --memory "${MEMORY}" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }
+create_it() { ID=$(shard create --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }
 timed "create" create_it
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
@@ -311,7 +311,7 @@ expect "$(printf 'over vsock\n' | shard exec -i "${ID}" /bin/cat)" "over vsock" 
 expect_exec "1" "the entrypoint is a child of PID 1, which is shard-init" /bin/sh -c 'awk '"'"'$2 == "(sleep)" { print $4 }'"'"' /proc/[0-9]*/stat'
 
 step "a microVM outlives its entrypoint"
-EXIT_ID=$(shard create --memory "${MEMORY}" --name e2e-exited "${IMAGE}" /bin/sh -c 'exit 3')
+EXIT_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'exit 3')
 for _ in $(seq 1 50); do
 	grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" && break
 	sleep 0.2
@@ -326,7 +326,7 @@ say "only stop ended it"
 
 step "a microVM that outgrows its memory stops with its reason, and nothing starts it again"
 # Only the first boot fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
-OOM_ID=$(shard create --memory "${OOM_MEMORY}" --name e2e-oom "${IMAGE}" /bin/sh -c \
+OOM_ID=$(shard create --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}" /bin/sh -c \
 	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done')
 OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
 for _ in $(seq 1 120); do
@@ -419,7 +419,7 @@ grep -q "with reflink" "${DAEMON_LOG}" && fail "the second daemon provisioned th
 say "the second daemon found the xfs mount and provisioned nothing"
 
 step "reconcile a microVM the host lost while the daemon was down"
-RECONCILE_ID=$(shard create --memory "${MEMORY}" --name e2e-lost "${IMAGE}" /bin/sleep 600)
+RECONCILE_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-lost "${IMAGE}" /bin/sleep 600)
 RECONCILE_LINK=$(record_field "${RECONCILE_ID}" host_interface)
 RECONCILE_PID=$(record_pid "${RECONCILE_ID}")
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
