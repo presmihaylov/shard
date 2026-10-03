@@ -30,6 +30,9 @@ const requestTimeout = 30 * time.Second
 // startTimeout bounds the wait for an exec's first frame, so an exec no guest listener took fails instead of running forever (SHARD-354).
 var startTimeout = requestTimeout
 
+// cancelBudget bounds the cancel frame of an exec, so a guest that stopped reading never holds the close.
+const cancelBudget = time.Second
+
 // Control is the host end of the control connection. A request waits for the guest's answer; the events between them queue for Next.
 type Control struct {
 	conn net.Conn
@@ -271,22 +274,26 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	}
 	defer conn.Close()
 
-	// A cancelled context closes the connection, which is what unblocks the header write and the frame reader below.
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	// The bound runs from the header to the first frame, so a guest that never reads the exec fails it too.
+	// The bound runs from the header to the first frame, and goes on before the cancel is armed, so the cancel's own budget overrides it.
 	if err := conn.SetDeadline(time.Now().Add(startTimeout)); err != nil {
 		return models.ExitStatus{}, fmt.Errorf("exec %q: bound the start: %w", header.Argv[0], err)
 	}
+	var writes sync.Mutex
+	// A cancelled context cancels the exec and closes, which is what unblocks the header write and the frame reader below.
+	stop := context.AfterFunc(ctx, func() { cancelExec(conn, &writes) })
+	defer stop()
 	if err := WriteMessage(conn, header); err != nil {
 		return models.ExitStatus{}, execFailure(ctx, header, err)
 	}
 
-	var writes sync.Mutex
 	go feedStdin(conn, &writes, spec.Stdin)
 	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
-	exit, err := readExec(conn, id, spec)
+	exit, err := readExec(ctx, conn, id, spec)
+	if err != nil && stop() {
+		// A host that gives up on the exec ends the command with it; only a daemon that dies leaves one running.
+		cancelExec(conn, &writes)
+	}
 	if err != nil {
 		return models.ExitStatus{}, execFailure(ctx, header, err)
 	}
@@ -304,6 +311,16 @@ func execFailure(ctx context.Context, header ExecHeader, err error) error {
 	}
 
 	return err
+}
+
+// cancelExec tells the guest to kill the command, then closes: a connection that only drops is a host that went away, and the command runs on.
+func cancelExec(conn net.Conn, writes *sync.Mutex) {
+	// The deadline comes first, so a write held by a guest that stopped reading frees the lock within the budget.
+	_ = conn.SetWriteDeadline(time.Now().Add(cancelBudget))
+	writes.Lock()
+	_ = WriteFrame(conn, StreamCancel, nil)
+	writes.Unlock()
+	_ = conn.Close()
 }
 
 // feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed write is the guest gone, which the frame reader reports.
@@ -357,7 +374,7 @@ func feedResizes(ctx context.Context, conn net.Conn, writes *sync.Mutex, resizes
 }
 
 // readExec takes the guest's frames until the exit one; the output files get their bytes as they come.
-func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus, error) {
+func readExec(ctx context.Context, conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus, error) {
 	r := bufio.NewReader(conn)
 	for first := true; ; first = false {
 		stream, payload, err := ReadFrame(r)
@@ -371,6 +388,12 @@ func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus
 		if first {
 			if err := conn.SetDeadline(time.Time{}); err != nil {
 				return models.ExitStatus{}, fmt.Errorf("clear the start bound: %w", err)
+			}
+			// A cancel that fired before the clear lost its write budget with it, so it gets the budget back.
+			if ctx.Err() != nil {
+				if err := conn.SetWriteDeadline(time.Now().Add(cancelBudget)); err != nil {
+					return models.ExitStatus{}, fmt.Errorf("restore the cancel budget: %w", err)
+				}
 			}
 		}
 

@@ -24,7 +24,7 @@ sudo install -d -o "$USER" /var/lib/shard
 A Mac without the developer tools has no `/usr/local/bin`, so the first `install -d` makes it. The
 root is where the daemon keeps every record, disk and kernel, and it defaults to `/var/lib/shard`;
 the second `install -d` hands it to your user so nothing runs as root. `--root <dir>`
-on every command picks another one, and needs no `sudo` at all. A binary a browser fetched carries
+on every command picks another one of at most 58 bytes, and needs no `sudo` at all. A binary a browser fetched carries
 the quarantine flag and macOS refuses to run it: `xattr -d com.apple.quarantine shard` clears it.
 `curl` sets none.
 
@@ -36,11 +36,17 @@ shard daemon
 
 That is the daemon, in a terminal of its own, and it stays there. On a Mac it picks the `vz`
 provider by itself, and `shard info` prints that choice and the reason for it before a daemon is up.
-A root that already holds records keeps whatever made them. The daemon builds the provider on the first verb that needs it, not at boot:
-that verb writes the signed VM shim and the guest supervisor under the root (`docs/macos-signing.md`)
-and fetches the release kernel for this Mac into the root, checked against its hash
-(`docs/kernel.md`). A daemon of the same build finds all three in place; a new build replaces the
-shim and the supervisor, and the kernel is fetched again only when its tag moves.
+A root that already holds records keeps whatever made them. The daemon builds the provider the first
+time it needs it. With records in the root, that time is boot: the daemon checks each record against
+the substrate before it listens. With an empty root, it is the first verb that needs the provider.
+The build writes the signed VM shim and the guest supervisor under the root
+(`docs/macos-signing.md`) and fetches the release kernel for this Mac into the root, checked against
+its hash (`docs/kernel.md`). A daemon of the same build hashes all three and keeps them; a new build
+replaces the shim and the supervisor, and the kernel is fetched again when its tag moves or its bytes
+changed.
+If the build fails over a root with records, the daemon does not start: a release endpoint it cannot
+reach holds it for up to 5 minutes, then it exits with the error, and under launchd it starts again
+and retries. Over an empty root the daemon starts, and only the verb that needs the provider fails.
 
 In a second terminal:
 
@@ -70,12 +76,16 @@ A terminal that closes takes the daemon with it. To have launchd hold it instead
 in `packaging/launchd/shard.daemon.plist` is the mirror of the Linux unit: it starts the daemon at
 boot as your user, brings it back one second after a crash and not after a clean exit, and leaves
 every VM alone when the daemon stops, so a restart re-adopts them. The daemon writes to
-`/var/log/shard/daemon.log`. `__USER__` in the file is the account the root belongs to, so `sed` puts
-yours in:
+`/var/log/shard/daemon.log`, and `packaging/launchd/shard.newsyslog.conf` rotates it: at 10 MiB
+newsyslog renames it aside, keeps seven old files, and sends the daemon a SIGHUP, on which it reopens
+`daemon.log` and keeps running. `__USER__` in both files is the account the root belongs to, so `sed`
+puts yours in:
 
 ```
 curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.daemon.plist
+curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.newsyslog.conf
 sudo install -d -m0755 -o "$USER" /var/log/shard
+sed "s/__USER__/$USER/" shard.newsyslog.conf | sudo tee /etc/newsyslog.d/shard.conf >/dev/null
 sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/shard.daemon.plist >/dev/null
 sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
 ```
@@ -86,7 +96,7 @@ take it out:
 
 ```
 sudo launchctl bootout system/shard.daemon
-sudo rm /Library/LaunchDaemons/shard.daemon.plist
+sudo rm /Library/LaunchDaemons/shard.daemon.plist /etc/newsyslog.d/shard.conf
 ```
 
 The bootout ends the daemon and nothing else: a running sandbox stays up until a daemon adopts it
@@ -110,8 +120,8 @@ again, so `shard stop` each one first when the Mac is to be clean.
 ## If it does not start
 
 - `provider vz does not support pause on this host`: macOS 13, or an Intel Mac. The verb needs Apple silicon on 14.
-- `kernel checksum mismatch`: a file under `<root>/kernel/` changed. Delete that directory and
-  `create` again; the daemon fetches a fresh one.
+- `kernel checksum mismatch`: the release no longer serves the bytes this build expects, or the
+  `SHARD_KERNEL` file changed. A cut file under `<root>/kernel/` is fetched again on its own.
 - A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The
   error names `Virtualization.framework`; there is no workaround short of the profile.
 - `codesign: command not found`: the shim is signed on first use with the Command Line Tools.

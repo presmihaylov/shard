@@ -142,6 +142,37 @@ func TestTheSnapshotVerbsSpellTheirFlags(t *testing.T) {
 	}
 }
 
+// RestoreArgs is the command line Restore really runs, so a later daemon can find that restore by it.
+func TestRestoreArgsIsTheCommandLineRestoreRuns(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+	opts := runsc.RestoreOptions{Bundle: "/b", Image: "/snap"}
+	if err := r.Restore(t.Context(), "amber-otter-1a2b", opts); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	ran := append([]string{filepath.Join(filepath.Dir(recorded), "runsc")}, argv(t, recorded)...)
+	if got := r.RestoreArgs("amber-otter-1a2b", opts); !slices.Equal(got, ran) {
+		t.Errorf("RestoreArgs is %v, want the command line the restore ran: %v", got, ran)
+	}
+}
+
+// The kernel names a running binary by the file it opened, so a runner given a symlink names the target.
+func TestExecutableFollowsASymlink(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+	link := filepath.Join(t.TempDir(), "runsc")
+	if err := os.Symlink(filepath.Join(filepath.Dir(recorded), "runsc"), link); err != nil {
+		t.Fatalf("link the fake runsc: %v", err)
+	}
+
+	linked, err := runsc.New(r.Root(), runsc.WithBinary(link))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if linked.Executable() != r.Executable() {
+		t.Errorf("Executable over a symlink is %q, want the file it names, %q", linked.Executable(), r.Executable())
+	}
+}
+
 func TestTheSnapshotVerbsRefuseWithNoPath(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
 

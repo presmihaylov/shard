@@ -41,9 +41,10 @@ publishes `Image-arm64`, `vmlinux-amd64` and `SHA256SUMS` under the release tag 
 A hash that does not match what the Go code expects fails the workflow, so a release can never
 carry a kernel the daemon would refuse.
 
-The daemon fetches the file for the host arch into `<root>/kernel/<tag>/` on first use, hashes it
-before every boot, and refuses one that changed: `kernel checksum mismatch`. `shard inspect` shows
-the tag in `kernel` on a sandbox that booted one.
+The daemon fetches the file for the host arch into `<root>/kernel/<tag>/` on first use, fsyncs it
+and its directory, and hashes it before every boot. A release file that changed, such as one a host
+crash cut, is fetched again; a `SHARD_KERNEL` file that changed is refused: `kernel checksum
+mismatch`. `shard inspect` shows the tag in `kernel` on a sandbox that booted one.
 
 ### The dev path
 

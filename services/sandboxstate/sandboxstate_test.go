@@ -583,6 +583,86 @@ func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	}
 }
 
+// A pause the daemon did not finish leaves <id>.tmp beside the snapshot, so a delete must take it too (SHARD-368).
+func TestDeleteRemovesTheUnfinishedSnapshotTmp(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	tmp := snapshotDir(t, r, sb.ID) + ".tmp"
+	if err := os.MkdirAll(tmp, 0o750); err != nil {
+		t.Fatalf("create the unfinished snapshot directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "checkpoint.img"), []byte("x"), 0o640); err != nil {
+		t.Fatalf("plant the checkpoint: %v", err)
+	}
+
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s is still there after the delete", tmp)
+	}
+}
+
+// SHARD-368: the start sweep removes an orphan .tmp no record reaches, and an invalid-id one, but keeps a
+// .tmp a record still names, because that record's provider frees its own staging, not the sweep.
+func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
+	r, root := repo(t)
+	held := create(t, r)
+	corrupt := create(t, r)
+
+	snapshots := filepath.Join(root, "snapshots")
+	orphan := filepath.Join(snapshots, "quiet-otter-0000.tmp")
+	invalid := filepath.Join(snapshots, "NOT A VALID ID.tmp")
+	heldTmp := snapshotDir(t, r, held.ID) + ".tmp"
+	corruptTmp := snapshotDir(t, r, corrupt.ID) + ".tmp"
+	for _, dir := range []string{orphan, invalid, heldTmp, corruptTmp} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("plant %s: %v", dir, err)
+		}
+	}
+
+	// A record that will not decode still names its staging, so the sweep must keep that staging.
+	if err := os.WriteFile(filepath.Join(sandboxDir(t, r, corrupt.ID), "sandbox.json"), []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	var lines []string
+	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("SweepSnapshotTmp: %v", err)
+	}
+
+	for _, gone := range []string{orphan, invalid} {
+		if _, err := os.Stat(gone); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the orphan %s survived the sweep", gone)
+		}
+	}
+	for _, name := range []string{heldTmp, corruptTmp} {
+		if _, err := os.Stat(name); err != nil {
+			t.Errorf("the recorded %s did not survive the sweep: %v", name, err)
+		}
+	}
+	if _, err := r.Get(held.ID); err != nil {
+		t.Errorf("the sweep touched the record of %s: %v", held.ID, err)
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "will not read") }) {
+		t.Errorf("the sweep reported %q, want a note that names the unreadable record", lines)
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 2") && strings.Contains(l, "kept 2") }) {
+		t.Errorf("the sweep reported %q, want swept 2 and kept 2", lines)
+	}
+
+	// A later start finds no orphan, but still names the staging it keeps, one line per daemon life.
+	lines = nil
+	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("second SweepSnapshotTmp: %v", err)
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 0") && strings.Contains(l, "kept 2") }) {
+		t.Errorf("the second sweep reported %q, want swept 0 and kept 2", lines)
+	}
+}
+
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
