@@ -1003,6 +1003,28 @@ func TestStopRecordsTheExitStatus(t *testing.T) {
 	}
 }
 
+// A shard-init that dies on the way down outranks the entrypoint exit the record took: its 125 and its reason are what inspect shows (SHARD-290).
+func TestStopRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
+	sb := running()
+	sb.ExitStatus = &models.ExitStatus{Code: 3}
+	svc, l := newService(t, &recorder{}, sb)
+	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
+	l.provider.failsOnStop = why
+
+	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	got := l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.StoppedReason != want {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+}
+
 // A stop that had to kill leaves no exit status: the supervisor died before it could record one.
 func TestStopRecordsNoExitStatusWhenTheSandboxWasKilled(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
