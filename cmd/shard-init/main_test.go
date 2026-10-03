@@ -160,7 +160,7 @@ type harness struct {
 	waited bool
 }
 
-// restart flags go before the entrypoint; the count file lands beside the exit file when any are given.
+// restart flags go before the entrypoint, and an empty child leaves none; the count file lands beside the exit file when any are given.
 func startSupervisor(t *testing.T, role, child string, restart ...string) *harness {
 	t.Helper()
 
@@ -177,7 +177,11 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *harne
 	if len(restart) > 0 {
 		args = append(append(args, restart...), "-restart-file", restartFile)
 	}
-	cmd := exec.Command(exe, append(args, "--", exe, childPrefix+child)...)
+	args = append(args, "--")
+	if child != "" {
+		args = append(args, exe, childPrefix+child)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Env = append(os.Environ(), roleEnv+"="+role)
 	cmd.Stderr = os.Stderr
 
@@ -308,6 +312,16 @@ func (s *harness) awaitRestartCount(t *testing.T, want func(models.RestartCount)
 	return count
 }
 
+func (s *harness) awaitReady(t *testing.T) {
+	t.Helper()
+
+	waitFor(t, 15*time.Second, "the handshake", func() bool {
+		_, err := os.Stat(s.readyFile)
+
+		return err == nil
+	})
+}
+
 // awaitExit collects the supervisor's own exit, which nothing but a stop signal produces.
 func (s *harness) awaitExit(t *testing.T) {
 	t.Helper()
@@ -403,6 +417,32 @@ func TestTermEndsASupervisorWhoseEntrypointAlreadyExited(t *testing.T) {
 	}
 
 	super.awaitExit(t)
+}
+
+// With no command the supervisor runs alone: it is ready at once and stays up, as a sandbox outlives any entrypoint.
+func TestASupervisorWithNoEntrypointIsReadyAndStaysUp(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "")
+
+	super.awaitReady(t)
+	time.Sleep(200 * time.Millisecond)
+	if !super.alive(t) {
+		t.Error("the supervisor exited with no entrypoint, so the sandbox did not stay up")
+	}
+}
+
+// Nothing ran, so a stop ends the supervisor cleanly and leaves no exit record for the host to read.
+func TestTermEndsASupervisorWithNoEntrypoint(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "")
+	super.awaitReady(t)
+
+	if err := super.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+	super.awaitExit(t)
+
+	if status, found := readFramedExit(t, super.exitFile); found {
+		t.Errorf("the supervisor reported the exit %+v, but nothing ran", status)
+	}
 }
 
 func TestOnFailureStartsTheEntrypointAgainUntilTheRetriesAreSpent(t *testing.T) {
@@ -604,11 +644,7 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 func TestTheSupervisorReportsThatTheEntrypointStarted(t *testing.T) {
 	super := startSupervisor(t, roleSupervisor, "sleep:5000")
 
-	waitFor(t, 15*time.Second, "the handshake", func() bool {
-		_, err := os.Stat(super.readyFile)
-
-		return err == nil
-	})
+	super.awaitReady(t)
 }
 
 // readLine bounds the read, because a supervisor that says nothing is the failure under test here.
@@ -646,7 +682,6 @@ func TestRunRejectsBadArguments(t *testing.T) {
 
 	cases := map[string][]string{
 		"no ready file":          {"--", "/bin/true"},
-		"no entrypoint":          {readyFlag, readyPath},
 		"relative ready file":    {readyFlag, "started", "--", "/bin/true"},
 		"ready file eats --":     {readyFlag, "--", "/bin/true"},
 		"user with no gid":       {readyFlag, readyPath, "-user", "1000", "--", "/bin/true"},

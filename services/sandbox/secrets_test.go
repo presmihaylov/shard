@@ -39,7 +39,7 @@ func granted(t *testing.T, r *recorder, sb models.Sandbox, env ...string) (*sand
 	}
 
 	spec := runspec.Resolve(models.SandboxSpec{ID: sb.ID, StateDir: l.repo.stateDir, RootFS: rootfs, Env: env},
-		models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+		models.ImageConfig{})
 
 	b, err := builder.Build(spec)
 	if err != nil {

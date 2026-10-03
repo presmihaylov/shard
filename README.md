@@ -46,7 +46,9 @@ shard exec lab python --version
 ```
 
 Shard flags precede the image or sandbox reference. The command and its arguments follow the reference.
-An optional `--` before the command still works. Image-only create uses the image's configured command.
+An optional `--` before the command still works. The command after the image is the only one that
+starts: the image's own ENTRYPOINT and CMD never run. With no command, only `shard-init` runs, and the
+sandbox stays up for `shard exec`.
 
 `shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
 It owns the state. Every other verb is a client of its socket and fails fast when the daemon is not
@@ -59,9 +61,9 @@ that shard does not support, an Intel Mac or one on macOS 13, can run shard insi
 workaround, as `docs/mac.md` describes.
 
 On create, shard pulls the image, claims the record, allocates the network, creates the sandbox and
-starts the entrypoint. Then it prints the id and returns. It never attaches. The entrypoint runs as
-the child of `shard-init`, and the sandbox outlives it. `--env`, `--workdir`, `--user`, `--memory`
-and `--cpus` shape the workload, and they go before the image.
+starts the command, if one was given. Then it prints the id and returns. It never attaches. That
+command, the entrypoint, runs as the child of `shard-init`, and the sandbox outlives it. `--env`,
+`--workdir`, `--user`, `--memory` and `--cpus` shape the workload, and they go before the image.
 
 `--user` sets the user of the entrypoint only. The supervisor stays privileged as PID 1, so it can
 always record how the entrypoint ended.

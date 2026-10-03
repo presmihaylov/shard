@@ -693,7 +693,7 @@ func validate(req CreateRequest) error {
 		}
 	}
 	if req.Restart != nil {
-		if err := validRestart(*req.Restart); err != nil {
+		if err := validRestart(*req.Restart, req.Command); err != nil {
 			return &RequestError{Err: err}
 		}
 	}

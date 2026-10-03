@@ -1527,6 +1527,46 @@ pending_and_failed_steps() {
 	say "rm removes a failed sandbox and its record is gone"
 }
 
+# no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
+no_command_steps() {
+	local id code refusal
+
+	step "create with no command runs only shard-init and stays up"
+	id=$(shard create "${IMAGE}")
+	track_sandbox "${id}"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running: $(shard ls --all)"
+	say "a create with no command reaches running"
+	expect_exec_in "${id}" "alive" "an exec answers in a sandbox with no command" /bin/echo alive
+	# Every user process but this exec, by pid and argv0; a kernel thread has no cmdline, so it never counts.
+	expect_exec_in "${id}" "1 /.shard/init" "the guest holds shard-init as PID 1 and nothing else besides the exec" /bin/sh -c '
+		for p in /proc/[0-9]*; do
+			p=${p#/proc/}
+			if [ "$p" = "$$" ]; then continue; fi
+			a=$(tr "\000" "\n" < "/proc/$p/cmdline" 2>/dev/null | head -n 1)
+			if [ -n "$a" ]; then echo "$p $a"; fi
+		done'
+	holds '"exit_status"' shard inspect "${id}" && fail "a sandbox with no command recorded an exit: $(shard inspect "${id}")"
+	say "inspect holds no exit status, because nothing ran to exit"
+
+	step "stop a sandbox with no command and find no exit"
+	shard stop --time "${GRACE}" "${id}" >/dev/null
+	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard ls --all does not list the sandbox with no command stopped"
+	# The image's CMD would have exited by now and its status would land at the stop, so none proves it never ran.
+	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
+	say "the stop ends shard-init alone and records no exit status"
+	drop_sandbox "${id}"
+
+	step "refuse --restart with no command"
+	code=0
+	refusal=$(shard create --restart always "${IMAGE}" 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "create --restart always with no command made a sandbox: ${refusal}"
+	grep -q -- '--restart needs a command after the image' <<<"${refusal}" || fail "the refusal does not name --restart: ${refusal}"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"always\"}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a restart policy with no command answered ${REPLY_CODE}, want 400"
+	grep -q 'restart.policy needs a command' <<<"${REPLY_BODY}" || fail "the refusal does not name restart.policy: ${REPLY_BODY}"
+	say "the CLI refuses --restart and the API refuses restart.policy with no command, 400"
+}
+
 # exec_cap_steps proves the sandbox keeps at most 32 exited execs and never evicts a running one (SHARD-163).
 exec_cap_steps() {
 	local body id long first exec_id n code
@@ -1864,6 +1904,7 @@ disk_bound_steps() {
 }
 
 pending_and_failed_steps
+no_command_steps
 exec_cap_steps
 health_steps
 restart_policy_steps

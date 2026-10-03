@@ -125,6 +125,11 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 
 	req.Image, rest = rest[0], rest[1:]
 	if len(rest) == 0 {
+		// The image's own command never runs, so with none there is nothing to start again.
+		if req.Restart != nil && req.Restart.Set() {
+			return sandbox.CreateRequest{}, errors.New("--restart needs a command after the image; the image's own ENTRYPOINT and CMD never run")
+		}
+
 		return req, nil
 	}
 
