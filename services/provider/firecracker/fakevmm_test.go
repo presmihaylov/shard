@@ -58,6 +58,8 @@ const (
 	snapshotsFile = "snapshots"
 	// refuseSnapshotFile, while it exists, has the vmm refuse every snapshot create, as one whose disk is full does.
 	refuseSnapshotFile = "refuse-snapshot"
+	// refuseResumeFile, while it exists, has the vmm refuse every resume of its vCPUs.
+	refuseResumeFile = "refuse-resume"
 	// fakeVersionEnv is the version the fake vmm names on --version, 1.17.0 when unset.
 	fakeVersionEnv = "SHARD_FAKE_FIRECRACKER_VERSION"
 )
@@ -377,6 +379,9 @@ func (f *fake) patchVM(body []byte) (string, error) {
 
 		return "", f.signal(syscall.SIGSTOP)
 	case "Resumed":
+		if _, err := os.Stat(filepath.Join(f.dir, refuseResumeFile)); err == nil {
+			return "Cannot resume microVM: refused by the test", nil
+		}
 		f.state = "Running"
 
 		return "", f.signal(syscall.SIGCONT)

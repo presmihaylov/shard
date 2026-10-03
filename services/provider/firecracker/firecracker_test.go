@@ -1365,6 +1365,44 @@ func TestAFailedCaptureRunsTheSourceOn(t *testing.T) {
 	}
 }
 
+// A source the fork could not resume after its capture keeps the marker beside an older pause's snapshot, so the next daemon runs it again, never ends it (SHARD-427, SHARD-462).
+func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, pid := h.runLong(t)
+	dir, _ := h.snapshotDir(spec.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refuse := filepath.Join(spec.StateDir, refuseResumeFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "refused by the test") {
+		t.Fatalf("Fork over a refused resume = %v, want the refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, firecracker.CaptureFile)); err != nil {
+		t.Fatalf("the capture marker after the refused resume: %v, want kept", err)
+	}
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+	p := h.reopen(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source = %+v, %v, want running again as pid %d", status, err, pid)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, firecracker.CaptureFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the capture marker after the adopt: %v, want gone", err)
+	}
+}
+
 // A daemon cut inside a capture leaves the source paused and frozen beside an older pause's snapshot; the marker has the next daemon run it again, never end it (SHARD-427, SHARD-462).
 func TestASourceACutCaptureLeftPausedRunsAgain(t *testing.T) {
 	h := newHarness(t)

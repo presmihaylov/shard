@@ -374,8 +374,12 @@ func (p *Provider) capture(ctx context.Context, id, dir string) error {
 		return err
 	}
 
-	// Only a daemon cut before this point leaves the marker, and the next one's adopt runs the source again.
-	return errors.Join(err, runAgain(m), os.Remove(filepath.Join(m.dir, captureFile)))
+	// A source this run left paused keeps its marker, so the next daemon's adopt runs it again rather than end it as a cut pause.
+	if runErr := runAgain(m); runErr != nil {
+		return errors.Join(err, runErr)
+	}
+
+	return errors.Join(err, os.Remove(filepath.Join(m.dir, captureFile)))
 }
 
 // hold marks the source, stops it over a frozen guest and stages its snapshot in dir; a machine it answers must run again, error or not.
