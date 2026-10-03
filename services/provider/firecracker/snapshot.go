@@ -171,7 +171,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if err := p.endLeftover(ctx, m); err != nil {
 		return err
 	}
-	if err := restoreFiles(dir, stateDir); err != nil {
+	if err := bundle.ReplaceDisk(func() error { return restoreFiles(dir, stateDir) }); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
@@ -283,8 +283,9 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if err := restoreFiles(dir, spec.StateDir); err != nil {
-		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
+	from, to := filepath.Join(dir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
+	if err := bundle.AdmitCopy(from, to, func() error { return restoreFiles(dir, spec.StateDir) }); err != nil {
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	// The memory restores under its own bounds; the network, and the name the guest answers to, are what the fork changes.
