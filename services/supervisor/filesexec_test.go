@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -37,14 +36,15 @@ func openFake(t *testing.T, ctx context.Context, run ExecFunc) io.ReadWriteClose
 
 func TestOpenFilesRunsTheFilesMode(t *testing.T) {
 	var got models.ExecSpec
-	conn, err := OpenFiles(t.Context(), func(_ context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
+	// The guest reads its request before it answers, so its exit never closes stdin under the host's write (SHARD-443).
+	conn, err := OpenFiles(t.Context(), fakeGuest(func(_ FileHeader, spec models.ExecSpec) models.ExitStatus {
 		got = spec
 		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileDir}}); err != nil {
-			return models.ExitStatus{}, err
+			t.Errorf("reply: %v", err)
 		}
 
-		return models.ExitStatus{}, nil
-	}, "app")
+		return models.ExitStatus{}
+	}), "app")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -203,7 +203,12 @@ func TestARefusalKeepsTheGuestsCode(t *testing.T) {
 func TestTheContextUnblocksAGuestThatHangs(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	conn := openFake(t, ctx, func(_ context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
-		// It waits on stdin, which only the host's close ends.
+		var header FileHeader
+		if err := ReadHeader(spec.Stdin, &header); err != nil {
+			return models.ExitStatus{}, err
+		}
+		// The caller gives up once the guest holds its request, and the guest waits on stdin, which only the host's close ends.
+		cancel()
 		if _, err := io.Copy(io.Discard, bufio.NewReader(spec.Stdin)); err != nil {
 			return models.ExitStatus{}, err
 		}
@@ -211,11 +216,12 @@ func TestTheContextUnblocksAGuestThatHangs(t *testing.T) {
 		return models.ExitStatus{Signal: 9}, nil
 	})
 
-	time.AfterFunc(50*time.Millisecond, cancel)
-	if _, err := Stat(conn, "/etc/hosts"); err == nil {
+	_, err := Stat(conn, "/etc/hosts")
+	if err == nil {
 		t.Fatal("a stat with no answer succeeded")
 	}
-	if err := conn.Close(); err == nil || !strings.Contains(err.Error(), "signal 9") {
-		t.Fatalf("close gave %v, want the killed exec", err)
+	// The read reports the kill when the guest's exit beats the close of its stdout, and the close reports it otherwise.
+	if joined := errors.Join(err, conn.Close()); strings.Count(joined.Error(), "signal 9") != 1 {
+		t.Fatalf("the stat joined with the close gave %v, want the killed exec once", joined)
 	}
 }
