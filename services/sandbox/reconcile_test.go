@@ -19,6 +19,8 @@ import (
 type recRepo struct {
 	t       *testing.T
 	records map[string]*models.Sandbox
+	// snapshots replaces the fixed root when a test needs a snapshot directory on disk.
+	snapshots string
 	// updateErr fails every record write, the way a full root does.
 	updateErr error
 }
@@ -65,8 +67,15 @@ func (r *recRepo) Delete(id string) error {
 	return nil
 }
 
-func (r *recRepo) Dir(id string) (string, error)         { return "/state/" + id, nil }
-func (r *recRepo) SnapshotDir(id string) (string, error) { return "/snapshots/" + id, nil }
+func (r *recRepo) Dir(id string) (string, error) { return "/state/" + id, nil }
+
+func (r *recRepo) SnapshotDir(id string) (string, error) {
+	if r.snapshots != "" {
+		return filepath.Join(r.snapshots, id), nil
+	}
+
+	return "/snapshots/" + id, nil
+}
 
 // recProvider answers Status per id, which is the whole substrate a reconcile asks about.
 type recProvider struct {
@@ -108,6 +117,20 @@ func (p *recProvider) Status(ctx context.Context, id string) (models.Status, err
 	return p.status[id], nil
 }
 
+// releasingProvider is a substrate that can release a sandbox a cut pause left frozen, the way gVisor can.
+type releasingProvider struct {
+	*recProvider
+
+	released []string
+}
+
+func (p *releasingProvider) Release(_ context.Context, id, dir string) error {
+	p.released = append(p.released, dir)
+	p.status[id] = gone()
+
+	return nil
+}
+
 func (p *recProvider) Stop(_ context.Context, id string, _ time.Duration) error {
 	p.stopped = append(p.stopped, id)
 	if p.stopErr != nil {
@@ -145,12 +168,12 @@ type reconcileLab struct {
 	reports []string
 }
 
-func newReconcileLab(t *testing.T, provider *recProvider, records ...models.Sandbox) *reconcileLab {
+func newReconcileLab(t *testing.T, provider models.Provider, records ...models.Sandbox) *reconcileLab {
 	return newTunedReconcileLab(t, provider, 0, records...)
 }
 
 // newTunedReconcileLab is newReconcileLab with a probe budget; a zero budget keeps the default.
-func newTunedReconcileLab(t *testing.T, provider *recProvider, budget time.Duration, records ...models.Sandbox) *reconcileLab {
+func newTunedReconcileLab(t *testing.T, provider models.Provider, budget time.Duration, records ...models.Sandbox) *reconcileLab {
 	t.Helper()
 
 	repo := &recRepo{t: t, records: map[string]*models.Sandbox{}}
@@ -337,6 +360,176 @@ func TestReconcileStopsAPausedRecordWhoseSnapshotIsGone(t *testing.T) {
 	got := lab.repo.records["sandbox1"]
 	if got.State != models.StateStopped || got.StoppedReason != sandbox.LostReason {
 		t.Errorf("the record says %s with the reason %q, want stopped with one", got.State, got.StoppedReason)
+	}
+}
+
+// heldCheckpoint writes a complete checkpoint where the lab's repository puts the sandbox's snapshot, and answers that directory.
+func heldCheckpoint(t *testing.T, lab *reconcileLab, id string) string {
+	t.Helper()
+
+	lab.repo.snapshots = t.TempDir()
+	dir := filepath.Join(lab.repo.snapshots, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return dir
+}
+
+// A daemon cut after a pause installed its snapshot and before the pause wrote the record must not lose the pause (SHARD-366).
+func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+	dir := heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.StoppedReason != "" {
+		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
+		t.Errorf("the reconcile reported %v, want one line on the pause", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, and the reconcile finishes that pause (SHARD-366).
+func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	dir := heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s and no mark", *got, dir)
+	}
+	if len(provider.released) != 1 || provider.released[0] != dir {
+		t.Errorf("the substrate released %v, want the sandbox once beside %s: a resume refuses a live one", provider.released, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
+		t.Errorf("the reconcile reported %v, want one line on the pause", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+// A daemon cut after the delete and before the unmount leaves a view runsc no longer holds, which rm --force must still free (SHARD-366).
+func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	r := &recorder{}
+	svc, l := newService(t, r, sb)
+	l.repo.snapshotDir = dir
+	l.provider.status, l.provider.mounted = gone(), true
+
+	if err := svc.ReconcileAll(t.Context(), []models.Sandbox{sb}, func(string) {}, runOnce); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
+		t.Fatalf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
+	}
+	if l.provider.mounted {
+		t.Errorf("the calls were %v, want the view released: no stop frees a view runsc does not hold", r.snapshot())
+	}
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, time.Second); err != nil {
+		t.Fatalf("rm --force of the paused record: %v", err)
+	}
+	if !l.repo.deleted || !l.provider.removed {
+		t.Errorf("rm left the record deleted %v and the runtime state removed %v, want both gone", l.repo.deleted, l.provider.removed)
+	}
+}
+
+// A substrate that cannot release keeps what it holds, so the reconcile does not take the snapshot from under it.
+func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
+// Without the mark the frozen sentry is no pause this daemon finishes, so the reconcile never releases it.
+func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" {
+		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	}
+	if len(provider.released) != 0 {
+		t.Errorf("the substrate released %v, want nothing", provider.released)
+	}
+}
+
+// A pause cut before its checkpoint was complete finished nothing, so the reconcile leaves the frozen sentry alone.
+func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	lab.repo.snapshots = t.TempDir()
+	partial := filepath.Join(lab.repo.snapshots, "sandbox1.tmp")
+	if err := os.MkdirAll(partial, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partial, "checkpoint.img"), []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if len(provider.released) != 0 {
+		t.Errorf("the substrate released %v, want nothing: no complete checkpoint stands beside the sentry", provider.released)
+	}
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
+// Without the mark the checkpoint is what an earlier pause and resume left, and the run after it is gone.
+func TestReconcileStopsARunningRecordOverACheckpointItNeverMarked(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.StoppedReason != sandbox.LostReason {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, sandbox.LostReason)
 	}
 }
 

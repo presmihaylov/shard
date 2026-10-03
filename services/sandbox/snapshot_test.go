@@ -39,8 +39,12 @@ func TestPauseWritesTheSnapshotAndRecordsIt(t *testing.T) {
 		t.Errorf("the record lost its exit: %+v", sb.ExitStatus)
 	}
 
-	if slices.Index(r.calls, "provider.Pause") > slices.Index(r.calls, "repo.Update") {
-		t.Errorf("the record was updated before the pause: %v", r.calls)
+	// The mark goes on before the provider writes, and comes off with the paused state after it.
+	if got := keep(r.calls, "provider.Pause", "repo.Update"); !slices.Equal(got, []string{"repo.Update", "provider.Pause", "repo.Update"}) {
+		t.Errorf("the pause and the record ran as %v, want the mark, the pause, then the record", got)
+	}
+	if sb.Pausing {
+		t.Error("the paused record kept the mark of its pause")
 	}
 }
 
@@ -67,8 +71,60 @@ func TestPauseKeepsTheRecordRunningWhenTheSandboxStillIs(t *testing.T) {
 		t.Fatal("pause returned no error")
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" {
-		t.Errorf("the record is %s with snapshot %q after a failed pause, want running with none", sb.State, sb.Snapshot)
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v after a failed pause, want running with neither", sb.State, sb.Snapshot, sb.Pausing)
+	}
+}
+
+// A checkpoint an earlier pause and resume left must not pass for a pause that failed after the guest died (SHARD-366).
+func TestAFailedPauseNeverTakesTheCheckpointAnEarlierPauseLeft(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "checkpoint.img")
+	if err := os.WriteFile(stale, []byte("an earlier pause"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := running()
+	resumed.Snapshot = dir
+	svc, l := newService(t, &recorder{fail: []string{"provider.Pause"}}, resumed)
+	l.repo.snapshotDir = dir
+	l.provider.status = models.Status{}
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is gone") {
+		t.Fatalf("pause returned %v, want the failure and that the sandbox is gone", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StateStopped || sb.Pausing {
+		t.Errorf("the record is %s with mark %v, want stopped with none: a resume would restore the older run", sb.State, sb.Pausing)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the old checkpoint is still there: %v", err)
+	}
+}
+
+// The old checkpoint goes before the mark, so a mark never stands over a checkpoint an earlier pause wrote.
+func TestPauseRemovesTheOldCheckpointBeforeItMarksTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "checkpoint.img")
+	if err := os.WriteFile(stale, []byte("an earlier pause"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recorder{fail: []string{"repo.Update#1"}}
+	svc, l := newService(t, r, running())
+	l.repo.snapshotDir = dir
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "mark the pause") {
+		t.Fatalf("pause returned %v, want the mark that failed", err)
+	}
+
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the mark was written before the old checkpoint went: %v", err)
+	}
+	if slices.Contains(r.calls, "provider.Pause") {
+		t.Errorf("a pause with no mark reached the provider: %v", r.calls)
 	}
 }
 
@@ -126,18 +182,14 @@ func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
 
 	// The checkpoint an earlier pause left must not pass for this one.
 	sb := l.repo.sb
-	if sb.State != models.StateFailed || sb.PID != 0 || !strings.Contains(sb.FailedReason, "no space left on device") {
-		t.Errorf("the record is %s with pid %d and reason %q, want failed with pid 0 and the checkpoint's reason", sb.State, sb.PID, sb.FailedReason)
+	if sb.State != models.StateFailed || sb.PID != 0 || !strings.Contains(sb.FailedReason, "no space left on device") || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, reason %q and mark %v, want failed with pid 0, the checkpoint's reason and no mark", sb.State, sb.PID, sb.FailedReason, sb.Pausing)
 	}
 }
 
 // A delete that spends the pause budget after a good checkpoint leaves the pause context done, and the record must still say paused.
 func TestPauseThatSpentItsBudgetStillRecordsTheSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.PauseBudget = 50 * time.Millisecond })
 	l.repo.snapshotDir = dir
 	l.provider.spendBudget = true
@@ -147,29 +199,87 @@ func TestPauseThatSpentItsBudgetStillRecordsTheSnapshot(t *testing.T) {
 		t.Fatalf("pause returned %v, want the deadline and that the sandbox is paused", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir {
-		t.Errorf("the record is %s with pid %d and snapshot %q, want paused with pid 0 and %s", sb.State, sb.PID, sb.Snapshot, dir)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Snapshot, sb.Pausing, dir)
 	}
 }
 
 // A complete snapshot outranks a failed host cleanup: the record must say paused, or start throws it away.
 func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	svc, l := newService(t, &recorder{fail: []string{"provider.Pause"}}, running())
+	svc, l := newService(t, &recorder{}, running())
 	l.repo.snapshotDir = dir
-	l.provider.status = models.Status{}
+	l.provider.cleanupFails = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
 	if err == nil || !strings.Contains(err.Error(), "is paused") {
 		t.Fatalf("pause returned %v, want the failure and that the sandbox is paused", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Snapshot != dir {
-		t.Errorf("the record is %s with snapshot %q, want paused with %s", sb.State, sb.Snapshot, dir)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Snapshot != dir || sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", sb.State, sb.Snapshot, sb.Pausing, dir)
+	}
+}
+
+// A delete that fails after the swap leaves the sentry frozen beside a complete snapshot, which the pause must release (SHARD-366).
+func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
+	dir := t.TempDir()
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is paused") {
+		t.Fatalf("pause returned %v, want the failure and that the sandbox is paused", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Snapshot, sb.Pausing, dir)
+	}
+	if !slices.Contains(r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", r.snapshot())
+	}
+}
+
+// A release that fails keeps the mark over the checkpoint, so the liveness tick finishes the pause later.
+func TestPauseKeepsItsMarkWhenTheReleaseFails(t *testing.T) {
+	dir := t.TempDir()
+	svc, l := newService(t, &recorder{fail: []string{"provider.Release"}}, running())
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "release sandbox sandbox1") {
+		t.Fatalf("pause returned %v, want the failed release", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	}
+}
+
+// unreleasing is a substrate with no release, the way Firecracker is: its embedded interface hides the fake's Release.
+type unreleasing struct{ models.Provider }
+
+// A substrate that cannot release keeps its guest frozen beside the snapshot, so the failed pause must keep the mark that names it.
+func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
+	dir := t.TempDir()
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(c *sandbox.Config) { c.Provider = unreleasing{c.Provider} })
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "keeps the pause mark") {
+		t.Fatalf("pause returned %v, want the failure and that the record keeps its mark", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	}
+	if slices.Contains(r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release from a substrate that has none", r.snapshot())
 	}
 }
 
@@ -551,7 +661,7 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "Snapshot",
+var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "Snapshot", "Pausing",
 	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "OOMRestartDue", "MemoryThrottles", "CalmSince", "HealthyRun", "ExitChannel",
 	"Health", "Restart", "StartedAt", "CreatedAt"}
 
