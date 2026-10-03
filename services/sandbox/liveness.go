@@ -38,21 +38,16 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 }
 
 // reconcileLive probes the substrate without the lock, because Status can wedge and a stop on this or any
-// other sandbox must not wait on it. It takes the lock only to write, and bails if the run has since changed.
+// other sandbox must not wait on it. It locks to write and to probe a marked run again, and bails if the run changed.
 func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
 	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
 		return err
 	}
 
-	status, err := s.status(ctx, sb.ID, "liveness")
-	var timeout *SubstrateTimeoutError
-	if errors.As(err, &timeout) {
-		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the next tick asks again", sb.ID, timeout.Budget))
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
+	status, ok, err := s.probeLive(ctx, sb.ID, report)
+	if !ok {
+		return err
 	}
 
 	unlock := s.lock(sb.ID)
@@ -67,6 +62,14 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return nil
 	}
 
+	// A pause can commit between the probe and the lock, so only a probe under the lock may drop its mark (SHARD-429).
+	if ranPast(current, status) {
+		status, ok, err = s.probeLive(ctx, sb.ID, report)
+		if !ok {
+			return err
+		}
+	}
+
 	// A pause that could not reconcile itself left its mark over the checkpoint it wrote, and maybe a frozen sandbox (SHARD-366).
 	dir, err := s.cutPause(ctx, current, status)
 	if err != nil {
@@ -74,6 +77,11 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	}
 	if dir != "" {
 		return s.recordCutPause(sb.ID, dir, report)
+	}
+	if ranPast(current, status) {
+		if err := s.dropMark(sb.ID, report); err != nil {
+			return err
+		}
 	}
 
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
@@ -89,6 +97,21 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	}
 
 	return s.recordDied(sb.ID, report)
+}
+
+// probeLive asks the substrate about a running sandbox; false with no error is a probe out of budget, which it reported.
+func (s *Service) probeLive(ctx context.Context, id string, report func(string)) (models.Status, bool, error) {
+	status, err := s.status(ctx, id, "liveness")
+	if timeout, ok := errors.AsType[*SubstrateTimeoutError](err); ok {
+		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the next tick asks again", id, timeout.Budget))
+
+		return models.Status{}, false, nil
+	}
+	if err != nil {
+		return models.Status{}, false, fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), id, err)
+	}
+
+	return status, true, nil
 }
 
 // recordCalm keeps the tick's throttle count on the record, and latches a healthy run there, so a daemon restart keeps both.

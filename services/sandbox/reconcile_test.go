@@ -387,6 +387,32 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 	}
 }
 
+// A cut after the vz swap leaves a shim the next daemon runs on past the snapshot, so a later death of that run is no pause (SHARD-429).
+func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
+	lab := newReconcileLab(t, provider, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning || got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with no mark: the substrate runs it on", got.State, got.Pausing)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "pause mark") {
+		t.Errorf("the pass reported %v, want one line on the mark", lab.reports)
+	}
+
+	provider.status["sandbox1"] = gone()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll after the death: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	}
+}
+
 // Without the mark the checkpoint is what an earlier pause and resume left, and the run after it is gone.
 func TestReconcileStopsARunningRecordOverACheckpointItNeverMarked(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
