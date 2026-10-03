@@ -14,6 +14,8 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/provider/runc"
+	"github.com/presmihaylov/shard/services/provider/sysbox"
 )
 
 // The daemon and the CLI share the root, so what one wrote the other serves.
@@ -69,7 +71,7 @@ func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	}
 }
 
-// The status is what the daemon knows about itself: its own pid, its socket and the gVisor verbs.
+// The status is what the daemon knows about itself: its own pid, its socket, the provider the suite runs and its verbs.
 func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
 	app, out := newCreateApp(t)
 
@@ -83,13 +85,15 @@ func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
 		fields[name] = strings.TrimSpace(value)
 	}
 
+	// sysbox and runc embed models.NoSnapshots, so they report none of the three verbs.
+	snapshots := strconv.FormatBool(itestProvider != sysbox.Name && itestProvider != runc.Name)
 	want := map[string]string{
 		"pid":        strconv.Itoa(daemonUnderTest.cmd.Process.Pid),
 		"socket":     filepath.Join(app.Root, api.SocketFile),
-		"provider":   "gvisor",
-		"pause":      "true",
-		"resume":     "true",
-		"fork":       "true",
+		"provider":   itestProvider,
+		"pause":      snapshots,
+		"resume":     snapshots,
+		"fork":       snapshots,
 		"plain_port": "30080",
 		"tls_port":   "30443",
 	}
