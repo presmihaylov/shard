@@ -24,7 +24,7 @@ sudo install -d -o "$USER" /var/lib/shard
 A Mac without the developer tools has no `/usr/local/bin`, so the first `install -d` makes it. The
 root is where the daemon keeps every record, disk and kernel, and it defaults to `/var/lib/shard`;
 the second `install -d` hands it to your user so nothing runs as root. `--root <dir>`
-on every command picks another one, and needs no `sudo` at all. A binary a browser fetched carries
+on every command picks another one of at most 58 bytes, and needs no `sudo` at all. A binary a browser fetched carries
 the quarantine flag and macOS refuses to run it: `xattr -d com.apple.quarantine shard` clears it.
 `curl` sets none.
 

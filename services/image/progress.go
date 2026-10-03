@@ -8,24 +8,29 @@ import (
 
 // The statuses of a pull event, in the order a pull says them; cached is the whole story of an image already on disk.
 const (
-	StatusCached  = "cached"
-	StatusPulling = "pulling"
-	StatusLayer   = "layer"
-	StatusPulled  = "pulled"
+	StatusCached    = "cached"
+	StatusPulling   = "pulling"
+	StatusLayer     = "layer"
+	StatusUnpacking = "unpacking"
+	StatusUnpacked  = "unpacked"
+	StatusBuilding  = "building"
+	StatusPulled    = "pulled"
 )
 
 // Event is one step of a pull, as the daemon streams it to a client.
 type Event struct {
 	Status    string `json:"status"`
 	Reference string `json:"reference,omitempty"`
-	// Digest names the image, except on a layer event, where it names the layer.
+	// Digest names the image, except on a layer or unpacked event, where it names the layer.
 	Digest string `json:"digest,omitempty"`
 	Layers int    `json:"layers,omitempty"`
+	// Layer is the position, from 1, of the layer an unpacked event names.
+	Layer int `json:"layer,omitempty"`
 	// Bytes is the download: the whole image on pulling, one blob on layer.
 	Bytes int64 `json:"bytes,omitempty"`
 	// Present is a layer another image already brought, so it cost no download.
 	Present bool `json:"present,omitempty"`
-	// Path is where the image went, on pulled and cached.
+	// Path is where the image went, on pulled and cached, and the file a building event writes.
 	Path string `json:"path,omitempty"`
 }
 

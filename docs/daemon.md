@@ -115,7 +115,20 @@ one:
   one bad boot cannot end every future `resume` while the checkpoint sits on disk.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
-- A record that says `created` is left alone: it never ran.
+- A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
+  before the fork or clone finished`. No verb leaves a record in `created`: only a fork or clone's
+  copy passes through it, and the caller got an error, not the id. A copy whose process still runs is
+  stopped first, because `rm` refuses a live sandbox and `stop` refuses a failed one. Then the daemon
+  tears down the copy's substrate, as `rm` does, because a restore the old daemon started can run on
+  where the runtime cannot see it. On gVisor that teardown first kills any `runsc restore` of the
+  copy, because until it starts the sandbox it is outside the sandbox's cgroup, and the daemon lock
+  means no new one can start. A fork or resume records the binary and the command line of its restore
+  in `restore.json` before it runs, so the kill finds the restore even after runsc was replaced, and
+  it signals through a pidfd, so a pid reused in between is never hit. A copy with no `restore.json`,
+  from a daemon older than the file, matches a process the daemon's user started with the restore
+  command line on the copy's own bundle, from any snapshot and any runsc binary. A teardown that
+  fails leaves the record as it is, with a line in the log, and the next start of the daemon tries
+  again.
 - A record that says `pending` becomes `running` when the substrate holds its process, because a
   start that took before the daemon stopped did reach `running`. With no process behind it the record
   becomes `failed`, and its `failed_reason` says `the daemon restarted before the create finished`: a
@@ -446,9 +459,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 **A streamed pull says each step as it lands.** An event is `cached` (the image is already on disk),
 `pulling` (the reference, the digest, the layer count and their bytes), one `layer` per layer with
-its bytes and whether it was already on disk, then `pulled` with where the image went. A refusal
-before the first line keeps its status and its JSON body. After the first line the status is sent,
-so a failure is a last `{"error"}` line with the same `code` and `message`.
+its bytes and whether it was already on disk, `unpacking` with the layer count and one `unpacked`
+per layer in manifest order with its position when the tree is not on disk yet, a `building` with
+the path of each disk or EROFS image a VM provider boots from, then `pulled` with where the image
+went. A refusal before the first line keeps its status and its JSON body. After the first line the
+status is sent, so a failure is a last `{"error"}` line with the same `code` and `message`.
 - `DELETE /v0/images/{ref}` takes the whole reference, slashes and all, and answers 200 with a
   `warnings` array of what it could not delete under the store. 404; 409 naming every sandbox that
   references it, unless `?force=true`.
@@ -477,7 +492,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 
 | code | status | when |
 |---|---|---|
-| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown |
+| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it; nothing is dialed |
 | `body_too_large` | 413 | a JSON body over 1 MiB; the daemon reads no further and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
@@ -527,7 +542,11 @@ shard --root /var/lib/shard serve --listen :2376 \
 It is a byte proxy and not an API. It reads the request line and the headers of a request only as
 far as the auth header, replays those bytes onto the socket and then splices the two connections, so
 the WebSocket handshake of an exec, a `logs` follow or an `egress-log` follow, and every message
-after it, pass through untouched and every route above works unchanged. A bad or missing token is a
+after it, pass through untouched and every route above works unchanged. The front splits the request
+line on the ASCII space alone and checks the method and the version as net/http does, so it reads the
+route the daemon serves; a line that does not parse that way, such as one split by a non-breaking
+space, is a `400` with the code `invalid_request`, written before the token check and before anything
+is dialed. A bad or missing token is a
 `401` with the code `unauthorized`, written before anything is dialed, so an unauthenticated client
 never reaches the daemon. A socket that does not answer is a `502` with the code `internal`. The
 front verifies HS256 alone: a token signed by another algorithm, a token signed by another secret, a
@@ -539,6 +558,16 @@ request it lets through. Without `--cert` and `--key` the front refuses to start
 TCP mode to fall back to. The secret file must not be readable by everyone on the host, and the front
 refuses one that is. The secret must be at least 32 bytes, the width an HS256 key needs, and the front
 refuses a shorter one; `openssl rand -hex 32` prints a secret that passes.
+
+A connection is bounded before its token is checked. The front holds at most 32 connections that
+have not shown a valid token yet from one source address, and at most (soft `RLIMIT_NOFILE` - 64) / 2
+in total, read at start and never fewer than 32: a held connection costs two file descriptors once it
+dials the daemon socket, and 64 stay for the listener, the logs and the dials. It closes the next one
+at once and logs the refusal, a few lines a second per source at most. A connection leaves that count
+once its token passes, so a client that holds many `logs` follows or exec sessions open is never
+refused for them. A connection must send its whole request head, the TLS handshake included, within
+10 s, or the front closes it. An accept that runs out of file descriptors or memory waits from 5 ms up
+to 1 s and tries again, so a flood of connections never ends the front.
 
 The access control is TLS on the wire, one signing secret in a file, and a coarse scope on each
 token. There is no user and no role yet.

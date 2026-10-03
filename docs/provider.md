@@ -49,6 +49,11 @@ that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes 
 `--provider` that names another substrate is refused, by both names, before the daemon touches the
 root; the records or the data image name the one to give.
 
+**A root leaves room for the sockets under it.** A unix socket path holds at most 107 bytes on Linux
+and 103 on macOS, and a microVM's sockets sit under `<root>/sandboxes/<id>/`. So the daemon refuses at
+start a root longer than 55 bytes for Firecracker, 58 for vz, or 96 for the container substrates (92
+on macOS), and the refusal names the longest root that fits (SHARD-358).
+
 **A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
 before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
 every byte as it comes, with no resume. A newer guest under an older daemon is unsupported: that
@@ -226,7 +231,13 @@ and the source and the snapshot are untouched. A fork restores holding the sourc
 hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
 else: the interface goes down for the MAC, which is why a fork's frames reach the bridge under its
 own and not the source's. Firecracker has no pause of the wall clock, so the guest's clock is
-corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
+corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of one
+snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
+`resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
+before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
+in between reseeds the guest it adopts. The vCPUs run from the load until the seed lands, so a
+process the snapshot held can still draw from the saved key in those few milliseconds; freezing the
+guest before the save, as `vz` does, is SHARD-409.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under

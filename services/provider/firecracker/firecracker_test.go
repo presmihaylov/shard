@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,7 +264,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 7 MiB of disk", 6: "at least 7 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
@@ -639,6 +640,96 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s after the forks: %v, want the snapshot whole", name, err)
+		}
+	}
+}
+
+// Every restore of one snapshot wakes with the same crng key, so the source's resume and each fork are reseeded once, and only on a restore.
+func TestEveryRestoreReseedsTheGuest(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
+	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
+		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	for _, fork := range forks {
+		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+			t.Fatalf("Fork: %v", err)
+		}
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
+		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed}) {
+			t.Errorf("the guest of %s read %q, want one reseed", s.ID, got)
+		}
+		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the reseed marker of %s after the restore: %v, want it gone", s.ID, err)
+		}
+	}
+}
+
+// A daemon cut between a restore's attach and its reseed leaves the marker, so the next daemon reseeds the guest it adopts, and the one after does not again.
+func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	fork := h.forkSpec(t)
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		if err := os.WriteFile(filepath.Join(s.StateDir, firecracker.ReseedFile), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range 2 {
+		p := h.reopen(t)
+		for _, s := range []models.SandboxSpec{spec, fork} {
+			status, err := p.Status(t.Context(), s.ID)
+			if err != nil || !status.Alive() {
+				t.Fatalf("Status of %s after the restart = %+v, %v, want it adopted", s.ID, status, err)
+			}
+		}
+	}
+
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
+			t.Errorf("the guest of %s read %q, want the restore's reseed and the first adopter's", s.ID, got)
+		}
+		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the reseed marker of %s after the adopt: %v, want it gone", s.ID, err)
 		}
 	}
 }

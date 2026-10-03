@@ -182,6 +182,8 @@ type ExecOptions struct {
 	// RootFS is the container's live tree on the host. When set, Exec looks the command up in it
 	// before anything runs, which is the only way to tell a command that never ran from one that did.
 	RootFS string
+	// Binds are the mounts from the host over RootFS, in config.json's order, which the lookup reads through.
+	Binds []Bind
 	// TTY says the three files below are one pty replica, which is the only way the guest gets a terminal.
 	TTY bool
 	// The files the guest process gets. They are files, not pipes, so a pty replica passes straight through.
@@ -201,7 +203,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	}
 
 	if opts.RootFS != "" {
-		if err := LookPath(opts.RootFS, opts.WorkDir, pathOf(opts.Env), opts.Argv[0]); err != nil {
+		if err := LookPath(opts.RootFS, opts.Binds, opts.WorkDir, pathOf(opts.Env), opts.Argv[0]); err != nil {
 			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
 		}
 	}

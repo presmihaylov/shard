@@ -125,6 +125,13 @@ func echo(t *testing.T, w http.ResponseWriter, r *http.Request) {
 func front(t *testing.T, root, secret string) string {
 	t.Helper()
 
+	return frontWith(t, root, secret, func(_ *Server, listener net.Listener) net.Listener { return listener })
+}
+
+// frontWith is front, with tune to change the server and to pick the listener it serves.
+func frontWith(t *testing.T, root, secret string, tune func(*Server, net.Listener) net.Listener) string {
+	t.Helper()
+
 	cert, key := keyPair(t)
 
 	server, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: secret, Root: root, Out: io.Discard})
@@ -139,7 +146,8 @@ func front(t *testing.T, root, secret string) string {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	ended := make(chan error, 1)
-	go func() { ended <- server.Serve(ctx, listener) }()
+	served := tune(server, listener)
+	go func() { ended <- server.Serve(ctx, served) }()
 
 	t.Cleanup(func() {
 		cancel()

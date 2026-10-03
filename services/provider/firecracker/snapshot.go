@@ -187,6 +187,9 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 			return nil, fmt.Errorf("mark the restore of sandbox %s in flight: %w", id, err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(stateDir, reseedFile), nil, 0o600); err != nil {
+		return nil, fmt.Errorf("mark sandbox %s for a reseed: %w", id, err)
+	}
 	snap := fcapi.Snapshot{
 		State:  filepath.Join(dir, snapshotState),
 		Memory: filepath.Join(stateDir, memoryFile),
@@ -207,6 +210,9 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	m, err := p.up(ctx, id, stateDir, client, info)
 	if err != nil {
 		return nil, err
+	}
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
 	}
 
 	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.

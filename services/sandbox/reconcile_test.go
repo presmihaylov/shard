@@ -74,6 +74,12 @@ type recProvider struct {
 	errs map[string]error
 	// wedge makes every Status block until the probe budget cancels it, the way a frozen sandbox does.
 	wedge bool
+	// stopped holds every id Stop was asked to end, and stopErr is what Stop answers.
+	stopped []string
+	stopErr error
+	// removed holds every id Remove was asked to tear down, and removeErr is what Remove answers.
+	removed   []string
+	removeErr error
 }
 
 func (p *recProvider) Name() string { return "fake" }
@@ -89,6 +95,22 @@ func (p *recProvider) Status(ctx context.Context, id string) (models.Status, err
 	}
 
 	return p.status[id], nil
+}
+
+func (p *recProvider) Stop(_ context.Context, id string, _ time.Duration) error {
+	p.stopped = append(p.stopped, id)
+	if p.stopErr != nil {
+		return p.stopErr
+	}
+	p.status[id] = gone()
+
+	return nil
+}
+
+func (p *recProvider) Remove(_ context.Context, id string) error {
+	p.removed = append(p.removed, id)
+
+	return p.removeErr
 }
 
 // recNet counts the re-applies, which is what the host netfilter rules cost after a restart.
@@ -248,25 +270,99 @@ func TestReconcileStopsAPausedRecordWhoseSnapshotIsGone(t *testing.T) {
 	}
 }
 
-func TestReconcileLeavesACreatedRecordAlone(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateCreated}
-	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+func TestReconcileFailsACreatedRecordWithNoProcess(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateCreated, PID: 13}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": gone()}}
+	lab := newReconcileLab(t, provider, sb)
 
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
 
-	if got := lab.repo.records["sandbox1"]; got.State != models.StateCreated || got.StoppedReason != "" {
-		t.Errorf("the record says %s with the reason %q, want created with none", got.State, got.StoppedReason)
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateFailed || got.PID != 0 || got.FailedReason != sandbox.DroppedCopyReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want failed with no pid and %q", got.State, got.PID, got.FailedReason, sandbox.DroppedCopyReason)
 	}
-	if len(lab.reports) != 0 {
-		t.Errorf("the reconcile reported %v for a record that never ran", lab.reports)
+	if len(provider.stopped) != 0 {
+		t.Errorf("Stop was asked to end %v, want nothing: nothing runs", provider.stopped)
+	}
+	if len(provider.removed) != 1 || provider.removed[0] != "sandbox1" {
+		t.Errorf("Remove was asked to tear down %v, want sandbox1 once: a restore can run where Status cannot see it", provider.removed)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") {
+		t.Errorf("the reconcile reported %v, want one line naming the sandbox", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+// A fork that the daemon dropped after the restore came up runs on under an id its caller never learned.
+func TestReconcileStopsAndFailsACreatedRecordWithALiveProcess(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateCreated}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}
+	lab := newReconcileLab(t, provider, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if len(provider.stopped) != 1 || provider.stopped[0] != "sandbox1" {
+		t.Errorf("Stop was asked to end %v, want sandbox1 once", provider.stopped)
+	}
+	if len(provider.removed) != 1 || provider.removed[0] != "sandbox1" {
+		t.Errorf("Remove was asked to tear down %v, want sandbox1 once", provider.removed)
+	}
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateFailed || got.PID != 0 || got.FailedReason != sandbox.DroppedCopyReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want failed with no pid and %q", got.State, got.PID, got.FailedReason, sandbox.DroppedCopyReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "51") {
+		t.Errorf("the reconcile reported %v, want one line naming the process it stopped", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: the copy never counts as running", lab.net.applied)
+	}
+}
+
+func TestReconcileKeepsACreatedRecordItCouldNotStop(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateCreated}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}, stopErr: errors.New("runsc kill failed")}
+	lab := newReconcileLab(t, provider, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "runsc kill failed") {
+		t.Errorf("the reconcile reported %v, want one line with the stop error", lab.reports)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateCreated {
+		t.Errorf("the record says %s, want created: a failed record over a live process could never be removed", got.State)
+	}
+}
+
+func TestReconcileKeepsACreatedRecordItCouldNotTearDown(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateCreated}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": gone()}, removeErr: errors.New("device or resource busy")}
+	lab := newReconcileLab(t, provider, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "device or resource busy") {
+		t.Errorf("the reconcile reported %v, want one line with the teardown error", lab.reports)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateCreated {
+		t.Errorf("the record says %s, want created: the next start of the daemon tears it down again", got.State)
 	}
 }
 
 func TestReconcileFailsAPendingRecordWithNoProcess(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, PID: 13}
-	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": gone()}}
+	lab := newReconcileLab(t, provider, sb)
 
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
@@ -278,6 +374,9 @@ func TestReconcileFailsAPendingRecordWithNoProcess(t *testing.T) {
 	}
 	if got.FailedReason != sandbox.InterruptedReason {
 		t.Errorf("the record gives the reason %q, want %q", got.FailedReason, sandbox.InterruptedReason)
+	}
+	if len(provider.removed) != 0 {
+		t.Errorf("Remove was asked to tear down %v, want nothing: rm frees a failed create", provider.removed)
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") {
 		t.Errorf("the reconcile reported %v, want one line naming the sandbox", lab.reports)

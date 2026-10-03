@@ -17,6 +17,9 @@ const LostReason = "daemon restarted and found no process"
 // InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
 const InterruptedReason = "the daemon restarted before the create finished"
 
+// DroppedCopyReason is what a fork or clone's record says once the daemon restarted before the copy reached running.
+const DroppedCopyReason = "the daemon restarted before the fork or clone finished"
+
 // ReconcileConcurrency bounds the startup probes in flight, so N frozen sandboxes cost about one budget, not N.
 const ReconcileConcurrency = 16
 
@@ -115,19 +118,11 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
-	// A pending record whose start never took is a create the daemon dropped: it ends failed, not stopped.
+	// A record that never reached running is a create, fork or clone the daemon dropped: it ends failed, not stopped.
 	if state == models.StateFailed {
-		err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
-			rec.State = models.StateFailed
-			rec.PID = 0
-			rec.FailedReason = InterruptedReason
-
-			return nil
-		})
-		if err != nil {
-			return "", fmt.Errorf("sandbox %s never finished its create but its record was not updated: %w", sb.ID, err)
+		if err := s.failDropped(ctx, sb, status, report); err != nil {
+			return "", err
 		}
-		report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says failed, %s", sb.ID, sb.State, InterruptedReason))
 
 		return state, nil
 	}
@@ -147,9 +142,62 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	return state, nil
 }
 
+// failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
+func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) error {
+	reason := InterruptedReason
+	if sb.State == models.StateCreated {
+		reason = DroppedCopyReason
+	}
+
+	// rm refuses a live sandbox and stop refuses a failed one, so a copy left running here could never be removed.
+	if status.Alive() {
+		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
+			return fmt.Errorf("stop sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
+		}
+		if err := s.awaitStopped(ctx, sb.ID); err != nil {
+			return err
+		}
+	}
+	// A restore the daemon left behind can run on where Status cannot see it, and a failed record stays until rm.
+	if sb.State == models.StateCreated {
+		if err := s.cfg.Provider.Remove(ctx, sb.ID); err != nil {
+			return fmt.Errorf("tear down sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
+		}
+	}
+
+	err := s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+		rec.State = models.StateFailed
+		rec.PID = 0
+		rec.FailedReason = reason
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s never reached running but its record was not updated: %w", sb.ID, err)
+	}
+
+	done := "the record now says failed"
+	if sb.State == models.StateCreated {
+		done = "its substrate is torn down and the record now says failed"
+	}
+	if status.Alive() {
+		report(fmt.Sprintf("sandbox %s said %s and the substrate held its process %d: it is stopped, %s, %s", sb.ID, sb.State, status.PID, done, reason))
+
+		return nil
+	}
+	report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: %s, %s", sb.ID, sb.State, done, reason))
+
+	return nil
+}
+
 // reconciled is the state the record should hold: what the substrate says, and for a paused one what
 // the snapshot on disk says, because a checkpoint holds no process and resume still brings it back.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
+	// No verb rests in created, so it is a fork or clone that never answered: its caller holds an error, not the id.
+	if sb.State == models.StateCreated {
+		return models.StateFailed, nil
+	}
+
 	if status.Alive() {
 		return models.StateRunning, nil
 	}
@@ -173,7 +221,7 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateStopped, nil
 	}
 
-	// A created record never ran, and a stopped one is already right.
+	// A stopped record is already right.
 	return sb.State, nil
 }
 

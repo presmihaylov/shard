@@ -410,7 +410,6 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 	if err != nil {
 		return err
 	}
-
 	if err := s.unpackDir(ctx, img, layers); err != nil {
 		return err
 	}
@@ -446,10 +445,18 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 
+	progress := ProgressFrom(ctx)
+	progress.Add(Event{Status: StatusUnpacking, Reference: img.Reference, Digest: img.Digest, Layers: len(layers)})
 	for i, layer := range layers {
 		if err := applyLayer(ctx, tmp, layer); err != nil {
 			return fmt.Errorf("apply layer %d of %s: %w", i, img.Reference, err)
 		}
+
+		digest, err := layer.Digest()
+		if err != nil {
+			return fmt.Errorf("read the digest of layer %d of %s: %w", i, img.Reference, err)
+		}
+		progress.Add(Event{Status: StatusUnpacked, Digest: digest.String(), Layer: i + 1, Layers: len(layers)})
 	}
 
 	if err := os.Rename(tmp, dir); err != nil {
@@ -466,6 +473,8 @@ func (s *Service) unpackDisk(ctx context.Context, img registry.Image, layers []v
 		return nil
 	}
 
+	ProgressFrom(ctx).Add(Event{Status: StatusBuilding, Path: disk})
+
 	return stageFile(disk, func(tmp string) error {
 		if err := buildDisk(ctx, tmp, layers); err != nil {
 			return fmt.Errorf("build the disk of %s: %w", img.Reference, err)
@@ -481,6 +490,8 @@ func (s *Service) unpackErofs(ctx context.Context, img registry.Image) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
+
+	ProgressFrom(ctx).Add(Event{Status: StatusBuilding, Path: path})
 
 	return stageFile(path, func(tmp string) error {
 		if err := erofs.Build(ctx, tmp, s.rootfsDir(img.Digest)); err != nil {

@@ -1,6 +1,6 @@
 # The sandbox state machine
 
-Six states, nine legal moves. `models/state.go` is the code; this page is the picture.
+Six states, ten legal moves. `models/state.go` is the code; this page is the picture.
 
 ```mermaid
 stateDiagram-v2
@@ -9,6 +9,7 @@ stateDiagram-v2
     pending --> failed: pull or start failed
     created --> running: fork or clone
     created --> stopped: stop before start
+    created --> failed: the daemon restarted mid fork or clone
     running --> paused: pause (snapshot to disk, memory freed)
     running --> stopped: stop, and nothing else
     paused --> running: resume (the snapshot survives)
@@ -26,6 +27,7 @@ stateDiagram-v2
 | `pending` | `failed` | the pull or the start failed | yes |
 | `created` | `running` | a fork or clone | yes |
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
+| `created` | `failed` | the daemon restarted before a fork or clone reached `running` | yes |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
 | `paused` | `running` | `resume` | yes: gVisor |
@@ -50,7 +52,9 @@ in the machine but reachable by nothing.
 verb but `get` and `rm`, with `409 sandbox_failed` and the reason, so an operator reads why and then
 removes it. A daemon that restarted while a create was still in flight finds the `pending` record
 with nothing behind it and moves it to `failed` too, because a create the daemon dropped never
-finished.
+finished. A `created` record at a restart is a fork or clone the daemon dropped, so it ends `failed`
+the same way. The daemon stops a copy that still runs and tears down its substrate first, because a
+restore the old daemon started can still run where the runtime cannot see it.
 
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
