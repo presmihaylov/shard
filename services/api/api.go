@@ -40,6 +40,9 @@ type Lifecycle interface {
 	KillExec(ctx context.Context, ref, execID, signal string) error
 	DeleteExec(ctx context.Context, ref, execID string) error
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
+	StatFile(ctx context.Context, ref, path string) (models.FileStat, error)
+	ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
+	WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -147,6 +150,10 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill"}, h.killExec},
 		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}"}, h.deleteExec},
 		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize"}, h.resizeExec},
+		{Route{"PUT", "/v0/sandboxes/{id}/files"}, h.putFile},
+		{Route{"GET", "/v0/sandboxes/{id}/files"}, h.getFile},
+		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
+		{Route{"HEAD", "/v0/sandboxes/{id}/files"}, h.statFile},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
@@ -561,6 +568,7 @@ func classify(err error) (int, models.Code) {
 	var execRunning *sandbox.ExecRunningError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
 	var tooLarge *http.MaxBytesError
+	var fileNotFound *sandbox.FileNotFoundError
 
 	switch {
 	case errors.As(err, &tooLarge):
@@ -568,7 +576,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken

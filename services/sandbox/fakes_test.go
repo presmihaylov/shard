@@ -332,6 +332,10 @@ type fakeProvider struct {
 	signaled  chan struct{}
 	signalPID int
 	signalGot string
+	// serve, when set, answers the exec in place of the canned streams, the way shard-init's files mode does.
+	serve func(spec models.ExecSpec) (models.ExitStatus, error)
+	// execCtx is what the last exec ran on, so a test sees whether the exec outlives its request.
+	execCtx context.Context
 }
 
 func (f *fakeProvider) LogPath(string) (string, error) {
@@ -351,8 +355,12 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 		return models.ExitStatus{}, err
 	}
 	f.mu.Lock()
-	f.execID, f.execSpec = id, spec
+	f.execID, f.execSpec, f.execCtx = id, spec, ctx
 	f.mu.Unlock()
+
+	if f.serve != nil {
+		return f.serve(spec)
+	}
 
 	if spec.Report != nil && !f.execNoPID {
 		spec.Report(f.execPID)

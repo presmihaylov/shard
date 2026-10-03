@@ -540,6 +540,33 @@ func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size san
 	return svc.ResizeExec(ctx, ref, execID, size)
 }
 
+func (l *lifecycle) StatFile(ctx context.Context, ref, path string) (models.FileStat, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, err
+	}
+
+	return svc.StatFile(ctx, ref, path)
+}
+
+func (l *lifecycle) ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadFile(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteFile(ctx, ref, req, src)
+}
+
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {

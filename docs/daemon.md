@@ -321,6 +321,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"signal":"TERM"}' http
 curl --unix-socket /var/lib/shard/shard.sock -X DELETE http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/logs
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/egress-log
+curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf&mode=600'
+curl --unix-socket /var/lib/shard/shard.sock -o app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock -I 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -434,6 +437,23 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   failure of the follow is close 1011 with the error. Without the handshake it is 200 chunked
   `application/x-ndjson`, one record per line as it lands, and the body ends on the same stop or rm.
   404 either way, before anything is on the wire.
+- `PUT /v0/sandboxes/{id}/files?path=&mode=&user=&parents=` streams the body into the running guest
+  and answers 204 once it sits at `path` as one file: the guest writes a temp name beside it, syncs
+  it and renames it over the old one, so a put that dies midway leaves the old file whole. `mode` is
+  the octal permission bits, 0644 by default and at most 0777. `user` resolves as an exec's does, the
+  entrypoint user by default; the write runs as that user, who owns the file. `parents=true` creates
+  the missing directories. The body needs a `Content-Length`. 400 for a relative path, a chunked
+  body, a bad mode or a write the guest refuses; 404 for no sandbox or a missing directory; 409 when
+  the sandbox is not running.
+- `GET /v0/sandboxes/{id}/files?path=` answers 200 `application/octet-stream` with the file and its
+  `X-Shard-Stat`, chunked to the end of the file and never cut at the stat's size, which a `/proc`
+  file states as 0. A guest that fails after the 200 cuts the chunked body before its last chunk, so
+  the client reads an unexpected EOF. 400 for a directory or anything else not a regular file; 404;
+  409 as above.
+- `HEAD /v0/sandboxes/{id}/files?path=` answers 200 with no body and `X-Shard-Stat:
+  {"type", "size", "mode", "uid", "gid", "mtime"}`, `type` one of `file`, `dir`, `symlink` or
+  `other`. It never follows a final symlink. A refusal has the status alone. `shard cp` speaks all
+  three.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -599,7 +619,7 @@ agree on what each request is, and an unknown route is a `403` too. The eight ca
 | `sandbox:read` | list, get, `logs` and `egress-log` |
 | `sandbox:write` | create, start, stop, pause, resume, fork and clone |
 | `sandbox:delete` | `rm` |
-| `exec` | every `exec` route |
+| `exec` | every `exec` route, and every `files` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |
