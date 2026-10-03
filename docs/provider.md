@@ -224,7 +224,9 @@ the one guest exit firecracker ends its process on (a power off leaves it runnin
 runs out into a kill of the process. A guest the host can no longer reach over vsock is still a
 running VM: `inspect` says so, and `stop` kills it without a grace it could not hear. A daemon
 restart adopts a running vmm by its socket, and resumes one a cut `pause` left paused, whose stopped
-guest would answer no handshake. `--memory` is required, `0` is refused by name, and 128 MiB is the
+guest would answer no handshake. A vmm that does not answer that adopt within 4 s reads
+`unresponsive` with its pid and keeps running, because a thawed vmm gives back the same VM
+(SHARD-392). `--memory` is required, `0` is refused by name, and 128 MiB is the
 least a guest boots with. The guest's network is a tap on the same bridge the veth substrates use,
 named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the IPv6
 drop and the egress chain key on that name, the proxy redirect on the leased address and the private

@@ -46,12 +46,12 @@ func (p *Provider) running(ctx context.Context, id string) (*machine, record, er
 	if err != nil {
 		return nil, record{}, err
 	}
-	state := models.StateStopped
+	status := models.Status{State: models.StateStopped}
 	if m != nil {
-		state = m.status(p).State
+		status = m.status(p)
 	}
-	if state != models.StateRunning {
-		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it", id, state, Name)
+	if status.State != models.StateRunning {
+		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it%s", id, status.State, Name, because(status))
 	}
 
 	return m, r, nil

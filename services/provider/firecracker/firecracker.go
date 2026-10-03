@@ -120,6 +120,8 @@ const (
 	flushGrace = 5 * time.Second
 	// probeFloor is the least one vmm state read gets, so a wait whose time ran out still asks once (SHARD-388).
 	probeFloor = time.Second
+	// adoptBound is how long a vmm met only by its socket gets to answer before it reads unresponsive; a boot probes in parallel, so it serves inside 5 s (SHARD-392).
+	adoptBound = 4 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
 	startGrace = 30 * time.Second
 )
@@ -172,6 +174,10 @@ type Provider struct {
 	machines map[string]*machine
 	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
 	spawning map[string]bool
+	// unadopted is every vmm an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
+	unadopted map[string]*machine
+	// adopting closes when the one adopt in flight for a sandbox ends, so a racing lookup reuses what it made.
+	adopting map[string]chan struct{}
 
 	// uids orders the uid counter, apart from mu, so a spawn's file write holds up no status.
 	uids sync.Mutex
@@ -214,6 +220,7 @@ func New(cfg Config) (*Provider, error) {
 	return &Provider{
 		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
 		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
+		unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{},
 		chown: os.Chown, ownTap: netns.ChownTap,
 	}, nil
 }
@@ -254,6 +261,7 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
 	p.machines = map[string]*machine{}
+	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error

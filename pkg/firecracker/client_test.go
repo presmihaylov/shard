@@ -174,7 +174,7 @@ func TestAdoptFindsTheRunningVmmAndKillEndsIt(t *testing.T) {
 	j, cfg := jail(root, "a"), config(root)
 	client, info := start(t, j, cfg)
 
-	adopted, again, err := firecracker.Adopt(j.Host(cfg.Socket), j.Host(cfg.Vsock))
+	adopted, again, err := firecracker.Adopt(t.Context(), j.Host(cfg.Socket), j.Host(cfg.Vsock))
 	if err != nil {
 		t.Fatalf("Adopt = %v", err)
 	}
@@ -277,7 +277,7 @@ func TestARefusalCarriesTheVmmsOwnWordsAndEndsIt(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, _, err := firecracker.Adopt(j.Host(cfg.Socket), j.Host(cfg.Vsock))
+		_, _, err := firecracker.Adopt(t.Context(), j.Host(cfg.Socket), j.Host(cfg.Vsock))
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
 			return
 		}
@@ -430,7 +430,7 @@ func TestRestoreReportsARefusedLoadAndEndsTheVmm(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, _, err := firecracker.Adopt(j.Host(snap.Socket), j.Host(snap.Vsock))
+		_, _, err := firecracker.Adopt(t.Context(), j.Host(snap.Socket), j.Host(snap.Vsock))
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
 			return
 		}
@@ -479,7 +479,7 @@ func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 	awaitRefused(t, client)
 }
 
-// A state read ends by its context's deadline, so a wait on a vmm that takes the dial and never answers ends on time (SHARD-388).
+// A state read ends by its context's deadline and names the peer it waited on, so a kill reaches that vmm and no owner since (SHARD-388, SHARD-392).
 func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	root := shortRoot(t)
 	client, info := start(t, jail(root, "a"), config(root))
@@ -488,10 +488,14 @@ func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	begun := time.Now()
-	if _, err := client.State(ctx); err == nil {
+	got, err := client.State(ctx)
+	if err == nil {
 		t.Fatal("State of a stopped vmm answered")
 	}
 	if took := time.Since(begun); took > 5*time.Second {
 		t.Errorf("State took %s on a deadline of 200ms", took)
+	}
+	if got.PID != info.PID {
+		t.Errorf("State timed out naming pid %d, want the peer %d", got.PID, info.PID)
 	}
 }

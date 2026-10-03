@@ -40,7 +40,7 @@ const (
 // jailerFile is written beside the chroot with what the fake jailer was run with.
 const jailerFile = "jailer.json"
 
-// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads.
+// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads, and an attach per control stream the host opens.
 const (
 	controlsFile = "controls"
 	// refuseFreezeFile, while it exists, has the guest refuse every freeze, as one that cannot hold its root does.
@@ -620,6 +620,9 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 
 	var toGuest, toHost io.Writer = guest, conn
 	if port == int(supervisor.ControlPort) {
+		if err := note(filepath.Join(f.dir, controlsFile), "attach"); err != nil {
+			return
+		}
 		c := &control{f: f, dir: f.dir, guest: guest, host: conn}
 		toGuest, toHost = writeFunc(c.intoGuest), writeFunc(c.intoHost)
 	}
