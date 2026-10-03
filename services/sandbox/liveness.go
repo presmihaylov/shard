@@ -203,6 +203,25 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 	return nil
 }
 
+// noteUnresponsive records what a verb's own probe found, unless a verb holds the sandbox or its run changed since; the next tick asks then.
+func (s *Service) noteUnresponsive(id string, seen models.Sandbox, reason string) error {
+	unlock, ok := s.tryLock(id)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+
+	current, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return err
+	}
+	if !current.State.Live() || current.PID != seen.PID || !current.StartedAt.Equal(seen.StartedAt) {
+		return nil
+	}
+
+	return s.recordUnresponsive(id, current, reason, s.report)
+}
+
 // recordUnresponsive marks a live record whose substrate process missed its probe bound, and keeps its pid and its run.
 func (s *Service) recordUnresponsive(id string, sb models.Sandbox, reason string, report func(string)) error {
 	if sb.State == models.StateUnresponsive && sb.UnresponsiveReason == reason {

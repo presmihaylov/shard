@@ -1557,8 +1557,14 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 	if took := time.Since(began); took > 10*time.Second {
 		t.Errorf("Exec over a frozen held shim took %s, want under 10 s", took)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), pid) {
-		t.Errorf("Pause over a frozen held shim = %v, want a refusal naming %s", err, pid)
+	// The refusal carries the reason typed, so the daemon records it without a second probe bound (SHARD-424).
+	began = time.Now()
+	var silent *models.UnresponsiveError
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); !errors.As(err, &silent) || !strings.Contains(silent.Reason, pid) {
+		t.Errorf("Pause over a frozen held shim = %v, want the unresponsive refusal naming %s", err, pid)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Errorf("Pause over a frozen held shim took %s, want under 8 s", took)
 	}
 
 	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
