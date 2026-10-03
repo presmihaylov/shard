@@ -560,8 +560,8 @@ type Lister interface {
 	List() ([]models.Sandbox, error)
 }
 
-// ListReadable returns the readable records when one will not decode, logs the unreadable ones by file when logf is not nil, and fails closed on any other list error (SHARD-343).
-func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
+// ListReadable returns the readable records when one will not decode and reports the unreadable ones through ulog; any other list error fails closed (SHARD-343, SHARD-403).
+func ListReadable(l Lister, ulog *UnreadableLog) ([]models.Sandbox, error) {
 	sandboxes, err := l.List()
 	if err == nil {
 		return sandboxes, nil
@@ -572,11 +572,57 @@ func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error)
 		return nil, err
 	}
 
-	if logf != nil {
-		logf("some records cannot be read, so they are skipped: %v", err)
+	if ulog != nil {
+		ulog.report(err)
 	}
 
 	return sandboxes, nil
+}
+
+// UnreadableLog reports each unreadable record once per daemon life, and again only when its error text changes, so one bad record does not flood the log (SHARD-403).
+type UnreadableLog struct {
+	logf func(string, ...any)
+	mu   sync.Mutex
+	seen map[string]string
+}
+
+// NewUnreadableLog builds a dedup over logf. Share one for a daemon's life, so one record logs once.
+func NewUnreadableLog(logf func(string, ...any)) *UnreadableLog {
+	return &UnreadableLog{logf: logf, seen: make(map[string]string)}
+}
+
+// report logs every unreadable record in err that is new or whose error text changed since the last log.
+func (u *UnreadableLog) report(err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	for _, e := range unreadableErrors(err) {
+		text := e.Err.Error()
+		if u.seen[e.ID] == text {
+			continue
+		}
+		u.seen[e.ID] = text
+		u.logf("record %s cannot be read, so it is skipped: %v", e.ID, e.Err)
+	}
+}
+
+// unreadableErrors flattens the UnreadableErrors joined into err, in the order List built them.
+func unreadableErrors(err error) []*UnreadableError {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var out []*UnreadableError
+		for _, sub := range joined.Unwrap() {
+			out = append(out, unreadableErrors(sub)...)
+		}
+
+		return out
+	}
+
+	var unreadable *UnreadableError
+	if errors.As(err, &unreadable) {
+		return []*UnreadableError{unreadable}
+	}
+
+	return nil
 }
 
 // onlyUnreadable reports whether err is non-nil and every error joined into it is an UnreadableError.

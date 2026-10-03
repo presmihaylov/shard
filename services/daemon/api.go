@@ -812,7 +812,7 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
 
-	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, logger).Run(ctx, ring); err != nil {
+	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
 		return err
 	}
 

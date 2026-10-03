@@ -41,7 +41,7 @@ func (t liveness) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
-		sandboxes, err := sandboxstate.ListReadable(repo, logger.Printf)
+		sandboxes, err := sandboxstate.ListReadable(repo, t.deps.unreadableLog())
 		if err != nil {
 			return err
 		}

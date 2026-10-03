@@ -60,6 +60,8 @@ type deps struct {
 	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
 	logSvc    *egress.Log
 	runnerSvc *runsc.Runner
+
+	unreadableLogSvc *sandboxstate.UnreadableLog
 	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
 	states *taskStates
 }
@@ -89,6 +91,23 @@ func (d *deps) logger() *log.Logger {
 	}
 
 	return log.New(out, "", log.LstdFlags)
+}
+
+// unreadableLog is the shared dedup for the "record cannot be read" line, so one bad record logs once per daemon life across every task (SHARD-403).
+func (d *deps) unreadableLog() *sandboxstate.UnreadableLog {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.unreadableLogLocked()
+}
+
+// unreadableLogLocked is unreadableLog for a caller that already holds d.mu, so stackLocked shares the one dedup.
+func (d *deps) unreadableLogLocked() *sandboxstate.UnreadableLog {
+	if d.unreadableLogSvc == nil {
+		d.unreadableLogSvc = sandboxstate.NewUnreadableLog(d.logger().Printf)
+	}
+
+	return d.unreadableLogSvc
 }
 
 // providerName is the substrate this daemon runs. Run settles it before anything here asks.
@@ -237,7 +256,7 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 		return nil, err
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
-	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, logger), gateway: gateway, out: logger}
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
 	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
 		Address:    gateway,

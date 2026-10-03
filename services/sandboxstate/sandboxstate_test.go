@@ -2,6 +2,7 @@ package sandboxstate_test
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -1081,5 +1082,81 @@ func TestListReadableSkipsWhenEveryErrorIsAnUnreadableRecord(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != "readable" {
 		t.Errorf("ListReadable = %+v, want the one readable record", got)
+	}
+}
+
+// capture records each log line a dedup test produces, so an assertion can count them and read their text.
+type capture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *capture) logf(format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, fmt.Sprintf(format, args...))
+}
+
+// SHARD-403: one unreadable record logs once across many lists, so a bad record does not flood the daemon log.
+func TestListReadableLogsAnUnreadableRecordOncePerDaemonLife(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err:       errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")}),
+	}
+
+	for range 3 {
+		if _, err := sandboxstate.ListReadable(l, ulog); err != nil {
+			t.Fatalf("ListReadable: %v", err)
+		}
+	}
+
+	if len(rec.lines) != 1 {
+		t.Fatalf("logged %d lines, want 1: %v", len(rec.lines), rec.lines)
+	}
+	if !strings.Contains(rec.lines[0], "broken") {
+		t.Errorf("log line %q does not name the record", rec.lines[0])
+	}
+}
+
+// SHARD-403: the same record logs again when its error text changes, so a new failure is not hidden.
+func TestListReadableRelogsWhenTheRecordErrorChanges(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	first := listResult{err: errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")})}
+	second := listResult{err: errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("permission denied")})}
+
+	if _, err := sandboxstate.ListReadable(first, ulog); err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+	if _, err := sandboxstate.ListReadable(second, ulog); err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+
+	if len(rec.lines) != 2 {
+		t.Fatalf("logged %d lines, want 2: %v", len(rec.lines), rec.lines)
+	}
+}
+
+// SHARD-403: two bad records each log once, so a dedup does not swallow a second record.
+func TestListReadableLogsEachDistinctRecordOnce(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	l := listResult{
+		err: errors.Join(
+			&sandboxstate.UnreadableError{ID: "a", Err: errors.New("decode sandbox.json")},
+			&sandboxstate.UnreadableError{ID: "b", Err: errors.New("decode sandbox.json")},
+		),
+	}
+
+	for range 2 {
+		if _, err := sandboxstate.ListReadable(l, ulog); err != nil {
+			t.Fatalf("ListReadable: %v", err)
+		}
+	}
+
+	if len(rec.lines) != 2 {
+		t.Fatalf("logged %d lines, want 2: %v", len(rec.lines), rec.lines)
 	}
 }
