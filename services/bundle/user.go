@@ -16,6 +16,15 @@ import (
 // errNoEntry lets a numeric id fall back to the plain id, while a real read error still propagates.
 var errNoEntry = errors.New("no such entry in the image")
 
+// UnknownUserError is a user or group the rootfs does not list: the request is wrong, not the sandbox.
+type UnknownUserError struct {
+	Err error
+}
+
+func (e *UnknownUserError) Error() string { return e.Err.Error() }
+
+func (e *UnknownUserError) Unwrap() error { return e.Err }
+
 // A passwd line is name:x:uid:gid:...; a group line is name:x:gid:member,member.
 const (
 	passwdFields = 4
@@ -79,6 +88,9 @@ func lookupUser(rootfs, name string) (string, uint32, uint32, error) {
 		if numeric && errors.Is(err, errNoEntry) {
 			return "", wanted, 0, nil
 		}
+		if errors.Is(err, errNoEntry) {
+			return "", 0, 0, &UnknownUserError{Err: fmt.Errorf("resolve the user %q: %w", name, err)}
+		}
 
 		return "", 0, 0, fmt.Errorf("resolve the user %q: %w", name, err)
 	}
@@ -136,6 +148,9 @@ func lookupGroup(rootfs, name string) (uint32, error) {
 	}
 
 	fields, err := findEntry(rootfs, "etc/group", groupFields, func(f []string) bool { return f[0] == name })
+	if errors.Is(err, errNoEntry) {
+		return 0, &UnknownUserError{Err: fmt.Errorf("resolve the group %q: %w", name, err)}
+	}
 	if err != nil {
 		return 0, fmt.Errorf("resolve the group %q: %w", name, err)
 	}
