@@ -910,6 +910,10 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
 	}
 
+	// The same bound a lost pause's release has, over the probe too, so a wedged runsc stalls no boot and holds no lock.
+	ctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
 	status, err := p.Status(ctx, id)
 	if err != nil {
 		return err
@@ -922,10 +926,6 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if err != nil {
 		return err
 	}
-
-	// The same bound a lost pause's release has, so a wedged delete stalls no boot and holds no lock.
-	ctx, cancel := context.WithTimeout(ctx, killGrace)
-	defer cancel()
 
 	return p.release(ctx, id, b, dir+".tmp")
 }

@@ -188,6 +188,31 @@ type releaser interface {
 
 // cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left frozen; empty for none.
 func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
+	dir, err := s.markedSnapshot(sb)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		return "", nil
+	}
+	if !status.Alive() {
+		return dir, nil
+	}
+
+	r, ok := s.cfg.Provider.(releaser)
+	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
+	if !ok || status.State != models.StatePaused {
+		return "", nil
+	}
+	if err := r.Release(ctx, sb.ID, dir); err != nil {
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left frozen beside its snapshot: %w", sb.ID, err)
+	}
+
+	return dir, nil
+}
+
+// markedSnapshot is the complete snapshot a marked pause installed for a record that still says running; empty for none.
+func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
 	if sb.State != models.StateRunning || !sb.Pausing {
 		return "", nil
 	}
@@ -202,18 +227,6 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 	}
 	if !held {
 		return "", nil
-	}
-	if !status.Alive() {
-		return dir, nil
-	}
-
-	r, ok := s.cfg.Provider.(releaser)
-	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
-	if !ok || status.State != models.StatePaused {
-		return "", nil
-	}
-	if err := r.Release(ctx, sb.ID, dir); err != nil {
-		return "", fmt.Errorf("release sandbox %s, which a cut pause left frozen beside its snapshot: %w", sb.ID, err)
 	}
 
 	return dir, nil

@@ -259,6 +259,30 @@ func TestPauseKeepsItsMarkWhenTheReleaseFails(t *testing.T) {
 	}
 }
 
+// unreleasing is a substrate with no release, the way Firecracker is: its embedded interface hides the fake's Release.
+type unreleasing struct{ models.Provider }
+
+// A substrate that cannot release keeps its guest frozen beside the snapshot, so the failed pause must keep the mark that names it.
+func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
+	dir := t.TempDir()
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(c *sandbox.Config) { c.Provider = unreleasing{c.Provider} })
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "keeps the pause mark") {
+		t.Fatalf("pause returned %v, want the failure and that the record keeps its mark", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	}
+	if slices.Contains(r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release from a substrate that has none", r.snapshot())
+	}
+}
+
 func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())

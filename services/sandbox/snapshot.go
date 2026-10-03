@@ -166,6 +166,15 @@ func (s *Service) settleLivePause(ctx context.Context, id string, status models.
 		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot had to be run again", id)
 	}
 
+	held, err := s.markedSnapshot(sb)
+	if err != nil {
+		return err
+	}
+	// A substrate that cannot release holds the guest frozen beside a complete snapshot, and only the mark still names that pause.
+	if held != "" && status.State == models.StatePaused {
+		return fmt.Errorf("sandbox %s is frozen beside the snapshot its pause installed, and %s cannot release it: the record keeps the pause mark", id, s.cfg.Provider.Name())
+	}
+
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.Pausing = false
 

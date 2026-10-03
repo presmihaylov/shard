@@ -289,6 +289,20 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 	}
 }
 
+// The callers hand Release a context with no deadline, so its own bound must cover the probe before the delete.
+func TestReleaseEndsAWedgedProbeAtItsOwnBound(t *testing.T) {
+	p := newProviderOver(t, `case "$*" in *state*) exec sleep 60;; esac`)
+	dir := frozenSentry(t, p, t.TempDir())
+
+	start := time.Now()
+	if err := p.Release(t.Context(), "amber-otter-1a2b", dir); err == nil {
+		t.Fatal("Release returned nil over a runsc that never answered")
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Errorf("Release took %s over a wedged probe, want it ended at its own bound", took)
+	}
+}
+
 // Pause is the one verb that deletes a sandbox from runsc, so it must never take one it did not see running.
 func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 	cases := map[string]string{
