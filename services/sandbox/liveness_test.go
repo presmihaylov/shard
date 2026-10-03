@@ -192,6 +192,55 @@ func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 	}
 }
 
+// reconcileThenTick is a daemon start over an OOM it never saw: the startup reconcile, then the first liveness tick.
+func (l *livenessLab) reconcileThenTick(t *testing.T, now time.Time) {
+	t.Helper()
+
+	report := func(line string) { l.reports = append(l.reports, line) }
+	if err := l.svc.ReconcileAll(t.Context(), []models.Sandbox{l.l.repo.sb}, report); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if err := l.tick(t, l.l.repo.sb, now); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+}
+
+func TestLivenessStartsAfterAnOOMTheDaemonWasDownFor(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	sb := optedIn()
+	sb.MaxOOMRestarts = 3
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	lab.reconcileThenTick(t, now)
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.PID != 7 || got.StoppedReason == sandbox.LostReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want running with the new pid", got.State, got.PID, got.StoppedReason)
+	}
+	if got.OOMRestarts != 1 || !got.OOMRestartedAt.Equal(now) {
+		t.Errorf("the record counts %d starts again at %v, want 1 at %v", got.OOMRestarts, got.OOMRestartedAt, now)
+	}
+	if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, "started again, 1 of 3") {
+		t.Errorf("the pass reported %v, want a last line counting the start", lab.reports)
+	}
+}
+
+func TestLivenessNamesTheMemoryOfAnOOMTheDaemonWasDownFor(t *testing.T) {
+	sb := running()
+	sb.Resources = models.Resources{MemoryMiB: 64}
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	lab.reconcileThenTick(t, time.Now())
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.OOMKilledReason {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, sandbox.OOMKilledReason)
+	}
+	if lab.l.provider.started {
+		t.Error("a sandbox that never asked was started again")
+	}
+}
+
 func TestLivenessGivesUpAtTheOOMLimit(t *testing.T) {
 	sb := optedIn()
 	sb.MaxOOMRestarts = 5

@@ -171,6 +171,23 @@ func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 	}
 }
 
+// An OOM taken while the daemon was down is the liveness tick's to decide, not a lost process (SHARD-311).
+func TestReconcileLeavesARunningRecordTheHostEndedForMemoryToTheLivenessTick(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, RestartOnOOM: true}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning || got.StoppedReason != "" {
+		t.Errorf("the record says %s with the reason %q, want running with none until the liveness tick", got.State, got.StoppedReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") || !strings.Contains(lab.reports[0], "memory") {
+		t.Errorf("the reconcile reported %v, want one line naming the sandbox and its memory", lab.reports)
+	}
+}
+
 func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)

@@ -91,6 +91,12 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
+	// An OOM no daemon saw stays a running record, so the first liveness tick takes the memory decision once the proxy listens (SHARD-311).
+	if sb.State == models.StateRunning && !status.Alive() && status.OOMKilled {
+		report(fmt.Sprintf("sandbox %s: the host ended it for memory while the daemon was down, the liveness tick records it and applies its restart_on_oom", sb.ID))
+
+		return models.StateRunning, nil
+	}
 
 	state, err := reconciled(sb, status)
 	if err != nil {

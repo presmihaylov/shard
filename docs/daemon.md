@@ -100,6 +100,10 @@ one:
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
   `shard inspect` carries it in the record. A `start` clears it.
+- A record that says `running` whose sandbox the host ended for its memory while the daemon was
+  down stays `running`. The first liveness tick then stops it with `ran out of memory and the host
+  ended it` and starts it again when the record set `restart_on_oom`, as it does for an OOM the
+  daemon saw, once the proxy listens (SHARD-311).
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
