@@ -169,6 +169,12 @@ const orderFile = "control-order"
 // floodFile in the state directory floods the next control stream past its state line, as guest root writing to PID 1's control fd would.
 const floodFile = "flood-control"
 
+// floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
+const floodEveryFile = "flood-every-control"
+
+// dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
+const dialsFile = "control-dials"
+
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
 
@@ -302,14 +308,19 @@ func (m *fakeMachine) has(name string) (bool, error) {
 
 // note appends kind to the order file, when the test made one.
 func (m *fakeMachine) note(kind string) error {
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), orderFile), os.O_WRONLY|os.O_APPEND, 0)
+	return m.appendTo(orderFile, kind)
+}
+
+// appendTo appends one line to a file the test made in the state directory, and does nothing when it made none.
+func (m *fakeMachine) appendTo(name, line string) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), name), os.O_WRONLY|os.O_APPEND, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(kind + "\n")
+	_, err = f.WriteString(line + "\n")
 
 	return errors.Join(err, f.Close())
 }
@@ -415,6 +426,14 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	flood := false
 	if port == supervisor.ControlPort {
 		if flood, err = m.take(floodFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		every, err := m.has(floodEveryFile)
+		if err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		flood = flood || every
+		if err := m.appendTo(dialsFile, "control"); err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
 	}

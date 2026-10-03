@@ -44,3 +44,40 @@ func TestRefusalsLogTheFirstAtOnceAndCountTheRest(t *testing.T) {
 		}
 	}
 }
+
+func TestRefusalsHoldOffTheRedialLongerEachTimeUntilAQuietWindow(t *testing.T) {
+	r := &Refusals{log: log.New(io.Discard, "", 0), id: "sb-1", window: time.Hour}
+	refused := fmt.Errorf("read a message: %w", ErrMessageTooLong)
+	ms := time.Millisecond
+
+	steps := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"a reset", io.EOF, 0},
+		{"the first refusal", refused, 100 * ms},
+		{"the second", refused, 200 * ms},
+		{"the third", refused, 400 * ms},
+		{"a reset between them", io.EOF, 0},
+		{"the fourth", refused, 800 * ms},
+		{"the fifth", refused, 1600 * ms},
+		{"the sixth, at the cap", refused, 2000 * ms},
+		{"the seventh, still at the cap", refused, 2000 * ms},
+	}
+	for _, step := range steps {
+		if got := r.Note(step.err); got != step.want {
+			t.Fatalf("%s waits %s, want %s", step.name, got, step.want)
+		}
+	}
+
+	r.tally()
+	if got := r.Note(refused); got != redialCap {
+		t.Fatalf("a refusal after a window that held some waits %s, want the cap %s", got, redialCap)
+	}
+	r.tally()
+	r.tally()
+	if got := r.Note(refused); got != redialFloor {
+		t.Fatalf("a refusal after a quiet window waits %s, want the floor %s", got, redialFloor)
+	}
+}
