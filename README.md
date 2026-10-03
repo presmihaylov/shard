@@ -3,22 +3,24 @@ This is a work in progress, will announce when it's live and ready to be used!
 
 shard is a single-node sandbox manager. One binary runs isolated sandboxes on a Linux host or a Mac,
 with or without hardware virtualization, and gives them the same lifecycle verbs either way: run,
-exec, pause, resume and fork. It drives gVisor by default, Sysbox when you need Docker or systemd
-inside the sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.framework on
-a Mac. A resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The
-CLI is a thin client of that socket, and each command runs one verb.
+exec, pause, resume and fork. It drives gVisor, Sysbox when you need Docker or systemd inside the
+sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.framework on a Mac. A
+resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The CLI is a
+thin client of that socket, and each command runs one verb.
 
-**Status: pre-alpha.** Every verb runs on gVisor, and on `vz` on an Apple silicon Mac with macOS 14
-or later. Sysbox and runc refuse pause, resume and fork, and run every other verb. Firecracker does
-not exist yet. Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
+**Status: pre-alpha.** Every verb runs on gVisor, on Firecracker, and on `vz` on an Apple silicon
+Mac with macOS 14 or later. Sysbox and runc refuse pause, resume and fork, and run every other verb.
+Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
 
 ## Providers
 
-`shard daemon --provider gvisor|sysbox|runc|vz` picks the substrate for the host. A Linux host
-defaults to gVisor and a Mac to `vz`. The table is the short form of the full matrix in
-`docs/provider.md`:
+`shard daemon --provider gvisor|sysbox|runc|vz|firecracker` picks the provider for the host.
+Without it, a Linux host whose `/dev/kvm` opens runs Firecracker, one without runs gVisor, and a
+Mac runs `vz`. Sysbox and runc run only when named. A root that holds records keeps the provider
+that made them, and `shard info` prints the pick. The table is the short form of the full matrix in
+`docs/provider.md`, which also has the Firecracker column:
 
-| | gVisor (Linux default) | Sysbox | runc | vz (Mac default) |
+| | gVisor (Linux default without `/dev/kvm`) | Sysbox | runc | vz (Mac default) |
 |---|---|---|---|---|
 | Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
 | Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |

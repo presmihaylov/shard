@@ -3,9 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"slices"
@@ -215,18 +213,17 @@ func shellCode(err error) error {
 func parseExec(args []string) (execOptions, error) {
 	var opts execOptions
 
-	flags := flag.NewFlagSet("shard exec", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.interactive, "i", false, "keep stdin open for the command")
-	flags.BoolVar(&opts.tty, "t", false, "run the command on a terminal")
-	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
-	flags.StringVar(&opts.workDir, "workdir", "", "the directory the command starts in")
-	flags.StringVar(&opts.user, "user", "", "the user the command runs as")
+	flags := newFlags("exec")
+	flags.BoolVar(&opts.interactive, "i", false, "")
+	flags.BoolVar(&opts.tty, "t", false, "")
+	flags.Var((*envList)(&opts.env), "env", "")
+	flags.StringVar(&opts.workDir, "workdir", "", "")
+	flags.StringVar(&opts.user, "user", "", "")
 
 	head, argv, separated := splitAtSeparator(args)
 
 	if err := parseVerb(flags, expandBundles(head)); err != nil {
-		return execOptions{}, fmt.Errorf("parse the exec flags: %w", err)
+		return execOptions{}, err
 	}
 
 	rest := flags.Args()

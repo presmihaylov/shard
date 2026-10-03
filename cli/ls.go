@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -148,12 +147,11 @@ func orDash(s string) string {
 func parseLs(args []string) (lsOptions, error) {
 	var opts lsOptions
 
-	flags := flag.NewFlagSet("shard ls", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.all, "all", false, "include the stopped sandboxes")
+	flags := newFlags("ls")
+	flags.BoolVar(&opts.all, "all", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return lsOptions{}, fmt.Errorf("parse the ls flags: %w", err)
+		return lsOptions{}, err
 	}
 
 	if rest := flags.Args(); len(rest) != 0 {

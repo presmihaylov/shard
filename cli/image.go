@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -14,11 +12,15 @@ import (
 )
 
 func (a App) pull(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("pull takes one image reference, got %d", len(args))
+	rest, err := parseArgs("pull", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("pull takes one image reference, got %d", len(rest))
 	}
 
-	img, err := a.client().PullImage(ctx, args[0], a.pullProgress())
+	img, err := a.client().PullImage(ctx, rest[0], a.pullProgress())
 	if err != nil {
 		return err
 	}
@@ -70,26 +72,13 @@ func layerCount(n int) string {
 	return fmt.Sprintf("%d layers", n)
 }
 
-func (a App) image(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("image takes a subcommand: ls, rm or prune")
-	}
-
-	switch args[0] {
-	case "ls", "list":
-		return a.imageList(ctx, args[1:])
-	case "rm", "remove":
-		return a.imageRemove(ctx, args[1:])
-	case "prune":
-		return a.imagePrune(ctx, args[1:])
-	}
-
-	return fmt.Errorf("unknown image subcommand %q; want ls, rm or prune", args[0])
-}
-
 func (a App) imageList(ctx context.Context, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("image ls takes no arguments, got %d", len(args))
+	rest, err := parseArgs("image ls", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("image ls takes no arguments, got %d", len(rest))
 	}
 
 	images, err := a.client().ListImages(ctx)
@@ -142,8 +131,12 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 
 // imagePrune removes every image no sandbox references, a stopped sandbox being a reference too.
 func (a App) imagePrune(ctx context.Context, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("image prune takes no arguments, got %d", len(args))
+	rest, err := parseArgs("image prune", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("image prune takes no arguments, got %d", len(rest))
 	}
 
 	result, err := a.client().PruneImages(ctx)
@@ -167,12 +160,11 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	var opts imageRemoveOptions
 
-	flags := flag.NewFlagSet("shard image rm", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "remove the image even when a sandbox references it")
+	flags := newFlags("image rm")
+	flags.BoolVar(&opts.force, "force", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return imageRemoveOptions{}, fmt.Errorf("parse the image rm flags: %w", err)
+		return imageRemoveOptions{}, err
 	}
 
 	rest := flags.Args()

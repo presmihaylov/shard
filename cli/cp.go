@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -47,12 +46,11 @@ func (a App) cp(ctx context.Context, args []string) error {
 func parseCp(args []string) (cpOptions, error) {
 	var opts cpOptions
 
-	flags := flag.NewFlagSet("shard cp", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.StringVar(&opts.user, "user", "", "the user that a copy into the sandbox runs as and that owns the file; empty means the entrypoint's user")
+	flags := newFlags("cp")
+	flags.StringVar(&opts.user, "user", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return cpOptions{}, fmt.Errorf("parse the cp flags: %w", err)
+		return cpOptions{}, err
 	}
 	if flags.NArg() != 2 {
 		return cpOptions{}, fmt.Errorf("cp takes a source and a destination, one of them <id|name>:<path>, got %d", flags.NArg())
@@ -81,15 +79,16 @@ func cpTargetOf(arg string) cpTarget {
 
 // cpIn puts a host file or directory into the sandbox, under its own name when the destination is a directory.
 func (a App) cpIn(ctx context.Context, opts cpOptions) (err error) {
+	// The PathError of open and stat already names the path, so the context added is the copy.
 	src, err := os.Open(opts.src.path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", opts.src.path, err)
+		return fmt.Errorf("copy %s to %s:%s: %w", opts.src.path, opts.dst.ref, opts.dst.path, err)
 	}
 	defer func() { err = errors.Join(err, src.Close()) }()
 
 	info, err := src.Stat()
 	if err != nil {
-		return fmt.Errorf("stat %s: %w", opts.src.path, err)
+		return fmt.Errorf("copy %s to %s:%s: %w", opts.src.path, opts.dst.ref, opts.dst.path, err)
 	}
 	if info.IsDir() {
 		return a.cpDirIn(ctx, opts)

@@ -7,11 +7,15 @@ import (
 
 // start asks the daemon to run a stopped sandbox again and prints the id it acted on.
 func (a App) start(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("start takes one sandbox id, got %d", len(args))
+	rest, err := parseArgs("start", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("start takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().StartSandbox(ctx, args[0])
+	sb, err := a.client().StartSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

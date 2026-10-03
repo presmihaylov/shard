@@ -6,16 +6,30 @@ import (
 	"io/fs"
 	"os"
 	"runtime"
+	"slices"
+	"strings"
 
 	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/provider/runc"
+	"github.com/presmihaylov/shard/services/provider/sysbox"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // KVMDevice is what a host exposes when it can run a virtual machine, and so what firecracker needs.
 const KVMDevice = "/dev/kvm"
+
+// Providers names every substrate a daemon can run sandboxes on, in the order the help lists them.
+var Providers = []string{gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name}
+
+// unknownProvider refuses a name no substrate answers to, and names every one that does.
+func unknownProvider(name string) error {
+	last := len(Providers) - 1
+
+	return fmt.Errorf("unknown provider %q: shard knows %s and %s", name, strings.Join(Providers[:last], ", "), Providers[last])
+}
 
 // Selection is the substrate a daemon runs sandboxes on, and why that one.
 type Selection struct {
@@ -45,6 +59,11 @@ func SelectProvider(named, root string) (Selection, error) {
 }
 
 func selectProvider(named, root, kvm string) (Selection, error) {
+	// Before the root is read, so a typo fails before any daemon work.
+	if named != "" && !slices.Contains(Providers, named) {
+		return Selection{}, unknownProvider(named)
+	}
+
 	made, err := madeBy(root)
 	if err != nil {
 		return Selection{}, err
@@ -61,7 +80,7 @@ func selectProvider(named, root, kvm string) (Selection, error) {
 
 	// A root whose every record is unreadable still belongs to one substrate, so a probe must not relabel it; only --provider recovers it (SHARD-343).
 	if made.Unreadable != "" {
-		return Selection{}, fmt.Errorf("the root %s holds records that cannot be read, so its substrate is unknown; pass --provider to name it: %s", root, made.Unreadable)
+		return Selection{}, fmt.Errorf("the root %s holds records that cannot be read, so its provider is unknown; name it with shard daemon --provider: %s", root, made.Unreadable)
 	}
 
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.

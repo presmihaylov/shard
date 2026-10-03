@@ -26,22 +26,16 @@ func TestDaemonTakesNoArgumentButStatus(t *testing.T) {
 	}
 }
 
-// The provider is built on the first ask, so the status is the one read that can say why there is none.
-func TestDaemonStatusSaysWhyTheProviderCannotBeBuilt(t *testing.T) {
+// A name no provider answers to fails before the daemon takes the root, so nothing is left under it.
+func TestDaemonRefusesAProviderShardDoesNotKnow(t *testing.T) {
 	root := shortRoot(t)
-	out := &syncBuffer{}
 
-	cancel, done := startDaemon(t, App{Version: "v-test", Root: root, Provider: "vmware"}, out)
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("daemon ended with %v", err)
-		}
-	}()
-
-	err := App{Version: "v-test", Root: root, Out: io.Discard}.Run(t.Context(), []string{"daemon", "status"})
+	err := App{Version: "v-test", Root: root, Out: io.Discard}.Run(t.Context(), []string{"daemon", "--provider", "vmware"})
 	if want := "unknown provider \"vmware\": shard knows gvisor, sysbox, runc, vz and firecracker"; err == nil || err.Error() != want {
-		t.Errorf("daemon status returned %v, want %q", err, want)
+		t.Errorf("daemon --provider vmware returned %v, want %q", err, want)
+	}
+	if _, err := os.Lstat(filepath.Join(root, api.SocketFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused daemon left a socket: %v", err)
 	}
 }
 
@@ -97,13 +91,13 @@ func shortRoot(t *testing.T) string {
 }
 
 // startDaemon waits for the log line, not the file: the socket exists a moment before its mode is set.
-func startDaemon(t *testing.T, app App, out *syncBuffer) (context.CancelFunc, <-chan error) {
+func startDaemon(t *testing.T, app App, out *syncBuffer, flags ...string) (context.CancelFunc, <-chan error) {
 	t.Helper()
 
 	app.Out = out
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- app.Run(ctx, []string{"--root", app.Root, "daemon"}) }()
+	go func() { done <- app.Run(ctx, append([]string{"--root", app.Root, "daemon"}, flags...)) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), "api listening on") {
@@ -200,7 +194,7 @@ func TestDaemonAnswersOnTheSocketUntilTheContextEnds(t *testing.T) {
 	root := shortRoot(t)
 	out := &syncBuffer{}
 
-	cancel, done := startDaemon(t, App{Version: "v-test", Root: root, Provider: "gvisor"}, out)
+	cancel, done := startDaemon(t, App{Version: "v-test", Root: root}, out, "--provider", "gvisor")
 
 	resp, err := socketClient(root).Get("http://shard/v0/version")
 	if err != nil {

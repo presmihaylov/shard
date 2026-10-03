@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -14,29 +12,6 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
 )
-
-func (a App) policy(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New("policy takes a subcommand: create, show, ls, rm, attach or detach")
-	}
-
-	switch args[0] {
-	case "create":
-		return a.policyCreate(ctx, args[1:])
-	case "show":
-		return a.policyShow(ctx, args[1:])
-	case "ls", "list":
-		return a.policyList(ctx, args[1:])
-	case "rm", "remove":
-		return a.policyRemove(ctx, args[1:])
-	case "attach":
-		return a.policyAttach(ctx, args[1:])
-	case "detach":
-		return a.policyDetach(ctx, args[1:])
-	}
-
-	return fmt.Errorf("unknown policy subcommand %q; run shard help", args[0])
-}
 
 // ruleList collects --allow and --deny into one slice, in the order the host evaluates them.
 type ruleList struct {
@@ -80,13 +55,12 @@ const (
 func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 	var rules []client.RuleText
 
-	flags := flag.NewFlagSet("shard policy create", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.Var(ruleList{action: models.ActionAllow, rules: &rules}, "allow", "a rule to allow, repeatable")
-	flags.Var(ruleList{action: models.ActionDeny, rules: &rules}, "deny", "a rule to deny, repeatable")
+	flags := newFlags("policy create")
+	flags.Var(ruleList{action: models.ActionAllow, rules: &rules}, "allow", "")
+	flags.Var(ruleList{action: models.ActionDeny, rules: &rules}, "deny", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return "", nil, fmt.Errorf("parse the policy create flags: %w", err)
+		return "", nil, err
 	}
 
 	rest := flags.Args()
@@ -101,11 +75,15 @@ func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 }
 
 func (a App) policyShow(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("policy show takes one name, got %d", len(args))
+	rest, err := parseArgs("policy show", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("policy show takes one name, got %d", len(rest))
 	}
 
-	policy, err := a.client().GetPolicy(ctx, args[0])
+	policy, err := a.client().GetPolicy(ctx, rest[0])
 	if err != nil {
 		return err
 	}
@@ -119,8 +97,12 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 }
 
 func (a App) policyList(ctx context.Context, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("policy ls takes no arguments, got %d", len(args))
+	rest, err := parseArgs("policy ls", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("policy ls takes no arguments, got %d", len(rest))
 	}
 
 	all, err := a.client().ListPolicies(ctx)
@@ -156,23 +138,25 @@ func (a App) policyRemove(ctx context.Context, args []string) error {
 }
 
 func parsePolicyRemove(args []string) (string, error) {
-	if len(args) != 1 {
-		return "", fmt.Errorf("policy rm takes one name, got %d", len(args))
+	rest, err := parseArgs("policy rm", args)
+	if err != nil {
+		return "", err
 	}
-	if strings.HasPrefix(args[0], "-") {
-		return "", errors.New("policy rm takes no flags: shard policy rm <name>")
+	if len(rest) != 1 {
+		return "", fmt.Errorf("policy rm takes one name, got %d", len(rest))
 	}
 
-	return args[0], nil
+	return rest[0], nil
 }
 
 // policyAttach hands a sandbox that already exists the policy a create with --policy would have given it.
 func (a App) policyAttach(ctx context.Context, args []string) error {
-	if err := noFlags("attach", args, 2, "shard policy attach <id|name> <policy>"); err != nil {
+	rest, err := policyArgs("attach", args, 2, "shard policy attach <id|name> <policy>")
+	if err != nil {
 		return err
 	}
 
-	sb, err := a.client().AttachPolicy(ctx, args[0], args[1])
+	sb, err := a.client().AttachPolicy(ctx, rest[0], rest[1])
 	if err != nil {
 		return err
 	}
@@ -181,11 +165,12 @@ func (a App) policyAttach(ctx context.Context, args []string) error {
 }
 
 func (a App) policyDetach(ctx context.Context, args []string) error {
-	if err := noFlags("detach", args, 1, "shard policy detach <id|name>"); err != nil {
+	rest, err := policyArgs("detach", args, 1, "shard policy detach <id|name>")
+	if err != nil {
 		return err
 	}
 
-	sb, err := a.client().DetachPolicy(ctx, args[0])
+	sb, err := a.client().DetachPolicy(ctx, rest[0])
 	if err != nil {
 		return err
 	}
@@ -193,14 +178,19 @@ func (a App) policyDetach(ctx context.Context, args []string) error {
 	return a.print(sb.ID)
 }
 
-// noFlags refuses a flag on a verb that takes none, and any argument count but the one it wants.
-func noFlags(verb string, args []string, want int, usage string) error {
-	if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return fmt.Errorf("policy %s takes no flags: %s", verb, usage)
+// policyArgs parses a policy verb that takes no flags, and refuses any count but the one it wants.
+func policyArgs(verb string, args []string, want int, usage string) ([]string, error) {
+	rest, err := parseArgs("policy "+verb, args)
+	if err != nil {
+		return nil, err
 	}
-	if len(args) != want {
-		return fmt.Errorf("policy %s takes %d arguments, got %d: %s", verb, want, len(args), usage)
+	// A sandbox name may start with -, after a --, but nothing after it does: one that seems to is a misplaced flag.
+	if len(rest) > 1 && slices.ContainsFunc(rest[1:], func(s string) bool { return strings.HasPrefix(s, "-") }) {
+		return nil, fmt.Errorf("policy %s takes no flags: %s", verb, usage)
+	}
+	if len(rest) != want {
+		return nil, fmt.Errorf("policy %s takes %d arguments, got %d: %s", verb, want, len(rest), usage)
 	}
 
-	return nil
+	return rest, nil
 }
