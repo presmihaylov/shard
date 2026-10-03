@@ -13,6 +13,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 )
@@ -133,6 +134,19 @@ func TestBuildCreatesTheOverlayLayers(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o755 {
 		t.Errorf("got the upper layer mode %o, want 755", info.Mode().Perm())
+	}
+}
+
+// A non-root user runs /.shard/init, which sysbox looks up as that user, and cannot list or change /.shard (SHARD-415).
+func TestAnyGuestUserTraversesTheShardDirAndNoneChangesIt(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	info, err := os.Stat(b.ShardDir)
+	if err != nil {
+		t.Fatalf("stat the shard directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o751 {
+		t.Errorf("got the shard directory mode %o, want 751", info.Mode().Perm())
 	}
 }
 
@@ -395,6 +409,21 @@ func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 
 	if after := readFile(t, filepath.Join(first.Dir, "config.json")); after != before {
 		t.Error("a second Build changed config.json")
+	}
+}
+
+// An exec looks its command up on the host, and /.shard/init is there only through the bind (SHARD-406).
+func TestRuntimeReadsBackTheBindsInTheirOrder(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	runtime, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+
+	want := []runc.Bind{{Guest: "/tmp", Host: b.Tmp}, {Guest: "/.shard", Host: b.ShardDir}, {Guest: bundle.GuestInitPath, Host: supervisorPath}}
+	if !slices.Equal(runtime.Binds, want) {
+		t.Errorf("Runtime reports the binds %v, want %v", runtime.Binds, want)
 	}
 }
 

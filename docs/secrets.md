@@ -1,7 +1,7 @@
 # Secrets
 
-A sandbox never holds a secret value. It holds a placeholder, and the value is put into an HTTPS
-request on the host, on its way to the one destination the secret is granted to. Whatever runs in the
+A sandbox never holds a secret value. It holds a placeholder, and the value is put into a header of an
+HTTPS request on the host, on its way to the one destination the secret is granted to. Whatever runs in the
 sandbox, a prompt-injected agent included, can read its environment, dump its memory and post every
 byte of it anywhere it likes, and what it posts is the placeholder. That holds as long as the granted
 host never sends the value back: see the caution under the grant.
@@ -26,9 +26,9 @@ NAME` hands the guest the placeholder as `$NAME` and records the grant in the sa
 copied bundle already hands the guest the placeholder.
 
 **Caution: grant only to hosts that never echo the credential.** The proxy puts the value into the
-request and reads nothing out of the response. A granted host that reflects what it received, an echo
-endpoint or a debug page that prints its request headers, returns the raw value in the body, and the
-guest reads it there. Stripping the value from every response is not practical, so the grant is the
+request headers alone, never the URL or the body, and reads nothing out of the response. A granted
+host that reflects a header it received, an echo endpoint or a debug page that prints its request
+headers, still returns the raw value in the body, and the guest reads it there. Stripping the value from every response is not practical, so the grant is the
 control: name only hosts that consume the credential and never return it.
 
 A grant does not open the host and does not close anything. The sandbox's policy decides what it may
@@ -63,14 +63,15 @@ sandboxes, or pass `--force`.
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
 fronted: the host turns its HTTP on 80 and 443 to the egress proxy, which is where the value goes
 in. See `docs/egress.md` for what fronting means. On the way out, the proxy replaces the placeholder with
-the value, in the URL, the headers and the body, and only when the request goes over TLS to a granted
-destination. A request to any other host carries the placeholder as it is, so a guest that posts its
+the value in the request headers only, and only when the request goes over TLS to a granted
+destination. A placeholder in the path, the query or the body goes upstream as it is: the guest picks
+those fields, and an upstream that quotes one back in an error, a 404 that names the model it was
+asked for, would hand the guest the value (SHARD-337). Put the key in a header, where every SDK puts it. A request to any other host carries the placeholder as it is, so a guest that posts its
 environment to an attacker posts the placeholder. Plain HTTP on 80 never gets the value, not even to a
 granted host, because it crosses the network in cleartext: the proxy forwards it with the placeholder
-unchanged, so send the credential over `https://`. A body past 8 MiB streams through untouched: put
-the key in a header, where every SDK puts it. HTTP Basic auth is decoded, substituted and
+unchanged, so send the credential over `https://`. HTTP Basic auth is decoded, substituted and
 re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key is not
-substituted; the proxy finds the placeholder only where it appears verbatim or inside a Basic header.
+substituted; the proxy finds the placeholder only where it appears verbatim in a header value or inside a Basic header.
 A hop-by-hop header, `Connection`, `Upgrade`, `Keep-Alive` and any header `Connection` names, keeps
 the placeholder: it belongs to the connection, not the upstream, and the proxy can quote one back.
 Brokering covers HTTPS on port 443 today. A credential sent on any other port or protocol, a
@@ -118,10 +119,10 @@ out and the placeholder is never substituted.
 
 ## What it stops, and what it does not
 
-It stops theft: the value cannot leave through the sandbox because the sandbox never had it. The
-guest can read its environment, dump its memory and search its disk, and find the placeholder. The
-one way in is a granted host that echoes the credential back, which is why a grant names only hosts
-that never do. On the `runc` provider the guarantee is the proxy's alone: nothing isolates the guest
+It keeps the value out of the sandbox: the guest can read its environment, dump its memory and search
+its disk, and find the placeholder. The value goes into request headers alone, so the guest cannot
+steer it into a field the upstream quotes back. The one way back in is a granted host that echoes a
+header it received, which is why a grant names only hosts that never do. On the `runc` provider the guarantee is the proxy's alone: nothing isolates the guest
 from the host, root in the guest is root on the host, and an escape reads the store as the host does.
 
 It does not stop misuse. A sandbox that may talk to `api.openai.com` with the key may make any call

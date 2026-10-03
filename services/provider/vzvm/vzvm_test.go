@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -38,8 +39,30 @@ type harness struct {
 	root        string
 	disk        string
 	saveRestore bool
+	// log is what the provider logged, read while it still writes.
+	log *safeBuffer
 
 	next atomic.Int64
+}
+
+// safeBuffer is a log sink the test reads while the provider still writes it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
 }
 
 func newHarness(t *testing.T) *harness {
@@ -58,7 +81,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 
-	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore}
+	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore, log: &safeBuffer{}}
 	h.open(t)
 
 	return h
@@ -75,6 +98,7 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 		Dir:         h.root,
 		Dirs:        h.stateDir,
 		SaveRestore: h.saveRestore,
+		Log:         log.New(h.log, "", 0),
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -231,6 +255,10 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	}
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128}); err != nil {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
+	}
+	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
+	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }
 
@@ -1142,6 +1170,72 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	}
 }
 
+// A guest that floods its control stream past the bound is cut off with one log line, and the sandbox goes on (SHARD-390).
+func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+
+	// The marker floods the stream the provider dials after the reset, past the state line that stream opens with.
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, floodFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	line := "sandbox " + spec.ID + ": refused a control message from the guest"
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(h.log.String(), line) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no refusal was logged within 10s; the log reads %q", h.log.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(h.log.String(), "1 MiB") {
+		t.Errorf("the refusal does not name the bound: %q", h.log.String())
+	}
+	awaitLog(t, h.provider, spec.ID, logged)
+
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo again"}, Stdout: out})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec after the refusal = %+v, %v", exit, err)
+	}
+	written, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(written), "again") {
+		t.Fatalf("the exec after the refusal wrote %q, %v", written, err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refusal = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(h.log.String(), "refused"); n != 1 {
+		t.Errorf("the provider logged %d refusals for one flood, want 1:\n%s", n, h.log.String())
+	}
+}
+
 // A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches Wait through the replayed state.
 func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 	h := newHarness(t)
@@ -1571,4 +1665,31 @@ func awaitExit(t *testing.T, pid int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("process %d did not exit", pid)
+}
+
+// An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
+func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
+	h := newHarness(t)
+	dir, err := h.stateDir("sb-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "output.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.BoundOutputLog("sb-legacy", 10); err != nil {
+		t.Fatalf("BoundOutputLog: %v", err)
+	}
+
+	for name, want := range map[string]int64{path: 0, path + ".1": 10} {
+		info, err := os.Stat(name)
+		if err != nil || info.Size() != want {
+			t.Errorf("%s: %v, want %d bytes", filepath.Base(name), err, want)
+		}
+	}
 }

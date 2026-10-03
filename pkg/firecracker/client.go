@@ -93,7 +93,7 @@ func (c *Client) spawn(ctx context.Context, binary, console, group string) (*exe
 
 // up reads the state the microVM settled in, which is what every spawn reports back.
 func (c *Client) up(cmd *exec.Cmd) (*Client, Info, error) {
-	info, err := c.State()
+	info, err := c.State(context.Background())
 	if err != nil {
 		return nil, Info{}, errors.Join(fmt.Errorf("read the state after the boot: %w", err), end(cmd))
 	}
@@ -149,7 +149,7 @@ func (c *Client) UpdateDrive(id, path string) error {
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.
 func (c *Client) claim() error {
-	info, err := c.State()
+	info, err := c.State(context.Background())
 	if err == nil {
 		return fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, c.socket)
 	}
@@ -177,7 +177,7 @@ func absent(err error) bool {
 func (c *Client) await(ctx context.Context, cmd *exec.Cmd, exited <-chan error, console string) error {
 	deadline := time.After(startTimeout)
 	for {
-		info, err := c.State()
+		info, err := c.State(ctx)
 		if err == nil && info.PID != cmd.Process.Pid {
 			return errors.Join(fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, c.socket), end(cmd))
 		}
@@ -228,7 +228,7 @@ func (c *Client) configure(cfg Config) error {
 // Adopt takes a firecracker that is already running, by its sockets, and proves it answers.
 func Adopt(socket, vsock string) (*Client, Info, error) {
 	client := &Client{socket: socket, vsock: vsock}
-	info, err := client.State()
+	info, err := client.State(context.Background())
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
 	}
@@ -236,10 +236,10 @@ func Adopt(socket, vsock string) (*Client, Info, error) {
 	return client, info, nil
 }
 
-// State asks the vmm what the microVM is doing, and who answers: the pid is the peer of the socket.
-func (c *Client) State() (Info, error) {
+// State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first.
+func (c *Client) State(ctx context.Context) (Info, error) {
 	var got instance
-	pid, err := c.call(http.MethodGet, "/", nil, &got)
+	pid, err := c.call(ctx, http.MethodGet, "/", nil, &got)
 	if err != nil {
 		return Info{}, err
 	}
@@ -267,7 +267,7 @@ func (c *Client) Kill() error {
 
 // owner is the pid that listens on the API socket, which the kernel attests at the dial: a vmm too wedged to answer HTTP still owns it (SHARD-339).
 func (c *Client) owner() (int, error) {
-	conn, err := c.dial(c.socket)
+	conn, err := c.dial(context.Background(), c.socket)
 	if err != nil {
 		return 0, err
 	}
@@ -299,7 +299,7 @@ func (c *Client) Connect(port uint32) (net.Conn, error) {
 	if c.vsock == "" {
 		return nil, errors.New("connect: the microVM has no vsock device")
 	}
-	conn, err := c.dial(c.vsock)
+	conn, err := c.dial(context.Background(), c.vsock)
 	if err != nil {
 		return nil, fmt.Errorf("connect to guest port %d: %w", port, err)
 	}
@@ -343,20 +343,20 @@ func handshake(conn net.Conn, port uint32) error {
 }
 
 func (c *Client) put(path string, body any) error {
-	_, err := c.call(http.MethodPut, path, body, nil)
+	_, err := c.call(context.Background(), http.MethodPut, path, body, nil)
 
 	return err
 }
 
 func (c *Client) patch(path string, body any) error {
-	_, err := c.call(http.MethodPatch, path, body, nil)
+	_, err := c.call(context.Background(), http.MethodPatch, path, body, nil)
 
 	return err
 }
 
 // call is one request on its own connection, bounded from dial to reply, and the pid of the process that answered it.
-func (c *Client) call(method, path string, body, reply any) (int, error) {
-	conn, err := c.dial(c.socket)
+func (c *Client) call(ctx context.Context, method, path string, body, reply any) (int, error) {
+	conn, err := c.dial(ctx, c.socket)
 	if err != nil {
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
@@ -374,7 +374,7 @@ func (c *Client) call(method, path string, body, reply any) (int, error) {
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(context.Background(), method, "http://localhost"+path, payload)
+	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, payload)
 	if err != nil {
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
@@ -405,13 +405,18 @@ func (c *Client) call(method, path string, body, reply any) (int, error) {
 	return pid, nil
 }
 
-// dial opens one bounded connection to a unix socket.
-func (c *Client) dial(socket string) (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", socket, callTimeout)
+// dial opens one connection to a unix socket, bounded by callTimeout or ctx's deadline, whichever comes first.
+func (c *Client) dial(ctx context.Context, socket string) (net.Conn, error) {
+	deadline := time.Now().Add(callTimeout)
+	if due, ok := ctx.Deadline(); ok && due.Before(deadline) {
+		deadline = due
+	}
+	dialer := net.Dialer{Deadline: deadline}
+	conn, err := dialer.DialContext(ctx, "unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", socket, err)
 	}
-	if err := conn.SetDeadline(time.Now().Add(callTimeout)); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, errors.Join(fmt.Errorf("dial %s: %w", socket, err), conn.Close())
 	}
 
