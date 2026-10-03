@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -111,10 +112,25 @@ func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 // namespace, the link and the mount, and leaves one failed record that rm then frees.
 func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	// A supervisor that is not there fails the bind mount, the last claim before the start.
-	app, _ := ownDaemon(t, InitPathEnv+"="+filepath.Join(t.TempDir(), "absent"))
+	absent := filepath.Join(t.TempDir(), "absent")
+	app, _ := ownDaemon(t, InitPathEnv+"="+absent)
 
-	if err := app.Run(t.Context(), createArgs(testImage, "--", "/bin/true")); err == nil {
+	err := app.Run(t.Context(), createArgs(testImage, "--", "/bin/true"))
+	if err == nil {
 		t.Fatal("a missing supervisor returned no error")
+	}
+
+	// firecracker reads the supervisor into its initrd when the daemon builds it, so the create is refused before any record.
+	if itestProvider == firecracker.Name {
+		if !strings.Contains(err.Error(), absent) {
+			t.Errorf("the refused create failed with %v, want it to name the supervisor %s", err, absent)
+		}
+		if held := holdings(t, app); len(held) != 0 {
+			t.Errorf("the refused create left %v, want nothing", held)
+		}
+		assertNoSandboxMounts(t, app.Root)
+
+		return
 	}
 
 	held := holdings(t, app)
