@@ -639,6 +639,7 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		ProxyCA:       d.proxyCA,
 		PullTimeout:   d.cfg.PullTimeout,
 		HostMemoryMiB: hostMemory >> 20,
+		HostCPUs:      runtime.NumCPU(),
 	}), nil
 }
 

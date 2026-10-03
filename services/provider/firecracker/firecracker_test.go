@@ -502,6 +502,27 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	}
 }
 
+// The vmm writes vmstate and memory under its own umask, so Pause tightens them: a snapshot the daemon reads is not world-readable.
+func TestPauseTightensTheSnapshotFiles(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+}
+
 // A resume brings the sandbox back over its own copy of the overlay and a link to the memory the snapshot keeps.
 func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	h := newHarness(t)

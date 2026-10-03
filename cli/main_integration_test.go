@@ -330,9 +330,16 @@ func daemonClient(app App) *client.Client {
 func create(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	t.Helper()
 
-	args := append([]string{"create", testImage, "--"}, argv...)
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
+	return createWith(t, app, out, append([]string{testImage, "--"}, argv...)...)
+}
+
+// createWith runs create with these flags and argv; the pull progress goes to stderr, so the id is stdout alone.
+func createWith(t *testing.T, app App, out *bytes.Buffer, args ...string) string {
+	t.Helper()
+
+	app, progress := ownStderr(app)
+	if err := app.Run(t.Context(), append([]string{"create"}, args...)); err != nil {
+		t.Fatalf("create: %v\n%s", err, progress)
 	}
 
 	id := strings.TrimSpace(out.String())
@@ -342,6 +349,14 @@ func create(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	out.Reset()
 
 	return id
+}
+
+// ownStderr answers app with stderr on a buffer of its own, so what a verb prints there never lands in out.
+func ownStderr(app App) (App, *bytes.Buffer) {
+	stderr := &bytes.Buffer{}
+	app.Err = stderr
+
+	return app, stderr
 }
 
 // record is the sandbox as the daemon reports it, which is the only record a test reads.
