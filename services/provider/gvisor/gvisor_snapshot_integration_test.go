@@ -12,8 +12,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// A pause is a checkpoint and a teardown, so a resumed sandbox is a new runsc container that must still
-// be the same run: same files, same entrypoint mid-loop, and its output still reaching the log.
+// A pause is a checkpoint and a teardown, so a resumed sandbox is a new runsc container that must still be the same run: same files, same entrypoint mid-loop, and its output still reaching the log.
 func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")

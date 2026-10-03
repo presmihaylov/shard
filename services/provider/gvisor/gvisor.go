@@ -883,9 +883,7 @@ func stateOf(status runsc.Status) models.State {
 	}
 }
 
-// Pause writes the sandbox into dir and then ends it with safeDelete, because runsc still names a
-// checkpointed container until that sweep forgets it. runsc then holds nothing, as after a stop before
-// the entrypoint ran, and the snapshot plus the state directory is everything a resume needs.
+// Pause checkpoints the sandbox into dir, then safeDelete sweeps its cgroup and forgets runsc's state, so the snapshot plus the state directory is everything a resume needs.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	status, err := p.Status(ctx, id)
 	if err != nil {
@@ -975,8 +973,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	return p.release(ctx, id, b, dir+".tmp")
 }
 
-// Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
-// as a new runsc container: the one the pause ended is gone for good.
+// Resume brings the sandbox back from the snapshot in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
 		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)
