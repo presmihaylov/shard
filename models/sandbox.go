@@ -30,6 +30,8 @@ type Sandbox struct {
 	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
 	// does not consume it, so it stands until the next pause replaces it or rm removes it.
 	Snapshot string `json:"snapshot,omitempty"`
+	// Pausing is set for one pause, after it removed the old checkpoint, so any checkpoint found under it is that pause's own.
+	Pausing bool `json:"pausing,omitempty"`
 
 	// PID is the sandbox process on the host, or 0 when it does not run.
 	PID       int          `json:"pid"`
