@@ -40,10 +40,10 @@ func TestStopReturnsNilWhenResumeEmptiesTheCgroupAndKillIsUnreachable(t *testing
 		t.Fatal(err)
 	}
 
-	// The fake runsc resumes with rc 0 and empties the cgroup, the way the sandbox exits after a bare resume, then the TERM refuses.
+	// The fake runsc resumes with rc 0 and removes the cgroup, the way a real empty cgroup rmdirs after the sandbox exits, then the TERM refuses.
 	p := newProviderOver(t, `case "$*" in
 *'overlay2=none state'*) echo '{"id":"`+id+`","status":"paused","pid":`+strconv.Itoa(pid)+`}' ;;
-*'overlay2=none resume'*) : > '`+procs+`' ;;
+*'overlay2=none resume'*) rm -rf '`+cgroupDir+`' ;;
 *'overlay2=none kill'*) echo 'connecting to control server: connection refused' >&2; exit 1 ;;
 *) exit 0 ;;
 esac`)
@@ -101,11 +101,17 @@ func TestStopWaitsOutAMidExitSentryAndReturnsNil(t *testing.T) {
 	const id = "amber-otter-1a2b"
 	p, procs := midExitSentry(t, id, 4242)
 
-	// The sentry leaves the cgroup after the resume, the way a real exit trails it; the wait must catch that.
+	// The sentry leaves the cgroup after the resume, the way a real exit trails it and the empty cgroup then rmdirs; the wait must catch that.
 	left := make(chan error, 1)
 	go func() {
 		time.Sleep(200 * time.Millisecond)
-		left <- os.Truncate(procs, 0)
+		// Rename then remove, so the poller reads the cgroup as either whole or gone, never mid-delete.
+		dir := filepath.Dir(procs)
+		if err := os.Rename(dir, dir+".gone"); err != nil {
+			left <- err
+			return
+		}
+		left <- os.RemoveAll(dir + ".gone")
 	}()
 
 	if err := p.Stop(t.Context(), id, time.Second); err != nil {

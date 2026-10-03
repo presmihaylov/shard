@@ -10,9 +10,9 @@
 | The devbox, by hand | `make itest`, `make devbox-e2e` | gVisor, Sysbox and runc need a Linux box with root. |
 
 CI calls those steps directly. `make check` is the local gate before a commit, and it runs the same
-checks plus the e2e script. The macOS job does for darwin what the Linux job does for Linux. A change
-to `pkg/vz`, `pkg/vzshim`, `cmd/shard-vz-shim` or `services/provider/vzvm` fails the PR when it no
-longer compiles or no longer passes its unit tests.
+checks plus the self-test of the e2e script, `scripts/e2e_test.sh`. The macOS job does for darwin
+what the Linux job does for Linux. A change to `pkg/vz`, `pkg/vzshim`, `cmd/shard-vz-shim` or
+`services/provider/vzvm` fails the PR when it no longer compiles or no longer passes its unit tests.
 
 ## The VM proof before a tag
 

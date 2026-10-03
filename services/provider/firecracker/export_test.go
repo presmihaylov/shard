@@ -33,6 +33,11 @@ func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int, jail stri
 func (p *Provider) RenumberSilent(id string, pid int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		m.pid = pid
+
+		return
+	}
 	p.unadopted[id].pid = pid
 }
 

@@ -883,6 +883,98 @@ func TestStopOfASilentVMMNeverKillsTheProcessOnItsPidSince(t *testing.T) {
 	}
 }
 
+// A vmm that freezes while this provider holds it reads unresponsive on its pid within the bound, and running again once it thaws (SHARD-439).
+func TestAHeldVMMThatFreezesReadsUnresponsiveUntilItThaws(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	freezeVMM(t, pid)
+
+	h.unresponsive(t, spec.ID, pid)
+	if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(stopGrace); ; time.Sleep(100 * time.Millisecond) {
+		status, err := h.provider.Status(t.Context(), spec.ID)
+		if err == nil && status.State == models.StateRunning && status.Reason == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Status %s after the thaw = %+v, %v, want running", stopGrace, status, err)
+		}
+	}
+}
+
+// Exec and pause on a held vmm that froze refuse within the bound and name it, instead of waiting on a guest that cannot answer (SHARD-439).
+func TestExecAndPauseOnAFrozenHeldVMMRefuseWithinTheBound(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	freezeVMM(t, pid)
+	t.Cleanup(func() {
+		if err := syscall.Kill(pid, syscall.SIGCONT); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Error(err)
+		}
+	})
+
+	began := time.Now()
+	_, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err == nil || !strings.Contains(err.Error(), string(models.StateUnresponsive)) || !strings.Contains(err.Error(), strconv.Itoa(pid)) {
+		t.Fatalf("Exec on a frozen vmm = %v, want a refusal that names it unresponsive on pid %d", err, pid)
+	}
+	if took := time.Since(began); took >= 8*time.Second {
+		t.Fatalf("Exec took %s to refuse a frozen vmm", took)
+	}
+	err = h.provider.Pause(t.Context(), spec.ID, filepath.Join(h.root, "snap-"+spec.ID))
+	if _, ok := errors.AsType[*models.UnresponsiveError](err); !ok {
+		t.Fatalf("Pause of a frozen vmm = %v, want an UnresponsiveError", err)
+	}
+}
+
+// A stop of a held vmm that froze kills it through the pin its attach took, so a process on its pid since lives, and the stop takes no grace (SHARD-439).
+func TestStopOfAFrozenHeldVMMKillsThroughItsPinNotItsPid(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	freezeVMM(t, pid)
+	h.unresponsive(t, spec.ID, pid)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+	h.provider.RenumberSilent(spec.ID, innocent.Process.Pid)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if took := time.Since(began); took > 3*time.Second {
+		t.Fatalf("Stop took %s on a vmm already read unresponsive", took)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the frozen vmm's pid since was hit: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
+// freezeVMM stops a vmm with SIGSTOP, as a host under load or an operator can.
+func freezeVMM(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // unresponsive reads a frozen vmm the way a booting daemon does, and proves it reads unresponsive on its pid inside the serve bound.
 func (h *harness) unresponsive(t *testing.T, id string, pid int) models.Status {
 	t.Helper()

@@ -37,7 +37,7 @@ stateDiagram-v2
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
-| `running` | `unresponsive` | the liveness tick, or a vz `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
+| `running` | `unresponsive` | the liveness tick, or an `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
 | `unresponsive` | `paused` | the liveness tick or a restart, when the process died after a marked pause wrote its checkpoint | yes: vz, Firecracker |
 | `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
@@ -74,7 +74,7 @@ restore that the old daemon started can still run where the runtime cannot see i
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
 means that the sandbox is up. It does not mean that a workload executes in it. When the entrypoint
 finishes, the sandbox stays `running` and you can still `exec` or `pause` it, and `fork` it once
-paused. E2B, Modal, Vercel and Daytona all work this way. There is no fifth state for an exited
+paused. E2B, Modal, Vercel and Daytona all work this way. There is no eighth state for an exited
 entrypoint. Instead, the liveness task writes the exit into `exit_status` on the record, which stays
 `running`, so `shard ls` prints `running (exited 0)`. `stop` is the only thing that ends a sandbox.
 
@@ -95,10 +95,10 @@ restart makes the record `paused` with that snapshot (SHARD-442). If the shim an
 its guest runs, the record drops the mark in the same write, because the guest ran past that
 checkpoint. `stop` and `rm --force` give the shim one more probe of 1 s, then kill it with no grace
 (SHARD-421). The kill goes through a pin that the kernel holds on the process, never through a bare
-pid, so a process that took the pid since is never hit. On Firecracker the same holds for a vmm
-that a restart meets only by its socket, with a bound of 4 s and a reason that names the vmm's pid
-(SHARD-392). There the pin is a pidfd that the adopt took on the connection that the vmm never
-answered.
+pid, so a process that took the pid since is never hit. On Firecracker the same holds, with a bound
+of 4 s and a reason that names the vmm's pid, both for a vmm that the daemon holds and for one that
+a restart meets only by its socket (SHARD-392, SHARD-439). There the pin is a pidfd that the attach
+or the adopt took on a connection that the vmm answered, or never answered.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the

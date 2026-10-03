@@ -125,6 +125,30 @@ func memoryEvents(dir, file string) (Events, error) {
 	return events, nil
 }
 
+// Populated reports whether the cgroup or any under it still holds a process, from the cgroup.events field; it clears only once the last killed task has fully exited, so it says when a cgroup whose cgroup.procs already reads empty is safe to remove (SHARD-440).
+func Populated(dir string) (bool, error) {
+	raw, err := read(dir, "cgroup.events")
+	if errors.Is(err, ErrNotFound) {
+		return false, ErrNotFound
+	}
+	// A test cgroup has no cgroup.events; treat it as idle so the caller can remove it.
+	if errors.Is(err, ErrNoController) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	for line := range strings.SplitSeq(raw, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), " ")
+		if found && key == "populated" {
+			return value != "0", nil
+		}
+	}
+
+	return false, nil
+}
+
 // Procs lists the processes in a cgroup and in every cgroup under it; a cgroup that is gone answers ErrNotFound.
 func Procs(dir string) ([]int, error) {
 	var pids []int

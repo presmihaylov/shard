@@ -206,10 +206,11 @@ or a sandbox.
   to the daemon's socket. It is a byte proxy, never a second API. It maps the
   request line to one coarse capability over the daemon's own route patterns and
   checks the token's scopes cover it, and it parses nothing else.
-- **The daemon is the single writer of the state.** Every verb goes over the
-  socket, so nothing else opens the stores and nothing needs a lock between
-  processes. The one lock left is `daemon.lock`, which keeps a second daemon off
-  a root the first one owns.
+- **The daemon is the single writer of the state.** Every verb that changes a
+  sandbox, an image, a secret or a policy goes over the socket, so nothing else
+  writes those stores and they need no lock between processes. `daemon.lock`
+  keeps a second daemon off a root the first one owns. The token ledger is not
+  daemon state: the local `tokens` verbs write it under `serve.tokens.lock`.
 - **Never log a secret value, and never write one into a state file.** A sandbox
   references a secret by name and never holds a value. A secret is granted to a
   destination, never to a sandbox alone.

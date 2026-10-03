@@ -44,9 +44,6 @@ const signalBudget = 5 * time.Second
 // settleGrace is how long a create or restore runs on after its caller gives up, because a kill before runsc saves its state orphans the sandbox.
 const settleGrace = 30 * time.Second
 
-// discardBudget bounds the delete that undoes a create or restore its caller gave up on.
-const discardBudget = 10 * time.Second
-
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
@@ -204,7 +201,7 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return r.discard(ctx, "create", id, err)
+		return discard(ctx, "create", id, err)
 	}
 	if err != nil {
 		return fmt.Errorf("runsc create %s: %w%s", id, err, diagnostics(opts.Stderr, start))
@@ -493,7 +490,7 @@ func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) er
 
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return r.discard(ctx, "restore", id, err)
+		return discard(ctx, "restore", id, err)
 	}
 	if err != nil {
 		return fmt.Errorf("runsc restore %s: %w%s", id, err, diagnostics(opts.Stderr, start))
@@ -510,18 +507,14 @@ func (r *Runner) settled(ctx context.Context) (context.Context, context.CancelFu
 	return run, func() { stop(); cancel() }
 }
 
-// discard undoes a create or restore whose caller gave up, because no record will ever name what it made.
-func (r *Runner) discard(ctx context.Context, verb, id string, err error) error {
+// discard reports a cancelled create or restore and drops no state; the provider's safeDelete sweeps the cgroup then forgets it, so a stored pid is never force-killed after reuse and the state survives a failed sweep (SHARD-440).
+func discard(ctx context.Context, verb, id string, err error) error {
 	// The caller gave up, so the cancel is the cause, whatever runsc printed on its way out.
-	cause := fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
 	if err != nil {
-		cause = fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
+		return fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
 	}
 
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
-	defer cancel()
-
-	return errors.Join(cause, r.Delete(dctx, id, true))
+	return fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
 }
 
 // Kill signals the container. all reaches every process in it; without it only PID 1 is signalled.
@@ -532,16 +525,6 @@ func (r *Runner) Kill(ctx context.Context, id, signal string, all bool) error {
 	}
 
 	return r.run(ctx, io.Discard, append(args, id, signal)...)
-}
-
-// Delete drops runsc's own state for the container. Until it runs, a stopped container still exists.
-func (r *Runner) Delete(ctx context.Context, id string, force bool) error {
-	args := []string{"delete"}
-	if force {
-		args = append(args, "--force")
-	}
-
-	return r.run(ctx, io.Discard, append(args, id)...)
 }
 
 // State asks the substrate what the container is doing. It never consults a record.
@@ -557,6 +540,36 @@ func (r *Runner) State(ctx context.Context, id string) (State, error) {
 	}
 
 	return state, nil
+}
+
+// Forget removes runsc's own files for a container and signals nothing, for a teardown that must not hand runsc a stale pid and must not leak what delete --force used to remove (SHARD-440).
+func (r *Runner) Forget(id string) error {
+	files, err := r.containerFiles(id)
+	if err != nil {
+		return fmt.Errorf("find the runsc files of %s: %w", id, err)
+	}
+
+	for _, file := range files {
+		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("drop the runsc file %s: %w", file, err)
+		}
+	}
+
+	return nil
+}
+
+// containerFiles are runsc's own per-container files under the root: the state and lock named <id>_sandbox:<id>.{state,lock}, and the control socket runsc-<id>.sock, all of which delete --force removed.
+func (r *Runner) containerFiles(id string) ([]string, error) {
+	var files []string
+	for _, pattern := range []string{"*:" + id + ".state", "*:" + id + ".lock", "runsc-" + id + ".sock"} {
+		matches, err := filepath.Glob(filepath.Join(r.root, pattern))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, matches...)
+	}
+
+	return files, nil
 }
 
 // run collects stderr so a failure can be classified, and leaves stdout to the caller.

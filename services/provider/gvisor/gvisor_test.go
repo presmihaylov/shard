@@ -133,8 +133,8 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 	}
 
 	got := unitFile(t, calls)
-	if strings.Contains(got, "resume") || !strings.Contains(got, "delete --force amber-otter-1a2b") {
-		t.Errorf("the failed checkpoint ran %q, want a delete and no thaw", got)
+	if strings.Contains(got, "resume") || strings.Contains(got, "delete") {
+		t.Errorf("the failed checkpoint ran %q, want no thaw and no runsc delete (SHARD-440)", got)
 	}
 	if got := unitFile(t, filepath.Join(dir, "checkpoint.img")); got != "old" {
 		t.Errorf("the old snapshot is %q after a failed pause, want it kept", got)
@@ -144,8 +144,8 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 	}
 }
 
-// The service bounds a pause the client let go of, and the delete after a good checkpoint must keep that bound.
-func TestAWedgedDeleteAfterACheckpointEndsAtTheDeadline(t *testing.T) {
+// The service bounds a pause the client let go of, and the sweep after a good checkpoint must keep that bound.
+func TestAWedgedSweepAfterACheckpointEndsAtTheDeadline(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "amber-otter-1a2b")
 	for _, layer := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard"} {
@@ -156,19 +156,32 @@ func TestAWedgedDeleteAfterACheckpointEndsAtTheDeadline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := newProviderIn(t, dir, `case "$*" in *delete*) exec sleep 60;; esac
-echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-	p.SetCgroupRoot(t.TempDir())
+	p := newProviderIn(t, dir, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+
+	cgroups := t.TempDir()
+	p.SetCgroupRoot(cgroups)
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The sentry names the sandbox, so the sweep pins and kills it; the kill never lands, so the cgroup never empties and the wait hits the deadline (SHARD-440).
+	if err := os.WriteFile(filepath.Join(p.ProcRoot(), "42", "cmdline"), []byte("runsc-sandbox\x00boot\x00amber-otter-1a2b\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.SetKillPinned(func(int, func() (bool, error)) error { return nil })
 
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	err := p.Pause(ctx, "amber-otter-1a2b", filepath.Join(t.TempDir(), "snap"))
 	if err == nil {
-		t.Fatal("Pause returned nil, want the delete cut at the deadline")
+		t.Fatal("Pause returned nil, want the wedged sweep cut at the deadline")
 	}
 	if took := time.Since(start); took > 10*time.Second {
-		t.Errorf("Pause took %s over a wedged delete, want it ended near the 500ms deadline", took)
+		t.Errorf("Pause took %s over a wedged sweep, want it ended near the 500ms deadline", took)
 	}
 }
 
@@ -244,6 +257,10 @@ func frozenSentry(t *testing.T, p *gvisor.Provider, cgroups string) string {
 	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The frozen sentry names the sandbox, so the sweep kills it by cgroup rather than mistaking it for a reused pid (SHARD-440).
+	if err := os.WriteFile(filepath.Join(proc, "42", "cmdline"), []byte("runsc-sandbox\x00boot\x00amber-otter-1a2b\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
 	if err := os.MkdirAll(cg, 0o700); err != nil {
 		t.Fatal(err)
@@ -263,16 +280,30 @@ func frozenSentry(t *testing.T, p *gvisor.Provider, cgroups string) string {
 	return dir
 }
 
-// A cut pause leaves the sentry frozen past its checkpoint, so the release must delete it and never thaw it (SHARD-366).
-func TestReleaseDeletesAFrozenSandboxWithoutAThaw(t *testing.T) {
+// sweepKill stands in for the pinned SIGKILL: it records the pid and removes the sandbox cgroup, the way the kernel reclaims one once its last process dies.
+func sweepKill(p *gvisor.Provider, cg string, killed *[]int) {
+	p.SetKillPinned(func(pid int, still func() (bool, error)) error {
+		ok, err := still()
+		if err != nil || !ok {
+			return err
+		}
+		*killed = append(*killed, pid)
+
+		return os.RemoveAll(cg)
+	})
+}
+
+// A cut pause leaves the sentry frozen past its checkpoint, so the release must sweep it and never thaw it (SHARD-366); the sweep kills by cgroup, never a runsc force delete (SHARD-440).
+func TestReleaseEndsAFrozenSandboxWithoutAThawOrAForceDelete(t *testing.T) {
 	work := t.TempDir()
 	calls := filepath.Join(work, "calls")
 	cgroups := t.TempDir()
 	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
-case "$*" in *delete*) rm -f `+cg+`/cgroup.procs ;; esac
 echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 	dir := frozenSentry(t, p, cgroups)
+	var killed []int
+	sweepKill(p, cg, &killed)
 
 	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
 	// Only Linux has the overlayfs the unmount after it needs.
@@ -280,27 +311,26 @@ echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 		t.Errorf("Release of a frozen sandbox: %v", err)
 	}
 
-	got := unitFile(t, calls)
-	if !strings.Contains(got, "delete --force") {
-		t.Errorf("release of a frozen sandbox ran %q, want a forced delete", got)
+	if len(killed) != 1 || killed[0] != 42 {
+		t.Errorf("release pinned and killed %v, want the frozen sentry 42", killed)
 	}
-	if strings.Contains(got, "resume") || strings.Contains(got, "kill") {
-		t.Errorf("release of a frozen sandbox ran %q, want neither a thaw nor a signal: the guest would run past its snapshot", got)
+	got := unitFile(t, calls)
+	if strings.Contains(got, "resume") || strings.Contains(got, "kill") || strings.Contains(got, "delete") {
+		t.Errorf("release of a frozen sandbox ran %q, want no thaw, no signal, and no runsc delete (SHARD-440)", got)
 	}
 }
 
-// A cut after the delete leaves runsc holding nothing, and the release must still sweep the cgroup and drop the view (SHARD-366).
-func TestReleaseFreesASandboxACutPauseLeftAfterItsDelete(t *testing.T) {
+// runsc no longer holds the sandbox, yet the cgroup still names the frozen sentry, so the release must sweep it and drop the view (SHARD-366).
+func TestReleaseFreesASandboxRunscNoLongerHolds(t *testing.T) {
 	work := t.TempDir()
 	calls := filepath.Join(work, "calls")
 	cgroups := t.TempDir()
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
 case "$*" in *state*) echo 'FetchSpec failed: loading container: file does not exist' >&2; exit 1;; esac`)
 	dir := frozenSentry(t, p, cgroups)
-	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
-	if err := os.Remove(filepath.Join(cg, "cgroup.procs")); err != nil {
-		t.Fatal(err)
-	}
+	var killed []int
+	sweepKill(p, cg, &killed)
 
 	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
 	// Only Linux has the overlayfs the unmount after it needs.
@@ -308,11 +338,14 @@ case "$*" in *state*) echo 'FetchSpec failed: loading container: file does not e
 		t.Errorf("Release of a sandbox runsc no longer holds: %v", err)
 	}
 
+	if len(killed) != 1 || killed[0] != 42 {
+		t.Errorf("release pinned and killed %v, want the frozen sentry 42 the cgroup still named", killed)
+	}
 	if _, err := os.Stat(cg); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the cgroup %s is still there (%v), want it swept before the unmount", cg, err)
 	}
-	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") {
-		t.Errorf("release of a sandbox runsc no longer holds ran %q, want neither a thaw nor a signal", got)
+	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") || strings.Contains(got, "delete") {
+		t.Errorf("release of a sandbox runsc no longer holds ran %q, want no thaw, no signal, and no runsc delete", got)
 	}
 }
 
