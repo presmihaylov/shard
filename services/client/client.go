@@ -36,6 +36,8 @@ type Client struct {
 	target string
 	// dialer is the whole of the transport switch: the unix socket, or tls to the proxy in front of shard serve.
 	dialer func(ctx context.Context) (net.Conn, error)
+	// authority is the Host of every request: shard on the socket, and otherwise the --remote host a proxy routes by.
+	authority string
 	// token is the bearer token a front checks. The socket takes none: its mode is the check.
 	token string
 	// hint is what a connect error tells the operator to check for this target.
@@ -108,7 +110,7 @@ func (e *APIError) Error() string { return e.Message }
 func New(root string) *Client {
 	socket := filepath.Join(root, api.SocketFile)
 
-	c := &Client{target: socket, hint: hint(root), Timeout: DefaultTimeout}
+	c := &Client{target: socket, authority: "shard", hint: hint(root), Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}
@@ -144,7 +146,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		settings.RootCAs = pool
 	}
 
-	c := &Client{target: host, token: token, hint: "the proxy at " + parsed.Host + " and the shard serve behind it", Timeout: DefaultTimeout}
+	c := &Client{target: host, authority: parsed.Host, token: token, hint: "the proxy at " + parsed.Host + " and the shard serve behind it", Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&tls.Dialer{Config: settings}).DialContext(ctx, "tcp", address)
 	}
@@ -165,6 +167,11 @@ func remoteAddress(parsed *url.URL) string {
 // Format prints the target alone, whatever the verb, so a client in a log line never shows its token.
 func (c Client) Format(f fmt.State, _ rune) {
 	fmt.Fprintf(f, "shard client for %s", c.target)
+}
+
+// endpoint is the url of one route. The dialer picks the connection; the url carries only the path and the Host.
+func (c *Client) endpoint(scheme, path string) string {
+	return scheme + "://" + c.authority + path
 }
 
 // transport sends every request that net/http builds over this client's own dialer.
@@ -420,7 +427,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, in, out any,
 		payload = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(call, method, "http://shard"+path, payload)
+	req, err := http.NewRequestWithContext(call, method, c.endpoint("http", path), payload)
 	if err != nil {
 		return nil, fmt.Errorf("build the request for %s %s: %w", method, path, err)
 	}
