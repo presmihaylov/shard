@@ -658,19 +658,6 @@ no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside
 the client could know. The four snapshot verbs set none either, because a checkpoint takes as long
 as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the 30 s grace to theirs.
 
-### Compatibility breaks
-
-- SHARD-460: the stop grace is fixed at 30 s and is no longer a setting. `shard stop` and `shard rm`
-  no longer take `--time`, and the CLI refuses it as an unknown flag. `POST /v0/sandboxes/{id}/stop`
-  refuses a body with `grace`, and `DELETE /v0/sandboxes/{id}` refuses a `grace` query, both with
-  400. `StopSandbox` and `RemoveSandbox` in `services/client` no longer take a grace.
-
-- SHARD-465: `shard serve`, `shard tokens mint`, `shard tokens ls` and `shard tokens revoke` take
-  `--signing-key-file` in place of `--secret-file`, and the CLI refuses `--secret-file` as an
-  unknown flag. Pass `--signing-key-file <path>` to keep a key file and the ledger beside it.
-  Without the flag, every one of them uses `<root>/auth/signing-key`, and `tokens ls` and
-  `tokens revoke` read the ledger beside it instead of refusing to run.
-
 ## The TCP front
 
 `shard serve` is how a client on another host reaches the daemon. It accepts TCP, terminates TLS and

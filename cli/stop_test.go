@@ -19,8 +19,6 @@ func TestParseStopRejections(t *testing.T) {
 		"two ids":         {"sandbox1", "sandbox2"},
 		"a flag after id": {"sandbox1", "-x"},
 		"an unknown flag": {"--forever", "sandbox1"},
-		// The grace is fixed, so the flag that set it is gone (SHARD-460).
-		"the removed --time": {"--time", "45s", "sandbox1"},
 	}
 
 	for name, args := range cases {

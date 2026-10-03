@@ -104,8 +104,7 @@ or the adopt took on a connection that the vmm answered, or never answered.
 
 **`stop` gives the entrypoint a fixed 30 s grace.** The stop sends SIGTERM and ends as soon as the
 entrypoint exits. An entrypoint that is still running after 30 s is killed. `rm --force` stops a live
-sandbox the same way before it deletes it. Nothing sets the grace: `--time` and the API `grace` are
-removed (SHARD-460).
+sandbox the same way before it deletes it. Nothing sets the grace.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the

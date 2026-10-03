@@ -833,19 +833,16 @@ func TestStopAnswers200WithTheRecordForAnEmptyBody(t *testing.T) {
 	}
 }
 
-// The grace is fixed, so an old client's grace is refused by name rather than read as honoured (SHARD-460).
-func TestStopIs400ForTheRemovedGrace(t *testing.T) {
+func TestStopIs400ForAnUnknownField(t *testing.T) {
 	s := seed(t)
 
-	for _, body := range []string{`{"grace":2.5}`, `{"grace":0}`} {
-		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", body)
-		refusal := errorOf(t, got)
-		if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, `unknown field "grace"`) {
-			t.Errorf("POST stop with %s answered %d %v, want 400 naming the grace", body, status, got)
-		}
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", `{"bogus":1}`)
+	refusal := errorOf(t, got)
+	if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, `unknown field "bogus"`) {
+		t.Errorf("POST stop with an unknown field answered %d %v, want 400 naming it", status, got)
 	}
 	if s.verbs.ref != "" {
-		t.Error("a stop with the removed grace still reached the orchestrator")
+		t.Error("a stop with an unknown field still reached the orchestrator")
 	}
 }
 
@@ -863,22 +860,6 @@ func TestDeleteAnswers204AndPassesForce(t *testing.T) {
 	send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1", "")
 	if s.verbs.force {
 		t.Error("a bare delete gave force=true, want false")
-	}
-}
-
-// Any spelling of the removed grace is refused by name, even an empty one, so no old client reads it as honoured (SHARD-460).
-func TestDeleteIs400ForTheRemovedGrace(t *testing.T) {
-	s := seed(t)
-
-	for _, query := range []string{"?force=true&grace=3", "?grace=0", "?grace="} {
-		status, got := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1"+query, "")
-		refusal := errorOf(t, got)
-		if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, "the query grace is removed") {
-			t.Errorf("DELETE %s answered %d %v, want 400 naming the grace", query, status, got)
-		}
-	}
-	if s.verbs.ref != "" {
-		t.Error("a delete with the removed grace still reached the orchestrator")
 	}
 }
 

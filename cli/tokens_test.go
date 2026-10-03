@@ -200,19 +200,6 @@ func TestTokensRefuseAMissingSigningKeyFile(t *testing.T) {
 	}
 }
 
-// SHARD-465 renamed --secret-file to --signing-key-file, and the old spelling gets the error any unknown flag gets.
-func TestTheSecretFileFlagIsAnUnknownFlag(t *testing.T) {
-	app := App{Version: "test", Root: t.TempDir(), Out: io.Discard}
-
-	for _, verb := range []string{"serve", "tokens mint", "tokens ls", "tokens revoke"} {
-		args := append(strings.Fields(verb), "--secret-file", "secret")
-		err := app.Run(t.Context(), args)
-		if want := "unknown flag --secret-file; run shard " + verb + " --help"; err == nil || err.Error() != want {
-			t.Errorf("%s --secret-file returned %v, want %q", verb, err, want)
-		}
-	}
-}
-
 // tokenID pulls the id column out of a tokens ls listing for the row whose name matches.
 func tokenID(t *testing.T, listing, name string) string {
 	t.Helper()

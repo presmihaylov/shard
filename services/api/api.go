@@ -553,7 +553,7 @@ func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, sb)
 }
 
-// stopRequest is the body of a stop, which carries nothing; the grace it once took is a 400 as an unknown field (SHARD-460).
+// stopRequest is the body of a stop, which carries nothing.
 type stopRequest struct{}
 
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
@@ -578,13 +578,6 @@ func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
 		h.writeError(w, err)
-
-		return
-	}
-
-	// A grace an old client still sends is refused by name, never ignored, so it cannot read as honoured (SHARD-460).
-	if r.URL.Query().Has("grace") {
-		h.writeError(w, &sandbox.RequestError{Err: fmt.Errorf("the query grace is removed: a stop gives the entrypoint a fixed %s", models.StopGrace)})
 
 		return
 	}

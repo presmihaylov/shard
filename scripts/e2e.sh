@@ -1903,28 +1903,11 @@ disk_bound_steps() {
 
 # stop_grace_steps prove SHARD-460: the grace is fixed at 30 s, a stop ends with an entrypoint that exits on SIGTERM, and kills one that ignores it at 30 s.
 stop_grace_steps() {
-	local id code refusal started took
-
-	step "refuse the removed --time and the API grace"
-	id=$(shard create "${IMAGE}" /bin/sleep 600)
-	track_sandbox "${id}"
-	code=0
-	refusal=$(shard stop --time 5s "${id}" 2>&1) || code=$?
-	[ "${code}" != "0" ] || fail "shard stop --time exited 0, and the flag is removed"
-	expect "${refusal}" "shard: unknown flag --time; run shard stop --help" "stop refuses --time as an unknown flag"
-	code=0
-	refusal=$(shard rm --force --time 5s "${id}" 2>&1) || code=$?
-	[ "${code}" != "0" ] || fail "shard rm --force --time exited 0, and the flag is removed"
-	expect "${refusal}" "shard: unknown flag --time; run shard rm --help" "rm refuses --time as an unknown flag"
-	api_call POST "/v0/sandboxes/${id}/stop" '{"grace":5}'
-	[ "${REPLY_CODE}" = "400" ] || fail "a stop with a grace answered ${REPLY_CODE}, want 400"
-	grep -q 'unknown field .*grace' <<<"${REPLY_BODY}" || fail "the stop refusal does not name the grace: ${REPLY_BODY}"
-	api_call DELETE "/v0/sandboxes/${id}?force=true&grace=5" ''
-	[ "${REPLY_CODE}" = "400" ] || fail "an rm with a grace answered ${REPLY_CODE}, want 400"
-	grep -q 'the query grace is removed' <<<"${REPLY_BODY}" || fail "the rm refusal does not name the grace: ${REPLY_BODY}"
-	expect "$(listed_state "${id}")" "running" "the API refuses a grace on stop and on rm with 400, and the sandbox runs on"
+	local id started took
 
 	step "a stop ends as soon as the entrypoint exits on SIGTERM"
+	id=$(shard create "${IMAGE}" /bin/sleep 600)
+	track_sandbox "${id}"
 	started=$(date +%s.%N)
 	shard stop "${id}" >/dev/null
 	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')

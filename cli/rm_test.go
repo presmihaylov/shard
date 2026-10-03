@@ -19,8 +19,6 @@ func TestParseRmRejections(t *testing.T) {
 		"two ids":         {"sandbox1", "sandbox2"},
 		"a flag after id": {"sandbox1", "--force"},
 		"an unknown flag": {"--recursive", "sandbox1"},
-		// --force stops with the fixed grace, so the flag that set it is gone (SHARD-460).
-		"the removed --time": {"--force", "--time", "5s", "sandbox1"},
 	}
 
 	for name, args := range cases {
