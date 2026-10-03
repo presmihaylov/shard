@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -327,6 +328,8 @@ type fakeProvider struct {
 	cleanupFails bool
 	// cleanupFreezes makes the pause write its checkpoint and then fail the delete, with the sentry still frozen.
 	cleanupFreezes bool
+	// mounted is a merged view runsc no longer holds: Stop refuses it the way the gVisor orphan guard does, and only Release frees it.
+	mounted bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -570,6 +573,9 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	if err := f.r.record("provider.Stop"); err != nil {
 		return err
 	}
+	if f.mounted && !f.status.Exists {
+		return errors.New("runsc does not hold sandbox sandbox1 but its rootfs is still mounted")
+	}
 	f.stopped, f.grace = true, grace
 	if f.aliveAfterStop == 0 {
 		f.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: f.failsOnStop}
@@ -582,12 +588,12 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	return nil
 }
 
-// Reclaim is the raw kill a wedged substrate gets, and it frees the substrate the way Stop's kill does.
+// Release frees what a cut pause left beside its snapshot, the frozen sentry and the merged view alike.
 func (f *fakeProvider) Release(_ context.Context, _, _ string) error {
 	if err := f.r.record("provider.Release"); err != nil {
 		return err
 	}
-	f.status = models.Status{}
+	f.status, f.mounted = models.Status{}, false
 
 	return nil
 }
@@ -597,6 +603,7 @@ func frozen() models.Status {
 	return models.Status{Exists: true, State: models.StatePaused, PID: 42}
 }
 
+// Reclaim is the raw kill a wedged substrate gets, and it frees the substrate the way Stop's kill does.
 func (f *fakeProvider) Reclaim(_ context.Context, _ string) error {
 	if err := f.r.record("provider.Reclaim"); err != nil {
 		return err

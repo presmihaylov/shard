@@ -432,6 +432,37 @@ func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	}
 }
 
+// A daemon cut after the delete and before the unmount leaves a view runsc no longer holds, which rm --force must still free (SHARD-366).
+func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	r := &recorder{}
+	svc, l := newService(t, r, sb)
+	l.repo.snapshotDir = dir
+	l.provider.status, l.provider.mounted = gone(), true
+
+	if err := svc.ReconcileAll(t.Context(), []models.Sandbox{sb}, func(string) {}, runOnce); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
+		t.Fatalf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
+	}
+	if l.provider.mounted {
+		t.Errorf("the calls were %v, want the view released: no stop frees a view runsc does not hold", r.snapshot())
+	}
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, time.Second); err != nil {
+		t.Fatalf("rm --force of the paused record: %v", err)
+	}
+	if !l.repo.deleted || !l.provider.removed {
+		t.Errorf("rm left the record deleted %v and the runtime state removed %v, want both gone", l.repo.deleted, l.provider.removed)
+	}
+}
+
 // A substrate that cannot release keeps what it holds, so the reconcile does not take the snapshot from under it.
 func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}

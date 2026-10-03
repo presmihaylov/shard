@@ -301,7 +301,7 @@ type releaser interface {
 	Release(ctx context.Context, id, dir string) error
 }
 
-// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left frozen; empty for none.
+// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left behind; empty for none.
 func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
 	dir, err := s.markedSnapshot(sb)
 	if err != nil {
@@ -310,17 +310,17 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 	if dir == "" {
 		return "", nil
 	}
-	if !status.Alive() {
+	r, ok := s.cfg.Provider.(releaser)
+	if !ok && !status.Alive() {
 		return dir, nil
 	}
-
-	r, ok := s.cfg.Provider.(releaser)
 	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
-	if !ok || status.State != models.StatePaused {
+	if !ok || status.Alive() && status.State != models.StatePaused {
 		return "", nil
 	}
+	// A cut after the delete still leaves the merged view mounted, and only the release frees it (SHARD-366).
 	if err := r.Release(ctx, sb.ID, dir); err != nil {
-		return "", fmt.Errorf("release sandbox %s, which a cut pause left frozen beside its snapshot: %w", sb.ID, err)
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left beside its snapshot: %w", sb.ID, err)
 	}
 
 	return dir, nil
