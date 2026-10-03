@@ -245,7 +245,8 @@ new one is judged by the new rules.
 Every fronted sandbox keeps a decision log, and `shard logs --egress <id|name>` prints it, one JSON
 record per line, oldest first. `shard logs -f --egress <id|name>` prints the same and then stays,
 so a new record appears within about a second of the decision. The follow ends at Ctrl-C, or when
-the sandbox is removed, and it says which on stderr. A record names the time, the source, the verdict, the host, the port,
+the sandbox is removed, and it says which on stderr. It fails, and says to follow again, when the log
+renames a file away before the follow read it. A record names the time, the source, the verdict, the host, the port,
 the address, the rule that decided and its text. It never carries a header, a body or a secret value.
 
 There are three sources, and the daemon writes all of them into the one file,

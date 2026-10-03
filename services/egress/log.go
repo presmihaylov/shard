@@ -55,6 +55,14 @@ type Log struct {
 	max  int64
 	// mu orders every size check, rename and write against the opens of a read, so no file passes max and a read sees each file once.
 	mu sync.Mutex
+	// watched counts the renames of each log a follow reads, so the follow can tell a file went by unread.
+	watched map[string]*watched
+}
+
+// watched is one log that follows read: how many read it, and how many times Append renamed it since the first began.
+type watched struct {
+	follows int
+	renames uint64
 }
 
 const (
@@ -64,7 +72,7 @@ const (
 	TailRecords = 10000
 )
 
-func NewLog(dirs Dirs) *Log { return &Log{dirs: dirs, max: MaxLog} }
+func NewLog(dirs Dirs) *Log { return &Log{dirs: dirs, max: MaxLog, watched: map[string]*watched{}} }
 
 // Append writes one record. A decision that cannot be written closes the door: the caller refuses the
 // request rather than let it out unlogged.
@@ -121,6 +129,10 @@ func (l *Log) rotate(dir string, next int64) error {
 		return fmt.Errorf("rotate %s: %w", path, err)
 	}
 
+	if w := l.watched[dir]; w != nil {
+		w.renames++
+	}
+
 	return nil
 }
 
@@ -162,6 +174,11 @@ func (l *Log) open(dir string) (rotated, current *os.File, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	return openBoth(dir)
+}
+
+// openBoth is open, for a caller that holds the lock.
+func openBoth(dir string) (rotated, current *os.File, err error) {
 	rotated, err = openIfAny(filepath.Join(dir, LogRotated))
 	if err != nil {
 		return nil, nil, err
