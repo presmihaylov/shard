@@ -530,8 +530,7 @@ type Lister interface {
 	List() ([]models.Sandbox, error)
 }
 
-// ListReadable returns the readable records when one will not decode, and reports the unreadable ones
-// through ulog; any other list error stops the caller, so it fails closed (SHARD-343, SHARD-403).
+// ListReadable returns the readable records when one will not decode and reports the unreadable ones through ulog; any other list error fails closed (SHARD-343, SHARD-403).
 func ListReadable(l Lister, ulog *UnreadableLog) ([]models.Sandbox, error) {
 	sandboxes, err := l.List()
 	if err == nil {
@@ -550,8 +549,7 @@ func ListReadable(l Lister, ulog *UnreadableLog) ([]models.Sandbox, error) {
 	return sandboxes, nil
 }
 
-// UnreadableLog reports each unreadable record once per daemon life, and again only when its error text
-// changes, so one bad record does not flood the daemon log on every list (SHARD-403).
+// UnreadableLog reports each unreadable record once per daemon life, and again only when its error text changes, so one bad record does not flood the log (SHARD-403).
 type UnreadableLog struct {
 	logf func(string, ...any)
 	mu   sync.Mutex
