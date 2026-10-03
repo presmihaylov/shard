@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,7 +57,7 @@ type Provider struct {
 	caps    models.Capabilities
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
-	// procRoot is where the kernel publishes a process's command line. A test points it at a directory it wrote.
+	// procRoot is where the kernel publishes a process's command line and state. A test points it at a directory it wrote.
 	procRoot string
 	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
 	killProcess func(pid int) error
@@ -732,7 +733,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
 	if status.Alive() {
-		dead, err := zombie(state.PID)
+		dead, err := p.exited(state.PID)
 		if err != nil {
 			return models.Status{}, err
 		}
@@ -763,12 +764,13 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return b.RestartCount()
 }
 
-// zombie reports a sandbox process that exited and waits for its reaper. runsc probes it with
-// kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
-func zombie(pid int) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+// exited reports a sandbox process that exited, reaped or not. runsc probes it with kill(pid, 0),
+// which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
+func (p *Provider) exited(pid int) (bool, error) {
+	stat, err := os.ReadFile(filepath.Join(p.procRoot, strconv.Itoa(pid), "stat"))
+	// PID 1 can reap the sentry between runsc's probe and this read, and a stopped sandbox must not read as running again (SHARD-437).
 	if vanished(err) {
-		return false, nil
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read the state of the sandbox process %d: %w", pid, err)
