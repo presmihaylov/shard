@@ -2,12 +2,14 @@ package firecracker_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -40,7 +42,7 @@ const (
 // jailerFile is written beside the chroot with what the fake jailer was run with.
 const jailerFile = "jailer.json"
 
-// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads.
+// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads, and an attach per control stream the host opens.
 const (
 	controlsFile = "controls"
 	// refuseFreezeFile, while it exists, has the guest refuse every freeze, as one that cannot hold its root does.
@@ -592,6 +594,12 @@ func (f *fake) let(conn net.Conn) {
 	delete(f.streams, conn)
 }
 
+// floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
+const floodEveryFile = "flood-every-control"
+
+// dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
+const dialsFile = "control-dials"
+
 // proxy is one host connection through the vsock device: CONNECT <port> in, OK back, and then the guest's own stream.
 func (f *fake) proxy(conn net.Conn, dir string) {
 	defer conn.Close()
@@ -617,9 +625,18 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 	if _, err := fmt.Fprintf(conn, "OK %d\n", port); err != nil {
 		return
 	}
+	answers, err := f.answers(port, guest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake firecracker:", err)
+
+		return
+	}
 
 	var toGuest, toHost io.Writer = guest, conn
 	if port == int(supervisor.ControlPort) {
+		if err := note(filepath.Join(f.dir, controlsFile), "attach"); err != nil {
+			return
+		}
 		c := &control{f: f, dir: f.dir, guest: guest, host: conn}
 		toGuest, toHost = writeFunc(c.intoGuest), writeFunc(c.intoHost)
 	}
@@ -634,7 +651,7 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 	f.sending[sent] = struct{}{}
 	f.mu.Unlock()
 	go func() {
-		_, _ = io.Copy(toHost, guest)
+		_, _ = io.Copy(toHost, answers)
 		closeWrite(conn)
 		f.mu.Lock()
 		delete(f.sending, sent)
@@ -757,6 +774,45 @@ func note(path, kind string) error {
 	_, err = f.WriteString(kind + "\n")
 
 	return errors.Join(err, f.Close())
+}
+
+// answers is what the host reads of one guest stream: the guest itself, or a flood past its state line while a test asks for one.
+func (f *fake) answers(port int, guest net.Conn) (io.Reader, error) {
+	if port != int(supervisor.ControlPort) {
+		return guest, nil
+	}
+	if err := note(filepath.Join(f.dir, dialsFile), "control"); err != nil {
+		return nil, err
+	}
+	_, err := os.Stat(filepath.Join(f.dir, floodEveryFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return guest, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &flooded{guest: guest}, nil
+}
+
+// flooded passes the guest's state line, then reads as one line that never ends.
+type flooded struct {
+	guest  io.Reader
+	passed bool
+}
+
+func (f *flooded) Read(p []byte) (int, error) {
+	if f.passed {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+	}
+	n, err := f.guest.Read(p)
+	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
+		f.passed = true
+
+		return end + 1, err
+	}
+
+	return n, err
 }
 
 // closeWrite passes a half-close through, so a guest that reads to EOF sees the host's, and the host the guest's.

@@ -12,6 +12,8 @@ const (
 	StateRunning State = "running"
 	// StatePaused holds a snapshot on disk and no memory.
 	StatePaused State = "paused"
+	// StateUnresponsive is a running sandbox whose substrate process missed its probe bound; an answer makes it running again, and only stop ends it.
+	StateUnresponsive State = "unresponsive"
 	// StateStopped keeps the writable layer, so a start can follow it. A sandbox stopped before its
 	// entrypoint ran leaves nothing on the substrate, because stopping that one is a delete there.
 	StateStopped State = "stopped"
@@ -21,12 +23,13 @@ const (
 
 // The whole machine, drawn in docs/state-machine.md. stopped is not terminal here; failed is.
 var legalTransitions = map[State][]State{
-	StatePending: {StateRunning, StateFailed},
-	StateCreated: {StateRunning, StateStopped, StateFailed},
-	StateRunning: {StatePaused, StateStopped, StateFailed},
-	StatePaused:  {StateRunning, StateStopped},
-	StateStopped: {StateRunning},
-	StateFailed:  {},
+	StatePending:      {StateRunning, StateFailed},
+	StateCreated:      {StateRunning, StateStopped, StateFailed},
+	StateRunning:      {StatePaused, StateStopped, StateUnresponsive, StateFailed},
+	StatePaused:       {StateRunning, StateStopped},
+	StateUnresponsive: {StateRunning, StateStopped},
+	StateStopped:      {StateRunning},
+	StateFailed:       {},
 }
 
 // Valid reports whether s is a known state. A record on disk may predate it.
@@ -39,3 +42,6 @@ func (s State) Valid() bool {
 func (s State) CanTransitionTo(next State) bool {
 	return slices.Contains(legalTransitions[s], next)
 }
+
+// Live reports a state whose substrate process still runs, answering or not.
+func (s State) Live() bool { return s == StateRunning || s == StateUnresponsive }

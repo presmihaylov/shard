@@ -28,61 +28,71 @@ type snapshot struct {
 
 // Pause writes the paused VM into dir and ends its vmm: the memory and the overlay are on disk, and the record stays for the resume.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
-	stateDir, r, err := p.open(id)
+	m, err := p.install(ctx, id, dir)
 	if err != nil {
 		return err
+	}
+
+	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
+	return errors.Join(os.RemoveAll(dir+".tmp"), p.end(context.WithoutCancel(ctx), m))
+}
+
+// install puts the paused VM's snapshot in dir and answers its vmm, still paused beside it.
+func (p *Provider) install(ctx context.Context, id string, dir string) (*machine, error) {
+	stateDir, r, err := p.open(id)
+	if err != nil {
+		return nil, err
 	}
 	m, err := p.lookup(ctx, id, stateDir, r)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	state := models.StateStopped
+	status := models.Status{State: models.StateStopped}
 	if m != nil {
-		state = m.status(p).State
+		status = m.status(p)
 	}
-	if state != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
+	if status.State != models.StateRunning {
+		return nil, fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox%s", id, status.State, Name, because(status))
 	}
 	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
 	if !m.freezesOverlay {
-		return fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
+		return nil, fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
 	}
 	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
 	if m.jail == "" {
-		return fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then pause it", id, Name)
+		return nil, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then pause it", id, Name)
 	}
 
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
 	info, err := m.client.State(ctx)
 	if err != nil {
-		return fmt.Errorf("sandbox %s: %w", id, err)
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
 		// A guest process the snapshot held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
 		if err := m.freeze(ctx); err != nil {
-			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
+			return nil, abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
 		}
 		if err := m.client.Pause(); err != nil {
-			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
+			return nil, abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
 	if err := p.stageSnapshot(m, r, stateDir, tmp); err != nil {
-		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
+		return nil, abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return nil, abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
-	return errors.Join(os.RemoveAll(tmp), p.end(context.WithoutCancel(ctx), m))
+	return m, nil
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
@@ -211,6 +221,9 @@ func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 		return nil
 	}
 	status := m.status(p)
+	if status.State == models.StateUnresponsive {
+		return fmt.Errorf("sandbox %s is %s on %s: resume takes a paused sandbox%s", m.id, status.State, Name, because(status))
+	}
 	if !status.Alive() {
 		return p.release(ctx, m)
 	}

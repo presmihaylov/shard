@@ -1,7 +1,7 @@
 # The sandbox state machine
 
-A sandbox has six states and ten legal moves between them. The code is `models/state.go`, and this
-page draws the same machine.
+A sandbox has seven states and fourteen legal moves between them. The code is `models/state.go`, and
+this page draws the same machine.
 
 ```mermaid
 stateDiagram-v2
@@ -14,6 +14,9 @@ stateDiagram-v2
     running --> paused: pause (snapshot to disk, memory freed)
     running --> stopped: stop, and nothing else
     running --> failed: a pause that lost the guest
+    running --> unresponsive: the substrate process missed its probe bound
+    unresponsive --> running: the process answers again
+    unresponsive --> stopped: stop
     paused --> running: resume (the snapshot survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
@@ -33,6 +36,9 @@ stateDiagram-v2
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
+| `running` | `unresponsive` | the liveness tick, or a vz `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
+| `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
+| `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
 | `paused` | `running` | `resume` | yes: gVisor |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
@@ -69,6 +75,23 @@ the sandbox stays `running` and you can still `exec`, `pause` or `fork` it. E2B,
 Daytona all work this way. There is no fifth state for an exited entrypoint. Instead, the liveness
 task writes the exit into `exit_status` on the record, which stays `running`, so `shard ls` prints
 `running (exited 0)`. `stop` is the only thing that ends a sandbox.
+
+**`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends
+it.** On vz the daemon probes each shim within 5 s, both a shim it holds and one that it meets only
+by its socket after a restart. A shim that is silent for the whole bound makes the record
+`unresponsive`. A `SIGSTOP` can freeze a shim that way, and so can a host under load. The record
+keeps its pid and its run, and `unresponsive_reason` names the shim's pid. Nothing kills the shim,
+because a thawed shim gives back the same VM. `shard ls` prints `unresponsive (its shim (pid N) did
+not answer within 5s)`, and `shard inspect` holds the state and the reason. `exec`, `start` and
+`pause` refuse the sandbox with the reason, and `exec` adds `wait for it to answer, or end it with
+shard stop <id>`. An `exec` or a `pause` that finds the shim silent writes `unresponsive` at once,
+not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When a later probe
+answers, the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one
+more probe of 1 s, then kill it with no grace (SHARD-421). The kill goes through a pin that the
+kernel holds on the process, never through a bare pid, so a process that took the pid since is never
+hit. On Firecracker the same holds for a vmm that a restart meets only by its socket, with a bound
+of 4 s and a reason that names the vmm's pid (SHARD-392). There the pin is a pidfd that the adopt
+took on the connection that the vmm never answered.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the

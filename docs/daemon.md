@@ -126,7 +126,10 @@ deletes one. It handles these cases:
 
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
-  `shard inspect` carries it in the record. A `start` clears it.
+  `shard inspect` carries it in the record. A `start` clears it. A vz shim that is there but does
+  not answer within 5 s makes the record `unresponsive` instead, and so does a firecracker vmm that
+  does not answer within 4 s. The record keeps that process's pid, and the daemon never kills the
+  process for its silence.
 - Sometimes the host ended a sandbox for its memory while the daemon was down, and its record still
   says `running`. That record gets the same decision the liveness tick makes for an OOM the daemon
   saw. It becomes `stopped` with `ran out of memory and the host ended it`, or the daemon starts it
@@ -145,9 +148,16 @@ deletes one. It handles these cases:
   above. The liveness tick applies the same rule. On gVisor the sentry can still be frozen beside
   that checkpoint, so the daemon deletes the frozen sandbox first, without a thaw, as the pause
   would have done. If the daemon stopped after that delete, runsc holds nothing, but the rootfs is
-  still mounted. The daemon unmounts the rootfs once the sandbox's cgroup is empty, so
-  `rm --force` still frees the record. A substrate that cannot release a frozen sandbox keeps the
-  record as it is.
+  still mounted. The daemon unmounts the rootfs once the sandbox's cgroup is empty, so `rm --force`
+  still frees the record. On Firecracker the vmm can still be paused beside that checkpoint, and the
+  next daemon ends it the same way. A paused vmm beside a complete checkpoint in the sandbox's
+  snapshot directory is never resumed past that checkpoint. A substrate that cannot release a frozen
+  sandbox keeps the record as it is. A marked record that the substrate says is `running` stays
+  `running` and loses the mark. That pause is over and never took this run, so a later death of the
+  run is a stop, not a pause. On vz this is a pause cut after its snapshot, and the next daemon runs
+  on its shim. Any other live state, frozen or unresponsive, proves no such run and keeps the mark.
+  The liveness tick asks the substrate again under the sandbox's lock before it drops a mark,
+  because a pause can commit after the tick's first probe.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports. The daemon drops the exit status of the run that ended.
 - A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
@@ -623,7 +633,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
-| `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
+| `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up, and rm without force on a paused one, whose snapshot a resume needs |
 | `sandbox_not_paused` | 409 | resume or fork on a sandbox that is not paused |
 | `sandbox_failed` | 409 | any verb except a get or an `rm` on a create that ended `failed`. The message carries the `failed_reason`, and `rm` frees the sandbox |

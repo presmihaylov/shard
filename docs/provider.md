@@ -238,18 +238,19 @@ firecracker end its process (a power off leaves it running). When the grace runs
 kills the process. A guest that the host can no longer reach over vsock is still a running VM.
 `inspect` says so, and `stop` kills it without waiting out a grace that the guest could not hear. A
 daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
-left paused, because that stopped guest would answer no handshake. `--memory` is required, `0` is
-refused by name, and 128 MiB is the least a guest boots with. The guest's network is a veth on the
-same bridge that the other substrates use. Its host end is named `shardv<n>`, and it is a port
-under the same host rules. The anti-spoof pair, the IPv6 drop and the egress chain key on that
-name. The proxy redirect keys on the leased address, and the private floor keys on the bridge. So a
-policy reads and logs the same on every substrate. The other end of the veth is in the sandbox's
-own namespace. There a bridge with no address joins it to a tap that is also named `shardv<n>`, so
-the vmm shares no network namespace with the host (SHARD-431). The vmm opens the tap as the guest's
-`eth0`, with a MAC derived from the lease. Once the guest is up, and before the entrypoint runs,
-`shard-init` takes the address, the gateway and the resolver over vsock. The next start after a
-stop leases the same address and builds the namespace and the tap again for the new vmm. `rm`
-releases both.
+left paused, because that stopped guest would answer no handshake. A vmm that does not answer that
+adopt within 4 s reads `unresponsive` with its pid. It keeps running, because a thawed vmm gives
+back the same VM (SHARD-392). `--memory` is required, `0` is refused by name, and 128 MiB is the
+least a guest boots with. The guest's network is a veth on the same bridge that the other substrates
+use. Its host end is named `shardv<n>`, and it is a port under the same host rules. The anti-spoof
+pair, the IPv6 drop and the egress chain key on that name. The proxy redirect keys on the leased
+address, and the private floor keys on the bridge. So a policy reads and logs the same on every
+substrate. The other end of the veth is in the sandbox's own namespace. There a bridge with no
+address joins it to a tap that is also named `shardv<n>`, so the vmm shares no network namespace
+with the host (SHARD-431). The vmm opens the tap as the guest's `eth0`, with a MAC derived from the
+lease. Once the guest is up, and before the entrypoint runs, `shard-init` takes the address, the
+gateway and the resolver over vsock. The next start after a stop leases the same address and builds
+the namespace and the tap again for the new vmm. `rm` releases both.
 
 The daemon spawns every vmm through Firecracker's `jailer`, and never as root (SHARD-306). Each
 sandbox gets a uid of its own, and a gid with the same value, from 0x70000000 to 0x7FFDFFFF

@@ -120,6 +120,8 @@ const (
 	flushGrace = 5 * time.Second
 	// probeFloor is the least one vmm state read gets, so a wait whose time ran out still asks once (SHARD-388).
 	probeFloor = time.Second
+	// adoptBound is how long a vmm met only by its socket gets to answer before it reads unresponsive; a boot probes in parallel, so it serves inside 5 s (SHARD-392).
+	adoptBound = 4 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
 	startGrace = 30 * time.Second
 )
@@ -152,6 +154,8 @@ type Config struct {
 	// JailBase is the jailer's chroot base, on the reflink filesystem of Dir and the state directories, so each jail gets its files by reference.
 	JailBase string
 	Dirs     StateDirs
+	// Snapshots answers where a sandbox's pause writes, which an adopt checks before it resumes a paused VM. sandboxstate.Repository.SnapshotDir is what shard passes.
+	Snapshots StateDirs
 	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
 	Log *log.Logger
 }
@@ -172,6 +176,10 @@ type Provider struct {
 	machines map[string]*machine
 	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
 	spawning map[string]bool
+	// unadopted is every vmm an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
+	unadopted map[string]*machine
+	// adopting closes when the one adopt in flight for a sandbox ends, so a racing lookup reuses what it made.
+	adopting map[string]chan struct{}
 
 	// uids orders the uid counter, apart from mu, so a spawn's file write holds up no status.
 	uids sync.Mutex
@@ -183,8 +191,8 @@ type Provider struct {
 }
 
 func New(cfg Config) (*Provider, error) {
-	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil {
-		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base and a state directory lookup")
+	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
+		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a snapshot directory lookup")
 	}
 
 	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.
@@ -214,6 +222,7 @@ func New(cfg Config) (*Provider, error) {
 	return &Provider{
 		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
 		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
+		unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{},
 		chown: os.Chown, ownTap: netns.ChownTapIn,
 	}, nil
 }
@@ -253,13 +262,17 @@ func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
+	unadopted := p.unadopted
 	p.machines = map[string]*machine{}
+	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
-	for _, m := range held {
-		if err := m.close(); err != nil {
-			errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+	for _, set := range []map[string]*machine{held, unadopted} {
+		for _, m := range set {
+			if err := m.close(); err != nil {
+				errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+			}
 		}
 	}
 

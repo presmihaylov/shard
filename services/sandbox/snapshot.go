@@ -51,7 +51,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if sb.State != models.StateRunning {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}
+		return models.Sandbox{}, wrongState(id, sb, "pause takes a running sandbox", models.CodeSandboxNotRunning)
 	}
 
 	dir, err := s.cfg.Repo.SnapshotDir(id)
@@ -77,7 +77,18 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	pctx, cancel := context.WithTimeout(base, s.pauseBudget())
 	defer cancel()
 
-	if err := s.cfg.Provider.Pause(pctx, id, dir); err != nil {
+	err = s.cfg.Provider.Pause(pctx, id, dir)
+	// The silent process already spent its probe bound, so the record takes the reason without a second one.
+	if silent, ok := errors.AsType[*models.UnresponsiveError](err); ok {
+		if err := s.recordUnresponsive(id, sb, silent.Reason, s.report); err != nil {
+			return models.Sandbox{}, err
+		}
+		sb.State = models.StateUnresponsive
+		sb.UnresponsiveReason = silent.Reason
+
+		return models.Sandbox{}, wrongState(id, sb, "pause takes a running sandbox", models.CodeSandboxNotRunning)
+	}
+	if err != nil {
 		var lost *models.LostError
 		if errors.As(err, &lost) {
 			return models.Sandbox{}, s.fail(base, id, err)

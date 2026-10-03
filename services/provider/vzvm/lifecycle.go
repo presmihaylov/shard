@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -74,7 +75,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, logFile, cursorFile, recordFile, diskFile, shimFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -188,8 +189,14 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if m != nil && m.status(p).Alive() {
-		return p.run(ctx, m, r)
+	if m != nil {
+		status := m.status(p)
+		if status.State == models.StateUnresponsive {
+			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
+		}
+		if status.Alive() {
+			return p.run(ctx, m, r)
+		}
 	}
 	if err := p.release(ctx, m); err != nil {
 		return err
@@ -263,6 +270,9 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if err != nil || m == nil {
 		return err
 	}
+	if m.status(p).State == models.StateUnresponsive {
+		return p.kill(ctx, m)
+	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
@@ -319,6 +329,10 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	stopCtx, cancel := context.WithDeadline(ctx, deadline)
 	_, stopErr := m.client.Stop(stopCtx)
 	cancel()
+	// A refused stop is a shim gone, or a frozen one whose full socket queue takes nothing; the wait would hear from neither (SHARD-423).
+	if absent(stopErr) {
+		return p.kill(ctx, m)
+	}
 	// A stop whose sandbox ended answers success, so the request's own error counts only when the shim stays.
 	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
@@ -339,7 +353,12 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 
 // kill ends the shim by the pid the kernel attests behind its socket, never by a name.
 func (p *Provider) kill(ctx context.Context, m *machine) error {
-	if err := m.client.Kill(); err != nil && !absent(err) {
+	err := m.client.Kill()
+	// A full socket queue refuses the dial that names the pid, and a socket that names another pid proves none, so the shim the attach verified is killed instead (SHARD-423).
+	if absent(err) || errors.Is(err, vz.ErrUnproven) {
+		err = m.shim.Kill()
+	}
+	if err != nil {
 		return fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err)
 	}
 	ended, err := m.awaitGone(ctx, killGrace/2)
@@ -366,7 +385,7 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	}
 	// A create that failed before its disk landed still holds the reservation.
 	bundle.Release(dir)
-	for _, name := range []string{diskFile, recordFile, socketFile} {
+	for _, name := range []string{diskFile, recordFile, socketFile, shimFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}
@@ -537,11 +556,19 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	if err != nil {
 		return models.Status{}, err
 	}
-	if m == nil {
-		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}, nil
+	status := models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}
+	if m != nil {
+		status = m.status(p)
+	}
+	if status.Alive() {
+		return status, nil
+	}
+	status.SupervisorFailed, err = supervisorFailed(dir)
+	if err != nil {
+		return models.Status{}, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	return m.status(p), nil
+	return status, nil
 }
 
 // oomKilled reads the marker the last boot left; only the next boot clears it.
@@ -549,4 +576,17 @@ func oomKilled(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, oomFile))
 
 	return err == nil
+}
+
+// supervisorFailed reads the reason the last boot's shard-init gave for its own death, empty when it did not die.
+func supervisorFailed(dir string) (string, error) {
+	reason, err := os.ReadFile(filepath.Join(dir, supervisorFailedFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read why the supervisor failed: %w", err)
+	}
+
+	return string(reason), nil
 }

@@ -27,7 +27,8 @@ type machine struct {
 	id     string
 	dir    string
 	client *vz.Client
-	pid    int
+	// shim is the pid the attach verified with its start time, which a kill uses when a full socket queue refuses the dial that names it (SHARD-423).
+	shim vz.Process
 	// machineID is what the shim reported, which a record persists for every later boot of the disk.
 	machineID string
 	// control is the stream to shard-init, replaced when a dropped one is dialed again.
@@ -49,6 +50,10 @@ type machine struct {
 	started bool
 	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
 	gone bool
+	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
+	silent bool
+	// asking closes once the one state request out to the shim ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
@@ -64,43 +69,152 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
+		p.probe(ctx, m, adoptBound)
+
 		return m, nil
 	}
+	if found {
+		p.probe(ctx, silent, adoptBound)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
 
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
 	socket := filepath.Join(dir, socketFile)
 	began := time.Now()
 	probe, cancel := context.WithTimeout(ctx, adoptBound)
 	client, info, err := vz.Adopt(probe, socket)
 	cancel()
+	// A frozen shim's full socket queue refuses the dial as a dead shim's stale socket does, so the recorded pid tells the two apart (SHARD-423).
+	if refused(err) {
+		return p.unanswered(id, dir, socket)
+	}
 	if absent(err) {
 		return nil, nil
 	}
-	// A shim silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-387).
+	// A shim silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-422).
 	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil {
-		return nil, p.kill(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
+		return p.unanswered(id, dir, socket)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := resumeCut(id, dir, client, info, &r); err != nil {
 		return nil, err
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
 }
 
+// unanswered keeps a shim an adopt found silent, by the pid behind its socket, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir, socket string) (*machine, error) {
+	client := vz.Open(socket)
+	shim, err := p.silentShim(client, dir)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: read the pid of its silent shim: %w", id, err)
+	}
+	if shim.PID == 0 {
+		return nil, nil
+	}
+	m := &machine{id: id, dir: dir, client: client, shim: shim, silent: true}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if kept, found := p.unadopted[id]; found {
+		return kept, nil
+	}
+	p.unadopted[id] = m
+
+	return m, nil
+}
+
+// silentShim is the shim behind the socket, or the one the last attach recorded while it runs, as a full socket queue refuses the dial; zero is none.
+func (p *Provider) silentShim(client *vz.Client, dir string) (vz.Process, error) {
+	pid, err := client.PID()
+	if refused(err) {
+		return p.recordedShim(dir)
+	}
+	if absent(err) {
+		return vz.Process{}, nil
+	}
+	if err != nil {
+		return vz.Process{}, err
+	}
+	shim, err := vz.Identify(pid)
+	if errors.Is(err, syscall.ESRCH) {
+		return vz.Process{}, nil
+	}
+
+	return shim, err
+}
+
+// recordedShim is the shim the last attach recorded while it still runs, and zero once it does not.
+func (p *Provider) recordedShim(dir string) (vz.Process, error) {
+	shim, err := p.readShim(dir)
+	if err != nil {
+		return vz.Process{}, err
+	}
+	alive, err := shim.Alive()
+	if err != nil || !alive {
+		return vz.Process{}, err
+	}
+
+	return shim, nil
+}
+
+// waiting says the one request to an unadopted shim is still out past its bound; any other end lets a fresh adopt decide.
+func (p *Provider) waiting(m *machine) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return m.silent && m.asking != nil
+}
+
 // lookupToStop is lookup whose adoption ends by the grace; a shim too frozen to answer is cut by its socket at once (SHARD-349).
 func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, grace time.Duration) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
+	// A shim that missed its probe gets one short probe more, and the stop kills it by its pid with no grace if that is silent too (SHARD-421).
+	if held && m.status(p).State == models.StateUnresponsive {
+		p.probe(ctx, m, probeFloor)
+	}
 	if held {
 		return m, nil
 	}
+	if found {
+		p.probe(ctx, silent, probeFloor)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
 
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
 	socket := filepath.Join(dir, socketFile)
 	probe, cancel := context.WithTimeout(ctx, max(grace, probeFloor))
 	client, info, err := vz.Adopt(probe, socket)
 	cancel()
+	if refused(err) {
+		return p.unanswered(id, dir, socket)
+	}
 	if absent(err) {
 		return nil, nil
 	}
@@ -108,15 +222,98 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 		return nil, fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
 	}
 	if err != nil {
-		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
+		shim, err := p.readShim(dir)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket), shim: shim})
+	}
+	// A VM that will not run again cannot take the guest's stop either, so it is cut by its socket.
+	if err := resumeCut(id, dir, client, info, &r); err != nil {
+		shim, err := vz.Identify(info.PID)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+
+		return nil, p.end(ctx, &machine{id: id, dir: dir, client: client, shim: shim})
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
 }
 
-// absent is a socket with no shim behind it: never made, or its owner exited and the path went with it.
+// claim makes this lookup the one that adopts the sandbox's shim once any other adopt of it ends, so the shim is attached once (SHARD-422).
+func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
+	for {
+		p.mu.Lock()
+		busy, taken := p.adopting[id]
+		if !taken {
+			done := make(chan struct{})
+			p.adopting[id] = done
+			p.mu.Unlock()
+
+			return func() {
+				p.mu.Lock()
+				delete(p.adopting, id)
+				p.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: wait for another adopt of its shim: %w", id, ctx.Err())
+		}
+	}
+}
+
+// settled is the shim another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as its request ended.
+func (p *Provider) settled(id string, seen *machine) (*machine, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		return m, true
+	}
+	m, found := p.unadopted[id]
+	if !found {
+		return nil, false
+	}
+	if m != seen {
+		return m, true
+	}
+	delete(p.unadopted, id)
+
+	return nil, false
+}
+
+// resumeCut runs a VM a daemon killed inside a pause left paused, before or after its record said so, and attach then thaws its root (SHARD-375, SHARD-402).
+func resumeCut(id, dir string, client *vz.Client, info vz.Info, r *record) error {
+	if info.State != vz.StatePaused {
+		return nil
+	}
+	// The pause never returned, so the service still says running; Pauses stays, so the next save outranks one the swap installed.
+	if r.Paused {
+		r.Paused = false
+		if err := writeRecord(dir, *r); err != nil {
+			return fmt.Errorf("sandbox %s: undo the paused record a cut pause left: %w", id, err)
+		}
+	}
+	if _, err := client.Resume(); err != nil {
+		return fmt.Errorf("resume sandbox %s, which a cut pause left paused: %w", id, err)
+	}
+
+	return nil
+}
+
+// absent is a socket that takes no dial: never made, its owner exited and the path went with it, or a frozen shim's queue is full.
 func absent(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, fs.ErrNotExist) || refused(err) || errors.Is(err, syscall.ENOENT)
+}
+
+// refused is a socket file that takes no dial: a shim died and left it, or a frozen shim's queue is full (SHARD-423).
+func refused(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // release lets a shim whose guest has gone finish exiting, and forgets it, so a new boot can claim the socket.
@@ -137,18 +334,77 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	return nil
 }
 
+// probe waits the bound for the shim's answer: silence marks it unresponsive, an answer clears that, and neither kills it (SHARD-421).
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	if m.gone || m.closed.Load() {
+		p.mu.Unlock()
+
+		return
+	}
+	// A frozen shim accepts nothing, and a full socket queue refuses a dial as if no shim were there, so one request waits for it.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
+	p.mu.Unlock()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	// The request cleared the mark on an answer; a failed one is the shim gone, which the event loop reports.
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+		p.mu.Lock()
+		if m.asking == asking {
+			m.silent = true
+		}
+		p.mu.Unlock()
+	}
+}
+
+// ask puts the one state request to the shim and holds it past the caller until the shim answers or dies; stop kills one that never answers.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.Await(ctx)
+	frozen := refused(err) && m.lingers()
+	p.mu.Lock()
+	m.asking = nil
+	if err == nil {
+		m.silent = false
+	}
+	// A full socket queue refuses the dial as a dead shim's socket does, so a shim that still runs by its pid stays silent (SHARD-423).
+	if frozen {
+		m.silent = true
+	}
+	p.mu.Unlock()
+	close(asking)
+}
+
+// lingers says the shim the attach verified still runs; a pid the kernel will not read is not proven gone, and a stop's kill reports why.
+func (m *machine) lingers() bool {
+	alive, err := m.shim.Alive()
+
+	return alive || err != nil
+}
+
 func (p *Provider) forget(m *machine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.machines[m.id] == m {
 		delete(p.machines, m.id)
 	}
+	if p.unadopted[m.id] == m {
+		delete(p.unadopted, m.id)
+	}
 }
 
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	stales := []string{exitFile, restartsFile, oomFile}
+	stales := []string{exitFile, restartsFile, oomFile, supervisorFailedFile}
 	// A restored guest still holds the output its cursor places; a fresh one starts its output again.
 	if restore == "" {
 		stales = append(stales, cursorFile)
@@ -198,7 +454,14 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 // attach puts the guest on the stack, opens the control connection and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	shim, err := vz.Identify(info.PID)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
+	}
+	if err := writeJSON(filepath.Join(dir, shimFile), shim); err != nil {
+		return nil, err
+	}
+	m := &machine{id: id, dir: dir, client: client, shim: shim, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -222,6 +485,9 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	state, err := control.Next()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: read the supervisor state: %w", id, err), m.close())
+	}
+	if state.Kind == supervisor.KindSupervisorFailed {
+		return nil, errors.Join(m.failedAtBoot(state), m.close())
 	}
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
@@ -311,7 +577,8 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
-			m.refusals.Note(err)
+			// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
+			time.Sleep(m.refusals.Note(err))
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -374,6 +641,22 @@ func (m *machine) markOOM() error {
 	return nil
 }
 
+// failedAtBoot lands a death from before the guest listened as the sandbox exit, and makes its reason the answer to the start (SHARD-418).
+func (m *machine) failedAtBoot(event supervisor.Message) error {
+	if event.Exit == nil {
+		return fmt.Errorf("sandbox %s: a supervisor-failed event carries no status", m.id)
+	}
+	reason := supervisor.OneLine(event.Error)
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(reason), 0o600); err != nil {
+		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
+	}
+	if err := supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit); err != nil {
+		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, reason)
+}
+
 // reconnect dials the control stream again after a drop, which a sleep of the host can cause, while the shim says the VM runs.
 func (p *Provider) reconnect(m *machine) (bool, error) {
 	deadline := time.Now().Add(startGrace)
@@ -387,12 +670,12 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
-			m.refusals.Note(err)
-			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
+			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try; a refusal waits longer.
+			wait := max(pollInterval, m.refusals.Note(err))
 			if err := control.Close(); err != nil {
 				return false, err
 			}
-			time.Sleep(pollInterval)
+			time.Sleep(wait)
 
 			continue
 		}
@@ -540,11 +823,16 @@ func endShim(id string, client *vz.Client, pid int) error {
 	// The create's context may already be canceled, and the shim must go either way, so the cleanup runs on its own clock.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
+	// The identity comes before the stop, so a refused dial after it reads the shim gone only once this pid is (SHARD-423).
+	shim, err := vz.Identify(pid)
+	if err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("end the shim of sandbox %s after a failed boot: %w", id, err)
+	}
 	var stopErr error
 	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
-	m := &machine{id: id, client: client}
+	m := &machine{id: id, client: client, shim: shim}
 	ended, err := m.awaitGone(ctx, killGrace)
 	if err != nil {
 		return errors.Join(stopErr, err)
@@ -552,8 +840,8 @@ func endShim(id string, client *vz.Client, pid int) error {
 	if ended {
 		return stopErr
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return errors.Join(stopErr, fmt.Errorf("kill the shim %d of sandbox %s after a failed boot: %w", pid, id, err))
+	if err := shim.Kill(); err != nil {
+		return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s after a failed boot: %w", id, err))
 	}
 	ended, err = m.awaitGone(ctx, killGrace)
 	if err != nil {
@@ -578,8 +866,18 @@ func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, err
 		probe, cancel := context.WithDeadline(ctx, probeEnd)
 		_, err := m.client.State(probe)
 		cancel()
-		if absent(err) {
+		if absent(err) && !refused(err) {
 			return true, nil
+		}
+		// A full socket queue refuses the dial too, so a refused shim is gone only once its pid is (SHARD-423).
+		if refused(err) {
+			alive, err := m.shim.Alive()
+			if err != nil {
+				return false, fmt.Errorf("sandbox %s: %w", m.id, err)
+			}
+			if !alive {
+				return true, nil
+			}
 		}
 		if !time.Now().Before(deadline) {
 			return false, nil
@@ -599,10 +897,23 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	// An unadopted shim has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
+	if m.silent || m.control.Load() == nil {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.shim.PID, Reason: fmt.Sprintf("its shim (pid %d) did not answer within %s", m.shim.PID, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
-	return models.Status{Exists: true, State: state, PID: m.pid}
+	return models.Status{Exists: true, State: state, PID: m.shim.PID}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }

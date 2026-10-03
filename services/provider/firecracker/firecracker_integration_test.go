@@ -96,13 +96,14 @@ func (h *vmHarness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary:   firecracker.Binary,
-		Jailer:   firecracker.Jailer,
-		JailBase: filepath.Join(h.root, "j"),
-		Kernel:   h.kernel,
-		Init:     guestInit(t),
-		Dir:      h.root,
-		Dirs:     h.stateDir,
+		Binary:    firecracker.Binary,
+		Jailer:    firecracker.Jailer,
+		JailBase:  filepath.Join(h.root, "j"),
+		Kernel:    h.kernel,
+		Init:      guestInit(t),
+		Dir:       h.root,
+		Dirs:      h.stateDir,
+		Snapshots: h.snapshotDir,
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)

@@ -304,6 +304,40 @@ func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
 	}
 }
 
+// A silent substrate process is asked again on each exec, so the refusal names it and lifts once it answers (SHARD-421).
+func TestExecRefusesAnUnresponsiveSandboxUntilItAnswers(t *testing.T) {
+	r := &recorder{}
+	sb := unresponsive()
+	svc, l := newService(t, r, sb)
+	l.provider.status = silentShim()
+
+	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason) || !strings.Contains(err.Error(), "shard stop sandbox1") {
+		t.Fatalf("Exec of an unresponsive sandbox returned %v, want the reason and the stop hint", err)
+	}
+
+	l.provider.status = alive(42)
+	if _, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, ""); err != nil {
+		t.Fatalf("Exec once the sandbox answers again: %v", err)
+	}
+}
+
+// An exec that finds the process silent moves a running record to unresponsive at once, not at the next tick (SHARD-424).
+func TestExecIntoASilentProcessRecordsItUnresponsive(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.status = silentShim()
+
+	if _, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, ""); err == nil {
+		t.Fatal("Exec into a silent process returned no error")
+	}
+
+	sb := l.repo.sb
+	if sb.State != models.StateUnresponsive || sb.UnresponsiveReason != silentShim().Reason || sb.PID != running().PID {
+		t.Errorf("the record is %s with the reason %q and pid %d, want unresponsive with the reason and its pid", sb.State, sb.UnresponsiveReason, sb.PID)
+	}
+}
+
 // The exit file records a 137 for an oom kill and for a plain kill -9, so the reason is named here.
 func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 	r := &recorder{}

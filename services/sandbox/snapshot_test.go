@@ -64,6 +64,46 @@ func TestPauseRefusesASandboxThatIsNotRunning(t *testing.T) {
 	}
 }
 
+// A pause into a silent process records it at once, and spends the one probe bound the provider already spent (SHARD-424).
+func TestPauseIntoASilentProcessRecordsItUnresponsiveWithoutAskingAgain(t *testing.T) {
+	r := &recorder{}
+	var reports []string
+	svc, l := newService(t, r, running(), func(cfg *sandbox.Config) {
+		cfg.Report = func(line string) { reports = append(reports, line) }
+	})
+	l.provider.status = silentShim()
+	l.provider.pauseErr = &models.UnresponsiveError{Sandbox: "sandbox1", Provider: "fake", Verb: models.VerbPause, Reason: silentShim().Reason}
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason) {
+		t.Errorf("pause into a silent process returned %v, want the refusal with the reason", err)
+	}
+	if slices.Contains(r.calls, "provider.Status") {
+		t.Errorf("pause asked the substrate again after its refusal: %v", r.calls)
+	}
+
+	sb := l.repo.sb
+	if sb.State != models.StateUnresponsive || sb.UnresponsiveReason != silentShim().Reason || sb.PID != running().PID {
+		t.Errorf("the record is %s with the reason %q and pid %d, want unresponsive with the reason and its pid", sb.State, sb.UnresponsiveReason, sb.PID)
+	}
+	if len(reports) != 1 || !strings.Contains(reports[0], "pid 42") {
+		t.Errorf("the pause reported %v, want one line naming the shim", reports)
+	}
+}
+
+// An unresponsive record refuses a pause with the reason it holds, without reaching the provider.
+func TestPauseRefusesAnUnresponsiveSandboxWithItsReason(t *testing.T) {
+	svc, l := newService(t, &recorder{}, unresponsive())
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason+": pause takes a running sandbox") {
+		t.Errorf("pause of an unresponsive sandbox returned %v, want the refusal with the reason", err)
+	}
+	if l.provider.paused {
+		t.Error("pause of an unresponsive sandbox reached the provider")
+	}
+}
+
 func TestPauseKeepsTheRecordRunningWhenTheSandboxStillIs(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Pause"}}, running())
 
@@ -661,7 +701,7 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "Snapshot", "Pausing",
+var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "UnresponsiveReason", "Snapshot", "Pausing",
 	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "OOMRestartDue", "MemoryThrottles", "CalmSince", "HealthyRun", "ExitChannel",
 	"Health", "Restart", "StartedAt", "CreatedAt"}
 

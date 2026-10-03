@@ -1,6 +1,8 @@
 package firecracker
 
 import (
+	"context"
+
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 )
@@ -22,14 +24,28 @@ func (p *Provider) Spawning(id string) (done func()) {
 	return p.spawn(id)
 }
 
-// EndUnloaded resumes a read that saw pid answer "Not started", which a test cannot pause inside Status.
-func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int, jail string) error {
-	return p.endUnloaded(id, client, pid, jail)
+// EndJudged resumes a read that judged pid dead weight, which a test cannot pause inside Status.
+func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int, jail string) error {
+	return p.endJudged(id, client, pid, jail)
+}
+
+// RenumberSilent points the pid a silent vmm reads under at another process, which is how a pid the kernel reused looks from here.
+func (p *Provider) RenumberSilent(id string, pid int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.unadopted[id].pid = pid
 }
 
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
 func (p *Provider) SetOwners(chown func(name string, uid, gid int) error, ownTap func(namespace, name string, uid, gid int) error) {
 	p.chown, p.ownTap = chown, ownTap
+}
+
+// Install is a pause cut after its install and before it ended the vmm, which a test cannot cut inside Pause.
+func (p *Provider) Install(ctx context.Context, id, dir string) error {
+	_, err := p.install(ctx, id, dir)
+
+	return err
 }
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.

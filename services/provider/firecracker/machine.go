@@ -10,16 +10,14 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/pidpin"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -32,6 +30,8 @@ type machine struct {
 	jail   string
 	client *fcapi.Client
 	pid    int
+	// pinned holds a vmm an adopt found silent, by the pin taken on the dial it never answered, so a stop kills that vmm alone.
+	pinned *pidpin.Process
 	// control is the stream to shard-init, replaced when a dropped one is dialed again.
 	control atomic.Pointer[supervisor.Control]
 	// closed says this process let the vmm go, so a stream that ends after it is not dialed again.
@@ -52,6 +52,10 @@ type machine struct {
 	started bool
 	// gone is set by the event loop once the vmm no longer runs the VM, so a status needs no socket round trip.
 	gone bool
+	// silent is set while a vmm an adopt found silent has not answered; only stop ends it (SHARD-392).
+	silent bool
+	// asking closes once the one state request out to a silent vmm ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
@@ -67,21 +71,49 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
 		return m, nil
 	}
+	// The one request to a silent vmm is already out, so a lookup waits only the floor on it, and a stop's opening probe stays short.
+	if found {
+		p.probe(ctx, silent, probeFloor)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
 
-	client, info, err := fcapi.Adopt(r.sockets(dir))
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	m, settled, err := p.settled(id, silent)
+	if settled || err != nil {
+		return m, err
+	}
+	socket, vsock := r.sockets(dir)
+	began := time.Now()
+	probe, cancel := context.WithTimeout(ctx, adoptBound)
+	client, info, pin, err := fcapi.AdoptPinned(probe, socket, vsock)
+	cancel()
 	if absent(err) {
 		return nil, nil
+	}
+	// A vmm silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-392).
+	if pin != nil && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
+		return p.unanswered(id, dir, r.Jail, fcapi.Open(socket, vsock), pin)
+	}
+	if pin != nil {
+		return nil, errors.Join(err, pin.Close())
 	}
 	if err != nil {
 		return nil, err
 	}
 	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
 	if info.State == fcapi.StateNotStarted {
-		return nil, p.endUnloaded(id, client, info.PID, r.Jail)
+		return nil, p.endJudged(id, client, info.PID, r.Jail)
 	}
 	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before its resume.
 	if info.State == fcapi.StatePaused {
@@ -91,8 +123,17 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		}
 		// A fork's restore was in flight, and its guest holds the source's address: end it, never resume it (SHARD-321).
 		if restoring {
-			return nil, p.endUnloaded(id, client, info.PID, r.Jail)
+			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
+		frozen, err := p.installed(id)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that (SHARD-427).
+		if frozen {
+			return nil, p.endJudged(id, client, info.PID, r.Jail)
+		}
+		// A pause cut before its install leaves a paused VM with nothing to stand for it, and its stopped guest answers no handshake.
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
@@ -142,20 +183,15 @@ func (m *machine) reseed(ctx context.Context) error {
 	return nil
 }
 
-// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
-func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int, jail string) error {
-	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
-	p.mu.Lock()
-	_, held := p.machines[id]
-	spared := held || p.spawning[id]
-	p.mu.Unlock()
-	if spared {
+// endJudged ends the vmm a read judged dead weight, by the pid it judged; one this process still spawns, or holds since, is left to it.
+func (p *Provider) endJudged(id string, client *fcapi.Client, pid int, jail string) error {
+	if p.spared(id) {
 		return nil
 	}
 
 	// The pid is the vmm judged here: the socket may answer for one a spawn began since.
 	if err := fcapi.KillPID(pid); err != nil {
-		return fmt.Errorf("sandbox %s: end the vmm a cut spawn left: %w", id, err)
+		return fmt.Errorf("sandbox %s: end the vmm a read judged: %w", id, err)
 	}
 
 	if err := awaitEnded(&machine{id: id, client: client, pid: pid}); err != nil {
@@ -169,6 +205,133 @@ func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int, jail st
 	}
 
 	return removeJail(jail)
+}
+
+// unanswered keeps a vmm an adopt found silent, by the pin on the peer that took its dial, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir, jail string, client *fcapi.Client, pin *pidpin.Process) (*machine, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if kept, found := p.unadopted[id]; found {
+		return kept, pin.Close()
+	}
+	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: pin.PID(), pinned: pin, silent: true}
+	p.unadopted[id] = m
+
+	return m, nil
+}
+
+// waiting says a silent vmm has still not answered; an answer, or no vmm left on the socket, lets a fresh adopt decide.
+func (p *Provider) waiting(m *machine) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return m.silent
+}
+
+// probe waits the bound on the one state request out to a silent vmm, and starts it when none is; nothing here kills the vmm.
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	// A frozen vmm accepts nothing, and every dial waits in its socket queue, so one request at a time keeps that queue from filling.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
+	p.mu.Unlock()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// ask puts the one state request to a silent vmm and holds it past the caller; a read that times out leaves it silent for the next probe.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.State(ctx)
+	p.mu.Lock()
+	m.asking = nil
+	if err == nil || absent(err) {
+		m.silent = false
+	}
+	p.mu.Unlock()
+	close(asking)
+}
+
+// claim makes this lookup the one that adopts the sandbox's vmm once any other adopt of it ends, so a thawed vmm is attached once.
+func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
+	for {
+		p.mu.Lock()
+		busy, taken := p.adopting[id]
+		if !taken {
+			done := make(chan struct{})
+			p.adopting[id] = done
+			p.mu.Unlock()
+
+			return func() {
+				p.mu.Lock()
+				delete(p.adopting, id)
+				p.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: wait for another adopt of its vmm: %w", id, ctx.Err())
+		}
+	}
+}
+
+// settled is the vmm another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as it answered.
+func (p *Provider) settled(id string, seen *machine) (*machine, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		return m, true, nil
+	}
+	m, found := p.unadopted[id]
+	if !found {
+		return nil, false, nil
+	}
+	if m != seen {
+		return m, true, nil
+	}
+	delete(p.unadopted, id)
+
+	return nil, false, m.close()
+}
+
+// spared is a vmm this process still spawns, or holds since, which a read leaves to its spawn.
+func (p *Provider) spared(id string) bool {
+	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, held := p.machines[id]
+
+	return held || p.spawning[id]
+}
+
+// installed says a complete snapshot is where the sandbox's pause writes; the pause verb removes the old one first, so a VM frozen beside it is a pause past its install or a restore before its vCPUs ran.
+func (p *Provider) installed(id string) (bool, error) {
+	dir, err := p.cfg.Snapshots(id)
+	if err != nil {
+		return false, fmt.Errorf("find the snapshot directory: %w", err)
+	}
+	path := filepath.Join(dir, checkpointFile)
+	_, err = os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat the checkpoint %s: %w", path, err)
+	}
+
+	return true, nil
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
@@ -228,6 +391,9 @@ func (p *Provider) settle(ctx context.Context, m *machine) error {
 func (p *Provider) forget(m *machine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.unadopted[m.id] == m {
+		delete(p.unadopted, m.id)
+	}
 	if p.machines[m.id] != m {
 		return
 	}
@@ -424,7 +590,8 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
-			m.refusals.Note(err)
+			// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
+			time.Sleep(m.refusals.Note(err))
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -494,7 +661,7 @@ func (m *machine) markSupervisorFailed(event supervisor.Message) error {
 	if event.Exit == nil {
 		return errors.New("a supervisor-failed event carries no status")
 	}
-	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(oneLine(event.Error)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(event.Error)), 0o600); err != nil {
 		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
 	}
 
@@ -507,30 +674,7 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 
-	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, oneLine(event.Error))
-}
-
-// maxReason bounds what a guest's reason may take of a record, a log line and a column of ls.
-const maxReason = 256
-
-// oneLine makes the guest's reason safe for a record and a log line: no control bytes, valid UTF-8, at most maxReason bytes.
-func oneLine(reason string) string {
-	clean := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-
-		return r
-	}, strings.ToValidUTF8(reason, "?"))
-	if len(clean) <= maxReason {
-		return clean
-	}
-	cut := maxReason
-	for !utf8.RuneStart(clean[cut]) {
-		cut--
-	}
-
-	return clean[:cut]
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
 // reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.
@@ -545,10 +689,9 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
-			m.refusals.Note(err)
-			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try.
+			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try; a refusal waits longer.
 			p.keep(m, control.Close())
-			time.Sleep(pollInterval)
+			time.Sleep(max(pollInterval, m.refusals.Note(err)))
 
 			continue
 		}
@@ -662,11 +805,15 @@ func (m *machine) close() error {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	var errs []error
+	if m.pinned != nil {
+		errs = append(errs, m.pinned.Close())
+	}
 	if control := m.control.Load(); control != nil {
-		return control.Close()
+		errs = append(errs, control.Close())
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // endVMM kills the vmm of a boot the provider could not finish; firecracker has no stop verb, so the kill is the only end.
@@ -723,10 +870,23 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	// An unadopted vmm has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
+	if m.silent || m.control.Load() == nil {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its vmm (pid %d) did not answer within %s", m.pid, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
 	return models.Status{Exists: true, State: state, PID: m.pid}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -34,6 +35,8 @@ const (
 	fakeShimEnv = "VZVM_FAKE_SHIM"
 	fakeInitEnv = "VZVM_FAKE_INIT"
 	fakeRunEnv  = "VZVM_FAKE_RUN"
+	// impostorRole runs the binary with a shim's arguments, serving nothing, as a process that only claims a socket would.
+	impostorRole = "impostor"
 )
 
 // initBinary is the shard-init the fake shim runs in place of a VM, built once per test run unless the env names one.
@@ -43,6 +46,19 @@ var initBinary string
 var guardHost func() (release func() error, err error)
 
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeShimEnv) == impostorRole {
+		time.Sleep(time.Hour)
+
+		return
+	}
+	// The shim passes its whole environment to the guest, so only the -transport argv says which one this is.
+	if os.Getenv(bootFailingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := bootFailingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "boot failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeShimEnv) == "1" {
 		if err := fakeShim(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake shim:", err)
@@ -129,6 +145,7 @@ func fakeShim() error {
 	if err != nil {
 		return err
 	}
+	listener = countingListener{Listener: listener, path: filepath.Join(filepath.Dir(cfg.Socket), acceptsFile)}
 	machine, err := bootFake(cfg)
 	if err != nil {
 		return errors.Join(err, listener.Close())
@@ -214,11 +231,26 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
+// refuseResumeFile in the state directory fails every resume of the VM, until the test removes it.
+const refuseResumeFile = "refuse-resume"
+
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
 
+// controlsFile in the state directory, once a test creates it, takes one line per control stream the host opens, so a test counts the attaches.
+const controlsFile = "controls"
+
+// acceptsFile in the state directory, once a test creates it, takes one line per connection the shim accepts, so a test reads what a frozen shim's socket queue held.
+const acceptsFile = "accepts"
+
 // floodFile in the state directory floods the next control stream past its state line, as guest root writing to PID 1's control fd would.
 const floodFile = "flood-control"
+
+// floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
+const floodEveryFile = "flood-every-control"
+
+// dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
+const dialsFile = "control-dials"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -322,6 +354,31 @@ func (m *fakeMachine) setFrozen(frozen bool) error {
 	return nil
 }
 
+type countingListener struct {
+	net.Listener
+	path string
+}
+
+func (l countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return conn, nil
+	}
+	if err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+	_, err = f.WriteString("accept\n")
+	if err := errors.Join(err, f.Close()); err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+
+	return conn, nil
+}
+
 func (m *fakeMachine) State() vz.State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -352,15 +409,18 @@ func (m *fakeMachine) has(name string) (bool, error) {
 }
 
 // note appends kind to the order file, when the test made one.
-func (m *fakeMachine) note(kind string) error {
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), orderFile), os.O_WRONLY|os.O_APPEND, 0)
+func (m *fakeMachine) note(kind string) error { return m.appendTo(orderFile, kind) }
+
+// appendTo appends one line to a file in the state directory, when the test made one.
+func (m *fakeMachine) appendTo(name, line string) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), name), os.O_WRONLY|os.O_APPEND, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(kind + "\n")
+	_, err = f.WriteString(line + "\n")
 
 	return errors.Join(err, f.Close())
 }
@@ -414,6 +474,14 @@ func (m *fakeMachine) resetAndAwaitHost() error {
 }
 
 func (m *fakeMachine) Resume() error {
+	refused, err := m.has(refuseResumeFile)
+	if err != nil {
+		return err
+	}
+	if refused {
+		return errors.New("the vm refuses to resume")
+	}
+
 	return m.move(vz.StatePaused, vz.StateRunning, syscall.SIGCONT)
 }
 
@@ -468,6 +536,14 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 		if flood, err = m.take(floodFile); err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
+		every, err := m.has(floodEveryFile)
+		if err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		flood = flood || every
+		if err := m.appendTo(dialsFile, "control"); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -475,8 +551,14 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 		return conn, conn.Close()
 	}
 	m.streams[conn] = struct{}{}
-	if port == supervisor.ControlPort {
-		m.controls++
+	if port != supervisor.ControlPort {
+		return &stream{Conn: conn, machine: m}, nil
+	}
+	m.controls++
+	if err := m.appendTo(controlsFile, "control"); err != nil {
+		delete(m.streams, conn)
+
+		return nil, errors.Join(err, conn.Close())
 	}
 	s := &stream{Conn: conn, machine: m}
 	if flood {

@@ -32,12 +32,15 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	state := models.StateStopped
+	status := models.Status{State: models.StateStopped}
 	if m != nil {
-		state = m.status(p).State
+		status = m.status(p)
 	}
-	if state != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
+	if status.State == models.StateUnresponsive {
+		return &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: models.VerbPause, Reason: status.Reason}
+	}
+	if status.State != models.StateRunning {
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, status.State, Name)
 	}
 
 	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.
@@ -52,7 +55,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
-	// A pause that crashed before its record left the VM paused, and this one carries on from there.
+	// A failed pause whose resume failed too left the VM paused, and this one carries on from there; a restart resumes it before this (SHARD-375).
 	if info.State != vz.StatePaused {
 		// A clone boots from the disk alone, so the guest's root is flushed and frozen first, and no write lands between the two.
 		if err := m.freeze(ctx); err != nil {
@@ -102,15 +105,24 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	if held {
 		return p.end(ctx, m)
 	}
-	client, _, err := vz.Adopt(ctx, filepath.Join(stateDir, socketFile))
+	socket := filepath.Join(stateDir, socketFile)
+	client, _, err := vz.Adopt(ctx, socket)
+	// A full socket queue refuses the dial too, so a refused leftover is ended by the pid its attach recorded, and gone only once that is (SHARD-423).
+	if refused(err) {
+		client, err = vz.Open(socket), nil
+	}
 	if absent(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	shim, err := p.readShim(stateDir)
+	if err != nil {
+		return err
+	}
 
-	return p.end(ctx, &machine{id: id, dir: stateDir, client: client})
+	return p.end(ctx, &machine{id: id, dir: stateDir, client: client, shim: shim})
 }
 
 // stageSnapshot writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.

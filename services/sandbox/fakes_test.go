@@ -312,6 +312,8 @@ type fakeProvider struct {
 	noPause  bool
 	noResume bool
 	noFork   bool
+	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
+	pauseErr error
 	// snapshotDir is the directory the pause was told to write into, and the one the fork read.
 	snapshotDir string
 	// source is the sandbox the clone was told to copy.
@@ -461,6 +463,9 @@ func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
 	f.pauseCtxErr = ctx.Err()
 	if err := f.r.record("provider.Pause"); err != nil {
 		return err
+	}
+	if f.pauseErr != nil {
+		return f.pauseErr
 	}
 	if f.lose {
 		f.status = models.Status{}

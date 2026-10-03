@@ -736,6 +736,19 @@ func TestStartRefusesASandboxThatIsNotStopped(t *testing.T) {
 	}
 }
 
+// An unresponsive record refuses a start with the reason it holds, as docs/state-machine.md promises (SHARD-424).
+func TestStartRefusesAnUnresponsiveSandboxWithItsReason(t *testing.T) {
+	svc, l := newService(t, &recorder{}, unresponsive())
+
+	_, err := svc.Start(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason+": start takes a stopped sandbox") {
+		t.Errorf("start of an unresponsive sandbox returned %v, want the refusal with the reason", err)
+	}
+	if l.provider.started {
+		t.Error("start of an unresponsive sandbox reached the provider")
+	}
+}
+
 // A mark an unfinished pause left would vouch for that pause's checkpoint in the new run, so a start drops it.
 func TestStartDropsTheMarkOfAnUnfinishedPause(t *testing.T) {
 	sb := stopped()

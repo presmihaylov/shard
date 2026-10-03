@@ -40,11 +40,23 @@ socket in the sandbox's state directory. The shim holds the VM, and the daemon h
 daemon restart re-adopts every running sandbox by that socket (SHARD-235). Only the shim carries the
 `com.apple.security.virtualization` entitlement (SHARD-214, `docs/macos-signing.md`). A sandbox whose
 shim is gone at that restart is `stopped`, with the reason every provider uses: `daemon restarted and
-found no process`. When the host sleeps, the VM and the shim stay. If the sleep resets the vsock
-streams, the daemon dials the control and the logs streams again while the shim reports that the VM
-runs, so `logs -f` and the events resume where they stopped. The new control connection opens with
-the guest's state. An exit or a restart that happened while no stream was open is recorded from
-that replay, so `wait` does not wait for an event that is gone.
+found no process`. A shim that goes silent for 5 s is never killed for that silence, whether the
+daemon holds it or a restart meets it only by its socket. Its sandbox reads `unresponsive` with the
+shim's pid until a probe answers, and `stop` kills it with no grace (SHARD-421, SHARD-422). A shim
+that a restart found silent gets one request that every later probe shares, so its socket queue
+never fills. A queue that fills anyway refuses every dial, as the socket of a dead shim does. So the
+daemon reads a refused shim as gone only once the pid and the start time that the last attach wrote
+to `shim.json` are gone (SHARD-423). `stop` kills the shim alone, through a pin that the kernel
+holds on the process. The daemon pins the pid and then checks the start time, or it pins the pid
+behind the socket and then proves it with a second dial, so a pid that the kernel gave to another
+process is never signalled. A shim that an older daemon booted has no `shim.json`. The daemon finds
+such a shim as a process of its own user that the kernel says runs from the installed shim's path,
+with a `-config` that names the socket. An argv alone is never enough. When the host sleeps, the VM
+and the shim stay. If the sleep resets the vsock streams, the daemon dials the control and the logs
+streams again while the shim reports that the VM runs, so `logs -f` and the events resume where they
+stopped. The new control connection opens with the guest's state. An exit or a restart that happened
+while no stream was open is recorded from that replay, so `wait` does not wait for an event that is
+gone.
 
 The shim lives exactly as long as its VM. A vsock connect to a port the guest does not serve never
 calls back (the framework "does nothing" for it), so the shim bounds every connect at 5 seconds and
@@ -129,7 +141,7 @@ port after boot and retries until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines. In: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` and `reseed`, each numbered and answered with `done` or `failure`. Out: `state`, `ready`, `exit`, `restarts`, `oom` and `supervisor-failed` |
+| 5000 | control | JSON lines. In: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` and `reseed`, each numbered and answered with `done` or `failure`. Out: `state`, `ready`, `exit`, `restarts`, `oom` and `supervisor-failed`. The host refuses a line past 1 MiB. It redials after 100 ms, waits twice as long after each refusal up to 2 s, and starts from 100 ms again after a quiet minute (SHARD-408) |
 | 5001 | exec | one connection per exec session. It carries an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol that the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s: the offset of the oldest output byte it holds and the offset of the next one. The host answers with one uint64, the byte to resume from. Then it reads raw bytes and acks each write to `output.log` with the offset after that write. The guest holds up to 1 MiB that no host has acked, so a daemon restart loses nothing and repeats nothing. `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` comes from a guest older than the protocol, so the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 
@@ -159,8 +171,8 @@ provider records the 125 as the sandbox exit and the reason as its stopped reaso
 `ls` show that as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot,
 before any listener exists, opens the control connection with the same message. A Firecracker start
 then answers with the reason and the 125 at once, instead of after the 30 second grace (SHARD-416).
-The vz provider ignores the event today and reads the halt as the guest gone. At boot, its start
-fails at once on the unexpected opener, without the reason, and records no 125.
+The vz provider records a failure at boot the same way (SHARD-418). After boot, it still ignores the
+event and reads the halt as the guest gone.
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection that

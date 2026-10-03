@@ -190,8 +190,14 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if m != nil && m.status(p).Alive() {
-		return p.run(ctx, m, r)
+	if m != nil {
+		status := m.status(p)
+		if status.State == models.StateUnresponsive {
+			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
+		}
+		if status.Alive() {
+			return p.run(ctx, m, r)
+		}
 	}
 	if err := p.release(ctx, m); err != nil {
 		return err
@@ -261,6 +267,10 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if m == nil {
 		return p.lost(id)
 	}
+	// A vmm still silent after the lookup's short probe has a guest that cannot hear a stop, so it gets no grace (SHARD-392).
+	if m.status(p).State == models.StateUnresponsive {
+		return p.endSilent(ctx, m)
+	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
@@ -323,6 +333,18 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	}
 	if !ended {
 		return fmt.Errorf("the vmm of sandbox %s still answers %s after a kill", m.id, killGrace)
+	}
+
+	return p.settle(ctx, m)
+}
+
+// endSilent kills a vmm that never answered through the pin its adopt took, never by a pid or the socket, either of which may name a vmm begun since.
+func (p *Provider) endSilent(ctx context.Context, m *machine) error {
+	if err := m.pinned.Kill(); err != nil {
+		return fmt.Errorf("sandbox %s: end its silent vmm: %w", m.id, err)
+	}
+	if err := awaitEnded(m); err != nil {
+		return err
 	}
 
 	return p.settle(ctx, m)

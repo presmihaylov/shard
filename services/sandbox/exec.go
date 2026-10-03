@@ -1171,6 +1171,14 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	// The substrate is asked even for an unresponsive record, so an exec works as soon as the process answers again.
+	if status.State == models.StateUnresponsive {
+		if err := s.noteUnresponsive(id, sb, status.Reason); err != nil {
+			return "", err
+		}
+
+		return "", &UnavailableError{ID: id, Why: "is unresponsive: " + status.Reason, Fix: "wait for it to answer, or end it with shard stop " + id}
+	}
 	if status.Alive() {
 		return id, nil
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -43,6 +44,10 @@ const (
 	initrdFile = "initrd.cpio"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// shimFile names the shim the last attach verified, which a refused dial cannot (SHARD-423).
+	shimFile = "shim.json"
+	// supervisorFailedFile holds the reason shard-init gave for a death at boot, which the end of the shim would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
@@ -63,7 +68,7 @@ const (
 	flushGrace = 5 * time.Second
 	// probeFloor is the least one shim state read gets, so a wait whose time ran out still asks once (SHARD-349).
 	probeFloor = time.Second
-	// adoptBound is how long a shim met only by its socket gets to answer before it counts as wedged (SHARD-387).
+	// adoptBound is how long a shim met only by its socket gets to answer before it reads unresponsive (SHARD-422).
 	adoptBound = 5 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
@@ -103,6 +108,10 @@ type Provider struct {
 	mu sync.Mutex
 	// machines is every shim this daemon has spoken to; a shim it has not is adopted by its socket.
 	machines map[string]*machine
+	// unadopted is every shim an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
+	unadopted map[string]*machine
+	// adopting closes when the one adopt in flight for a sandbox ends, so a racing lookup reuses what it made.
+	adopting map[string]chan struct{}
 	// recovering is nil but in a test, which holds the gap between the choice to thaw a lost freeze and that thaw.
 	recovering func()
 }
@@ -120,7 +129,7 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}, unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -141,6 +150,7 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
 	p.machines = map[string]*machine{}
+	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
@@ -219,6 +229,23 @@ func readRecord(dir string) (record, bool, error) {
 
 func writeRecord(dir string, r record) error {
 	return writeJSON(filepath.Join(dir, recordFile), r)
+}
+
+// readShim is the shim the last attach recorded, or the live one started on the socket, as an older daemon recorded none; zero is neither.
+func (p *Provider) readShim(dir string) (vz.Process, error) {
+	blob, err := os.ReadFile(filepath.Join(dir, shimFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return vz.Locate(p.cfg.Shim, filepath.Join(dir, socketFile))
+	}
+	if err != nil {
+		return vz.Process{}, fmt.Errorf("read the shim record: %w", err)
+	}
+	var shim vz.Process
+	if err := json.Unmarshal(blob, &shim); err != nil {
+		return vz.Process{}, fmt.Errorf("decode the shim record in %s: %w", dir, err)
+	}
+
+	return shim, nil
 }
 
 func writeJSON(path string, value any) error {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/peercred"
+	"github.com/presmihaylov/shard/pkg/pidpin"
 )
 
 // Client speaks to one firecracker over its API socket. It holds no connection between calls, so a daemon restart loses nothing.
@@ -293,23 +294,53 @@ func (c *Client) configure(cfg Config) error {
 	return c.put("/actions", action{Type: "InstanceStart"})
 }
 
-// Adopt takes a firecracker that is already running, by its sockets, and proves it answers.
-func Adopt(socket, vsock string) (*Client, Info, error) {
-	client := &Client{socket: socket, vsock: vsock}
-	info, err := client.State(context.Background())
-	if err != nil {
-		return nil, Info{}, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+// Open names the vmm on its sockets and asks it nothing, so a caller can still kill one that never answers.
+func Open(socket, vsock string) *Client { return &Client{socket: socket, vsock: vsock} }
+
+// Adopt takes a firecracker that is already running, by its sockets, and proves it answers by ctx's deadline; one that fails after the dial is still named in the Info.
+func Adopt(ctx context.Context, socket, vsock string) (*Client, Info, error) {
+	client, info, silent, err := AdoptPinned(ctx, socket, vsock)
+	if silent != nil {
+		return nil, info, errors.Join(err, silent.Close())
 	}
 
-	return client, info, nil
+	return client, info, err
 }
 
-// State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first.
+// AdoptPinned is Adopt that pins the peer of its dial before it asks, and hands the pin back when that peer stays silent to the deadline; the caller closes it.
+func AdoptPinned(ctx context.Context, socket, vsock string) (*Client, Info, *pidpin.Process, error) {
+	client := Open(socket, vsock)
+	conn, pid, err := client.peer(ctx, http.MethodGet, "/")
+	if err != nil {
+		return nil, Info{}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+	defer conn.Close()
+	pin, err := pidpin.Open(pid)
+	if err != nil {
+		return nil, Info{PID: pid}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+	var got instance
+	err = request(ctx, conn, http.MethodGet, "/", nil, &got)
+	// Only a peer that still holds the connection lets the request time out, so a silent one outlived the pin, which is therefore that vmm.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return nil, Info{PID: pid}, pin, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+	if err != nil {
+		return nil, Info{PID: pid}, nil, errors.Join(fmt.Errorf("adopt the vmm on %s: %w", socket, err), pin.Close())
+	}
+	if err := pin.Close(); err != nil {
+		return nil, Info{PID: pid}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+
+	return client, Info{State: got.State, PID: pid}, nil, nil
+}
+
+// State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first; a read that fails after the dial still names that peer.
 func (c *Client) State(ctx context.Context) (Info, error) {
 	var got instance
 	pid, err := c.call(ctx, http.MethodGet, "/", nil, &got)
 	if err != nil {
-		return Info{}, err
+		return Info{PID: pid}, err
 	}
 
 	return Info{State: got.State, PID: pid}, nil
@@ -422,55 +453,70 @@ func (c *Client) patch(path string, body any) error {
 	return err
 }
 
-// call is one request on its own connection, bounded from dial to reply, and the pid of the process that answered it.
+// call is one request on its own connection, bounded from dial to reply, and the pid of the peer that took the dial, kept on a later failure.
 func (c *Client) call(ctx context.Context, method, path string, body, reply any) (int, error) {
-	conn, err := c.dial(ctx, c.socket)
+	conn, pid, err := c.peer(ctx, method, path)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return 0, err
 	}
 	defer conn.Close()
+
+	return pid, request(ctx, conn, method, path, body, reply)
+}
+
+// peer dials the API socket and names the process behind the connection, which the kernel attests.
+func (c *Client) peer(ctx context.Context, method, path string) (net.Conn, int, error) {
+	conn, err := c.dial(ctx, c.socket)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s %s: %w", method, path, err)
+	}
 	pid, err := peercred.PID(conn)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: read the peer of the api socket: %w", method, path, err)
+		return nil, 0, errors.Join(fmt.Errorf("%s %s: read the peer of the api socket: %w", method, path, err), conn.Close())
 	}
 
+	return conn, pid, nil
+}
+
+// request sends one request on conn and reads its reply, by conn's deadline.
+func request(ctx context.Context, conn net.Conn, method, path string, body, reply any) error {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, fmt.Errorf("%s %s: marshal the request: %w", method, path, err)
+			return fmt.Errorf("%s %s: marshal the request: %w", method, path, err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, payload)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if err := req.Write(conn); err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: %w", method, path, err)
+		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	blob, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("%s %s: read the reply: %w", method, path, err)
+		return fmt.Errorf("%s %s: read the reply: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return 0, fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, faultOf(blob))
+		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, faultOf(blob))
 	}
 	if reply == nil {
-		return pid, nil
+		return nil
 	}
 	if err := json.Unmarshal(blob, reply); err != nil {
-		return 0, fmt.Errorf("%s %s: decode the reply: %w", method, path, err)
+		return fmt.Errorf("%s %s: decode the reply: %w", method, path, err)
 	}
 
-	return pid, nil
+	return nil
 }
 
 // dial opens one connection to a unix socket, bounded by callTimeout or ctx's deadline, whichever comes first.

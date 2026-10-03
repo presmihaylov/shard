@@ -210,6 +210,60 @@ func pausedAlive(pid int) models.Status {
 
 func gone() models.Status { return models.Status{} }
 
+func TestReconcileMakesAnUnresponsiveRecordRunningAndKeepsItsRun(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := unresponsive()
+	sb.StartedAt = started
+	sb.ExitStatus = &models.ExitStatus{Code: 3}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateRunning || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) || got.ExitStatus == nil {
+		t.Errorf("the record says %s with the reason %q, the start %s and the exit %+v; want running with its run kept", got.State, got.UnresponsiveReason, got.StartedAt, got.ExitStatus)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once for the live sandbox", lab.net.applied)
+	}
+}
+
+func TestReconcileRecordsAProcessThatDoesNotAnswerAsUnresponsive(t *testing.T) {
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": silentShim()}}, running())
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateUnresponsive || got.PID != 42 || got.UnresponsiveReason != silentShim().Reason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want unresponsive with its pid and the reason", got.State, got.PID, got.UnresponsiveReason)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once, since the process still runs", lab.net.applied)
+	}
+}
+
+func TestReconcileStopsAnUnresponsiveRecordWithNoProcess(t *testing.T) {
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, unresponsive())
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.LostReason || got.UnresponsiveReason != "" {
+		t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, sandbox.LostReason)
+	}
+}
+
+// unproven is a live substrate that does not say running, such as a vz shim that missed its probe bound.
+func unproven(pid int) models.Status {
+	return models.Status{Exists: true, State: models.StateCreated, PID: pid}
+}
+
 func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
@@ -515,6 +569,55 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 	}
 	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
 		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
+// A cut after the vz swap leaves a shim the next daemon runs on past the snapshot, so a later death of that run is no pause (SHARD-429).
+func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
+	lab := newReconcileLab(t, provider, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning || got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with no mark: the substrate runs it on", got.State, got.Pausing)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "pause mark") {
+		t.Errorf("the pass reported %v, want one line on the mark", lab.reports)
+	}
+
+	provider.status["sandbox1"] = gone()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll after the death: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	}
+}
+
+// Only a substrate that says running proves the run went past the snapshot; an unresponsive vz shim may still hold it frozen (SHARD-422).
+func TestReconcileKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": unproven(42)}}
+	lab := newReconcileLab(t, provider, sb)
+	dir := heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning || !got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with the mark kept", got.State, got.Pausing)
+	}
+
+	provider.status["sandbox1"] = gone()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll after the death: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StatePaused || got.Snapshot != dir {
+		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
 	}
 }
 

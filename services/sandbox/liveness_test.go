@@ -178,6 +178,81 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
+// silentShim is what vz answers for a held shim that missed its probe bound (SHARD-421).
+func silentShim() models.Status {
+	return models.Status{Exists: true, State: models.StateUnresponsive, PID: 42, Reason: "its shim (pid 42) did not answer within 5s"}
+}
+
+// unresponsive is a running record that liveness marked for its silent shim.
+func unresponsive() models.Sandbox {
+	sb := running()
+	sb.State = models.StateUnresponsive
+	sb.UnresponsiveReason = silentShim().Reason
+
+	return sb
+}
+
+func TestLivenessMarksASilentSandboxUnresponsiveAndNeverEndsIt(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := running()
+	sb.StartedAt = started
+	lab := newLivenessLab(t, sb, silentShim())
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateUnresponsive || got.PID != 42 || got.UnresponsiveReason != silentShim().Reason || !got.StartedAt.Equal(started) {
+		t.Errorf("the record says %s with pid %d, the reason %q and the start %s; want unresponsive with its pid, the reason and its run", got.State, got.PID, got.UnresponsiveReason, got.StartedAt)
+	}
+	if lab.l.provider.stopped {
+		t.Error("liveness stopped a sandbox that only went silent")
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "pid 42") {
+		t.Errorf("the pass reported %v, want one line naming the shim", lab.reports)
+	}
+
+	if err := lab.tick(t, got, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+	if len(lab.reports) != 1 {
+		t.Errorf("the second pass reported %v, want nothing new for a sandbox still silent", lab.reports[1:])
+	}
+}
+
+func TestLivenessMakesAnUnresponsiveSandboxRunningOnceItAnswers(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := unresponsive()
+	sb.StartedAt = started
+	lab := newLivenessLab(t, sb, alive(42))
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.PID != 42 || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) {
+		t.Errorf("the record says %s with pid %d, the reason %q and the start %s; want running with its run kept", got.State, got.PID, got.UnresponsiveReason, got.StartedAt)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "answers again") {
+		t.Errorf("the pass reported %v, want one line on the answer", lab.reports)
+	}
+}
+
+func TestLivenessStopsAnUnresponsiveSandboxWhoseProcessDied(t *testing.T) {
+	lab := newLivenessLab(t, unresponsive(), gone())
+
+	if err := lab.tick(t, unresponsive(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.DiedReason || got.UnresponsiveReason != "" {
+		t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, sandbox.DiedReason)
+	}
+}
+
 // A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
 func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	dir := t.TempDir()
@@ -263,6 +338,82 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	}
 	if got := lab.l.repo.sb; got.Snapshot != "" || !got.Pausing {
 		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
+// A run the substrate carried on past its pause's snapshot holds no pause, so a later death of it is no pause either (SHARD-429).
+func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with no mark: the substrate runs it on", got.State, got.Pausing)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness after the death: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	}
+}
+
+func TestLivenessKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, unproven(42))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with the mark kept", got.State, got.Pausing)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness after the death: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir {
+		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
+	}
+}
+
+// The tick probes before it takes the lock, so a pause can commit after the probe; only a probe under the lock drops the mark.
+func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.repo.snapshotDir = dir
+	// The second Status finds the sandbox gone into the snapshot the first one predated.
+	lab.l.provider.exits = func() {}
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
 	}
 }
 

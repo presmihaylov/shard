@@ -55,6 +55,19 @@ func (e *UnsupportedError) Error() string {
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
 
+// UnresponsiveError is a verb the substrate refused because the process behind the sandbox missed its probe bound.
+type UnresponsiveError struct {
+	Sandbox  string
+	Provider string
+	Verb     string
+	// Reason is the words Status.Reason carries for the silent process, so a caller records them without asking again.
+	Reason string
+}
+
+func (e *UnresponsiveError) Error() string {
+	return fmt.Sprintf("sandbox %s is %s on %s: %s takes a running sandbox: %s", e.Sandbox, StateUnresponsive, e.Provider, e.Verb, e.Reason)
+}
+
 // LostError is a verb that failed after the substrate had already ended the sandbox, so its record ends failed.
 type LostError struct {
 	Sandbox string

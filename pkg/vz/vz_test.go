@@ -170,11 +170,15 @@ func TestFrozenShimHelper(t *testing.T) {
 	if socket == "" {
 		t.Skip("a helper process for TestKillEndsAShimTooFrozenToAnswer")
 	}
-	listener, err := net.Listen("unix", socket)
+	listener, err := net.Listen("unix", socket+".bind")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	// The file exists from the bind, before the listen; a dial in that gap is refused, so the test only sees the path once it listens.
+	if err := os.Rename(socket+".bind", socket); err != nil {
+		t.Fatal(err)
+	}
 	select {}
 }
 
@@ -194,6 +198,63 @@ func dialed(t *testing.T, socket string) bool {
 
 // SHARD-349: a frozen shim takes the dial and never the call, so the kill names it by the kernel's peer pid and never waits for an answer.
 func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
+	socket, cmd, exited := listening(t)
+	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &Client{socket: socket}
+	started := time.Now()
+	if err := client.Kill(); err != nil {
+		t.Fatalf("Kill of a frozen shim = %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the frozen shim still runs 5s after Kill")
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Errorf("Kill took %s, want it done at the dial", took)
+	}
+	if err := client.Kill(); !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ENOENT) {
+		t.Errorf("Kill of an ended shim = %v, want the socket refused", err)
+	}
+}
+
+// A pin on a pid the shim socket does not name again after the pin sends no signal, and says so, so the caller kills by its own record instead.
+func TestKillThroughAPinTheSocketDoesNotProveSignalsNobody(t *testing.T) {
+	socket, _, exited := listening(t)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+
+	client := &Client{socket: socket}
+	if err := client.killPinned(innocent.Process.Pid); !errors.Is(err, ErrUnproven) {
+		t.Fatalf("killPinned of a pid the socket does not name = %v, want ErrUnproven", err)
+	}
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the pinned process the socket does not name was hit: %v", err)
+	}
+	select {
+	case err := <-exited:
+		t.Fatalf("the shim the socket names was hit: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// listening runs a helper that listens on a socket and never accepts, in a group of its own, and is killed at cleanup.
+func listening(t *testing.T) (string, *exec.Cmd, <-chan error) {
+	t.Helper()
 	socket := filepath.Join(shortRoot(t), "shim.sock")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestFrozenShimHelper$")
 	cmd.Env = append(os.Environ(), frozenShimEnv+"="+socket)
@@ -215,26 +276,8 @@ func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
 
-	client := &Client{socket: socket}
-	started := time.Now()
-	if err := client.Kill(); err != nil {
-		t.Fatalf("Kill of a frozen shim = %v", err)
-	}
-	select {
-	case <-exited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the frozen shim still runs 5s after Kill")
-	}
-	if took := time.Since(started); took > time.Second {
-		t.Errorf("Kill took %s, want it done at the dial", took)
-	}
-	if err := client.Kill(); !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ENOENT) {
-		t.Errorf("Kill of an ended shim = %v, want the socket refused", err)
-	}
+	return socket, cmd, exited
 }
 
 func TestAnIdleConnectionDoesNotKeepServeFromReturning(t *testing.T) {

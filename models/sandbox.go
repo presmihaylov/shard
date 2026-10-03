@@ -26,6 +26,8 @@ type Sandbox struct {
 	StoppedReason string `json:"stopped_reason,omitempty"`
 	// FailedReason says why a create never reached running or a pause lost the guest, set only in state failed.
 	FailedReason string `json:"failed_reason,omitempty"`
+	// UnresponsiveReason says what missed its probe bound, set only in state unresponsive.
+	UnresponsiveReason string `json:"unresponsive_reason,omitempty"`
 
 	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
 	// does not consume it, so it stands until the next pause replaces it or rm removes it.

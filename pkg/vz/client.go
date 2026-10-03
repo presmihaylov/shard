@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/peercred"
+	"github.com/presmihaylov/shard/pkg/pidpin"
 )
 
 // Client speaks to one shim over its socket. It holds no connection between verbs, so a daemon restart loses nothing.
@@ -105,42 +106,125 @@ func Adopt(ctx context.Context, socket string) (*Client, Info, error) {
 func (c *Client) State(ctx context.Context) (Info, error) { return c.call(ctx, request{Verb: "state"}) }
 func (c *Client) Stop(ctx context.Context) (Info, error)  { return c.call(ctx, request{Verb: "stop"}) }
 
+// Await asks the state on one connection and waits until the shim answers or ctx ends, so a frozen shim's socket queue takes no second request.
+func (c *Client) Await(ctx context.Context) (Info, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "unix", c.socket)
+	if err != nil {
+		return Info{}, fmt.Errorf("state: dial the shim: %w", err)
+	}
+	var reply response
+	done := make(chan error, 1)
+	go func() {
+		err := writeFrame(conn, request{Verb: "state"})
+		if err == nil {
+			err = readFrame(conn, &reply)
+		}
+		done <- err
+	}()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		// The close ends the read, so the exchange is over before this returns.
+		closeErr := conn.Close()
+		<-done
+
+		return Info{}, errors.Join(fmt.Errorf("state: %w", ctx.Err()), closeErr)
+	}
+	if err == nil {
+		err = reply.err()
+	}
+	if err != nil {
+		return Info{}, errors.Join(fmt.Errorf("state: %w", err), conn.Close())
+	}
+	if err := conn.Close(); err != nil {
+		return Info{}, fmt.Errorf("close the shim socket: %w", err)
+	}
+
+	return Info{State: reply.State, PID: reply.PID, MachineID: reply.MachineID}, nil
+}
+
 func (c *Client) Pause() (Info, error)  { return c.call(context.Background(), request{Verb: "pause"}) }
 func (c *Client) Resume() (Info, error) { return c.call(context.Background(), request{Verb: "resume"}) }
 func (c *Client) Save(path string) (Info, error) {
 	return c.call(context.Background(), request{Verb: "save", Path: path})
 }
 
-// Kill ends the shim by the pid behind its socket, which the kernel attests at the dial: a shim too frozen to answer still owns it (SHARD-349).
-func (c *Client) Kill() error {
+// PID is the shim's pid as the kernel attests it at the dial, which a shim too frozen to answer still gives.
+func (c *Client) PID() (int, error) {
+	conn, pid, err := c.peer()
+	if err != nil {
+		return 0, err
+	}
+	if err := conn.Close(); err != nil {
+		return 0, fmt.Errorf("close the shim socket: %w", err)
+	}
+
+	return pid, nil
+}
+
+// peer dials the shim and names the process behind the connection, which the caller closes.
+func (c *Client) peer() (net.Conn, int, error) {
 	timeout := c.timeout
 	if timeout == 0 {
 		timeout = callTimeout
 	}
 	conn, err := net.DialTimeout("unix", c.socket, timeout)
 	if err != nil {
-		return fmt.Errorf("kill: dial the shim: %w", err)
+		return nil, 0, fmt.Errorf("dial the shim: %w", err)
 	}
 	pid, err := peercred.PID(conn)
 	if err != nil {
-		return errors.Join(fmt.Errorf("kill: read the peer of the shim socket: %w", err), conn.Close())
+		return nil, 0, errors.Join(fmt.Errorf("read the peer of the shim socket: %w", err), conn.Close())
+	}
+	// Neither 0 nor 1 is a shim, and a signal to either reaches this process's own group or every process it may signal.
+	if pid <= 1 {
+		return nil, 0, errors.Join(fmt.Errorf("the shim socket names pid %d", pid), conn.Close())
+	}
+
+	return conn, pid, nil
+}
+
+// ErrUnproven is a shim socket that named one pid at the pin and another, or none, after it, so no signal went out.
+var ErrUnproven = errors.New("the shim socket does not prove the pinned pid")
+
+// Kill ends the shim behind its socket through a pin taken while its first dial is open, once a second dial names the same pid: a shim too frozen to answer still owns its socket (SHARD-349).
+func (c *Client) Kill() error {
+	conn, pid, err := c.peer()
+	if err != nil {
+		return fmt.Errorf("kill: %w", err)
+	}
+	if err := c.killPinned(pid); err != nil {
+		return errors.Join(fmt.Errorf("kill: %w", err), conn.Close())
 	}
 	if err := conn.Close(); err != nil {
 		return fmt.Errorf("kill: close the shim socket: %w", err)
 	}
-	// A pid of 0 or 1 as a group would be this process's own group, or every process it may signal.
-	if pid <= 1 {
-		return fmt.Errorf("kill: the shim socket names pid %d", pid)
-	}
-	// Start made the shim lead its own group; one that leads none dies alone.
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
-		return nil
-	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill the shim %d: %w", pid, err)
-	}
 
 	return nil
+}
+
+// killPinned pins pid and signals through the pin only when a dial after the pin names pid too.
+func (c *Client) killPinned(pid int) error {
+	pin, err := pidpin.Open(pid)
+	if errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("%w: pid %d is gone", ErrUnproven, pid)
+	}
+	if err != nil {
+		return err
+	}
+	again, err := c.PID()
+	if err == nil && again != pid {
+		err = fmt.Errorf("%w: the socket named pid %d, then %d", ErrUnproven, pid, again)
+	}
+	if err == nil {
+		err = pin.Kill()
+	}
+	if err != nil {
+		return errors.Join(err, pin.Close())
+	}
+
+	return pin.Close()
 }
 
 // Connect opens one vsock connection to a guest port; the returned stream is that connection.

@@ -112,6 +112,8 @@ type Config struct {
 	StartBudget time.Duration
 	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
 	PauseBudget time.Duration
+	// Report takes a transition a verb records on its own, as the background loops report theirs; only a test leaves it nil.
+	Report func(string)
 	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
 	PutCleanupGrace time.Duration
 }
@@ -179,6 +181,15 @@ type StateError struct {
 }
 
 func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
+
+// wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
+func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
+	if sb.State == models.StateUnresponsive {
+		fix = sb.UnresponsiveReason + ": " + fix
+	}
+
+	return &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
+}
 
 // FailedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
 // A create that never reached running is terminal, so an operator reads the reason and then removes it.
@@ -305,6 +316,14 @@ func (s *Service) cancelPull(id, verb string) {
 
 func cancelled(verb string) error {
 	return fmt.Errorf("%w by %s", errCreateCancelled, verb)
+}
+
+// report logs a transition a verb recorded, where the daemon logs the ones its loops record.
+func (s *Service) report(line string) {
+	if s.cfg.Report == nil {
+		return
+	}
+	s.cfg.Report(line)
 }
 
 // probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.
@@ -809,7 +828,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if sb.State != models.StateStopped {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "start takes a stopped sandbox", Code: models.CodeSandboxNotStopped}
+		return models.Sandbox{}, wrongState(id, sb, "start takes a stopped sandbox", models.CodeSandboxNotStopped)
 	}
 
 	if err := s.start(ctx, id); err != nil {
@@ -975,6 +994,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
+		sb.UnresponsiveReason = ""
 		callOffOOMWait(sb)
 		if exit != nil {
 			sb.ExitStatus = exit

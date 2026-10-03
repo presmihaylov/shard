@@ -32,7 +32,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 	for _, sb := range sandboxes {
 		var err error
 		switch {
-		case sb.State == models.StateRunning:
+		case sb.State.Live():
 			err = s.reconcileLive(ctx, sb, now, report)
 		case sb.State == models.StateStopped && !sb.OOMRestartDue.IsZero():
 			err = s.startAgainWhenDue(ctx, sb, now, report)
@@ -46,21 +46,16 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 }
 
 // reconcileLive probes the substrate without the lock, because Status can wedge and a stop on this or any
-// other sandbox must not wait on it. It takes the lock only to write, and bails if the run has since changed.
+// other sandbox must not wait on it. It locks to write and to probe a marked run again, and bails if the run changed.
 func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
-	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
+	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || !before.State.Live() || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
 		return err
 	}
 
-	status, err := s.status(ctx, sb.ID, "liveness")
-	var timeout *SubstrateTimeoutError
-	if errors.As(err, &timeout) {
-		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the next tick asks again", sb.ID, timeout.Budget))
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
+	status, ok, err := s.probeLive(ctx, sb.ID, report)
+	if !ok {
+		return err
 	}
 
 	unlock, ok := s.tryLock(sb.ID)
@@ -74,8 +69,27 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	if err != nil {
 		return err
 	}
-	if current.State != models.StateRunning || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
+	if !current.State.Live() || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
 		return nil
+	}
+	// A silent substrate process may still answer, so it is marked and never ended here; only stop ends it (SHARD-421).
+	if status.State == models.StateUnresponsive {
+		return s.recordUnresponsive(sb.ID, current, status.Reason, report)
+	}
+	if status.Alive() && current.State == models.StateUnresponsive {
+		if err := s.recordAnswered(sb.ID, report); err != nil {
+			return err
+		}
+		current.State = models.StateRunning
+		current.UnresponsiveReason = ""
+	}
+
+	// A pause can commit between the probe and the lock, so only a probe under the lock may drop its mark (SHARD-429).
+	if ranPast(current, status) {
+		status, ok, err = s.probeLive(ctx, sb.ID, report)
+		if !ok {
+			return err
+		}
 	}
 
 	// A pause that could not reconcile itself left its mark over the checkpoint it wrote, and maybe a frozen sandbox (SHARD-366).
@@ -85,6 +99,11 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	}
 	if dir != "" {
 		return s.recordCutPause(sb.ID, dir, report)
+	}
+	if ranPast(current, status) {
+		if err := s.dropMark(sb.ID, report); err != nil {
+			return err
+		}
 	}
 
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
@@ -110,7 +129,22 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report)
 	}
 
-	return s.recordDied(sb.ID, report)
+	return s.recordDied(sb.ID, DiedReason, report)
+}
+
+// probeLive asks the substrate about a running sandbox; false with no error is a probe out of budget, which it reported.
+func (s *Service) probeLive(ctx context.Context, id string, report func(string)) (models.Status, bool, error) {
+	status, err := s.status(ctx, id, "liveness")
+	if timeout, ok := errors.AsType[*SubstrateTimeoutError](err); ok {
+		report(fmt.Sprintf("sandbox %s: the substrate did not answer within %s, the record is left as it is and the next tick asks again", id, timeout.Budget))
+
+		return models.Status{}, false, nil
+	}
+	if err != nil {
+		return models.Status{}, false, fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), id, err)
+	}
+
+	return status, true, nil
 }
 
 // recordCalm keeps the tick's throttle count on the record, and latches a healthy run there, so a daemon restart keeps both.
@@ -192,6 +226,60 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 	return nil
 }
 
+// noteUnresponsive records what a verb's own probe found, unless a verb holds the sandbox or its run changed since; the next tick asks then.
+func (s *Service) noteUnresponsive(id string, seen models.Sandbox, reason string) error {
+	unlock, ok := s.tryLock(id)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+
+	current, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return err
+	}
+	if !current.State.Live() || current.PID != seen.PID || !current.StartedAt.Equal(seen.StartedAt) {
+		return nil
+	}
+
+	return s.recordUnresponsive(id, current, reason, s.report)
+}
+
+// recordUnresponsive marks a live record whose substrate process missed its probe bound, and keeps its pid and its run.
+func (s *Service) recordUnresponsive(id string, sb models.Sandbox, reason string, report func(string)) error {
+	if sb.State == models.StateUnresponsive && sb.UnresponsiveReason == reason {
+		return nil
+	}
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateUnresponsive
+		rec.UnresponsiveReason = reason
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s did not answer but its record was not updated: %w", id, err)
+	}
+	report(fmt.Sprintf("sandbox %s: %s, the record now says unresponsive until it answers or a stop ends it", id, reason))
+
+	return nil
+}
+
+// recordAnswered makes an unresponsive record running again once its substrate process answers, with its run kept.
+func (s *Service) recordAnswered(id string, report func(string)) error {
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateRunning
+		rec.UnresponsiveReason = ""
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s answers again but its record was not updated: %w", id, err)
+	}
+	report(fmt.Sprintf("sandbox %s answers again, the record now says running", id))
+
+	return nil
+}
+
 // recordExitChannel keeps on the record why the exit cannot be read, so inspect names it, and reports each change once.
 func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, report func(string)) error {
 	if sb.ExitChannel == why {
@@ -217,11 +305,12 @@ func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, re
 
 // recordDied stops the record of a sandbox whose process is gone with no OOM and no stop behind it, so
 // exec reads the truth and start can bring it back.
-func (s *Service) recordDied(id string, report func(string)) error {
+func (s *Service) recordDied(id, reason string, report func(string)) error {
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
-		rec.StoppedReason = DiedReason
+		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 
 		return nil
 	})
@@ -229,7 +318,7 @@ func (s *Service) recordDied(id string, report func(string)) error {
 		return fmt.Errorf("sandbox %s is gone but its record was not updated: %w", id, err)
 	}
 	s.dropExecs(id)
-	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, DiedReason))
+	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, reason))
 
 	return nil
 }
@@ -296,6 +385,7 @@ func (s *Service) waitOOMBackoff(id string, due time.Time, report func(string)) 
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 		rec.OOMRestartDue = due
 
 		return nil
