@@ -48,12 +48,20 @@ func TestBuildWritesTheSeccompFilter(t *testing.T) {
 	}
 }
 
-// gVisor's sentry is the boundary there, so its bundles carry no host filter.
+func TestBuildWritesTheAppArmorProfile(t *testing.T) {
+	got := buildWith(t, bundle.WithAppArmor(bundle.AppArmorProfile))
+
+	if got.Process.ApparmorProfile != bundle.AppArmorProfile {
+		t.Errorf("got the AppArmor profile %q, want %s", got.Process.ApparmorProfile, bundle.AppArmorProfile)
+	}
+}
+
+// gVisor's sentry is the boundary there, so its bundles carry no host filter and no profile.
 func TestBuildConfinesNothingUnlessAsked(t *testing.T) {
 	got := buildWith(t)
 
-	if got.Linux.Seccomp != nil {
-		t.Errorf("got the filter %+v, want none", got.Linux.Seccomp)
+	if got.Linux.Seccomp != nil || got.Process.ApparmorProfile != "" {
+		t.Errorf("got the filter %+v and the profile %q, want neither", got.Linux.Seccomp, got.Process.ApparmorProfile)
 	}
 }
 

@@ -78,8 +78,10 @@ boot as your user, brings it back one second after a crash and not after a clean
 every VM alone when the daemon stops, so a restart re-adopts them. The daemon writes to
 `/var/log/shard/daemon.log`, and `packaging/launchd/shard.newsyslog.conf` rotates it: at 10 MiB
 newsyslog renames it aside, keeps seven old files, and sends the daemon a SIGHUP, on which it reopens
-`daemon.log` and keeps running. `__USER__` in both files is the account the root belongs to, so `sed`
-puts yours in:
+`daemon.log` and keeps running. newsyslog runs once an hour, so between two runs the daemon caps the
+log itself: past 64 MiB it moves it to `daemon.log.overflow`, replacing the one before,
+reopens `daemon.log` and writes a line that says so. `__USER__` in both files is the account the root
+belongs to, so `sed` puts yours in:
 
 ```
 curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.daemon.plist

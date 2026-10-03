@@ -213,6 +213,9 @@ type ExitReport struct {
 // ExitReportKind is the only Kind an exit report carries, so a reader rejects anything else.
 const ExitReportKind = "exit"
 
+// ExitChannelSize is the sealed memfd a sysbox PID 1 reports on: shard-init fills it from offset 0, the record then NULs.
+const ExitChannelSize = 4096
+
 // SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
 const SupervisorFailedExitCode = 125
 

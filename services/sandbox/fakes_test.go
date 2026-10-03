@@ -261,6 +261,8 @@ type fakeProvider struct {
 	exit   models.ExitStatus
 	// entrypointExit is what the non-blocking ExitStatus reads: nil while the entrypoint still runs.
 	entrypointExit *models.ExitStatus
+	// entrypointErr is what ExitStatus answers instead, as a guest that replaced the exit channel makes it.
+	entrypointErr error
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
 	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
@@ -615,6 +617,9 @@ func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) 
 func (f *fakeProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
 	if err := f.r.record("provider.ExitStatus"); err != nil {
 		return nil, err
+	}
+	if f.entrypointErr != nil {
+		return nil, f.entrypointErr
 	}
 
 	return f.entrypointExit, nil
