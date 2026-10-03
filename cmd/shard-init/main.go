@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/memfd"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -486,12 +487,20 @@ func (fileReporter) oomKilled() error {
 	return errors.New("a file reporter has no memory bound to report a kill under")
 }
 
-// exited frames the exit record onto fd 0, the exit file the host holds open for append; the newlines let a reader take whole lines only.
+// exited frames the exit record onto fd 0, the channel the host holds; the newlines let a reader take whole lines only.
 func (fileReporter) exited(exit models.ExitStatus) error {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("marshal the exit report: %w", err)
+	}
+
+	sealed, err := memfd.Fixed(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read the seals of fd 0: %w", err)
+	}
+	if sealed {
+		return writePage(os.Stdin, encoded)
 	}
 
 	// One record at a time keeps the file under the host's read bound; a failed clear still appends, so the host reads the code.
@@ -502,6 +511,22 @@ func (fileReporter) exited(exit models.ExitStatus) error {
 	}
 	if cleared != nil {
 		return fmt.Errorf("the exit status is on fd 0, but the records before it stay: %w", cleared)
+	}
+
+	return nil
+}
+
+// writePage fills the sealed page from offset 0 in one write, the record then NULs, since no write can resize it.
+func writePage(f *os.File, encoded []byte) error {
+	framed := append(append([]byte{'\n'}, encoded...), '\n')
+	if len(framed) > models.ExitChannelSize {
+		return fmt.Errorf("the exit record is %d bytes, past the %d byte channel", len(framed), models.ExitChannelSize)
+	}
+
+	page := make([]byte, models.ExitChannelSize)
+	copy(page, framed)
+	if _, err := f.WriteAt(page, 0); err != nil {
+		return fmt.Errorf("report the exit status on fd 0: %w", err)
 	}
 
 	return nil

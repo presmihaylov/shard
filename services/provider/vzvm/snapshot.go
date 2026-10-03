@@ -223,11 +223,17 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 
 	// The disk comes back to the moment of the save, or the restored memory would meet a filesystem it never wrote.
 	disk := filepath.Join(stateDir, diskFile)
-	if err := os.Remove(disk); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("drop the disk of sandbox %s: %w", id, err)
-	}
-	if _, err := bundle.CloneFile(filepath.Join(dir, snapshotDiskFile), disk); err != nil {
-		return fmt.Errorf("restore the disk of sandbox %s: %w", id, err)
+	if err := bundle.ReplaceDisk(func() error {
+		if err := os.Remove(disk); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("drop the disk of sandbox %s: %w", id, err)
+		}
+		if _, err := bundle.CloneFile(filepath.Join(dir, snapshotDiskFile), disk); err != nil {
+			return fmt.Errorf("restore the disk of sandbox %s: %w", id, err)
+		}
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	r.MachineID = snap.MachineID
@@ -243,6 +249,9 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 
 	return nil
 }
+
+// AdoptStaging keeps the snapshot staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
+func (p *Provider) AdoptStaging(string) error { return nil }
 
 // Fork restores the save in dir as a new sandbox under the spec's id and address; the source is not touched.
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
@@ -265,8 +274,8 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneFile(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the snapshot disk for sandbox %s: %w", spec.ID, err)
+	if err := cloneDisk(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
+		return fmt.Errorf("copy the snapshot disk for sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	// The saved memory restores under its own identifier and size only; the network, and the name the guest answers to, are what the fork changes.

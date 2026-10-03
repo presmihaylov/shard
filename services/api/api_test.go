@@ -81,6 +81,10 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 		Socket:    "/var/lib/shard/shard.sock",
 		Provider:  "sysbox",
 		Proxy:     api.Proxy{PlainPort: 30080, TLSPort: 30443},
+		Tasks: []api.TaskState{
+			{Name: "api", State: "running"},
+			{Name: "liveness", State: "backoff", Restarts: 2, LastError: "boom"},
+		},
 	}, nil
 }
 
@@ -231,6 +235,10 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 		"provider":     "sysbox",
 		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false},
 		"proxy":        map[string]any{"plain_port": float64(30080), "tls_port": float64(30443)},
+		"tasks": []any{
+			map[string]any{"name": "api", "state": "running", "restarts": float64(0)},
+			map[string]any{"name": "liveness", "state": "backoff", "restarts": float64(2), "last_error": "boom"},
+		},
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Errorf("GET /v0/daemon answered %v, want %v", body, want)

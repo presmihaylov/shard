@@ -19,7 +19,7 @@ const stderrTail = 4 << 10
 type ExecFunc func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error)
 
 // OpenFiles starts shard-init's files mode through run, as user, and answers its stdio as one connection; Close says how the exec ended.
-func OpenFiles(ctx context.Context, run ExecFunc, user string) (io.ReadWriteCloser, error) {
+func OpenFiles(ctx context.Context, run ExecFunc, user string) (FilesConn, error) {
 	pipes, err := openPipes()
 	if err != nil {
 		return nil, err
@@ -106,6 +106,9 @@ type filesConn struct {
 	stop    func() bool
 	once    sync.Once
 	shutErr error
+	// stdinOnce lets CloseWrite and shut both close stdin, whichever comes first.
+	stdinOnce sync.Once
+	stdinErr  error
 }
 
 func (c *filesConn) Write(p []byte) (int, error) {
@@ -136,9 +139,18 @@ func (c *filesConn) Close() error {
 	return errors.Join(c.shutErr, c.result())
 }
 
+// CloseWrite gives the guest EOF on its stdin and leaves its stdout open for the answer.
+func (c *filesConn) CloseWrite() error {
+	c.stdinOnce.Do(func() {
+		c.stdinErr = c.stdin.Close()
+	})
+
+	return c.stdinErr
+}
+
 func (c *filesConn) shut() {
 	c.once.Do(func() {
-		c.shutErr = errors.Join(c.stdin.Close(), c.stdout.Close())
+		c.shutErr = errors.Join(c.CloseWrite(), c.stdout.Close())
 	})
 }
 

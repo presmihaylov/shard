@@ -141,6 +141,36 @@ func TestCreateRefusesAnUnknownState(t *testing.T) {
 	}
 }
 
+// An admission runs on a claimed directory no verb lists, and its refusal leaves no directory and no name (SHARD-393).
+func TestARefusedAdmissionLeavesNothing(t *testing.T) {
+	r, _ := repo(t)
+	sb := newSandbox()
+	sb.Name = "builder"
+	refused := errors.New("no room for the disk")
+
+	var claimed string
+	_, err := r.Create(sb, func(dir string) error {
+		claimed = dir
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			t.Errorf("the admission ran before the directory %s was claimed: %v", dir, err)
+		}
+		if list, err := r.List(); err != nil || len(list) != 0 {
+			t.Errorf("List during the admission = %v, %v, want nothing", list, err)
+		}
+
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("Create = %v, want the refusal", err)
+	}
+	if _, err := os.Stat(claimed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the directory %s outlived the refusal: %v", claimed, err)
+	}
+	if _, err := r.Create(sb); err != nil {
+		t.Fatalf("the refused create still holds the name builder: %v", err)
+	}
+}
+
 func TestCreateAndGetRoundTrip(t *testing.T) {
 	r, _ := repo(t)
 	want := create(t, r)

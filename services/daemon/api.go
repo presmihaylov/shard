@@ -87,7 +87,10 @@ func Run(ctx context.Context, cfg Config) error {
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
 	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
-	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
+	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
+	d.states = dmn.states
+	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -251,6 +254,7 @@ func (p process) Daemon() (api.Daemon, error) {
 		Provider:     provider.Name(),
 		Capabilities: provider.Capabilities(),
 		Proxy:        api.Proxy{PlainPort: proxy.PlainPort, TLSPort: proxy.TLSPort},
+		Tasks:        p.deps.states.snapshot(),
 	}, nil
 }
 
@@ -565,6 +569,51 @@ func (l *lifecycle) WriteFile(ctx context.Context, ref string, req sandbox.FileW
 	}
 
 	return svc.WriteFile(ctx, ref, req, src)
+}
+
+func (l *lifecycle) ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListDir(ctx, ref, path)
+}
+
+func (l *lifecycle) MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.MakeDir(ctx, ref, req)
+}
+
+func (l *lifecycle) DeleteFile(ctx context.Context, ref, path string, recursive bool) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.DeleteFile(ctx, ref, path, recursive)
+}
+
+func (l *lifecycle) ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadArchive(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteArchive(ctx, ref, req, src)
 }
 
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {

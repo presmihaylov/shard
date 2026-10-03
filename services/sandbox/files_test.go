@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,6 +241,105 @@ func TestAFileRefusalAnswersTheAPICode(t *testing.T) {
 	}
 }
 
+func TestListDirStreamsTheEntriesAsTheEntrypointUser(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	want := []models.FileEntry{
+		{Name: "app", FileStat: models.FileStat{Type: models.FileRegular, Size: 3, Mode: 0o755}},
+		{Name: "conf", FileStat: models.FileStat{Type: models.FileDir, Mode: 0o700}},
+	}
+	l.provider.serve = guest(t, func(header supervisor.FileHeader, spec models.ExecSpec) error {
+		if header.Op != supervisor.OpList || header.Path != "/srv" {
+			t.Errorf("the guest got %+v, want an ls of /srv", header)
+		}
+		if err := supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Stat: &models.FileStat{Type: models.FileDir}, Count: len(want)}); err != nil {
+			return err
+		}
+		for _, entry := range want {
+			if err := supervisor.WriteMessage(spec.Stdout, entry); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	listing, err := svc.ListDir(t.Context(), "sandbox1", "/srv")
+	if err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+	var got []models.FileEntry
+	for {
+		entry, err := listing.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		got = append(got, entry)
+	}
+	if err := listing.Close(); err != nil {
+		t.Fatalf("close the listing: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ls = %+v, want %+v", got, want)
+	}
+	if l.provider.execSpec.User != "" {
+		t.Fatalf("the ls ran as %q, want the entrypoint user", l.provider.execSpec.User)
+	}
+}
+
+func TestMakeDirSendsTheModeAndParentsAsTheUser(t *testing.T) {
+	cases := []struct {
+		mode string
+		want uint32
+	}{
+		{mode: "", want: sandbox.DefaultDirMode},
+		{mode: "700", want: 0o700},
+		{mode: "0750", want: 0o750},
+	}
+	for _, c := range cases {
+		t.Run("mode "+c.mode, func(t *testing.T) {
+			r := &recorder{}
+			svc, l := newService(t, r, running())
+			l.provider.serve = guest(t, func(header supervisor.FileHeader, spec models.ExecSpec) error {
+				if header != (supervisor.FileHeader{Op: supervisor.OpMkdir, Path: "/srv/a/b", Mode: c.want, Parents: true}) {
+					t.Errorf("the guest got %+v, want a mkdir -p of /srv/a/b at %#o", header, c.want)
+				}
+
+				return supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Stat: &models.FileStat{Type: models.FileDir, Mode: header.Mode}})
+			})
+
+			if err := svc.MakeDir(t.Context(), "sandbox1", sandbox.MkdirRequest{Path: "/srv/a/b", Mode: c.mode, Parents: true, User: "app"}); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if l.provider.execSpec.User != "app" {
+				t.Fatalf("the mkdir ran as %q, want app", l.provider.execSpec.User)
+			}
+		})
+	}
+}
+
+func TestDeleteFileSendsRecursiveAsTheEntrypointUser(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.serve = guest(t, func(header supervisor.FileHeader, spec models.ExecSpec) error {
+		if header != (supervisor.FileHeader{Op: supervisor.OpDelete, Path: "/srv/cache", Recursive: true}) {
+			t.Errorf("the guest got %+v, want a recursive delete of /srv/cache", header)
+		}
+
+		return supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Stat: &models.FileStat{Type: models.FileDir}})
+	})
+
+	if err := svc.DeleteFile(t.Context(), "sandbox1", "/srv/cache", true); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if l.provider.execSpec.User != "" {
+		t.Fatalf("the delete ran as %q, want the entrypoint user", l.provider.execSpec.User)
+	}
+}
+
 // What the daemon can refuse on its own costs no exec.
 func TestFileVerbsRefuseWithNoExec(t *testing.T) {
 	cases := []struct {
@@ -265,6 +365,56 @@ func TestFileVerbsRefuseWithNoExec(t *testing.T) {
 				return svc.WriteFile(t.Context(), "sandbox1", sandbox.FileWrite{Path: "/srv/app", Mode: 0o4755}, strings.NewReader(""))
 			},
 			want: isRequestError,
+		},
+		{
+			name: "a mkdir mode that is not octal",
+			sb:   running(),
+			run: func(svc *sandbox.Service) error {
+				return svc.MakeDir(t.Context(), "sandbox1", sandbox.MkdirRequest{Path: "/srv/a", Mode: "rwx"})
+			},
+			want: isRequestError,
+		},
+		{
+			name: "a mkdir mode above 0777",
+			sb:   running(),
+			run: func(svc *sandbox.Service) error {
+				return svc.MakeDir(t.Context(), "sandbox1", sandbox.MkdirRequest{Path: "/srv/a", Mode: "1777"})
+			},
+			want: isRequestError,
+		},
+		{
+			name: "a relative ls",
+			sb:   running(),
+			run: func(svc *sandbox.Service) error {
+				_, err := svc.ListDir(t.Context(), "sandbox1", "srv")
+
+				return err
+			},
+			want: isRequestError,
+		},
+		{
+			name: "a delete of the root",
+			sb:   running(),
+			run: func(svc *sandbox.Service) error {
+				return svc.DeleteFile(t.Context(), "sandbox1", "/", true)
+			},
+			want: isRequestError,
+		},
+		{
+			name: "a delete of the root spelled another way",
+			sb:   running(),
+			run: func(svc *sandbox.Service) error {
+				return svc.DeleteFile(t.Context(), "sandbox1", "//srv/..", true)
+			},
+			want: isRequestError,
+		},
+		{
+			name: "a delete in a stopped sandbox",
+			sb:   stopped(),
+			run: func(svc *sandbox.Service) error {
+				return svc.DeleteFile(t.Context(), "sandbox1", "/srv/a", false)
+			},
+			want: isNotRunning,
 		},
 		{
 			name: "a stopped sandbox",

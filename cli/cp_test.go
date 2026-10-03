@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/tarball"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -36,6 +38,15 @@ func fakeGuest(t *testing.T, root string) func(models.ExecSpec) (models.ExitStat
 			}
 		}
 
+		if header.Op == supervisor.OpUnpack {
+			if err := tarball.Unpack(spec.Stdin, host, tarball.Options{KeepSetid: true}); err != nil {
+				return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: err.Error(), Code: supervisor.FileInvalid})
+			}
+			if _, err := io.Copy(io.Discard, spec.Stdin); err != nil {
+				return models.ExitStatus{}, err
+			}
+		}
+
 		info, err := os.Lstat(host)
 		if errors.Is(err, fs.ErrNotExist) {
 			return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file or directory", Code: supervisor.FileNotFound})
@@ -51,6 +62,9 @@ func fakeGuest(t *testing.T, root string) func(models.ExecSpec) (models.ExitStat
 			return models.ExitStatus{}, err
 		}
 
+		if header.Op == supervisor.OpPack {
+			return models.ExitStatus{}, tarball.Pack(spec.Stdout, host, filepath.Base(host))
+		}
 		if header.Op == supervisor.OpGet {
 			content, err := os.ReadFile(host)
 			if err != nil {
@@ -197,15 +211,147 @@ func TestCpKeepsTheGuestsRefusal(t *testing.T) {
 	}
 }
 
-func TestCpRefusesADirectorySource(t *testing.T) {
+func TestCpRefusesASourceThatIsNeitherAFileNorADirectory(t *testing.T) {
 	app, provider, _ := newCpApp(t)
 
-	err := app.Run(t.Context(), []string{"cp", t.TempDir(), "sandbox1:/srv/"})
-	if err == nil || !strings.Contains(err.Error(), "is not one") {
-		t.Fatalf("cp of a directory gave %v, want a refusal", err)
+	err := app.Run(t.Context(), []string{"cp", os.DevNull, "sandbox1:/srv/"})
+	if err == nil || !strings.Contains(err.Error(), "is neither") {
+		t.Fatalf("cp of a device gave %v, want a refusal", err)
 	}
 	if provider.execSpec.Argv != nil {
 		t.Fatalf("the refusal still ran an exec: %v", provider.execSpec.Argv)
+	}
+}
+
+// tree lays out a directory of a file, a subdirectory with its own mode and a symlink, under parent/name.
+func tree(t *testing.T, parent, name string) string {
+	t.Helper()
+
+	root := filepath.Join(parent, name)
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatalf("make %s: %v", root, err)
+	}
+	for p, mode := range map[string]fs.FileMode{root: 0o750, filepath.Join(root, "sub"): 0o700} {
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatalf("chmod %s: %v", p, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "app.conf"), []byte("port=80\n"), 0o640); err != nil {
+		t.Fatalf("write app.conf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write run.sh: %v", err)
+	}
+	if err := os.Symlink("app.conf", filepath.Join(root, "current")); err != nil {
+		t.Fatalf("link current: %v", err)
+	}
+
+	return root
+}
+
+func checkTree(t *testing.T, root string) {
+	t.Helper()
+
+	checkFile(t, filepath.Join(root, "app.conf"), "port=80\n", 0o640)
+	checkFile(t, filepath.Join(root, "sub", "run.sh"), "#!/bin/sh\n", 0o755)
+	if link, err := os.Readlink(filepath.Join(root, "current")); err != nil || link != "app.conf" {
+		t.Fatalf("current links to %q, %v, want app.conf", link, err)
+	}
+	for p, mode := range map[string]fs.FileMode{root: 0o750, filepath.Join(root, "sub"): 0o700} {
+		info, err := os.Stat(p)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("%s has mode %v, %v, want %v", p, info.Mode().Perm(), err, mode)
+		}
+	}
+}
+
+func TestCpPutsAHostDirectory(t *testing.T) {
+	cases := []struct {
+		dst  string
+		want string
+	}{
+		{dst: "sandbox1:/srv/", want: "srv/app"},
+		{dst: "sandbox1:/srv", want: "srv/app"},
+		{dst: "sandbox1:/srv/renamed", want: "srv/renamed"},
+	}
+	for _, c := range cases {
+		t.Run(c.dst, func(t *testing.T) {
+			app, provider, guestRoot := newCpApp(t)
+			src := tree(t, t.TempDir(), "app")
+
+			if err := app.Run(t.Context(), []string{"cp", "--user", "app", src, c.dst}); err != nil {
+				t.Fatalf("cp: %v", err)
+			}
+
+			checkTree(t, filepath.Join(guestRoot, c.want))
+			if provider.execSpec.User != "app" {
+				t.Fatalf("the unpack ran as %q, want app", provider.execSpec.User)
+			}
+		})
+	}
+}
+
+func TestCpCopiesAGuestDirectoryOut(t *testing.T) {
+	app, _, guestRoot := newCpApp(t)
+	tree(t, filepath.Join(guestRoot, "srv"), "data")
+	hostDir := t.TempDir()
+
+	if err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/data", hostDir}); err != nil {
+		t.Fatalf("cp into a directory: %v", err)
+	}
+	checkTree(t, filepath.Join(hostDir, "data"))
+
+	if err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/data", filepath.Join(hostDir, "copy")}); err != nil {
+		t.Fatalf("cp to a new name: %v", err)
+	}
+	checkTree(t, filepath.Join(hostDir, "copy"))
+}
+
+// The sandbox writes the tar a copy out unpacks, so a guest that lies lands nothing outside the destination.
+func TestCpOutOfAHostileGuestStaysInTheDestination(t *testing.T) {
+	app, provider, _ := newCpApp(t)
+	provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+		var header supervisor.FileHeader
+		if err := supervisor.ReadHeader(spec.Stdin, &header); err != nil {
+			return models.ExitStatus{}, err
+		}
+		if err := supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Stat: &models.FileStat{Type: models.FileDir, Mode: 0o755}}); err != nil {
+			return models.ExitStatus{}, err
+		}
+		if header.Op != supervisor.OpPack {
+			return models.ExitStatus{}, nil
+		}
+
+		tw := tar.NewWriter(spec.Stdout)
+		for _, hdr := range []*tar.Header{
+			{Name: "data/", Typeflag: tar.TypeDir, Mode: 0o755},
+			{Name: "data/escape", Typeflag: tar.TypeSymlink, Linkname: "../../outside"},
+			{Name: "data/escape/planted", Typeflag: tar.TypeReg, Mode: 0o644},
+		} {
+			if err := tw.WriteHeader(hdr); err != nil {
+				return models.ExitStatus{}, err
+			}
+		}
+
+		return models.ExitStatus{}, tw.Close()
+	}
+	parent := t.TempDir()
+	dst := filepath.Join(parent, "host", "out")
+	for _, d := range []string{"host", "outside"} {
+		if err := os.Mkdir(filepath.Join(parent, d), 0o755); err != nil {
+			t.Fatalf("make %s: %v", d, err)
+		}
+	}
+
+	err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/data", dst})
+	if err == nil || !strings.Contains(err.Error(), "data/escape") {
+		t.Fatalf("cp of a hostile tar gave %v, want the refusal of data/escape", err)
+	}
+	if left, err := os.ReadDir(filepath.Join(parent, "outside")); err != nil || len(left) != 0 {
+		t.Fatalf("outside the destination holds %v, %v, want nothing", left, err)
+	}
+	if left, err := os.ReadDir(dst); err != nil || len(left) != 0 {
+		t.Fatalf("the destination holds %v, %v, want the refused link gone", left, err)
 	}
 }
 
