@@ -260,7 +260,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	return s.record(id)
 }
 
-// Fork starts a new sandbox from the snapshot of another, and reads nothing else of the source.
+// Fork starts a new sandbox from a capture of another as it runs, and reads nothing else of the source.
 func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb models.Sandbox, err error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbFork); err != nil {
 		return models.Sandbox{}, err
@@ -337,7 +337,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 }
 
 // Clone starts a new sandbox over a copy of the files another one kept, and runs its entrypoint from
-// the beginning. It takes no memory: that is fork, which reads a snapshot.
+// the beginning. It takes no memory: that is fork, which captures the running source.
 func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb models.Sandbox, err error) {
 	// No capability gate: every provider copies files and starts a sandbox, so clone is mandatory.
 	source, src, unlock, err := s.readSource(ctx, ref, req)

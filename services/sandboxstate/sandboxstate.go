@@ -70,7 +70,7 @@ func (r *Repository) Dir(id string) (string, error) {
 	return r.dir(id), nil
 }
 
-// SnapshotDir is where a pause writes and a fork reads. It is not created until one happens.
+// SnapshotDir is where a pause writes and a resume reads. It is not created until one happens.
 func (r *Repository) SnapshotDir(id string) (string, error) {
 	if err := ValidID(id); err != nil {
 		return "", err

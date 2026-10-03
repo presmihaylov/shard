@@ -283,8 +283,8 @@ frames would need a second hop to reach the proxy anyway.
   that clone and resumes. Then it sends one re-address message on
   the control port, so the guest drops the source's address and takes its own (hypeman's issue 423
   is a fork that answers on the old IP). A source that resumed and wrote to its disk after the pause
-  still forks from the pause-time pair, the way gVisor forks the layers that `Pause` exported. The
-  fork ticket (SHARD-215) ships that resumed-source regression case.
+  still forks from the pause-time pair. The fork ticket (SHARD-215) ships that resumed-source
+  regression case.
 
 A restore refuses a VM whose configuration differs from the saved one, and the machine identifier
 is part of that configuration. The framework generates a fresh identifier per configuration, so the

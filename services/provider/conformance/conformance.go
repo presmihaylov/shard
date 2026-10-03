@@ -61,7 +61,7 @@ const (
 	execCancelDelay = 500 * time.Millisecond
 )
 
-// forkCount is how many sandboxes one snapshot feeds at once: three, so nothing in a provider can count on a pair.
+// forkCount is how many sandboxes one running source feeds: three, so nothing in a provider can count on a pair.
 const forkCount = 3
 
 // Run executes the suite. A verb with a false capability must refuse before its subtest skips.
