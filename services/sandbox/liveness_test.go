@@ -277,6 +277,39 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 }
 
+// A marked pause whose shim went silent and then died left a complete checkpoint, and the death must not lose it (SHARD-442).
+func TestLivenessPausesAMarkedRecordWhoseShimWentSilentAndThenDied(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, silentShim())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	silent := lab.l.repo.sb
+	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Snapshot != "" {
+		t.Fatalf("the record is %s with mark %v and snapshot %q, want unresponsive with the mark kept and no pause: the shim may still answer", silent.State, silent.Pausing, silent.Snapshot)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, silent, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
+		t.Errorf("the record is %s with pid %d, snapshot %q, mark %v and the reasons %q and %q; want paused with pid 0, %s, no mark and no reason", got.State, got.PID, got.Snapshot, got.Pausing, got.UnresponsiveReason, got.StoppedReason, dir)
+	}
+	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
+		t.Errorf("the passes reported %v, want the silence and then the pause of an unresponsive record", lab.reports)
+	}
+}
+
 // A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, which the tick must release (SHARD-366).
 func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	dir := t.TempDir()

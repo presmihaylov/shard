@@ -1,6 +1,6 @@
 # The sandbox state machine
 
-Seven states, fourteen legal moves. `models/state.go` is the code; this page is the picture.
+Seven states, fifteen legal moves. `models/state.go` is the code; this page is the picture.
 
 ```mermaid
 stateDiagram-v2
@@ -15,6 +15,7 @@ stateDiagram-v2
     running --> failed: a pause that lost the guest
     running --> unresponsive: the substrate process missed its probe bound
     unresponsive --> running: the process answers again
+    unresponsive --> paused: the process died after a marked pause wrote its checkpoint
     unresponsive --> stopped: stop
     paused --> running: resume (the snapshot survives)
     paused --> stopped: stop
@@ -37,6 +38,7 @@ stateDiagram-v2
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
 | `running` | `unresponsive` | the liveness tick, or a vz `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
+| `unresponsive` | `paused` | the liveness tick or a restart, when the process died after a marked pause wrote its checkpoint | yes: vz, Firecracker |
 | `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
 | `paused` | `running` | `resume` | yes: gVisor |
 | `paused` | `stopped` | `stop` | yes |
@@ -82,7 +84,9 @@ the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer wi
 and `exec` adds `wait for it to answer, or end it with shard stop <id>`. An `exec` or a `pause` that
 finds the shim silent writes `unresponsive` at once, not at the next tick, and a `pause` spends one
 5 s bound on it (SHARD-424). When a later probe answers,
-the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one more probe of
+the next liveness tick writes `running` again. A shim that dies under a pause mark, over the complete
+checkpoint that pause wrote, makes the record `paused` with that snapshot, as a running one would (SHARD-442).
+`stop` and `rm --force` give the shim one more probe of
 1 s, then kill it by its pid with no grace (SHARD-421). On Firecracker the same holds for a vmm a
 restart meets only by its socket, with a bound of 4 s and a reason that names the vmm's pid
 (SHARD-392).

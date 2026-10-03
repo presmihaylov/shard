@@ -455,6 +455,43 @@ func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 }
 
+// A marked record a silent shim made unresponsive keeps its pause when the shim is gone by the restart (SHARD-442).
+func TestReconcilePausesAMarkedUnresponsiveRecordWhoseShimDied(t *testing.T) {
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
+	dir := heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
+		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "said unresponsive") {
+		t.Errorf("the reconcile reported %v, want one line on the pause of an unresponsive record", lab.reports)
+	}
+}
+
+// A shim still silent may answer with the guest past its checkpoint, so the restart takes no pause from it.
+func TestReconcileKeepsAMarkedRecordWhoseShimIsStillSilentUnresponsive(t *testing.T) {
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": silentShim()}}, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateUnresponsive || !got.Pausing || got.Snapshot != "" || got.PID != 42 {
+		t.Errorf("the record is %+v, want unresponsive with its pid and the mark kept, and no snapshot", *got)
+	}
+}
+
 // A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, and the reconcile finishes that pause (SHARD-366).
 func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}

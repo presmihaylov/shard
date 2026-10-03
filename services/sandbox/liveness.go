@@ -98,7 +98,7 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return err
 	}
 	if dir != "" {
-		return s.recordCutPause(sb.ID, dir, report)
+		return s.recordCutPause(sb.ID, current.State, dir, report)
 	}
 	if ranPast(current, status) {
 		if err := s.dropMark(sb.ID, report); err != nil {

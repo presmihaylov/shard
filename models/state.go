@@ -27,7 +27,7 @@ var legalTransitions = map[State][]State{
 	StateCreated:      {StateRunning, StateStopped, StateFailed},
 	StateRunning:      {StatePaused, StateStopped, StateUnresponsive, StateFailed},
 	StatePaused:       {StateRunning, StateStopped},
-	StateUnresponsive: {StateRunning, StateStopped},
+	StateUnresponsive: {StateRunning, StatePaused, StateStopped},
 	StateStopped:      {StateRunning},
 	StateFailed:       {},
 }
