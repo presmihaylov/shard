@@ -1,0 +1,114 @@
+package supervisor_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/supervisor"
+)
+
+// guestDialer hands Exec one end of a pipe, and the guest end to serve once it has read the exec header.
+func guestDialer(t *testing.T, serve func(net.Conn) error) supervisor.Dialer {
+	t.Helper()
+
+	return func(context.Context, uint32) (net.Conn, error) {
+		host, guest := net.Pipe()
+		go func() {
+			defer guest.Close()
+			var header supervisor.ExecHeader
+			if err := supervisor.ReadHeader(guest, &header); err != nil {
+				t.Errorf("read the header: %v", err)
+
+				return
+			}
+			if err := serve(guest); err != nil {
+				t.Errorf("serve the exec: %v", err)
+			}
+		}()
+
+		return host, nil
+	}
+}
+
+// A guest that took the connection and never the exec is the listener SHARD-354 lost: the exec fails by name, not as running forever.
+func TestExecFailsByNameWhenTheGuestNeverStartsIt(t *testing.T) {
+	supervisor.SetStartTimeout(t, 100*time.Millisecond)
+	dial := guestDialer(t, func(guest net.Conn) error {
+		_, err := io.Copy(io.Discard, guest)
+
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"true"}}, models.ExecSpec{})
+	if !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "the guest did not start it within 100ms") {
+		t.Fatalf("exec gave %v, want the start bound by name", err)
+	}
+}
+
+// The bound is on the start alone: a command that runs past it after its started frame still reports its exit.
+func TestExecOutlivesTheStartBoundOnceStarted(t *testing.T) {
+	supervisor.SetStartTimeout(t, 100*time.Millisecond)
+	dial := guestDialer(t, func(guest net.Conn) error {
+		go func() { _, _ = io.Copy(io.Discard, guest) }()
+		if err := supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 42}); err != nil {
+			return err
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		return supervisor.WriteJSONFrame(guest, supervisor.StreamExit, supervisor.ExitFrame{Code: 7})
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	exit, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, models.ExecSpec{})
+	if err != nil || exit.Code != 7 {
+		t.Fatalf("exec gave %+v, %v, want code 7", exit, err)
+	}
+}
+
+// A guest that took the connection and never reads the header holds the write, which the start bound ends by name too.
+func TestExecFailsByNameWhenTheGuestNeverReadsTheHeader(t *testing.T) {
+	supervisor.SetStartTimeout(t, 100*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := supervisor.Exec(ctx, unreadDialer(t), "sb", supervisor.ExecHeader{Argv: []string{"true"}}, models.ExecSpec{})
+	if !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "the guest did not start it within 100ms") {
+		t.Fatalf("exec gave %v, want the start bound by name", err)
+	}
+}
+
+// The caller's deadline ends a header write no guest reads, well before the start bound would.
+func TestExecEndsByItsContextWhileTheHeaderWaits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, err := supervisor.Exec(ctx, unreadDialer(t), "sb", supervisor.ExecHeader{Argv: []string{"true"}}, models.ExecSpec{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("exec gave %v, want the caller's deadline", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("exec took %s on a deadline of 100ms", took)
+	}
+}
+
+// unreadDialer hands Exec one end of a pipe whose guest end nobody reads, so the header write blocks.
+func unreadDialer(t *testing.T) supervisor.Dialer {
+	t.Helper()
+
+	return func(context.Context, uint32) (net.Conn, error) {
+		host, guest := net.Pipe()
+		t.Cleanup(func() { guest.Close() })
+
+		return host, nil
+	}
+}
