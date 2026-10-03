@@ -92,25 +92,6 @@ func TestInitPathFromEnv(t *testing.T) {
 	}
 }
 
-func TestParseCreateHealthFlags(t *testing.T) {
-	req, err := parseCreate([]string{"--health-command", "test -e /ready", "--health-interval", "5s", "--health-timeout", "2s", "--health-retries", "2", "alpine:3.20"})
-	if err != nil {
-		t.Fatalf("parseCreate: %v", err)
-	}
-	want := &models.HealthCheck{Command: []string{"/bin/sh", "-c", "test -e /ready"}, Interval: 5, Timeout: 2, Retries: 2}
-	if !reflect.DeepEqual(req.Health, want) {
-		t.Errorf("health = %+v, want %+v", req.Health, want)
-	}
-
-	req, err = parseCreate([]string{"alpine:3.20"})
-	if err != nil {
-		t.Fatalf("parseCreate: %v", err)
-	}
-	if req.Health != nil {
-		t.Errorf("health = %+v, want none when no flag asked for a probe", req.Health)
-	}
-}
-
 func TestParseCreateRestartFlags(t *testing.T) {
 	req, err := parseCreate([]string{"--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "alpine:3.20", "sleep", "60"})
 	if err != nil {
@@ -174,6 +155,7 @@ func TestParseCreateRejections(t *testing.T) {
 		"an unknown flag":        {"--forever", "alpine:3.20"},
 		"the old init flag":      {"--shard-init", "/opt/shard-init", "alpine:3.20"},
 		"the dropped http probe": {"--health-http", "8080/healthz", "alpine:3.20"},
+		"the dropped probe":      {"--health-command", "true", "alpine:3.20"},
 		"an env with no value":   {"--env", "DEBUG", "alpine:3.20"},
 		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":    {"--env", "=1", "alpine:3.20"},
@@ -184,10 +166,6 @@ func TestParseCreateRejections(t *testing.T) {
 		"a negative disk bound":     {"--disk", "-1", "alpine:3.20"},
 		"a disk that overflows":     {"--disk", "17592186044416", "alpine:3.20"},
 		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
-		"a probe setting alone":     {"--health-retries", "2", "alpine:3.20"},
-		"a sub-second interval":     {"--health-command", "true", "--health-interval", "500ms", "alpine:3.20"},
-		"a negative timeout":        {"--health-command", "true", "--health-timeout", "-1s", "alpine:3.20"},
-		"a negative retry count":    {"--health-command", "true", "--health-retries", "-1", "alpine:3.20"},
 		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20"},
 		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20"},
 		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20"},

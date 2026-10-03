@@ -26,7 +26,7 @@ func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 		t.Fatalf("the first line is %q, want marker", line)
 	}
 
-	if err := app.Run(t.Context(), []string{"stop", "--time", "1s", id}); err != nil {
+	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 

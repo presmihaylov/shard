@@ -37,7 +37,6 @@ PROVIDER=${PROVIDER:-gvisor}
 # Where the daemon pins each sandbox's user namespace on sysbox (pkg/netns.UsernsRunDir).
 USERNS_DIR=/var/run/shard/userns
 DIND_IMAGE=${DIND_IMAGE:-docker:27-dind}
-GRACE=${GRACE:-5s}
 # The two loopback ports the TCP front binds in this run: one over the daemon, one over nothing.
 SERVE_PORT=${SERVE_PORT:-12376}
 LONE_PORT=${LONE_PORT:-12377}
@@ -748,7 +747,7 @@ snapshot_steps() {
 	say "the source does not see what the fork wrote"
 
 	step "stop and remove the fork"
-	shard stop --time "${GRACE}" "${FORK_ID}" >/dev/null
+	shard stop "${FORK_ID}" >/dev/null
 	shard rm "${FORK_ID}" >/dev/null
 	absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${FORK_ID}" || true)"
 	absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
@@ -1434,7 +1433,7 @@ step "carry stdin into a command"
 GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" /bin/cat)
 expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
 
-# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, health, the policy and a live follow.
+# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, the dropped health field, the policy and a live follow.
 # Each is one function that makes its own sandboxes over the socket, asserts, and removes them.
 
 # track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
@@ -1545,7 +1544,7 @@ alone_in() {
 
 # no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
 no_command_steps() {
-	local id clone code refusal policy
+	local id clone code refusal policy started took
 
 	step "create with no command runs only shard-init and stays up"
 	id=$(shard create "${IMAGE}")
@@ -1556,7 +1555,11 @@ no_command_steps() {
 	alone_in "${id}" "after the create"
 
 	step "stop a sandbox with no command and find no exit"
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	started=$(date +%s.%N)
+	shard stop "${id}" >/dev/null
+	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+	# Nothing runs under shard-init, so the stop never spends the 30 s grace (SHARD-460).
+	awk -v t="${took}" 'BEGIN { exit !(t < 10) }' || fail "the stop of a sandbox with no command took ${took} s"
 	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard ls --all does not list the sandbox with no command stopped"
 	# The image's CMD would have exited by now and its status would land at the stop, so none proves it never ran.
 	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
@@ -1566,7 +1569,7 @@ no_command_steps() {
 	shard start "${id}" >/dev/null
 	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running after the start"
 	alone_in "${id}" "after a start"
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	shard stop "${id}" >/dev/null
 	clone=$(shard clone "${id}")
 	track_sandbox "${clone}"
 	[ "$(listed_state "${clone}")" = "running" ] || fail "the clone of the sandbox with no command is not running"
@@ -1632,59 +1635,14 @@ exec_cap_steps() {
 	drop_sandbox "${id}"
 }
 
-# health_steps drives the health probe to healthy, to unhealthy, through a flap, and refuses one with no command (SHARD-54).
+# health_steps proves the daemon takes no health probe: a create body that names one is refused (SHARD-455).
 health_steps() {
-	local id rec
-
-	step "a command health check reaches healthy"
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/true\"],\"interval\":1,\"retries\":2}}" | json_field id)
-	[ -n "${id}" ] || fail "the healthy-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"healthy"' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"healthy"' "${rec}" || fail "a passing probe never reached healthy: $(cat "${rec}")"
-	say "a command health check reaches healthy"
-	drop_sandbox "${id}"
-
-	step "a failing probe reaches unhealthy after the retries"
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/false\"],\"interval\":1,\"retries\":2}}" | json_field id)
-	[ -n "${id}" ] || fail "the failing-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"unhealthy"' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"unhealthy"' "${rec}" || fail "a failing probe never reached unhealthy: $(cat "${rec}")"
-	grep -q '"failures": *[2-9]' "${rec}" || fail "the unhealthy record counts fewer than the 2 retries: $(cat "${rec}")"
-	say "a failing probe reaches unhealthy after the retries it allows"
-	drop_sandbox "${id}"
-
-	step "a flapping probe stays healthy and resets its failures"
-	# The probe fails once and then passes, so the one failure it counted folds back to zero at the next pass.
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/sh\",\"-c\",\"if [ -e /tmp/probed ]; then exit 0; fi; touch /tmp/probed; exit 1\"],\"interval\":1,\"retries\":3}}" | json_field id)
-	[ -n "${id}" ] || fail "the flapping-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"healthy"' "${rec}" && grep -q '"failures": *0' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"healthy"' "${rec}" || fail "the flapping probe did not settle healthy: $(cat "${rec}")"
-	grep -q '"failures": *0' "${rec}" || fail "the flapping probe did not reset its failures: $(cat "${rec}")"
-	grep -q '"status": *"unhealthy"' "${rec}" && fail "the flapping probe reached unhealthy on one failure: $(cat "${rec}")"
-	say "a flapping probe stays healthy and resets its failures"
-	drop_sandbox "${id}"
-
-	step "refuse a health check with no command"
-	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"interval\":1}}"
-	[ "${REPLY_CODE}" = "400" ] || fail "a health check with no command answered ${REPLY_CODE}, want 400"
+	step "refuse a create body that names a health check"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"command\":[\"/bin/true\"]}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a create body with a health check answered ${REPLY_CODE}, want 400"
 	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
-	grep -q 'health names no command' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing command: ${REPLY_BODY}"
-	say "the API refuses a health check with no command, 400 invalid_request"
+	grep -q 'unknown field' <<<"${REPLY_BODY}" || fail "the refusal does not name the unknown field: ${REPLY_BODY}"
+	say "the API refuses a create body that names a health check, 400 invalid_request"
 }
 
 # restart_policy_steps drives the supervisor policy: on-failure, always, a clean exit, a bare outlive, and refusals (SHARD-55).
@@ -1902,7 +1860,7 @@ disk_bound_steps() {
 
 	step "the disk survives a stop and a start"
 	shard exec "${id}" /bin/sh -c 'echo before-the-stop > /root/marker' >/dev/null
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	shard stop "${id}" >/dev/null
 	# sysbox-runc holds a stopped sandbox, and sysbox-mgr chowns its upper layer back at delete, so the disk stays up until then.
 	disk_mount=$(mount | grep " on ${SHARD_ROOT}/sandboxes/${id}/disk " || true)
 	case "${PROVIDER}" in
@@ -1913,7 +1871,7 @@ disk_bound_steps() {
 	expect_exec_in "${id}" "before-the-stop" "the marker survives the stop and start" /bin/cat /root/marker
 
 	step "a clone is bounded the way its source was"
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	shard stop "${id}" >/dev/null
 	clone=$(shard clone --name e2e-disk-clone "${id}")
 	track_sandbox "${clone}"
 	grep -q '"disk_mib": *64' "$(rec_of "${clone}")" || fail "the clone record does not carry the disk bound: $(cat "$(rec_of "${clone}")")"
@@ -1921,6 +1879,62 @@ disk_bound_steps() {
 	expect_exec_in "${clone}" "1" "a fill past the bound fails in the clone too" /bin/sh -c "${fill_root}"
 	say "the clone carries disk_mib 64 and its own disk bounds it"
 	drop_sandbox "${clone}"
+	drop_sandbox "${id}"
+}
+
+# stop_grace_steps prove SHARD-460: the grace is fixed at 30 s, a stop ends with an entrypoint that exits on SIGTERM, and kills one that ignores it at 30 s.
+stop_grace_steps() {
+	local id code refusal started took
+
+	step "refuse the removed --time and the API grace"
+	id=$(shard create "${IMAGE}" /bin/sleep 600)
+	track_sandbox "${id}"
+	code=0
+	refusal=$(shard stop --time 5s "${id}" 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "shard stop --time exited 0, and the flag is removed"
+	expect "${refusal}" "shard: unknown flag --time; run shard stop --help" "stop refuses --time as an unknown flag"
+	code=0
+	refusal=$(shard rm --force --time 5s "${id}" 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "shard rm --force --time exited 0, and the flag is removed"
+	expect "${refusal}" "shard: unknown flag --time; run shard rm --help" "rm refuses --time as an unknown flag"
+	api_call POST "/v0/sandboxes/${id}/stop" '{"grace":5}'
+	[ "${REPLY_CODE}" = "400" ] || fail "a stop with a grace answered ${REPLY_CODE}, want 400"
+	grep -q 'unknown field .*grace' <<<"${REPLY_BODY}" || fail "the stop refusal does not name the grace: ${REPLY_BODY}"
+	api_call DELETE "/v0/sandboxes/${id}?force=true&grace=5" ''
+	[ "${REPLY_CODE}" = "400" ] || fail "an rm with a grace answered ${REPLY_CODE}, want 400"
+	grep -q 'the query grace is removed' <<<"${REPLY_BODY}" || fail "the rm refusal does not name the grace: ${REPLY_BODY}"
+	expect "$(listed_state "${id}")" "running" "the API refuses a grace on stop and on rm with 400, and the sandbox runs on"
+
+	step "a stop ends as soon as the entrypoint exits on SIGTERM"
+	started=$(date +%s.%N)
+	shard stop "${id}" >/dev/null
+	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+	awk -v t="${took}" 'BEGIN { exit !(t < 10) }' || fail "the stop took ${took} s, and the entrypoint exits on SIGTERM"
+	grep -q '"signal": *15' "$(rec_of "${id}")" || fail "the record holds no SIGTERM exit: $(cat "$(rec_of "${id}")")"
+	say "on ${PROVIDER} the stop took ${took} s of the 30 s grace, and the record holds the SIGTERM exit"
+
+	step "rm --force stops a running sandbox, then deletes it"
+	shard start "${id}" >/dev/null
+	shard rm --force "${id}" >/dev/null
+	untrack_sandbox "${id}"
+	absent "the record of the sandbox rm --force stopped" "$([ -e "${SHARD_ROOT}/sandboxes/${id}" ] && echo "${SHARD_ROOT}/sandboxes/${id}" || true)"
+
+	# The kill costs the full 30 s, so gvisor proves it end to end and the provider unit tests cover the rest.
+	[ "${PROVIDER}" = "gvisor" ] || return 0
+	step "a stop kills an entrypoint that ignores SIGTERM at 30 s"
+	id=$(shard create "${IMAGE}" /bin/sh -c "trap '' TERM; echo e2e-ignores-term; while true; do sleep 1; done")
+	track_sandbox "${id}"
+	for _ in $(seq 1 50); do
+		holds "e2e-ignores-term" shard logs "${id}" && break
+		sleep 0.2
+	done
+	holds "e2e-ignores-term" shard logs "${id}" || fail "the entrypoint never said it ignores SIGTERM"
+	started=$(date +%s.%N)
+	shard stop "${id}" >/dev/null
+	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+	# The 15 s past the grace covers the kill and the settle after it.
+	awk -v t="${took}" 'BEGIN { exit !(t >= 30 && t < 45) }' || fail "the stop took ${took} s, want the 30 s grace and then the kill"
+	expect "$(listed_state "${id}")" "stopped" "on ${PROVIDER} the stop took ${took} s: the 30 s grace, then the kill"
 	drop_sandbox "${id}"
 }
 
@@ -1932,6 +1946,7 @@ restart_policy_steps
 http_follow_steps
 oom_restart_steps
 disk_bound_steps
+stop_grace_steps
 
 # snapshot_refusals prove a provider without snapshots refuses each verb by name and leaves the sandbox running.
 snapshot_refusals() {
@@ -1980,7 +1995,7 @@ docker_steps() {
 	absent "the nested image in the host store" "$(shard image ls | grep e2e-nested || true)"
 
 	step "stop and remove the dockerd sandbox"
-	shard stop --time "${GRACE}" "${DIND_ID}" >/dev/null
+	shard stop "${DIND_ID}" >/dev/null
 	[ "$(listed_state "${DIND_ID}")" = "stopped" ] || fail "shard ls --all does not list the dockerd sandbox stopped"
 	shard rm "${DIND_ID}" >/dev/null
 	absent "the dockerd sandbox's record" "$([ -e "${SHARD_ROOT}/sandboxes/${DIND_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${DIND_ID}" || true)"
@@ -2017,7 +2032,7 @@ done
 grep -q "shard-e2e-entrypoint" "${PLAIN_LOG}" || fail "curl -N on logs?follow=true printed nothing while the sandbox ran"
 
 step "stop the sandbox"
-shard stop --time "${GRACE}" "${ID}" >/dev/null
+shard stop "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"
 say "the record says stopped"
 
@@ -2113,7 +2128,7 @@ say "the clones share nothing with each other or with the source, which is still
 
 step "stop and remove the clones"
 for CLONE_ID in "$@"; do
-	shard stop --time "${GRACE}" "${CLONE_ID}" >/dev/null
+	shard stop "${CLONE_ID}" >/dev/null
 	shard rm "${CLONE_ID}" >/dev/null
 	absent "the record of clone ${CLONE_ID}" "$([ -e "${SHARD_ROOT}/sandboxes/${CLONE_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${CLONE_ID}" || true)"
 done
@@ -2155,7 +2170,7 @@ expect_blocked "${ID}" "the policy holds after the start"
 expect_fronted "${ID}" "the proxy fronts the sandbox after the start"
 
 step "stop the started sandbox"
-shard stop --time "${GRACE}" "${ID}" >/dev/null
+shard stop "${ID}" >/dev/null
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"
 say "the record says stopped"
 
@@ -2171,7 +2186,7 @@ expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder before the grant
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null 2>&1 && fail "secret grant took a running sandbox"
 say "secret grant refuses a running sandbox"
 
-shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard stop "${GRANT_ID}" >/dev/null
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null
 holds '"E2E_TOKEN"' shard inspect "${GRANT_ID}" || fail "inspect does not name the grant"
 shard start "${GRANT_ID}" >/dev/null
@@ -2186,7 +2201,7 @@ say "the grant turns the sandbox's 80 and 443 to the proxy"
 expect_fronted "${GRANT_ID}" "the grant fronts the sandbox, and the proxy puts the value in"
 
 step "ungrant the secret and prove the placeholder is gone"
-shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard stop "${GRANT_ID}" >/dev/null
 shard secret ungrant "${GRANT_ID}" E2E_TOKEN >/dev/null
 holds '"E2E_TOKEN"' shard inspect "${GRANT_ID}" && fail "inspect still names the grant"
 shard start "${GRANT_ID}" >/dev/null
@@ -2208,7 +2223,7 @@ REFUSAL=$(shard policy attach "${GRANT_ID}" e2e-attach 2>&1) || CODE=$?
 echo "${REFUSAL}" | grep -q "stop it first" || fail "policy attach said '${REFUSAL}', want the fix"
 say "policy attach refuses a running sandbox"
 
-shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard stop "${GRANT_ID}" >/dev/null
 shard policy attach "${GRANT_ID}" e2e-attach >/dev/null
 shard start "${GRANT_ID}" >/dev/null
 fronted "${GRANT_ID}" || fail "the attach did not turn the sandbox's 80 to the proxy"
@@ -2231,7 +2246,7 @@ echo "${REFUSAL}" | grep -q "${GRANT_ID}" || fail "policy rm said '${REFUSAL}', 
 say "policy rm refuses the attached policy and names the sandbox"
 
 step "detach the policy and prove the sandbox is not fronted any more"
-shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard stop "${GRANT_ID}" >/dev/null
 shard policy detach "${GRANT_ID}" >/dev/null
 shard start "${GRANT_ID}" >/dev/null
 fronted "${GRANT_ID}" && fail "the detached sandbox still holds a dnat to the proxy"
@@ -2247,7 +2262,7 @@ holds '"policy"' shard inspect "${GRANT_ID}" && fail "the refused attach wrote t
 say "policy attach refuses a policy the host does not hold and writes nothing"
 
 
-shard stop --time "${GRACE}" "${GRANT_ID}" >/dev/null
+shard stop "${GRANT_ID}" >/dev/null
 GRANT_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
 GRANT_ADDRESS="${GRANT_ADDRESS%%/*}"
 shard rm "${GRANT_ID}" >/dev/null

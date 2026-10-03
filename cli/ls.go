@@ -49,10 +49,10 @@ func (a App) ls(ctx context.Context, args []string) error {
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tRESTART\tHEALTH\tPOLICY")
+	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tRESTART\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), restart(sb), health(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), restart(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -107,18 +107,6 @@ func spent(policy string, count, limit int, gaveUp bool) string {
 	}
 
 	return policy
-}
-
-// health is what the probes found, and how many failed in a row out of the retries the sandbox allows.
-func health(sb models.Sandbox) string {
-	if sb.Health == nil {
-		return "-"
-	}
-	if sb.Health.Failures == 0 {
-		return string(sb.Health.Status)
-	}
-
-	return fmt.Sprintf("%s %d/%d", sb.Health.Status, sb.Health.Failures, sb.HealthCheck.Retries)
 }
 
 // uptime is how long the sandbox has run since its last start or resume; only a live one is up.

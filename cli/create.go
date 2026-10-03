@@ -58,19 +58,11 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&restart.policy, "restart", "", "")
 	flags.IntVar(&restart.retries, "restart-retries", 0, "")
 	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "")
-	var health healthFlags
-	flags.StringVar(&health.command, "health-command", "", "")
-	flags.DurationVar(&health.interval, "health-interval", 0, "")
-	flags.DurationVar(&health.timeout, "health-timeout", 0, "")
-	flags.IntVar(&health.retries, "health-retries", 0, "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return sandbox.CreateRequest{}, err
 	}
 
-	if req.Health, err = health.request(); err != nil {
-		return sandbox.CreateRequest{}, err
-	}
 	if req.Restart, err = restart.request(); err != nil {
 		return sandbox.CreateRequest{}, err
 	}
@@ -143,38 +135,6 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 
 	return req, nil
-}
-
-// healthFlags is the probe as the flags spell it, before the daemon's seconds and argv.
-type healthFlags struct {
-	command           string
-	interval, timeout time.Duration
-	retries           int
-}
-
-// request turns the flags into the create body's probe, or nil when no command names one.
-func (h healthFlags) request() (*models.HealthCheck, error) {
-	if h.command == "" {
-		if h.interval != 0 || h.timeout != 0 || h.retries != 0 {
-			return nil, errors.New("--health-interval, --health-timeout and --health-retries tune a probe, set --health-command")
-		}
-
-		return nil, nil
-	}
-
-	hc := &models.HealthCheck{Command: []string{"/bin/sh", "-c", h.command}, Retries: h.retries}
-	var err error
-	if hc.Interval, err = wholeSeconds("--health-interval", h.interval); err != nil {
-		return nil, err
-	}
-	if hc.Timeout, err = wholeSeconds("--health-timeout", h.timeout); err != nil {
-		return nil, err
-	}
-	if h.retries < 0 {
-		return nil, fmt.Errorf("--health-retries is a count and cannot be negative, got %d", h.retries)
-	}
-
-	return hc, nil
 }
 
 // oomRestartFlag reads --restart-on-oom as a bare bool, which is unlimited, or as =N, which caps the starts in a row.

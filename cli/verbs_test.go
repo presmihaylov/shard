@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
@@ -84,13 +83,13 @@ func TestRmForceStopsThenRemovesThroughTheDaemon(t *testing.T) {
 
 	app, d := newClientApp(t, &out, running())
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", "--time", "3s", "sandbox1"}); err != nil {
+	if err := app.Run(t.Context(), []string{"rm", "--force", "sandbox1"}); err != nil {
 		t.Fatalf("rm --force: %v", err)
 	}
 
 	provider := d.providerSvc.(*fakeLifecycleProvider)
-	if !provider.stopped || !provider.removed || provider.grace != 3*time.Second {
-		t.Errorf("rm --force stopped=%v removed=%v grace=%s, want both with 3s", provider.stopped, provider.removed, provider.grace)
+	if !provider.stopped || !provider.removed || provider.grace != models.StopGrace {
+		t.Errorf("rm --force stopped=%v removed=%v grace=%s, want both with the fixed %s", provider.stopped, provider.removed, provider.grace, models.StopGrace)
 	}
 	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
 		t.Errorf("rm printed %q, want the bare id", out.String())
@@ -128,17 +127,17 @@ func TestRmForceOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
 	}
 }
 
-func TestStopPassesTheGraceThroughTheDaemon(t *testing.T) {
+func TestStopGivesTheFixedGraceThroughTheDaemon(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 
-	if err := app.Run(t.Context(), []string{"stop", "--time", "3s", "sandbox1"}); err != nil {
+	if err := app.Run(t.Context(), []string{"stop", "sandbox1"}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	if got := d.providerSvc.(*fakeLifecycleProvider).grace; got != 3*time.Second {
-		t.Errorf("the provider got the grace %s, want 3s", got)
+	if got := d.providerSvc.(*fakeLifecycleProvider).grace; got != models.StopGrace {
+		t.Errorf("the provider got the grace %s, want the fixed %s", got, models.StopGrace)
 	}
 	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
 		t.Errorf("stop printed %q, want the bare id", out.String())

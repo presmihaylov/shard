@@ -215,7 +215,7 @@ func TestStopRecordsTheLastRestartCount(t *testing.T) {
 	svc, l := newService(t, &recorder{}, policied())
 	l.provider.restarts = models.RestartCount{Count: 3, GaveUp: true}
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 

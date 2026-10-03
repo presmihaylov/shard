@@ -618,7 +618,7 @@ func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
 		t.Errorf("the calls were %v, want the view released: no stop frees a view runsc does not hold", r.snapshot())
 	}
 
-	if err := svc.Remove(t.Context(), "sandbox1", true, time.Second); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("rm --force of the paused record: %v", err)
 	}
 	if !l.repo.deleted || !l.provider.removed {
