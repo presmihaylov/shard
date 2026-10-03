@@ -458,6 +458,7 @@ func (s *Service) fail(ctx context.Context, id string, cause error) error {
 		sb.State = models.StateFailed
 		sb.FailedReason = cause.Error()
 		sb.PID = 0
+		sb.Pausing = false
 
 		return nil
 	})

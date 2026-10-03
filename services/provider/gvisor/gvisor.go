@@ -854,7 +854,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)

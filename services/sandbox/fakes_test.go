@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -291,6 +292,8 @@ type fakeProvider struct {
 	pauseCtxErr error
 	// spendBudget makes the pause write its checkpoint and then wait out its deadline, the way a wedged delete does.
 	spendBudget bool
+	// cleanupFails makes the pause write its checkpoint and then fail the delete, with the sentry gone.
+	cleanupFails bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -415,6 +418,16 @@ func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
 		f.status = models.Status{}
 
 		return &models.LostError{Sandbox: id, Err: fmt.Errorf("checkpoint sandbox %s: no space left on device", id)}
+	}
+	if f.spendBudget || f.cleanupFails {
+		if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+			return err
+		}
+	}
+	if f.cleanupFails {
+		f.status = models.Status{}
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: device or resource busy", id)
 	}
 	if f.spendBudget {
 		<-ctx.Done()

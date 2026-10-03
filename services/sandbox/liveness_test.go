@@ -1,6 +1,8 @@
 package sandbox_test
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -107,6 +109,30 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.DiedReason) {
 		t.Errorf("the pass reported %v, want one line on the death", lab.reports)
+	}
+}
+
+// A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
+func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, gone())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
+		t.Errorf("the pass reported %v, want one line on the pause", lab.reports)
 	}
 }
 

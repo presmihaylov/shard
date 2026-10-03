@@ -103,6 +103,12 @@ one:
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
   checkpoint counts as gone: a read that fails for any other reason refuses the start instead, so
   one bad boot cannot end every future `resume` while the checkpoint sits on disk.
+- A record that says `running` with a `pause` in flight, no process behind it and a complete
+  checkpoint in its snapshot becomes `paused`: the daemon stopped after the pause installed the
+  snapshot and before the pause wrote the record. A pause removes the old checkpoint before it marks
+  the record, so the checkpoint found under the mark is that pause's own. Without the mark, a
+  checkpoint is what an earlier pause left, and the record becomes `stopped` as above. The liveness
+  tick applies the same rule.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` is left alone: it never ran.

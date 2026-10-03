@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -54,6 +56,19 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
+	// A checkpoint an earlier pause left would pass for this one's, so it goes before the mark that trusts one (SHARD-366).
+	if err := os.Remove(filepath.Join(dir, checkpointFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return models.Sandbox{}, fmt.Errorf("remove the old checkpoint of sandbox %s: %w", id, err)
+	}
+	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+		sb.Pausing = true
+
+		return nil
+	})
+	if err != nil {
+		return models.Sandbox{}, fmt.Errorf("mark the pause of sandbox %s: %w", id, err)
+	}
+
 	// A client that hangs up mid-checkpoint would cut a save the guest does not survive (SHARD-336).
 	base := context.WithoutCancel(ctx)
 	pctx, cancel := context.WithTimeout(base, s.pauseBudget())
@@ -69,18 +84,28 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, errors.Join(err, s.reconcileGone(base, id, dir))
 	}
 
-	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	if err := s.recordPaused(id, dir); err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return s.record(id)
+}
+
+// recordPaused writes a pause whose checkpoint is complete, whether the pause itself or a reconcile found it.
+func (s *Service) recordPaused(id, dir string) error {
+	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StatePaused
 		sb.PID = 0
 		sb.Snapshot = dir
+		sb.Pausing = false
 
 		return nil
 	})
 	if err != nil {
-		return models.Sandbox{}, fmt.Errorf("sandbox %s is paused but its record was not updated: %w", id, err)
+		return fmt.Errorf("sandbox %s is paused but its record was not updated: %w", id, err)
 	}
 
-	return s.record(id)
+	return nil
 }
 
 // reconcileGone is for a pause that failed: the sandbox still runs and the record is right, or the
@@ -91,35 +116,40 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 		return err
 	}
 	if status.Alive() {
+		err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+			sb.Pausing = false
+
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("sandbox %s still runs but its record was not updated: %w", id, err)
+		}
+
 		return nil
 	}
 
-	// The checkpoint is the last file the provider writes before it deletes, and a pause that lost the guest ended failed above.
+	// The checkpoint is the last file the provider writes, and this pause removed any older one before it began.
 	held, err := hasCheckpoint(dir)
 	if err != nil {
 		return err
 	}
-
-	state := models.StateStopped
 	if held {
-		state = models.StatePaused
+		if err := s.recordPaused(id, dir); err != nil {
+			return err
+		}
+
+		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot failed", id)
 	}
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
-		sb.State = state
+		sb.State = models.StateStopped
 		sb.PID = 0
-		if state == models.StatePaused {
-			sb.Snapshot = dir
-		}
+		sb.Pausing = false
 
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("sandbox %s is gone but its record was not updated: %w", id, err)
-	}
-
-	if state == models.StatePaused {
-		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot failed", id)
 	}
 
 	return fmt.Errorf("sandbox %s is gone from %s and its record says stopped", id, s.cfg.Provider.Name())

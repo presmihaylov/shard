@@ -75,6 +75,15 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 
 		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
+
+	// A pause that could not reconcile itself left its mark over the checkpoint it wrote (SHARD-366).
+	dir, err := s.cutPause(current)
+	if err != nil {
+		return fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+	}
+	if dir != "" {
+		return s.recordCutPause(sb.ID, dir, report)
+	}
 	if status.OOMKilled {
 		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
 	}

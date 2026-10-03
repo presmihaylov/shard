@@ -89,6 +89,21 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
 
+	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
+	if !status.Alive() {
+		dir, err := s.cutPause(sb)
+		if err != nil {
+			return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+		}
+		if dir != "" {
+			if err := s.recordCutPause(sb.ID, dir, report); err != nil {
+				return "", err
+			}
+
+			return models.StatePaused, nil
+		}
+	}
+
 	state, err := reconciled(sb, status)
 	if err != nil {
 		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
@@ -166,6 +181,37 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 
 	// A created record never ran, and a stopped one is already right.
 	return sb.State, nil
+}
+
+// cutPause is the snapshot directory a marked pause completed and never recorded, or empty when there is none.
+func (s *Service) cutPause(sb models.Sandbox) (string, error) {
+	if sb.State != models.StateRunning || !sb.Pausing {
+		return "", nil
+	}
+
+	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
+	if err != nil {
+		return "", err
+	}
+	held, err := hasCheckpoint(dir)
+	if err != nil {
+		return "", err
+	}
+	if !held {
+		return "", nil
+	}
+
+	return dir, nil
+}
+
+// recordCutPause records the pause a cut pause completed on the host, and reports the correction.
+func (s *Service) recordCutPause(id, dir string, report func(string)) error {
+	if err := s.recordPaused(id, dir); err != nil {
+		return err
+	}
+	report(fmt.Sprintf("sandbox %s said running and a pause the daemon never recorded left a complete snapshot: the record now says paused", id))
+
+	return nil
 }
 
 // hasCheckpoint answers only what it read. A stat that failed for any other reason is not an absence.
