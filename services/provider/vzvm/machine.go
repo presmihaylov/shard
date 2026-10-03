@@ -49,8 +49,14 @@ type machine struct {
 	started bool
 	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
 	gone bool
+	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
+	silent bool
+	// asking closes once the one state request out to the shim ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the shim: one vsock connection per call.
@@ -62,20 +68,164 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
+		p.probe(ctx, m, adoptBound)
+
 		return m, nil
 	}
+	if found {
+		p.probe(ctx, silent, adoptBound)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
 
-	client, info, err := vz.Adopt(filepath.Join(dir, socketFile))
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
+	socket := filepath.Join(dir, socketFile)
+	began := time.Now()
+	probe, cancel := context.WithTimeout(ctx, adoptBound)
+	client, info, err := vz.Adopt(probe, socket)
+	cancel()
 	if absent(err) {
 		return nil, nil
+	}
+	// A shim silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-422).
+	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil {
+		return p.unanswered(id, dir, socket)
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
+}
+
+// unanswered keeps a shim an adopt found silent, by the pid behind its socket, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir, socket string) (*machine, error) {
+	client := vz.Open(socket)
+	pid, err := client.PID()
+	if absent(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: read the pid of its silent shim: %w", id, err)
+	}
+	m := &machine{id: id, dir: dir, client: client, pid: pid, silent: true}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if kept, found := p.unadopted[id]; found {
+		return kept, nil
+	}
+	p.unadopted[id] = m
+
+	return m, nil
+}
+
+// waiting says the one request to an unadopted shim is still out past its bound; any other end lets a fresh adopt decide.
+func (p *Provider) waiting(m *machine) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return m.silent && m.asking != nil
+}
+
+// lookupToStop is lookup whose adoption ends by the grace; a shim too frozen to answer is cut by its socket at once (SHARD-349).
+func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, grace time.Duration) (*machine, error) {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
+	p.mu.Unlock()
+	// A shim that missed its probe gets one short probe more, and the stop kills it by its pid with no grace if that is silent too (SHARD-421).
+	if held && m.status(p).State == models.StateUnresponsive {
+		p.probe(ctx, m, probeFloor)
+	}
+	if held {
+		return m, nil
+	}
+	if found {
+		p.probe(ctx, silent, probeFloor)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
+
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
+	socket := filepath.Join(dir, socketFile)
+	probe, cancel := context.WithTimeout(ctx, max(grace, probeFloor))
+	client, info, err := vz.Adopt(probe, socket)
+	cancel()
+	if absent(err) {
+		return nil, nil
+	}
+	if err != nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
+	}
+	if err != nil {
+		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
+	}
+
+	return p.attach(ctx, id, dir, r, client, info, false)
+}
+
+// claim makes this lookup the one that adopts the sandbox's shim once any other adopt of it ends, so the shim is attached once (SHARD-422).
+func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
+	for {
+		p.mu.Lock()
+		busy, taken := p.adopting[id]
+		if !taken {
+			done := make(chan struct{})
+			p.adopting[id] = done
+			p.mu.Unlock()
+
+			return func() {
+				p.mu.Lock()
+				delete(p.adopting, id)
+				p.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: wait for another adopt of its shim: %w", id, ctx.Err())
+		}
+	}
+}
+
+// settled is the shim another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as its request ended.
+func (p *Provider) settled(id string, seen *machine) (*machine, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		return m, true
+	}
+	m, found := p.unadopted[id]
+	if !found {
+		return nil, false
+	}
+	if m != seen {
+		return m, true
+	}
+	delete(p.unadopted, id)
+
+	return nil, false
 }
 
 // absent is a socket with no shim behind it: never made, or its owner exited and the path went with it.
@@ -100,11 +250,58 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	return m.close()
 }
 
+// probe waits the bound for the shim's answer: silence marks it unresponsive, an answer clears that, and neither kills it (SHARD-421).
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	if m.gone || m.closed.Load() {
+		p.mu.Unlock()
+
+		return
+	}
+	// A frozen shim accepts nothing, and a full socket queue refuses a dial as if no shim were there, so one request waits for it.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
+	p.mu.Unlock()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	// The request cleared the mark on an answer; a failed one is the shim gone, which the event loop reports.
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+		p.mu.Lock()
+		if m.asking == asking {
+			m.silent = true
+		}
+		p.mu.Unlock()
+	}
+}
+
+// ask puts the one state request to the shim and holds it past the caller until the shim answers or dies; stop kills one that never answers.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.Await(ctx)
+	p.mu.Lock()
+	m.asking = nil
+	if err == nil {
+		m.silent = false
+	}
+	p.mu.Unlock()
+	close(asking)
+}
+
 func (p *Provider) forget(m *machine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.machines[m.id] == m {
 		delete(p.machines, m.id)
+	}
+	if p.unadopted[m.id] == m {
+		delete(p.unadopted, m.id)
 	}
 }
 
@@ -161,7 +358,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 // attach puts the guest on the stack, opens the control connection and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{})}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -222,7 +419,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -274,6 +471,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -349,6 +547,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
 			if err := control.Close(); err != nil {
 				return false, err
@@ -425,14 +624,14 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == vz.StateRunning
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
 func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.File.Close()
+	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
 		err := supervisor.Logs(ctx, opened, out, version)
@@ -494,7 +693,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
 	var stopErr error
-	if _, err := client.Stop(); err != nil && !absent(err) {
+	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
 	m := &machine{id: id, client: client}
@@ -523,7 +722,14 @@ func endShim(id string, client *vz.Client, pid int) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		_, err := m.client.State()
+		// Each read ends with the wait, so a shim that takes the dial and never answers costs the grace and not callTimeout (SHARD-349).
+		probeEnd := deadline
+		if floor := time.Now().Add(probeFloor); floor.After(probeEnd) {
+			probeEnd = floor
+		}
+		probe, cancel := context.WithDeadline(ctx, probeEnd)
+		_, err := m.client.State(probe)
+		cancel()
 		if absent(err) {
 			return true, nil
 		}
@@ -545,10 +751,23 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	// An unadopted shim has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
+	if m.silent || m.control.Load() == nil {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its shim (pid %d) did not answer within %s", m.pid, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
 	return models.Status{Exists: true, State: state, PID: m.pid}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }

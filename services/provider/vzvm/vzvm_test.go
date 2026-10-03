@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +27,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -37,8 +39,30 @@ type harness struct {
 	root        string
 	disk        string
 	saveRestore bool
+	// log is what the provider logged, read while it still writes.
+	log *safeBuffer
 
 	next atomic.Int64
+}
+
+// safeBuffer is a log sink the test reads while the provider still writes it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.b.String()
 }
 
 func newHarness(t *testing.T) *harness {
@@ -57,7 +81,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 
-	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore}
+	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore, log: &safeBuffer{}}
 	h.open(t)
 
 	return h
@@ -74,6 +98,7 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 		Dir:         h.root,
 		Dirs:        h.stateDir,
 		SaveRestore: h.saveRestore,
+		Log:         log.New(h.log, "", 0),
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -905,7 +930,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 2)
 	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
 	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
-	shim, _, err := vz.Adopt(filepath.Join(dir, "shim.sock"))
+	shim, _, err := vz.Adopt(t.Context(), filepath.Join(dir, "shim.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -918,7 +943,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := shim.State(); err == nil {
+	if _, err := shim.State(t.Context()); err == nil {
 		t.Fatal("the shim the crashed pause left still answers")
 	}
 	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
@@ -1145,6 +1170,72 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	}
 }
 
+// A guest that floods its control stream past the bound is cut off with one log line, and the sandbox goes on (SHARD-390).
+func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	logged := awaitLog(t, h.provider, spec.ID, 0)
+
+	// The marker floods the stream the provider dials after the reset, past the state line that stream opens with.
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, floodFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	line := "sandbox " + spec.ID + ": refused a control message from the guest"
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(h.log.String(), line) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no refusal was logged within 10s; the log reads %q", h.log.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(h.log.String(), "1 MiB") {
+		t.Errorf("the refusal does not name the bound: %q", h.log.String())
+	}
+	awaitLog(t, h.provider, spec.ID, logged)
+
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo again"}, Stdout: out})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec after the refusal = %+v, %v", exit, err)
+	}
+	written, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(written), "again") {
+		t.Fatalf("the exec after the refusal wrote %q, %v", written, err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refusal = %+v, %v; want running", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(h.log.String(), "refused"); n != 1 {
+		t.Errorf("the provider logged %d refusals for one flood, want 1:\n%s", n, h.log.String())
+	}
+}
+
 // A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches Wait through the replayed state.
 func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 	h := newHarness(t)
@@ -1240,6 +1331,312 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	}
 }
 
+// A shim that takes the dial and never answers still ends on a stop, held or adopted after a restart: the provider kills it by the pid behind its socket (SHARD-349).
+func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			stopsAFrozenShim(t, restart)
+		})
+	}
+}
+
+func stopsAFrozenShim(t *testing.T, restart bool) {
+	h, spec, shim := frozenShim(t, restart)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop with a frozen shim: %v", err)
+	}
+	if took := time.Since(began); took > stopGrace+10*time.Second {
+		t.Errorf("Stop with a frozen shim took %s, want under the grace plus 10 s", took)
+	}
+	awaitExit(t, shim)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
+// After a daemon restart a shim too frozen to answer reads unresponsive with its pid within the startup bound and is never killed for it; a thaw lets the next lookup adopt it (SHARD-422).
+func TestAnAdoptedShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	pid := fmt.Sprintf("pid %d", shim)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, acceptsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The bound the daemon's startup probe gives each sandbox.
+	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
+	defer cancel()
+	began := time.Now()
+	status, err := h.provider.Status(ctx, spec.ID)
+	if err != nil || status.State != models.StateUnresponsive || status.PID != shim || !strings.Contains(status.Reason, pid) {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive with the reason naming %s", status, err, pid)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Errorf("Status over a frozen shim after a restart took %s, want under 8 s", took)
+	}
+	if err := syscall.Kill(shim, 0); err != nil {
+		t.Fatalf("the frozen shim %d is gone after a Status: %v, want it kept", shim, err)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive || status.PID != shim {
+		t.Fatalf("the next Status = %+v, %v; want unresponsive with the same shim", status, err)
+	}
+	// A start over a disk whose shim may thaw would boot a second VM on it.
+	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "unresponsive") || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Start over a frozen adopted shim = %v, want a refusal naming unresponsive and %s", err, pid)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+	// The adopt's state request, the pid read and the one request every later lookup shared; a new dial per lookup would fill the queue.
+	if queued := settledLines(t, filepath.Join(dir, acceptsFile)); queued != 3 {
+		t.Errorf("the thawed shim accepted %d connections its socket queue held, want 3", queued)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != shim || status.Reason != "" {
+		t.Fatalf("Status after the thaw = %+v, %v; want running, adopted with the same shim", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the thaw: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// A stop kills a frozen shim an adopt left unresponsive by its pid after one short probe, with no grace (SHARD-422).
+func TestStopKillsAnAdoptedShimTooFrozenToAnswerAtOnce(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
+	}
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over an unresponsive adopted shim: %v", err)
+	}
+	if took := time.Since(began); took >= stopGrace {
+		t.Errorf("Stop over an unresponsive adopted shim took %s, want it killed with no grace, under %s", took, stopGrace)
+	}
+	awaitExit(t, shim)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
+// Lookups that race once a silent adopted shim answers attach it once, so it gets one control stream and one log pump (SHARD-422).
+func TestLookupsThatRaceAfterAThawAttachTheShimOnce(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, controlsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range cap(errs) {
+		wg.Go(func() {
+			<-start
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err == nil && (status.State != models.StateRunning || status.PID != shim) {
+				err = fmt.Errorf("Status after the thaw = %+v, want running with pid %d", status, shim)
+			}
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	if controls := settledLines(t, filepath.Join(dir, controlsFile)); controls != 1 {
+		t.Errorf("the thawed shim got %d control streams, want 1: each is an attach of its own", controls)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the thaw: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// settledLines is the line count of path once it holds still for a second.
+func settledLines(t *testing.T, path string) int {
+	t.Helper()
+	last, still := -1, time.Now()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		out, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Count(string(out), "\n")
+		if lines != last {
+			last, still = lines, time.Now()
+		}
+		if time.Since(still) >= time.Second {
+			return lines
+		}
+	}
+	t.Fatalf("%s still grows after 10 s, at %d lines", path, last)
+
+	return 0
+}
+
+// A held shim too frozen to answer reads unresponsive with its pid and is never killed for it: verbs refuse it by name, a thaw makes it running again, and a stop kills it at once (SHARD-421).
+func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T) {
+	h, spec, shim := frozenShim(t, false)
+	pid := fmt.Sprintf("pid %d", shim)
+
+	began := time.Now()
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateUnresponsive || status.PID != shim || !strings.Contains(status.Reason, pid) {
+		t.Fatalf("Status over a frozen held shim = %+v, %v; want unresponsive with the reason naming %s", status, err, pid)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Errorf("Status over a frozen held shim took %s, want under 8 s", took)
+	}
+	if err := syscall.Kill(shim, 0); err != nil {
+		t.Fatalf("the frozen shim %d is gone after a Status: %v, want it kept", shim, err)
+	}
+
+	began = time.Now()
+	_, err = h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), "unresponsive") || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Exec over a frozen held shim = %v, want a refusal naming unresponsive and %s", err, pid)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("Exec over a frozen held shim took %s, want under 10 s", took)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Pause over a frozen held shim = %v, want a refusal naming %s", err, pid)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != shim || status.Reason != "" {
+		t.Fatalf("Status after the thaw = %+v, %v; want running again with the same shim", status, err)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim again: %v", err)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status after the second freeze = %+v, %v; want unresponsive", status, err)
+	}
+	began = time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over an unresponsive shim: %v", err)
+	}
+	if took := time.Since(began); took >= stopGrace {
+		t.Errorf("Stop over an unresponsive shim took %s, want it killed with no grace, under %s", took, stopGrace)
+	}
+	awaitExit(t, shim)
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
+func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
+	h, spec, shim := frozenShim(t, false)
+	// A frozen shim accepts nothing; once its socket queue holds 128, a macOS dial reads refused, as if no shim were there.
+	for range 200 {
+		h.provider.Probe(t.Context(), spec.ID, 10*time.Millisecond)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status after 200 probes of a frozen shim = %+v, %v; want unresponsive", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over a long frozen shim: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
+func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
+	t.Helper()
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLog(t, h.provider, spec.ID, 0)
+	// The fake's guest is a host process the shim's kill leaves behind, which a VM's guest is not.
+	path, err := h.provider.LogPath(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entrypoint, guest int
+	if _, err := fmt.Sscanf(string(out), "pids %d %d", &entrypoint, &guest); err != nil {
+		t.Fatalf("read the guest pids from %q: %v", out, err)
+	}
+	// A pid of 1 or less would signal every process this user owns, or this test's own group.
+	if entrypoint <= 1 || guest <= 1 {
+		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
+	}
+	t.Cleanup(func() {
+		for _, pid := range []int{-entrypoint, -guest, guest} {
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest %d: %v", pid, err)
+			}
+		}
+	})
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pid of 0 would signal this test's own group.
+	shim := status.PID
+	if shim <= 0 {
+		t.Fatalf("Status = %+v, want the shim's pid", status)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the frozen shim %d: %v", shim, err)
+		}
+	})
+	// The daemon goes before the freeze, so the next one meets the frozen shim only by its socket.
+	if restart {
+		if err := h.provider.Close(); err != nil {
+			t.Fatalf("close the provider: %v", err)
+		}
+	}
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim: %v", err)
+	}
+	if restart {
+		h.open(t)
+	}
+
+	return h, spec, shim
+}
+
 // Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
 func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	h := newHarness(t)
@@ -1321,4 +1718,31 @@ func awaitExit(t *testing.T, pid int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("process %d did not exit", pid)
+}
+
+// An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
+func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
+	h := newHarness(t)
+	dir, err := h.stateDir("sb-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "output.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.BoundOutputLog("sb-legacy", 10); err != nil {
+		t.Fatalf("BoundOutputLog: %v", err)
+	}
+
+	for name, want := range map[string]int64{path: 0, path + ".1": 10} {
+		info, err := os.Stat(name)
+		if err != nil || info.Size() != want {
+			t.Errorf("%s: %v, want %d bytes", filepath.Base(name), err, want)
+		}
+	}
 }

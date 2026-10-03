@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,9 +59,16 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after a forced stop of the VM, which nothing in the guest can refuse.
 	killGrace = 10 * time.Second
+	// probeFloor is the least one shim state read gets, so a wait whose time ran out still asks once (SHARD-349).
+	probeFloor = time.Second
+	// adoptBound is how long a shim met only by its socket gets to answer before it reads unresponsive (SHARD-422).
+	adoptBound = 5 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
 )
+
+// SocketFiles names every socket the provider binds in a sandbox's state directory, so the daemon refuses a root they do not fit under.
+func SocketFiles() []string { return []string{socketFile} }
 
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes.
 type StateDirs func(id string) (string, error)
@@ -78,6 +87,8 @@ type Config struct {
 	Dirs  StateDirs
 	// SaveRestore says the framework on this host saves and restores a VM, which is what a fork needs; vz.HostSaveRestore probes it.
 	SaveRestore bool
+	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
+	Log *log.Logger
 }
 
 var _ models.Provider = (*Provider)(nil)
@@ -90,6 +101,10 @@ type Provider struct {
 	mu sync.Mutex
 	// machines is every shim this daemon has spoken to; a shim it has not is adopted by its socket.
 	machines map[string]*machine
+	// unadopted is every shim an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
+	unadopted map[string]*machine
+	// adopting closes when the one adopt in flight for a sandbox ends, so a racing lookup reuses what it made.
+	adopting map[string]chan struct{}
 	// recovering is nil but in a test, which holds the gap between the choice to thaw a lost freeze and that thaw.
 	recovering func()
 }
@@ -103,8 +118,11 @@ func New(cfg Config) (*Provider, error) {
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err
 	}
+	if cfg.Log == nil {
+		cfg.Log = log.New(io.Discard, "", 0)
+	}
 
-	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}, unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -117,6 +135,7 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
 	p.machines = map[string]*machine{}
+	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
@@ -147,7 +166,7 @@ type record struct {
 	// Nameservers and Hostname are the resolver files the guest writes itself, as a VM has no upper layer.
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
-	// RootFS is the image tree an exec resolves a named user against.
+	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
@@ -217,4 +236,24 @@ func (p *Provider) LogPath(id string) (string, error) {
 	}
 
 	return filepath.Join(dir, logFile), nil
+}
+
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+func (p *Provider) HeldLogs(id string) ([]string, error) {
+	dir, err := p.dir(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{filepath.Join(dir, consoleFile)}, nil
+}
+
+// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+func (p *Provider) BoundOutputLog(id string, max int64) error {
+	dir, err := p.dir(id)
+	if err != nil {
+		return err
+	}
+
+	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
 }

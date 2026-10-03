@@ -1026,7 +1026,7 @@ func offer(slot chan models.TerminalSize, size models.TerminalSize) {
 	}
 }
 
-// dropExecs ends and forgets every exec of one sandbox, because a stop takes its execs with it.
+// dropExecs ends and forgets every exec of one sandbox, because a sandbox that ends takes its execs with it.
 func (s *Service) dropExecs(id string) {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
@@ -1170,6 +1170,10 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	status, err := s.cfg.Provider.Status(ctx, id)
 	if err != nil {
 		return "", err
+	}
+	// The substrate is asked even for an unresponsive record, so an exec works as soon as the process answers again.
+	if status.State == models.StateUnresponsive {
+		return "", &UnavailableError{ID: id, Why: "is unresponsive: " + status.Reason, Fix: "wait for it to answer, or end it with shard stop " + id}
 	}
 	if status.Alive() {
 		return id, nil

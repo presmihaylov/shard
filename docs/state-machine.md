@@ -1,6 +1,6 @@
 # The sandbox state machine
 
-Six states, nine legal moves. `models/state.go` is the code; this page is the picture.
+Seven states, thirteen legal moves. `models/state.go` is the code; this page is the picture.
 
 ```mermaid
 stateDiagram-v2
@@ -9,13 +9,17 @@ stateDiagram-v2
     pending --> failed: pull or start failed
     created --> running: fork or clone
     created --> stopped: stop before start
+    created --> failed: the daemon restarted mid fork or clone
     running --> paused: pause (snapshot to disk, memory freed)
     running --> stopped: stop, and nothing else
+    running --> unresponsive: the substrate process missed its probe bound
+    unresponsive --> running: the process answers again
+    unresponsive --> stopped: stop
     paused --> running: resume (the snapshot survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
     stopped --> [*]: rm
-    paused --> [*]: rm
+    paused --> [*]: rm --force
     created --> [*]: rm
     failed --> [*]: rm
 ```
@@ -26,8 +30,12 @@ stateDiagram-v2
 | `pending` | `failed` | the pull or the start failed | yes |
 | `created` | `running` | a fork or clone | yes |
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
+| `created` | `failed` | the daemon restarted before a fork or clone reached `running` | yes |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
+| `running` | `unresponsive` | the liveness tick, when the substrate process missed its probe bound | yes: vz |
+| `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz |
+| `unresponsive` | `stopped` | `stop` | yes: vz |
 | `paused` | `running` | `resume` | yes: gVisor |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
@@ -50,7 +58,9 @@ in the machine but reachable by nothing.
 verb but `get` and `rm`, with `409 sandbox_failed` and the reason, so an operator reads why and then
 removes it. A daemon that restarted while a create was still in flight finds the `pending` record
 with nothing behind it and moves it to `failed` too, because a create the daemon dropped never
-finished.
+finished. A `created` record at a restart is a fork or clone the daemon dropped, so it ends `failed`
+the same way. The daemon stops a copy that still runs and tears down its substrate first, because a
+restore the old daemon started can still run where the runtime cannot see it.
 
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
@@ -59,6 +69,16 @@ the sandbox is up, not that a workload executes in it. When the entrypoint finis
 all do. There is no fifth state for it: the liveness task writes the exit into `exit_status` on the
 still-`running` record instead, so `shard ls` prints `running (exited 0)`. **`stop` is the only
 thing that ends a sandbox.**
+
+**`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends it.**
+On vz the daemon probes each shim within 5 s, held or met only by its socket after a restart. A shim silent for the whole bound, frozen by
+a `SIGSTOP` or starved by a host under load, makes the record `unresponsive`: it keeps its pid and its
+run, and `unresponsive_reason` names the shim's pid. Nothing kills it, because a thawed shim gives back
+the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer within 5s)`, and
+`shard inspect` holds the state and the reason. `exec`, `start` and `pause` refuse it with the reason,
+and `exec` adds `wait for it to answer, or end it with shard stop <id>`. When a later probe answers,
+the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one more probe of
+1 s, then kill it by its pid with no grace (SHARD-421).
 
 **`stop` returns once the sandbox has stopped.** The substrate can report one alive for a moment after
 a clean stop, so `stop` waits for it to be gone before it writes the record, and fails without changing

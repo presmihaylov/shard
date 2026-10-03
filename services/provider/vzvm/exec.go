@@ -6,7 +6,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -51,12 +50,12 @@ func (p *Provider) running(ctx context.Context, id string) (*machine, record, er
 	if err != nil {
 		return nil, record{}, err
 	}
-	state := models.StateStopped
+	status := models.Status{State: models.StateStopped}
 	if m != nil {
-		state = m.status(p).State
+		status = m.status(p)
 	}
-	if state != models.StateRunning {
-		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it", id, state, Name)
+	if status.State != models.StateRunning {
+		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it%s", id, status.State, Name, because(status))
 	}
 
 	return m, r, nil
@@ -72,13 +71,9 @@ func headerOf(r record, spec models.ExecSpec) (supervisor.ExecHeader, error) {
 		Groups:  r.Run.Groups,
 		TTY:     spec.TTY,
 	}
+	// The guest resolves a named user, because the image on the host misses a user the sandbox added (SHARD-356).
 	if spec.User != "" {
-		identity, err := bundle.ResolveUser(r.RootFS, spec.User)
-		if err != nil {
-			return supervisor.ExecHeader{}, err
-		}
-		header.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
-		header.Groups = identity.Groups
+		header.User, header.Groups, header.Lookup = spec.User, nil, true
 	}
 	if spec.TTY && spec.Stdin != nil {
 		size, err := pty.SizeOf(spec.Stdin)

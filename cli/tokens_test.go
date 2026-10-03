@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,3 +156,53 @@ func TestTokensMintRefusesAShortSecret(t *testing.T) {
 		t.Error("mint signed a token with a secret under 32 bytes")
 	}
 }
+
+// A mistyped scope minted a token that every route refused with 403 and no hint, so mint refuses it, names the scopes it knows, and records nothing (SHARD-373).
+func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+	err := app.tokens([]string{"mint", "--name", "ci", "--scopes", "sandbox:read,sandbox:raed", "--secret-file", secret})
+	if err == nil {
+		t.Fatal("mint signed a token with the scope sandbox:raed")
+	}
+	for _, want := range append([]string{"sandbox:raed"}, everyScope...) {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q, and it must name %s", err, want)
+		}
+	}
+	if _, err := os.Stat(serve.TokensPath(secret, "")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("mint left a ledger for a token it refused: %v", err)
+	}
+}
+
+func TestTokensMintTakesEveryScopeTheFrontKnows(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	for _, scope := range everyScope {
+		var out bytes.Buffer
+		app := App{Version: "test", Root: dir, Out: &out}
+		if err := app.tokens([]string{"mint", "--name", "ci", "--scopes", scope, "--secret-file", secret}); err != nil {
+			t.Fatalf("mint with the scope %s: %v", scope, err)
+		}
+
+		var record serve.Token
+		if err := json.Unmarshal(out.Bytes(), &record); err != nil {
+			t.Fatalf("mint printed %q, not one JSON object: %v", out.String(), err)
+		}
+		if strings.Join(record.Scopes, ",") != scope {
+			t.Errorf("the record carries scopes %v, want [%s]", record.Scopes, scope)
+		}
+	}
+}
+
+// everyScope is "*" and the eight capabilities docs/daemon.md names.
+var everyScope = []string{"*", "daemon:read", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "image:*", "secret:*", "policy:*"}

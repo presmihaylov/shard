@@ -55,6 +55,8 @@ type Provider interface {
 	Restarts(ctx context.Context, id string) (RestartCount, error)
 	// LogPath names the file the guest's output lands in. SHARD-23 turns it into shard logs.
 	LogPath(id string) (string, error)
+	// HeldLogs names the log files a process outside the daemon appends to, which the daemon bounds by copy and truncate.
+	HeldLogs(id string) ([]string, error)
 
 	// Pause writes a complete snapshot into dir, frees the memory and ends the sandbox on the substrate,
 	// so Status reports it stopped; a pause over a dir that holds one leaves it holding one. Optional,
@@ -86,6 +88,8 @@ type Status struct {
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
 	// A stop leaves the same leftovers, so a record that says stopped outranks it.
 	OOMKilled bool
+	// Reason says what missed its probe bound, set only in StateUnresponsive.
+	Reason string
 	// Throttles counts the times the host held the sandbox at its memory throttle, 0 on a substrate with none.
 	Throttles int64
 }

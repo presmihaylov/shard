@@ -304,6 +304,24 @@ func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
 	}
 }
 
+// A silent substrate process is asked again on each exec, so the refusal names it and lifts once it answers (SHARD-421).
+func TestExecRefusesAnUnresponsiveSandboxUntilItAnswers(t *testing.T) {
+	r := &recorder{}
+	sb := unresponsive()
+	svc, l := newService(t, r, sb)
+	l.provider.status = silentShim()
+
+	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason) || !strings.Contains(err.Error(), "shard stop sandbox1") {
+		t.Fatalf("Exec of an unresponsive sandbox returned %v, want the reason and the stop hint", err)
+	}
+
+	l.provider.status = alive(42)
+	if _, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, ""); err != nil {
+		t.Fatalf("Exec once the sandbox answers again: %v", err)
+	}
+}
+
 // The exit file records a 137 for an oom kill and for a plain kill -9, so the reason is named here.
 func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 	r := &recorder{}
@@ -820,6 +838,79 @@ func TestStopForgetsTheSandboxExecs(t *testing.T) {
 
 	if _, err := svc.GetExec(t.Context(), "sandbox1", exec.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Errorf("a get after the stop returned %v, want an exec that is not found", err)
+	}
+}
+
+// runExecToItsEnd creates one exec and waits for its exit, so a test changes the substrate under no running command.
+func runExecToItsEnd(t *testing.T, svc *sandbox.Service) {
+	t.Helper()
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+}
+
+// rm --force of a paused sandbox drops its execs, or their buffers stay in the daemon for good (SHARD-362); a plain rm refuses it (SHARD-281).
+func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
+
+	if _, err := svc.Pause(t.Context(), "sandbox1"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// runsc deletes the sandbox once its checkpoint is written.
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
+// rm of a dead sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+func TestRemoveOfADeadSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
+// A sandbox that died or that the host killed for its memory takes its execs with it, as a stop does (SHARD-362).
+func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
+	cases := []struct {
+		name   string
+		sb     models.Sandbox
+		status models.Status
+	}{
+		{"died", running(), gone()},
+		{"oom killed", running(), oomKilled()},
+		{"oom killed and started again", optedIn(), oomKilled()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, tc.sb, alive(42))
+			runExecToItsEnd(t, lab.svc)
+			lab.l.provider.status = tc.status
+
+			if err := lab.tick(t, tc.sb, time.Now()); err != nil {
+				t.Fatalf("Liveness: %v", err)
+			}
+			if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+				t.Errorf("the daemon still holds %d execs of the sandbox that ended, want none", held)
+			}
+		})
 	}
 }
 
