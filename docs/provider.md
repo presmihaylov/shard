@@ -16,7 +16,7 @@ another `--provider`: the other substrate has never heard of those sandboxes.
 | Docker inside | no | yes | no | yes | yes |
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
-| Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
+| Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
 | Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every verb |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
@@ -127,8 +127,14 @@ root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE` include
 controls PID 1 and the entrypoint: it can write a forged record, drive the exit value or pick the
 signal, and a background write after the real exit makes `inspect` report the forged code. No channel
 on Sysbox is host-readable and guest-unwritable, so there is no mechanism fix: the exit code of a
-Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. Firecracker
-will verify it behind the VM boundary the way gVisor does behind the sentry.
+Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. The channel
+is a memfd of 4 KiB sealed against growing and shrinking, so no guest write can fill the host's disk
+or memory. After a restart the daemon finds it again through fd 0 of PID 1, confirmed in the sandbox
+cgroup, and takes it only while it is a regular file of 4 KiB with its seals and the inode create
+recorded; anything else `inspect` names as `exit channel replaced`. A stop copies the record before it
+returns. If PID 1 dies while the daemon is down, or the daemon dies inside the stop that ended PID 1,
+its unread exit record is lost with it. Firecracker will verify the exit code behind the VM boundary
+the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
 and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a
@@ -146,6 +152,13 @@ fallback to gVisor.
 
 **runc carries Docker's default seccomp profile.** It answers the keyring calls with `EPERM`, and
 `runc create` runs with `--no-new-keyring`, so a guest spends none of the host's keyring quota.
+
+**runc carries Docker's AppArmor profile where the module is on.** `shard-default` is Docker's
+`docker-default` under a shard name, rule for rule from `moby/profiles/apparmor`, so it never
+replaces a Docker's own profile on the same host. Every runc sandbox runs under it. A host whose
+module is on and whose `apparmor_parser` is missing would run every sandbox unconfined, so the
+daemon refuses the runc provider there and names the `apparmor` package. A host with the module off
+runs no profile, as Docker does.
 
 ## Required verbs against optional verbs
 
@@ -219,7 +232,7 @@ as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes 
 gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
 after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 
-`pause` stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
+`pause` freezes the guest, stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
 directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
 all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
 leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
@@ -235,15 +248,31 @@ corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Eve
 snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
 `resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
 before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
-in between reseeds the guest it adopts. The vCPUs run from the load until the seed lands, so a
-process the snapshot held can still draw from the saved key in those few milliseconds; freezing the
-guest before the save, as `vz` does, is SHARD-409.
+in between reseeds the guest it adopts, and ends one that refuses the reseed or the thaw. No guest
+process draws from the saved key in between, because the snapshot holds the guest frozen: `pause`
+has `shard-init` freeze the sandbox cgroup and then the root's writes before it stops the vCPUs, and
+every restore reseeds the guest before it thaws it (SHARD-409). The root is an overlay, which takes
+no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that cannot freeze refuses
+the pause, and the VM runs on. The thaw paths are the ones `docs/provider-vz.md` lists for `vz`: a
+failed pause, a daemon cut between the freeze and the snapshot, and a control connection that
+dropped with the freeze's answer. A VM booted before this change runs a `shard-init` whose freeze
+cannot reach the upper disk. Its state says so, and the pause is refused before any freeze, with an
+error that says to restart the sandbox first.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
 one that cannot, so no `pause` ever fails halfway for it. And the vmm's state names the source's
 `overlay.raw` by path, which the load opens before the drive is swapped for the fork's own copy, so
 a snapshot outlives neither a moved root nor a removed source.
+
+Every writable drive runs with the cache type `Writeback`, so a guest `fsync` returns only once the
+vmm has flushed the data to the host disk; the firecracker default, `Unsafe`, drops the flush. The
+read-only EROFS base keeps the default. The vmm fixes the cache type when it boots, and a snapshot
+keeps the one its vmm ran with, so a sandbox created before this release, and any snapshot taken
+before it, keep `Unsafe`: a daemon restart adopts the running vmm as it is, and a `resume` or a
+`fork` of such a snapshot loads its saved drive. A `stop` and a `start` boot a fresh vmm with
+`Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a sandbox to get
+there.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
 over a root it turns into an XFS image, `create` with `--memory`, the vmm's host cgroup and its
@@ -401,7 +430,11 @@ record never answers for it. The two disagree on purpose:
 - a sandbox stopped before its entrypoint ran leaves nothing at the substrate, so the record says
   `stopped` and `Status` reports `Exists: false`.
 
-`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. The
+`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. A
+gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the sentry exits
+after any checkpoint, taken or not: the provider returns `models.LostError` and the record ends
+`failed` (SHARD-336). runsc never probes a paused sandbox, so `Status` reads a paused one whose sentry
+is gone as `stopped`, which `stop` and `rm --force` then end. The
 entrypoint exiting is not a transition, and `Wait` returning does not end anything. Under a restart
 policy `Wait` returns the first exit of the run, not the settled one: the supervisor rewrites the exit
 file per exit and clears nothing, so only a stopped sandbox answers with its last exit. No verb waits

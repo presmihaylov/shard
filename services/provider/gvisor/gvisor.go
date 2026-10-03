@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,7 +58,7 @@ type Provider struct {
 	caps    models.Capabilities
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
-	// procRoot is where the kernel publishes a process's command line. A test points it at a directory it wrote.
+	// procRoot is where the kernel publishes a process's command line and state. A test points it at a directory it wrote.
 	procRoot string
 	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
 	killProcess func(pid int) error
@@ -448,15 +450,28 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return p.unmount(id, status.Exists)
 	}
 
-	// A frozen sentry delivers no signal, and only a pause that broke off leaves one behind.
+	// Nothing runs, so only the mount is left; runsc refuses to signal a paused sandbox whose sentry has exited (SHARD-336).
+	if !status.Alive() {
+		return p.unmount(id, status.Exists)
+	}
+
+	// A frozen sentry delivers no signal, and only a daemon that died between the freeze and the checkpoint leaves one behind.
 	if status.State == models.StatePaused {
 		if err := p.runsc.Resume(ctx, id); err != nil {
+			if errors.Is(err, runsc.ErrUnreachable) {
+				return p.endWedged(ctx, id, status.Exists)
+			}
+
 			return err
 		}
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
 	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
+		if errors.Is(err, runsc.ErrUnreachable) {
+			return p.endWedged(ctx, id, status.Exists)
+		}
+
 		return err
 	}
 
@@ -473,6 +488,18 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 	// runsc still holds a sandbox it has stopped, so the status read above is what owns the mount.
 	return p.unmount(id, status.Exists)
+}
+
+// endWedged ends a cut-paused wedged sentry: sweep kills any pids its own cgroup still holds and takes an empty one as already gone, then runsc delete drops the state (SHARD-411).
+func (p *Provider) endWedged(ctx context.Context, id string, held bool) error {
+	if err := p.sweep(ctx, id); err != nil {
+		return err
+	}
+	if err := p.runsc.Delete(ctx, id, true); err != nil {
+		return err
+	}
+
+	return p.unmount(id, held)
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
@@ -732,11 +759,11 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
 	if status.Alive() {
-		dead, err := zombie(state.PID)
+		gone, err := p.stale(id, state)
 		if err != nil {
 			return models.Status{}, err
 		}
-		if dead {
+		if gone {
 			status.State, status.PID = models.StateStopped, 0
 		}
 	}
@@ -763,18 +790,38 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return b.RestartCount()
 }
 
-// zombie reports a sandbox process that exited and waits for its reaper. runsc probes it with
-// kill(pid, 0), which a zombie still answers, so runsc calls the sandbox running until PID 1 reaps it.
-func zombie(pid int) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+// stale reports an alive runsc state whose pid is not this sandbox's live sentry (SHARD-411).
+func (p *Provider) stale(id string, state runsc.State) (bool, error) {
+	stat, err := os.ReadFile(filepath.Join(p.procRoot, strconv.Itoa(state.PID), "stat"))
+	// PID 1 can reap the sentry after runsc's probe (SHARD-437), runsc never probes a paused one, and the sentry exits after a checkpoint (SHARD-336).
 	if vanished(err) {
-		return false, nil
+		return true, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the state of the sandbox process %d: %w", pid, err)
+		return false, fmt.Errorf("read the state of the sandbox process %d: %w", state.PID, err)
+	}
+	if zombieStat(string(stat)) {
+		return true, nil
+	}
+	if state.Status != runsc.StatusPaused {
+		return false, nil
 	}
 
-	return zombieStat(string(stat)), nil
+	// a clean pause deletes the container, so a paused one with a live pid is a cut pause whose pid Linux reused unless it is still in this sandbox's cgroup.
+	return p.foreignPid(state.PID, id)
+}
+
+// foreignPid reports a pid that is not in this sandbox's cgroup, so Linux reused it after the sentry exited.
+func (p *Provider) foreignPid(pid int, id string) (bool, error) {
+	pids, err := cgroup.Procs(cgroupDir(p.cgroupRoot, id))
+	if errors.Is(err, cgroup.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the processes of sandbox %s: %w", id, err)
+	}
+
+	return !slices.Contains(pids, pid), nil
 }
 
 // vanished reads the two ways a process goes away under the read: /proc holds no such directory, or
@@ -834,8 +881,8 @@ func stateOf(status runsc.Status) models.State {
 	}
 }
 
-// Pause writes the sandbox into dir and then deletes it from runsc, because a checkpointed container
-// still holds its whole memory until it is deleted. runsc then holds nothing, as after a stop before
+// Pause writes the sandbox into dir and then deletes it from runsc, because runsc still names a
+// checkpointed container until it is deleted. runsc then holds nothing, as after a stop before
 // the entrypoint ran, and the snapshot plus the state directory is everything a resume needs.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	status, err := p.Status(ctx, id)
@@ -869,17 +916,28 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
 	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(tmp)); err != nil {
-		return p.abandon(ctx, id, tmp, err)
+		return p.lose(ctx, id, b, tmp, err)
 	}
 
-	// A filesystem without an atomic exchange refuses the install, and that must leave a running sandbox, not a frozen one.
+	// A filesystem without an atomic exchange refuses the install, after a checkpoint the sentry did not survive.
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return p.abandon(ctx, id, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The snapshot is complete, so a Ctrl-C from here on must not leave a frozen sandbox behind.
-	ctx = context.WithoutCancel(ctx)
+	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged delete holds no lock.
+	return p.release(ctx, id, b, tmp)
+}
 
+// lose ends a pause that broke off after the checkpoint began: the sentry has exited, so nothing is left to thaw.
+func (p *Provider) lose(ctx context.Context, id string, b bundle.Bundle, tmp string, err error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
+	defer cancel()
+
+	return errors.Join(&models.LostError{Sandbox: id, Err: err}, p.release(ctx, id, b, tmp))
+}
+
+// release frees what runsc and the host still hold of a sandbox whose sentry has exited after a checkpoint.
+func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp string) error {
 	if err := p.runsc.Delete(ctx, id, true); err != nil {
 		return err
 	}
@@ -891,14 +949,6 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.
 	return errors.Join(os.RemoveAll(tmp), b.Unmount())
-}
-
-// abandon gives up a pause that could not complete: only stop ends a sandbox, so this one goes on running, even after a Ctrl-C.
-func (p *Provider) abandon(ctx context.Context, id, tmp string, err error) error {
-	thaw, cancel := context.WithTimeout(context.WithoutCancel(ctx), killGrace)
-	defer cancel()
-
-	return errors.Join(err, p.runsc.Resume(thaw, id), os.RemoveAll(tmp))
 }
 
 // Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
@@ -939,6 +989,11 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	return nil
+}
+
+// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+func (p *Provider) AdoptStaging(dir string) error {
+	return os.RemoveAll(dir + ".tmp")
 }
 
 // Fork restores the snapshot in dir as a new sandbox over its own copy of the layer: two forks share nothing.

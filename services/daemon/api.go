@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := openLog(cfg.LogPath); err != nil {
 			return err
 		}
-		extra = append(extra, logReopen{path: cfg.LogPath, hangups: hangups, out: cfg.Out, reopen: openLog})
+		extra = append(extra, logReopen{path: cfg.LogPath, limit: logCap, interval: logCapInterval, hangups: hangups, out: cfg.Out, reopen: openLog})
 	}
 
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
@@ -86,8 +86,11 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
-	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
+	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
+	d.states = dmn.states
+	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -251,6 +254,7 @@ func (p process) Daemon() (api.Daemon, error) {
 		Provider:     provider.Name(),
 		Capabilities: provider.Capabilities(),
 		Proxy:        api.Proxy{PlainPort: proxy.PlainPort, TLSPort: proxy.TLSPort},
+		Tasks:        p.deps.states.snapshot(),
 	}, nil
 }
 
@@ -817,52 +821,4 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// egressLogRotation keeps every sandbox's decision log bounded. It renames rather than truncates, so an
-// O_APPEND writer that holds the old file keeps writing into a file the reader still prints.
-type egressLogRotation struct {
-	deps *deps
-}
-
-const (
-	// maxEgressLog is what one log may reach before it is renamed, and one renamed file is kept behind it.
-	maxEgressLog      = 8 << 20
-	egressLogInterval = time.Minute
-)
-
-func (egressLogRotation) Name() string { return "egress-log-rotation" }
-
-func (t egressLogRotation) Run(ctx context.Context) error {
-	repo, err := t.deps.repo()
-	if err != nil {
-		return err
-	}
-
-	decisions, err := t.deps.egressLog()
-	if err != nil {
-		return err
-	}
-
-	ticker := time.NewTicker(egressLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-
-		sandboxes, err := repo.List()
-		if err != nil {
-			return err
-		}
-
-		for _, sb := range sandboxes {
-			if err := decisions.Rotate(sb.ID, maxEgressLog); err != nil {
-				return err
-			}
-		}
-	}
 }

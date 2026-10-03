@@ -33,6 +33,9 @@ const DefaultProbeBudget = 10 * time.Second
 // task. It exceeds gvisor's start grace, so a slow but live start is not cut short.
 const DefaultStartBudget = 60 * time.Second
 
+// DefaultPauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.
+const DefaultPauseBudget = 10 * time.Minute
+
 // MaxMemoryMiB is 16 TiB, which is past any host and far below the point where MiB times 2^20 wraps.
 const MaxMemoryMiB = 1 << 24
 
@@ -42,7 +45,7 @@ const MaxDiskMiB = ext4.MaxDiskSize >> 20
 // Repository is the part of sandboxstate.Repository the lifecycle verbs drive.
 type Repository interface {
 	Reader
-	Create(sb models.Sandbox) (models.Sandbox, error)
+	Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error)
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
 	Dir(id string) (string, error)
@@ -107,6 +110,8 @@ type Config struct {
 	ProbeBudget time.Duration
 	// StartBudget overrides DefaultStartBudget, which only a test has a reason to do.
 	StartBudget time.Duration
+	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
+	PauseBudget time.Duration
 	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
 	PutCleanupGrace time.Duration
 }
@@ -320,6 +325,15 @@ func (s *Service) startBudget() time.Duration {
 	return DefaultStartBudget
 }
 
+// pauseBudget is how long one pause's checkpoint and delete get, whether or not the client still waits.
+func (s *Service) pauseBudget() time.Duration {
+	if s.cfg.PauseBudget != 0 {
+		return s.cfg.PauseBudget
+	}
+
+	return DefaultPauseBudget
+}
+
 // status asks the substrate about a sandbox on a bounded context, so a wedged runtime cannot pin a verb.
 // A deadline we set, not the caller's own cancel, becomes the SubstrateTimeoutError a verb fails fast on.
 func (s *Service) status(ctx context.Context, id, op string) (models.Status, error) {
@@ -382,6 +396,21 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		}
 	}
 
+	var admit []func(dir string) error
+	reserved := ""
+	disks, admits := s.cfg.Provider.(diskAdmitter)
+	if admits {
+		admit = append(admit, func(dir string) error {
+			// A disk the root has no room for is the request's fault, refused before the record a later failure would leave.
+			if err := disks.AdmitDisk(dir, req.Resources); err != nil {
+				return &RequestError{Err: err}
+			}
+			reserved = dir
+
+			return nil
+		})
+	}
+
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
 		Name:           req.Name,
 		Image:          ref,
@@ -396,12 +425,23 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Health:         startingHealth(req.Health),
 		Restart:        withRestartDefaults(req.Restart),
 		CreatedAt:      time.Now().UTC(),
-	})
+	}, admit...)
 	if err != nil {
+		// The record or the name failed after the admission, so nothing will ever write that disk.
+		if reserved != "" {
+			disks.ReleaseDisk(reserved)
+		}
+
 		return models.Sandbox{}, err
 	}
 
 	return sb, nil
+}
+
+// diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
+type diskAdmitter interface {
+	AdmitDisk(dir string, res models.Resources) error
+	ReleaseDisk(dir string)
 }
 
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
@@ -799,10 +839,35 @@ func (s *Service) startWithin(ctx context.Context, id string) error {
 	}
 
 	if err := s.cfg.Provider.Start(ctx, id); err != nil {
-		return errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false))
+		if reconcileErr := Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, false); reconcileErr != nil {
+			return errors.Join(err, reconcileErr)
+		}
+
+		return errors.Join(err, s.recordFailedStart(ctx, id))
 	}
 
 	return RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false)
+}
+
+// recordFailedStart lands a shard-init that died before the start ran anything, so inspect shows its 125 and its reason (SHARD-416).
+func (s *Service) recordFailedStart(ctx context.Context, id string) error {
+	status, err := s.cfg.Provider.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if status.Alive() || status.SupervisorFailed == "" {
+		return nil
+	}
+	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		supervisorFailed(rec, status.SupervisorFailed)
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %s, but its record was not updated: %w", id, SupervisorFailedReason, err)
+	}
+
+	return nil
 }
 
 // Stop ends the processes and keeps everything rm frees: the record, the lease, the address and the
@@ -867,9 +932,16 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 			// A stopped record cannot confirm it is gone under a wedge, so it falls through to the kill.
 		case err != nil:
 			return err
-		case sb.State == models.StateStopped && !status.Alive():
+		case sb.State == models.StateStopped && !status.Alive() && sb.OOMRestartDue.IsZero():
 			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
 			return nil
+		case sb.State == models.StateStopped && !status.Alive():
+			// A second stop still calls off the start again the record waits on.
+			return s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+				callOffOOMWait(rec)
+
+				return nil
+			})
 		}
 	}
 
@@ -877,7 +949,8 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	if err := s.awaitStopped(ctx, id); err != nil {
+	status, err := s.awaitStopped(ctx, id)
+	if err != nil {
 		return err
 	}
 
@@ -901,8 +974,13 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
+		callOffOOMWait(sb)
 		if exit != nil {
 			sb.ExitStatus = exit
+		}
+		// shard-init died on the way down, so its 125 outranks an entrypoint exit the record already took.
+		if status.SupervisorFailed != "" {
+			supervisorFailed(sb, status.SupervisorFailed)
 		}
 		if sb.Restart != nil {
 			sb.Restart.RestartCount = restarts
@@ -914,7 +992,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
 // stop, and a rm that lands in that moment would refuse it. The record is written only after this.
-func (s *Service) awaitStopped(ctx context.Context, id string) error {
+func (s *Service) awaitStopped(ctx context.Context, id string) (models.Status, error) {
 	// The bound excludes the grace on purpose: Provider.Stop already spent it, and the client's own
 	// timeout is DefaultTimeout plus the grace, which counting it twice would run past.
 	bound := s.cfg.StopSettle
@@ -929,24 +1007,24 @@ func (s *Service) awaitStopped(ctx context.Context, id string) error {
 	for {
 		status, err := s.cfg.Provider.Status(sctx, id)
 		if err != nil && ctx.Err() != nil {
-			return ctx.Err()
+			return models.Status{}, ctx.Err()
 		}
 		if err != nil && sctx.Err() != nil {
-			return fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
 		}
 		if err != nil {
-			return err
+			return models.Status{}, err
 		}
 		if !status.Alive() {
-			return nil
+			return status, nil
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
 		}
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return models.Status{}, ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -1101,7 +1179,12 @@ func (s *Service) free(ctx context.Context, id string) error {
 // A create that runs beside this one is no reason to keep it: the runtime takes it again on its
 // next create, and a live sandbox does not need it to stay up.
 func (s *Service) dropSubstrateRoot() error {
+	// List direct, not ListReadable: an unreadable record may name this substrate, so keep its root until an operator fixes it (SHARD-343).
 	left, err := s.cfg.Repo.List()
+	var unreadable *sandboxstate.UnreadableError
+	if errors.As(err, &unreadable) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

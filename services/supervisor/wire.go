@@ -23,7 +23,7 @@ const (
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
 const LogsVersion = 1
 
-// The kinds a control message carries. The host sends the first seven; the guest answers each with done or failure, and sends the rest on its own.
+// The kinds a control message carries. The host sends the first eight; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
@@ -32,6 +32,7 @@ const (
 	KindReseed    = "reseed"
 	KindFreeze    = "freeze"
 	KindThaw      = "thaw"
+	KindKill      = "kill"
 	KindDone      = "done"
 	KindFailure   = "failure"
 	KindState     = "state"
@@ -69,6 +70,8 @@ type Message struct {
 	Frozen bool `json:"frozen,omitempty"`
 	// Logs on a state replay is the logs port protocol the guest speaks; zero is a guest from before it, which sends raw output and reads no acks.
 	Logs int `json:"logs,omitempty"`
+	// FreezesOverlay on a state replay says the guest freezes an overlay root by its upper; a guest from before it fails every freeze on one.
+	FreezesOverlay bool `json:"freezes_overlay,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
 }

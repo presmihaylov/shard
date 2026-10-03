@@ -133,6 +133,83 @@ func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	}
 }
 
+// diskProvider is a VM substrate, which admits the disk of a create before its record exists.
+type diskProvider struct {
+	models.Provider
+
+	refuse   error
+	admitted []string
+	released []string
+}
+
+func (d *diskProvider) AdmitDisk(dir string, _ models.Resources) error {
+	if d.refuse != nil {
+		return d.refuse
+	}
+	d.admitted = append(d.admitted, dir)
+
+	return nil
+}
+
+func (d *diskProvider) ReleaseDisk(dir string) { d.released = append(d.released, dir) }
+
+func withDisks(d *diskProvider) func(*sandbox.Config) {
+	return func(c *sandbox.Config) {
+		d.Provider = c.Provider
+		c.Provider = d
+	}
+}
+
+// A disk the root has no room for is refused before the record, so no verb ever sees the sandbox (SHARD-393).
+func TestCreateRefusedByTheDiskAdmissionLeavesNoRecord(t *testing.T) {
+	r := &recorder{}
+	disks := &diskProvider{refuse: errors.New("a 4096 MiB disk does not fit on the root")}
+	svc, l := newService(t, r, models.Sandbox{}, withDisks(disks))
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "does not fit on the root") {
+		t.Fatalf("create = %v, want a request error with the admission's reason", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+	if l.repo.sb.ID != "" {
+		t.Errorf("a refused create left the record %+v", l.repo.sb)
+	}
+}
+
+// The record write can fail after the admission, and nothing will write that disk then.
+func TestAnAdmittedDiskIsReleasedWhenTheRecordFails(t *testing.T) {
+	r := &recorder{fail: []string{"repo.Create"}}
+	disks := &diskProvider{}
+	svc, _ := newService(t, r, models.Sandbox{}, withDisks(disks))
+
+	if _, err := svc.Create(t.Context(), alpine()); err == nil {
+		t.Fatal("create succeeded over a record write that failed")
+	}
+	if want := []string{"/sandboxes/sandbox1"}; !slices.Equal(disks.released, want) {
+		t.Errorf("released %v, want %v", disks.released, want)
+	}
+}
+
+func TestACreateKeepsTheDiskItWasAdmitted(t *testing.T) {
+	r := &recorder{}
+	disks := &diskProvider{}
+	svc, _ := newService(t, r, models.Sandbox{}, withDisks(disks))
+
+	if _, err := svc.Create(t.Context(), alpine()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/sandboxes/sandbox1"}; !slices.Equal(disks.admitted, want) {
+		t.Errorf("admitted %v, want %v", disks.admitted, want)
+	}
+	if len(disks.released) != 0 {
+		t.Errorf("a create that took released its disk: %v", disks.released)
+	}
+}
+
 // A bound past the host's memory never binds, so it is refused by name before anything is pulled or recorded.
 func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
 	r := &recorder{}
@@ -686,6 +763,26 @@ func TestStartRecordsASandboxThatCameUpUnderAFailedStart(t *testing.T) {
 	}
 }
 
+// A shard-init that died at boot leaves a stopped sandbox, so the start lands its exit and its reason (SHARD-416).
+func TestStartRecordsTheExitAndTheReasonOfAShardInitThatDiedAtBoot(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}}, stopped())
+	why := "mount /dev/vdb on /overlay: read-only file system"
+	l.provider.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}
+
+	if _, err := svc.Start(t.Context(), "sandbox1"); err == nil {
+		t.Fatal("start returned no error")
+	}
+
+	got := l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.StoppedReason != want {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+}
+
 func TestStartNamesTheSandboxWhenTheRecordWriteFails(t *testing.T) {
 	svc, _ := newService(t, &recorder{fail: []string{"repo.Update"}}, stopped())
 
@@ -1003,6 +1100,28 @@ func TestStopRecordsTheExitStatus(t *testing.T) {
 	}
 }
 
+// A shard-init that dies on the way down outranks the entrypoint exit the record took: its 125 and its reason are what inspect shows (SHARD-290).
+func TestStopRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
+	sb := running()
+	sb.ExitStatus = &models.ExitStatus{Code: 3}
+	svc, l := newService(t, &recorder{}, sb)
+	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
+	l.provider.failsOnStop = why
+
+	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	got := l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.StoppedReason != want {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+}
+
 // A stop that had to kill leaves no exit status: the supervisor died before it could record one.
 func TestStopRecordsNoExitStatusWhenTheSandboxWasKilled(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
@@ -1201,6 +1320,19 @@ func TestRemoveKeepsWhatTheSubstrateSharesWhileASandboxIsLeft(t *testing.T) {
 	}
 	if l.substrate.dropped {
 		t.Error("the rm dropped the substrate mount while another sandbox still uses the root")
+	}
+}
+
+// SHARD-343: a record that will not read may name this substrate, so the last rm keeps the root rather than releasing it.
+func TestRemoveKeepsTheSubstrateWhileARecordIsUnreadable(t *testing.T) {
+	svc, l := stoppedOnTheHost(t, &recorder{})
+	l.repo.listErr = &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if l.substrate.dropped {
+		t.Error("the rm dropped the substrate mount while a record could not be read")
 	}
 }
 

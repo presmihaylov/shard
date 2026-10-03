@@ -29,8 +29,6 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.
 - **The egress proxy**: the `proxy` task listens on the bridge gateway, ports 30080 and 30443, and
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
-- **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
-  passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
 - **Output log rotation**: a sandbox's `output.log` and a VM's `console.log` keep 16 MiB each,
   with one older file of up to 16 MiB beside them as `<file>.1`, which `shard logs` prints first.
   The daemon writes a VM's `output.log` itself and renames it before it passes 16 MiB, so that
@@ -117,6 +115,11 @@ one:
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
   `shard inspect` carries it in the record. A `start` clears it.
+- A record that says `running` whose sandbox the host ended for its memory while the daemon was
+  down gets the decision the liveness tick makes for an OOM the daemon saw: it becomes `stopped`
+  with `ran out of memory and the host ended it`, or the daemon starts it again when the record set
+  `restart_on_oom` and the limit allows. The tick's backoff does not apply here, so no verb ever
+  reads it as `running` with no process behind it (SHARD-311).
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
@@ -180,7 +183,7 @@ substrate call that wedges never pins that lock: a `stop` or `rm` on that sandbo
 still runs. A tick the substrate does not answer within the deadline logs one line, leaves the record
 untouched, and asks again next tick. The tick takes the lock only to write, and reads the record
 again first, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
-One tick the substrate answers has three outcomes.
+One tick the substrate answers has four outcomes.
 
 The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
 stays `running` and the tick writes the exit into `exit_status`. `shard ls` then shows `running
@@ -193,6 +196,12 @@ The sandbox process is gone. Nothing but the host or a crash ends a running sand
 daemon's back, so the tick makes the record `stopped` with `pid` 0 and `stopped_reason` `the sandbox
 process died`. A `start` brings it back. The daemon does not start it again on its own; a restart
 policy for a process that died is SHARD-188.
+
+`shard-init` itself died. On Firecracker `shard-init` tells the host why before the VM halts, with
+the exit code 125, as `docs/provider-vz.md` says. The tick makes the record `stopped` with `pid` 0,
+`exit_status` 125 and `stopped_reason` `shard-init failed: <reason>`, and logs one line. A `start`
+brings it back and clears both. A run whose last report never landed ends the same way, with the
+loss as the reason, but its `start` answers with the loss until `rm` drops the sandbox.
 
 The host ended it for its memory. A sandbox that overruns its `--memory` bound is ended by the host,
 whole: the kernel kills every process in its cgroup, `shard-init` included, and `runsc` still holds
@@ -217,8 +226,10 @@ the last one in `oom_restarted_at`, and `shard ls` shows the policy in its `REST
 `on-oom 2` when the count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from
 the last, then 2, 4 and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds
 `the N starts again the limit allows are spent`. A `shard start` by hand still works, and clears the
-reason. A sandbox the record says `stopped` is never started again by the daemon, so a `stop` in the
-window is final. A `fork` or `clone` inherits the policy with a fresh count.
+reason. While a start again waits, the record says `stopped` with pid 0, the reason adds
+`it starts again at <time>`, and `oom_restart_due` holds that time, so no verb reads the dead
+process (SHARD-425); `shard ls` still lists it. A `stop` in the wait calls the start again off, and
+a `shard start` runs it at once. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 
@@ -392,7 +403,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. 404; 409 when the sandbox is still up,
   unless `?force=true`, which stops it first with `grace=<seconds>` from the query.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. 404; 409
-  when the sandbox is not running, or when the provider does not claim the verb.
+  when the sandbox is not running, or when the provider does not claim the verb. A client that hangs
+  up does not cut the pause, and the daemon gives a pause 10 minutes at most (`DefaultPauseBudget`)
+  before it cuts it. A pause the substrate lost after its checkpoint began, a cut one included,
+  answers 500 and leaves the record `failed` with the reason.
 - `POST /v0/sandboxes/{id}/resume` takes no body and answers 200 with the running record. 404; 409
   when the sandbox is not paused, when its record names no snapshot, or for an unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, run from the
@@ -416,6 +430,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   replays it again. A stalled client is closed with no exit, and the record says how much it lost.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
   TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
+  An exec that a signal ends reports code 128+n and signal 0 on every provider. Only the entrypoint's exit status carries the signal.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;
   409 `exec_running` while the command still runs.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
@@ -429,9 +444,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `text/plain`, the bytes as they come, and the body ends when the sandbox stops or is removed, so
   `curl -N` follows a log. 404 either way, before anything is on the wire. `shard logs -f` takes the
   WebSocket.
-- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
-  array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
-  404. `shard logs --egress` prints one record per line.
+- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
+  sandbox as a JSON array, oldest first: the proxy's own records and the host drops the daemon wrote
+  into the same file. The `Shard-Egress-Cut` header counts the older records it left out, and is
+  absent when it left out none. 404. `shard logs --egress` prints one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake is text messages, one JSON record
   each, live. A stopped or removed sandbox ends it with close 1000 and the reason as the close text; a
   failure of the follow is close 1011 with the error. Without the handshake it is 200 chunked
@@ -567,7 +583,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
-| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
 | `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead: it SIGKILLs the sandbox's own runsc processes, matched by its cgroup and by its id on their command line, then finishes the teardown, and answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
@@ -660,6 +676,16 @@ narrow: the front skips the `Connection: close` rewrite only when all four hands
 present, and it reads the daemon's status line first. A `101` is the connection the WebSocket needs; a
 non-101 answer ends after that one response, so a request pipelined behind a handshake the daemon does
 not upgrade never reaches the daemon.
+
+The route check is coarse: `create` maps to `sandbox:write` alone, yet a create can name secrets and
+a policy, which `secret:*` and `policy:*` otherwise guard. So the daemon checks the token's scopes a
+second time: a create that names a secret needs `secret:*`, and a create that names a policy needs
+`policy:*`, or the daemon answers `403` with the code `forbidden` and names the missing scope before
+it builds anything. The front carries the token's scopes to the daemon in an `X-Shard-Scopes` header,
+stamped on every request it forwards and stripped of any copy the client sent, so a forged header can
+only remove a right. A request with no such header reached the daemon socket directly, which is the
+operator's own channel and keeps every right. A `fork` and a `clone` keep the source sandbox's grants
+by design, so they need only `sandbox:write`.
 
 A token is minted on the server, from the same secret, and never over the API:
 

@@ -65,11 +65,25 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// shortRoot skips t.TempDir and a Mac's $TMPDIR, both past the root a vz sandbox's socket path leaves room for.
+// itestPrefix names the temp roots the integration teardown sweeps, so a root a test here leaves behind goes with them.
+const itestPrefix = "shard-itest"
+
+// shortTemp is where shortRoot makes a root: t.TempDir and a Mac's $TMPDIR are both past the root a vz sandbox's socket path leaves room for.
+const shortTemp = "/tmp"
+
+// A root this helper made and a test failed to remove is still the sweep's to take back (SHARD-377).
+func TestShortRootSitsUnderThePrefixTheSweepOwns(t *testing.T) {
+	root := shortRoot(t)
+	if filepath.Dir(root) != shortTemp || !strings.HasPrefix(filepath.Base(root), itestPrefix) {
+		t.Errorf("shortRoot = %s, want %s* under %s", root, itestPrefix, shortTemp)
+	}
+}
+
+// shortRoot makes a root short enough for a socket path, under the prefix the integration sweep owns.
 func shortRoot(t *testing.T) string {
 	t.Helper()
 
-	root, err := os.MkdirTemp("/tmp", "shard") //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp(shortTemp, itestPrefix) //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -109,12 +123,84 @@ func socketClient(root string) *http.Client {
 	}}}
 }
 
-// The daemon needs no provider and no runsc for this: the socket and the records are plain files.
+// serveFakeDaemon answers GET /v0/daemon on the socket under root with a fixed record, so a status test needs no provider.
+func serveFakeDaemon(t *testing.T, root string, d api.Daemon) {
+	t.Helper()
+
+	ln, err := net.Listen("unix", filepath.Join(root, api.SocketFile))
+	if err != nil {
+		t.Fatalf("listen on the socket: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v0/daemon", func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(d); err != nil {
+			t.Errorf("encode the daemon record: %v", err)
+		}
+	})
+	srv := &http.Server{Handler: mux}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("serve the fake daemon: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close the fake daemon: %v", err)
+		}
+	})
+}
+
+func TestDaemonStatusExitsNonZeroWhenATaskIsInBackoff(t *testing.T) {
+	root := shortRoot(t)
+	serveFakeDaemon(t, root, api.Daemon{
+		Version:  "v-test",
+		PID:      7,
+		Provider: "gvisor",
+		Tasks: []api.TaskState{
+			{Name: "dns", State: "running"},
+			{Name: "liveness", State: "backoff", Restarts: 3, LastError: "runsc is gone"},
+		},
+	})
+	out := &syncBuffer{}
+
+	err := App{Version: "v-test", Root: root, Out: out}.Run(t.Context(), []string{"daemon", "status"})
+	if err == nil || !strings.Contains(err.Error(), "backoff") || !strings.Contains(err.Error(), "liveness") {
+		t.Errorf("status with a task in backoff returned %v, want an error naming liveness", err)
+	}
+	if s := out.String(); !strings.Contains(s, "liveness") || !strings.Contains(s, "backoff") || !strings.Contains(s, "runsc is gone") {
+		t.Errorf("status output = %q, want the task table with the backoff task", s)
+	}
+}
+
+func TestDaemonStatusListsTheTasksAndSucceedsWhenAllRun(t *testing.T) {
+	root := shortRoot(t)
+	serveFakeDaemon(t, root, api.Daemon{
+		Version:  "v-test",
+		PID:      7,
+		Provider: "gvisor",
+		Tasks: []api.TaskState{
+			{Name: "api", State: "running"},
+			{Name: "dns", State: "running"},
+		},
+	})
+	out := &syncBuffer{}
+
+	if err := (App{Version: "v-test", Root: root, Out: out}).Run(t.Context(), []string{"daemon", "status"}); err != nil {
+		t.Fatalf("status with every task running returned %v, want nil", err)
+	}
+	for _, want := range []string{"task", "state", "restarts", "api", "dns", "running"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status output = %q, want it to contain %q", out.String(), want)
+		}
+	}
+}
+
+// The daemon needs no runsc for this: the socket and the records are plain files, and gvisor keeps a /dev/kvm host from provisioning a data image.
 func TestDaemonAnswersOnTheSocketUntilTheContextEnds(t *testing.T) {
 	root := shortRoot(t)
 	out := &syncBuffer{}
 
-	cancel, done := startDaemon(t, App{Version: "v-test", Root: root}, out)
+	cancel, done := startDaemon(t, App{Version: "v-test", Root: root, Provider: "gvisor"}, out)
 
 	resp, err := socketClient(root).Get("http://shard/v0/version")
 	if err != nil {

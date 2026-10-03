@@ -88,9 +88,9 @@ func (r *Repository) snapshotDir(id string) string {
 	return filepath.Join(r.root, snapshotsDir, id)
 }
 
-// Create generates the id, claims it and writes the record. It returns the sandbox that it stored.
+// Create generates the id, claims it, runs each admit on its directory and writes the record. It returns the sandbox that it stored.
 // It takes no lock: the mkdir that claims the id is atomic, and the record write is atomic too.
-func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (r *Repository) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
 	if sb.ID != "" {
 		return models.Sandbox{}, fmt.Errorf("the sandbox carries the id %q, which the repository generates", sb.ID)
 	}
@@ -102,6 +102,13 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	id, err := r.claimID()
 	if err != nil {
 		return models.Sandbox{}, err
+	}
+
+	// An admit runs before the record, so a refusal leaves nothing a verb can see.
+	for _, check := range admit {
+		if err := check(r.dir(id)); err != nil {
+			return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		}
 	}
 
 	sb.ID = id
@@ -183,6 +190,23 @@ func (r *Repository) namePath(name string) string {
 	return filepath.Join(r.root, namesDir, name)
 }
 
+// nameExists reports whether a link spelled exactly ref is on disk. A case-insensitive filesystem lets
+// os.Readlink follow a legacy mixed-case link, so the exact directory entry is what decides (SHARD-374).
+func (r *Repository) nameExists(ref string) (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(r.root, namesDir))
+	if err != nil {
+		return false, fmt.Errorf("read the names directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.Name() == ref {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // Resolve turns what an operator typed into the id every other method takes. A name is a symlink, so
 // this is one readlink; anything else is already an id, and Get answers for one that names nothing.
 func (r *Repository) Resolve(ref string) (string, error) {
@@ -197,6 +221,15 @@ func (r *Repository) Resolve(ref string) (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the name link %s: %w", r.namePath(ref), err)
+	}
+
+	// A case-insensitive filesystem lets readlink follow a legacy mixed-case link, so only an exact entry resolves (SHARD-374).
+	exact, err := r.nameExists(ref)
+	if err != nil {
+		return "", err
+	}
+	if !exact {
+		return ref, nil
 	}
 
 	// A refused target is a broken link, never the operator's mistake, so it is no ValidationError.
@@ -469,6 +502,10 @@ func RecordedProvider(root string) (string, error) {
 	}
 
 	r := &Repository{root: root}
+
+	var unreadable error
+	var provider string
+
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
 		if !entry.IsDir() || ValidID(entry.Name()) != nil {
@@ -480,15 +517,61 @@ func RecordedProvider(root string) (string, error) {
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
+		// Skip an unreadable record the way List does, so the records a good one names still select (SHARD-343).
 		if err != nil {
-			return "", err
+			unreadable = errors.Join(unreadable, &UnreadableError{ID: entry.Name(), Err: err})
+
+			continue
 		}
-		if sb.Provider != "" {
-			return sb.Provider, nil
+		// Keep scanning past the first provider, so a record that sorts later and cannot be read is still reported (SHARD-343).
+		if provider == "" && sb.Provider != "" {
+			provider = sb.Provider
 		}
 	}
 
-	return "", nil
+	return provider, unreadable
+}
+
+// Lister is the List a ListReadable caller holds, so a package with its own narrower records interface passes it.
+type Lister interface {
+	List() ([]models.Sandbox, error)
+}
+
+// ListReadable returns the readable records when one will not decode, logs the unreadable ones by file when logf is not nil, and fails closed on any other list error (SHARD-343).
+func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
+	sandboxes, err := l.List()
+	if err == nil {
+		return sandboxes, nil
+	}
+
+	// A join carrying any error other than an unreadable record is a real failure, so fail closed (SHARD-343).
+	if !onlyUnreadable(err) {
+		return nil, err
+	}
+
+	if logf != nil {
+		logf("some records cannot be read, so they are skipped: %v", err)
+	}
+
+	return sandboxes, nil
+}
+
+// onlyUnreadable reports whether err is non-nil and every error joined into it is an UnreadableError.
+func onlyUnreadable(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		for _, e := range errs {
+			if !onlyUnreadable(e) {
+				return false
+			}
+		}
+
+		return len(errs) > 0
+	}
+
+	var unreadable *UnreadableError
+
+	return errors.As(err, &unreadable)
 }
 
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is
@@ -553,9 +636,13 @@ func plainComponent(kind, s string) error {
 	}
 
 	for _, c := range s {
-		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		// A case-insensitive filesystem folds an upper-case letter onto another record, so ids, names and refs stay lower case (SHARD-374).
+		if c >= 'A' && c <= 'Z' {
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another sandbox", kind, s, c)}
+		}
+		alphanumeric := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)}
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a lower-case letter, a digit, - or _", kind, s, c)}
 		}
 	}
 

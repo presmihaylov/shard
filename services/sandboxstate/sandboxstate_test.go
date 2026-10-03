@@ -141,6 +141,36 @@ func TestCreateRefusesAnUnknownState(t *testing.T) {
 	}
 }
 
+// An admission runs on a claimed directory no verb lists, and its refusal leaves no directory and no name (SHARD-393).
+func TestARefusedAdmissionLeavesNothing(t *testing.T) {
+	r, _ := repo(t)
+	sb := newSandbox()
+	sb.Name = "builder"
+	refused := errors.New("no room for the disk")
+
+	var claimed string
+	_, err := r.Create(sb, func(dir string) error {
+		claimed = dir
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			t.Errorf("the admission ran before the directory %s was claimed: %v", dir, err)
+		}
+		if list, err := r.List(); err != nil || len(list) != 0 {
+			t.Errorf("List during the admission = %v, %v, want nothing", list, err)
+		}
+
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("Create = %v, want the refusal", err)
+	}
+	if _, err := os.Stat(claimed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the directory %s outlived the refusal: %v", claimed, err)
+	}
+	if _, err := r.Create(sb); err != nil {
+		t.Fatalf("the refused create still holds the name builder: %v", err)
+	}
+}
+
 func TestCreateAndGetRoundTrip(t *testing.T) {
 	r, _ := repo(t)
 	want := create(t, r)
@@ -797,6 +827,25 @@ func TestARefusedReferenceIsAValidationError(t *testing.T) {
 	}
 }
 
+// SHARD-374: an upper-case ref or name folds onto another sandbox on a case-insensitive filesystem, so it is refused; an id shape is refused in any case.
+func TestAMixedCaseNameOrReferenceIsRefused(t *testing.T) {
+	r, _ := repo(t)
+
+	var invalid *sandboxstate.ValidationError
+	if _, err := r.Resolve("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("Resolve of an upper-case ref got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("ValidName of a mixed-case id shape got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("morning-fern-b8b0"); err == nil {
+		t.Error("ValidName of a lower-case id shape got nil, want it refused")
+	}
+	if err := sandboxstate.ValidName("my-sandbox"); err != nil {
+		t.Errorf("ValidName of a plain lower-case name got %v, want nil", err)
+	}
+}
+
 // SHARD-46: a daemon asks the root what made its records before it picks a substrate for itself.
 func TestRecordedProviderNamesWhatMadeTheRecords(t *testing.T) {
 	r, root := repo(t)
@@ -841,5 +890,122 @@ func TestRecordedProviderOfAFreshRootCreatesNothing(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("the root holds %d entries after the ask, want it untouched", len(entries))
+	}
+}
+
+// SHARD-343: one record that will not decode must not stop a daemon reading what made the rest; a good record still names the substrate.
+func TestRecordedProviderSkipsAnUndecodableRecord(t *testing.T) {
+	r, root := repo(t)
+	a, b := create(t, r), create(t, r)
+
+	// Corrupt whichever id sorts first, so the undecodable record is read before the good one.
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	brokenID := ids[0]
+
+	path := filepath.Join(sandboxDir(t, r, brokenID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider the good record names", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != brokenID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, brokenID)
+	}
+}
+
+// SHARD-343: a root where no record decodes selects as a root with no records, not a fatal read.
+func TestRecordedProviderOfARootWhereNoRecordDecodes(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	path := filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "" {
+		t.Errorf("RecordedProvider = %q, want nothing when no record decodes", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != sb.ID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, sb.ID)
+	}
+}
+
+// SHARD-343: a corrupt record that sorts after a good one must still be reported, so the scan does not stop at the first provider.
+func TestRecordedProviderReportsAnUndecodableRecordThatSortsLast(t *testing.T) {
+	r, root := repo(t)
+	a, b := create(t, r), create(t, r)
+
+	// Corrupt whichever id sorts last, so a return at the first good record would miss it.
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	brokenID := ids[1]
+
+	path := filepath.Join(sandboxDir(t, r, brokenID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider the good record names", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != brokenID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, brokenID)
+	}
+}
+
+// listResult is a Lister with a chosen result, so a ListReadable test can hand it any error shape.
+type listResult struct {
+	sandboxes []models.Sandbox
+	err       error
+}
+
+func (l listResult) List() ([]models.Sandbox, error) { return l.sandboxes, l.err }
+
+// SHARD-343: a join that carries a real error beside an unreadable record must fail closed, not pass partial state as success.
+func TestListReadableFailsClosedOnAnErrorBesideAnUnreadableRecord(t *testing.T) {
+	fatal := errors.New("read the sandboxes directory: permission denied")
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err:       errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")}, fatal),
+	}
+
+	got, err := sandboxstate.ListReadable(l, nil)
+	if !errors.Is(err, fatal) {
+		t.Fatalf("ListReadable error = %v, want it to carry the fatal error", err)
+	}
+	if got != nil {
+		t.Errorf("ListReadable returned %d records beside the fatal error, want none", len(got))
+	}
+}
+
+// SHARD-343: a join of only unreadable records is skipped, and the readable records still come back.
+func TestListReadableSkipsWhenEveryErrorIsAnUnreadableRecord(t *testing.T) {
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err: errors.Join(
+			&sandboxstate.UnreadableError{ID: "a", Err: errors.New("decode sandbox.json")},
+			&sandboxstate.UnreadableError{ID: "b", Err: errors.New("decode sandbox.json")},
+		),
+	}
+
+	got, err := sandboxstate.ListReadable(l, nil)
+	if err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "readable" {
+		t.Errorf("ListReadable = %+v, want the one readable record", got)
 	}
 }

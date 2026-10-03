@@ -12,6 +12,12 @@ var ErrUnsupported = errors.New("verb not supported")
 // could record how the entrypoint ended. It is a normal outcome of a stop, not a failure.
 var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited")
 
+// ErrExitFileTooLarge is an exit file past any record shard-init writes, which only a guest that reached the file can make.
+var ErrExitFileTooLarge = errors.New("the exit file is larger than any exit record")
+
+// ErrExitChannelReplaced is a PID 1 whose fd 0 is no longer the sealed channel create gave it, which only guest root can do.
+var ErrExitChannelReplaced = errors.New("exit channel replaced")
+
 // CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {
@@ -48,3 +54,15 @@ func (e *UnsupportedError) Error() string {
 }
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
+
+// LostError is a verb that failed after the substrate had already ended the sandbox, so its record ends failed.
+type LostError struct {
+	Sandbox string
+	Err     error
+}
+
+func (e *LostError) Error() string {
+	return fmt.Sprintf("sandbox %s is lost: %v", e.Sandbox, e.Err)
+}
+
+func (e *LostError) Unwrap() error { return e.Err }

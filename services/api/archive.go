@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/tar"
 	"errors"
 	"io"
 	"net/http"
@@ -38,10 +39,69 @@ func (h *Handler) getArchive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.WriteHeader(http.StatusOK)
 
-	_, err = io.Copy(w, body)
-	if err := errors.Join(err, body.Close()); err != nil {
+	watch := watchTrailer()
+	_, err = io.Copy(io.MultiWriter(w, watch), body)
+	whole, endErr := watch.end()
+	if err := errors.Join(err, endErr, body.Close()); err != nil {
+		// A client that hangs up once the trailer went out has the whole tar, and its hang-up is what shut the exec (SHARD-410).
+		if whole && r.Context().Err() != nil {
+			return
+		}
 		h.log.Printf("api: archive %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
 		// The abort drops the connection without the last chunk, so the client reads a cut, never a whole tar.
 		panic(http.ErrAbortHandler)
+	}
+}
+
+// errStreamEnd ends the watch's copy of a stream, so a tar cut at an entry boundary never reads as one that ended.
+var errStreamEnd = errors.New("the archive stream ended")
+
+// trailerWatch reads a copy of what a tar response sent and tells whether its end-of-archive trailer went by.
+type trailerWatch struct {
+	w    *io.PipeWriter
+	seen chan bool
+}
+
+func watchTrailer() *trailerWatch {
+	r, w := io.Pipe()
+	t := &trailerWatch{w: w, seen: make(chan bool, 1)}
+	go func() { t.seen <- endsWithTrailer(r) }()
+
+	return t
+}
+
+func (t *trailerWatch) Write(p []byte) (int, error) {
+	return t.w.Write(p)
+}
+
+// end closes the copy and answers whether the trailer went by.
+func (t *trailerWatch) end() (bool, error) {
+	if err := t.w.CloseWithError(errStreamEnd); err != nil {
+		return false, err
+	}
+
+	return <-t.seen, nil
+}
+
+// endsWithTrailer reads r as a tar up to its trailer, then drains the rest, so the response never waits on the watch.
+func endsWithTrailer(r io.Reader) bool {
+	whole := readsToTrailer(tar.NewReader(r))
+	_, err := io.Copy(io.Discard, r)
+
+	return whole && errors.Is(err, errStreamEnd)
+}
+
+func readsToTrailer(tr *tar.Reader) bool {
+	for {
+		_, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			return false
+		}
 	}
 }

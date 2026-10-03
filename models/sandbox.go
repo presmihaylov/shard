@@ -20,9 +20,11 @@ type Sandbox struct {
 	State  State  `json:"state"`
 	// ExitStatus is the last entrypoint exit, nil until one happens. A sandbox has none of its own.
 	ExitStatus *ExitStatus `json:"exit_status,omitempty"`
-	// StoppedReason says why shard stopped it when no operator did, empty otherwise.
+	// ExitChannel says why the daemon no longer reads the entrypoint exit from the guest, empty while it does.
+	ExitChannel string `json:"exit_channel,omitempty"`
+	// StoppedReason says why shard stopped it when no operator did, or why shard-init died on a stop; empty otherwise.
 	StoppedReason string `json:"stopped_reason,omitempty"`
-	// FailedReason says why a create never reached running, set only in state failed.
+	// FailedReason says why a create never reached running or a pause lost the guest, set only in state failed.
 	FailedReason string `json:"failed_reason,omitempty"`
 
 	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
@@ -46,6 +48,8 @@ type Sandbox struct {
 	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
 	OOMRestarts    int       `json:"oom_restarts,omitempty"`
 	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
+	// OOMRestartDue is when a stopped sandbox that waits out the backoff starts again, zero when none waits.
+	OOMRestartDue time.Time `json:"oom_restart_due,omitzero"`
 	// MemoryThrottles is the host's throttle count the daemon last saw this run, and CalmSince the tick it last grew, zero for none.
 	MemoryThrottles int64     `json:"memory_throttles,omitempty"`
 	CalmSince       time.Time `json:"calm_since,omitzero"`

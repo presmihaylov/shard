@@ -35,7 +35,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 	if err := bundle.WriteOverlayDisk(filepath.Join(spec.StateDir, bundle.OverlayDiskFile), spec.Resources); err != nil {
-		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	r, err := recordOf(spec)
@@ -68,7 +68,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, memoryFile, bundle.OverlayDiskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, logFile, cursorFile, recordFile, memoryFile, bundle.OverlayDiskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -182,6 +182,9 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := p.lost(id); err != nil {
+		return err
+	}
 
 	m, err := p.lookup(ctx, id, dir)
 	if err != nil {
@@ -252,8 +255,11 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 
 	m, err := p.lookup(ctx, id, dir)
-	if err != nil || m == nil {
+	if err != nil {
 		return err
+	}
+	if m == nil {
+		return p.lost(id)
 	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
@@ -271,17 +277,36 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		if !m.status(p).Alive() {
 			return p.release(ctx, m)
 		}
-		// A guest with no stream, or no answer within the grace, is past waiting for.
-		return p.end(ctx, m)
+		// A guest with no stream, or no answer within the grace, is past waiting for; it still flushes before the cut.
+		return p.endLive(ctx, m)
 	}
 	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
 		return err
 	}
 	if ended {
-		p.forget(m)
+		return p.settle(ctx, m)
+	}
+	// The grace outran the stop, so the guest flushes its disk before the cut (SHARD-344, shard ruling f4b0942e).
+	return p.endLive(ctx, m)
+}
 
-		return m.close()
+// endLive cuts a VM whose guest may still run: it gives the guest a bounded window to flush first, so a forced stop loses nothing the entrypoint wrote (SHARD-344).
+func (p *Provider) endLive(ctx context.Context, m *machine) error {
+	// The guest's flush rides the vmm, so a vmm too frozen to answer is cut at once and the stop keeps its bound.
+	probe, cancelProbe := context.WithTimeout(ctx, probeFloor)
+	_, err := m.client.State(probe)
+	cancelProbe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: no flush before the forced stop, the vmm does not answer: %v\n", m.id, err)
+
+		return p.end(ctx, m)
+	}
+	// The flush is best effort and off the verb's deadline; a responsive guest syncs within flushGrace, a hung one is cut with the VM anyway.
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushGrace)
+	defer cancel()
+	if err := m.control.Load().Kill(flushCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: flush before the forced stop: %v\n", m.id, err)
 	}
 
 	return p.end(ctx, m)
@@ -299,25 +324,30 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	if !ended {
 		return fmt.Errorf("the vmm of sandbox %s still answers %s after a kill", m.id, killGrace)
 	}
-	p.forget(m)
 
-	return m.close()
+	return p.settle(ctx, m)
 }
 
 // Remove ends the VM and drops the overlay, the memory, the record and the sockets; the state directory itself is the repository's.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	if err := p.Stop(ctx, id, 0); err != nil {
+	// A loss comes back only once the vmm is gone, and rm drops it with the files that cannot answer for the run.
+	if err := p.Stop(ctx, id, 0); err != nil && !errors.Is(err, errLostState) {
 		return err
 	}
 	dir, err := p.dir(id)
 	if err != nil {
 		return err
 	}
+	// A create that failed before its disk landed still holds the reservation.
+	bundle.Release(dir)
 	for _, name := range []string{bundle.OverlayDiskFile, memoryFile, recordFile, socketFile, vsockFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}
 	}
+	p.mu.Lock()
+	delete(p.lostRuns, id)
+	p.mu.Unlock()
 
 	// A stopped sandbox keeps its cgroup, empty, because the start that brings it back boots into that one.
 	return p.sweep(ctx, id)
@@ -352,7 +382,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 		return err
 	}
 	// A clone shares the source's blocks or is refused: a full copy of the overlay is not what the verb promises.
-	if err := bundle.Reflink(filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)); err != nil {
+	from, to := filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
+	if err := bundle.AdmitCopy(from, to, func() error { return bundle.Reflink(from, to) }); err != nil {
 		return fmt.Errorf("clone the overlay of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
@@ -447,16 +478,22 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return bundle.Bundle{RestartFile: filepath.Join(dir, restartsFile)}.RestartCount()
 }
 
+// errLostState marks a run whose files say nothing true, since the loop could not land one of its events.
+var errLostState = errors.New("lost its lifecycle state")
+
 // lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.
 func (p *Provider) lost(id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	m, held := p.machines[id]
-	if !held || m.lost == nil {
+	cause := p.lostRuns[id]
+	if m, held := p.machines[id]; held && m.lost != nil {
+		cause = m.lost
+	}
+	if cause == nil {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox %s lost its lifecycle state: %w", id, m.lost)
+	return fmt.Errorf("sandbox %s %w: %w", id, errLostState, cause)
 }
 
 // Status asks the vmm, because a record saying running can outlive a restart of the daemon.
@@ -477,11 +514,25 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	if err != nil {
 		return models.Status{}, err
 	}
-	if m == nil {
-		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}, nil
+	status := models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(dir)}
+	if m != nil {
+		status = m.status(p)
+	}
+	if status.Alive() {
+		return status, nil
+	}
+	// A run whose last report never landed has nothing true on file, so it ends as a supervisor failure and never as an ordinary death.
+	if lost := p.lost(id); lost != nil {
+		status.SupervisorFailed = lost.Error()
+
+		return status, nil
+	}
+	status.SupervisorFailed, err = supervisorFailed(dir)
+	if err != nil {
+		return models.Status{}, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	return m.status(p), nil
+	return status, nil
 }
 
 // oomKilled reads the marker the last boot left; only the next boot clears it.
@@ -489,4 +540,17 @@ func oomKilled(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, oomFile))
 
 	return err == nil
+}
+
+// supervisorFailed reads the reason the last boot's shard-init gave for its own death, empty when it did not die.
+func supervisorFailed(dir string) (string, error) {
+	reason, err := os.ReadFile(filepath.Join(dir, supervisorFailedFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read why the supervisor failed: %w", err)
+	}
+
+	return string(reason), nil
 }
