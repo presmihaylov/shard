@@ -682,6 +682,37 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	}
 }
 
+// A link close that fails after the VM is down is a log line, so the stop stands and one remove ends the sandbox (SHARD-389).
+func TestALinkCloseFaultAfterTheVMIsDownNeverFailsTheStop(t *testing.T) {
+	stop := func(h *harness, id string) error { return h.provider.Stop(t.Context(), id, stopGrace) }
+	remove := func(h *harness, id string) error { return h.provider.Remove(t.Context(), id) }
+	for name, end := range map[string]func(*harness, string) error{"stop": stop, "remove": remove} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+			if err := h.provider.Create(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+				t.Fatal(err)
+			}
+			h.provider.FailLinkClose(spec.ID, errors.New("write vmnet-host: no buffer space available"))
+
+			if err := end(h, spec.ID); err != nil {
+				t.Fatalf("%s with a link close fault = %v, want nil", name, err)
+			}
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			want := models.Status{Exists: true, State: models.StateStopped}
+			if name == "remove" {
+				want = models.Status{}
+			}
+			if err != nil || status != want {
+				t.Fatalf("Status after the %s = %+v, %v; want %+v", name, status, err, want)
+			}
+		})
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, from a stopped source and from a paused one.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)

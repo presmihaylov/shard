@@ -206,7 +206,12 @@ func (c *Client) configure(cfg Config) error {
 		return err
 	}
 	for _, d := range cfg.Drives {
-		if err := c.put("/drives/"+d.ID, drive{ID: d.ID, Path: d.Path, ReadOnly: d.ReadOnly}); err != nil {
+		wire := drive{ID: d.ID, Path: d.Path, ReadOnly: d.ReadOnly}
+		// A writable drive honours a guest flush only with Writeback; a read-only one never writes, so it keeps the default.
+		if !d.ReadOnly {
+			wire.CacheType = cacheWriteback
+		}
+		if err := c.put("/drives/"+d.ID, wire); err != nil {
 			return err
 		}
 	}

@@ -29,8 +29,6 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.
 - **The egress proxy**: the `proxy` task listens on the bridge gateway, ports 30080 and 30443, and
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
-- **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
-  passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
 - **Output log rotation**: a sandbox's `output.log` and a VM's `console.log` keep 16 MiB each,
   with one older file of up to 16 MiB beside them as `<file>.1`, which `shard logs` prints first.
   The daemon writes a VM's `output.log` itself and renames it before it passes 16 MiB, so that
@@ -117,6 +115,11 @@ one:
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
   `shard inspect` carries it in the record. A `start` clears it.
+- A record that says `running` whose sandbox the host ended for its memory while the daemon was
+  down gets the decision the liveness tick makes for an OOM the daemon saw: it becomes `stopped`
+  with `ran out of memory and the host ended it`, or the daemon starts it again when the record set
+  `restart_on_oom` and the limit allows. The tick's backoff does not apply here, so no verb ever
+  reads it as `running` with no process behind it (SHARD-311).
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent
@@ -429,9 +432,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `text/plain`, the bytes as they come, and the body ends when the sandbox stops or is removed, so
   `curl -N` follows a log. 404 either way, before anything is on the wire. `shard logs -f` takes the
   WebSocket.
-- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
-  array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
-  404. `shard logs --egress` prints one record per line.
+- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
+  sandbox as a JSON array, oldest first: the proxy's own records and the host drops the daemon wrote
+  into the same file. The `Shard-Egress-Cut` header counts the older records it left out, and is
+  absent when it left out none. 404. `shard logs --egress` prints one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake is text messages, one JSON record
   each, live. A stopped or removed sandbox ends it with close 1000 and the reason as the close text; a
   failure of the follow is close 1011 with the error. Without the handshake it is 200 chunked

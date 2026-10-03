@@ -13,12 +13,16 @@ type bootSource struct {
 	Args   string `json:"boot_args"`
 }
 
+// cacheWriteback makes the vmm pass a guest flush through to the host; the default, Unsafe, drops it (SHARD-396).
+const cacheWriteback = "Writeback"
+
 // drive never claims the root: the guest assembles its own from the devices, so root= stays out of the command line.
 type drive struct {
-	ID       string `json:"drive_id"`
-	Path     string `json:"path_on_host"`
-	Root     bool   `json:"is_root_device"`
-	ReadOnly bool   `json:"is_read_only"`
+	ID        string `json:"drive_id"`
+	Path      string `json:"path_on_host"`
+	Root      bool   `json:"is_root_device"`
+	ReadOnly  bool   `json:"is_read_only"`
+	CacheType string `json:"cache_type,omitempty"`
 }
 
 type networkInterface struct {
