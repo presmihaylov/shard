@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -19,14 +20,14 @@ func TestAttachStreamsTheAppOutputThenHowItEnded(t *testing.T) {
 
 	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/attach")
 
-	var out string
+	var out strings.Builder
 	for {
 		stream, payload, err := api.Receive(t.Context(), conn)
 		if err != nil {
 			t.Fatalf("Receive: %v", err)
 		}
 		if stream == api.StreamStdout {
-			out += string(payload)
+			out.Write(payload)
 
 			continue
 		}
@@ -45,8 +46,8 @@ func TestAttachStreamsTheAppOutputThenHowItEnded(t *testing.T) {
 		break
 	}
 
-	if out != "first run\nlast run\n" {
-		t.Errorf("the attach sent %q, want every line once", out)
+	if out.String() != "first run\nlast run\n" {
+		t.Errorf("the attach sent %q, want every line once", out.String())
 	}
 	if status := closed(t, conn); status != websocket.StatusNormalClosure {
 		t.Errorf("the attach closed with %v, want a normal closure", status)
