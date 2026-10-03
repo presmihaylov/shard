@@ -14,14 +14,14 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// guestDialer hands Exec one end of a pipe, and the guest end to serve once it has read the exec header.
+// guestDialer hands Exec one end of a pipe, and the guest end to serve once it has read the exec header; that end stays open until the test ends (SHARD-471).
 func guestDialer(t *testing.T, serve func(net.Conn) error) supervisor.Dialer {
 	t.Helper()
 
 	return func(context.Context, uint32) (net.Conn, error) {
 		host, guest := net.Pipe()
+		t.Cleanup(func() { guest.Close() })
 		go func() {
-			defer guest.Close()
 			var header supervisor.ExecHeader
 			if err := supervisor.ReadHeader(guest, &header); err != nil {
 				t.Errorf("read the header: %v", err)

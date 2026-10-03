@@ -434,9 +434,10 @@ func TestAnExecTheHostGivesUpOnIsCancelled(t *testing.T) {
 // FC and vz report a signalled exec by its 128+n alone, the shape runsc and runc exec give (SHARD-432).
 func TestExecReportsASignalledCommandByItsCodeAlone(t *testing.T) {
 	host, guest := net.Pipe()
+	// Open until Exec returns: a net.Pipe fails the host's SetDeadline once either end closes, and a vsock conn does not (SHARD-471).
+	defer guest.Close()
 	sent := make(chan error, 1)
 	go func() {
-		defer guest.Close()
 		var header supervisor.ExecHeader
 		if err := supervisor.ReadHeader(guest, &header); err != nil {
 			sent <- err
