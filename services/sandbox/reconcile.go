@@ -191,7 +191,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
 			return fmt.Errorf("stop sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
 		}
-		if err := s.awaitStopped(ctx, sb.ID); err != nil {
+		if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
 			return err
 		}
 	}
