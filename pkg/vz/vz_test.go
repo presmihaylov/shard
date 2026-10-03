@@ -194,8 +194,13 @@ func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	// The socket file exists at bind(), before listen(), so only a dial that connects proves the backlog takes one.
 	for {
-		if _, err := os.Stat(socket); err == nil {
+		probe, err := net.Dial("unix", socket)
+		if err == nil {
+			if err := probe.Close(); err != nil {
+				t.Fatal(err)
+			}
 			break
 		}
 		select {
