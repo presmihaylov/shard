@@ -147,7 +147,7 @@ func RemoveFstab(image, point string) error {
 	dropped := false
 	for line := range strings.SplitSeq(string(blob), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 4 && fields[0] == image && fields[1] == point && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
+		if xfsLoop(fields) && fields[0] == image && fields[1] == point {
 			dropped = true
 			continue
 		}
@@ -170,6 +170,38 @@ func RemoveFstab(image, point string) error {
 	}
 
 	return nil
+}
+
+// Loop is one line of FstabPath that loop-mounts an xfs image at a point.
+type Loop struct {
+	Image string
+	Point string
+}
+
+// FstabLoops lists every xfs loop line in FstabPath, so a sweep can find the lines of roots that are gone; a missing file lists none.
+func FstabLoops() ([]Loop, error) {
+	blob, err := os.ReadFile(FstabPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", FstabPath, err)
+	}
+
+	var out []Loop
+	for line := range strings.SplitSeq(string(blob), "\n") {
+		fields := strings.Fields(line)
+		if xfsLoop(fields) && !strings.HasPrefix(fields[0], "#") {
+			out = append(out, Loop{Image: fields[0], Point: fields[1]})
+		}
+	}
+
+	return out, nil
+}
+
+// xfsLoop is whether the fields of one fstab line loop-mount an xfs image.
+func xfsLoop(fields []string) bool {
+	return len(fields) >= 4 && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop")
 }
 
 // InFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.

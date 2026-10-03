@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -132,5 +133,29 @@ func TestRemoveFstabMissingFileIsNoError(t *testing.T) {
 	FstabPath = filepath.Join(t.TempDir(), "fstab")
 	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFstabLoopsListsOnlyTheXfsLoopLines(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "# /tmp/old.xfs /tmp/old xfs loop 0 0\n/dev/sda1 / ext4 defaults 0 1\n/tmp/a.xfs /tmp/a xfs loop 0 0\n/tmp/b.img /tmp/b ext4 loop 0 0\n/tmp/c.xfs /tmp/c xfs defaults 0 0\n"
+	if err := os.WriteFile(FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FstabLoops()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Loop{{Image: "/tmp/a.xfs", Point: "/tmp/a"}}; !slices.Equal(got, want) {
+		t.Fatalf("FstabLoops = %v, want %v", got, want)
+	}
+}
+
+func TestFstabLoopsMissingFileListsNone(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	got, err := FstabLoops()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("FstabLoops = %v, %v, want none and no error", got, err)
 	}
 }

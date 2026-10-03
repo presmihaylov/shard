@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/firecracker"
@@ -32,10 +34,13 @@ const (
 // cgroupParent is the one cgroup the daemon puts every sandbox under, by id.
 const cgroupParent = "shard"
 
-// firecrackerProvider is the provider a record names when the sandbox is a vmm, and socketFile is its api socket beside the record.
+// apiSockFlag is how pkg/firecracker hands a vmm its api socket, and a socket under a root of ours makes the vmm ours.
+const apiSockFlag = "--api-sock"
+
+// killGrace bounds the wait for a killed vmm to let go of its cgroup, and pollInterval paces that wait.
 const (
-	firecrackerProvider = "firecracker"
-	socketFile          = "firecracker.sock"
+	killGrace    = 10 * time.Second
+	pollInterval = 100 * time.Millisecond
 )
 
 // runtimes maps the provider a record names to the binary whose state the daemon keeps under the root, by that name.
@@ -65,6 +70,10 @@ func (l Leftover) String() string { return l.What + " " + l.Path }
 // Find lists what an integration run leaves when it does not tear down. Everything it names is owned
 // by a root of the package that asks, so a run beside the systemd unit reports and takes none of its.
 func Find(prefixes ...string) ([]Leftover, error) {
+	vmms, err := leftVMMs(prefixes)
+	if err != nil {
+		return nil, err
+	}
 	mounts, err := leftMounts(prefixes)
 	if err != nil {
 		return nil, err
@@ -77,24 +86,28 @@ func Find(prefixes ...string) ([]Leftover, error) {
 	if err != nil {
 		return nil, err
 	}
+	lines, err := leftFstab(prefixes)
+	if err != nil {
+		return nil, err
+	}
 
-	// The order is the order Sweep must take them in: a mount pins the root it lives under, and the
-	// record under that root is the only handle by which the namespace and the link can be found.
-	return append(append(mounts, sandboxes...), roots...), nil
+	// The order is the order Sweep must take them in: a vmm holds its cgroup and its tap, a mount pins the root
+	// it lives under, and the record under that root is the only handle by which the namespace and the link can be found.
+	return slices.Concat(vmms, mounts, sandboxes, roots, lines), nil
 }
 
-// Sweep takes back everything Find names, then the host network once nothing holds it, and what it could not take is what the error names.
+// Sweep takes back everything Find names, then what every root shares once nothing holds it, and what it could not take is what the error names.
 func Sweep(prefixes ...string) error {
 	left, err := Find(prefixes...)
 	if err != nil {
 		return err
 	}
 
-	return errors.Join(removeEach(left), sweepHostNet())
+	return errors.Join(removeEach(left), sweepShared())
 }
 
-// sweepHostNet drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them.
-func sweepHostNet() error {
+// sweepShared drops the bridge, the tables and the cgroup parent the daemon never drops (SHARD-272), unless a run on another root still holds them.
+func sweepShared() error {
 	held, err := hostNetHeld()
 	if err != nil {
 		return err
@@ -118,8 +131,29 @@ func sweepHostNet() error {
 	if shown(hostBridge) {
 		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})
 	}
+	parent := filepath.Join(cgroup.Root, cgroupParent)
+	idle, err := idleCgroup(parent)
+	if err != nil {
+		return err
+	}
+	if idle {
+		left = append(left, Leftover{What: "the cgroup parent", Path: parent, remove: func() error { return cgroup.Remove(parent) }})
+	}
 
 	return removeEach(left)
+}
+
+// idleCgroup is whether dir exists and holds no sandbox; every provider makes the parent again on its next create.
+func idleCgroup(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the cgroups under %s: %w", dir, err)
+	}
+
+	return !slices.ContainsFunc(entries, os.DirEntry.IsDir), nil
 }
 
 // hostNetHeld is whether a sandbox of any root still has a port on the bridge, or a daemon still serves the proxy.
@@ -156,15 +190,22 @@ func removeEach(left []Leftover) error {
 	return fmt.Errorf("the host still carries what this run made:\n\t%s", strings.Join(failed, "\n\t"))
 }
 
-// Unmount takes back only the mounts under the roots it is given, and touches no other host state.
-// A run uses it to give one root back while the rest of the suite still holds sandboxes of its own.
-func Unmount(prefixes ...string) error {
-	mounts, err := leftMounts(prefixes)
+// Release gives back what one root's sandboxes and mounts still hold and touches no other root, so a run can remove it while the suite runs on.
+func Release(root string) error {
+	vmms, err := leftVMMs([]string{filepath.Join(root, sandboxDir) + string(filepath.Separator)})
+	if err != nil {
+		return err
+	}
+	sandboxes, err := sandboxesOf(root)
+	if err != nil {
+		return err
+	}
+	mounts, err := leftMounts([]string{root})
 	if err != nil {
 		return err
 	}
 
-	return removeEach(mounts)
+	return removeEach(slices.Concat(vmms, sandboxes, mounts))
 }
 
 // Refuse fails a run on a root an earlier run of the same package left, because its lease pool lives
@@ -215,17 +256,29 @@ func leftSandboxes(prefixes []string) ([]Leftover, error) {
 
 	var out []Leftover
 	for _, root := range roots {
-		entries, err := os.ReadDir(filepath.Join(root, sandboxDir))
-		if os.IsNotExist(err) {
-			continue
-		}
+		held, err := sandboxesOf(root)
 		if err != nil {
-			return nil, fmt.Errorf("read the sandboxes of %s: %w", root, err)
+			return nil, err
 		}
+		out = append(out, held...)
+	}
 
-		for _, entry := range entries {
-			out = append(out, sandboxOf(root, entry.Name())...)
-		}
+	return out, nil
+}
+
+// sandboxesOf names what every record under one root still holds.
+func sandboxesOf(root string) ([]Leftover, error) {
+	entries, err := os.ReadDir(filepath.Join(root, sandboxDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the sandboxes of %s: %w", root, err)
+	}
+
+	var out []Leftover
+	for _, entry := range entries {
+		out = append(out, sandboxOf(root, entry.Name())...)
 	}
 
 	return out, nil
@@ -241,15 +294,9 @@ func sandboxOf(root, id string) []Leftover {
 		state := filepath.Join(root, binary)
 		out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
 	}
-	// A firecracker sandbox is a vmm, not a runtime the record can delete; find it by the api socket beside the record and end it.
-	if rec.Provider == firecrackerProvider {
-		if pid := vmmPID(filepath.Join(root, sandboxDir, id, socketFile)); pid > 0 {
-			out = append(out, Leftover{What: "the firecracker vmm", Path: id, remove: func() error { return firecracker.KillPID(pid) }})
-		}
-	}
 	// A stop keeps the cgroup for the rm that never came.
 	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
-		out = append(out, Leftover{What: "the cgroup", Path: group, remove: func() error { return cgroup.Remove(group) }})
+		out = append(out, Leftover{What: "the cgroup", Path: group, remove: removeCgroup(group)})
 	}
 	if exists(netns.NamespacePath(id)) {
 		out = append(out, Leftover{What: "the namespace", Path: id, remove: run("ip", "netns", "delete", id)})
@@ -305,29 +352,101 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// vmmPID is the firecracker that serves this socket, or 0 when none does; a cmdline is NUL joined, so the socket path is one whole argument.
-func vmmPID(sock string) int {
+// leftVMMs names every vmm whose api socket sits under a root of ours, so one is found after the record that started it is gone.
+func leftVMMs(prefixes []string) ([]Leftover, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return 0
+		return nil, fmt.Errorf("list the processes: %w", err)
 	}
 
-	want := []byte(sock)
+	var out []Leftover
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			continue
 		}
 		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
-		if err != nil {
+		if gone(err) {
 			continue
 		}
-		if bytes.Contains(cmdline, want) {
-			return pid
+		if err != nil {
+			return nil, fmt.Errorf("read the command line of %d: %w", pid, err)
+		}
+		if sock := apiSocket(strings.Split(string(cmdline), "\x00")); sock != "" && hasPrefix(sock, prefixes) {
+			out = append(out, Leftover{What: "the firecracker vmm", Path: sock, remove: killVMM(pid)})
 		}
 	}
 
-	return 0
+	return out, nil
+}
+
+// apiSocket is the whole argument after --api-sock, or "" for a process that names none.
+func apiSocket(argv []string) string {
+	i := slices.Index(argv, apiSockFlag)
+	if i < 0 || i+1 >= len(argv) {
+		return ""
+	}
+
+	return argv[i+1]
+}
+
+// killVMM waits for the vmm to exit after the kill, because only then are its cgroup and its tap free.
+func killVMM(pid int) func() error {
+	return func() error {
+		if err := firecracker.KillPID(pid); err != nil {
+			return err
+		}
+
+		deadline := time.Now().Add(killGrace)
+		for {
+			running, err := alive(pid)
+			if err != nil || !running {
+				return err
+			}
+			if !time.Now().Before(deadline) {
+				return fmt.Errorf("the vmm %d still runs %s after a SIGKILL", pid, killGrace)
+			}
+			time.Sleep(pollInterval)
+		}
+	}
+}
+
+// alive is whether pid still runs; a zombie holds nothing and only waits for its reaper.
+func alive(pid int) (bool, error) {
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if gone(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the state of %d: %w", pid, err)
+	}
+
+	// The state follows the command name, which may itself hold a ')'.
+	end := bytes.LastIndexByte(stat, ')')
+	if end < 0 || end+2 >= len(stat) {
+		return false, fmt.Errorf("read the state of %d: %q has none", pid, stat)
+	}
+
+	return stat[end+2] != 'Z', nil
+}
+
+// gone is whether a read under /proc failed only because the process exited.
+func gone(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// removeCgroup waits out the moment a killed vmm still holds its cgroup after it exits.
+func removeCgroup(dir string) func() error {
+	return func() error {
+		deadline := time.Now().Add(killGrace)
+		for {
+			err := cgroup.Remove(dir)
+			if !errors.Is(err, syscall.EBUSY) || !time.Now().Before(deadline) {
+				return err
+			}
+			time.Sleep(pollInterval)
+		}
+	}
 }
 
 func leftRoots(prefixes []string) ([]Leftover, error) {
@@ -338,28 +457,27 @@ func leftRoots(prefixes []string) ([]Leftover, error) {
 
 	out := make([]Leftover, 0, len(roots))
 	for _, root := range roots {
-		// Firecracker mounts a sibling <root>.xfs at the root (datadir.ImagePath); its image file and fstab line sit beside the root and outlive a RemoveAll of it.
-		if image := filepath.Clean(root) + ".xfs"; exists(image) {
-			out = append(out, Leftover{What: "the data image", Path: image, remove: removeImage(image, root)})
-		}
 		out = append(out, Leftover{What: "the temp root", Path: root, remove: removeAll(root)})
 	}
 
 	return out, nil
 }
 
-// removeImage drops the fstab line that mounts image at point, then the image; neither being there is not an error.
-func removeImage(image, point string) func() error {
-	return func() error {
-		if err := xfs.RemoveFstab(image, point); err != nil {
-			return err
-		}
-		if err := os.Remove(image); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove %s: %w", image, err)
-		}
-
-		return nil
+// leftFstab names the line that mounts a data image at a root of ours on boot, which outlives the image and the root.
+func leftFstab(prefixes []string) ([]Leftover, error) {
+	loops, err := xfs.FstabLoops()
+	if err != nil {
+		return nil, err
 	}
+
+	var out []Leftover
+	for _, loop := range loops {
+		if hasPrefix(loop.Image, prefixes) && hasPrefix(loop.Point, prefixes) {
+			out = append(out, Leftover{What: "the fstab line", Path: loop.Point, remove: func() error { return xfs.RemoveFstab(loop.Image, loop.Point) }})
+		}
+	}
+
+	return out, nil
 }
 
 // match answers the roots an earlier run of this package left, which is the whole of what it owns.

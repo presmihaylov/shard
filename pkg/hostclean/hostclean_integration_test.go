@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
 // The mounts come back deepest first, because an overlay pins the root it lives under.
@@ -50,7 +53,7 @@ func TestSandboxOfNamesTheSandboxTheRecordHolds(t *testing.T) {
 		{"sysbox", `{"provider":"sysbox"}`, true},
 		{"runc", `{"provider":"runc"}`, true},
 		{"a record a crashed run never finished", `{"provider":`, false},
-		{"a provider this package does not drive", `{"provider":"firecracker"}`, false},
+		{"firecracker, whose vmm the scan of /proc names instead", `{"provider":"firecracker"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -66,6 +69,86 @@ func TestSandboxOfNamesTheSandboxTheRecordHolds(t *testing.T) {
 				t.Errorf("the record %s names the sandbox = %v, want %v: %v", tc.record, !tc.named, tc.named, left)
 			}
 		})
+	}
+}
+
+// Only the argument after --api-sock names the socket: a process that only mentions a socket path is not a vmm (SHARD-377).
+func TestAPISocketReadsOnlyTheFlagArgument(t *testing.T) {
+	const sock = "/tmp/shard-itest1/sandboxes/amber-otter-1a2b/firecracker.sock"
+	for _, tc := range []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{"the vmm", []string{"firecracker", apiSockFlag, sock, ""}, sock},
+		{"a process that names the path in one argument", []string{"grep", apiSockFlag + " " + sock, ""}, ""},
+		{"a process that names the path with no flag", []string{"tail", sock, ""}, ""},
+		{"the flag with no argument", []string{"firecracker", apiSockFlag}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := apiSocket(tc.argv); got != tc.want {
+				t.Errorf("apiSocket(%q) = %q, want %q", tc.argv, got, tc.want)
+			}
+		})
+	}
+}
+
+// A killed vmm is a zombie until its reaper waits for it, and a zombie holds no cgroup and no tap.
+func TestAliveTakesAZombieAsGone(t *testing.T) {
+	if running, err := alive(os.Getpid()); err != nil || !running {
+		t.Fatalf("alive(self) = %v, %v, want true", running, err)
+	}
+
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(killGrace)
+	for {
+		running, err := alive(cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an exited child that nobody reaped still reads as alive after %s", killGrace)
+		}
+		time.Sleep(pollInterval)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if running, err := alive(cmd.Process.Pid); err != nil || running {
+		t.Errorf("alive(reaped) = %v, %v, want false", running, err)
+	}
+}
+
+// A line is ours only when both its image and its point sit under a root of ours.
+func TestLeftFstabNamesOnlyTheLinesOfOurRoots(t *testing.T) {
+	xfs.FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n/tmp/shard-daemon7.xfs /tmp/shard-daemon7 xfs loop 0 0\n/var/lib/x.xfs /tmp/shard-daemon8 xfs loop 0 0\n"
+	if err := os.WriteFile(xfs.FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	left, err := leftFstab([]string{"/tmp/shard-daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].Path != "/tmp/shard-daemon7" {
+		t.Fatalf("leftFstab = %v, want the line of /tmp/shard-daemon7 only", left)
+	}
+	if err := removeEach(left); err != nil {
+		t.Fatal(err)
+	}
+	loops, err := xfs.FstabLoops()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loops) != 2 {
+		t.Errorf("the sweep left %v, want the two lines that are not ours", loops)
 	}
 }
 
@@ -153,13 +236,13 @@ func TestSweepTakesTheHostNetOnlyOnceNothingHoldsIt(t *testing.T) {
 	}
 	mustRun(t, "ip", "link", "add", port, "type", "veth", "peer", "name", port+"p")
 	t.Cleanup(func() {
-		if err := errors.Join(deleteLink(port)(), sweepHostNet()); err != nil {
+		if err := errors.Join(deleteLink(port)(), sweepShared()); err != nil {
 			t.Error(err)
 		}
 	})
 	mustRun(t, "ip", "link", "set", port, "master", hostBridge)
 
-	if err := sweepHostNet(); err != nil {
+	if err := sweepShared(); err != nil {
 		t.Fatalf("sweep with a port on the bridge: %v", err)
 	}
 	if !shown(hostBridge) || tablesListed(t) != len(hostTableFamilies) {
@@ -169,7 +252,7 @@ func TestSweepTakesTheHostNetOnlyOnceNothingHoldsIt(t *testing.T) {
 	if err := deleteLink(port)(); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepHostNet(); err != nil {
+	if err := sweepShared(); err != nil {
 		t.Fatalf("sweep with no port on the bridge: %v", err)
 	}
 	if shown(hostBridge) || tablesListed(t) != 0 {
