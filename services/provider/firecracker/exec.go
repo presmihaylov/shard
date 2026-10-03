@@ -42,7 +42,7 @@ func (p *Provider) running(ctx context.Context, id string) (*machine, record, er
 	if !found {
 		return nil, record{}, fmt.Errorf("sandbox %s does not exist on %s", id, Name)
 	}
-	m, err := p.lookup(ctx, id, dir)
+	m, err := p.lookup(ctx, id, dir, r)
 	if err != nil {
 		return nil, record{}, err
 	}
