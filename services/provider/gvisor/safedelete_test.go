@@ -110,3 +110,38 @@ func TestSafeDeleteKeepsTheStateWhenASweepRefuses(t *testing.T) {
 		t.Fatal("SafeDelete dropped the state although the sweep refused the cgroup")
 	}
 }
+
+// TestSafeDeleteSkipsAMemberReusedOutsideTheCgroupAfterThePin is SHARD-440: a member exits and a host process reuses its pid in another cgroup after the pidfd pins it, so the post-pin membership recheck spares it.
+func TestSafeDeleteSkipsAMemberReusedOutsideTheCgroupAfterThePin(t *testing.T) {
+	h := newHost(t)
+	h.process(1101, bundle.CgroupsPath(sandboxID), "runsc-sandbox", "boot", "--bundle="+bundleDir, sandboxID)
+
+	p := h.provider()
+	f := &fakeRunsc{}
+	p.SetRunsc(f)
+
+	var signalled []int
+	p.SetKillPinned(func(pid int, still func() (bool, error)) error {
+		// Between the scan and the pin the member exits; the pid now names a host process in another cgroup.
+		h.move(pid, "system.slice/cron.service")
+		ok, err := still()
+		if err != nil {
+			return err
+		}
+		if ok {
+			signalled = append(signalled, pid)
+		}
+
+		return nil
+	})
+
+	if err := p.SafeDelete(context.Background(), sandboxID); err != nil {
+		t.Fatalf("SafeDelete: %v", err)
+	}
+	if len(signalled) != 0 {
+		t.Fatalf("SafeDelete signalled %v, a pid reused outside the cgroup after the pin", signalled)
+	}
+	if !f.forgot {
+		t.Fatal("SafeDelete did not drop the state after the cgroup emptied")
+	}
+}

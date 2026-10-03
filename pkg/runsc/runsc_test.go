@@ -362,8 +362,8 @@ esac
 	return r, filepath.Dir(argvFile)
 }
 
-// A Ctrl-C mid-create must not kill runsc before it saves its state, so the create finishes; discard then forgets the state and never deletes (SHARD-440).
-func TestACancelledBringUpFinishesAndIsForgotten(t *testing.T) {
+// A Ctrl-C mid-create must not kill runsc before it saves its state, so the create finishes; discard keeps that state and never deletes, and the provider's safeDelete sweeps then forgets it (SHARD-440).
+func TestACancelledBringUpFinishesAndKeepsItsState(t *testing.T) {
 	for verb, bringUp := range bringUps {
 		t.Run(verb, func(t *testing.T) {
 			r, dir := settling(t, verb, `while [ ! -e "$dir/release" ]; do sleep 0.01; done
@@ -396,13 +396,13 @@ func TestACancelledBringUpFinishesAndIsForgotten(t *testing.T) {
 				t.Errorf("runsc %s never finished: %v", verb, err)
 			}
 
-			assertForgotten(t, verb, state, argv(t, filepath.Join(dir, "calls")))
+			assertKept(t, verb, state, argv(t, filepath.Join(dir, "calls")))
 		})
 	}
 }
 
-// A runsc that outlives the grace is abandoned, not force-deleted: discard kills the subprocess, forgets the state and signals nothing, so a wedged bring-up still returns (SHARD-440).
-func TestABringUpThatOutlivesTheGraceIsForgotten(t *testing.T) {
+// A runsc that outlives the grace is abandoned, not force-deleted: the grace cancels it, discard keeps the state and signals nothing, so a wedged bring-up still returns and the provider's safeDelete frees it later (SHARD-440).
+func TestABringUpThatOutlivesTheGraceKeepsItsState(t *testing.T) {
 	for verb, bringUp := range bringUps {
 		t.Run(verb, func(t *testing.T) {
 			r, dir := settling(t, verb, "exec sleep 60")
@@ -427,12 +427,12 @@ func TestABringUpThatOutlivesTheGraceIsForgotten(t *testing.T) {
 				t.Fatalf("%s never returned after the grace ran out", verb)
 			}
 
-			assertForgotten(t, verb, state, argv(t, filepath.Join(dir, "calls")))
+			assertKept(t, verb, state, argv(t, filepath.Join(dir, "calls")))
 		})
 	}
 }
 
-// savedState lays down the runsc state file a bring-up had already written when its caller gave up, so discard has state to forget.
+// savedState lays down the runsc state file a bring-up had already written when its caller gave up, so the test can prove discard keeps it.
 func savedState(t *testing.T, r *runsc.Runner) string {
 	t.Helper()
 
@@ -443,12 +443,12 @@ func savedState(t *testing.T, r *runsc.Runner) string {
 	return stateFile(t, r.Root(), "amber-otter-1a2b", `{"goferPid":4343}`)
 }
 
-// assertForgotten proves discard dropped the saved state and ran no delete, so no pid runsc stored is force-killed after a reuse.
-func assertForgotten(t *testing.T, verb, state string, calls []string) {
+// assertKept proves discard left the saved state in place and ran no delete, so the provider's safeDelete, not discard, decides when a cancelled bring-up's state goes.
+func assertKept(t *testing.T, verb, state string, calls []string) {
 	t.Helper()
 
-	if _, err := os.Stat(state); !os.IsNotExist(err) {
-		t.Errorf("discard left the %s state behind: %v", verb, err)
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("discard dropped the %s state, want it kept for the provider to sweep then forget: %v", verb, err)
 	}
 	for _, call := range calls {
 		if strings.Contains(call, "delete") {

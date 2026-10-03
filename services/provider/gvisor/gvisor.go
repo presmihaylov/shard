@@ -193,8 +193,8 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 		if ctx.Err() == nil {
 			return err
 		}
-		// A bring-up killed past its grace never saved the state runsc deletes by, so only the cgroup still holds what it forked.
-		return errors.Join(err, p.sweep(context.WithoutCancel(ctx), spec.ID))
+		// A cancelled bring-up may have forked the sandbox into the cgroup; sweep it, then drop the state only once the sweep clears it (SHARD-440).
+		return errors.Join(err, p.safeDelete(context.WithoutCancel(ctx), spec.ID))
 	}
 
 	if err := boundMemory(p.cgroupRoot, spec); err != nil {

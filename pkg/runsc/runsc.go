@@ -201,7 +201,7 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return r.discard(ctx, "create", id, err)
+		return discard(ctx, "create", id, err)
 	}
 	if err != nil {
 		return fmt.Errorf("runsc create %s: %w%s", id, err, diagnostics(opts.Stderr, start))
@@ -490,7 +490,7 @@ func (r *Runner) Restore(ctx context.Context, id string, opts RestoreOptions) er
 
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return r.discard(ctx, "restore", id, err)
+		return discard(ctx, "restore", id, err)
 	}
 	if err != nil {
 		return fmt.Errorf("runsc restore %s: %w%s", id, err, diagnostics(opts.Stderr, start))
@@ -507,15 +507,14 @@ func (r *Runner) settled(ctx context.Context) (context.Context, context.CancelFu
 	return run, func() { stop(); cancel() }
 }
 
-// discard drops the state a create or restore its caller gave up on saved, signalling nothing, so a pid runsc stored is never force-killed after the kernel reused it; the provider sweeps the cgroup it forked into (SHARD-440).
-func (r *Runner) discard(ctx context.Context, verb, id string, err error) error {
+// discard reports a cancelled create or restore and drops no state; the provider's safeDelete sweeps the cgroup then forgets it, so a stored pid is never force-killed after reuse and the state survives a failed sweep (SHARD-440).
+func discard(ctx context.Context, verb, id string, err error) error {
 	// The caller gave up, so the cancel is the cause, whatever runsc printed on its way out.
-	cause := fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
 	if err != nil {
-		cause = fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
+		return fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
 	}
 
-	return errors.Join(cause, r.Forget(id))
+	return fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
 }
 
 // Kill signals the container. all reaches every process in it; without it only PID 1 is signalled.

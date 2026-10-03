@@ -81,13 +81,36 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 	}
 
 	for _, pid := range ours {
-		// A pidfd pins the process and rechecks the id before it signals, so a pid reused between the scan and the kill is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
-		if err := p.killPinned(pid, func() (bool, error) { return p.names(pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
+		// A pidfd pins the process, then rechecks both its cgroup membership and its id before it signals, so a pid reused between the scan and the kill, inside the cgroup or out, is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
+		if err := p.killPinned(pid, func() (bool, error) { return p.own(dir, pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
 		}
 	}
 
 	return p.awaitEmpty(ctx, dir, id)
+}
+
+// own says whether the pinned pid is still the sandbox's: still in its cgroup, and still naming it; the recheck a kill makes after it pins the process, so a reused pid outside the cgroup is never signalled (SHARD-440).
+func (p *Provider) own(dir string, pid int, id string) (bool, error) {
+	member, err := p.member(dir, pid)
+	if err != nil || !member {
+		return false, err
+	}
+
+	return p.names(pid, id)
+}
+
+// member says whether the pid is still a process of the cgroup, read back after the pin because the scan that listed it may be stale.
+func (p *Provider) member(dir string, pid int) (bool, error) {
+	pids, err := cgroup.Procs(dir)
+	if errors.Is(err, cgroup.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the processes of the cgroup %s: %w", dir, err)
+	}
+
+	return slices.Contains(pids, pid), nil
 }
 
 // named keeps the processes whose command line carries the id as one whole argument, so a sibling sharing a prefix never matches.

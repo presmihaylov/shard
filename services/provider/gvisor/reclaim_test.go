@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,6 +56,15 @@ func (h *host) process(pid int, cgroup string, argv ...string) {
 	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(strings.Join(argv, "\x00")+"\x00"), 0o600); err != nil {
 		h.t.Fatalf("write the fake command line: %v", err)
 	}
+
+	h.placed[pid] = cgroup
+	h.cgroups[cgroup] = true
+	h.render()
+}
+
+// move puts a process in another cgroup, the way a pid reused by an unrelated host process reads after the first one exits.
+func (h *host) move(pid int, cgroup string) {
+	h.t.Helper()
 
 	h.placed[pid] = cgroup
 	h.cgroups[cgroup] = true
@@ -241,16 +251,20 @@ func TestSweepRefusesAStranger(t *testing.T) {
 	}
 }
 
-// A fork or resume cut short past the grace leaves a sentry and a gofer runsc never saved, so the bring-up kills them itself.
-func TestACancelledBringUpSweepsWhatItForked(t *testing.T) {
+// A fork or resume cut short past the grace leaves a sentry and a gofer runsc never saved, so the bring-up sweeps them by cgroup, then forgets the state runsc left (SHARD-440).
+func TestACancelledBringUpSweepsWhatItForkedThenForgets(t *testing.T) {
 	h := newHost(t)
 	h.process(1101, bundle.CgroupsPath(sandboxID), "runsc-sandbox", "boot", "--bundle="+bundleDir, sandboxID)
 	h.process(1102, bundle.CgroupsPath(sandboxID), "runsc-gofer", "gofer", "--bundle", bundleDir, sandboxID)
 	h.process(2201, bundle.CgroupsPath(sandboxID+"-2"), "runsc-sandbox", "boot", "--bundle="+bundleDir+"-2", sandboxID+"-2")
 
+	p := h.provider()
+	f := &fakeRunsc{}
+	p.SetRunsc(f)
+
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
-	err := h.provider().BringUp(ctx, models.SandboxSpec{ID: sandboxID, StateDir: dir}, filepath.Join(dir, "exit"), func(*os.File, *os.File) error {
+	err := p.BringUp(ctx, models.SandboxSpec{ID: sandboxID, StateDir: dir}, filepath.Join(dir, "exit"), func(*os.File, *os.File) error {
 		cancel()
 		return fmt.Errorf("runsc restore %s: %w", sandboxID, ctx.Err())
 	})
@@ -259,6 +273,9 @@ func TestACancelledBringUpSweepsWhatItForked(t *testing.T) {
 	}
 	if want := []int{1101, 1102}; !slices.Equal(h.killed, want) {
 		t.Errorf("BringUp killed %v, want the sentry and the gofer of %s alone: %v", h.killed, sandboxID, want)
+	}
+	if !f.forgot {
+		t.Error("BringUp did not forget the state after it swept the cancelled bring-up")
 	}
 }
 
@@ -495,8 +512,8 @@ func TestKillRestoresFailsWhileTheRestoreStillRuns(t *testing.T) {
 	}
 }
 
-// Remove kills the restore before any runsc call, so the restore cannot bring the sandbox up after the teardown.
-func TestRemoveKillsAnInFlightRestoreBeforeItRunsRunsc(t *testing.T) {
+// Remove kills the in-flight restore and never force-deletes, so it execs no runsc and the restore cannot bring the sandbox up after the teardown (SHARD-440).
+func TestRemoveKillsAnInFlightRestoreAndNeverForceDeletes(t *testing.T) {
 	h := newHost(t)
 	ran := filepath.Join(t.TempDir(), "runsc-ran")
 	p := h.restorer("touch " + ran + "; exit 1")
@@ -505,22 +522,23 @@ func TestRemoveKillsAnInFlightRestoreBeforeItRunsRunsc(t *testing.T) {
 		t.Fatalf("forget the restore the launch ran: %v", err)
 	}
 
-	var runscFirst []int
+	var ranRunsc []int
 	p.SetKill(func(pid int) error {
 		if _, err := os.Stat(ran); err == nil {
-			runscFirst = append(runscFirst, pid)
+			ranRunsc = append(ranRunsc, pid)
 		}
 
 		return h.kill(pid)
 	})
 
-	if err := p.Remove(t.Context(), sandboxID); err == nil {
-		t.Fatal("Remove passed over a runsc delete that failed")
+	// Remove sweeps the cgroup and forgets the state over files and execs no runsc; the unmount needs overlayfs, so only Linux proves the teardown finishes.
+	if err := p.Remove(t.Context(), sandboxID); err != nil && runtime.GOOS == "linux" {
+		t.Fatalf("Remove: %v", err)
 	}
 	if want := []int{4401}; !slices.Equal(h.killed, want) {
 		t.Errorf("Remove killed %v, want the in-flight restore %v", h.killed, want)
 	}
-	if len(runscFirst) > 0 {
-		t.Errorf("Remove ran runsc before it killed the restore %v", runscFirst)
+	if len(ranRunsc) > 0 {
+		t.Errorf("Remove execed runsc at %v, want no force delete", ranRunsc)
 	}
 }
