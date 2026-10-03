@@ -3,10 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
@@ -215,8 +216,7 @@ func shellCode(err error) error {
 	return &ExitError{Code: notStarted.Code, Message: notStarted.Error()}
 }
 
-// parseExec splits the flags, the id and the argv. Go's flag stops at the first non-flag argument,
-// so the flags precede the id, and everything after the literal -- is the command.
+// Go stops at the sandbox reference, so guest arguments never reach the flag parser.
 func parseExec(args []string) (execOptions, error) {
 	var opts execOptions
 
@@ -227,9 +227,7 @@ func parseExec(args []string) (execOptions, error) {
 	flags.StringVar(&opts.workDir, "workdir", "", "")
 	flags.StringVar(&opts.user, "user", "", "")
 
-	head, argv, separated := splitAtSeparator(args)
-
-	if err := parseVerb(flags, expandBundles(head)); err != nil {
+	if err := parseVerb(flags, expandBundles(args, flags)); err != nil {
 		return execOptions{}, err
 	}
 
@@ -237,15 +235,12 @@ func parseExec(args []string) (execOptions, error) {
 	if len(rest) == 0 {
 		return execOptions{}, errors.New("exec takes one sandbox id, got none")
 	}
-	if len(rest) > 1 {
-		return execOptions{}, fmt.Errorf("unexpected argument %q: the flags go before the id and the command after --", rest[1])
-	}
-
-	if !separated {
-		return execOptions{}, errors.New("exec takes the command to run after --, and there was no --")
+	argv := rest[1:]
+	if len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
 	}
 	if len(argv) == 0 {
-		return execOptions{}, errors.New("-- takes the command to run, and nothing followed it")
+		return execOptions{}, errors.New("exec takes a command after the sandbox id or name")
 	}
 
 	// A terminal nothing can type on is a hang, and the guest would wait on a keyboard that never answers.
@@ -258,20 +253,14 @@ func parseExec(args []string) (execOptions, error) {
 	return opts, nil
 }
 
-// splitAtSeparator cuts at the first --, so a flag in the command is never read as one of shard's.
-func splitAtSeparator(args []string) (head, tail []string, found bool) {
-	at := slices.Index(args, "--")
-	if at < 0 {
-		return args, nil, false
-	}
-
-	return args[:at], args[at+1:], true
-}
-
-// expandBundles spells -it as two flags, because Go's flag package reads it as one named "it".
-func expandBundles(args []string) []string {
+// expandBundles leaves flag values and all arguments after the sandbox reference untouched.
+func expandBundles(args []string, flags *flag.FlagSet) []string {
 	out := make([]string, 0, len(args))
-	for _, arg := range args {
+	for at := 0; at < len(args); at++ {
+		arg := args[at]
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			return append(out, args[at:]...)
+		}
 		if arg == "-it" || arg == "-ti" {
 			out = append(out, "-i", "-t")
 
@@ -279,6 +268,18 @@ func expandBundles(args []string) []string {
 		}
 
 		out = append(out, arg)
+		name, _, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		f := flags.Lookup(name)
+		if f == nil || inline {
+			continue
+		}
+		if boolean, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
+			continue
+		}
+		if at+1 < len(args) {
+			at++
+			out = append(out, args[at])
+		}
 	}
 
 	return out

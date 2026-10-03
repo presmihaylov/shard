@@ -41,8 +41,12 @@ with `docs/mac.md`, and read `docs/provider-vz.md` for the contract.
 
 ```
 shard daemon
-shard create python:3.12 -- python -c 'print(1)'
+shard create --name lab python:3.12 python -c 'print(1)'
+shard exec lab python --version
 ```
+
+Shard flags precede the image or sandbox reference. The command and its arguments follow the reference.
+An optional `--` before the command still works. Image-only create uses the image's configured command.
 
 `shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
 It owns the state. Every other verb is a client of its socket and fails fast when the daemon is not
@@ -128,7 +132,7 @@ the placeholder. `docs/secrets.md` says what this protects against and what it d
 
 ```
 shard policy create --allow api.example.com --deny any locked
-shard create --policy locked python:3.12 -- python agent.py
+shard create --policy locked python:3.12 python agent.py
 shard policy show locked
 shard policy rm locked
 ```

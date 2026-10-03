@@ -23,7 +23,7 @@ import (
 )
 
 func TestParseExecTheGoalCommand(t *testing.T) {
-	opts, err := parseExec([]string{"bold-comet-9ed5", "--", "echo", "hello"})
+	opts, err := parseExec([]string{"bold-comet-9ed5", "echo", "hello"})
 	if err != nil {
 		t.Fatalf("parseExec: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestParseExecTheGoalCommand(t *testing.T) {
 }
 
 func TestParseExecTakesEveryFlagBeforeTheID(t *testing.T) {
-	args := []string{"-i", "--env", "A=1", "--env", "B=2", "--workdir", "/srv", "--user", "app", "one-two-0000", "--", "sh"}
+	args := []string{"-i", "--env", "A=1", "--env", "B=2", "--workdir", "/srv", "--user", "app", "one-two-0000", "sh"}
 
 	opts, err := parseExec(args)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestParseExecTakesEveryFlagBeforeTheID(t *testing.T) {
 // -it is one word to everyone who has typed it, and Go's flag package reads it as a flag named it.
 func TestParseExecReadsTheBundledFlags(t *testing.T) {
 	for _, bundle := range []string{"-it", "-ti"} {
-		opts, err := parseExec([]string{bundle, "one-two-0000", "--", "sh"})
+		opts, err := parseExec([]string{bundle, "one-two-0000", "sh"})
 		if err != nil {
 			t.Fatalf("parseExec %s: %v", bundle, err)
 		}
@@ -74,7 +74,7 @@ func TestParseExecReadsTheBundledFlags(t *testing.T) {
 
 // A flag of the command is the command's, and shard must never read it as one of its own.
 func TestParseExecLeavesTheCommandFlagsAlone(t *testing.T) {
-	opts, err := parseExec([]string{"one-two-0000", "--", "ls", "-i", "--user", "root"})
+	opts, err := parseExec([]string{"one-two-0000", "ls", "-i", "--user", "root"})
 	if err != nil {
 		t.Fatalf("parseExec: %v", err)
 	}
@@ -93,10 +93,10 @@ func TestParseExecRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no id", []string{"--", "sh"}, "one sandbox id"},
-		{"no separator", []string{"one-two-0000", "sh"}, "after --"},
-		{"nothing after the separator", []string{"one-two-0000", "--"}, "nothing followed it"},
-		{"a second argument before the separator", []string{"one-two-0000", "sh", "--", "sh"}, "unexpected argument"},
+		{"no id", nil, "one sandbox id"},
+		{"only flags", []string{"-i"}, "one sandbox id"},
+		{"no command", []string{"one-two-0000"}, "takes a command"},
+		{"nothing after the separator", []string{"one-two-0000", "--"}, "takes a command"},
 		{"a terminal with no input", []string{"-t", "one-two-0000", "--", "sh"}, "-t needs -i"},
 		{"an env entry that is no assignment", []string{"--env", "BROKEN", "one-two-0000", "--", "sh"}, "KEY=VALUE"},
 	}
@@ -203,12 +203,12 @@ func TestExecPassesItsFlagsToTheDaemon(t *testing.T) {
 	app, d := newClientApp(t, &out, running())
 	provider := d.providerSvc.(*fakeLifecycleProvider)
 
-	args := []string{"exec", "--env", "A=1", "--workdir", "/srv", "--user", "app", "sandbox1", "--", "env"}
+	args := []string{"exec", "--env", "A=1", "--workdir", "/srv", "--user", "app", "sandbox1", "env", "--help", "-it", "--", ""}
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if want := []string{"env"}; !slices.Equal(provider.execSpec.Argv, want) {
+	if want := []string{"env", "--help", "-it", "--", ""}; !slices.Equal(provider.execSpec.Argv, want) {
 		t.Errorf("argv = %v, want %v", provider.execSpec.Argv, want)
 	}
 	if want := []string{"A=1"}; !slices.Equal(provider.execSpec.Env, want) {
@@ -335,4 +335,40 @@ func TestTheResizeForwarderEndsWithItsStop(t *testing.T) {
 	}
 
 	forwarder.stop()
+}
+
+func TestParseExecPreservesArguments(t *testing.T) {
+	command := []string{"sh", "-c", "echo ready", "", "-it", "--", "--help", "--workdir", "/guest"}
+	for _, separator := range [][]string{nil, {"--"}} {
+		args := []string{"--workdir", "/app", "lab"}
+		args = append(args, separator...)
+		args = append(args, command...)
+		opts, err := parseExec(args)
+		if err != nil {
+			t.Fatalf("parseExec: %v", err)
+		}
+		if opts.id != "lab" || opts.workDir != "/app" || opts.interactive || opts.tty || !slices.Equal(opts.argv, command) {
+			t.Errorf("parseExec = %+v, want the guest arguments intact", opts)
+		}
+	}
+}
+
+func TestParseExecLeavesBundleFlagValuesAlone(t *testing.T) {
+	opts, err := parseExec([]string{"--user", "-it", "--workdir=-ti", "lab", "true"})
+	if err != nil {
+		t.Fatalf("parseExec: %v", err)
+	}
+	if opts.user != "-it" || opts.workDir != "-ti" || opts.interactive || opts.tty {
+		t.Errorf("parseExec expanded a flag value: %+v", opts)
+	}
+}
+
+func TestParseExecTakesACommandThatStartsWithAHyphen(t *testing.T) {
+	opts, err := parseExec([]string{"lab", "--guest", "-it"})
+	if err != nil {
+		t.Fatalf("parseExec: %v", err)
+	}
+	if !slices.Equal(opts.argv, []string{"--guest", "-it"}) || opts.interactive || opts.tty {
+		t.Errorf("parseExec read the guest command as flags: %+v", opts)
+	}
 }

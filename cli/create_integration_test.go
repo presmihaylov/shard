@@ -35,7 +35,7 @@ func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 		t.Errorf("the record says %q, want running: a sandbox outlives its entrypoint", sb.State)
 	}
 
-	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
+	if got, err := runExec(t, app, "exec", id, "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
 		t.Errorf("an exec in the new sandbox wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 
@@ -65,7 +65,7 @@ func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
 	if sb := record(t, app, id); sb.State != models.StateRunning {
 		t.Errorf("the record says %q after the entrypoint exited, want running", sb.State)
 	}
-	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
+	if got, err := runExec(t, app, "exec", id, "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
 		t.Errorf("an exec after the entrypoint exited wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 }
@@ -75,7 +75,7 @@ func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
 func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := createWith(t, app, out, "--user", "nobody", testImage, "--", "/bin/sh", "-c", "id -u")
+	id := createWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "id -u")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The exit status is the assertion: a supervisor that dropped too could never write it.
@@ -94,7 +94,7 @@ func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := createWith(t, app, out, "--user", "nobody", testImage, "--", "/bin/sh", "-c", "grep CapEff /proc/self/status")
+	id := createWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "grep CapEff /proc/self/status")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
@@ -115,7 +115,7 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	absent := filepath.Join(t.TempDir(), "absent")
 	app, _ := ownDaemon(t, InitPathEnv+"="+absent)
 
-	err := app.Run(t.Context(), createArgs(testImage, "--", "/bin/true"))
+	err := app.Run(t.Context(), createArgs(testImage, "/bin/true"))
 	if err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}
@@ -160,7 +160,7 @@ func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) 
 	before := holdings(t, app)
 
 	creating, _ := ownStderr(app)
-	err := creating.Run(t.Context(), createArgs(testImage, "--", "/no/such/entrypoint"))
+	err := creating.Run(t.Context(), createArgs(testImage, "/no/such/entrypoint"))
 	if err == nil {
 		t.Fatal("create reported success for an entrypoint the image does not hold")
 	}
