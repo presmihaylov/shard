@@ -88,6 +88,7 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.State = models.StateRunning
 		sb.PID = status.PID
 		sb.StoppedReason = ""
+		sb.UnresponsiveReason = ""
 		// A mark an unfinished pause left would vouch for its checkpoint across this new run.
 		sb.Pausing = false
 		sb.OOMRestartDue = time.Time{}

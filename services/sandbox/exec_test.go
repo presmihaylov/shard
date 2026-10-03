@@ -304,6 +304,24 @@ func TestExecRefusesASandboxTheProviderNoLongerHolds(t *testing.T) {
 	}
 }
 
+// A silent substrate process is asked again on each exec, so the refusal names it and lifts once it answers (SHARD-421).
+func TestExecRefusesAnUnresponsiveSandboxUntilItAnswers(t *testing.T) {
+	r := &recorder{}
+	sb := unresponsive()
+	svc, l := newService(t, r, sb)
+	l.provider.status = silentShim()
+
+	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || !strings.Contains(err.Error(), "is unresponsive: "+silentShim().Reason) || !strings.Contains(err.Error(), "shard stop sandbox1") {
+		t.Fatalf("Exec of an unresponsive sandbox returned %v, want the reason and the stop hint", err)
+	}
+
+	l.provider.status = alive(42)
+	if _, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, ""); err != nil {
+		t.Fatalf("Exec once the sandbox answers again: %v", err)
+	}
+}
+
 // The exit file records a 137 for an oom kill and for a plain kill -9, so the reason is named here.
 func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 	r := &recorder{}

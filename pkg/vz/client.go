@@ -105,6 +105,44 @@ func Adopt(ctx context.Context, socket string) (*Client, Info, error) {
 func (c *Client) State(ctx context.Context) (Info, error) { return c.call(ctx, request{Verb: "state"}) }
 func (c *Client) Stop(ctx context.Context) (Info, error)  { return c.call(ctx, request{Verb: "stop"}) }
 
+// Await asks the state on one connection and waits until the shim answers or ctx ends, so a frozen shim's socket queue takes no second request.
+func (c *Client) Await(ctx context.Context) (Info, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "unix", c.socket)
+	if err != nil {
+		return Info{}, fmt.Errorf("state: dial the shim: %w", err)
+	}
+	var reply response
+	done := make(chan error, 1)
+	go func() {
+		err := writeFrame(conn, request{Verb: "state"})
+		if err == nil {
+			err = readFrame(conn, &reply)
+		}
+		done <- err
+	}()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		// The close ends the read, so the exchange is over before this returns.
+		closeErr := conn.Close()
+		<-done
+
+		return Info{}, errors.Join(fmt.Errorf("state: %w", ctx.Err()), closeErr)
+	}
+	if err == nil {
+		err = reply.err()
+	}
+	if err != nil {
+		return Info{}, errors.Join(fmt.Errorf("state: %w", err), conn.Close())
+	}
+	if err := conn.Close(); err != nil {
+		return Info{}, fmt.Errorf("close the shim socket: %w", err)
+	}
+
+	return Info{State: reply.State, PID: reply.PID, MachineID: reply.MachineID}, nil
+}
+
 func (c *Client) Pause() (Info, error)  { return c.call(context.Background(), request{Verb: "pause"}) }
 func (c *Client) Resume() (Info, error) { return c.call(context.Background(), request{Verb: "resume"}) }
 func (c *Client) Save(path string) (Info, error) {

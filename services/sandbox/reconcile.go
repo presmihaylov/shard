@@ -51,7 +51,7 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 				state = models.StateRunning
 			}
 		}
-		if state == models.StateRunning {
+		if state.Live() {
 			running++
 		}
 	}
@@ -113,7 +113,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
-	if sb.State == models.StateRunning && !status.Alive() && status.OOMKilled {
+	if sb.State.Live() && !status.Alive() && status.OOMKilled {
 		return s.reconcileOOMKilled(ctx, sb, status, report)
 	}
 
@@ -138,6 +138,21 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
+	if state == models.StateUnresponsive {
+		if err := s.recordUnresponsive(sb.ID, sb, status.Reason, report); err != nil {
+			return "", err
+		}
+
+		return state, nil
+	}
+	// An unresponsive record whose process answers again keeps its run, so it is no fresh start (SHARD-421).
+	if state == models.StateRunning && sb.State == models.StateUnresponsive {
+		if err := s.recordAnswered(sb.ID, report); err != nil {
+			return "", err
+		}
+
+		return state, nil
+	}
 	if state == models.StateRunning {
 		if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, sb.ID, false); err != nil {
 			return "", err
@@ -180,6 +195,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 
 		return nil
 	})
@@ -264,6 +280,9 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateFailed, nil
 	}
 
+	if status.State == models.StateUnresponsive {
+		return models.StateUnresponsive, nil
+	}
 	// A substrate still reporting paused held a cut pause: keep that truth, or inspect and exec lie (SHARD-411).
 	if status.State == models.StatePaused {
 		return models.StatePaused, nil
@@ -288,7 +307,7 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateFailed, nil
 	}
 
-	if sb.State == models.StateRunning || sb.State == models.StatePaused {
+	if sb.State.Live() || sb.State == models.StatePaused {
 		return models.StateStopped, nil
 	}
 

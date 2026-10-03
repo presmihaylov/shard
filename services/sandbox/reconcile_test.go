@@ -210,6 +210,55 @@ func pausedAlive(pid int) models.Status {
 
 func gone() models.Status { return models.Status{} }
 
+func TestReconcileMakesAnUnresponsiveRecordRunningAndKeepsItsRun(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := unresponsive()
+	sb.StartedAt = started
+	sb.ExitStatus = &models.ExitStatus{Code: 3}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateRunning || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) || got.ExitStatus == nil {
+		t.Errorf("the record says %s with the reason %q, the start %s and the exit %+v; want running with its run kept", got.State, got.UnresponsiveReason, got.StartedAt, got.ExitStatus)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once for the live sandbox", lab.net.applied)
+	}
+}
+
+func TestReconcileRecordsAProcessThatDoesNotAnswerAsUnresponsive(t *testing.T) {
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": silentShim()}}, running())
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateUnresponsive || got.PID != 42 || got.UnresponsiveReason != silentShim().Reason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want unresponsive with its pid and the reason", got.State, got.PID, got.UnresponsiveReason)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once, since the process still runs", lab.net.applied)
+	}
+}
+
+func TestReconcileStopsAnUnresponsiveRecordWithNoProcess(t *testing.T) {
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, unresponsive())
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.LostReason || got.UnresponsiveReason != "" {
+		t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, sandbox.LostReason)
+	}
+}
+
 func TestReconcileNamesAProcessTheDaemonKilledForItsSilence(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	killed := models.Status{Exists: true, State: models.StateStopped, Unresponsive: true}

@@ -1414,6 +1414,78 @@ func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
 	}
 }
 
+// A held shim too frozen to answer reads unresponsive with its pid and is never killed for it: verbs refuse it by name, a thaw makes it running again, and a stop kills it at once (SHARD-421).
+func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T) {
+	h, spec, shim := frozenShim(t, false)
+	pid := fmt.Sprintf("pid %d", shim)
+
+	began := time.Now()
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateUnresponsive || status.PID != shim || !strings.Contains(status.Reason, pid) {
+		t.Fatalf("Status over a frozen held shim = %+v, %v; want unresponsive with the reason naming %s", status, err, pid)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Errorf("Status over a frozen held shim took %s, want under 8 s", took)
+	}
+	if err := syscall.Kill(shim, 0); err != nil {
+		t.Fatalf("the frozen shim %d is gone after a Status: %v, want it kept", shim, err)
+	}
+
+	began = time.Now()
+	_, err = h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), "unresponsive") || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Exec over a frozen held shim = %v, want a refusal naming unresponsive and %s", err, pid)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("Exec over a frozen held shim took %s, want under 10 s", took)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Pause over a frozen held shim = %v, want a refusal naming %s", err, pid)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != shim || status.Reason != "" {
+		t.Fatalf("Status after the thaw = %+v, %v; want running again with the same shim", status, err)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim again: %v", err)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status after the second freeze = %+v, %v; want unresponsive", status, err)
+	}
+	began = time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over an unresponsive shim: %v", err)
+	}
+	if took := time.Since(began); took >= stopGrace {
+		t.Errorf("Stop over an unresponsive shim took %s, want it killed with no grace, under %s", took, stopGrace)
+	}
+	awaitExit(t, shim)
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.Unresponsive {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped by the stop, not killed for its silence", status, err)
+	}
+}
+
+func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
+	h, spec, shim := frozenShim(t, false)
+	// A frozen shim accepts nothing; once its socket queue holds 128, a macOS dial reads refused, as if no shim were there.
+	for range 200 {
+		h.provider.Probe(t.Context(), spec.ID, 10*time.Millisecond)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status after 200 probes of a frozen shim = %+v, %v; want unresponsive", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over a long frozen shim: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
 func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
 	t.Helper()

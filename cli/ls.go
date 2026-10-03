@@ -67,6 +67,9 @@ func state(sb models.Sandbox) string {
 	if sb.StoppedReason != "" {
 		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 	}
+	if sb.UnresponsiveReason != "" {
+		return fmt.Sprintf("%s (%s)", sb.State, sb.UnresponsiveReason)
+	}
 
 	return string(sb.State)
 }
@@ -114,9 +117,9 @@ func health(sb models.Sandbox) string {
 	return fmt.Sprintf("%s %d/%d", sb.Health.Status, sb.Health.Failures, sb.HealthCheck.Retries)
 }
 
-// uptime is how long the sandbox has run since its last start or resume; only a running one is up.
+// uptime is how long the sandbox has run since its last start or resume; only a live one is up.
 func uptime(sb models.Sandbox, now time.Time) string {
-	if sb.State != models.StateRunning {
+	if !sb.State.Live() {
 		return "-"
 	}
 

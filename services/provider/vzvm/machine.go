@@ -49,6 +49,10 @@ type machine struct {
 	started bool
 	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
 	gone bool
+	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
+	silent bool
+	// asking closes once the one state request out to the shim ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
@@ -66,6 +70,8 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	m, held := p.machines[id]
 	p.mu.Unlock()
 	if held {
+		p.probe(ctx, m, adoptBound)
+
 		return m, nil
 	}
 
@@ -142,6 +148,50 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	closeDown(m)
 
 	return nil
+}
+
+// probe waits the bound for the shim's answer: silence marks it unresponsive, an answer clears that, and neither kills it (SHARD-421).
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	if m.gone || m.closed.Load() {
+		p.mu.Unlock()
+
+		return
+	}
+	// A frozen shim accepts nothing, and a full socket queue refuses a dial as if no shim were there, so one request waits for it.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
+	p.mu.Unlock()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	// The request cleared the mark on an answer; a failed one is the shim gone, which the event loop reports.
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+		p.mu.Lock()
+		if m.asking == asking {
+			m.silent = true
+		}
+		p.mu.Unlock()
+	}
+}
+
+// ask puts the one state request to the shim and holds it past the caller until the shim answers or dies; stop kills one that never answers.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.Await(ctx)
+	p.mu.Lock()
+	m.asking = nil
+	if err == nil {
+		m.silent = false
+	}
+	p.mu.Unlock()
+	close(asking)
 }
 
 func (p *Provider) forget(m *machine) {
@@ -606,10 +656,22 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	if m.silent {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its shim (pid %d) did not answer within %s", m.pid, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
 	return models.Status{Exists: true, State: state, PID: m.pid}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }

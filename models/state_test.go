@@ -12,17 +12,19 @@ var allStates = []models.State{
 	models.StateCreated,
 	models.StateRunning,
 	models.StatePaused,
+	models.StateUnresponsive,
 	models.StateStopped,
 	models.StateFailed,
 }
 
 func TestCanTransitionTo(t *testing.T) {
 	legal := map[models.State]map[models.State]bool{
-		models.StatePending: {models.StateRunning: true, models.StateFailed: true},
-		models.StateCreated: {models.StateRunning: true, models.StateStopped: true, models.StateFailed: true},
-		models.StateRunning: {models.StatePaused: true, models.StateStopped: true, models.StateFailed: true},
-		models.StatePaused:  {models.StateRunning: true, models.StateStopped: true},
-		models.StateStopped: {models.StateRunning: true},
+		models.StatePending:      {models.StateRunning: true, models.StateFailed: true},
+		models.StateCreated:      {models.StateRunning: true, models.StateStopped: true, models.StateFailed: true},
+		models.StateRunning:      {models.StatePaused: true, models.StateStopped: true, models.StateUnresponsive: true, models.StateFailed: true},
+		models.StatePaused:       {models.StateRunning: true, models.StateStopped: true},
+		models.StateUnresponsive: {models.StateRunning: true, models.StateStopped: true},
+		models.StateStopped:      {models.StateRunning: true},
 	}
 
 	for _, from := range allStates {
