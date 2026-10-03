@@ -227,6 +227,26 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// The grace is a bound and never a wait: an entrypoint that exits on SIGTERM ends the stop with it (SHARD-460).
+	t.Run("StopEndsWhenTheEntrypointExitsOnTerm", func(t *testing.T) {
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell("trap 'exit 0' TERM; echo conformance-exits-on-term; while true; do sleep 0.1; done")
+		id := s.start(t, spec)
+		s.awaitLog(t, id, 0)
+
+		started := time.Now()
+		if err := s.Provider.Stop(t.Context(), id, models.StopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		if elapsed := time.Since(started); elapsed > stopGrace/3 {
+			t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on SIGTERM", elapsed, models.StopGrace)
+		}
+		if s.status(t, id).Alive() {
+			t.Error("the sandbox is still alive after Stop")
+		}
+	})
+
 	// A second Create over a used state directory must not let the first run's exit answer a wait.
 	t.Run("ASecondCreateAnswersNoStaleExitStatus", func(t *testing.T) {
 		spec := s.NewSpec(t)

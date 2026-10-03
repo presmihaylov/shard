@@ -90,7 +90,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
 	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
 	d.states = dmn.states
@@ -422,22 +422,22 @@ func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, erro
 	return svc.Start(ctx, ref)
 }
 
-func (l *lifecycle) Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
+func (l *lifecycle) Stop(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 
-	return svc.Stop(ctx, ref, grace)
+	return svc.Stop(ctx, ref)
 }
 
-func (l *lifecycle) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
+func (l *lifecycle) Remove(ctx context.Context, ref string, force bool) error {
 	svc, err := l.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.Remove(ctx, ref, force, grace)
+	return svc.Remove(ctx, ref, force)
 }
 
 func (l *lifecycle) Pause(ctx context.Context, ref string) (models.Sandbox, error) {

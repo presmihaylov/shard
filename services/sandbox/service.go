@@ -19,9 +19,6 @@ import (
 	"github.com/presmihaylov/shard/services/secret"
 )
 
-// DefaultStopGrace is how long the entrypoint gets to answer SIGTERM before shard kills it.
-const DefaultStopGrace = 10 * time.Second
-
 // DefaultStopSettle is how long past Provider.Stop a stop waits for the substrate to report the sandbox gone.
 const DefaultStopSettle = 5 * time.Second
 
@@ -153,8 +150,6 @@ type CreateRequest struct {
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
 	// MaxOOMRestarts caps those starts in a row, 0 for unlimited.
 	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
-	// Health is the probe the daemon runs while the sandbox runs, nil for none.
-	Health *models.HealthCheck `json:"health,omitempty"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
@@ -440,8 +435,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Policy:         req.Policy,
 		RestartOnOOM:   req.RestartOnOOM,
 		MaxOOMRestarts: req.MaxOOMRestarts,
-		HealthCheck:    withHealthDefaults(req.Health),
-		Health:         startingHealth(req.Health),
 		Restart:        withRestartDefaults(req.Restart),
 		CreatedAt:      time.Now().UTC(),
 	}, admit...)
@@ -687,11 +680,6 @@ func validate(req CreateRequest) error {
 	if req.MaxOOMRestarts < 0 {
 		return &RequestError{Err: fmt.Errorf("max_oom_restarts is a count and cannot be negative, got %d", req.MaxOOMRestarts)}
 	}
-	if req.Health != nil {
-		if err := validHealthCheck(*req.Health); err != nil {
-			return &RequestError{Err: err}
-		}
-	}
 	if req.Restart != nil {
 		if err := validRestart(*req.Restart, req.Command); err != nil {
 			return &RequestError{Err: err}
@@ -892,7 +880,7 @@ func (s *Service) recordFailedStart(ctx context.Context, id string) error {
 
 // Stop ends the processes and keeps everything rm frees: the record, the lease, the address and the
 // writable layer all outlive it, so a start can follow.
-func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
+func (s *Service) Stop(ctx context.Context, ref string) (models.Sandbox, error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return models.Sandbox{}, err
@@ -926,14 +914,14 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 		return models.Sandbox{}, err
 	}
 
-	if err := s.stop(ctx, id, grace, false); err != nil {
+	if err := s.stop(ctx, id, false); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(id)
 }
 
-func (s *Service) stop(ctx context.Context, id string, grace time.Duration, force bool) error {
+func (s *Service) stop(ctx context.Context, id string, force bool) error {
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
 		return err
@@ -965,7 +953,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		}
 	}
 
-	if err := s.cfg.Provider.Stop(ctx, id, grace); err != nil {
+	if err := s.cfg.Provider.Stop(ctx, id, models.StopGrace); err != nil {
 		return err
 	}
 
@@ -1066,8 +1054,8 @@ func (s *Service) lastExit(ctx context.Context, id string) (*models.ExitStatus, 
 }
 
 // Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused
-// unless force says to stop it first, with grace as the stop's.
-func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
+// unless force says to stop it first, with the grace a stop gives.
+func (s *Service) Remove(ctx context.Context, ref string, force bool) error {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return err
@@ -1088,7 +1076,7 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time
 		return err
 	}
 
-	if err := s.endIfAlive(ctx, id, sb.State, force, grace); err != nil {
+	if err := s.endIfAlive(ctx, id, sb.State, force); err != nil {
 		return err
 	}
 
@@ -1112,10 +1100,10 @@ type reclaimer interface {
 }
 
 // endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
-func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
+func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool) error {
 	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot, and no probe can wedge that answer.
 	if state == models.StatePaused {
-		return s.refuseOrStop(ctx, id, state, force, grace)
+		return s.refuseOrStop(ctx, id, state, force)
 	}
 
 	status, err := s.status(ctx, id, "rm")
@@ -1125,7 +1113,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 			return err
 		}
 
-		return s.stop(ctx, id, grace, force)
+		return s.stop(ctx, id, force)
 	}
 	if err != nil {
 		return err
@@ -1134,16 +1122,16 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 		return nil
 	}
 
-	return s.refuseOrStop(ctx, id, status.State, force, grace)
+	return s.refuseOrStop(ctx, id, status.State, force)
 }
 
 // refuseOrStop ends a live or paused sandbox for rm when force says so, and refuses it otherwise.
-func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
+func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool) error {
 	if !force {
 		return &StateError{ID: id, State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
-	return s.stop(ctx, id, grace, force)
+	return s.stop(ctx, id, force)
 }
 
 // reclaim is the kill rm --force falls back to on a wedge; no kill on offer, or one that misses, keeps the typed wedge so the API still answers 504.

@@ -101,15 +101,12 @@ var helps = map[string]verbHelp{
 			{"--restart <policy>", "when to start the command again inside the sandbox after it exits: no, on-failure or always; it needs a command", ""},
 			{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
 			{"--restart-backoff <duration>", "how long to wait before the first restart, in whole seconds; the wait doubles each time, up to " + strconv.Itoa(models.RestartBackoffCap) + "s", seconds(sandbox.DefaultRestartBackoff)},
-			{"--health-command <cmd>", "a shell command the daemon runs in the sandbox every interval; exit 0 is a pass", ""},
-			{"--health-interval <duration>", "the time between two probes, in whole seconds, " + seconds(sandbox.MaxHealthInterval) + " at most", seconds(sandbox.DefaultHealthInterval)},
-			{"--health-timeout <duration>", "how long one probe has to answer, in whole seconds, " + seconds(sandbox.MaxHealthTimeout) + " at most", seconds(sandbox.DefaultHealthTimeout)},
-			{"--health-retries <n>", "how many failed probes in a row mark the sandbox unhealthy", strconv.Itoa(sandbox.DefaultHealthRetries)},
 		},
 		notes: []string{
 			"The flags go before the image. The command follows the image; an optional -- may precede it. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
 			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
+			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
 		},
 		example: "shard create --name web --memory 512 python:3.12 python -m http.server",
 	},
@@ -131,7 +128,7 @@ var helps = map[string]verbHelp{
 		usage:   []string{"ls [--all]"},
 		summary: "list the sandboxes; --all adds the stopped ones",
 		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}},
-		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART, HEALTH and POLICY."},
+		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
 		example: "shard ls --all",
 	},
 	"logs": {
@@ -151,12 +148,14 @@ var helps = map[string]verbHelp{
 		example: "shard inspect web",
 	},
 	"stop": {
-		usage:   []string{"stop [--time <duration>] <id|name>"},
+		usage:   []string{"stop <id|name>"},
 		summary: "stop a sandbox; its files stay for start or clone",
 		args:    []row{sandboxArg},
-		flags:   []flagHelp{{"--time <duration>", "how long the entrypoint gets after SIGTERM before it is killed", short(sandbox.DefaultStopGrace)}},
-		notes:   []string{"stop is the only verb that ends a sandbox. Its memory goes, and its files stay."},
-		example: "shard stop --time 30s web",
+		notes: []string{
+			"stop sends SIGTERM to the entrypoint and returns as soon as it exits. An entrypoint still running after " + short(models.StopGrace) + " is killed. The grace is fixed.",
+			"stop is the only verb that ends a sandbox. Its memory goes, and its files stay.",
+		},
+		example: "shard stop web",
 	},
 	"start": {
 		usage:   []string{"start <id|name>"},
@@ -166,14 +165,16 @@ var helps = map[string]verbHelp{
 		example: "shard start web",
 	},
 	"rm": {
-		usage:   []string{"rm [--force] [--time <duration>] <id|name>"},
+		usage:   []string{"rm [--force] <id|name>"},
 		summary: "delete a stopped or failed sandbox and its files",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"--force", "stop a running or paused sandbox first, and warn rather than fail on one that does not exist", ""},
-			{"--time <duration>", "how long --force gives the entrypoint before it is killed", short(sandbox.DefaultStopGrace)},
 		},
-		notes:   []string{"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull."},
+		notes: []string{
+			"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull.",
+			"--force stops the sandbox as stop does, with the same " + short(models.StopGrace) + " grace, and then deletes it.",
+		},
 		example: "shard rm --force web",
 	},
 	"pause": {

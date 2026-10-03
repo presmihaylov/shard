@@ -319,7 +319,7 @@ done
 grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} never took the entrypoint's exit"
 expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its entrypoint exited 3"
 expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose entrypoint is gone" /bin/echo still-up
-shard stop --time "${GRACE}" "${EXIT_ID}" >/dev/null
+shard stop "${EXIT_ID}" >/dev/null
 shard rm "${EXIT_ID}" >/dev/null
 EXIT_ID=""
 say "only stop ended it"
@@ -453,7 +453,7 @@ VMM_PID=$(record_pid "${ID}")
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "a fresh vmm ${VMM_PID} drives the resumed microVM"
 
 step "stop the microVM"
-stop_it() { shard stop --time "${GRACE}" "${ID}" >/dev/null; }
+stop_it() { shard stop "${ID}" >/dev/null; }
 timed "stop" stop_it
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopped"
 for _ in $(seq 1 50); do
@@ -507,7 +507,7 @@ say "the clones share nothing with each other or with the source, which is still
 
 step "stop and remove the clones"
 for CLONE_ID in "$@"; do
-	shard stop --time "${GRACE}" "${CLONE_ID}" >/dev/null
+	shard stop "${CLONE_ID}" >/dev/null
 	shard rm "${CLONE_ID}" >/dev/null
 done
 CLONE_IDS=""
@@ -527,7 +527,7 @@ say "the new vmm runs in the cgroup the stop kept"
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 expect_network "after the start"
 expect_fronted "${ID}" "the proxy fronts the sandbox after the start"
-shard stop --time "${GRACE}" "${ID}" >/dev/null
+shard stop "${ID}" >/dev/null
 say "stopped again"
 
 step "remove the microVM"

@@ -53,7 +53,7 @@ func TestRemoveFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 
 	start := time.Now()
-	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", false)
 	bounded(t, start, "rm")
 
 	var timeout *sandbox.SubstrateTimeoutError
@@ -76,7 +76,7 @@ func TestStopFallsThroughToTheKillWhenAStoppedRecordStillLies(t *testing.T) {
 	l.provider.stopUnwedges = true
 
 	start := time.Now()
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("Stop returned %v, want the kill path to complete", err)
 	}
 	bounded(t, start, "stop")
@@ -93,7 +93,7 @@ func TestRemoveForceReclaimsAWedgedSandboxThroughTheRawKill(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 
 	start := time.Now()
-	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("Remove --force returned %v, want the kill to carry it through", err)
 	}
 	bounded(t, start, "rm --force")
@@ -117,7 +117,7 @@ func TestRemoveForceFailsFastWhenTheSubstrateOffersNoKill(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 
 	start := time.Now()
-	err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", true)
 	bounded(t, start, "rm --force")
 
 	var timeout *sandbox.SubstrateTimeoutError
@@ -139,7 +139,7 @@ func TestRemoveForceReportsAKillThatDidNotLand(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 	l.provider.reclaimErr = errors.New("sandbox sandbox1 still holds processes [4242] after SIGKILL")
 
-	err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", true)
 
 	var timeout *sandbox.SubstrateTimeoutError
 	if !errors.As(err, &timeout) {
@@ -238,7 +238,7 @@ func TestStopIsBoundedWhenTheSubstrateNeverSettles(t *testing.T) {
 	l.provider.aliveAfterStop = -1
 
 	start := time.Now()
-	_, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	_, err := svc.Stop(t.Context(), "sandbox1")
 	bounded(t, start, "stop")
 
 	if err == nil || !strings.Contains(err.Error(), "did not stop within") {
@@ -256,7 +256,7 @@ func TestStopFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 
 	start := time.Now()
-	_, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	_, err := svc.Stop(t.Context(), "sandbox1")
 	bounded(t, start, "stop")
 
 	var timeout *sandbox.SubstrateTimeoutError
