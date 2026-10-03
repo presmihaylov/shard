@@ -651,9 +651,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	spec, _ := h.runLong(t)
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
 	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
-		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		watchControls(t, s)
 	}
 
 	dir := t.TempDir()
@@ -670,11 +668,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	}
 
 	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
-		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed}) {
+		if got := controls(t, s.StateDir, supervisor.KindReseed); !slices.Equal(got, []string{supervisor.KindReseed}) {
 			t.Errorf("the guest of %s read %q, want one reseed", s.ID, got)
 		}
 		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
@@ -690,9 +684,7 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	spec, _ := h.runLong(t)
 	fork := h.forkSpec(t)
 	for _, s := range []models.SandboxSpec{spec, fork} {
-		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		watchControls(t, s)
 	}
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -721,16 +713,246 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	}
 
 	for _, s := range []models.SandboxSpec{spec, fork} {
-		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
+		if got := controls(t, s.StateDir, supervisor.KindReseed); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
 			t.Errorf("the guest of %s read %q, want the restore's reseed and the first adopter's", s.ID, got)
 		}
 		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("the reseed marker of %s after the adopt: %v, want it gone", s.ID, err)
 		}
+	}
+}
+
+// A pause freezes the guest before the snapshot, and every restore reseeds the frozen guest before the thaw lets it run on the saved key (SHARD-409).
+func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	fork := h.forkSpec(t)
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		watchControls(t, s)
+	}
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	kinds := []string{supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw}
+	if got := controls(t, spec.StateDir, kinds...); !slices.Equal(got, kinds) {
+		t.Errorf("the guest of the source read %q, want %q", got, kinds)
+	}
+	if got := controls(t, fork.StateDir, kinds...); !slices.Equal(got, kinds[1:]) {
+		t.Errorf("the guest of the fork read %q, want %q", got, kinds[1:])
+	}
+}
+
+// A guest that cannot hold its root refuses the pause: the VM runs on, the guest is told to thaw, and nothing is written (SHARD-409).
+func TestAPauseTheGuestCannotFreezeForIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	refuse := filepath.Join(spec.StateDir, refuseFreezeFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "freeze the guest before the pause") {
+		t.Fatalf("Pause of a guest that refuses the freeze = %v, want the refusal", err)
+	}
+	status, statusErr := h.provider.Status(t.Context(), spec.ID)
+	if statusErr != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused Pause = %+v, %v, want running", status, statusErr)
+	}
+	for _, path := range []string{dir + ".tmp", filepath.Join(dir, "checkpoint.img")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the refused Pause: %v, want none", path, err)
+		}
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindThaw}) {
+		t.Errorf("the guest read %q, want the refused freeze and a thaw", got)
+	}
+
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause once the guest takes the freeze: %v", err)
+	}
+}
+
+// A VM booted before the guest froze its overlay root keeps that shard-init, so its pause is refused with the restart that fixes it, and no freeze reaches the guest (SHARD-409).
+func TestAPauseOfAGuestFromBeforeTheFreezeIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	old := filepath.Join(spec.StateDir, oldGuestFile)
+	if err := os.WriteFile(old, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon of an upgrade attaches to a VM the one before it booted.
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.open(t)
+	dir := t.TempDir()
+
+	err := p.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "restart the sandbox, then pause it") {
+		t.Fatalf("Pause of a guest from before the freeze = %v, want the refusal that names the restart", err)
+	}
+	status, statusErr := p.Status(t.Context(), spec.ID)
+	if statusErr != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused Pause = %+v, %v, want running", status, statusErr)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s.tmp after the refused Pause: %v, want none", dir, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); len(got) != 0 {
+		t.Errorf("the guest read %q, want no freeze sent to a guest that cannot take it", got)
+	}
+
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the restart: %v", err)
+	}
+}
+
+// A drop that takes the guest's answer to a freeze leaves it frozen, so the pause's undo or the stream dialed again thaws it, once, and the next pause goes through (SHARD-409).
+func TestAFreezeWhoseAnswerADropTookIsThawed(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := os.WriteFile(filepath.Join(spec.StateDir, loseFreezeFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "freeze the guest before the pause") {
+		t.Fatalf("Pause whose freeze lost its answer = %v, want the refusal", err)
+	}
+	// Which side thaws depends on whether the redial lands before the undo, so the thaw is waited for.
+	want := []string{supervisor.KindFreeze, supervisor.KindThaw}
+	got := controls(t, spec.StateDir, want...)
+	for deadline := time.Now().Add(10 * time.Second); !slices.Equal(got, want) && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		got = controls(t, spec.StateDir, want...)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the guest read %q, want the freeze and one thaw", got)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the thaw: %v", err)
+	}
+}
+
+// A daemon cut between the freeze and the snapshot leaves the guest frozen, and the next daemon thaws it as it adopts the VM (SHARD-409).
+func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the pause of a daemon that froze the guest and stopped the vCPUs, then died before the snapshot.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.open(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status of the frozen leftover = %+v, %v, want the sandbox running again", status, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindThaw}) {
+		t.Errorf("the guest read %q, want the cut pause's freeze and the next daemon's thaw", got)
+	}
+}
+
+// A frozen guest the next daemon cannot reseed is ended, not left frozen for every later verb to fail on (SHARD-409).
+func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is a restore's vmm whose daemon died before the reseed, over a guest that will refuse it.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{firecracker.ReseedFile, refuseReseedFile} {
+		if err := os.WriteFile(filepath.Join(spec.StateDir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := h.open(t)
+
+	if _, err := p.Status(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "reseed the restored guest") {
+		t.Fatalf("Status of a frozen guest that refuses the reseed = %v, want the refusal", err)
+	}
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after the refused reseed = %+v, %v, want the sandbox stopped", status, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindReseed}) {
+		t.Errorf("the guest read %q, want the freeze and the refused reseed, and no thaw", got)
+	}
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Errorf("Remove after the refused reseed: %v", err)
 	}
 }
 
@@ -1043,6 +1265,33 @@ func (h *harness) forkSpec(t *testing.T) models.SandboxSpec {
 	spec := h.newSpec(t)
 
 	return models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
+}
+
+// watchControls has the fake vmm note what the guest of s reads from here on.
+func watchControls(t *testing.T, s models.SandboxSpec) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(s.StateDir, controlsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// controls is what the guest of the sandbox under dir read, in order, of the kinds named.
+func controls(t *testing.T, dir string, kinds ...string) []string {
+	t.Helper()
+
+	read, err := os.ReadFile(filepath.Join(dir, controlsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for kind := range strings.FieldsSeq(string(read)) {
+		if slices.Contains(kinds, kind) {
+			got = append(got, kind)
+		}
+	}
+
+	return got
 }
 
 // links is how many names the file has, which is what proves the memory is shared and not copied.

@@ -251,6 +251,8 @@ type fakeLifecycleProvider struct {
 	execSpec  models.ExecSpec
 	// execID is the sandbox the exec ran in, so a test says which id a name resolved to.
 	execID string
+	// serve stands in for the guest end of an exec, as a files exec needs.
+	serve func(spec models.ExecSpec) (models.ExitStatus, error)
 }
 
 func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -258,6 +260,10 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 		return models.ExitStatus{}, err
 	}
 	f.execID, f.execSpec = id, spec
+
+	if f.serve != nil {
+		return f.serve(spec)
+	}
 
 	if f.execErr != nil {
 		return models.ExitStatus{}, f.execErr

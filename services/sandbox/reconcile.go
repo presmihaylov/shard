@@ -122,6 +122,22 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
+	// A cut pause the record never recorded: the substrate holds it paused, so the record catches up.
+	if state == models.StatePaused {
+		err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+			rec.State = models.StatePaused
+			rec.PID = 0
+
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("sandbox %s is paused but its record was not updated: %w", sb.ID, err)
+		}
+		report(fmt.Sprintf("sandbox %s said %s and the substrate holds it paused: the record now says paused", sb.ID, sb.State))
+
+		return state, nil
+	}
+
 	// A record that never reached running is a create, fork or clone the daemon dropped: it ends failed, not stopped.
 	if state == models.StateFailed {
 		if err := s.failDropped(ctx, sb, status, report); err != nil {
@@ -217,6 +233,11 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	// No verb rests in created, so it is a fork or clone that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {
 		return models.StateFailed, nil
+	}
+
+	// A substrate still reporting paused held a cut pause: keep that truth, or inspect and exec lie (SHARD-411).
+	if status.State == models.StatePaused {
+		return models.StatePaused, nil
 	}
 
 	if status.Alive() {

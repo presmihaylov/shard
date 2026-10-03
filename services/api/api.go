@@ -41,6 +41,12 @@ type Lifecycle interface {
 	KillExec(ctx context.Context, ref, execID, signal string) error
 	DeleteExec(ctx context.Context, ref, execID string) error
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
+	StatFile(ctx context.Context, ref, path string) (models.FileStat, error)
+	ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
+	WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error
+	ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error)
+	MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error
+	DeleteFile(ctx context.Context, ref, path string, recursive bool) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -49,12 +55,16 @@ type Lifecycle interface {
 	DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error)
 }
 
-// EgressLog is what shard logs --egress prints: every decision made for one sandbox, oldest first.
+// EgressLog is what shard logs --egress prints: the newest decisions made for one sandbox, oldest first.
 type EgressLog interface {
-	Read(sb models.Sandbox) ([]egress.Record, error)
-	// Follow yields the records the log holds and then every one appended after, until ctx ends.
+	// Read returns the newest records and how many older ones it left out.
+	Read(sb models.Sandbox) ([]egress.Record, int, error)
+	// Follow yields the newest records the log holds and then every one appended after, until ctx ends.
 	Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error
 }
+
+// EgressCutHeader counts the older records an egress log read left out, and is absent when it left out none.
+const EgressCutHeader = "Shard-Egress-Cut"
 
 // Daemon is what GET /v0/daemon answers: the process on this socket, its substrate and its proxy ports.
 type Daemon struct {
@@ -148,6 +158,13 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill"}, h.killExec},
 		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}"}, h.deleteExec},
 		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize"}, h.resizeExec},
+		{Route{"PUT", "/v0/sandboxes/{id}/files"}, h.putFile},
+		{Route{"GET", "/v0/sandboxes/{id}/files"}, h.getFile},
+		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
+		{Route{"HEAD", "/v0/sandboxes/{id}/files"}, h.statFile},
+		{Route{"DELETE", "/v0/sandboxes/{id}/files"}, h.deleteFile},
+		{Route{"GET", "/v0/sandboxes/{id}/ls"}, h.listDir},
+		{Route{"POST", "/v0/sandboxes/{id}/mkdir"}, h.makeDir},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
@@ -314,13 +331,16 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.egressLog.Read(sb)
+	records, cut, err := h.egressLog.Read(sb)
 	if err != nil {
 		h.writeError(w, err)
 
 		return
 	}
 
+	if cut > 0 {
+		w.Header().Set(EgressCutHeader, strconv.Itoa(cut))
+	}
 	h.writeJSON(w, http.StatusOK, records)
 }
 
@@ -633,6 +653,7 @@ func classify(err error) (int, models.Code) {
 	var substrateTimeout *sandbox.SubstrateTimeoutError
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
+	var fileNotFound *sandbox.FileNotFoundError
 
 	switch {
 	case errors.As(err, &scope):
@@ -642,7 +663,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
