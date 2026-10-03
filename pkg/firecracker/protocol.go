@@ -3,8 +3,9 @@ package firecracker
 // The request and reply bodies of the firecracker API, the fields shard uses of each.
 
 type machineConfig struct {
-	VCPUs     int64 `json:"vcpu_count"`
-	MemoryMiB int64 `json:"mem_size_mib"`
+	VCPUs           int64 `json:"vcpu_count"`
+	MemoryMiB       int64 `json:"mem_size_mib"`
+	TrackDirtyPages bool  `json:"track_dirty_pages"`
 }
 
 type bootSource struct {
@@ -56,19 +57,20 @@ type vmState struct {
 }
 
 type snapshotCreate struct {
-	Type       string `json:"snapshot_type"`
-	StatePath  string `json:"snapshot_path"`
-	MemoryPath string `json:"mem_file_path"`
+	Type       SnapshotType `json:"snapshot_type"`
+	StatePath  string       `json:"snapshot_path"`
+	MemoryPath string       `json:"mem_file_path"`
 }
 
 // snapshotLoad names the tap and the vsock path of the new process; the drives keep the paths the snapshot holds until a patch swaps them.
 type snapshotLoad struct {
-	StatePath     string            `json:"snapshot_path"`
-	Memory        memoryBackend     `json:"mem_backend"`
-	ResumeVM      bool              `json:"resume_vm"`
-	Network       []networkOverride `json:"network_overrides,omitempty"`
-	Vsock         *vsockOverride    `json:"vsock_override,omitempty"`
-	ClockRealtime bool              `json:"clock_realtime"`
+	StatePath       string            `json:"snapshot_path"`
+	Memory          memoryBackend     `json:"mem_backend"`
+	TrackDirtyPages bool              `json:"track_dirty_pages"`
+	ResumeVM        bool              `json:"resume_vm"`
+	Network         []networkOverride `json:"network_overrides,omitempty"`
+	Vsock           *vsockOverride    `json:"vsock_override,omitempty"`
+	ClockRealtime   bool              `json:"clock_realtime"`
 }
 
 type memoryBackend struct {

@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// minVersion is the oldest firecracker that takes a Diff snapshot without a dirty-page log and merges it into a memory file of the guest's size.
+// minVersion is the oldest firecracker whose snapshot load takes track_dirty_pages, which every Diff after a restore needs.
 var minVersion = version{1, 13, 0}
 
 type version [3]int
@@ -37,7 +37,7 @@ func CheckVersion(binary string) error {
 		return fmt.Errorf("read the version of %s: %w", binary, err)
 	}
 	if v.older(minVersion) {
-		return fmt.Errorf("%s is firecracker %s, and shard needs %s or newer, whose pause writes only the pages the guest holds", binary, v, minVersion)
+		return fmt.Errorf("%s is firecracker %s, and shard needs %s or newer, whose snapshot load keeps the dirty-page log on", binary, v, minVersion)
 	}
 
 	return nil

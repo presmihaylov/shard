@@ -13,7 +13,7 @@ import (
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 )
 
-// A pause takes a Diff, which is the whole image of a guest that booted fresh: its holes are pages it never wrote (SHARD-450).
+// A pause takes a Diff over the log the boot turned on, which is the whole image of a guest that booted fresh: its holes are pages it never wrote (SHARD-450, SHARD-458).
 func TestAPauseOfABootedVMMWritesAWholeDiff(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -31,7 +31,7 @@ func TestAPauseOfABootedVMMWritesAWholeDiff(t *testing.T) {
 	}
 }
 
-// Each pause after a resume merges its Diff into a copy of the memory the vmm loaded, so a chain keeps every earlier page (SHARD-450, SHARD-451).
+// Each load turns the log on again, and each pause after a resume merges its Diff into a copy of the memory the vmm loaded, so a chain keeps every earlier page (SHARD-450, SHARD-451, SHARD-458).
 func TestAChainOfPausesAndResumesKeepsWhatEachPauseWrote(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -93,7 +93,102 @@ func TestAPauseOfAForkMergesOntoTheSnapshotItLoaded(t *testing.T) {
 	}
 }
 
-// The Diff takes the pages that are resident, so a pause refuses a vmm whose cgroup it cannot hold at no swap, by the cgroup's name, before it freezes the guest (SHARD-450).
+// A vmm this daemon did not boot or load may have a log a snapshot already cleared, so its pause takes a Full, and the chain goes on from it (SHARD-458).
+func TestAPauseOfAnAdoptedVMMTakesAFull(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec := h.runSnapshotted(t)
+	dir := t.TempDir()
+	h.reopen(t)
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause of the adopted vmm: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume after the Full: %v", err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause of the vmm this daemon loaded: %v", err)
+	}
+
+	if got, want := snapshots(t, spec.StateDir), []string{"Full onto 0", "Diff onto 1"}; !slices.Equal(got, want) {
+		t.Fatalf("the vmms took %q, want %q", got, want)
+	}
+	if got := memoryOf(t, dir); got != "Full\nDiff\n" {
+		t.Fatalf("the snapshot memory = %q, want the Full and the Diff merged onto it", got)
+	}
+}
+
+// A create the vmm refused may have read the log already, so the next pause of that restored vmm takes a Full over no seed (SHARD-458).
+func TestAPauseAfterARefusedSnapshotTakesAFull(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec := h.runSnapshotted(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	refuse := filepath.Join(spec.StateDir, refuseSnapshotFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "No space left") {
+		t.Fatalf("Pause over a refused snapshot = %v, want the refusal", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refusal = %+v, %v, want running", status, err)
+	}
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the refusal: %v", err)
+	}
+	if got, want := snapshots(t, spec.StateDir), []string{"Diff onto 0", "Full onto 0"}; !slices.Equal(got, want) {
+		t.Fatalf("the vmm took %q, want %q", got, want)
+	}
+	if got := memoryOf(t, dir); got != "Full\n" {
+		t.Fatalf("the snapshot memory = %q, want the one Full", got)
+	}
+}
+
+// A pause that failed after its create left the log cleared, so the next pause of that vmm takes a Full (SHARD-458).
+func TestAPauseAfterOneThatFailedPastItsSnapshotTakesAFull(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec := h.runSnapshotted(t)
+	dir := t.TempDir()
+	// The vmm holds no handle on the overlay, so moving it aside breaks the copy after the create.
+	overlay := filepath.Join(spec.StateDir, "overlay.raw")
+	if err := os.Rename(overlay, overlay+".aside"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "copy the overlay") {
+		t.Fatalf("Pause with no overlay = %v, want the copy to fail", err)
+	}
+	if err := os.Rename(overlay+".aside", overlay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the failed one: %v", err)
+	}
+	if got, want := snapshots(t, spec.StateDir), []string{"Diff onto 0", "Full onto 0"}; !slices.Equal(got, want) {
+		t.Fatalf("the vmm took %q, want %q", got, want)
+	}
+	if got := memoryOf(t, dir); got != "Full\n" {
+		t.Fatalf("the snapshot memory = %q, want the one Full", got)
+	}
+}
+
+// A pause refuses a vmm whose cgroup it cannot hold at no swap, by the cgroup's name, before it freezes the guest (SHARD-450).
 func TestAPauseNeedsTheVMMsCgroupToSwapNothing(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -188,7 +283,7 @@ func answerSwap(fifo, value string) error {
 	return os.WriteFile(fifo, []byte(value), 0o600)
 }
 
-// Only firecracker 1.13 and newer take a Diff without a dirty-page log, so a daemon refuses an older one by its version (SHARD-450).
+// Only firecracker 1.13 and newer turn the dirty-page log on at a load, so a daemon refuses an older one by its version (SHARD-450, SHARD-458).
 func TestADaemonRefusesAFirecrackerOlderThan113(t *testing.T) {
 	h := newHarness(t)
 	t.Setenv(fakeVersionEnv, "1.12.1")

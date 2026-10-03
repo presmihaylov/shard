@@ -44,7 +44,9 @@ type machine struct {
 	pausing bool
 	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
 	freezesOverlay bool
-	cancel         context.CancelFunc
+	// wholeLog says the vmm's dirty-page log holds every page the guest wrote since this process booted or loaded it, so a Diff is whole (SHARD-458).
+	wholeLog bool
+	cancel   context.CancelFunc
 	// followed is closed once follow has landed the guest's last event, so a stop that saw the vmm go reads all of them (SHARD-290).
 	followed chan struct{}
 
@@ -507,6 +509,7 @@ func (p *Provider) up(ctx context.Context, id, dir, jail string, client *fcapi.C
 	if m == nil {
 		return nil, fmt.Errorf("sandbox %s: the guest was killed by its memory bound before it ran", id)
 	}
+	m.wholeLog = true
 
 	return m, nil
 }

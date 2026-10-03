@@ -133,7 +133,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 		"vsock":   string(s.Vsock),
 	} {
 		want := map[string]string{
-			"machine": `{"vcpu_count":2,"mem_size_mib":256}`,
+			"machine": `{"vcpu_count":2,"mem_size_mib":256,"track_dirty_pages":true}`,
 			"boot":    `{"kernel_image_path":"/vmlinux","initrd_path":"/initrd","boot_args":"console=ttyS0 -- -transport vsock"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/base.erofs","is_root_device":false,"is_read_only":true}`,
 			"overlay": `{"drive_id":"overlay","path_on_host":"/overlay.raw","is_root_device":false,"is_read_only":false,"cache_type":"Writeback"}`,
@@ -333,7 +333,7 @@ func snapshot(t *testing.T, client *firecracker.Client) (string, string) {
 		t.Fatalf("Pause = %v", err)
 	}
 	state, memory := "/vmstate", "/memory"
-	if err := client.Snapshot(state, memory); err != nil {
+	if err := client.Snapshot(firecracker.SnapshotDiff, state, memory); err != nil {
 		t.Fatalf("Snapshot = %v", err)
 	}
 
@@ -363,7 +363,7 @@ func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
 	j, cfg := jail(root, "a"), config(root)
 	client, _ := start(t, j, cfg)
 
-	err := client.Snapshot("/vmstate", "/memory")
+	err := client.Snapshot(firecracker.SnapshotDiff, "/vmstate", "/memory")
 	if err == nil || !strings.Contains(err.Error(), "PUT /snapshot/create") {
 		t.Fatalf("Snapshot of a running microVM = %v, want the refusal named", err)
 	}
@@ -375,6 +375,14 @@ func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
 		}
 	}
 	want := `{"snapshot_type":"Diff","snapshot_path":"/vmstate","mem_file_path":"/memory"}`
+	if got := string(readSeen(t, j, cfg.Socket).Snapshot); got != want {
+		t.Fatalf("the snapshot put = %s, want %s", got, want)
+	}
+
+	if err := client.Snapshot(firecracker.SnapshotFull, state, memory); err != nil {
+		t.Fatalf("Snapshot of a Full = %v", err)
+	}
+	want = `{"snapshot_type":"Full","snapshot_path":"/vmstate","mem_file_path":"/memory"}`
 	if got := string(readSeen(t, j, cfg.Socket).Snapshot); got != want {
 		t.Fatalf("the snapshot put = %s, want %s", got, want)
 	}
@@ -424,7 +432,7 @@ func TestRestoreBringsTheSnapshotUpInAFreshVmmWithItsOwnTapAndVsock(t *testing.T
 	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("the fresh vmm was told %q, want %q", calls, wantCalls)
 	}
-	wantLoad := `{"snapshot_path":"/vmstate","mem_backend":{"backend_type":"File","backend_path":"/memory"},"resume_vm":false,` +
+	wantLoad := `{"snapshot_path":"/vmstate","mem_backend":{"backend_type":"File","backend_path":"/memory"},"track_dirty_pages":true,"resume_vm":false,` +
 		`"network_overrides":[{"iface_id":"eth0","host_dev_name":"shardv3"}],"vsock_override":{"uds_path":"/v.sock"},"clock_realtime":true}`
 	if string(s.Load) != wantLoad {
 		t.Fatalf("the load put = %s, want %s", s.Load, wantLoad)

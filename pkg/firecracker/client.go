@@ -175,6 +175,8 @@ func (c *Client) load(snap Snapshot) error {
 	body := snapshotLoad{
 		StatePath: snap.State,
 		Memory:    memoryBackend{Type: "File", Path: snap.Memory},
+		// A snapshot does not keep the dirty-page log, so each load turns it on again.
+		TrackDirtyPages: true,
 		// The guest's clock stopped at the snapshot; this moves it up to now, on x86_64 only.
 		ClockRealtime: true,
 	}
@@ -201,9 +203,9 @@ func (c *Client) Resume() error {
 	return c.patch("/vm", vmState{State: "Resumed"})
 }
 
-// Snapshot writes the device state and the guest's resident pages to two files, merged into memory when that file is already the guest's size; firecracker wants the microVM paused first.
-func (c *Client) Snapshot(state, memory string) error {
-	return c.put("/snapshot/create", snapshotCreate{Type: "Diff", StatePath: state, MemoryPath: memory})
+// Snapshot writes the device state and the guest's memory to two files, a Diff merged into memory when that file is already the guest's size; firecracker wants the microVM paused first.
+func (c *Client) Snapshot(kind SnapshotType, state, memory string) error {
+	return c.put("/snapshot/create", snapshotCreate{Type: kind, StatePath: state, MemoryPath: memory})
 }
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.
@@ -263,7 +265,8 @@ func (c *Client) await(ctx context.Context, vmm *process, console string) error 
 
 // configure puts the machine, the boot source, the drives, the network and the vsock in, in the order the API wants them, then starts the instance.
 func (c *Client) configure(cfg Config) error {
-	if err := c.put("/machine-config", machineConfig{VCPUs: cfg.VCPUs, MemoryMiB: cfg.MemoryMiB}); err != nil {
+	// The dirty-page log keeps a Diff to the pages the guest wrote; without it firecracker counts every resident page (SHARD-458).
+	if err := c.put("/machine-config", machineConfig{VCPUs: cfg.VCPUs, MemoryMiB: cfg.MemoryMiB, TrackDirtyPages: true}); err != nil {
 		return err
 	}
 	if err := c.put("/boot-source", bootSource{Kernel: cfg.Kernel, Initrd: cfg.Initrd, Args: cfg.Cmdline}); err != nil {

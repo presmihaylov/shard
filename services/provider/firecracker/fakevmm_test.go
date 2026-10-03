@@ -54,8 +54,10 @@ const (
 	refuseReseedFile = "refuse-reseed"
 	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
 	oldGuestFile = "old-guest"
-	// snapshotsFile takes one line per snapshot the vmm writes: its type, and how many snapshots the file it merged into held.
+	// snapshotsFile takes one line per snapshot the vmm writes: its type, and how many snapshots the file it wrote onto held.
 	snapshotsFile = "snapshots"
+	// refuseSnapshotFile, while it exists, has the vmm refuse every snapshot create, as one whose disk is full does.
+	refuseSnapshotFile = "refuse-snapshot"
 	// fakeVersionEnv is the version the fake vmm names on --version, 1.17.0 when unset.
 	fakeVersionEnv = "SHARD_FAKE_FIRECRACKER_VERSION"
 )
@@ -245,6 +247,8 @@ type fake struct {
 	severed bool
 	// frozen is what the guest was last told, freeze or thaw, which a snapshot keeps the way its memory would.
 	frozen bool
+	// tracking is the dirty-page log the machine config or the load turned on; a Diff without it takes every resident page.
+	tracking bool
 	// sending is every guest-to-host copy still open, which a guest that powers off drains through before the vmm dies.
 	sending map[chan struct{}]struct{}
 }
@@ -305,8 +309,9 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 		return f.loadSnapshot(body)
 	case path == "/machine-config":
 		var m struct {
-			VCPUs     int64 `json:"vcpu_count"`
-			MemoryMiB int64 `json:"mem_size_mib"`
+			VCPUs           int64 `json:"vcpu_count"`
+			MemoryMiB       int64 `json:"mem_size_mib"`
+			TrackDirtyPages bool  `json:"track_dirty_pages"`
 		}
 		if err := json.Unmarshal(body, &m); err != nil {
 			return "", err
@@ -317,6 +322,7 @@ func (f *fake) apply(path string, body []byte) (string, error) {
 		if m.MemoryMiB < 1 {
 			return "The memory size (MiB) is invalid.", nil
 		}
+		f.tracking = m.TrackDirtyPages
 	case path == "/boot-source":
 		f.boot = body
 	case strings.HasPrefix(path, "/drives/"):
@@ -392,6 +398,9 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if f.state != "Paused" {
 		return "Cannot snapshot a running microVM.", nil
 	}
+	if _, err := os.Stat(filepath.Join(f.dir, refuseSnapshotFile)); err == nil {
+		return "Cannot create snapshot: No space left on device", nil
+	}
 	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock, Frozen: f.frozen})
 	if err != nil {
 		return "", err
@@ -406,11 +415,16 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
+	// A Diff without the log is noted apart, so a test that wants a Diff proves the boot or the load turned the log on.
+	kind := c.Type
+	if kind == "Diff" && !f.tracking {
+		kind = "Resident Diff"
+	}
+	if err := note(filepath.Join(f.dir, snapshotsFile), fmt.Sprintf("%s onto %d", kind, strings.Count(string(found), "\n"))); err != nil {
+		return "", err
+	}
 	if c.Type != "Diff" {
 		found = nil
-	}
-	if err := note(filepath.Join(f.dir, snapshotsFile), fmt.Sprintf("%s onto %d", c.Type, strings.Count(string(found), "\n"))); err != nil {
-		return "", err
 	}
 
 	return "", os.WriteFile(memory, append(found, c.Type+"\n"...), 0o644)
@@ -423,8 +437,9 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 		Memory    struct {
 			Path string `json:"backend_path"`
 		} `json:"mem_backend"`
-		ResumeVM bool `json:"resume_vm"`
-		Vsock    *struct {
+		TrackDirtyPages bool `json:"track_dirty_pages"`
+		ResumeVM        bool `json:"resume_vm"`
+		Vsock           *struct {
 			Path string `json:"uds_path"`
 		} `json:"vsock_override"`
 	}
@@ -454,7 +469,7 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 			return "Load snapshot error: " + err.Error(), nil
 		}
 	}
-	f.boot, f.drives, f.vsock = state.Boot, state.Drives, state.Vsock
+	f.boot, f.drives, f.vsock, f.tracking = state.Boot, state.Drives, state.Vsock, l.TrackDirtyPages
 	if l.Vsock != nil {
 		f.vsock = l.Vsock.Path
 	}

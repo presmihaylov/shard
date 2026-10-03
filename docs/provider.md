@@ -301,18 +301,21 @@ the snapshot, and a control connection that dropped with the freeze's answer. A 
 older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so, and the
 pause is refused before any freeze, with an error that says to restart the sandbox first.
 
-A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest holds in
-memory (SHARD-450, SHARD-451). After a boot, the pages that the guest never touched stay holes in a
-sparse file, and a hole reads as zero. After a restore, shard first reflinks the memory that the vmm
-loaded to the snapshot path, and firecracker merges the Diff into that copy, never into the file
-that it maps. So a pause reads nothing back from the old snapshot. Firecracker finds the pages with
-mincore(2), which over-counts: a page that the guest only read after a restore is resident too, so
-the pause writes it again, unchanged (SHARD-458). mincore also misses a page that the host swapped
-out. So a pause refuses a vmm whose cgroup it cannot hold at `memory.swap.max` 0, and names the
-cgroup; every boot sets that value. Only firecracker 1.13.0 and newer take a Diff this way, so the
-daemon refuses an older `firecracker` at its start, and names its version. Diff snapshots are a
-developer preview in Firecracker, so an upgrade of the binary must pass the memory-integrity kit of
-SHARD-450 again before it ships.
+A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest wrote since
+the vmm booted or loaded (SHARD-450, SHARD-451, SHARD-458). Every boot and every load turns on
+firecracker's dirty-page log, and each snapshot reads and clears it. After a boot, the pages that
+the guest never wrote stay holes in a sparse file, and a hole reads as zero. After a restore, shard
+first reflinks the memory that the vmm loaded to the snapshot path, and firecracker merges the Diff
+into that copy, never into the file that it maps. So a pause reads nothing back from the old
+snapshot, and a page that the guest only read is not written again. The log is whole only for a vmm
+that this daemon booted or loaded and has not snapshotted since. A vmm that a restarted daemon
+adopted, or one whose last pause failed at or after its snapshot, takes a Full snapshot over no
+copy, and the pause after its next resume is a Diff again. A pause still refuses a vmm whose cgroup
+it cannot hold at `memory.swap.max` 0, and names the cgroup; every boot sets that value. Only
+firecracker 1.13.0 and newer turn the log on at a load, so the daemon refuses an older
+`firecracker` at its start, and names its version. Diff snapshots are a developer preview in
+Firecracker, so an upgrade of the binary must pass the memory-integrity kit of SHARD-450 again
+before it ships.
 
 Two more limits apply. The data dir must be able to clone a file by sharing its blocks, because
 `pause` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts

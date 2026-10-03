@@ -61,7 +61,7 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	if !m.freezesOverlay {
 		return nil, fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
 	}
-	// The Diff takes the pages that are resident, which a page the host swapped out is not (SHARD-450).
+	// The Diff over resident pages missed a swapped page; the dirty-page log does not, so a later ticket can drop this (SHARD-450, SHARD-458).
 	if err := p.noSwap(id); err != nil {
 		return nil, err
 	}
@@ -161,10 +161,17 @@ func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 	if err := p.chown(snap, r.UID, r.UID); err != nil {
 		return fmt.Errorf("give %s to uid %d: %w", snap, r.UID, err)
 	}
-	if err := p.seedMemory(m, r, snap); err != nil {
-		return err
+	// A vmm this process did not boot or load may have a log a snapshot already cleared, so it takes a Full, which needs no seed.
+	kind := fcapi.SnapshotFull
+	if m.wholeLog {
+		kind = fcapi.SnapshotDiff
+		if err := p.seedMemory(m, r, snap); err != nil {
+			return err
+		}
 	}
-	if err := m.client.Snapshot(jailSnap+jailState, jailSnap+jailMemory); err != nil {
+	// The create reads and clears the log, so whatever it comes to, the next snapshot of this vmm is a Full.
+	m.wholeLog = false
+	if err := m.client.Snapshot(kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
 		return fmt.Errorf("snapshot the vm: %w", err)
 	}
 	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other snapshot file is.

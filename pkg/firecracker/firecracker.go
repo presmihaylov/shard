@@ -68,6 +68,14 @@ type Snapshot struct {
 	Console string
 }
 
+// SnapshotType is how much of the guest's memory a snapshot writes: a Full every page, a Diff the pages the dirty-page log holds, which the snapshot then clears.
+type SnapshotType string
+
+const (
+	SnapshotFull SnapshotType = "Full"
+	SnapshotDiff SnapshotType = "Diff"
+)
+
 // Drive is one virtio block device.
 type Drive struct {
 	ID       string

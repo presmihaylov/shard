@@ -195,7 +195,7 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
 		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a snapshot directory lookup")
 	}
-	// Every pause takes a Diff, which only firecracker 1.13 and newer take without a dirty-page log (SHARD-450).
+	// Every load turns the dirty-page log on, which only firecracker 1.13 and newer take (SHARD-458).
 	if err := fcapi.CheckVersion(cfg.Binary); err != nil {
 		return nil, err
 	}
