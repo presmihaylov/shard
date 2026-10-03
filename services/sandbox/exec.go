@@ -1026,7 +1026,7 @@ func offer(slot chan models.TerminalSize, size models.TerminalSize) {
 	}
 }
 
-// dropExecs ends and forgets every exec of one sandbox, because a stop takes its execs with it.
+// dropExecs ends and forgets every exec of one sandbox, because a sandbox that ends takes its execs with it.
 func (s *Service) dropExecs(id string) {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()

@@ -33,7 +33,7 @@ func SecretHolders(repo Reader, name string) ([]string, error) {
 // GrantSecret hands a sandbox the placeholder of a stored secret, the way a create with --secret does.
 // The value stays on the host: the proxy substitutes it on a request bound for a granted host.
 func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
-	id, sb, unlock, err := s.held(ref, name, "grant")
+	id, sb, unlock, err := s.held(ctx, ref, name, "grant")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
@@ -100,7 +100,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 // UngrantSecret takes the placeholder back. The proxy CA stays: it is the image roots plus one
 // certificate, and a sandbox that trusts it reaches no host the policy does not allow.
 func (s *Service) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
-	id, sb, unlock, err := s.held(ref, name, "ungrant")
+	id, sb, unlock, err := s.held(ctx, ref, name, "ungrant")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
@@ -140,22 +140,25 @@ func (s *Service) UngrantSecret(ctx context.Context, ref, name string) (models.S
 
 // held takes the sandbox lock and refuses the states whose environment is already live: a running guest
 // holds it in its processes, and a paused one holds it in the snapshot.
-func (s *Service) held(ref, name, verb string) (string, models.Sandbox, func(), error) {
+func (s *Service) held(ctx context.Context, ref, name, verb string) (string, models.Sandbox, func(), error) {
 	if err := secret.ValidName(name); err != nil {
 		return "", models.Sandbox{}, nil, &RequestError{Err: err}
 	}
 
-	return s.holdCreatedOrStopped(ref, "secret "+verb+" takes a created or stopped sandbox: stop it first")
+	return s.holdCreatedOrStopped(ctx, ref, "secret "+verb+" takes a created or stopped sandbox: stop it first")
 }
 
 // holdCreatedOrStopped locks the sandbox and refuses every state a verb that rewrites the guest environment cannot take.
-func (s *Service) holdCreatedOrStopped(ref, fix string) (string, models.Sandbox, func(), error) {
+func (s *Service) holdCreatedOrStopped(ctx context.Context, ref, fix string) (string, models.Sandbox, func(), error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return "", models.Sandbox{}, nil, err
 	}
 
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return "", models.Sandbox{}, nil, err
+	}
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
