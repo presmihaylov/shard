@@ -665,8 +665,6 @@ as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the 
   refuses a body with `grace`, and `DELETE /v0/sandboxes/{id}` refuses a `grace` query, both with
   400. `StopSandbox` and `RemoveSandbox` in `services/client` no longer take a grace.
 
-### Compatibility breaks
-
 - SHARD-465: `shard serve`, `shard tokens mint`, `shard tokens ls` and `shard tokens revoke` take
   `--signing-key-file` in place of `--secret-file`, and the CLI refuses `--secret-file` as an
   unknown flag. Pass `--signing-key-file <path>` to keep a key file and the ledger beside it.
