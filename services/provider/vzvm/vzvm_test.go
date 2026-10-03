@@ -1582,3 +1582,20 @@ func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
 		}
 	}
 }
+
+// vz finishes a cut pause's stage on the next resume, so AdoptStaging keeps dir+".tmp" and never drops it (SHARD-404).
+func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshot")
+	tmp := dir + ".tmp"
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("stage a cut pause: %v", err)
+	}
+
+	if err := (&vzvm.Provider{}).AdoptStaging(dir); err != nil {
+		t.Fatalf("AdoptStaging: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); err != nil {
+		t.Errorf("the staging %s is gone after adopt, want vz to keep it to finish on resume: %v", tmp, err)
+	}
+}

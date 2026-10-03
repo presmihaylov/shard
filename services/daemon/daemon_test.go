@@ -100,6 +100,45 @@ func TestSuperviseRestartsAFailingTaskUntilItIsDone(t *testing.T) {
 	}
 }
 
+func TestTaskStatesTrackRunningBackoffAndDone(t *testing.T) {
+	ts := newTaskStates([]Task{&fakeTask{}})
+
+	if got := ts.snapshot(); len(got) != 1 || got[0].Name != "fake" || got[0].State != TaskRunning {
+		t.Fatalf("a fresh registry = %+v, want one running task", got)
+	}
+
+	ts.backoff("fake", errors.New("one"))
+	ts.backoff("fake", errors.New("two"))
+	if got := ts.snapshot()[0]; got.State != TaskBackoff || got.Restarts != 2 || got.LastError != "two" {
+		t.Errorf("after two failures = %+v, want backoff/2/two", got)
+	}
+
+	ts.running("fake")
+	if got := ts.snapshot()[0]; got.State != TaskRunning || got.Restarts != 2 {
+		t.Errorf("after a restart = %+v, want running with the count kept", got)
+	}
+
+	ts.done("fake")
+	if got := ts.snapshot()[0]; got.State != TaskDone {
+		t.Errorf("after it is done = %+v, want done", got)
+	}
+}
+
+func TestSuperviseRecordsEachTaskState(t *testing.T) {
+	task := &fakeTask{script: []error{errors.New("one"), errors.New("two"), nil}}
+	d := fast(New(t.TempDir(), io.Discard, task))
+
+	d.supervise(t.Context(), task)
+
+	got := d.states.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("snapshot = %+v, want one task", got)
+	}
+	if s := got[0]; s.Name != "fake" || s.State != TaskDone || s.Restarts != 2 || s.LastError != "two" {
+		t.Errorf("after supervise = %+v, want fake/done/2/two", s)
+	}
+}
+
 func TestSuperviseStopsWhenTheContextEnds(t *testing.T) {
 	task := &fakeTask{}
 	d := fast(New(t.TempDir(), io.Discard))

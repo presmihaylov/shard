@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
@@ -711,6 +712,35 @@ func TestStartAnswersTheRecord(t *testing.T) {
 	}
 	if s.verbs.ref != "web" {
 		t.Errorf("the orchestrator got the reference %q, want web", s.verbs.ref)
+	}
+}
+
+// A start the substrate broke is named in the daemon log, and one it refused stays the client's alone (SHARD-416).
+func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
+	cases := map[string]struct {
+		err    error
+		status int
+		logged bool
+	}{
+		"broke":   {err: errors.New("shard-init failed at boot with exit 125: mount /dev/vdb on /overlay: read-only file system"), status: http.StatusInternalServerError, logged: true},
+		"refused": {err: sandboxstate.ErrNotFound, status: http.StatusNotFound},
+	}
+
+	for name, c := range cases {
+		s := seed(t)
+		s.verbs.err = c.err
+		var out bytes.Buffer
+		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, &out)
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
+
+		if w.Code != c.status {
+			t.Errorf("%s: the start answered %d, want %d", name, w.Code, c.status)
+		}
+		if logged := strings.Contains(out.String(), "start sandbox web: "+c.err.Error()); logged != c.logged {
+			t.Errorf("%s: the daemon log holds %q, want the failure logged %t", name, out.String(), c.logged)
+		}
 	}
 }
 

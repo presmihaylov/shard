@@ -763,6 +763,26 @@ func TestStartRecordsASandboxThatCameUpUnderAFailedStart(t *testing.T) {
 	}
 }
 
+// A shard-init that died at boot leaves a stopped sandbox, so the start lands its exit and its reason (SHARD-416).
+func TestStartRecordsTheExitAndTheReasonOfAShardInitThatDiedAtBoot(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}}, stopped())
+	why := "mount /dev/vdb on /overlay: read-only file system"
+	l.provider.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}
+
+	if _, err := svc.Start(t.Context(), "sandbox1"); err == nil {
+		t.Fatal("start returned no error")
+	}
+
+	got := l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.StoppedReason != want {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+}
+
 func TestStartNamesTheSandboxWhenTheRecordWriteFails(t *testing.T) {
 	svc, _ := newService(t, &recorder{fail: []string{"repo.Update"}}, stopped())
 
@@ -1300,6 +1320,19 @@ func TestRemoveKeepsWhatTheSubstrateSharesWhileASandboxIsLeft(t *testing.T) {
 	}
 	if l.substrate.dropped {
 		t.Error("the rm dropped the substrate mount while another sandbox still uses the root")
+	}
+}
+
+// SHARD-343: a record that will not read may name this substrate, so the last rm keeps the root rather than releasing it.
+func TestRemoveKeepsTheSubstrateWhileARecordIsUnreadable(t *testing.T) {
+	svc, l := stoppedOnTheHost(t, &recorder{})
+	l.repo.listErr = &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if l.substrate.dropped {
+		t.Error("the rm dropped the substrate mount while a record could not be read")
 	}
 }
 

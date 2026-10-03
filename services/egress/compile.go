@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // Records is the part of the sandbox repository the compiler reads.
@@ -145,7 +146,8 @@ func Fronted(sb models.Sandbox) bool {
 
 // Chains compiles one chain per fronted sandbox with an address, since a lease outlives a stop; a held sandbox's *network.HeldChains comes with every chain.
 func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
-	sandboxes, err := s.records.List()
+	// nil log: the daemon tasks already name a bad record, so the compiler just skips it and goes on (SHARD-343).
+	sandboxes, err := sandboxstate.ListReadable(s.records, nil)
 	if err != nil {
 		return nil, err
 	}

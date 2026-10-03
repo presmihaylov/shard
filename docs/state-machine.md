@@ -12,6 +12,7 @@ stateDiagram-v2
     created --> failed: the daemon restarted mid fork or clone
     running --> paused: pause (snapshot to disk, memory freed)
     running --> stopped: stop, and nothing else
+    running --> failed: a pause that lost the guest
     paused --> running: resume (the snapshot survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
@@ -30,6 +31,7 @@ stateDiagram-v2
 | `created` | `failed` | the daemon restarted before a fork or clone reached `running` | yes |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
+| `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
 | `paused` | `running` | `resume` | yes: gVisor |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
@@ -50,7 +52,8 @@ in the machine but reachable by nothing.
 
 **`failed` is terminal, and only `rm` frees it.** A create that never reached `running` refuses every
 verb but `get` and `rm`, with `409 sandbox_failed` and the reason, so an operator reads why and then
-removes it. A daemon that restarted while a create was still in flight finds the `pending` record
+removes it. A gVisor `pause` that broke off after its checkpoint began lands here too: the sentry
+exits after any checkpoint, so nothing is left to thaw. A daemon that restarted while a create was still in flight finds the `pending` record
 with nothing behind it and moves it to `failed` too, because a create the daemon dropped never
 finished. A `created` record at a restart is a fork or clone the daemon dropped, so it ends `failed`
 the same way. The daemon stops a copy that still runs and tears down its substrate first, because a

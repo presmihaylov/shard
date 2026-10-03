@@ -53,7 +53,7 @@ func serveTransport(name string, boot guestBoot) error {
 	// The re-exec in confine runs this again, over a root disk already moved onto.
 	if boot.set() && os.Getenv(capbsetEnv) == "" {
 		if err := bootGuest(boot); err != nil {
-			return fmt.Errorf("%w: %w", errSupervisor, err)
+			return failBoot(listen, fmt.Errorf("%w: %w", errSupervisor, err))
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
@@ -61,7 +61,7 @@ func serveTransport(name string, boot guestBoot) error {
 	if os.Getpid() == 1 {
 		bound, err = confine()
 		if err != nil {
-			return fmt.Errorf("%w: %w", errSupervisor, err)
+			return failBoot(listen, fmt.Errorf("%w: %w", errSupervisor, err))
 		}
 		root, err = rootDisk()
 		if err != nil {
@@ -129,6 +129,46 @@ func (t *transport) fail(err error) error {
 			return fmt.Errorf("%w; no host attached to hear it", err)
 		}
 	}
+}
+
+// failBoot carries a death from before the listeners exist to the first host that dials, as the message its state would open with (SHARD-416).
+func failBoot(listen func(uint32) (net.Listener, error), err error) error {
+	l, listenErr := listen(supervisor.ControlPort)
+	if listenErr != nil {
+		return fmt.Errorf("%w; listen for a host to hear it: %w", err, listenErr)
+	}
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	got := make(chan accepted, 1)
+	go func() {
+		conn, err := l.Accept()
+		got <- accepted{conn: conn, err: err}
+	}()
+
+	var a accepted
+	select {
+	case a = <-got:
+	case <-time.After(failureGrace):
+		return errors.Join(fmt.Errorf("%w; no host attached to hear it", err), l.Close())
+	}
+	if a.err != nil {
+		return errors.Join(fmt.Errorf("%w; accept a host to hear it: %w", err, a.err), l.Close())
+	}
+	report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: err.Error(), Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
+	if writeErr := supervisor.WriteMessage(a.conn, report); writeErr != nil {
+		return errors.Join(fmt.Errorf("%w; tell the host: %w", err, writeErr), a.conn.Close(), l.Close())
+	}
+	// The halt follows the exit at once and can drop bytes still in flight, so the host hanging up is what says it read them.
+	if deadlineErr := a.conn.SetReadDeadline(time.Now().Add(failureGrace)); deadlineErr != nil {
+		return errors.Join(fmt.Errorf("%w; wait for the host to hang up: %w", err, deadlineErr), a.conn.Close(), l.Close())
+	}
+	if _, readErr := io.Copy(io.Discard, a.conn); readErr != nil {
+		return errors.Join(fmt.Errorf("%w; wait for the host to hang up: %w", err, readErr), a.conn.Close(), l.Close())
+	}
+
+	return errors.Join(err, a.conn.Close(), l.Close())
 }
 
 // detach forgets the control connection, all of them for nil, so a report waits for the next host instead of a dead one.

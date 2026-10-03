@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/logfile"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -45,7 +47,8 @@ func (t heldLogRotation) pass() error {
 	if err != nil {
 		return err
 	}
-	sandboxes, err := repo.List()
+	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
+	sandboxes, err := sandboxstate.ListReadable(repo, logger.Printf)
 	if err != nil {
 		return err
 	}
