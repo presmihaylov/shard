@@ -102,11 +102,11 @@ func TestASecondValueIsRefused(t *testing.T) {
 }
 
 // slow serves the seeded handler with a ReadTimeout far shorter than the verbs it times.
-func slow(t *testing.T, s seeded) seeded {
+func slow(t *testing.T, s seeded, timeout time.Duration) seeded {
 	t.Helper()
 
 	server := httptest.NewUnstartedServer(s.handler)
-	server.Config.ReadTimeout = 50 * time.Millisecond
+	server.Config.ReadTimeout = timeout
 	server.Start()
 	t.Cleanup(server.Close)
 
@@ -117,7 +117,7 @@ func slow(t *testing.T, s seeded) seeded {
 
 // The ReadTimeout bounds a slow body only, so a create that pulls for longer still runs to its answer.
 func TestACreateOutlivesTheReadTimeout(t *testing.T) {
-	s := slow(t, seed(t))
+	s := slow(t, seed(t), 50*time.Millisecond)
 	s.verbs.hold = 200 * time.Millisecond
 
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", `{"image":"alpine"}`)
@@ -131,7 +131,7 @@ func TestACreateOutlivesTheReadTimeout(t *testing.T) {
 
 // A follow has no body, so the ReadTimeout never applies to it and it ends with the sandbox.
 func TestAFollowOutlivesTheReadTimeout(t *testing.T) {
-	s := slow(t, seed(t))
+	s := slow(t, seed(t), 50*time.Millisecond)
 	s.verbs.lines = []string{"first\n"}
 	s.verbs.stops = make(chan struct{})
 	s.verbs.reason = sandbox.LogsStopped

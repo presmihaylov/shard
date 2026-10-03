@@ -487,7 +487,7 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
 var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "Snapshot",
-	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "MemoryThrottles", "CalmSince", "HealthyRun",
+	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "MemoryThrottles", "CalmSince", "HealthyRun", "ExitChannel",
 	"Health", "Restart", "StartedAt", "CreatedAt"}
 
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.

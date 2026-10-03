@@ -21,6 +21,8 @@ func reseed([]byte) error { return errNotLinux }
 
 func powerOff(bool) error { return nil }
 
-func freezeRoot() error { return nil }
+func freezeRoot(*os.File) error { return nil }
 
-func thawRoot() error { return nil }
+func thawRoot(*os.File) error { return nil }
+
+func rootDisk() (*os.File, error) { return nil, nil }

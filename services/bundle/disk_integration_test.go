@@ -73,6 +73,30 @@ func TestUnmountDetachesTheDisk(t *testing.T) {
 	}
 }
 
+// TestRestartCountReadsTheDiskAStopDetached pins the count Stop records, off the disk the stop unmounted (SHARD-401).
+func TestRestartCountReadsTheDiskAStopDetached(t *testing.T) {
+	requireRunsc(t)
+
+	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB, []string{"/bin/true"})
+	if err := b.Mount(lower); err != nil {
+		t.Fatalf("mount the overlay: %v", err)
+	}
+	if err := os.WriteFile(b.RestartFile, []byte(`{"count":2,"gave_up":true}`), 0o600); err != nil {
+		t.Fatalf("write the restart file: %v", err)
+	}
+	if err := b.Unmount(); err != nil {
+		t.Fatalf("unmount: %v", err)
+	}
+
+	count, err := b.RestartCount()
+	if err != nil || count.Count != 2 || !count.GaveUp {
+		t.Errorf("RestartCount() = %+v, %v off the unmounted disk, want 2 starts again and a give-up", count, err)
+	}
+	if _, found, err := mountinfo.At(b.Disk); err != nil || found {
+		t.Errorf("the read left %s mounted (found %v, err %v)", b.Disk, found, err)
+	}
+}
+
 // TestUnmountOverlayKeepsTheDisk pins what a Sysbox stop leaves: no overlay, and the disk up for sysbox-mgr to chown the upper layer back at delete.
 func TestUnmountOverlayKeepsTheDisk(t *testing.T) {
 	requireRunsc(t)
