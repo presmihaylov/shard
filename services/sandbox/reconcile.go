@@ -151,7 +151,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	}
 	// An unresponsive record whose process answers again keeps its run, so it is no fresh start (SHARD-421).
 	if state == models.StateRunning && sb.State == models.StateUnresponsive {
-		if err := s.recordAnswered(sb.ID, report); err != nil {
+		if err := s.recordAnswered(sb.ID, status, report); err != nil {
 			return "", err
 		}
 

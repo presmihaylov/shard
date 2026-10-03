@@ -77,11 +77,13 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordUnresponsive(sb.ID, current, status.Reason, report)
 	}
 	if status.Alive() && current.State == models.StateUnresponsive {
-		if err := s.recordAnswered(sb.ID, report); err != nil {
+		if err := s.recordAnswered(sb.ID, status, report); err != nil {
 			return err
 		}
-		current.State = models.StateRunning
-		current.UnresponsiveReason = ""
+		current, err = s.cfg.Repo.Get(sb.ID)
+		if err != nil {
+			return err
+		}
 	}
 
 	// A pause can commit between the probe and the lock, so only a probe under the lock may drop its mark (SHARD-429).
@@ -265,15 +267,26 @@ func (s *Service) recordUnresponsive(id string, sb models.Sandbox, reason string
 }
 
 // recordAnswered makes an unresponsive record running again once its substrate process answers, with its run kept.
-func (s *Service) recordAnswered(id string, report func(string)) error {
+func (s *Service) recordAnswered(id string, status models.Status, report func(string)) error {
+	dropped := false
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateRunning
 		rec.UnresponsiveReason = ""
+		// A process that runs again ran past any pause it held, so its old checkpoint must never become the pause (SHARD-442).
+		if status.State == models.StateRunning && rec.Pausing {
+			rec.Pausing = false
+			dropped = true
+		}
 
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("sandbox %s answers again but its record was not updated: %w", id, err)
+	}
+	if dropped {
+		report(fmt.Sprintf("sandbox %s answers again and runs on past a pause the daemon never recorded: the record now says running and drops the pause mark", id))
+
+		return nil
 	}
 	report(fmt.Sprintf("sandbox %s answers again, the record now says running", id))
 

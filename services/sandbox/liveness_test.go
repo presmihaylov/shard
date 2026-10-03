@@ -310,6 +310,48 @@ func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *tes
 	}
 }
 
+// A silent shim that answers running again ran past the pause, so the tick drops the mark with the answer and its death stops the record (SHARD-442).
+func TestLivenessDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(sb.PID))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	answered := lab.l.repo.sb
+	if answered.State != models.StateRunning || answered.Pausing || answered.Snapshot != "" {
+		t.Fatalf("after the answer the record is %s with mark %v and snapshot %q, want running with no mark and no pause", answered.State, answered.Pausing, answered.Snapshot)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, answered, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("after the death the record is %s with snapshot %q, want stopped with none: the checkpoint is older than the run", got.State, got.Snapshot)
+	}
+}
+
+// A shim that answers frozen beside its checkpoint ran nothing past the pause, so the mark stays.
+func TestLivenessKeepsTheMarkWhenASilentShimAnswersFrozen(t *testing.T) {
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, pausedAlive(sb.PID))
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; !got.Pausing {
+		t.Errorf("the record is %s with no mark, want the mark kept: a frozen guest ran nothing past the pause", got.State)
+	}
+}
+
 // A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, which the tick must release (SHARD-366).
 func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	dir := t.TempDir()

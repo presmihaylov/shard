@@ -492,6 +492,35 @@ func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t
 	}
 }
 
+// A silent shim that answers running again ran past the pause, so its later death must not restore that pause (SHARD-442).
+func TestReconcileDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
+	sb := unresponsive()
+	sb.Pausing = true
+	provider := &recProvider{status: map[string]models.Status{sb.ID: alive(sb.PID)}}
+	lab := newReconcileLab(t, provider, sb)
+	heldCheckpoint(t, lab, sb.ID)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("the restart that finds the shim answering: %v", err)
+	}
+	answered := *lab.repo.records[sb.ID]
+	if answered.State != models.StateRunning || answered.Pausing || answered.UnresponsiveReason != "" {
+		t.Fatalf("after the answer the record is %+v, want running with no mark and no reason: the guest ran past the pause", answered)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "drops the pause mark") {
+		t.Errorf("the restart reported %v, want one line on the answer that drops the mark", lab.reports)
+	}
+
+	provider.status[sb.ID] = gone()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("the restart after the shim died: %v", err)
+	}
+	got := lab.repo.records[sb.ID]
+	if got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("after the death the record is %+v, want stopped with no snapshot: the checkpoint is older than the run", *got)
+	}
+}
+
 // A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, and the reconcile finishes that pause (SHARD-366).
 func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}

@@ -91,12 +91,14 @@ not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When
 answers, the next liveness tick writes `running` again. A daemon can die after a pause wrote its
 checkpoint, and the pause mark then stays on the record. If the next daemon finds the shim silent,
 the record turns `unresponsive` and keeps the mark. When that shim dies, the liveness tick or a
-restart makes the record `paused` with that snapshot (SHARD-442). `stop` and `rm --force` give the
-shim one more probe of 1 s, then kill it with no grace (SHARD-421). The kill goes through a pin that
-the kernel holds on the process, never through a bare pid, so a process that took the pid since is
-never hit. On Firecracker the same holds for a vmm that a restart meets only by its socket, with a
-bound of 4 s and a reason that names the vmm's pid (SHARD-392). There the pin is a pidfd that the
-adopt took on the connection that the vmm never answered.
+restart makes the record `paused` with that snapshot (SHARD-442). If the shim answers instead and
+its guest runs, the record drops the mark in the same write, because the guest ran past that
+checkpoint. `stop` and `rm --force` give the shim one more probe of 1 s, then kill it with no grace
+(SHARD-421). The kill goes through a pin that the kernel holds on the process, never through a bare
+pid, so a process that took the pid since is never hit. On Firecracker the same holds for a vmm
+that a restart meets only by its socket, with a bound of 4 s and a reason that names the vmm's pid
+(SHARD-392). There the pin is a pidfd that the adopt took on the connection that the vmm never
+answered.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the
