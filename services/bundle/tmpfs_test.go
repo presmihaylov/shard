@@ -41,7 +41,7 @@ func TestAnUnboundedSandboxKeepsTheDockerShmSize(t *testing.T) {
 // and mounts its own devtmpfs, which reports half the host's memory to the guest.
 // Without a mount of its own, /tmp is a tmpfs runsc sizes to nothing, charged to the memory bound; the bind charges the disk bound.
 func TestTmpIsABindOfTheSandboxDisk(t *testing.T) {
-	b, spec := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, spec := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
 	m := mountAt(t, spec, "/tmp")
 	if m.Type != "bind" || m.Source != b.Tmp {

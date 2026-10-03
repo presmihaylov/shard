@@ -289,10 +289,13 @@ after a signal. `always` starts it again after every exit. `--restart-retries` (
 starts again in one run. With no cap, `on-failure` starts the entrypoint again without end. `always`
 never gives up and takes no retries at all. `--restart-backoff` (`backoff`, in whole seconds,
 default 1) is the wait before the first start again, and it doubles each time, up to 60 s. Both
-flags need a policy. A run that lasts ten seconds since its last start clears the count, so a slow
-crash loop never spends a finite cap. At the cap, `on-failure` gives up and the entrypoint stays
-exited. A stop then puts its last exit in `exit_status`, as after any exit. A stop during the wait
-ends the sandbox at once and drops the start that was due.
+flags need a policy. A policy other than `no` needs a command after the image, because the image's
+own ENTRYPOINT and CMD never run: the CLI refuses it naming `--restart`, and the API answers 400
+naming `restart.policy`. `--restart-on-oom` needs no command, because it starts the whole sandbox. A
+run that lasts ten seconds since its last start clears the count, so a slow crash loop never spends
+a finite cap. At the cap, `on-failure` gives up and the entrypoint stays exited. A stop then puts
+its last exit in `exit_status`, as after any exit. A stop during the wait ends the sandbox at once
+and drops the start that was due.
 
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
 channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
@@ -408,20 +411,22 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
   "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "restart":
-  {"policy", "retries", "backoff"}}` and answers 201 with the record. A body that still names
-  `health` is refused with 400, as any field the route does not know. A cached image needs no pull,
-  so the create builds and starts the sandbox before it answers, and the record says `running`. A
-  claim that fails at that point gives everything back, and the create answers 500. An uncached
-  image makes the record `pending`, and the create answers before the download. The daemon pulls,
-  builds and starts behind it, and the record lands on `running` or `failed` with a one-line
-  `failed_reason`. A background pull or start that fails is therefore read from the record, and does
-  not come back as an error. With `?wait=true` the create holds until the record leaves `pending`,
-  then answers the `running` or `failed` record it reached, so a caller reads the settled record
-  without a poll. The plain create answers at once. A wait that sends `Accept: application/x-ndjson`
-  streams the pull instead: one `{"event"}` line per step as it lands, then `{"sandbox"}` with the
-  settled record. The create answers 400 when the body does not decode, when a field does not
-  validate, or when the body names a secret or a policy the host does not hold. It answers 409
-  `name_taken` when another sandbox already holds the name.
+  {"policy", "retries", "backoff"}}` and answers 201 with the record. `command` is the start
+  command. The image's own ENTRYPOINT and CMD never run, so a body with no `command` starts only
+  `shard-init`, and the sandbox stays up. A body that still names `health` is refused with 400, as
+  any field the route does not know. A cached image needs no pull, so the create builds and starts
+  the sandbox before it answers, and the record says `running`. A claim that fails at that point
+  gives everything back, and the create answers 500. An uncached image makes the record `pending`,
+  and the create answers before the download. The daemon pulls, builds and starts behind it, and the
+  record lands on `running` or `failed` with a one-line `failed_reason`. A background pull or start
+  that fails is therefore read from the record, and does not come back as an error. With
+  `?wait=true` the create holds until the record leaves `pending`, then answers the `running` or
+  `failed` record it reached, so a caller reads the settled record without a poll. The plain create
+  answers at once. A wait that sends `Accept: application/x-ndjson` streams the pull instead: one
+  `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled record. The create
+  answers 400 when the body does not decode, when a field does not validate, or when the body names
+  a secret or a policy the host does not hold. It answers 409 `name_taken` when another sandbox
+  already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.

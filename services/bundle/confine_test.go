@@ -81,7 +81,7 @@ func TestBuildHandsTheFilterTheFinishedSpec(t *testing.T) {
 func TestBuildFailsWhenTheFilterDoes(t *testing.T) {
 	broken := errors.New("no profile")
 	_, err := newServiceWith(t, bundle.WithSeccomp(func(*specs.Spec) (*specs.LinuxSeccomp, error) { return nil, broken })).
-		Build(runspec.Resolve(newSpec(t), models.ImageConfig{Entrypoint: []string{"/bin/sh"}}))
+		Build(runspec.Resolve(newSpec(t), models.ImageConfig{}))
 
 	if !errors.Is(err, broken) {
 		t.Errorf("Build = %v, want the filter's error", err)
@@ -91,7 +91,7 @@ func TestBuildFailsWhenTheFilterDoes(t *testing.T) {
 func buildWith(t *testing.T, opts ...bundle.Option) specs.Spec {
 	t.Helper()
 
-	b, err := newServiceWith(t, opts...).Build(runspec.Resolve(newSpec(t), models.ImageConfig{Entrypoint: []string{"/bin/sh"}}))
+	b, err := newServiceWith(t, opts...).Build(runspec.Resolve(newSpec(t), models.ImageConfig{}))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

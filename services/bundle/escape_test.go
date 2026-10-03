@@ -40,7 +40,7 @@ func TestForkRefusesAGuestSymlinkOutOfTheLayer(t *testing.T) {
 			}
 			source := newSpec(t)
 			source.Network = network("s-test", "10.87.0.2/16")
-			b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+			b, _ := build(t, source, models.ImageConfig{})
 
 			host := t.TempDir()
 			write(t, filepath.Join(host, "hosts"), "the host's own\n")

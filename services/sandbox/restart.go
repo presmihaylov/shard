@@ -11,8 +11,8 @@ import (
 // DefaultRestartBackoff is the first wait a policy that names none gets; retries default to unlimited.
 const DefaultRestartBackoff = 1
 
-// validRestart refuses a policy that is not one of the three, and settings for a policy that never starts again.
-func validRestart(r models.RestartSpec) error {
+// validRestart refuses a policy that is not one of the three, settings for a policy that never starts again, and a policy with no command.
+func validRestart(r models.RestartSpec, command []string) error {
 	switch r.Policy {
 	case models.RestartNo, models.RestartOnFailure, models.RestartAlways:
 	default:
@@ -29,6 +29,10 @@ func validRestart(r models.RestartSpec) error {
 	}
 	if !r.Set() && (r.Retries != 0 || r.Backoff != 0) {
 		return errors.New("restart.retries and backoff need a policy that starts again, and the request names none")
+	}
+	// The image's own command never runs, so with none there is nothing to start again.
+	if r.Set() && len(command) == 0 {
+		return errors.New("restart.policy needs a command, and the request names none: the image's own ENTRYPOINT and CMD never run")
 	}
 
 	return nil
