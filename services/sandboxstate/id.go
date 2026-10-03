@@ -42,6 +42,23 @@ func generateID() (string, error) {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 
-	return fmt.Sprintf("%s-%s-%02x%02x",
-		adjectives[int(b[0])%wordsPerList], nouns[int(b[1])%wordsPerList], b[2], b[3]), nil
+	return formatID(b), nil
+}
+
+func formatID(b [4]byte) string {
+	return fmt.Sprintf("%s-%s-%02x%02x", adjectives[int(b[0])%wordsPerList], nouns[int(b[1])%wordsPerList], b[2], b[3])
+}
+
+// maxIDLength is the longest id formatID makes: the longest words, two dashes and four hex digits.
+func maxIDLength() int {
+	longest := func(words [wordsPerList]string) int {
+		n := 0
+		for _, word := range words {
+			n = max(n, len(word))
+		}
+
+		return n
+	}
+
+	return longest(adjectives) + len("-") + longest(nouns) + len("-") + len("ffff")
 }

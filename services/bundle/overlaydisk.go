@@ -15,8 +15,8 @@ import (
 // OverlayDiskFile names the writable disk a microVM sandbox mounts over its read-only image; the guest lays its upper and work directories on it.
 const OverlayDiskFile = "overlay.raw"
 
-// MinOverlayDiskMiB is the smallest bound the empty overlay grows to; a test pins it to WriteOverlayDisk.
-const MinOverlayDiskMiB = 7
+// MinOverlayDiskMiB is the smallest bound the empty overlay grows to: a 1024-block journal needs an 11 MiB disk to find its run; a test pins it to WriteOverlayDisk.
+const MinOverlayDiskMiB = 11
 
 // WriteOverlayDisk lays an empty ext4 image down at dst, grown to the bound of r, so every write of the sandbox lands on it and stops there.
 func WriteOverlayDisk(dst string, r models.Resources) error {

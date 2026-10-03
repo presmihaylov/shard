@@ -29,7 +29,9 @@ type version struct {
 
 // merge is the final tree once the whiteouts are applied, plus the older versions the hard links took.
 type merge struct {
-	tree   map[string]version
+	tree map[string]version
+	// kids names the paths right under each directory, written or implied, so a drop walks one subtree and not the tree.
+	kids   map[string]map[string]bool
 	links  map[version]version
 	needed map[version]bool
 	// names holds the name of every version a link took, and home where the ones that lost it are written: the first link.
@@ -97,7 +99,7 @@ func (m *merge) writeTar(ctx context.Context, w io.Writer, layers []v1.Layer) er
 
 // planDisk reads every layer once for its headers and settles which version of each path survives.
 func planDisk(ctx context.Context, layers []v1.Layer) (*merge, error) {
-	m := &merge{tree: map[string]version{}, links: map[version]version{}, needed: map[version]bool{}, names: map[version]string{}, home: map[version]string{}}
+	m := &merge{tree: map[string]version{}, kids: map[string]map[string]bool{}, links: map[version]version{}, needed: map[version]bool{}, names: map[version]string{}, home: map[version]string{}}
 	for i, layer := range layers {
 		if err := walkLayer(ctx, layer, func(seq int, hdr *tar.Header, _ io.Reader) error {
 			return m.plan(version{i, seq}, hdr)
@@ -173,17 +175,43 @@ func (m *merge) plan(v version, hdr *tar.Header) error {
 	if hdr.Typeflag != tar.TypeDir {
 		m.dropBelow(name, v.layer+1)
 	}
-	m.tree[name] = v
+	m.put(name, v)
 
 	return nil
 }
 
+// put records name, and links it under each parent up to the first one that already holds it.
+func (m *merge) put(name string, v version) {
+	m.tree[name] = v
+	for name != "" {
+		parent := path.Dir(name)
+		if parent == "." {
+			parent = ""
+		}
+		if m.kids[parent][name] {
+			return
+		}
+		if m.kids[parent] == nil {
+			m.kids[parent] = map[string]bool{}
+		}
+		m.kids[parent][name] = true
+		name = parent
+	}
+}
+
 // dropBelow forgets name and everything under it that a layer before limit wrote.
 func (m *merge) dropBelow(name string, limit int) {
-	for p, v := range m.tree {
-		if v.layer < limit && (p == name || name == "" || strings.HasPrefix(p, name+"/")) {
-			delete(m.tree, p)
+	if v, ok := m.tree[name]; ok && v.layer < limit {
+		delete(m.tree, name)
+	}
+	for kid := range m.kids[name] {
+		m.dropBelow(kid, limit)
+		// A kid with nothing left under it leaves the index, so a later drop does not walk it again.
+		if _, ok := m.tree[kid]; ok || len(m.kids[kid]) > 0 {
+			continue
 		}
+		delete(m.kids[name], kid)
+		delete(m.kids, kid)
 	}
 }
 

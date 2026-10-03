@@ -148,6 +148,30 @@ func TestResolveUserRefusesAGroupFileThatIsASymbolicLink(t *testing.T) {
 	}
 }
 
+// O_NOFOLLOW guards only the last part, so a guest that makes a middle part a symlink onto the host could
+// turn a host file into the user database; os.OpenRoot has to confine every part to the rootfs (SHARD-357).
+func TestResolveUserRefusesAPasswdReachedThroughAHostSymlink(t *testing.T) {
+	rootfs := emptyRootFS(t)
+	host := t.TempDir()
+	if err := os.WriteFile(filepath.Join(host, "passwd"), []byte("probe:x:4242:4242:::\n"), 0o600); err != nil {
+		t.Fatalf("write the host passwd: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(rootfs, "etc")); err != nil {
+		t.Fatalf("drop the etc dir: %v", err)
+	}
+	if err := os.Symlink(host, filepath.Join(rootfs, "etc")); err != nil {
+		t.Fatalf("link etc onto the host: %v", err)
+	}
+
+	got, err := bundle.ResolveUser(rootfs, "probe")
+	if err == nil {
+		t.Fatalf("ResolveUser read a passwd reached through a host symlink and returned %+v", got)
+	}
+	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/passwd")) {
+		t.Errorf("the refusal is %q, and it must name the file", err)
+	}
+}
+
 // rootFSWith writes the two databases. An empty one is a rootfs that has no such file at all.
 func rootFSWith(t *testing.T, passwd, group string) string {
 	t.Helper()
