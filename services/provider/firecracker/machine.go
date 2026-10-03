@@ -134,12 +134,16 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		if restoring {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
+		capturing, err := exists(filepath.Join(dir, captureFile))
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: read the capture marker: %w", id, err)
+		}
 		frozen, err := p.installed(id)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %s: %w", id, err)
 		}
-		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that (SHARD-427).
-		if frozen {
+		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that; a capture's source runs on (SHARD-427, SHARD-462).
+		if frozen && !capturing {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
 		// A pause cut before its install leaves a paused VM with nothing to stand for it, and its stopped guest answers no handshake.
@@ -155,6 +159,10 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
 	if err := m.reseed(ctx); err != nil {
 		return nil, errors.Join(err, p.end(ctx, m))
+	}
+	// The attach thawed a guest the cut capture left frozen, so the source runs again and the marker is spent.
+	if err := os.Remove(filepath.Join(dir, captureFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("sandbox %s: clear the capture marker: %w", id, err)
 	}
 
 	return m, nil

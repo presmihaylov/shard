@@ -160,6 +160,9 @@ deletes one. It handles these cases:
   or already running again. The first read of it, at startup or on a liveness tick, thaws a frozen
   source and drops the mark only once the source runs again. A stale mark on a running source would
   pass a later real pause for a cut fork, so the read drops it there too (SHARD-457).
+- A Firecracker source that a live fork's capture paused when the daemon was cut carries a marker
+  beside it. The first read of it resumes and thaws the source, then drops the marker. It never ends
+  that source as it ends a pause cut after its install (SHARD-462).
 - A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
   before the fork or clone finished`. No verb leaves a record in `created`. Only the copy of a fork
   or a clone passes through that state, and the caller got an error instead of the id. The daemon
