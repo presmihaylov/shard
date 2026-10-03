@@ -4,7 +4,6 @@
 package hostclean
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
-	"github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/xfs"
@@ -63,6 +61,8 @@ type Leftover struct {
 	Path string
 
 	remove func() error
+	// pin holds a vmm by its pidfd from Find to the kill, so its pid never passes to another process in between.
+	pin *os.File
 }
 
 func (l Leftover) String() string { return l.What + " " + l.Path }
@@ -70,10 +70,6 @@ func (l Leftover) String() string { return l.What + " " + l.Path }
 // Find lists what an integration run leaves when it does not tear down. Everything it names is owned
 // by a root of the package that asks, so a run beside the systemd unit reports and takes none of its.
 func Find(prefixes ...string) ([]Leftover, error) {
-	vmms, err := leftVMMs(prefixes)
-	if err != nil {
-		return nil, err
-	}
 	mounts, err := leftMounts(prefixes)
 	if err != nil {
 		return nil, err
@@ -87,6 +83,11 @@ func Find(prefixes ...string) ([]Leftover, error) {
 		return nil, err
 	}
 	lines, err := leftFstab(prefixes)
+	if err != nil {
+		return nil, err
+	}
+	// The pins come last, so no failure after them leaves one open.
+	vmms, err := leftVMMs(prefixes)
 	if err != nil {
 		return nil, err
 	}
@@ -192,15 +193,15 @@ func removeEach(left []Leftover) error {
 
 // Release gives back what one root's sandboxes and mounts still hold and touches no other root, so a run can remove it while the suite runs on.
 func Release(root string) error {
-	vmms, err := leftVMMs([]string{filepath.Join(root, sandboxDir) + string(filepath.Separator)})
-	if err != nil {
-		return err
-	}
 	sandboxes, err := sandboxesOf(root)
 	if err != nil {
 		return err
 	}
 	mounts, err := leftMounts([]string{root})
+	if err != nil {
+		return err
+	}
+	vmms, err := leftVMMs([]string{filepath.Join(root, sandboxDir) + string(filepath.Separator)})
 	if err != nil {
 		return err
 	}
@@ -224,7 +225,22 @@ func Refuse(prefixes ...string) error {
 		names = append(names, l.String())
 	}
 
-	return fmt.Errorf("the host carries what an earlier run left, and this run must not remove it:\n\t%s", strings.Join(names, "\n\t"))
+	return errors.Join(fmt.Errorf("the host carries what an earlier run left, and this run must not remove it:\n\t%s", strings.Join(names, "\n\t")), unpin(left))
+}
+
+// unpin lets go of the vmms a Find pinned and nothing removed.
+func unpin(left []Leftover) error {
+	var errs []error
+	for _, l := range left {
+		if l.pin == nil {
+			continue
+		}
+		if err := l.pin.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("unpin %s: %w", l, err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // leftMounts names the mounts under a temp root, deepest first: an overlay pins the root beneath it.
@@ -370,10 +386,18 @@ func leftVMMs(prefixes []string) ([]Leftover, error) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read the command line of %d: %w", pid, err)
+			return nil, errors.Join(fmt.Errorf("read the command line of %d: %w", pid, err), unpin(out))
 		}
-		if sock := apiSocket(strings.Split(string(cmdline), "\x00")); sock != "" && hasPrefix(sock, prefixes) {
-			out = append(out, Leftover{What: "the firecracker vmm", Path: sock, remove: killVMM(pid)})
+		sock := apiSocket(strings.Split(string(cmdline), "\x00"))
+		if sock == "" || !hasPrefix(sock, prefixes) {
+			continue
+		}
+		vmm, ours, err := pinVMM(pid, sock)
+		if err != nil {
+			return nil, errors.Join(err, unpin(out))
+		}
+		if ours {
+			out = append(out, vmm)
 		}
 	}
 
@@ -388,46 +412,6 @@ func apiSocket(argv []string) string {
 	}
 
 	return argv[i+1]
-}
-
-// killVMM waits for the vmm to exit after the kill, because only then are its cgroup and its tap free.
-func killVMM(pid int) func() error {
-	return func() error {
-		if err := firecracker.KillPID(pid); err != nil {
-			return err
-		}
-
-		deadline := time.Now().Add(killGrace)
-		for {
-			running, err := alive(pid)
-			if err != nil || !running {
-				return err
-			}
-			if !time.Now().Before(deadline) {
-				return fmt.Errorf("the vmm %d still runs %s after a SIGKILL", pid, killGrace)
-			}
-			time.Sleep(pollInterval)
-		}
-	}
-}
-
-// alive is whether pid still runs; a zombie holds nothing and only waits for its reaper.
-func alive(pid int) (bool, error) {
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if gone(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read the state of %d: %w", pid, err)
-	}
-
-	// The state follows the command name, which may itself hold a ')'.
-	end := bytes.LastIndexByte(stat, ')')
-	if end < 0 || end+2 >= len(stat) {
-		return false, fmt.Errorf("read the state of %d: %q has none", pid, stat)
-	}
-
-	return stat[end+2] != 'Z', nil
 }
 
 // gone is whether a read under /proc failed only because the process exited.

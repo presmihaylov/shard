@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/pkg/xfs"
 )
@@ -90,38 +89,6 @@ func TestAPISocketReadsOnlyTheFlagArgument(t *testing.T) {
 				t.Errorf("apiSocket(%q) = %q, want %q", tc.argv, got, tc.want)
 			}
 		})
-	}
-}
-
-// A killed vmm is a zombie until its reaper waits for it, and a zombie holds no cgroup and no tap.
-func TestAliveTakesAZombieAsGone(t *testing.T) {
-	if running, err := alive(os.Getpid()); err != nil || !running {
-		t.Fatalf("alive(self) = %v, %v, want true", running, err)
-	}
-
-	cmd := exec.Command("true")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(killGrace)
-	for {
-		running, err := alive(cmd.Process.Pid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !running {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("an exited child that nobody reaped still reads as alive after %s", killGrace)
-		}
-		time.Sleep(pollInterval)
-	}
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if running, err := alive(cmd.Process.Pid); err != nil || running {
-		t.Errorf("alive(reaped) = %v, %v, want false", running, err)
 	}
 }
 
