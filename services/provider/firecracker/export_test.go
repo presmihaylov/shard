@@ -23,8 +23,13 @@ func (p *Provider) Spawning(id string) (done func()) {
 }
 
 // EndJudged resumes a read that judged pid dead weight, which a test cannot pause inside Status.
-func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int) error {
-	return p.endJudged(id, client, pid)
+func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int, jail string) error {
+	return p.endJudged(id, client, pid, jail)
+}
+
+// SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
+func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+	p.chown, p.ownTap = chown, ownTap
 }
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.

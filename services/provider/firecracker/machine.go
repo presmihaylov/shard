@@ -26,8 +26,10 @@ import (
 
 // machine is one live vmm: its client and the control connection to shard-init.
 type machine struct {
-	id     string
-	dir    string
+	id  string
+	dir string
+	// jail is the vmm's chroot, which goes once the vmm does; empty is a vmm spawned before the jail.
+	jail   string
 	client *fcapi.Client
 	pid    int
 	// control is the stream to shard-init, replaced when a dropped one is dialed again.
@@ -65,8 +67,8 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 	return m.client.Connect(port)
 }
 
-// lookup finds the sandbox's vmm, held or adopted by its socket, and returns nil when none answers.
-func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error) {
+// lookup finds the sandbox's vmm, held or adopted by the socket its record names, and returns nil when none answers.
+func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
 	silent, found := p.unadopted[id]
@@ -90,7 +92,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if m, settled := p.settled(id, silent); settled {
 		return m, nil
 	}
-	socket, vsock := filepath.Join(dir, socketFile), filepath.Join(dir, vsockFile)
+	socket, vsock := r.sockets(dir)
 	began := time.Now()
 	probe, cancel := context.WithTimeout(ctx, adoptBound)
 	client, info, err := fcapi.Adopt(probe, socket, vsock)
@@ -100,31 +102,31 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	}
 	// A vmm silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-392).
 	if err != nil && info.PID > 0 && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
-		return p.unanswered(id, dir, fcapi.Open(socket, vsock), info.PID), nil
+		return p.unanswered(id, dir, r.Jail, fcapi.Open(socket, vsock), info.PID), nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
 	if info.State == fcapi.StateNotStarted {
-		return nil, p.endJudged(id, client, info.PID)
+		return nil, p.endJudged(id, client, info.PID, r.Jail)
 	}
-	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before it swapped off the source's overlay.
+	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before its resume.
 	if info.State == fcapi.StatePaused {
 		restoring, err := exists(filepath.Join(dir, restoringFile))
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %s: read the restore marker: %w", id, err)
 		}
-		// A fork's restore was in flight, so this vmm may hold the source's live disk: end it, never resume it onto the source (SHARD-321).
+		// A fork's restore was in flight, and its guest holds the source's address: end it, never resume it (SHARD-321).
 		if restoring {
-			return nil, p.endJudged(id, client, info.PID)
+			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
 	}
 
-	m, err = p.attach(ctx, id, dir, client, info)
+	m, err = p.attach(ctx, id, dir, r.Jail, client, info)
 	if err != nil || m == nil {
 		return m, err
 	}
@@ -169,7 +171,7 @@ func (m *machine) reseed(ctx context.Context) error {
 }
 
 // endJudged ends the vmm a read judged dead weight, by the pid it judged; one this process still spawns, or holds since, is left to it.
-func (p *Provider) endJudged(id string, client *fcapi.Client, pid int) error {
+func (p *Provider) endJudged(id string, client *fcapi.Client, pid int, jail string) error {
 	if p.spared(id) {
 		return nil
 	}
@@ -179,17 +181,27 @@ func (p *Provider) endJudged(id string, client *fcapi.Client, pid int) error {
 		return fmt.Errorf("sandbox %s: end the vmm a read judged: %w", id, err)
 	}
 
-	return awaitEnded(&machine{id: id, client: client, pid: pid})
+	if err := awaitEnded(&machine{id: id, client: client, pid: pid}); err != nil {
+		return err
+	}
+	// A vmm a spawn began since answers from the same jail, which is then its own.
+	probe, cancel := context.WithTimeout(context.Background(), probeFloor)
+	defer cancel()
+	if _, err := client.State(probe); !absent(err) {
+		return nil
+	}
+
+	return removeJail(jail)
 }
 
 // unanswered keeps a vmm an adopt found silent, by the pid that took its dial, so each later lookup waits on its one request.
-func (p *Provider) unanswered(id, dir string, client *fcapi.Client, pid int) *machine {
+func (p *Provider) unanswered(id, dir, jail string, client *fcapi.Client, pid int) *machine {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if kept, found := p.unadopted[id]; found {
 		return kept
 	}
-	m := &machine{id: id, dir: dir, client: client, pid: pid, silent: true}
+	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: pid, silent: true}
 	p.unadopted[id] = m
 
 	return m
@@ -337,7 +349,7 @@ func (p *Provider) settle(ctx context.Context, m *machine) error {
 		}
 	}
 	p.forget(m)
-	if err := m.close(); err != nil {
+	if err := errors.Join(m.close(), removeJail(m.jail)); err != nil {
 		return err
 	}
 
@@ -386,41 +398,48 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 	if err != nil {
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
-	group, err := p.bound(id, r.Resources)
+	if err := p.bound(id, r.Resources); err != nil {
+		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
+	}
+	done := p.spawn(id)
+	defer done()
+	jail, err := p.jail(id, dir, &r, "")
 	if err != nil {
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
 	cfg := fcapi.Config{
-		Kernel:    p.cfg.Kernel,
-		Initrd:    p.initrd,
+		Kernel:    jailKernel,
+		Initrd:    jailInitrd,
 		Cmdline:   cmdline,
 		VCPUs:     vcpus(r.Resources.VCPUs),
 		MemoryMiB: r.Resources.MemoryMiB,
 		Drives: []fcapi.Drive{
-			{ID: baseDrive, Path: r.BaseDisk, ReadOnly: true},
-			{ID: overlayDrive, Path: filepath.Join(dir, bundle.OverlayDiskFile)},
+			{ID: baseDrive, Path: jailBase, ReadOnly: true},
+			{ID: overlayDrive, Path: jailOverlay},
 		},
 		Network: device,
-		Vsock:   filepath.Join(dir, vsockFile),
-		Socket:  filepath.Join(dir, socketFile),
+		Vsock:   jailVsock,
+		Socket:  apiSocket,
 		Console: filepath.Join(dir, consoleFile),
-		Cgroup:  group,
 	}
-	done := p.spawn(id)
-	defer done()
-	client, info, err := fcapi.Start(ctx, p.cfg.Binary, cfg)
+	client, info, err := fcapi.Start(ctx, jail, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
+		return nil, errors.Join(fmt.Errorf("boot sandbox %s: %w", id, err), removeJail(r.Jail))
 	}
 
-	return p.up(ctx, id, dir, client, info)
+	return p.up(ctx, id, dir, r.Jail, client, info)
 }
 
 // up attaches to a vmm this provider just spawned, and ends it when there is no guest to attach to.
-func (p *Provider) up(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m, err := p.attach(ctx, id, dir, client, info)
+func (p *Provider) up(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
+	m, err := p.attach(ctx, id, dir, jail, client, info)
 	if err != nil {
-		return nil, errors.Join(err, endVMM(id, client))
+		// A vmm the kill did not end keeps its jail, so a later lookup can still find it and end it.
+		if endErr := endVMM(id, client); endErr != nil {
+			return nil, errors.Join(err, endErr)
+		}
+
+		return nil, errors.Join(err, removeJail(jail))
 	}
 	if m == nil {
 		return nil, fmt.Errorf("sandbox %s: the guest was killed by its memory bound before it ran", id)
@@ -470,8 +489,8 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 }
 
 // attach opens the control connection to the guest and follows its events and its logs.
-func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
+	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
@@ -492,7 +511,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
 	m.freezesOverlay = state.FreezesOverlay
-	// The guest answered, so a fork's restore swapped off the source and resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
+	// The guest answered, so a fork's restore resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
 	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())
 	}
