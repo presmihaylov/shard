@@ -396,7 +396,8 @@ func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus
 				return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: exit.Error, Code: exit.Code}
 			}
 
-			return models.ExitStatus{Code: exit.Code, Signal: exit.Signal}, nil
+			// The code alone, because runsc and runc exec report 128+n and no signal, and every provider sends one shape (SHARD-432).
+			return models.ExitStatus{Code: exit.Code}, nil
 		default:
 			return models.ExitStatus{}, fmt.Errorf("the guest sent a frame of stream %d, which the host does not take", stream)
 		}
