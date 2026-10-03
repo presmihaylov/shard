@@ -51,6 +51,8 @@ type machine struct {
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the shim: one vsock connection per call.
@@ -214,7 +216,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 // attach puts the guest on the stack, opens the control connection and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{})}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -275,7 +277,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -327,6 +329,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -402,6 +405,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
 			if err := control.Close(); err != nil {
 				return false, err
@@ -485,7 +489,7 @@ func (m *machine) alive() bool {
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
 func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.File.Close()
+	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
 		err := supervisor.Logs(ctx, opened, out, version)
