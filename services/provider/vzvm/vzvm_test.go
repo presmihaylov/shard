@@ -1346,6 +1346,21 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 	}
 }
 
+func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
+	h, spec, shim := frozenShim(t, false)
+	// A frozen shim accepts nothing; once its socket queue holds 128, a macOS dial reads refused, as if no shim were there.
+	for range 200 {
+		h.provider.Probe(t.Context(), spec.ID, 10*time.Millisecond)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status after 200 probes of a frozen shim = %+v, %v; want unresponsive", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over a long frozen shim: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
 func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
 	t.Helper()

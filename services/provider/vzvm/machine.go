@@ -51,6 +51,8 @@ type machine struct {
 	gone bool
 	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
 	silent bool
+	// asking closes once the one state request out to the shim ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 }
@@ -145,25 +147,48 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	return m.close()
 }
 
-// probe asks a held shim for its state within the bound: a silent one reads unresponsive, an answer clears that, and neither kills it (SHARD-421).
+// probe waits the bound for the shim's answer: silence marks it unresponsive, an answer clears that, and neither kills it (SHARD-421).
 func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 	p.mu.Lock()
-	gone := m.gone
+	if m.gone || m.closed.Load() {
+		p.mu.Unlock()
+
+		return
+	}
+	// A frozen shim accepts nothing, and a full socket queue refuses a dial as if no shim were there, so one request waits for it.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
 	p.mu.Unlock()
-	if gone || m.closed.Load() {
-		return
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	// The request cleared the mark on an answer; a failed one is the shim gone, which the event loop reports.
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+		p.mu.Lock()
+		if m.asking == asking {
+			m.silent = true
+		}
+		p.mu.Unlock()
 	}
-	began := time.Now()
-	probe, cancel := context.WithTimeout(ctx, bound)
-	_, err := m.client.State(probe)
-	cancel()
-	// A fast error is the shim gone, which the event loop reports; only the whole bound in silence counts.
-	if err != nil && (time.Since(began) < bound || ctx.Err() != nil) {
-		return
-	}
+}
+
+// ask puts the one state request to the shim and holds it past the caller until the shim answers or dies; stop kills one that never answers.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.Await(ctx)
 	p.mu.Lock()
-	m.silent = err != nil
+	m.asking = nil
+	if err == nil {
+		m.silent = false
+	}
 	p.mu.Unlock()
+	close(asking)
 }
 
 func (p *Provider) forget(m *machine) {
