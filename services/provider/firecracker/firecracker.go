@@ -18,6 +18,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -193,6 +194,10 @@ type Provider struct {
 func New(cfg Config) (*Provider, error) {
 	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
 		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a snapshot directory lookup")
+	}
+	// Every pause takes a Diff, which only firecracker 1.13 and newer take without a dirty-page log (SHARD-450).
+	if err := fcapi.CheckVersion(cfg.Binary); err != nil {
+		return nil, err
 	}
 
 	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.

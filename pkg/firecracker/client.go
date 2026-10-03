@@ -201,9 +201,9 @@ func (c *Client) Resume() error {
 	return c.patch("/vm", vmState{State: "Resumed"})
 }
 
-// Snapshot writes the device state and the whole guest memory to two files; firecracker wants the microVM paused first.
+// Snapshot writes the device state and the guest's resident pages to two files, merged into memory when that file is already the guest's size; firecracker wants the microVM paused first.
 func (c *Client) Snapshot(state, memory string) error {
-	return c.put("/snapshot/create", snapshotCreate{Type: "Full", StatePath: state, MemoryPath: memory})
+	return c.put("/snapshot/create", snapshotCreate{Type: "Diff", StatePath: state, MemoryPath: memory})
 }
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.

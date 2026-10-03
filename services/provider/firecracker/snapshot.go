@@ -61,6 +61,10 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	if !m.freezesOverlay {
 		return nil, fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
 	}
+	// The Diff takes the pages that are resident, which a page the host swapped out is not (SHARD-450).
+	if err := p.noSwap(id); err != nil {
+		return nil, err
+	}
 	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
 	if m.jail == "" {
 		return nil, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then pause it", id, Name)
@@ -119,6 +123,32 @@ func (p *Provider) stageSnapshot(m *machine, r record, stateDir, tmp string) err
 	return nil
 }
 
+// seedMemory gives a restored vmm's Diff a copy of the memory it loaded to merge into, so the snapshot is whole; a booted vmm's Diff is whole on its own, with holes where the guest wrote nothing (SHARD-450).
+func (p *Provider) seedMemory(m *machine, r record, snap string) error {
+	loaded := filepath.Join(m.jail, jailMemory)
+	restored, err := exists(loaded)
+	if err != nil {
+		return fmt.Errorf("read the loaded memory: %w", err)
+	}
+	if !restored {
+		return nil
+	}
+	// The copy is a file of its own, so the merge never writes the memory the vmm maps.
+	seed := filepath.Join(snap, memoryFile)
+	if err := bundle.Reflink(loaded, seed); err != nil {
+		return fmt.Errorf("copy the loaded memory: %w", err)
+	}
+	if err := p.chown(seed, r.UID, r.UID); err != nil {
+		return fmt.Errorf("give %s to uid %d: %w", seed, r.UID, err)
+	}
+	// The loaded memory is read-only to the vmm, and a clone may keep that mode.
+	if err := os.Chmod(seed, 0o600); err != nil {
+		return fmt.Errorf("let the vmm write %s: %w", seed, err)
+	}
+
+	return nil
+}
+
 // snapshotInto has the vmm write its state and memory into a directory of the jail, then moves both into tmp as root's.
 func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 	// A pause cut after the snapshot left its files, which the vmm refuses to write over.
@@ -130,6 +160,9 @@ func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 	}
 	if err := p.chown(snap, r.UID, r.UID); err != nil {
 		return fmt.Errorf("give %s to uid %d: %w", snap, r.UID, err)
+	}
+	if err := p.seedMemory(m, r, snap); err != nil {
+		return err
 	}
 	if err := m.client.Snapshot(jailSnap+jailState, jailSnap+jailMemory); err != nil {
 		return fmt.Errorf("snapshot the vm: %w", err)

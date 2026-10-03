@@ -253,6 +253,32 @@ func TestLivenessStopsAnUnresponsiveSandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
+// An unresponsive sandbox the host ends for its memory, or whose shard-init dies, keeps only the reason it stopped for (SHARD-441).
+func TestLivenessStopsAnUnresponsiveSandboxWithItsOwnReasonAlone(t *testing.T) {
+	const why = "exec the entrypoint: no such file"
+	for _, tc := range []struct {
+		name   string
+		status models.Status
+		want   string
+	}{
+		{name: "the host ended it for its memory", status: oomKilled(), want: sandbox.OOMKilledReason},
+		{name: "its shard-init died", status: models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}, want: sandbox.SupervisorFailedReason + ": " + why},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, unresponsive(), tc.status)
+
+			if err := lab.tick(t, unresponsive(), time.Now()); err != nil {
+				t.Fatalf("Liveness: %v", err)
+			}
+
+			got := lab.l.repo.sb
+			if got.State != models.StateStopped || got.StoppedReason != tc.want || got.UnresponsiveReason != "" {
+				t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, tc.want)
+			}
+		})
+	}
+}
+
 // A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
 func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	dir := t.TempDir()

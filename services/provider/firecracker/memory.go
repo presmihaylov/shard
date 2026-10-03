@@ -35,6 +35,26 @@ func (p *Provider) bound(id string, r models.Resources) error {
 	return err
 }
 
+// noSwap pins the vmm's cgroup to no swap and reads it back, and refuses the pause by the cgroup's name when it cannot (SHARD-450).
+func (p *Provider) noSwap(id string) error {
+	if p.cgroupRoot == "" {
+		return nil
+	}
+	dir := cgroupDir(p.cgroupRoot, id)
+	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+		return fmt.Errorf("sandbox %s: a pause needs cgroup %s to swap nothing: %w", id, dir, err)
+	}
+	swap, err := cgroup.MemorySwapMax(dir)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: a pause needs cgroup %s to swap nothing: %w", id, dir, err)
+	}
+	if swap != 0 {
+		return fmt.Errorf("sandbox %s: a pause needs cgroup %s to swap nothing, and its memory.swap.max reads %d", id, dir, swap)
+	}
+
+	return nil
+}
+
 // sweep drops the host cgroup of a sandbox that is gone, which nothing else on the host would empty.
 // A killed vmm leaves its cgroup a moment after it stops answering, and the kernel refuses to remove
 // one that still holds a task, so the sweep waits that moment out.

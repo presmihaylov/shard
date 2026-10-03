@@ -50,6 +50,11 @@ func SetMemorySwapMax(dir string, bytes int64) error {
 	return write(dir, "memory.swap.max", strconv.FormatInt(bytes, 10))
 }
 
+// MemorySwapMax reads back what the cgroup may push to swap. It answers -1 for the literal "max", which is no bound.
+func MemorySwapMax(dir string) (int64, error) {
+	return readBound(dir, "memory.swap.max")
+}
+
 // SetOOMGroup makes the OOM killer take every process in the cgroup, not the one it would pick.
 func SetOOMGroup(dir string) error {
 	return write(dir, "memory.oom.group", "1")

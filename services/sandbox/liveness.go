@@ -341,6 +341,7 @@ func (s *Service) recordSupervisorFailed(id, why string, report func(string)) er
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
+		rec.UnresponsiveReason = ""
 		supervisorFailed(rec, why)
 
 		return nil
@@ -372,6 +373,7 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 		if restart {
 			rec.OOMRestarts = restarts + 1
 			rec.OOMRestartedAt = now

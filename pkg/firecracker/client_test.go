@@ -374,7 +374,7 @@ func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
 			t.Fatalf("Snapshot left no %s in the jail: %v", path, err)
 		}
 	}
-	want := `{"snapshot_type":"Full","snapshot_path":"/vmstate","mem_file_path":"/memory"}`
+	want := `{"snapshot_type":"Diff","snapshot_path":"/vmstate","mem_file_path":"/memory"}`
 	if got := string(readSeen(t, j, cfg.Socket).Snapshot); got != want {
 		t.Fatalf("the snapshot put = %s, want %s", got, want)
 	}
