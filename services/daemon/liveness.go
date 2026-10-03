@@ -44,8 +44,10 @@ func (t liveness) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// A root with nothing running needs no substrate, so a host without runsc keeps its daemon.
-		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool { return sb.State == models.StateRunning }) {
+		// A root with nothing running and no start again due needs no substrate, so a host without runsc keeps its daemon.
+		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool {
+			return sb.State == models.StateRunning || !sb.OOMRestartDue.IsZero()
+		}) {
 			failures.tick(ctx, nil)
 
 			continue

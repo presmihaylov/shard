@@ -45,9 +45,11 @@ const (
 	exitFile     = "exit.json"
 	restartsFile = "restarts.json"
 	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
-	oomFile    = "oom"
-	logFile    = "output.log"
-	initrdFile = "initrd.cpio"
+	oomFile = "oom"
+	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
+	logFile              = "output.log"
+	initrdFile           = "initrd.cpio"
 	// memoryFile is the guest memory a restore mapped, a hard link to the snapshot's own; a fresh boot has none.
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
@@ -119,6 +121,8 @@ type Provider struct {
 	machines map[string]*machine
 	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
 	spawning map[string]bool
+	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
+	lostRuns map[string]error
 }
 
 func New(cfg Config) (*Provider, error) {
@@ -138,7 +142,7 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -150,6 +154,14 @@ func (p *Provider) Capabilities() models.Capabilities {
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }
+
+// AdmitDisk reserves the overlay a create writes into dir, before the sandbox has a record, so a refusal leaves none.
+func (p *Provider) AdmitDisk(dir string, res models.Resources) error {
+	return bundle.Reserve(filepath.Join(dir, bundle.OverlayDiskFile), bundle.DiskBytes(res))
+}
+
+// ReleaseDisk gives back what AdmitDisk reserved for a create that ended before its record.
+func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 
 // Close drops what this process holds of every vmm and leaves the VMs running, which is what a daemon exit does.
 func (p *Provider) Close() error {

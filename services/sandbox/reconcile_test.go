@@ -42,7 +42,9 @@ func (r *recRepo) List() ([]models.Sandbox, error) {
 	return out, nil
 }
 
-func (r *recRepo) Create(sb models.Sandbox) (models.Sandbox, error) { return sb, nil }
+func (r *recRepo) Create(sb models.Sandbox, _ ...func(dir string) error) (models.Sandbox, error) {
+	return sb, nil
+}
 
 func (r *recRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 	if r.updateErr != nil {

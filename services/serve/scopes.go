@@ -73,6 +73,8 @@ var routeCapabilities = map[string]capability{
 	"DELETE /v0/sandboxes/{id}/files":            capExec,
 	"GET /v0/sandboxes/{id}/ls":                  capExec,
 	"POST /v0/sandboxes/{id}/mkdir":              capExec,
+	"PUT /v0/sandboxes/{id}/archive":             capExec,
+	"GET /v0/sandboxes/{id}/archive":             capExec,
 	"GET /v0/sandboxes/{id}/logs":                capSandboxRead,
 	"GET /v0/sandboxes/{id}/egress-log":          capSandboxRead,
 	"POST /v0/sandboxes/{id}/secrets/{name}":     capSecret,

@@ -220,8 +220,10 @@ the last one in `oom_restarted_at`, and `shard ls` shows the policy in its `REST
 `on-oom 2` when the count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from
 the last, then 2, 4 and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds
 `the N starts again the limit allows are spent`. A `shard start` by hand still works, and clears the
-reason. A sandbox the record says `stopped` is never started again by the daemon, so a `stop` in the
-window is final. A `fork` or `clone` inherits the policy with a fresh count.
+reason. While a start again waits, the record says `stopped` with pid 0, the reason adds
+`it starts again at <time>`, and `oom_restart_due` holds that time, so no verb reads the dead
+process (SHARD-425); `shard ls` still lists it. A `stop` in the wait calls the start again off, and
+a `shard start` runs it at once. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 
@@ -325,6 +327,8 @@ curl --unix-socket /var/lib/shard/shard.sock -I 'http://localhost/v0/sandboxes/<
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/ls?path=/srv'
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"path":"/srv/cache","mode":"700","parents":true}' http://localhost/v0/sandboxes/<id or name>/mkdir
 curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/cache&recursive=true'
+tar -cf - app | curl --unix-socket /var/lib/shard/shard.sock -T - 'http://localhost/v0/sandboxes/<id or name>/archive?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/archive?path=/srv/app' | tar -xf -
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -469,6 +473,21 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   never its target. A directory with anything in it needs `recursive=true`, and `/` is never
   deleted. It runs as the entrypoint user. 400 for `/` or a full directory without `recursive`; 404;
   409 as above.
+- `PUT /v0/sandboxes/{id}/archive?path=&user=` unpacks the tar body, chunked or sized, under the
+  guest directory `path` and answers 204 once every entry is on disk. `user` is as a put's, and the
+  unpack runs as that user, who owns every entry. Each file lands through a temp name. The guest
+  refuses an absolute name, a `..`, an entry under a symlink that leaves `path`, a hard link to a
+  file the tar did not carry, a device node and a fifo. Directories take their modes once their
+  entries are in, and one already there keeps its own. The body is held to the same idle bound as a
+  put's. 400 for a refused entry, a body that is not a tar or a `path` that is not a directory; 404;
+  409 as above.
+- `GET /v0/sandboxes/{id}/archive?path=` answers 200 `application/x-tar` with the path and its
+  `X-Shard-Stat`, the top entry named after the path's base name and a directory's entries in
+  lexical order. A guest that fails after the 200 aborts the chunked body, so a cut tar never reads
+  as a whole one. 400 for `/`; 404; 409 as above. `shard cp` copies a directory through both. A copy
+  out unpacks what the sandbox sends, so it refuses an entry or a symlink that leaves the
+  destination, a device node and a hard link to a file the tar did not carry, drops setuid and
+  setgid, and stops past 64 GiB or 1048576 entries.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -634,7 +653,7 @@ agree on what each request is, and an unknown route is a `403` too. The eight ca
 | `sandbox:read` | list, get, `logs` and `egress-log` |
 | `sandbox:write` | create, start, stop, pause, resume, fork and clone |
 | `sandbox:delete` | `rm` |
-| `exec` | every `exec` route, and every `files`, `ls` and `mkdir` route |
+| `exec` | every `exec` route, and every `files`, `ls`, `mkdir` and `archive` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |

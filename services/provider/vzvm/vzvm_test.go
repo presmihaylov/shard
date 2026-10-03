@@ -27,6 +27,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -1371,6 +1372,43 @@ func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
 }
 
 func stopsAFrozenShim(t *testing.T, restart bool) {
+	h, spec, shim := frozenShim(t, restart)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop with a frozen shim: %v", err)
+	}
+	if took := time.Since(began); took > stopGrace+10*time.Second {
+		t.Errorf("Stop with a frozen shim took %s, want under the grace plus 10 s", took)
+	}
+	awaitExit(t, shim)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
+// After a daemon restart a shim too frozen to answer is cut by its socket, so the first probe ends on time and nothing frozen is left (SHARD-387).
+func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+
+	// The bound the daemon's startup probe gives each sandbox.
+	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
+	defer cancel()
+	began := time.Now()
+	status, err := h.provider.Status(ctx, spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want stopped", status, err)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Errorf("Status over a frozen shim took %s, want under 8 s", took)
+	}
+	awaitExit(t, shim)
+}
+
+// frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
+func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
+	t.Helper()
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1432,18 +1470,7 @@ func stopsAFrozenShim(t *testing.T, restart bool) {
 		h.open(t)
 	}
 
-	began := time.Now()
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-		t.Fatalf("Stop with a frozen shim: %v", err)
-	}
-	if took := time.Since(began); took > stopGrace+10*time.Second {
-		t.Errorf("Stop with a frozen shim took %s, want under the grace plus 10 s", took)
-	}
-	awaitExit(t, shim)
-	status, err = h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.Alive() || status.State != models.StateStopped {
-		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
-	}
+	return h, spec, shim
 }
 
 // Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.

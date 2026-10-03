@@ -16,15 +16,18 @@ import (
 const shimGrace = 5 * time.Second
 
 // leftHeld names the vm shims: on a Mac they are all a run holds outside its roots.
-func leftHeld(prefixes []string) ([]Leftover, error) {
+func leftHeld(prefixes, _ []string) ([]Leftover, error) {
 	return leftShims(prefixes)
 }
 
-// leftMounts has nothing to name: a Mac run hands its disks to the VM and mounts nothing on the host.
-func leftMounts([]string) ([]Leftover, error) { return nil, nil }
+// heldBy has nothing to name: a Mac run hands its disks to the VM and mounts nothing on the host.
+func heldBy(string) ([]Leftover, error) { return nil, nil }
 
-// sweepHostNet has nothing to take: the guest network of a Mac run lives inside the test process.
-func sweepHostNet() error { return nil }
+// sweepShared has nothing to take: the guest network of a Mac run lives inside the test process, and a Mac has no cgroup.
+func sweepShared() error { return nil }
+
+// noteParent has nothing to note: a Mac has no cgroup parent.
+func noteParent() error { return nil }
 
 // leftShims names every shim whose config puts its socket under a root of ours, which is the only mark a shim carries.
 func leftShims(prefixes []string) ([]Leftover, error) {

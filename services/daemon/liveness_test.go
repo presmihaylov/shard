@@ -44,6 +44,29 @@ func TestLivenessFailsLoudWhenTheSubstrateIsGone(t *testing.T) {
 	}
 }
 
+// A start again that waits out the OOM backoff needs the substrate though nothing runs (SHARD-425).
+func TestLivenessAsksForTheSubstrateWhenAStartAgainWaits(t *testing.T) {
+	d := noRunscDeps(t)
+	if _, err := d.repoSvc.Create(models.Sandbox{Image: "alpine", State: models.StateStopped, OOMRestartDue: time.Now().UTC()}); err != nil {
+		t.Fatalf("create the record: %v", err)
+	}
+
+	_, want := d.lifecycle()
+	if want == nil {
+		t.Skip("this host holds a substrate")
+	}
+
+	// A tick that skips the wait ends quietly at the deadline instead of hanging the test.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	task := liveness{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
+	err := task.Run(ctx)
+	if err == nil || err.Error() != want.Error() {
+		t.Fatalf("Run = %v, want the layers' own refusal %v, so the wait is never skipped", err, want)
+	}
+}
+
 // noRunscDeps is a gvisor daemon's layers on a host where runsc is not on PATH, with its repository built.
 func noRunscDeps(t *testing.T) *deps {
 	t.Helper()

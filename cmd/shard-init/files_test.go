@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -22,7 +23,7 @@ import (
 )
 
 // startFiles brings the guest up with an entrypoint running, as a host does, and answers a way to open one files exec.
-func startFiles(t *testing.T) func() io.ReadWriteCloser {
+func startFiles(t *testing.T) func() supervisor.FilesConn {
 	t.Helper()
 	_, dial := startTransport(t)
 	ctx := testContext(t)
@@ -40,7 +41,7 @@ func startFiles(t *testing.T) func() io.ReadWriteCloser {
 		return supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: spec.Argv, WorkDir: spec.WorkDir}, spec)
 	}
 
-	return func() io.ReadWriteCloser {
+	return func() supervisor.FilesConn {
 		conn, err := supervisor.OpenFiles(ctx, run, "")
 		if err != nil {
 			t.Fatalf("open a files exec: %v", err)
@@ -58,7 +59,7 @@ func closeFiles(t *testing.T, conn io.Closer) {
 	}
 }
 
-func statFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models.FileStat, error) {
+func statFile(t *testing.T, open func() supervisor.FilesConn, path string) (models.FileStat, error) {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -66,7 +67,7 @@ func statFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models
 	return supervisor.Stat(conn, path)
 }
 
-func getFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models.FileStat, []byte, error) {
+func getFile(t *testing.T, open func() supervisor.FilesConn, path string) (models.FileStat, []byte, error) {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -80,7 +81,7 @@ func getFile(t *testing.T, open func() io.ReadWriteCloser, path string) (models.
 	return stat, got, err
 }
 
-func putFile(t *testing.T, open func() io.ReadWriteCloser, header supervisor.FileHeader, src io.Reader) error {
+func putFile(t *testing.T, open func() supervisor.FilesConn, header supervisor.FileHeader, src io.Reader) error {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -88,7 +89,7 @@ func putFile(t *testing.T, open func() io.ReadWriteCloser, header supervisor.Fil
 	return supervisor.Put(conn, header, src)
 }
 
-func listEntries(t *testing.T, open func() io.ReadWriteCloser, path string) ([]models.FileEntry, error) {
+func listEntries(t *testing.T, open func() supervisor.FilesConn, path string) ([]models.FileEntry, error) {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -110,7 +111,7 @@ func listEntries(t *testing.T, open func() io.ReadWriteCloser, path string) ([]m
 	}
 }
 
-func mkdirPath(t *testing.T, open func() io.ReadWriteCloser, header supervisor.FileHeader) error {
+func mkdirPath(t *testing.T, open func() supervisor.FilesConn, header supervisor.FileHeader) error {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -118,7 +119,7 @@ func mkdirPath(t *testing.T, open func() io.ReadWriteCloser, header supervisor.F
 	return supervisor.Mkdir(conn, header)
 }
 
-func deleteFile(t *testing.T, open func() io.ReadWriteCloser, path string, recursive bool) error {
+func deleteFile(t *testing.T, open func() supervisor.FilesConn, path string, recursive bool) error {
 	t.Helper()
 	conn := open()
 	defer closeFiles(t, conn)
@@ -498,6 +499,130 @@ func TestFilesDeleteTakesAFullDirectoryOnlyWhenRecursive(t *testing.T) {
 
 	err = deleteFile(t, open, filepath.Join(dir, "missing"), true)
 	refusedAs(t, "a delete of a missing path", err, supervisor.FileNotFound, "no such file")
+}
+
+func getArchive(t *testing.T, open func() supervisor.FilesConn, path string) (models.FileStat, []byte, error) {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	stat, body, err := supervisor.GetArchive(conn, path)
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+	got, err := io.ReadAll(body)
+
+	return stat, got, err
+}
+
+func putArchive(t *testing.T, open func() supervisor.FilesConn, path string, src io.Reader) error {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	return supervisor.PutArchive(conn, path, src)
+}
+
+// tarOf builds a tar by hand, a name and its body per entry, with a trailing slash for a directory and "->" for a symlink.
+func tarOf(t *testing.T, entries ...[2]string) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e[0], Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(e[1]))}
+		if strings.HasSuffix(e[0], "/") {
+			hdr.Typeflag, hdr.Mode, hdr.Size = tar.TypeDir, 0o755, 0
+		}
+		if target, ok := strings.CutPrefix(e[1], "->"); ok {
+			hdr.Typeflag, hdr.Linkname, hdr.Size = tar.TypeSymlink, target, 0
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Size > 0 {
+			if _, err := tw.Write([]byte(e[1])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return &buf
+}
+
+func TestFilesPackThenUnpackMovesADirectory(t *testing.T) {
+	open := startFiles(t)
+	src := filepath.Join(t.TempDir(), "app")
+	if err := os.MkdirAll(filepath.Join(src, "bin"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	big := payload(t)
+	if err := os.WriteFile(filepath.Join(src, "bin", "run"), big, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("bin/run", filepath.Join(src, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	stat, archive, err := getArchive(t, open, src)
+	if err != nil || stat.Type != models.FileDir {
+		t.Fatalf("get the archive: %+v, %v, want the stat of a dir", stat, err)
+	}
+	dst := t.TempDir()
+	if err := putArchive(t, open, dst, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("put the archive: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dst, "app", "bin", "run"))
+	if err != nil || !bytes.Equal(got, big) {
+		t.Fatalf("app/bin/run holds %d bytes, %v, want %d equal ones", len(got), err, len(big))
+	}
+	if target, err := os.Readlink(filepath.Join(dst, "app", "current")); err != nil || target != "bin/run" {
+		t.Fatalf("app/current links to %q, %v, want bin/run", target, err)
+	}
+	if info, err := os.Stat(filepath.Join(dst, "app", "bin")); err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("app/bin is %v, %v, want mode 0750", info, err)
+	}
+}
+
+// A guest that refuses an entry stops reading, so a host still sending a large archive gets the reason and not a broken pipe.
+func TestFilesUnpackRefusesAnEntryThatEscapes(t *testing.T) {
+	open := startFiles(t)
+	parent := t.TempDir()
+	dst := filepath.Join(parent, "dst")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]*bytes.Buffer{
+		"a ../ entry":               tarOf(t, [2]string{"../x", "x"}, [2]string{"big", string(payload(t))}),
+		"an entry under a link out": tarOf(t, [2]string{"l", "->" + parent}, [2]string{"l/x", "x"}),
+	}
+	for name, archive := range cases {
+		refusedAs(t, name, putArchive(t, open, dst, archive), supervisor.FileInvalid, "refuse the entry")
+	}
+	if _, err := os.Stat(filepath.Join(parent, "x")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("an escaping entry landed beside dst: %v", err)
+	}
+}
+
+func TestFilesArchiveRefusesWhatItCannotTake(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	refusedAs(t, "an unpack into a file", putArchive(t, open, file, tarOf(t)), supervisor.FileInvalid, "not a directory")
+	refusedAs(t, "an unpack into nothing", putArchive(t, open, filepath.Join(dir, "missing"), tarOf(t)), supervisor.FileNotFound, "no such file")
+	refusedAs(t, "an unpack of what is not a tar", putArchive(t, open, dir, strings.NewReader(strings.Repeat("not a tar ", 100))), supervisor.FileInvalid, "invalid tar header")
+	_, _, err := getArchive(t, open, "/")
+	refusedAs(t, "a pack of /", err, supervisor.FileInvalid, "has no name")
+	_, _, err = getArchive(t, open, filepath.Join(dir, "missing"))
+	refusedAs(t, "a pack of nothing", err, supervisor.FileNotFound, "no such file")
 }
 
 func TestLookPathAnswersTheInitPathWithItself(t *testing.T) {
