@@ -113,7 +113,7 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	// A supervisor that is not there fails the bind mount, the last claim before the start.
 	app, _ := ownDaemon(t, InitPathEnv+"="+filepath.Join(t.TempDir(), "absent"))
 
-	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/true"}); err == nil {
+	if err := app.Run(t.Context(), createArgs(testImage, "--", "/bin/true")); err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}
 
@@ -144,7 +144,7 @@ func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) 
 	before := holdings(t, app)
 
 	creating, _ := ownStderr(app)
-	err := creating.Run(t.Context(), []string{"create", testImage, "--", "/no/such/entrypoint"})
+	err := creating.Run(t.Context(), createArgs(testImage, "--", "/no/such/entrypoint"))
 	if err == nil {
 		t.Fatal("create reported success for an entrypoint the image does not hold")
 	}
@@ -183,8 +183,9 @@ func TestCreateFinishesWhenTheClientGivesUpWaiting(t *testing.T) {
 	app, _ := ownDaemon(t)
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
-		Image:   testImage,
-		Command: []string{"/bin/sleep", "600"},
+		Image:     testImage,
+		Command:   []string{"/bin/sleep", "600"},
+		Resources: itestResources(),
 	})
 	if err != nil {
 		t.Fatalf("create from an uncached image: %v", err)
