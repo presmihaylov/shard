@@ -110,9 +110,9 @@ one:
   checkpoint is what an earlier pause left, and the record becomes `stopped` as above. The liveness
   tick applies the same rule. On gVisor the sentry can still be frozen beside that checkpoint, so the
   daemon deletes it first, without a thaw, the way the pause would have. On Firecracker the vmm can
-  still be paused beside that checkpoint, and the next daemon ends it the same way: the vm record
-  names the snapshot its last pause wrote into, so a paused vmm beside a complete one is never
-  resumed past it. A substrate that cannot do that keeps the record as it is.
+  still be paused beside that checkpoint, and the next daemon ends it the same way: a paused vmm
+  beside a complete checkpoint in the sandbox's snapshot directory is never resumed past it. A
+  substrate that cannot do that keeps the record as it is.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` is left alone: it never ran.

@@ -60,11 +60,12 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary: os.Args[0],
-		Kernel: "kernel",
-		Init:   initBinary,
-		Dir:    h.root,
-		Dirs:   h.stateDir,
+		Binary:    os.Args[0],
+		Kernel:    "kernel",
+		Init:      initBinary,
+		Dir:       h.root,
+		Dirs:      h.stateDir,
+		Snapshots: h.snapshotDir,
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -91,6 +92,11 @@ func (h *harness) reopen(t *testing.T) models.Provider {
 // stateDir answers for any id, as the repository does; only a spec's directory exists.
 func (h *harness) stateDir(id string) (string, error) {
 	return filepath.Join(h.root, "s", id), nil
+}
+
+// snapshotDir answers where a pause of id writes, as the repository does; nothing creates it before a pause.
+func (h *harness) snapshotDir(id string) (string, error) {
+	return filepath.Join(h.root, "snapshots", id), nil
 }
 
 func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
@@ -422,7 +428,6 @@ type vm struct {
 	BaseDisk string             `json:"base_disk"`
 	RootFS   string             `json:"rootfs"`
 	Run      supervisor.RunSpec `json:"run"`
-	Snapshot string             `json:"snapshot"`
 }
 
 func readVM(t *testing.T, dir string) vm {
@@ -465,9 +470,6 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	}
 	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory after Pause: %v, want gone", err)
-	}
-	if got := readVM(t, spec.StateDir).Snapshot; got != dir {
-		t.Errorf("the record names the snapshot %q, want %q", got, dir)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
@@ -695,9 +697,18 @@ func TestAVMFrozenBesideItsSnapshotIsEndedNotResumed(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
-	dir := t.TempDir()
+	dir, _ := h.snapshotDir(spec.ID)
+	record := filepath.Join(spec.StateDir, "vm.json")
+	shape, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := h.provider.Install(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Install: %v", err)
+	}
+	// A daemon from before this fix left the record as the boot wrote it, and its leftover must be judged the same.
+	if err := os.WriteFile(record, shape, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	p := h.reopen(t)
 

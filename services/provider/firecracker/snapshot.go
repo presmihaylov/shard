@@ -53,11 +53,6 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 		return nil, fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
 
-	// The record names where this pause writes before the vCPUs stop, so an adopt can tell a VM frozen past its install (SHARD-427).
-	r.Snapshot = dir
-	if err := writeRecord(stateDir, r); err != nil {
-		return nil, fmt.Errorf("sandbox %s: %w", id, err)
-	}
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {

@@ -69,7 +69,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		return nil, p.endCut(id, client, info.PID)
 	}
 	if info.State == fcapi.StatePaused {
-		frozen, err := installed(dir)
+		frozen, err := p.installed(id)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %s: %w", id, err)
 		}
@@ -105,13 +105,13 @@ func (p *Provider) endCut(id string, client *fcapi.Client, pid int) error {
 	return awaitEnded(&machine{id: id, client: client, pid: pid})
 }
 
-// installed says the pause the record names put a complete snapshot in place; the pause verb removes the old checkpoint before any pause, so it is that pause's own.
-func installed(dir string) (bool, error) {
-	r, found, err := readRecord(dir)
-	if err != nil || !found || r.Snapshot == "" {
-		return false, err
+// installed says a complete snapshot is where the sandbox's pause writes; the pause verb removes the old one first, so a VM frozen beside it is a pause past its install or a restore before its vCPUs ran.
+func (p *Provider) installed(id string) (bool, error) {
+	dir, err := p.cfg.Snapshots(id)
+	if err != nil {
+		return false, fmt.Errorf("find the snapshot directory: %w", err)
 	}
-	path := filepath.Join(r.Snapshot, checkpointFile)
+	path := filepath.Join(dir, checkpointFile)
 	_, err = os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil

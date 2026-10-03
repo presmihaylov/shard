@@ -172,7 +172,7 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	provider, err := d.newProvider(repo.Dir)
+	provider, err := d.newProvider(repo.Dir, repo.SnapshotDir)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +282,7 @@ func (f gatewayFront) ListenPacket(port uint16) (net.PacketConn, error) {
 }
 
 // newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default on Linux and vz on a Mac.
-func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, error) {
+func (d *deps) newProvider(dirs, snapshots func(string) (string, error)) (models.Provider, error) {
 	switch d.providerName() {
 	case gvisor.Name:
 		runner, err := d.runnerLocked()
@@ -308,7 +308,7 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 	case vzvm.Name:
 		return d.newVZ(dirs)
 	case firecracker.Name:
-		return d.newFirecracker(dirs)
+		return d.newFirecracker(dirs, snapshots)
 	default:
 		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s, %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name)
 	}
@@ -318,7 +318,7 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 const firecrackerDir = "firecracker"
 
 // newFirecracker builds the microVM provider: the vmm on PATH, the guest kernel fetched once, and the static init the initrd carries.
-func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, error) {
+func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Provider, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("provider %s runs on Linux only, not %s", firecracker.Name, runtime.GOOS)
 	}
@@ -333,11 +333,12 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 	}
 
 	return firecracker.New(firecracker.Config{
-		Binary: binary,
-		Kernel: guest.Path,
-		Init:   d.cfg.InitPath,
-		Dir:    filepath.Join(d.cfg.Root, firecrackerDir),
-		Dirs:   dirs,
+		Binary:    binary,
+		Kernel:    guest.Path,
+		Init:      d.cfg.InitPath,
+		Dir:       filepath.Join(d.cfg.Root, firecrackerDir),
+		Dirs:      dirs,
+		Snapshots: snapshots,
 	})
 }
 

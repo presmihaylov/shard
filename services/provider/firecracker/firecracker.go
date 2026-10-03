@@ -86,6 +86,8 @@ type Config struct {
 	// Dir is where the provider writes the initrd it builds from Init.
 	Dir  string
 	Dirs StateDirs
+	// Snapshots answers where a sandbox's pause writes, which an adopt checks before it resumes a paused VM. sandboxstate.Repository.SnapshotDir is what shard passes.
+	Snapshots StateDirs
 }
 
 var _ models.Provider = (*Provider)(nil)
@@ -105,8 +107,8 @@ type Provider struct {
 }
 
 func New(cfg Config) (*Provider, error) {
-	if cfg.Binary == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.Dirs == nil {
-		return nil, errors.New("the firecracker provider needs a binary, a kernel, a shard-init, a directory and a state directory lookup")
+	if cfg.Binary == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
+		return nil, errors.New("the firecracker provider needs a binary, a kernel, a shard-init, a directory, a state directory lookup and a snapshot directory lookup")
 	}
 
 	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.
@@ -167,8 +169,6 @@ type record struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
-	// Snapshot is the directory the last pause wrote into, which an adopt checks before it resumes a paused VM.
-	Snapshot string `json:"snapshot,omitempty"`
 }
 
 func (p *Provider) dir(id string) (string, error) {
