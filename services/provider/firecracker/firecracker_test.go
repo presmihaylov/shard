@@ -83,7 +83,7 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
-	p.SetOwners(h.own, func(string, int, int) error { return nil })
+	p.SetOwners(h.own, func(string, string, int, int) error { return nil })
 	// A boot bounds its vmm on the host cgroup, and a test host has no cgroup hierarchy to bound it on.
 	p.SetCgroupRoot("")
 	// The newest provider holds the live vmms, so a spec's cleanup must stop through it.

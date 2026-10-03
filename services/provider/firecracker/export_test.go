@@ -28,7 +28,7 @@ func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int, jail st
 }
 
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
-func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+func (p *Provider) SetOwners(chown func(name string, uid, gid int) error, ownTap func(namespace, name string, uid, gid int) error) {
 	p.chown, p.ownTap = chown, ownTap
 }
 

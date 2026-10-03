@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -266,6 +267,7 @@ func TestAMicroVMIsAddressedOverItsTap(t *testing.T) {
 		if err != nil || !strings.Contains(string(neigh), "10.213.0.2 lladdr 02:fc:0a:d5:00:02") {
 			t.Errorf("%s: the bridge did not learn the guest from its tap: %v\n%s", phase, err, neigh)
 		}
+		requireVMMIn(t, h.provider, spec.ID, lease.NetnsPath)
 
 		if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
 			t.Fatalf("%s: stop: %v", phase, err)
@@ -535,6 +537,33 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 	if err != nil || !strings.Contains(string(neigh), "10.213.0.3 lladdr 02:fc:0a:d5:00:03") {
 		t.Errorf("the bridge did not learn the fork from its tap: %v\n%s", err, neigh)
 	}
+	requireVMMIn(t, h.provider, fork.ID, fork.Network.NetnsPath)
+}
+
+// requireVMMIn fails unless the sandbox's vmm runs in the network namespace at path, which is never the host's.
+func requireVMMIn(t *testing.T, p models.Provider, id, path string) {
+	t.Helper()
+
+	status, err := p.Status(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Status of %s: %v", id, err)
+	}
+	vmm, want, host := namespaceOf(t, fmt.Sprintf("/proc/%d/ns/net", status.PID)), namespaceOf(t, path), namespaceOf(t, "/proc/1/ns/net")
+	if vmm != want || vmm == host {
+		t.Errorf("the vmm %d of %s is in the network namespace %s, want %s and never the host's %s", status.PID, id, vmm, want, host)
+	}
+}
+
+// namespaceOf names the namespace a path holds by its device and inode, which /proc and the bind mount under /var/run/netns share.
+func namespaceOf(t *testing.T, path string) string {
+	t.Helper()
+
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+
+	return fmt.Sprintf("%d:%d", st.Dev, st.Ino)
 }
 
 // The real vmm a cut fork leaves answers "Not started", and the next daemon ends it, so a remove frees the host (SHARD-295).

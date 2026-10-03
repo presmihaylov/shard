@@ -1,5 +1,5 @@
 // Package network leases every sandbox an address and a port on the host bridge, a veth into its own
-// namespace or a tap for a VM. Host netfilter is the policy of record, never a rule inside the sandbox.
+// namespace, with a tap beside it for a VM. Host netfilter is the policy of record, never a rule inside the sandbox.
 package network
 
 import (
@@ -32,6 +32,9 @@ var DefaultNameservers = []netip.Addr{
 // guestInterface is what the sandbox's own end of the veth pair is called inside its namespace.
 const guestInterface = "eth0"
 
+// tapBridge joins the guest end of the veth to the tap inside a microVM's namespace.
+const tapBridge = "br0"
+
 // hostInterfacePrefix names the host end. A name may hold 15 characters, so the address offset that
 // follows it keeps every name unique and short enough for any IPv4 subnet.
 const hostInterfacePrefix = "shardv"
@@ -61,8 +64,7 @@ type Config struct {
 	// a user namespace of its own needs for CAP_NET_ADMIN over its netns. Nil or unset is the host's,
 	// which gVisor joins. Asked at Allocate and never at boot, so the host side needs no substrate.
 	Userns func() (netns.IDMapping, error)
-	// Tap gives each sandbox a tap on the host instead of a veth into a namespace, for a vmm to open.
-	// The spec then names no netns, and the provider addresses the guest itself.
+	// Tap puts a tap beside the guest end of the veth, for a vmm that joins the namespace and addresses the guest itself.
 	Tap bool
 	// Report takes the held sandboxes of a ReapplyAll, which then succeeds; nil fails it instead.
 	Report func(format string, v ...any)
@@ -286,23 +288,15 @@ func (s *Service) owner() (netns.IDMapping, error) {
 
 // spec is what the provider joins. It is derived, so any shard process can rebuild it from the record.
 func (s *Service) spec(id string, address netip.Addr, owner netns.IDMapping) models.NetworkSpec {
-	spec := models.NetworkSpec{
+	return models.NetworkSpec{
 		Address:       netip.PrefixFrom(address, s.cfg.Subnet.Bits()),
 		Gateway:       s.gateway,
 		HostInterface: s.hostInterface(address),
 		// Cloned: the spec crosses into the provider and the bundle, and neither may reach back here.
 		Nameservers: slices.Clone(s.cfg.Nameservers),
+		NetnsPath:   netns.NamespacePath(id),
+		Userns:      userns(id, owner),
 	}
-
-	// A tap has no namespace to join: the vmm opens the host end and the guest addresses its own side.
-	if s.cfg.Tap {
-		return spec
-	}
-
-	spec.NetnsPath = netns.NamespacePath(id)
-	spec.Userns = userns(id, owner)
-
-	return spec
 }
 
 // userns is the user namespace the guest joins, which is none unless the config asks for one.
@@ -341,18 +335,37 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr, own
 
 	// A tap's guest side is inside the VM, which the provider addresses once the guest is up.
 	if s.cfg.Tap {
-		return nil
+		return s.bridgeTap(ctx, id, host)
 	}
 
 	return s.configureGuest(ctx, id, address)
 }
 
-// link makes the host interface: a tap the vmm opens, or one end of a veth whose other end is in the netns.
-func (s *Service) link(ctx context.Context, id, host string, owner netns.IDMapping) error {
-	if s.cfg.Tap {
-		return s.manager.AddTap(ctx, host)
+// bridgeTap names the tap after the host end, as older records and snapshots do, and bridges it to the veth with no address.
+func (s *Service) bridgeTap(ctx context.Context, id, tap string) error {
+	if err := s.manager.AddTapIn(ctx, id, tap); err != nil {
+		return err
 	}
 
+	if err := s.manager.AddBridgeIn(ctx, id, tapBridge); err != nil {
+		return err
+	}
+
+	for _, port := range []string{guestInterface, tap} {
+		if err := s.manager.AttachBridgeIn(ctx, id, port, tapBridge); err != nil {
+			return err
+		}
+
+		if err := s.manager.SetUpIn(ctx, id, port); err != nil {
+			return err
+		}
+	}
+
+	return s.manager.SetUpIn(ctx, id, tapBridge)
+}
+
+// link makes the netns and the veth whose host end is the sandbox's port.
+func (s *Service) link(ctx context.Context, id, host string, owner netns.IDMapping) error {
 	if err := s.addNamespace(ctx, id, owner); err != nil {
 		return err
 	}
