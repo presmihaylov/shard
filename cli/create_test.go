@@ -150,10 +150,10 @@ func TestParseCreateRestartFlags(t *testing.T) {
 
 // The image's own command never runs, so a policy with no command after the image is refused by its flag.
 func TestParseCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
-	for _, policy := range []string{"on-failure", "always"} {
-		_, err := parseCreate([]string{"--restart", policy, "alpine:3.20"})
-		if err == nil || !strings.Contains(err.Error(), "--restart needs a command after the image") {
-			t.Errorf("parseCreate(--restart %s) with no command = %v, want the refusal naming --restart", policy, err)
+	for _, flags := range [][]string{{"--restart", "always"}, {"--restart", "on-failure", "--restart-retries", "3"}} {
+		_, err := parseCreate(append(flags, "alpine:3.20"))
+		if err == nil || !strings.Contains(err.Error(), "--restart needs a command") {
+			t.Errorf("parseCreate(%v) with no command = %v, want the refusal naming --restart", flags, err)
 		}
 	}
 
