@@ -252,3 +252,153 @@ func mustRun(t *testing.T, binary string, args ...string) {
 func names(left []Leftover, what string) bool {
 	return slices.ContainsFunc(left, func(l Leftover) bool { return l.What == what })
 }
+
+// A firecracker root keeps its data image and the image lock beside it, under the same prefix: they are files to take, not roots to read (SHARD-377).
+func TestFindTakesAFileBesideARootAsAFile(t *testing.T) {
+	useFstab(t, "")
+	prefix := filepath.Join(t.TempDir(), "shard-itest")
+	root := prefix + "1"
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{root + ".xfs", root + ".xfs.lock"} {
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	left, err := Find(prefix)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	want := []string{"the temp root " + root, "the temp file " + root + ".xfs", "the temp file " + root + ".xfs.lock"}
+	if got := described(left); !slices.Equal(got, want) {
+		t.Fatalf("Find = %q, want %q", got, want)
+	}
+	if err := removeEach(left); err != nil {
+		t.Fatal(err)
+	}
+	if rest, err := filepath.Glob(prefix + "*"); err != nil || len(rest) != 0 {
+		t.Errorf("the sweep left %v (%v)", rest, err)
+	}
+}
+
+// The image goes last: the mount over it, the loop under that mount and the fstab line that names it all go first (SHARD-377).
+func TestFindTakesAnImageOnlyAfterItsMountLoopAndLine(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("a loop mount wants root")
+	}
+	if err := xfs.Have(); err != nil {
+		t.Skip(err)
+	}
+	prefix := filepath.Join(t.TempDir(), "shard-itest")
+	root := prefix + "1"
+	image := root + ".xfs"
+	useFstab(t, image+" "+root+" xfs loop 0 0\n")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := xfs.MakeImage(t.Context(), image, 320<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := xfs.Mount(t.Context(), image, root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unmount(t, root) })
+
+	left, err := Find(prefix)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	order := []string{"the mount", "the loop", "the fstab line", "the temp file"}
+	at := make([]int, len(order))
+	for i, what := range order {
+		at[i] = slices.IndexFunc(left, func(l Leftover) bool { return l.What == what })
+	}
+	if slices.Contains(at, -1) || !slices.IsSorted(at) {
+		t.Fatalf("Find = %q, want %v in that order", described(left), order)
+	}
+
+	if err := removeEach(left); err != nil {
+		t.Fatal(err)
+	}
+	if rest, err := Find(prefix); err != nil || len(rest) != 0 {
+		t.Errorf("after the sweep Find = %q (%v), want nothing", described(rest), err)
+	}
+}
+
+// unmount gives back a mount a failed test left; the unmount clears the loop under it too.
+func unmount(t *testing.T, point string) {
+	t.Helper()
+
+	listed, err := os.ReadFile(mountinfo)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if len(mountPoints(string(listed), []string{point})) == 0 {
+		return
+	}
+	if err := run("umount", point)(); err != nil {
+		t.Error(err)
+	}
+}
+
+// useFstab points the fstab this package reads at a file of the test's own, holding lines.
+func useFstab(t *testing.T, lines string) {
+	t.Helper()
+
+	orig := xfs.FstabPath
+	t.Cleanup(func() { xfs.FstabPath = orig })
+	xfs.FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := os.WriteFile(xfs.FstabPath, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func described(left []Leftover) []string {
+	out := make([]string, 0, len(left))
+	for _, l := range left {
+		out = append(out, l.String())
+	}
+
+	return out
+}
+
+// A cgroup parent the host had before the run stays as it was, and one the run made goes once it is idle (SHARD-377).
+func TestSweepDropsOnlyACgroupParentTheRunMade(t *testing.T) {
+	useFstab(t, "")
+	prefix := filepath.Join(t.TempDir(), "shard-itest")
+	orig := parentPath
+	t.Cleanup(func() { parentPath, parentMade = orig, false })
+
+	for _, tc := range []struct {
+		name string
+		had  bool
+	}{{"the host had it", true}, {"the run made it", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			parentPath = filepath.Join(t.TempDir(), cgroupParent)
+			if tc.had {
+				if err := os.Mkdir(parentPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := Refuse(prefix); err != nil {
+				t.Fatalf("Refuse: %v", err)
+			}
+			if !tc.had {
+				if err := os.Mkdir(parentPath, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			left, err := leftParent()
+			if err != nil {
+				t.Fatalf("leftParent: %v", err)
+			}
+			if named := len(left) == 1 && left[0].Path == parentPath; named == tc.had {
+				t.Errorf("leftParent = %v, want the parent named %v", described(left), !tc.had)
+			}
+		})
+	}
+}

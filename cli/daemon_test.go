@@ -65,11 +65,22 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// itestPrefix names the temp roots the integration teardown sweeps, so a root a test here leaves behind goes with them.
+const itestPrefix = "shard-itest"
+
+// A root this helper made and a test failed to remove is still the sweep's to take back (SHARD-377).
+func TestShortRootSitsUnderThePrefixTheSweepOwns(t *testing.T) {
+	root := shortRoot(t)
+	if filepath.Dir(root) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(root), itestPrefix) {
+		t.Errorf("shortRoot = %s, want %s* under %s", root, itestPrefix, os.TempDir())
+	}
+}
+
 // shortRoot skips t.TempDir, whose path carries the test name past the 104 bytes a macOS socket path allows.
 func shortRoot(t *testing.T) string {
 	t.Helper()
 
-	root, err := os.MkdirTemp("", "shard") //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp("", itestPrefix) //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -109,12 +120,12 @@ func socketClient(root string) *http.Client {
 	}}}
 }
 
-// The daemon needs no provider and no runsc for this: the socket and the records are plain files.
+// The daemon needs no runsc for this: the socket and the records are plain files, and gvisor keeps a /dev/kvm host from provisioning a data image.
 func TestDaemonAnswersOnTheSocketUntilTheContextEnds(t *testing.T) {
 	root := shortRoot(t)
 	out := &syncBuffer{}
 
-	cancel, done := startDaemon(t, App{Version: "v-test", Root: root}, out)
+	cancel, done := startDaemon(t, App{Version: "v-test", Root: root, Provider: "gvisor"}, out)
 
 	resp, err := socketClient(root).Get("http://shard/v0/version")
 	if err != nil {

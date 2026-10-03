@@ -26,6 +26,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/provider/firecracker"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -92,7 +93,7 @@ func run(m *testing.M) (int, error) {
 
 // stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
 // so a run refuses to start on it.
-func stateRoots() []string { return underTemp("shard-itest", "shard-build", "shard-daemon") }
+func stateRoots() []string { return underTemp(itestPrefix, "shard-build", "shard-daemon") }
 
 // tempPrefixes adds the scratch directory of an exec, which a killed daemon leaves and nothing pins.
 func tempPrefixes() []string { return append(stateRoots(), underTemp("shard-exec-")...) }
@@ -199,6 +200,25 @@ type testDaemon struct {
 
 // itestProvider names the substrate the suite's daemon runs, so a /dev/kvm host does not auto-pick firecracker and leak a vmm; SHARD_ITEST_PROVIDER picks another for a box run.
 var itestProvider = cmp.Or(os.Getenv("SHARD_ITEST_PROVIDER"), "gvisor")
+
+// itestResources is the bound each create of the suite carries: firecracker refuses an unbounded guest, so a run there takes the floor it boots under.
+func itestResources() models.Resources {
+	if itestProvider != firecracker.Name {
+		return models.Resources{}
+	}
+
+	return models.Resources{MemoryMiB: firecracker.MinMemoryMiB}
+}
+
+// createArgs is the create verb over args, with the suite's bound unless args name their own.
+func createArgs(args ...string) []string {
+	bound := itestResources().MemoryMiB
+	if bound == 0 || slices.Contains(args, "--memory") {
+		return append([]string{"create"}, args...)
+	}
+
+	return append([]string{"create", "--memory", strconv.FormatInt(bound, 10)}, args...)
+}
 
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
 // env is added to the daemon's own environment, which is how a test gives it a different wiring.
@@ -334,7 +354,7 @@ func daemonClient(app App) *client.Client {
 func create(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	t.Helper()
 
-	args := append([]string{"create", testImage, "--"}, argv...)
+	args := createArgs(append([]string{testImage, "--"}, argv...)...)
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -32,6 +32,12 @@ const (
 // cgroupParent is the one cgroup the daemon puts every sandbox under, by id.
 const cgroupParent = "shard"
 
+// parentPath is where the host keeps that cgroup; a test points it at a dir of its own.
+var parentPath = filepath.Join(cgroup.Root, cgroupParent)
+
+// parentMade is whether Refuse found no cgroup parent, which makes the parent this run's to drop.
+var parentMade bool
+
 // apiSockFlag is how pkg/firecracker hands a vmm its api socket, and a socket under a root of ours makes the vmm ours.
 const apiSockFlag = "--api-sock"
 
@@ -74,11 +80,15 @@ func Find(prefixes ...string) ([]Leftover, error) {
 	if err != nil {
 		return nil, err
 	}
-	sandboxes, err := leftSandboxes(prefixes)
+	loops, err := leftLoops(prefixes)
 	if err != nil {
 		return nil, err
 	}
-	roots, err := leftRoots(prefixes)
+	roots, files, err := match(prefixes)
+	if err != nil {
+		return nil, err
+	}
+	sandboxes, err := leftSandboxes(roots)
 	if err != nil {
 		return nil, err
 	}
@@ -92,9 +102,8 @@ func Find(prefixes ...string) ([]Leftover, error) {
 		return nil, err
 	}
 
-	// The order is the order Sweep must take them in: a vmm holds its cgroup and its tap, a mount pins the root
-	// it lives under, and the record under that root is the only handle by which the namespace and the link can be found.
-	return slices.Concat(vmms, mounts, sandboxes, roots, lines), nil
+	// Sweep takes them in this order: a vmm holds its cgroup and tap, a mount pins its root and loop, a record names the netns and link, and an image goes after its loop and line.
+	return slices.Concat(vmms, mounts, loops, sandboxes, taken("the temp root", roots), lines, taken("the temp file", files)), nil
 }
 
 // Sweep takes back everything Find names, then what every root shares once nothing holds it, and what it could not take is what the error names.
@@ -132,16 +141,25 @@ func sweepShared() error {
 	if shown(hostBridge) {
 		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})
 	}
-	parent := filepath.Join(cgroup.Root, cgroupParent)
-	idle, err := idleCgroup(parent)
+	parent, err := leftParent()
 	if err != nil {
 		return err
 	}
-	if idle {
-		left = append(left, Leftover{What: "the cgroup parent", Path: parent, remove: func() error { return cgroup.Remove(parent) }})
+
+	return removeEach(append(left, parent...))
+}
+
+// leftParent names the cgroup parent only when this run made it and no sandbox of any root is under it, so a parent the host had stays as it was.
+func leftParent() ([]Leftover, error) {
+	if !parentMade {
+		return nil, nil
+	}
+	idle, err := idleCgroup(parentPath)
+	if err != nil || !idle {
+		return nil, err
 	}
 
-	return removeEach(left)
+	return []Leftover{{What: "the cgroup parent", Path: parentPath, remove: func() error { return cgroup.Remove(parentPath) }}}, nil
 }
 
 // idleCgroup is whether dir exists and holds no sandbox; every provider makes the parent again on its next create.
@@ -212,6 +230,7 @@ func Release(root string) error {
 // Refuse fails a run on a root an earlier run of the same package left, because its lease pool lives
 // in that root: a new pool would hand out an address the old one holds and delete that sandbox's veth.
 func Refuse(prefixes ...string) error {
+	parentMade = !exists(parentPath)
 	left, err := Find(prefixes...)
 	if err != nil {
 		return err
@@ -264,12 +283,7 @@ func leftMounts(prefixes []string) ([]Leftover, error) {
 
 // leftSandboxes names the namespace and the veth of every sandbox a leftover root still records. The
 // record is what makes them ours: a namespace no root of this package names belongs to another run.
-func leftSandboxes(prefixes []string) ([]Leftover, error) {
-	roots, err := match(prefixes)
-	if err != nil {
-		return nil, err
-	}
-
+func leftSandboxes(roots []string) ([]Leftover, error) {
 	var out []Leftover
 	for _, root := range roots {
 		held, err := sandboxesOf(root)
@@ -311,7 +325,7 @@ func sandboxOf(root, id string) []Leftover {
 		out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
 	}
 	// A stop keeps the cgroup for the rm that never came.
-	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
+	if group := filepath.Join(parentPath, id); exists(group) {
 		out = append(out, Leftover{What: "the cgroup", Path: group, remove: removeCgroup(group)})
 	}
 	if exists(netns.NamespacePath(id)) {
@@ -433,18 +447,13 @@ func removeCgroup(dir string) func() error {
 	}
 }
 
-func leftRoots(prefixes []string) ([]Leftover, error) {
-	roots, err := match(prefixes)
-	if err != nil {
-		return nil, err
+func taken(what string, paths []string) []Leftover {
+	out := make([]Leftover, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, Leftover{What: what, Path: path, remove: removeAll(path)})
 	}
 
-	out := make([]Leftover, 0, len(roots))
-	for _, root := range roots {
-		out = append(out, Leftover{What: "the temp root", Path: root, remove: removeAll(root)})
-	}
-
-	return out, nil
+	return out
 }
 
 // leftFstab names the line that mounts a data image at a root of ours on boot, which outlives the image and the root.
@@ -464,18 +473,88 @@ func leftFstab(prefixes []string) ([]Leftover, error) {
 	return out, nil
 }
 
-// match answers the roots an earlier run of this package left, which is the whole of what it owns.
-func match(prefixes []string) ([]string, error) {
-	var out []string
+// match answers what an earlier run of this package left, which is the whole of what it owns: the roots, and the files beside them such as a data image and its lock.
+func match(prefixes []string) (roots, files []string, err error) {
 	for _, prefix := range prefixes {
 		matches, err := filepath.Glob(prefix + "*")
 		if err != nil {
-			return nil, fmt.Errorf("list the roots under %s: %w", prefix, err)
+			return nil, nil, fmt.Errorf("list the roots under %s: %w", prefix, err)
 		}
-		out = append(out, matches...)
+		for _, path := range matches {
+			info, err := os.Lstat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("stat %s: %w", path, err)
+			}
+			if info.IsDir() {
+				roots = append(roots, path)
+				continue
+			}
+			files = append(files, path)
+		}
+	}
+
+	return roots, files, nil
+}
+
+// loopDevices is where the kernel names the file behind each bound loop device.
+const loopDevices = "/sys/block/loop*/loop/backing_file"
+
+// leftLoops names every loop device over an image of ours, which a mount that went away without its loop leaves bound.
+func leftLoops(prefixes []string) ([]Leftover, error) {
+	bound, err := filepath.Glob(loopDevices)
+	if err != nil {
+		return nil, fmt.Errorf("list the loop devices: %w", err)
+	}
+
+	var out []Leftover
+	for _, file := range bound {
+		dev := "/dev/" + filepath.Base(filepath.Dir(filepath.Dir(file)))
+		image, err := loopImage(dev)
+		if err != nil {
+			return nil, err
+		}
+		if image != "" && hasPrefix(image, prefixes) {
+			out = append(out, Leftover{What: "the loop", Path: dev, remove: detachLoop(dev, image)})
+		}
 	}
 
 	return out, nil
+}
+
+// loopImage is the file a loop device reads, or "" for one bound to nothing.
+func loopImage(dev string) (string, error) {
+	file := filepath.Join("/sys/block", filepath.Base(dev), "loop", "backing_file")
+	blob, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, err)
+	}
+
+	return strings.TrimSuffix(strings.TrimSpace(string(blob)), " (deleted)"), nil
+}
+
+// detachLoop waits out the moment an unmount above still holds the loop, and takes one already cleared as detached.
+func detachLoop(dev, image string) func() error {
+	return func() error {
+		deadline := time.Now().Add(killGrace)
+		for {
+			bound, err := loopImage(dev)
+			if err != nil || bound != image {
+				return err
+			}
+			// A detach that loses the race to the clear is moot, so only a loop still bound at the deadline names its error.
+			detach := run("losetup", "-d", dev)()
+			if !time.Now().Before(deadline) {
+				return errors.Join(fmt.Errorf("%s still reads %s", dev, image), detach)
+			}
+			time.Sleep(pollInterval)
+		}
+	}
 }
 
 // mountPoints reads the fifth field of each line of mountinfo, which is where the mount is attached.

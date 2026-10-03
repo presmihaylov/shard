@@ -274,11 +274,11 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 
 	app, out := newCreateApp(t)
 
-	args := []string{"create"}
+	var args []string
 	if user != "" {
 		args = append(args, "--user", user)
 	}
-	if err := app.Run(t.Context(), append(args, testImage, "--", "/bin/true")); err != nil {
+	if err := app.Run(t.Context(), createArgs(append(args, testImage, "--", "/bin/true")...)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 

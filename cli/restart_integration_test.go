@@ -17,7 +17,7 @@ func TestTheSupervisorStartsTheEntrypointAgainUntilThePolicyGivesUp(t *testing.T
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	args := []string{"create", "--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 1"}
+	args := createArgs("--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 1")
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestAlwaysStartsTheEntrypointAgainWithoutEnd(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	args := []string{"create", "--restart", "always", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 0"}
+	args := createArgs("--restart", "always", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 0")
 	if err := app.Run(t.Context(), args); err != nil {
 		t.Fatalf("create: %v", err)
 	}
