@@ -24,14 +24,15 @@ func MemoryCeiling(r models.Resources) int64 {
 	return (r.MemoryMiB + vmmOverheadMiB) * bytesPerMiB
 }
 
-// bound makes the host cgroup a boot spawns this sandbox's vmm into. A provider without a cgroup
+// bound makes the host cgroup the jailer puts this sandbox's vmm in. A provider without a cgroup
 // root is a test one, on a host that has no cgroup v2 hierarchy: New always names the host's mount.
-func (p *Provider) bound(id string, r models.Resources) (string, error) {
+func (p *Provider) bound(id string, r models.Resources) error {
 	if p.cgroupRoot == "" {
-		return "", nil
+		return nil
 	}
+	_, err := boundVMM(p.cgroupRoot, id, r)
 
-	return boundVMM(p.cgroupRoot, id, r)
+	return err
 }
 
 // sweep drops the host cgroup of a sandbox that is gone, which nothing else on the host would empty.
