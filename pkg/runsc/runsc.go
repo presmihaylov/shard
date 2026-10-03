@@ -455,6 +455,15 @@ func (r *Runner) Checkpoint(ctx context.Context, id, dir string) error {
 	return r.run(ctx, io.Discard, "checkpoint", "--image-path", dir, id)
 }
 
+// CheckpointRunning writes the container's state into dir and keeps the same sentry running after the save; a container Pause froze stays frozen until Resume.
+func (r *Runner) CheckpointRunning(ctx context.Context, id, dir string) error {
+	if dir == "" {
+		return errors.New("no image path: runsc checkpoint has nowhere to write")
+	}
+
+	return r.run(ctx, io.Discard, "checkpoint", "--leave-running", "--image-path", dir, id)
+}
+
 // RestoreOptions is the bundle the container comes back over and the checkpoint it comes back from.
 type RestoreOptions struct {
 	Bundle string

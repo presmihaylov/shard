@@ -163,9 +163,9 @@ func (p *Provider) Close() error {
 	return errors.Join(errs...)
 }
 
-// Capabilities: the three optional verbs are one VZ save and two restores, so a host without them has none.
+// Capabilities: pause and resume are one VZ save and one restore, so a host without them has neither; fork waits for SHARD-463.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore}
+	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore}
 }
 
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.

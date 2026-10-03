@@ -628,7 +628,7 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo $i > /count; sleep 0.2; done")
@@ -647,7 +647,7 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	fork := h.newSpec(t)
 	fork.Name = "twin"
 	fork.Network.Nameservers = []netip.Addr{gateway}
-	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
@@ -688,7 +688,7 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 // Every restore of one save wakes with the same crng key, so the resumed source and its forks each read their own bytes only after a reseed (SHARD-293).
 func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
@@ -709,7 +709,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	ids := []string{spec.ID}
 	for range 4 {
 		fork := h.newSpec(t)
-		if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+		if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, fork.ID)
@@ -747,7 +747,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 // A process that runs across the save draws its next bytes after the restore, so two forks share no draw past the first line they differ on (SHARD-310).
 func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
@@ -768,7 +768,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	var forks []models.SandboxSpec
 	for range 2 {
 		fork := h.newSpec(t)
-		if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+		if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 			t.Fatal(err)
 		}
 		forks = append(forks, fork)
@@ -810,7 +810,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 // A clone boots from the disk alone, so a pause freezes the root under a writer in mid-loop: the clone holds every count the writer printed, and the source and a fork write again after (SHARD-296).
 func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	// Each count reaches the disk before the log, and a cold boot of the disk finds the file and only sleeps.
@@ -851,7 +851,7 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	t.Logf("the source printed %d before its pause, and the clone holds %d", printed, onDisk)
 
 	fork := h.newSpec(t)
-	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	if got := execIn(t, h, fork.ID, "echo forked > /root/forked && cat /root/forked"); got != "forked" {

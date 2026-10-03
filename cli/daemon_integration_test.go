@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/runc"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
 )
@@ -85,7 +86,7 @@ func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
 		fields[name] = strings.TrimSpace(value)
 	}
 
-	// sysbox and runc embed models.NoSnapshots, so they report none of the three verbs.
+	// sysbox and runc embed models.NoSnapshots, so they report none of the three verbs, and only gvisor forks a running sandbox (SHARD-457).
 	snapshots := strconv.FormatBool(itestProvider != sysbox.Name && itestProvider != runc.Name)
 	want := map[string]string{
 		"pid":        strconv.Itoa(daemonUnderTest.cmd.Process.Pid),
@@ -93,7 +94,7 @@ func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
 		"provider":   itestProvider,
 		"pause":      snapshots,
 		"resume":     snapshots,
-		"fork":       snapshots,
+		"fork":       strconv.FormatBool(itestProvider == gvisor.Name),
 		"plain_port": "30080",
 		"tls_port":   "30443",
 	}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SHARD-17: the whole sandbox lifecycle on a no-KVM Linux box, from an install to a clean host.
 # It installs the two binaries, starts shard daemon over the run's root (SHARD-124), creates a
-# sandbox, execs into it twice over the same filesystem, pauses, resumes and forks it (SHARD-36),
+# sandbox, execs into it twice over the same filesystem, forks it while it runs, pauses and resumes it (SHARD-36, SHARD-457),
 # stops it, removes it, stops the daemon, and then proves the host holds nothing either left behind.
 # One sandbox holds a secret and a policy, so it is fronted: the run starts an echo server in a
 # netns of its own and proves the proxy puts the value in on the granted host only (SHARD-71).
@@ -662,8 +662,10 @@ runtime_binary() {
 	esac
 }
 
-# snapshot_steps pause, fork and resume the sandbox, which only a provider that holds snapshots can do.
+# snapshot_steps fork the running sandbox, then pause and resume it, which only a provider that holds snapshots can do.
 snapshot_steps() {
+	fork_steps
+
 	step "pause the sandbox"
 	# A restore keeps the guest's processes; a restart makes new ones. The entrypoint's pid and start
 	# time tell the two apart from outside, and the file proves the layer went with the memory.
@@ -699,36 +701,8 @@ snapshot_steps() {
 	echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
 	say "exec refused the paused sandbox and named the resume"
 
-	step "fork the paused snapshot into a second sandbox"
-	# A fork reads what the pause wrote, so it takes a paused source and is the sandbox as it was at the pause.
-	timed "fork" fork_it
-	[ -n "${FORK_ID}" ] && [ "${FORK_ID}" != "${ID}" ] || fail "fork printed '${FORK_ID}', want a new id"
-	FORK_RECORD="${SHARD_ROOT}/sandboxes/${FORK_ID}/sandbox.json"
-	FORK_ADDRESS=$(grep -o '"address": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
-	FORK_LINK=$(grep -o '"host_interface": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
-	[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
-	say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
-
-	[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
-	[ "$(listed_state "${ID}")" = "paused" ] || fail "the fork moved the source off paused"
-	say "ls shows the fork running beside the paused source"
-
-	holds '"E2E_TOKEN"' shard inspect "${FORK_ID}" || fail "the fork did not carry the grant"
-	holds '"policy": "e2e-policy"' shard inspect "${FORK_ID}" || fail "the fork did not carry the policy"
-	expect_blocked "${FORK_ID}" "the policy holds on the fork"
-	expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
-	expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
-
-	expect_exec_in "${FORK_ID}" "before-the-pause" "the fork holds the file the source wrote before the pause" /bin/cat /root/at-pause
-	expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
-		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${FORK_ADDRESS}'"
-	expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
-		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
-	expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
-	shard exec "${FORK_ID}" /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
-
 	step "resume the sandbox"
-	# The fork read the snapshot and left it, so the resume still has it to load.
+	# A resume loads the snapshot and leaves it, so a second resume could load it again.
 	timed "resume" resume_it
 	grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the resume"
 	grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the resume changed the address"
@@ -740,7 +714,54 @@ snapshot_steps() {
 	expect_network "after the resume"
 	expect_blocked "${ID}" "the policy holds after the resume"
 	expect_fronted "${ID}" "the proxy fronts the sandbox after the resume"
+}
 
+# fork_steps fork the running sandbox where the provider forks, and prove the refusal by name where it does not (SHARD-457).
+fork_steps() {
+	if [ "$(status_field fork)" != "true" ]; then
+		step "fork is refused by name on ${PROVIDER}"
+		CODE=0
+		REFUSAL=$(shard fork --name e2e-fork "${ID}" 2>&1) || CODE=$?
+		[ "${CODE}" != "0" ] || fail "fork ran on ${PROVIDER}, which claims no fork"
+		echo "${REFUSAL}" | grep -q "${PROVIDER}" || fail "the fork refusal '${REFUSAL}' does not name ${PROVIDER}"
+		[ "$(listed_state "${ID}")" = "running" ] || fail "the refused fork moved the source off running"
+		say "fork is refused by name on ${PROVIDER}, and the source runs on"
+
+		return 0
+	fi
+
+	step "fork the running sandbox into a second sandbox"
+	# A fork captures the source as it runs, and the same runtime runs on: same host pid, same entrypoint (SHARD-457).
+	shard exec "${ID}" /bin/sh -c 'echo before-the-fork > /root/at-fork' >/dev/null
+	CLOCK_BEFORE_FORK=$(entrypoint_clock "${ID}")
+	SOURCE_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
+	timed "fork" fork_it
+	[ -n "${FORK_ID}" ] && [ "${FORK_ID}" != "${ID}" ] || fail "fork printed '${FORK_ID}', want a new id"
+	FORK_RECORD="${SHARD_ROOT}/sandboxes/${FORK_ID}/sandbox.json"
+	FORK_ADDRESS=$(grep -o '"address": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+	FORK_LINK=$(grep -o '"host_interface": *"[^"]*"' "${FORK_RECORD}" | cut -d'"' -f4)
+	[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
+	say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
+
+	[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
+	[ "$(listed_state "${ID}")" = "running" ] || fail "the fork moved the source off running"
+	grep -Eq "\"pid\": *${SOURCE_PID}([^0-9]|$)" "${RECORD}" || fail "the source is no longer host pid ${SOURCE_PID} after the fork"
+	expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE_FORK}" "the source's entrypoint is the same process with the same start time, so the source ran on"
+	say "ls shows the fork running beside the source, which runs on as host pid ${SOURCE_PID}"
+
+	holds '"E2E_TOKEN"' shard inspect "${FORK_ID}" || fail "the fork did not carry the grant"
+	holds '"policy": "e2e-policy"' shard inspect "${FORK_ID}" || fail "the fork did not carry the policy"
+	expect_blocked "${FORK_ID}" "the policy holds on the fork"
+	expect_exec_in "${FORK_ID}" "mock-E2E_TOKEN" "the fork holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
+	expect_fronted "${FORK_ID}" "the proxy fronts the fork on its own address"
+
+	expect_exec_in "${FORK_ID}" "before-the-fork" "the fork holds the file the source wrote before the fork" /bin/cat /root/at-fork
+	expect_exec_in "${FORK_ID}" "${FORK_ADDRESS}" "the fork holds its own address" \
+		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${FORK_ADDRESS}'"
+	expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
+		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+	expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
+	shard exec "${FORK_ID}" /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
 	CODE=0
 	shard exec "${ID}" /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
 	[ "${CODE}" != "0" ] || fail "the source sees the file the fork wrote"
@@ -756,7 +777,7 @@ snapshot_steps() {
 	# The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
 	RECONCILE_ID=""
 	RECONCILE_LINK=""
-	expect_exec "before-the-pause" "the source runs on after the fork is gone" /bin/cat /root/at-pause
+	expect_exec "before-the-fork" "the source runs on after the fork is gone" /bin/cat /root/at-fork
 }
 
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.

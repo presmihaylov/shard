@@ -448,7 +448,7 @@ func TestManyMicroVMsForkFromOneSnapshot(t *testing.T) {
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t), h.forkSpec(t)}
 	for _, fork := range forks {
 		began := time.Now()
-		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork into %s: %v", fork.ID, err)
 		}
 		// hypeman takes about 62ms for the same verb over the same substrate.
@@ -516,7 +516,7 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 	if fork.Network.Address.String() != "10.213.0.3/24" || fork.Network.HostInterface != "shardv3" {
 		t.Fatalf("the fork's lease is %+v, want the second address of %s over shardv3", fork.Network, testSubnet)
 	}
-	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if out, err := exec.Command("ip", "neigh", "flush", "dev", testBridge).CombinedOutput(); err != nil {

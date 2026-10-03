@@ -156,6 +156,10 @@ deletes one. It handles these cases:
   because a pause can commit after the tick's first probe.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports. The daemon drops the exit status of the run that ended.
+- A gVisor source that a live fork marked when the daemon was cut carries the mark beside it, frozen
+  or already running again. The first read of it, at startup or on a liveness tick, thaws a frozen
+  source and drops the mark only once the source runs again. A stale mark on a running source would
+  pass a later real pause for a cut fork, so the read drops it there too (SHARD-457).
 - A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
   before the fork or clone finished`. No verb leaves a record in `created`. Only the copy of a fork
   or a clone passes through that state, and the caller got an error instead of the id. The daemon
@@ -426,8 +430,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   404, and 409 when the sandbox is not paused, when its record names no snapshot, or for an
   unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, which runs
-  from the source's snapshot. Errors: 400 for a body that does not decode or a name that does not
-  validate, 404, and 409 when the source has no snapshot or for an unclaimed verb.
+  from a capture of the running source; the source runs on as it was (SHARD-457). Errors: 400 for a
+  body that does not decode or a name that does not validate, 404, and 409 when the source is not
+  running or for an unclaimed verb.
 - `POST /v0/sandboxes/{id}/clone` takes `{"name"}` and answers 201 with the new record, which runs
   from a copy of the source's files. Errors: 400 as for a fork, 404, and 409 when the source is
   still up.
@@ -604,12 +609,12 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
-| `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
+| `sandbox_not_running` | 409 | exec, pause or fork on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up, and rm without force on a paused one, whose snapshot a resume needs |
-| `sandbox_not_paused` | 409 | resume or fork on a sandbox that is not paused |
+| `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
 | `sandbox_failed` | 409 | any verb except a get or an `rm` on a create that ended `failed`. The message carries the `failed_reason`, and `rm` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
-| `no_snapshot` | 409 | resume or fork on a paused sandbox whose record names no snapshot |
+| `no_snapshot` | 409 | resume on a paused sandbox whose record names no snapshot |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |

@@ -133,6 +133,7 @@ func (RunscStub) Start(ctx context.Context, id string) error                    
 func (RunscStub) Pause(ctx context.Context, id string) error                          { return nil }
 func (RunscStub) Resume(ctx context.Context, id string) error                         { return nil }
 func (RunscStub) Checkpoint(ctx context.Context, id, dir string) error                { return nil }
+func (RunscStub) CheckpointRunning(ctx context.Context, id, dir string) error         { return nil }
 func (RunscStub) Restore(ctx context.Context, id string, opts runsc.RestoreOptions) error {
 	return nil
 }

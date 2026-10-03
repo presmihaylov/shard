@@ -61,3 +61,8 @@ const SupervisorFailedFile = supervisorFailedFile
 
 // ReseedFile is the marker a restore keeps until its guest is reseeded, which a test writes to stand in for a daemon cut before the reseed.
 const ReseedFile = reseedFile
+
+// ForkSnapshot is the restore of a paused snapshot into a new sandbox, which SHARD-462 builds the live fork on and the public Fork no longer offers.
+func (p *Provider) ForkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	return p.forkSnapshot(ctx, dir, spec)
+}

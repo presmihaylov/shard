@@ -75,7 +75,7 @@ restore that the old daemon started can still run where the runtime cannot see i
 means that the sandbox is up. It does not mean that a workload executes in it. A sandbox created
 with no command runs only `shard-init`, because the image's own ENTRYPOINT and CMD never run, and
 its `exit_status` stays empty. When the entrypoint finishes, the sandbox stays `running` and
-you can still `exec` or `pause` it, and `fork` it once paused. E2B, Modal, Vercel and Daytona all
+you can still `exec`, `pause` or `fork` it. E2B, Modal, Vercel and Daytona all
 work this way. There is no eighth state for an exited entrypoint. Instead, the liveness task writes
 the exit into `exit_status` on the record, which stays `running`, so `shard ls` prints
 `running (exited 0)`. `stop` is the only thing that ends a sandbox.
@@ -135,10 +135,14 @@ them.
 **`rm` is not a state.** It removes the record and everything under it. `Provider.Remove` force-ends
 a running sandbox instead of refusing it, because nothing else drops the rootfs mount.
 
-**`fork` is not a transition.** It takes a `paused` source only, because it reads the snapshot the
-pause wrote, and it refuses any other state. It creates a second sandbox in `running` and leaves the
-source `paused`. A snapshot is immutable and a resume does not consume it, so one `pause` followed by
-one `shard fork <source>` per new sandbox is the primitive for a warm pool.
+**`fork` is not a transition.** It takes a `running` source only and refuses any other state
+(SHARD-457). It freezes the source for a moment, captures its memory and files, and lets the same
+runtime run on, so the source stays `running` with its pid and its record. It creates a second
+sandbox in `running` from that capture, never from an older snapshot. One `shard fork <source>` per
+new sandbox is the primitive for a warm pool. On gVisor the freeze lasts at most 10 minutes, and a
+capture still in flight then fails and thaws the source. A daemon cut while the source is frozen
+leaves a mark beside it, and the next read of that source thaws it. A fork cut before its restore
+gives back everything it claimed, and one cut later keeps a copy that the runtime reports alive.
 
 **`clone` is not a transition either.** It creates a second sandbox in `running` over a copy of the
 files that a `stopped` or `paused` source kept. It runs the entrypoint from the beginning, so it acts

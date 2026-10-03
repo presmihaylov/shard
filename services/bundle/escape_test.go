@@ -47,7 +47,7 @@ func TestForkRefusesAGuestSymlinkOutOfTheLayer(t *testing.T) {
 			plantLink(t, filepath.Join(b.Upper, "etc"), link(host))
 
 			snapshot := t.TempDir()
-			if err := b.Export(snapshot); err != nil {
+			if err := b.Export(t.Context(), snapshot); err != nil {
 				t.Fatalf("Export: %v", err)
 			}
 

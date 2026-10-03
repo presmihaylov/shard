@@ -187,10 +187,11 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 }
 
 func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
-	for _, verb := range []string{"fork", "clone"} {
+	// A fork captures a running source (SHARD-457), and a clone copies one that holds still.
+	for verb, source := range map[string]models.Sandbox{"fork": running(), "clone": paused()} {
 		var out bytes.Buffer
 
-		app, d := newClientApp(t, &out, paused())
+		app, d := newClientApp(t, &out, source)
 
 		if err := app.Run(t.Context(), []string{verb, "--name", "web-2", "web"}); err != nil {
 			t.Fatalf("%s: %v", verb, err)
@@ -199,7 +200,7 @@ func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
 		if got := strings.TrimSpace(out.String()); got != "sandbox2" {
 			t.Errorf("%s printed %q, want the new id", verb, got)
 		}
-		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != paused().Image {
+		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
 			t.Errorf("%s created %+v, want the source's image under the new name", verb, got)
 		}
 	}

@@ -17,7 +17,7 @@ func TestNoSnapshotsRefusesEveryOptionalVerbByName(t *testing.T) {
 	cases := map[string]error{
 		models.VerbPause:  n.Pause(t.Context(), "amber-otter-1a2b", "/snap"),
 		models.VerbResume: n.Resume(t.Context(), "amber-otter-1a2b", "/snap"),
-		models.VerbFork:   n.Fork(t.Context(), "/snap", models.SandboxSpec{}),
+		models.VerbFork:   n.Fork(t.Context(), "amber-otter-1a2b", models.SandboxSpec{}),
 	}
 
 	for verb, err := range cases {

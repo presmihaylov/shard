@@ -67,10 +67,8 @@ type Provider interface {
 	Pause(ctx context.Context, id string, dir string) error
 	// Resume brings the sandbox back from the snapshot in dir and does not consume it. Optional.
 	Resume(ctx context.Context, id string, dir string) error
-	// Fork starts one more sandbox from the snapshot in dir. It writes nothing of the source and consumes
-	// nothing of the snapshot, so any number of forks of one snapshot run at once, each on its own files.
-	// Optional.
-	Fork(ctx context.Context, dir string, spec SandboxSpec) error
+	// Fork starts one more sandbox from a capture of the running sandbox sourceID, which runs on as it was; never from an older snapshot (SHARD-457). Optional.
+	Fork(ctx context.Context, sourceID string, spec SandboxSpec) error
 	// AdoptStaging settles the snapshot staging a cut pause left beside dir at daemon start: a provider that never reads a staged snapshot drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
 	AdoptStaging(dir string) error
 }

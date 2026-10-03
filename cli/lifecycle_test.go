@@ -468,7 +468,7 @@ func stopped() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
-// paused is the record of a sandbox that holds a snapshot, which is what resume and fork are given.
+// paused is the record of a sandbox that holds a snapshot, which is what resume is given.
 func paused() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1"}
 }

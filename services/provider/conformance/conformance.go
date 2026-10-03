@@ -61,7 +61,7 @@ const (
 	execCancelDelay = 500 * time.Millisecond
 )
 
-// forkCount is how many sandboxes one snapshot feeds at once: three, so nothing in a provider can count on a pair.
+// forkCount is how many sandboxes one running source feeds: three, so nothing in a provider can count on a pair.
 const forkCount = 3
 
 // Run executes the suite. A verb with a false capability must refuse before its subtest skips.
@@ -75,13 +75,9 @@ func Run(t *testing.T, s Subject) {
 	caps := s.Provider.Capabilities()
 
 	t.Run("CapabilitiesAreCoherent", func(t *testing.T) {
-		// Both verbs need a snapshot, and only Pause makes one.
+		// Resume needs a snapshot, and only Pause makes one; a fork captures its running source itself (SHARD-457).
 		if caps.Resume && !caps.Pause {
 			t.Error("Resume: true with Pause: false; nothing can make the snapshot")
-		}
-
-		if caps.Fork && !caps.Pause {
-			t.Error("Fork: true with Pause: false; nothing can make the snapshot")
 		}
 
 		// A snapshot nothing can restore is not a capability.
@@ -572,47 +568,42 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("Fork", func(t *testing.T) {
 		id := s.running(t)
-		dir := s.snapshotOf(t, id, caps.Pause)
-		err := s.Provider.Fork(t.Context(), dir, copyOf(s.NewSpec(t)))
+		err := s.Provider.Fork(t.Context(), id, copyOf(s.NewSpec(t)))
 		s.check(t, models.VerbFork, caps.Fork, err)
 	})
 
-	// One snapshot feeds as many sandboxes as are asked of it, none of them is the source, and the source comes back after them.
-	t.Run("ManyForksFromOneSnapshot", func(t *testing.T) {
+	// A running source feeds as many forks as are asked of it, each from a capture of its own, and it runs on through them as it was (SHARD-457).
+	t.Run("ManyForksOfARunningSource", func(t *testing.T) {
 		if !caps.Fork {
 			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbFork)
 		}
 
 		source := s.running(t)
+		before := s.status(t, source)
 		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo source > " + s.scratch("conformance-fork"))}); status.Code != 0 {
 			t.Fatalf("the write into the source exited %d", status.Code)
-		}
-
-		dir := s.SnapshotDir(t)
-		if err := s.Provider.Pause(t.Context(), source, dir); err != nil {
-			t.Fatalf("Pause: %v", err)
-		}
-		if s.status(t, source).Alive() {
-			t.Fatal("the source is still alive after a Pause, and its snapshot is what holds it now")
 		}
 
 		forks := make([]models.SandboxSpec, forkCount)
 		for i := range forks {
 			forks[i] = copyOf(s.NewSpec(t))
-			if err := s.Provider.Fork(t.Context(), dir, forks[i]); err != nil {
-				t.Fatalf("fork %d of %d from one snapshot: %v", i+1, forkCount, err)
+			if err := s.Provider.Fork(t.Context(), source, forks[i]); err != nil {
+				t.Fatalf("fork %d of %d of one running source: %v", i+1, forkCount, err)
+			}
+			if after := s.status(t, source); after.State != models.StateRunning || after.PID != before.PID {
+				t.Fatalf("the source is %+v after fork %d, want it running as pid %d, the runtime it had", after, i+1, before.PID)
 			}
 		}
 
 		// Each fork is a sandbox of its own: its own process, and a command of its own that runs in it.
-		pids := map[int]string{}
+		pids := map[int]string{before.PID: source}
 		for _, fork := range forks {
 			status := s.status(t, fork.ID)
 			if !status.Alive() || status.PID <= 0 {
 				t.Fatalf("fork %s is %+v, want it running with a pid of its own", fork.ID, status)
 			}
 			if other, held := pids[status.PID]; held {
-				t.Errorf("fork %s runs as pid %d, which fork %s already holds", fork.ID, status.PID, other)
+				t.Errorf("fork %s runs as pid %d, which %s already holds", fork.ID, status.PID, other)
 			}
 			pids[status.PID] = fork.ID
 
@@ -621,54 +612,44 @@ func Run(t *testing.T, s Subject) {
 			}
 		}
 
-		// Only Stop ends a sandbox, and it ends the one it names.
-		if err := s.Provider.Stop(t.Context(), forks[0].ID, stopGrace); err != nil {
-			t.Fatalf("Stop the first fork: %v", err)
+		// A fork's own write stays in the fork: the capture copied the source's files, it does not share them.
+		if status, _ := s.exec(t, forks[0].ID, models.ExecSpec{Argv: s.Shell("echo fork > " + s.scratch("conformance-fork"))}); status.Code != 0 {
+			t.Fatalf("the write into the first fork exited %d", status.Code)
 		}
-		for _, fork := range forks[1:] {
-			if !s.status(t, fork.ID).Alive() {
-				t.Errorf("fork %s went down with the fork that was stopped", fork.ID)
-			}
+		if _, out := s.exec(t, source, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
+			t.Errorf("the source reads %q after the first fork wrote its own copy, want source", out)
+		}
+
+		// Only Stop ends a sandbox, and it ends the one it names.
+		for _, fork := range forks {
 			if err := s.Provider.Stop(t.Context(), fork.ID, stopGrace); err != nil {
 				t.Fatalf("Stop fork %s: %v", fork.ID, err)
 			}
 		}
-
-		// The forks consumed nothing: the same snapshot still brings the source back.
-		if err := s.Provider.Resume(t.Context(), source, dir); err != nil {
-			t.Fatalf("Resume the source after %d forks: %v", forkCount, err)
-		}
 		if !s.status(t, source).Alive() {
-			t.Fatal("the source is not running after a Resume from the snapshot its forks came from")
-		}
-		if _, out := s.exec(t, source, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
-			t.Errorf("the source reads %q from the file it wrote before the pause, want source", out)
+			t.Error("the source went down with its forks")
 		}
 		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
 			t.Fatalf("Stop the source: %v", err)
 		}
 	})
 
-	// Every fork of one snapshot wakes with the same memory, so only a reseed on restore keeps two of them from drawing the same bytes (SHARD-266).
-	t.Run("TheForksOfOneSnapshotDrawTheirOwnBytes", func(t *testing.T) {
+	// Every fork of one running source wakes with the memory of its capture, so only a reseed on restore keeps two of them from drawing the same bytes (SHARD-266).
+	t.Run("TheForksOfOneSourceDrawTheirOwnBytes", func(t *testing.T) {
 		if !caps.Fork {
 			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbFork)
 		}
 
 		spec := s.NewSpec(t)
-		// One vCPU, so every fork draws from the one per-cpu crng the snapshot saved.
+		// One vCPU, so every fork draws from the one per-cpu crng the capture saved.
 		spec.Resources.VCPUs = 1
 		source := s.start(t, spec)
 		s.awaitUptime(t, source, s.ReseedWindow)
-		dir := s.SnapshotDir(t)
-		if err := s.Provider.Pause(t.Context(), source, dir); err != nil {
-			t.Fatalf("Pause: %v", err)
-		}
 
 		drawn := map[string]string{}
 		for range forkCount {
 			fork := copyOf(s.NewSpec(t))
-			if err := s.Provider.Fork(t.Context(), dir, fork); err != nil {
+			if err := s.Provider.Fork(t.Context(), source, fork); err != nil {
 				t.Fatalf("Fork: %v", err)
 			}
 			status, out := s.exec(t, fork.ID, models.ExecSpec{Argv: s.Shell("head -c 16 /dev/urandom | od -An -tx1")})

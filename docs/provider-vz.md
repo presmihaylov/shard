@@ -277,12 +277,14 @@ frames would need a second hop to reach the proxy anyway.
   from the same pair. When a resume's shim dies after the restore has written to the live disk, and
   the record is still paused over the same snapshot, the next resume gets the pause-time contents
   again. The fork ticket (SHARD-215) ships that repeated-resume case, with a write after round one.
-- `fork` clones the snapshot's `disk.img` and never the live disk. It starts a new shim that
-  restores the same state file over that clone and resumes. Then it sends one re-address message on
+- `fork` refuses by name until SHARD-463, because a fork now takes a running source (SHARD-457).
+  The restore below stays, and SHARD-463 builds the live fork on it. It clones the snapshot's
+  `disk.img` and never the live disk. It starts a new shim that restores the same state file over
+  that clone and resumes. Then it sends one re-address message on
   the control port, so the guest drops the source's address and takes its own (hypeman's issue 423
   is a fork that answers on the old IP). A source that resumed and wrote to its disk after the pause
-  still forks from the pause-time pair, the way gVisor forks the layers that `Pause` exported. The
-  fork ticket (SHARD-215) ships that resumed-source regression case.
+  still forks from the pause-time pair. The fork ticket (SHARD-215) ships that resumed-source
+  regression case.
 
 A restore refuses a VM whose configuration differs from the saved one, and the machine identifier
 is part of that configuration. The framework generates a fresh identifier per configuration, so the

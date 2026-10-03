@@ -265,8 +265,13 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 // AdoptStaging keeps the snapshot staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
 func (p *Provider) AdoptStaging(string) error { return nil }
 
-// Fork restores the save in dir as a new sandbox under the spec's id and address; the source is not touched.
-func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
+// Fork refuses by name: the fork of a paused source is gone, and the live fork of a running one comes with SHARD-463 (SHARD-457).
+func (p *Provider) Fork(context.Context, string, models.SandboxSpec) error {
+	return models.Unsupported(Name, models.VerbFork)
+}
+
+// forkSnapshot restores the save in dir as a new sandbox under the spec's id and address, and leaves the source as it was; SHARD-463 builds the live fork on it.
+func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	if !p.cfg.SaveRestore {
 		return models.Unsupported(Name, models.VerbFork)
 	}

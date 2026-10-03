@@ -247,9 +247,9 @@ func copyIn(src, dst string, perm os.FileMode) error {
 
 func (p *Provider) Name() string { return Name }
 
-// Capabilities are the three snapshot verbs, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
+// Capabilities are pause and resume, which every host with /dev/kvm has: a snapshot is two files the vmm writes; fork waits for SHARD-462.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: true, Resume: true, Fork: true}
+	return models.Capabilities{Pause: true, Resume: true}
 }
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.

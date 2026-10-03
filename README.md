@@ -8,8 +8,9 @@ sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.fram
 resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The CLI is a
 thin client of that socket, and each command runs one verb.
 
-**Status: pre-alpha.** Every verb runs on gVisor, on Firecracker, and on `vz` on an Apple silicon
-Mac with macOS 14 or later. Sysbox and runc refuse pause, resume and fork, and run every other verb.
+**Status: pre-alpha.** Every verb runs on gVisor. Firecracker and `vz` on an Apple silicon Mac with
+macOS 14 or later run every verb but fork, which comes to them with SHARD-462 and SHARD-463. Sysbox
+and runc refuse pause, resume and fork, and run every other verb.
 Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
 
 ## Providers
@@ -25,7 +26,8 @@ that made them, and `shard info` prints the pick. The table is the short form of
 | Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
 | Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
 | Docker or systemd inside | no | yes | no | no |
-| pause, resume, fork | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
+| pause, resume | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
+| fork of a running sandbox | yes | **no, refused by name** | **no, refused by name** | **no, refused by name** until SHARD-463 |
 | Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |
 
 Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
@@ -103,11 +105,14 @@ Sysbox, on runc and on `vz` on any other Mac, each snapshot verb refuses by name
 keeps running.
 
 `shard pause` writes a running sandbox into a snapshot and frees its memory. `shard resume` runs it
-again from that snapshot. `shard fork` starts a new sandbox from the snapshot of another one and
-leaves the source as it is. A pause copies the writable layer, so its time and disk cost grow with
-what the sandbox has written. The snapshot is the memory image plus a copy of the writable layer as
-it was at the pause. Two forks of one snapshot therefore share nothing, and a resume does not
-consume the snapshot.
+again from that snapshot, and does not consume it. A pause copies the writable layer, so its time
+and disk cost grow with what the sandbox has written. The snapshot is the memory image plus a copy
+of the writable layer as it was at the pause.
+
+`shard fork` starts a new sandbox from a running one. It freezes the source for a moment, captures
+its memory and its writable layer, lets the same sandbox run on, and starts the new one from that
+capture, never from an older snapshot. Each fork takes a capture of its own, so two forks share
+nothing, and the capture is never a snapshot you can name. Only gVisor forks today (SHARD-457).
 
 `shard clone` takes no memory image at all. It copies every file that a stopped or paused sandbox
 kept, `/tmp` included, and runs the entrypoint again from the beginning under a new id and address,
@@ -116,7 +121,7 @@ stays as it was. Clone refuses a running source, because a running sandbox is st
 that clone would copy.
 
 Measured on the devbox, a 2 vCPU Hetzner Cloud box with no `/dev/kvm`, with an idle Alpine sandbox
-of about 40 MiB resident: pause takes 0.19 to 0.24 s, resume 0.46 to 0.48 s, and fork 0.43 to 0.51 s.
+of about 40 MiB resident: pause takes 0.19 to 0.24 s, and resume 0.46 to 0.48 s.
 E2B quotes about 4 s per GiB to pause and about 1 s to resume. Those numbers include a cloud round
 trip that these do not, so they compare the mechanism rather than the product.
 `docs/demo.cast` is the whole run on that box, recorded with `make devbox-demo`. Play it with
