@@ -727,9 +727,7 @@ func (h *harness) frozenAfterARestart(t *testing.T) (models.SandboxSpec, int) {
 
 	spec, pid := h.runLong(t)
 	h.reopen(t)
-	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	freezeVMM(t, pid)
 
 	return spec, pid
 }
@@ -972,11 +970,23 @@ func TestStopOfAFrozenHeldVMMKillsThroughItsPinNotItsPid(t *testing.T) {
 	}
 }
 
-// freezeVMM stops a vmm with SIGSTOP, as a host under load or an operator can.
+// freezeVMM stops a vmm with SIGSTOP, as a host under load or an operator can, and waits until every thread of it has stopped, which a kill does not.
 func freezeVMM(t *testing.T, pid int) {
 	t.Helper()
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		done, err := stopped(pid)
+		if err != nil {
+			t.Fatalf("read the state of the vmm %d: %v", pid, err)
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the vmm %d did not stop within 5s", pid)
+		}
 	}
 }
 
