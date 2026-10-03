@@ -15,9 +15,6 @@ import (
 // LostReason is what a record says once the daemon found no process and no snapshot behind it.
 const LostReason = "daemon restarted and found no process"
 
-// UnresponsiveReason is what a record says once the daemon killed a sandbox process that did not answer.
-const UnresponsiveReason = "the daemon killed a sandbox process that did not answer"
-
 // InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
 const InterruptedReason = "the daemon restarted before the create finished"
 
@@ -187,14 +184,10 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
-	reason := LostReason
-	if status.Unresponsive {
-		reason = UnresponsiveReason
-	}
 	err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
-		rec.StoppedReason = reason
+		rec.StoppedReason = LostReason
 		rec.UnresponsiveReason = ""
 
 		return nil
@@ -202,7 +195,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if err != nil {
 		return "", fmt.Errorf("sandbox %s is gone but its record was not updated: %w", sb.ID, err)
 	}
-	report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says stopped, %s", sb.ID, sb.State, reason))
+	report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says stopped, %s", sb.ID, sb.State, LostReason))
 
 	return state, nil
 }

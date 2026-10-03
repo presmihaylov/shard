@@ -178,22 +178,6 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
-func TestLivenessNamesASandboxTheDaemonKilledForItsSilence(t *testing.T) {
-	lab := newLivenessLab(t, running(), models.Status{Exists: true, State: models.StateStopped, Unresponsive: true})
-
-	if err := lab.tick(t, running(), time.Now()); err != nil {
-		t.Fatalf("Liveness: %v", err)
-	}
-
-	got := lab.l.repo.sb
-	if got.State != models.StateStopped || got.StoppedReason != sandbox.UnresponsiveReason {
-		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, sandbox.UnresponsiveReason)
-	}
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.UnresponsiveReason) {
-		t.Errorf("the pass reported %v, want one line with the reason", lab.reports)
-	}
-}
-
 // silentShim is what vz answers for a held shim that missed its probe bound (SHARD-421).
 func silentShim() models.Status {
 	return models.Status{Exists: true, State: models.StateUnresponsive, PID: 42, Reason: "its shim (pid 42) did not answer within 5s"}

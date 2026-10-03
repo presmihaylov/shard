@@ -121,10 +121,6 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report)
 	}
 
-	if status.Unresponsive {
-		return s.recordDied(sb.ID, UnresponsiveReason, report)
-	}
-
 	return s.recordDied(sb.ID, DiedReason, report)
 }
 

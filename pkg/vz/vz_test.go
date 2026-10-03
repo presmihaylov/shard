@@ -170,11 +170,15 @@ func TestFrozenShimHelper(t *testing.T) {
 	if socket == "" {
 		t.Skip("a helper process for TestKillEndsAShimTooFrozenToAnswer")
 	}
-	listener, err := net.Listen("unix", socket)
+	listener, err := net.Listen("unix", socket+".bind")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	// The file exists from the bind, before the listen; a dial in that gap is refused, so the test only sees the path once it listens.
+	if err := os.Rename(socket+".bind", socket); err != nil {
+		t.Fatal(err)
+	}
 	select {}
 }
 

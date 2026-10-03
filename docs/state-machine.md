@@ -74,7 +74,7 @@ still-`running` record instead, so `shard ls` prints `running (exited 0)`. **`st
 thing that ends a sandbox.**
 
 **`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends it.**
-On vz the daemon probes each shim it holds within 5 s. A shim silent for the whole bound, frozen by
+On vz the daemon probes each shim within 5 s, held or met only by its socket after a restart. A shim silent for the whole bound, frozen by
 a `SIGSTOP` or starved by a host under load, makes the record `unresponsive`: it keeps its pid and its
 run, and `unresponsive_reason` names the shim's pid. Nothing kills it, because a thawed shim gives back
 the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer within 5s)`, and

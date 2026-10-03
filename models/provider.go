@@ -90,8 +90,6 @@ type Status struct {
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
 	// A stop leaves the same leftovers, so a record that says stopped outranks it.
 	OOMKilled bool
-	// Unresponsive says the provider killed this sandbox's process because it did not answer in its bound; set only when not alive.
-	Unresponsive bool
 	// Reason says what missed its probe bound, set only in StateUnresponsive.
 	Reason string
 	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.

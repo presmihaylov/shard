@@ -1357,8 +1357,8 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Exists || status.Alive() || status.PID != 0 || status.Unresponsive {
-		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid, and not killed for its silence", status)
+	if !status.Exists || status.Alive() || status.PID != 0 {
+		t.Fatalf("the new provider sees %+v, want the sandbox stopped with no pid", status)
 	}
 }
 
@@ -1383,35 +1383,150 @@ func stopsAFrozenShim(t *testing.T, restart bool) {
 	}
 	awaitExit(t, shim)
 	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.Alive() || status.State != models.StateStopped || status.Unresponsive {
-		t.Fatalf("Status after the stop = %+v, %v; want stopped by the stop, not killed for its silence", status, err)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
 	}
 }
 
-// After a daemon restart a shim too frozen to answer is cut by its socket, so the first probe ends on time and nothing frozen is left (SHARD-387), and every later probe says why (SHARD-398).
-func TestStatusAfterARestartCutsAShimTooFrozenToAnswer(t *testing.T) {
+// After a daemon restart a shim too frozen to answer reads unresponsive with its pid within the startup bound and is never killed for it; a thaw lets the next lookup adopt it (SHARD-422).
+func TestAnAdoptedShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T) {
 	h, spec, shim := frozenShim(t, true)
+	pid := fmt.Sprintf("pid %d", shim)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, acceptsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// The bound the daemon's startup probe gives each sandbox.
 	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
 	defer cancel()
 	began := time.Now()
 	status, err := h.provider.Status(ctx, spec.ID)
-	if err != nil || status.Alive() || status.State != models.StateStopped {
-		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want stopped", status, err)
+	if err != nil || status.State != models.StateUnresponsive || status.PID != shim || !strings.Contains(status.Reason, pid) {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive with the reason naming %s", status, err, pid)
 	}
 	if took := time.Since(began); took > 8*time.Second {
-		t.Errorf("Status over a frozen shim took %s, want under 8 s", took)
+		t.Errorf("Status over a frozen shim after a restart took %s, want under 8 s", took)
+	}
+	if err := syscall.Kill(shim, 0); err != nil {
+		t.Fatalf("the frozen shim %d is gone after a Status: %v, want it kept", shim, err)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive || status.PID != shim {
+		t.Fatalf("the next Status = %+v, %v; want unresponsive with the same shim", status, err)
+	}
+	// A start over a disk whose shim may thaw would boot a second VM on it.
+	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "unresponsive") || !strings.Contains(err.Error(), pid) {
+		t.Errorf("Start over a frozen adopted shim = %v, want a refusal naming unresponsive and %s", err, pid)
+	}
+
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+	// The adopt's state request, the pid read and the one request every later lookup shared; a new dial per lookup would fill the queue.
+	if queued := settledLines(t, filepath.Join(dir, acceptsFile)); queued != 3 {
+		t.Errorf("the thawed shim accepted %d connections its socket queue held, want 3", queued)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != shim || status.Reason != "" {
+		t.Fatalf("Status after the thaw = %+v, %v; want running, adopted with the same shim", status, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the thaw: %v", err)
 	}
 	awaitExit(t, shim)
-	if !status.Unresponsive {
-		t.Errorf("Status over a frozen shim after a restart = %+v, want it killed for its silence", status)
+}
+
+// A stop kills a frozen shim an adopt left unresponsive by its pid after one short probe, with no grace (SHARD-422).
+func TestStopKillsAnAdoptedShimTooFrozenToAnswerAtOnce(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
 	}
-	// A probe that timed out before the record was written comes back, and must still read the kill.
-	status, err = h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.Alive() || !status.Unresponsive {
-		t.Errorf("the next Status = %+v, %v; want stopped and killed for its silence", status, err)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop over an unresponsive adopted shim: %v", err)
 	}
+	if took := time.Since(began); took >= stopGrace {
+		t.Errorf("Stop over an unresponsive adopted shim took %s, want it killed with no grace, under %s", took, stopGrace)
+	}
+	awaitExit(t, shim)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
+// Lookups that race once a silent adopted shim answers attach it once, so it gets one control stream and one log pump (SHARD-422).
+func TestLookupsThatRaceAfterAThawAttachTheShimOnce(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, controlsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range cap(errs) {
+		wg.Go(func() {
+			<-start
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err == nil && (status.State != models.StateRunning || status.PID != shim) {
+				err = fmt.Errorf("Status after the thaw = %+v, want running with pid %d", status, shim)
+			}
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	if controls := settledLines(t, filepath.Join(dir, controlsFile)); controls != 1 {
+		t.Errorf("the thawed shim got %d control streams, want 1: each is an attach of its own", controls)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the thaw: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// settledLines is the line count of path once it holds still for a second.
+func settledLines(t *testing.T, path string) int {
+	t.Helper()
+	last, still := -1, time.Now()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		out, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Count(string(out), "\n")
+		if lines != last {
+			last, still = lines, time.Now()
+		}
+		if time.Since(still) >= time.Second {
+			return lines
+		}
+	}
+	t.Fatalf("%s still grows after 10 s, at %d lines", path, last)
+
+	return 0
 }
 
 // A held shim too frozen to answer reads unresponsive with its pid and is never killed for it: verbs refuse it by name, a thaw makes it running again, and a stop kills it at once (SHARD-421).
@@ -1466,8 +1581,8 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 	}
 	awaitExit(t, shim)
 	status, err = h.provider.Status(t.Context(), spec.ID)
-	if err != nil || status.Alive() || status.Unresponsive {
-		t.Fatalf("Status after the stop = %+v, %v; want stopped by the stop, not killed for its silence", status, err)
+	if err != nil || status.Alive() {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
 	}
 }
 

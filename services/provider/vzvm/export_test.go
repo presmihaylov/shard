@@ -14,6 +14,9 @@ func (p *Provider) HoldRecovery(hold func()) {
 func (p *Provider) Probe(ctx context.Context, id string, bound time.Duration) {
 	p.mu.Lock()
 	m := p.machines[id]
+	if m == nil {
+		m = p.unadopted[id]
+	}
 	p.mu.Unlock()
 	p.probe(ctx, m, bound)
 }
