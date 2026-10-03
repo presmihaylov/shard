@@ -558,5 +558,7 @@ func TestConformanceOnMicroVMs(t *testing.T) {
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:      h.reopen,
+		// A source paused past 47 s of uptime gave equal fork draws without the reseed, 6 runs of 6 (SHARD-414).
+		ReseedWindow: 50 * time.Second,
 	})
 }

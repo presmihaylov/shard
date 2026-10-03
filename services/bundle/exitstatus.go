@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // exitFileCap bounds the read: shard-init keeps one record of a few dozen bytes, and sysbox guest root can append to the file.
@@ -26,6 +27,42 @@ func ReadExitStatus(path string) (models.ExitStatus, bool, error) {
 		return models.ExitStatus{}, false, err
 	}
 
+	exit, found, err := decodeExitRecord(blob)
+	if err != nil {
+		return models.ExitStatus{}, false, fmt.Errorf("decode the exit report in %s: %w", path, err)
+	}
+
+	return exit, found, nil
+}
+
+// DecodeExitPage reads the record off a sealed exit channel page; anything else there is a guest write, so it is no exit.
+func DecodeExitPage(page []byte) (models.ExitStatus, bool) {
+	if end := bytes.IndexByte(page, 0); end >= 0 {
+		page = page[:end]
+	}
+
+	exit, found, err := decodeExitRecord(page)
+	if err != nil {
+		return models.ExitStatus{}, false
+	}
+
+	return exit, found
+}
+
+// WriteExitStatus replaces the exit file with one record, framed as shard-init frames it, so ReadExitStatus reads it.
+func WriteExitStatus(path string, exit models.ExitStatus) error {
+	encoded, err := json.Marshal(models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal})
+	if err != nil {
+		return fmt.Errorf("marshal the exit report: %w", err)
+	}
+	if err := store.WriteFile(path, append(append([]byte{'\n'}, encoded...), '\n'), 0o600); err != nil {
+		return fmt.Errorf("write the exit record to %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func decodeExitRecord(blob []byte) (models.ExitStatus, bool, error) {
 	line := lastCompleteLine(blob)
 	if line == nil {
 		return models.ExitStatus{}, false, nil
@@ -33,7 +70,7 @@ func ReadExitStatus(path string) (models.ExitStatus, bool, error) {
 
 	var report models.ExitReport
 	if err := json.Unmarshal(line, &report); err != nil {
-		return models.ExitStatus{}, false, fmt.Errorf("decode the exit report in %s: %w", path, err)
+		return models.ExitStatus{}, false, err
 	}
 	// A foreign or torn line is not an exit, so the reader waits rather than believe it.
 	if report.Kind != models.ExitReportKind {

@@ -797,6 +797,25 @@ func TestARefusedReferenceIsAValidationError(t *testing.T) {
 	}
 }
 
+// SHARD-374: an upper-case ref or name folds onto another sandbox on a case-insensitive filesystem, so it is refused; an id shape is refused in any case.
+func TestAMixedCaseNameOrReferenceIsRefused(t *testing.T) {
+	r, _ := repo(t)
+
+	var invalid *sandboxstate.ValidationError
+	if _, err := r.Resolve("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("Resolve of an upper-case ref got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("ValidName of a mixed-case id shape got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("morning-fern-b8b0"); err == nil {
+		t.Error("ValidName of a lower-case id shape got nil, want it refused")
+	}
+	if err := sandboxstate.ValidName("my-sandbox"); err != nil {
+		t.Errorf("ValidName of a plain lower-case name got %v, want nil", err)
+	}
+}
+
 // SHARD-46: a daemon asks the root what made its records before it picks a substrate for itself.
 func TestRecordedProviderNamesWhatMadeTheRecords(t *testing.T) {
 	r, root := repo(t)

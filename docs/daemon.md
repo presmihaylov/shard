@@ -29,8 +29,6 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
 - **The API socket**: the REST surface under `${root}/shard.sock`, described below.
 - **The egress proxy**: the `proxy` task listens on the bridge gateway, ports 30080 and 30443, and
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
-- **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
-  passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
 - **Output log rotation**: a sandbox's `output.log` and a VM's `console.log` keep 16 MiB each,
   with one older file of up to 16 MiB beside them as `<file>.1`, which `shard logs` prints first.
   The daemon writes a VM's `output.log` itself and renames it before it passes 16 MiB, so that
@@ -323,6 +321,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"signal":"TERM"}' http
 curl --unix-socket /var/lib/shard/shard.sock -X DELETE http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/logs
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/egress-log
+curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf&mode=600'
+curl --unix-socket /var/lib/shard/shard.sock -o app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock -I 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/ls?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"path":"/srv/cache","mode":"700","parents":true}' http://localhost/v0/sandboxes/<id or name>/mkdir
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/cache&recursive=true'
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -428,14 +432,45 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `text/plain`, the bytes as they come, and the body ends when the sandbox stops or is removed, so
   `curl -N` follows a log. 404 either way, before anything is on the wire. `shard logs -f` takes the
   WebSocket.
-- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the egress decisions of the sandbox as a JSON
-  array, oldest first: the proxy's own records and the host drops the daemon wrote into the same file.
-  404. `shard logs --egress` prints one record per line.
+- `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
+  sandbox as a JSON array, oldest first: the proxy's own records and the host drops the daemon wrote
+  into the same file. The `Shard-Egress-Cut` header counts the older records it left out, and is
+  absent when it left out none. 404. `shard logs --egress` prints one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake is text messages, one JSON record
   each, live. A stopped or removed sandbox ends it with close 1000 and the reason as the close text; a
   failure of the follow is close 1011 with the error. Without the handshake it is 200 chunked
   `application/x-ndjson`, one record per line as it lands, and the body ends on the same stop or rm.
   404 either way, before anything is on the wire.
+- `PUT /v0/sandboxes/{id}/files?path=&mode=&user=&parents=` streams the body into the running guest
+  and answers 204 once it sits at `path` as one file: the guest writes a temp name beside it, syncs
+  it and renames it over the old one, so a put that dies midway leaves the old file whole. `mode` is
+  the octal permission bits, 0644 by default and at most 0777. `user` resolves as an exec's does, the
+  entrypoint user by default; the write runs as that user, who owns the file. `parents=true` creates
+  the missing directories. The body needs a `Content-Length`. 400 for a relative path, a chunked
+  body, a bad mode or a write the guest refuses; 404 for no sandbox or a missing directory; 409 when
+  the sandbox is not running.
+- `GET /v0/sandboxes/{id}/files?path=` answers 200 `application/octet-stream` with the file and its
+  `X-Shard-Stat`, chunked to the end of the file and never cut at the stat's size, which a `/proc`
+  file states as 0. A guest that fails after the 200 cuts the chunked body before its last chunk, so
+  the client reads an unexpected EOF. 400 for a directory or anything else not a regular file; 404;
+  409 as above.
+- `HEAD /v0/sandboxes/{id}/files?path=` answers 200 with no body and `X-Shard-Stat:
+  {"type", "size", "mode", "uid", "gid", "mtime"}`, `type` one of `file`, `dir`, `symlink` or
+  `other`. It never follows a final symlink. A refusal has the status alone. `shard cp` speaks all
+  three.
+- `GET /v0/sandboxes/{id}/ls?path=` answers 200 `{"entries": [{"name", "type", "size", "mode", "uid",
+  "gid", "mtime"}]}`, sorted by name, each entry its own lstat. It follows a final symlink to the
+  directory. A guest that fails after the 200 leaves the closing `]}` off, so a cut listing never
+  parses. 400 for a path that is not a directory; 404; 409 as above.
+- `POST /v0/sandboxes/{id}/mkdir` takes `{"path", "mode", "parents", "user"}` and answers 204. `mode`
+  is an octal string, `"755"` by default and at most `"777"`, set past the umask. `parents: true` is
+  `mkdir -p`: it makes what leads to the path and takes a directory already there. `user` is as a
+  put's. 400 for a bad mode, or a path already there unless `parents` is set and it is a directory;
+  404 for a missing parent; 409 as above.
+- `DELETE /v0/sandboxes/{id}/files?path=&recursive=` removes the path and answers 204. A symlink goes,
+  never its target. A directory with anything in it needs `recursive=true`, and `/` is never
+  deleted. It runs as the entrypoint user. 400 for `/` or a full directory without `recursive`; 404;
+  409 as above.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -601,7 +636,7 @@ agree on what each request is, and an unknown route is a `403` too. The eight ca
 | `sandbox:read` | list, get, `logs` and `egress-log` |
 | `sandbox:write` | create, start, stop, pause, resume, fork and clone |
 | `sandbox:delete` | `rm` |
-| `exec` | every `exec` route |
+| `exec` | every `exec` route, and every `files`, `ls` and `mkdir` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |

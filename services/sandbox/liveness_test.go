@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -127,6 +128,32 @@ func TestLivenessNeverRewritesARecordedExit(t *testing.T) {
 
 	if len(lab.reports) != 0 {
 		t.Errorf("the pass reported %v over an exit it already knew", lab.reports)
+	}
+}
+
+// Guest root can put its own file on PID 1's fd 0; inspect names it once, and a later good read clears it (SHARD-419).
+func TestLivenessNamesAReplacedExitChannelOnceAndClearsIt(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointErr = fmt.Errorf("fd 0 of PID 1 is not a regular file: %w", models.ErrExitChannelReplaced)
+
+	for range 2 {
+		if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !strings.Contains(got.ExitChannel, "exit channel replaced") {
+		t.Errorf("the record says %s with exit channel %q, want running and the channel named replaced", got.State, got.ExitChannel)
+	}
+	if len(lab.reports) != 1 {
+		t.Errorf("two passes reported %v, want one line", lab.reports)
+	}
+
+	lab.l.provider.entrypointErr = nil
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb.ExitChannel; got != "" {
+		t.Errorf("a good read left exit channel %q on the record", got)
 	}
 }
 
