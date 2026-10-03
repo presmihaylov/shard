@@ -270,11 +270,12 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(c.StatePath, encoded, 0o600); err != nil {
+	// 0o644 is what a real vmm writes under the daemon's shell umask, so a test proves secureSnapshot tightens it.
+	if err := os.WriteFile(c.StatePath, encoded, 0o644); err != nil {
 		return "", err
 	}
 	// The fake has no guest memory, so the file is a blob: what a restore links to and the tests count the links of.
-	return "", os.WriteFile(c.MemoryPath, []byte("fake guest memory\n"), 0o600)
+	return "", os.WriteFile(c.MemoryPath, []byte("fake guest memory\n"), 0o644)
 }
 
 // loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices, and the overrides the host paths of this one.

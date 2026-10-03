@@ -313,8 +313,9 @@ killer runs first on every workload and the daemon hears an OOM instead of a dea
 the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
-of unbounded, and a fraction such as `0.5` with an error that names it, because a VM gets whole CPUs
-and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
+of unbounded, and a value above the CPUs the daemon may run on by name, because such a quota never
+binds and a large enough one overflows to no bound at all. It refuses a fraction such as `0.5` with an
+error that names it, because a VM gets whole CPUs and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
 `--cpus 0` gives it one per host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`,
 refused outside the host's range.
 
