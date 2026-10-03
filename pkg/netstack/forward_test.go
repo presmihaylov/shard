@@ -405,6 +405,68 @@ func TestALinkAtItsFlowLimitDropsTheNextFlow(t *testing.T) {
 	}
 }
 
+// A flow the listener takes spends the guest's share like a forwarded one: past it the listener drops it as limit, and a close gives the place back (SHARD-350).
+func TestAListenerFlowPastTheGuestsShareIsDroppedAsLimit(t *testing.T) {
+	target, _ := echoTCP(t)
+	host, drops, accepted := redirecting(t, func(netip.Addr) bool { return true }, func() Verdict { return allowed }, target)
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+	https := netip.AddrPortFrom(remote.Addr(), 443)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	host.mu.Lock()
+	link.active = maxLinkFlows
+	host.mu.Unlock()
+	if refused, err := guest.dialTCP(ctx, https); err == nil {
+		defer refused.Close()
+	}
+	select {
+	case got := <-drops:
+		got.Time = time.Time{}
+		want := Drop{Guest: guestA, Destination: remote.Addr(), Protocol: "tcp", Port: 443, Rule: RuleLimit}
+		if got != want {
+			t.Errorf("reported %+v, want %+v", got, want)
+		}
+	case server := <-accepted:
+		server.Close()
+		t.Fatal("the listener handed on a flow past the guest's share")
+	case <-time.After(5 * time.Second):
+		t.Fatal("no drop reported")
+	}
+
+	host.mu.Lock()
+	link.active = 0
+	host.mu.Unlock()
+	client, err := guest.dialTCP(ctx, https)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var server net.Conn
+	select {
+	case server = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the listener never took a flow under the share")
+	}
+	if during := counted(host, link); during != 2 {
+		t.Errorf("an accepted flow counts %d on the link and the stack together, want 2", during)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if after := counted(host, link); after != 0 {
+		t.Errorf("a closed flow still counts %d", after)
+	}
+}
+
+func counted(host *Stack, link *Link) int {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+
+	return link.active + host.active
+}
+
 // redirecting builds a host stack that redirects 443 onto a listener for the guests redirected names, and dials every allowed flow to target.
 func redirecting(t *testing.T, redirected func(netip.Addr) bool, verdict func() Verdict, target string) (*Stack, chan Drop, chan net.Conn) {
 	t.Helper()

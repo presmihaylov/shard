@@ -354,6 +354,29 @@ func TestDecideRefusesWhatIsLocalToTheHost(t *testing.T) {
 	}
 }
 
+// The 403 body reaches the guest, so a floor deny names only the host and never the address it resolved to (SHARD-342).
+func TestDecideFloorReasonCarriesNoResolvedAddress(t *testing.T) {
+	svc := New(newStore(t), nil, gateway, nameservers, fakeResolver{})
+	svc.local.Addresses = func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("203.0.113.9")}, nil }
+
+	for _, tc := range []struct {
+		name string
+		addr netip.Addr
+		id   string
+	}{
+		{"private", netip.MustParseAddr("10.0.0.5"), network.RulePrivate},
+		{"local", netip.MustParseAddr("203.0.113.9"), network.RuleLocal},
+	} {
+		got, err := svc.Decide(models.Sandbox{ID: "sb"}, "forged.example.com", 80, tc.addr)
+		if err != nil || got.ID != tc.id {
+			t.Fatalf("%s floor: got %+v, %v", tc.name, got, err)
+		}
+		if strings.Contains(got.Reason, tc.addr.String()) {
+			t.Errorf("%s floor reason %q carries the resolved address %s (SHARD-342)", tc.name, got.Reason, tc.addr)
+		}
+	}
+}
+
 // A question carries a name and no address, so an address rule is silent and a deny on one port leaves the name in use.
 func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
 	s := newStore(t)
@@ -422,6 +445,93 @@ func TestDecideNameJudgesAQuestionByTheNameAlone(t *testing.T) {
 	}
 	if got, err := svc.DecideName(models.Sandbox{ID: "lost", Policy: "gone"}, "any.example.net"); err != nil || got.Action != models.ActionDeny || got.ID != network.RuleMissing {
 		t.Errorf("a sandbox whose policy is gone got %+v, %v", got, err)
+	}
+}
+
+// The http path judges the name before any lookup: a host no rule allows is refused unresolved, and only an
+// allow rule an address could match on the port forces a resolve (SHARD-342).
+func TestUnresolvedRefusesByNameBeforeResolving(t *testing.T) {
+	s := newStore(t)
+	for _, policy := range []models.Policy{
+		{Name: "denyall", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}},
+		{Name: "namelist", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com")}},
+		{Name: "namedeny", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "bad.example.com"),
+			mustRule(t, models.ActionAllow, "suffix:example.com"),
+		}},
+		{Name: "cidr", Rules: []models.Rule{mustRule(t, models.ActionAllow, "93.184.216.0/24")}},
+		{Name: "cidr443", Rules: []models.Rule{mustRule(t, models.ActionAllow, "93.184.216.0/24 tcp:443")}},
+		{Name: "denycidr", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "8.8.8.8/32"),
+			mustRule(t, models.ActionAllow, "api.example.com"),
+		}},
+		{Name: "dnsonly", Rules: []models.Rule{mustRule(t, models.ActionAllow, "dns")}},
+		{Name: "web80", Rules: []models.Rule{mustRule(t, models.ActionAllow, "api.example.com tcp:80")}},
+		{Name: "denyport", Rules: []models.Rule{
+			mustRule(t, models.ActionDeny, "bad.example.com tcp:443"),
+			mustRule(t, models.ActionAllow, "93.184.216.0/24"),
+		}},
+	} {
+		if err := s.Set(policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := New(s, nil, gateway, nameservers, fakeResolver{})
+
+	for _, tc := range []struct {
+		policy string
+		host   string
+		port   int
+		final  bool
+		action models.Action
+		rule   string
+	}{
+		{"denyall", "0a1402.t.attacker.test", 80, true, models.ActionDeny, "deny any"},
+		{"namelist", "api.example.com", 443, false, "", ""},
+		{"namelist", "evil.test", 443, true, models.ActionDeny, ""},
+		{"namedeny", "bad.example.com", 443, true, models.ActionDeny, "deny bad.example.com tcp:80,443"},
+		{"namedeny", "sub.example.com", 443, false, "", ""},
+		{"cidr", "evil.test", 443, false, "", ""},
+		{"cidr443", "evil.test", 80, true, models.ActionDeny, ""},
+		{"cidr443", "evil.test", 443, false, "", ""},
+		{"denycidr", "evil.test", 443, true, models.ActionDeny, ""},
+		// An allow-dns-only policy must refuse a forged Host unresolved: the dns group is the resolver, not a web host.
+		{"dnsonly", "exfil.attacker.test", 443, true, models.ActionDeny, ""},
+		// A name rule bound to one web port must not open the other: 443 is refused unresolved, 80 goes on to resolve.
+		{"web80", "api.example.com", 443, true, models.ActionDeny, ""},
+		{"web80", "api.example.com", 80, false, "", ""},
+		// A per-port deny is final at its port before a later address allow can resolve the name.
+		{"denyport", "bad.example.com", 443, true, models.ActionDeny, "deny bad.example.com tcp:443"},
+		{"denyport", "bad.example.com", 80, false, "", ""},
+	} {
+		got, final, err := svc.Unresolved(models.Sandbox{ID: "sandbox1", Policy: tc.policy}, tc.host, tc.port)
+		if err != nil {
+			t.Fatalf("Unresolved(%s under %s:%d): %v", tc.host, tc.policy, tc.port, err)
+		}
+		if final != tc.final {
+			t.Errorf("Unresolved(%s under %s:%d) final = %v, want %v", tc.host, tc.policy, tc.port, final, tc.final)
+		}
+		if !final {
+			continue
+		}
+		rule := ""
+		if got.Rule.Destination.Kind != "" {
+			rule = FormatRule(got.Rule.Rule)
+		}
+		if got.Action != tc.action || rule != tc.rule {
+			t.Errorf("Unresolved(%s under %s:%d) = %s by %q, want %s by %q", tc.host, tc.policy, tc.port, got.Action, rule, tc.action, tc.rule)
+		}
+		if strings.Contains(got.Reason, "resolves to") {
+			t.Errorf("Unresolved(%s under %s:%d) reason carried an address: %q", tc.host, tc.policy, tc.port, got.Reason)
+		}
+	}
+
+	if _, final, err := svc.Unresolved(models.Sandbox{ID: "free"}, "any.example.net", 443); err != nil || final {
+		t.Errorf("a sandbox with no policy was refused unresolved (final=%v, %v)", final, err)
+	}
+	if got, final, err := svc.Unresolved(models.Sandbox{ID: "lost", Policy: "gone"}, "any.example.net", 443); err != nil || !final || got.ID != network.RuleMissing {
+		t.Errorf("a sandbox whose policy is gone got %+v (final=%v), %v", got, final, err)
 	}
 }
 

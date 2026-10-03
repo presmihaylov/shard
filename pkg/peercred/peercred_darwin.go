@@ -1,6 +1,6 @@
 //go:build darwin
 
-package firecracker
+package peercred
 
 import (
 	"errors"
@@ -11,8 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// peerPID is the process behind a unix socket connection, which the kernel attests; a Mac runs no firecracker, but the tests run here.
-func peerPID(conn net.Conn) (int, error) {
+// PID is the process behind a unix socket connection, which the kernel attests.
+func PID(conn net.Conn) (int, error) {
 	sc, ok := conn.(syscall.Conn)
 	if !ok {
 		return 0, fmt.Errorf("a %T carries no peer credentials", conn)

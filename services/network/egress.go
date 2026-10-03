@@ -144,7 +144,10 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	fmt.Fprintf(&b, "\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tiifname %q ct state established,related accept\n", s.cfg.Bridge)
 	for _, chain := range chains {
-		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
+		proxied := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s tcp dport { %d, %d }", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
+		// Each rule counts only its own sandbox's connections, so one sandbox past its share never refuses another (SHARD-350).
+		over := fmt.Sprintf("%s ct count over %d", proxied, proxy.MaxSourceConns)
+		fmt.Fprintf(&b, "\t\t%s %s\n\t\t%s drop\n\t\t%s accept\n", over, logStatement(RuleLimit), over, proxied)
 	}
 	// Every sandbox may ask the resolver, so one whose policy was detached keeps resolving; the resolver judges by source.
 	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s udp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
@@ -257,7 +260,7 @@ const (
 	RuleIPv6    = "ipv6"
 	// RuleStack is a VM host's drop: the frames end in the daemon, so nothing a policy allows leaves except through the proxy.
 	RuleStack = "stack"
-	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit the stack's when a sandbox holds its share of flows.
+	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit a new flow or proxy connection past the sandbox's share.
 	RuleUnapplied = "unapplied"
 	RuleLimit     = netstack.RuleLimit
 	// RuleRedirect is the stack's drop of a fronted sandbox's 80 or 443 that its connection tracking kept off the proxy.
