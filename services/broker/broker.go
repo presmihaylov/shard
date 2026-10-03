@@ -1,9 +1,8 @@
 // Package broker is the proxy's director: it names the sandbox behind a connection, judges the request by
-// the same rules the host enforces, and puts a secret value where the guest put a placeholder.
+// the same rules the host enforces, and puts a secret value where the guest put a placeholder in a request header.
 package broker
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/base64"
@@ -96,45 +95,13 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 		return proxy.Decision{}, err
 	}
 
-	allowed := decision.Action == models.ActionAllow
-	hold := false
-	if allowed {
-		hold, err = b.holds(sb, req)
-		if err != nil {
-			return proxy.Decision{}, err
-		}
-	}
-
 	// The floor, the default and a missing policy have no rule text, so the 403 and the proxy log name the id instead (SHARD-229).
 	return proxy.Decision{
-		Allowed:  allowed,
+		Allowed:  decision.Action == models.ActionAllow,
 		Upstream: upstream,
-		Hold:     hold,
 		Rule:     cmp.Or(rule, decision.ID),
 		Reason:   decision.Reason,
 	}, nil
-}
-
-// holds says whether Rewrite could put a value in the body: on TLS, with a secret of the sandbox granted to the host.
-func (b *Broker) holds(sb models.Sandbox, req proxy.Request) (bool, error) {
-	if !req.TLS {
-		return false, nil
-	}
-
-	for _, name := range sb.Secrets {
-		sec, err := b.secrets.Get(name)
-		if errors.Is(err, secret.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		if granted(sec, req.Host) {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }
 
 // denied records and returns a deny reached before any lookup, so its record carries no resolved address and
@@ -202,7 +169,7 @@ func (b *Broker) record(id string, req proxy.Request, action models.Action, reco
 	return nil
 }
 
-// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder, on TLS only.
+// Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder in a request header, on TLS only.
 func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte, reserve proxy.Reserve) ([]byte, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
@@ -251,7 +218,11 @@ func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request
 		}
 	}
 
-	return substitute(out, body, substitution{replacer: strings.NewReplacer(pairs...), changes: changes, reserve: reserve})
+	if err := substitute(out, substitution{replacer: strings.NewReplacer(pairs...), changes: changes, reserve: reserve}); err != nil {
+		return nil, err
+	}
+
+	return body, nil
 }
 
 func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
@@ -289,16 +260,8 @@ type substitution struct {
 	reserve  proxy.Reserve
 }
 
-// substitute edits the URL, every end-to-end header value and the held body; a body that was not held is nil and passes as it is.
-func substitute(out *http.Request, body []byte, sub substitution) ([]byte, error) {
-	for _, field := range []*string{&out.URL.Path, &out.URL.RawPath, &out.URL.RawQuery} {
-		swapped, err := sub.rewrite(*field)
-		if err != nil {
-			return nil, err
-		}
-		*field = swapped
-	}
-
+// substitute edits every end-to-end header value alone, since an upstream quotes the path, the query and the body back in an error (SHARD-337).
+func substitute(out *http.Request, sub substitution) error {
 	hop := hopByHop(out.Header)
 	for name, values := range out.Header {
 		if hop[name] {
@@ -307,26 +270,24 @@ func substitute(out *http.Request, body []byte, sub substitution) ([]byte, error
 		for i, v := range values {
 			swapped, err := sub.rewrite(v)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			values[i] = swapped
 		}
 	}
 
-	if !hop["Authorization"] {
-		if err := rewriteBasic(out, sub); err != nil {
-			return nil, err
-		}
+	if hop["Authorization"] {
+		return nil
 	}
 
-	return sub.rewriteBody(body)
+	return rewriteBasic(out, sub)
 }
 
-// bound is the most a rewrite of length bytes can come to, with count telling how often a placeholder occurs; false when none that changes does.
-func (sub substitution) bound(length int, count func(placeholder string) int) (int, bool) {
-	found := false
+// bound is the most a rewrite of s can come to; false when no placeholder that changes occurs in it.
+func (sub substitution) bound(s string) (int, bool) {
+	length, found := len(s), false
 	for _, c := range sub.changes {
-		n := count(c.placeholder)
+		n := strings.Count(s, c.placeholder)
 		if n == 0 {
 			continue
 		}
@@ -338,7 +299,7 @@ func (sub substitution) bound(length int, count func(placeholder string) int) (i
 }
 
 func (sub substitution) rewrite(s string) (string, error) {
-	size, found := sub.bound(len(s), func(placeholder string) int { return strings.Count(s, placeholder) })
+	size, found := sub.bound(s)
 	if !found {
 		return s, nil
 	}
@@ -353,24 +314,6 @@ func (sub substitution) rewrite(s string) (string, error) {
 	}
 
 	return out.String(), nil
-}
-
-func (sub substitution) rewriteBody(body []byte) ([]byte, error) {
-	size, found := sub.bound(len(body), func(placeholder string) int { return bytes.Count(body, []byte(placeholder)) })
-	if !found {
-		return body, nil
-	}
-	// The replacer reads a string, so the body is copied once more than the rewrite.
-	if err := sub.reserve(len(body) + size); err != nil {
-		return nil, fmt.Errorf("put the secrets in: %w", err)
-	}
-
-	out := bytes.NewBuffer(make([]byte, 0, size))
-	if _, err := sub.replacer.WriteString(out, string(body)); err != nil {
-		return nil, fmt.Errorf("put the secrets in: %w", err)
-	}
-
-	return out.Bytes(), nil
 }
 
 // hopByHop names the headers of the connection, not the request, which the proxy handles itself and can quote back to the guest (SHARD-299).
