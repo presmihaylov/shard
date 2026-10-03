@@ -347,7 +347,7 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 
 // markedSnapshot is the complete snapshot a marked pause installed for a record still live, answering or not; empty for none.
 func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
-	// A silent shim turns a marked record unresponsive, and its death must still find the pause (SHARD-442).
+	// A daemon cut after the checkpoint can leave the mark over a silent shim, and its death must still find the pause (SHARD-442).
 	if !sb.State.Live() || !sb.Pausing {
 		return "", nil
 	}

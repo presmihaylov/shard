@@ -83,13 +83,13 @@ the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer wi
 `shard inspect` holds the state and the reason. `exec`, `start` and `pause` refuse it with the reason,
 and `exec` adds `wait for it to answer, or end it with shard stop <id>`. An `exec` or a `pause` that
 finds the shim silent writes `unresponsive` at once, not at the next tick, and a `pause` spends one
-5 s bound on it (SHARD-424). When a later probe answers,
-the next liveness tick writes `running` again. A shim that dies under a pause mark, over the complete
-checkpoint that pause wrote, makes the record `paused` with that snapshot, as a running one would (SHARD-442).
-`stop` and `rm --force` give the shim one more probe of
-1 s, then kill it by its pid with no grace (SHARD-421). On Firecracker the same holds for a vmm a
-restart meets only by its socket, with a bound of 4 s and a reason that names the vmm's pid
-(SHARD-392).
+5 s bound on it (SHARD-424). When a later probe answers, the next liveness tick writes `running`
+again. A daemon that dies after a pause wrote its checkpoint leaves the pause mark on the record. If
+the next daemon finds the shim silent, the record turns `unresponsive` and keeps the mark, and when
+the shim dies, the liveness tick or a restart makes the record `paused` with that snapshot
+(SHARD-442). `stop` and `rm --force` give the shim one more probe of 1 s, then kill it by its pid with
+no grace (SHARD-421). On Firecracker the same holds for a vmm a restart meets only by its socket,
+with a bound of 4 s and a reason that names the vmm's pid (SHARD-392).
 
 **`stop` returns once the sandbox has stopped.** The substrate can report one alive for a moment after
 a clean stop, so `stop` waits for it to be gone before it writes the record, and fails without changing

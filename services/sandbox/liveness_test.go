@@ -277,8 +277,8 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 }
 
-// A marked pause whose shim went silent and then died left a complete checkpoint, and the death must not lose it (SHARD-442).
-func TestLivenessPausesAMarkedRecordWhoseShimWentSilentAndThenDied(t *testing.T) {
+// A daemon cut after the checkpoint leaves its mark over a frozen shim, and the tick must keep the pause through its silence and its death (SHARD-442).
+func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
 		t.Fatal(err)

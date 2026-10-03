@@ -455,40 +455,40 @@ func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 }
 
-// A marked record a silent shim made unresponsive keeps its pause when the shim is gone by the restart (SHARD-442).
-func TestReconcilePausesAMarkedUnresponsiveRecordWhoseShimDied(t *testing.T) {
-	sb := unresponsive()
+// A daemon cut after the checkpoint leaves its mark over a frozen shim, and the restarts must keep the pause through its silence and its death (SHARD-442).
+func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t *testing.T) {
+	sb := running()
 	sb.Pausing = true
-	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
-	dir := heldCheckpoint(t, lab, "sandbox1")
+	provider := &recProvider{status: map[string]models.Status{sb.ID: silentShim()}}
+	lab := newReconcileLab(t, provider, sb)
+	dir := heldCheckpoint(t, lab, sb.ID)
 
 	if err := lab.run(t); err != nil {
-		t.Fatalf("ReconcileAll: %v", err)
+		t.Fatalf("the restart that adopts the frozen shim: %v", err)
+	}
+	silent := *lab.repo.records[sb.ID]
+	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Snapshot != "" || silent.PID != sb.PID {
+		t.Fatalf("after the first restart the record is %+v, want unresponsive with its pid and the mark kept, and no snapshot: the shim may still answer", silent)
 	}
 
-	got := lab.repo.records["sandbox1"]
+	if err := lab.run(t); err != nil {
+		t.Fatalf("the restart while the shim is still silent: %v", err)
+	}
+	if still := *lab.repo.records[sb.ID]; still.State != models.StateUnresponsive || !still.Pausing || still.Snapshot != "" || still.PID != sb.PID {
+		t.Fatalf("after the second restart the record is %+v, want it unresponsive with its pid and the mark kept: the shim may still answer", still)
+	}
+
+	provider.status[sb.ID] = gone()
+	if err := lab.run(t); err != nil {
+		t.Fatalf("the restart after the shim died: %v", err)
+	}
+
+	got := lab.repo.records[sb.ID]
 	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
-		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
+		t.Errorf("after the third restart the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
 	}
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "said unresponsive") {
-		t.Errorf("the reconcile reported %v, want one line on the pause of an unresponsive record", lab.reports)
-	}
-}
-
-// A shim still silent may answer with the guest past its checkpoint, so the restart takes no pause from it.
-func TestReconcileKeepsAMarkedRecordWhoseShimIsStillSilentUnresponsive(t *testing.T) {
-	sb := unresponsive()
-	sb.Pausing = true
-	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": silentShim()}}, sb)
-	heldCheckpoint(t, lab, "sandbox1")
-
-	if err := lab.run(t); err != nil {
-		t.Fatalf("ReconcileAll: %v", err)
-	}
-
-	got := lab.repo.records["sandbox1"]
-	if got.State != models.StateUnresponsive || !got.Pausing || got.Snapshot != "" || got.PID != 42 {
-		t.Errorf("the record is %+v, want unresponsive with its pid and the mark kept, and no snapshot", *got)
+	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
+		t.Errorf("the restarts reported %v, want the silence and then the pause of an unresponsive record", lab.reports)
 	}
 }
 
