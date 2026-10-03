@@ -842,11 +842,11 @@ one way a client off Linux drives sandboxes, because the daemon itself runs on L
 ## One daemon per root
 
 The daemon takes an exclusive flock on `daemon.lock` under the root, and refuses to start while
-another daemon holds it. It is the only lock shard keeps. The daemon is the single writer of the
-state, so nothing else is contended between processes. The lock dies with the process. Beside the
-lock, the daemon writes `daemon.pid` for newsyslog to signal on a Mac, and removes it on a clean
-exit. Nothing in shard reads that file. Nothing probes either file to decide whether a daemon is up.
-A client that needs a daemon asks the socket and reads the outcome.
+another daemon holds it. The daemon is the single writer of the sandbox, image, secret and policy
+stores, so none of them is contended between processes. The lock dies with the process. Beside the lock, the daemon writes `daemon.pid`
+for newsyslog to signal on a Mac, and removes it on a clean exit. Nothing in shard reads that file.
+Nothing probes either file to decide whether a daemon is up. A client that needs a daemon asks the
+socket and reads the outcome.
 
 ## Supervision
 

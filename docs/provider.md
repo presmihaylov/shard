@@ -142,7 +142,7 @@ finds the channel again through fd 0 of PID 1, confirmed in the sandbox cgroup. 
 only while it is a regular file of 4 KiB with its seals and the inode that create recorded.
 `inspect` names anything else as `exit channel replaced`. A stop copies the record before it
 returns. If PID 1 dies while the daemon is down, or the daemon dies inside the stop that ended PID 1,
-the unread exit record is lost with it. Firecracker will verify the exit code behind the VM boundary
+the unread exit record is lost with it. Firecracker verifies the exit code behind the VM boundary
 the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs root, the Sysbox package installed on the host,
@@ -178,9 +178,11 @@ flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `
 `ExitStatus`, `Status`, `Restarts`, `LogPath`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
-a record, so a refusal leaves nothing in `ls`. Only vz refuses anything. A VM's memory is real
-memory, so `--memory 0` and a bound under 128 MiB are refused by name. The Linux substrates take
-every bound. `Create` checks its spec again, so a clone or a fork is held to the same rule.
+a record, so a refusal leaves nothing in `ls`. Only vz and Firecracker refuse anything. A VM's
+memory is real memory, so both refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk`
+whose last block group cannot hold its own metadata. Firecracker also refuses a `--cpus` above 32
+and a `--disk` under 11 MiB. gVisor, Sysbox and runc take every bound. `Create` checks its spec
+again, so a clone or a fork is held to the same rule.
 
 `Clone` is required because it needs nothing a substrate may lack. It copies the writable layer
 that another sandbox kept, and runs that sandbox's entrypoint again from the beginning, under the
@@ -240,17 +242,19 @@ kills the process. A guest that the host can no longer reach over vsock is still
 daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
 left paused, because that stopped guest would answer no handshake. A vmm that does not answer that
 adopt within 4 s reads `unresponsive` with its pid. It keeps running, because a thawed vmm gives
-back the same VM (SHARD-392). `--memory` is required, `0` is refused by name, and 128 MiB is the
-least a guest boots with. The guest's network is a veth on the same bridge that the other substrates
-use. Its host end is named `shardv<n>`, and it is a port under the same host rules. The anti-spoof
-pair, the IPv6 drop and the egress chain key on that name. The proxy redirect keys on the leased
-address, and the private floor keys on the bridge. So a policy reads and logs the same on every
-substrate. The other end of the veth is in the sandbox's own namespace. There a bridge with no
-address joins it to a tap that is also named `shardv<n>`, so the vmm shares no network namespace
-with the host (SHARD-431). The vmm opens the tap as the guest's `eth0`, with a MAC derived from the
-lease. Once the guest is up, and before the entrypoint runs, `shard-init` takes the address, the
-gateway and the resolver over vsock. The next start after a stop leases the same address and builds
-the namespace and the tap again for the new vmm. `rm` releases both.
+back the same VM (SHARD-392). A vmm that the daemon holds reads `unresponsive` the same way when it
+misses a probe of 4 s, and a later answer reads `running` again (SHARD-439). `--memory` is required,
+`0` is refused by name, and 128 MiB is the least a guest boots with. The guest's network is a veth
+on the same bridge that the other substrates use. Its host end is named `shardv<n>`, and it is a
+port under the same host rules. The anti-spoof pair, the IPv6 drop and the egress chain key on that
+name. The proxy redirect keys on the leased address, and the private floor keys on the bridge. So a
+policy reads and logs the same on every substrate. The other end of the veth is in the sandbox's own
+namespace. There a bridge with no address joins it to a tap that is also named `shardv<n>`, so the
+vmm shares no network namespace with the host (SHARD-431). The vmm opens the tap as the guest's
+`eth0`, with a MAC derived from the lease. Once the guest is up, and before the entrypoint runs,
+`shard-init` takes the address, the gateway and the resolver over vsock. The next start after a stop
+leases the same address and builds the namespace and the tap again for the new vmm. `rm` releases
+both.
 
 The daemon spawns every vmm through Firecracker's `jailer`, and never as root (SHARD-306). Each
 sandbox gets a uid of its own, and a gid with the same value, from 0x70000000 to 0x7FFDFFFF
@@ -472,8 +476,8 @@ disk over it, and lays `upper` and `work` on that disk. It then mounts the overl
 moves the kernel filesystems across and pivots onto it, exactly as the one-disk `-root` boot does.
 It stays PID 1, and the host sends the entrypoint over vsock as it does for the one-disk boot. `vz`
 keeps its ext4 root disk, and an APFS clone is its overlay. The guest kernel must carry
-`CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`. Neither shipped kernel config sets the first yet, and
-SHARD-265 adds it. On a host whose kernel lacks it, the boot fails at the base mount, and the
+`CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`. Both shipped kernel configs, amd64 and arm64, set both
+(SHARD-265). On a guest kernel that lacks the first, the boot fails at the base mount, and the
 console log says so.
 
 ## What `Status` means
@@ -520,15 +524,17 @@ caller allocates on the host, and a pipe cannot be one.
 - The repository owns the record and the directory itself. It removes the directory only after
   `Remove` has dropped every mount inside it.
 - The network service owns the namespace, the address and the host interface. `NetworkSpec` is
-  allocated before `Create`, so a provider joins a namespace that it did not build, and it never
-  releases one. On `firecracker` the namespace holds a tap bridged to the veth, and no address. The
-  jailer puts the vmm in the namespace, the vmm opens the tap, and the provider addresses the guest
-  with the lease that the spec carries.
+  allocated before `Create`, so a provider on Linux joins a namespace that it did not build, and it
+  never releases one. On `vz` there is no namespace, only the lease. On `firecracker` the namespace
+  holds a tap bridged to the veth, and no address. The jailer puts the vmm in the namespace, the vmm
+  opens the tap, and the provider addresses the guest with the lease that the spec carries.
 - The host is the policy of record. On Linux that is host netfilter. On `vz` it is the daemon's own
   userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a
   rule that lives inside the sandbox.
 
-Every verb takes an id, because `shard` runs no daemon that could remember anything from `Create`.
+A verb that acts on a sandbox names it by its id, as an argument or in the spec, because a sandbox
+outlives the `shard daemon` that created it, and the next daemon finds it by that id alone. `Name`,
+`Capabilities`, `CheckResources` and `AdoptStaging` act on no sandbox, so they take no id.
 
 ## What the conformance suite proves
 
@@ -558,8 +564,8 @@ proves the refuse path there. It proves the snapshot path on gVisor, on `vz` and
 takes one fork from one snapshot. The N-fork case, which holds every substrate to a snapshot that
 no verb consumes, is SHARD-45.
 
-It proves nothing about the network. Every substrate joins a namespace that the network service
-built, so there is nothing to generalize yet.
+It proves nothing about the network. Every provider on Linux joins a namespace that the network
+service built, and `vz` joins none, so there is nothing to generalize yet.
 
 It does not prove that systemd runs as a sandbox's own init, because no substrate allows it.
 `shard-init` is PID 1 on every provider, and systemd refuses the system-manager role when it is not

@@ -260,7 +260,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 
-	m, err := p.lookup(ctx, id, dir, r)
+	m, err := p.lookupToStop(ctx, id, dir, r)
 	if err != nil {
 		return err
 	}
@@ -338,7 +338,7 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	return p.settle(ctx, m)
 }
 
-// endSilent kills a vmm that never answered through the pin its adopt took, never by a pid or the socket, either of which may name a vmm begun since.
+// endSilent kills a silent vmm through the pin its attach or adopt took, never by a pid or the socket, either of which may name a vmm begun since.
 func (p *Provider) endSilent(ctx context.Context, m *machine) error {
 	if err := m.pinned.Kill(); err != nil {
 		return fmt.Errorf("sandbox %s: end its silent vmm: %w", m.id, err)

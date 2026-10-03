@@ -310,29 +310,39 @@ func Adopt(ctx context.Context, socket, vsock string) (*Client, Info, error) {
 // AdoptPinned is Adopt that pins the peer of its dial before it asks, and hands the pin back when that peer stays silent to the deadline; the caller closes it.
 func AdoptPinned(ctx context.Context, socket, vsock string) (*Client, Info, *pidpin.Process, error) {
 	client := Open(socket, vsock)
-	conn, pid, err := client.peer(ctx, http.MethodGet, "/")
+	info, pin, err := client.StatePinned(ctx)
 	if err != nil {
-		return nil, Info{}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+		return nil, info, pin, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+	if err := pin.Close(); err != nil {
+		return nil, info, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+	}
+
+	return client, info, nil, nil
+}
+
+// StatePinned is State on a connection whose peer is pinned before the request; the pin comes back when the vmm answers or stays silent to the deadline, and the caller closes it.
+func (c *Client) StatePinned(ctx context.Context) (Info, *pidpin.Process, error) {
+	conn, pid, err := c.peer(ctx, http.MethodGet, "/")
+	if err != nil {
+		return Info{}, nil, err
 	}
 	defer conn.Close()
 	pin, err := pidpin.Open(pid)
 	if err != nil {
-		return nil, Info{PID: pid}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+		return Info{PID: pid}, nil, fmt.Errorf("GET /: %w", err)
 	}
 	var got instance
 	err = request(ctx, conn, http.MethodGet, "/", nil, &got)
-	// Only a peer that still holds the connection lets the request time out, so a silent one outlived the pin, which is therefore that vmm.
+	// Only a peer that still holds the connection answers or lets the request time out, so either way it outlived the pin, which is therefore that vmm.
+	if err == nil {
+		return Info{State: got.State, PID: pid}, pin, nil
+	}
 	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return nil, Info{PID: pid}, pin, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
-	}
-	if err != nil {
-		return nil, Info{PID: pid}, nil, errors.Join(fmt.Errorf("adopt the vmm on %s: %w", socket, err), pin.Close())
-	}
-	if err := pin.Close(); err != nil {
-		return nil, Info{PID: pid}, nil, fmt.Errorf("adopt the vmm on %s: %w", socket, err)
+		return Info{PID: pid}, pin, err
 	}
 
-	return client, Info{State: got.State, PID: pid}, nil, nil
+	return Info{PID: pid}, nil, errors.Join(err, pin.Close())
 }
 
 // State asks the vmm what the microVM is doing and who answers, the pid being the socket's peer, by ctx's deadline if it comes first; a read that fails after the dial still names that peer.
