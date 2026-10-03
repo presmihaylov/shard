@@ -110,3 +110,24 @@ func TestTheWordListsHoldNoDuplicates(t *testing.T) {
 		}
 	}
 }
+
+// A caller sizes what it puts in a sandbox's dir by LongestDir, so no id may make a longer one (SHARD-358).
+func TestLongestDirIsAsLongAsTheLongestIDMakes(t *testing.T) {
+	root := "/var/lib/shard"
+	r := &Repository{root: root}
+	longest := LongestDir(root)
+
+	reached := false
+	for a := range wordsPerList {
+		for n := range wordsPerList {
+			dir := r.dir(formatID([4]byte{byte(a), byte(n), 0xff, 0xff}))
+			if len(dir) > len(longest) {
+				t.Fatalf("%s is %d bytes, longer than LongestDir's %d", dir, len(dir), len(longest))
+			}
+			reached = reached || len(dir) == len(longest)
+		}
+	}
+	if !reached {
+		t.Errorf("no id makes a dir as long as LongestDir's %d bytes: %s", len(longest), longest)
+	}
+}

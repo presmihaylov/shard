@@ -54,6 +54,9 @@ func newClaims(sub string, scopes []string, ttl time.Duration) (claims, error) {
 	if len(scopes) == 0 {
 		scopes = []string{"*"}
 	}
+	if err := checkScopes(scopes); err != nil {
+		return claims{}, err
+	}
 
 	jti, err := newJTI()
 	if err != nil {

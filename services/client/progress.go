@@ -21,10 +21,13 @@ type PullEvent = image.Event
 
 // The statuses a PullEvent carries, in the order a pull says them.
 const (
-	PullCached  = image.StatusCached
-	PullPulling = image.StatusPulling
-	PullLayer   = image.StatusLayer
-	PullPulled  = image.StatusPulled
+	PullCached    = image.StatusCached
+	PullPulling   = image.StatusPulling
+	PullLayer     = image.StatusLayer
+	PullUnpacking = image.StatusUnpacking
+	PullUnpacked  = image.StatusUnpacked
+	PullBuilding  = image.StatusBuilding
+	PullPulled    = image.StatusPulled
 )
 
 // CreateSandboxAndWait is one call, so a pull that ends before a separate wait could attach is never missed.

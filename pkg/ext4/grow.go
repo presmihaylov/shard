@@ -16,7 +16,7 @@ func LastGroupFits(size int64) bool {
 	return blocks <= blocksPerGroup || tail == 0 || tail > 2+tableBlocks
 }
 
-// Grow extends an unmounted image from Write to size bytes, adding empty block groups.
+// Grow extends an unmounted image from Write to size bytes, adding empty block groups, and gives it a journal if it has none.
 func Grow(path string, size int64) (err error) {
 	if size%BlockSize != 0 {
 		return fmt.Errorf("ext4: grow %s: size %d is not a multiple of %d", path, size, BlockSize)
@@ -46,9 +46,37 @@ func Grow(path string, size int64) (err error) {
 	if newBlocks < oldBlocks {
 		return fmt.Errorf("ext4: grow %s: %d blocks is smaller than the current %d", path, newBlocks, oldBlocks)
 	}
-	if newBlocks == oldBlocks {
+	if newBlocks == oldBlocks && sb.FeatureCompat&CompatHasJournal != 0 {
 		return nil
 	}
+
+	if newBlocks > oldBlocks {
+		if err := addGroups(f, path, &sb, size); err != nil {
+			return err
+		}
+	}
+
+	// Grow is not crash-atomic: a half-built image is never consumed, since the caller records the sandbox only after Grow returns.
+	if sb.FeatureCompat&CompatHasJournal == 0 {
+		if err := ensureJournal(f, &sb); err != nil {
+			return fmt.Errorf("ext4: grow %s: add the journal: %w", path, err)
+		}
+		sb.FeatureCompat |= CompatHasJournal
+	}
+
+	if err := writeAt(f, superBlockOffset, &sb); err != nil {
+		return fmt.Errorf("ext4: grow %s: write the superblock: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("ext4: grow %s: %w", path, err)
+	}
+	return nil
+}
+
+// addGroups adds the block groups between the image's current size and size, and updates sb's counts; the caller writes sb.
+func addGroups(f *os.File, path string, sb *SuperBlock, size int64) error {
+	oldBlocks := sb.BlocksCountLow
+	newBlocks := uint32(size / BlockSize)
 	oldGroups := (oldBlocks-1)/blocksPerGroup + 1
 	newGroups := (newBlocks-1)/blocksPerGroup + 1
 	// The descriptor table runs from block 1 to the first bitmap, which is where Write reserved it up to MaxDiskSize.
@@ -145,12 +173,7 @@ func Grow(path string, size int64) (err error) {
 	sb.BlocksCountLow = newBlocks
 	sb.InodesCount = inodesPerGroup * newGroups
 	sb.FreeInodesCount += inodesPerGroup * (newGroups - oldGroups)
-	if err := writeAt(f, superBlockOffset, &sb); err != nil {
-		return fmt.Errorf("ext4: grow %s: write the superblock: %w", path, err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("ext4: grow %s: %w", path, err)
-	}
+
 	return nil
 }
 

@@ -73,7 +73,7 @@ func lookupUser(rootfs, name string) (string, uint32, uint32, error) {
 		match = func(fields []string) bool { id, ok := parseID(fields[2]); return ok && id == wanted }
 	}
 
-	fields, err := findEntry(filepath.Join(rootfs, "etc/passwd"), passwdFields, match)
+	fields, err := findEntry(rootfs, "etc/passwd", passwdFields, match)
 	if err != nil {
 		// An id the image does not list is still a valid id to run as, and its group is root.
 		if numeric && errors.Is(err, errNoEntry) {
@@ -105,7 +105,7 @@ func membershipsOf(rootfs, name string) ([]uint32, error) {
 	}
 
 	var groups []uint32
-	err := scanDatabase(filepath.Join(rootfs, "etc/group"), memberField+1, func(fields []string) (bool, error) {
+	err := scanDatabase(rootfs, "etc/group", memberField+1, func(fields []string) (bool, error) {
 		if !slices.Contains(strings.Split(fields[memberField], ","), name) {
 			return true, nil
 		}
@@ -135,7 +135,7 @@ func lookupGroup(rootfs, name string) (uint32, error) {
 		return id, nil
 	}
 
-	fields, err := findEntry(filepath.Join(rootfs, "etc/group"), groupFields, func(f []string) bool { return f[0] == name })
+	fields, err := findEntry(rootfs, "etc/group", groupFields, func(f []string) bool { return f[0] == name })
 	if err != nil {
 		return 0, fmt.Errorf("resolve the group %q: %w", name, err)
 	}
@@ -184,9 +184,9 @@ func parseID(s string) (uint32, bool) {
 }
 
 // findEntry returns the first entry the match accepts. A missing file is the same answer as a missing name.
-func findEntry(path string, minFields int, match func(fields []string) bool) ([]string, error) {
+func findEntry(rootfs, rel string, minFields int, match func(fields []string) bool) ([]string, error) {
 	var found []string
-	err := scanDatabase(path, minFields, func(fields []string) (bool, error) {
+	err := scanDatabase(rootfs, rel, minFields, func(fields []string) (bool, error) {
 		if !match(fields) {
 			return true, nil
 		}
@@ -205,27 +205,35 @@ func findEntry(path string, minFields int, match func(fields []string) bool) ([]
 }
 
 // scanDatabase reads one colon-separated database and stops when visit says it has read enough.
-// The rootfs is the guest's own tree, so the file it names is refused unless it is a plain one: a
-// symlink would resolve against the host's root, and a fifo would block this open until the guest answers.
-func scanDatabase(path string, minFields int, visit func(fields []string) (bool, error)) error {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// os.OpenRoot confines every part of rel to the guest's own tree, so no symlink on a middle part leads
+// the read onto the host (SHARD-357); O_NOFOLLOW keeps the last part a plain file and O_NONBLOCK stops a fifo stalling it.
+func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string) (bool, error)) error {
+	full := filepath.Join(rootfs, rel)
+
+	root, err := os.OpenRoot(rootfs)
+	if err != nil {
+		return fmt.Errorf("open the rootfs %s: %w", rootfs, err)
+	}
+	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
+
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("the image has no %s: %w", filepath.Base(path), errNoEntry)
+		return fmt.Errorf("the image has no %s: %w", filepath.Base(rel), errNoEntry)
 	}
 	if errors.Is(err, syscall.ELOOP) {
-		return fmt.Errorf("%s is a symbolic link, and a user database must be a file in the same tree", path)
+		return fmt.Errorf("%s is a symbolic link, and a user database must be a file in the same tree", full)
 	}
 	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
+		return fmt.Errorf("open %s: %w", full, err)
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
+		return fmt.Errorf("stat %s: %w", full, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is a %s, and a user database must be a regular file", path, info.Mode().Type())
+		return fmt.Errorf("%s is a %s, and a user database must be a regular file", full, info.Mode().Type())
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -245,7 +253,7 @@ func scanDatabase(path string, minFields int, visit func(fields []string) (bool,
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", full, err)
 	}
 
 	return nil

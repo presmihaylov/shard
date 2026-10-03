@@ -85,7 +85,36 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		}
 	}
 
-	return p.attach(ctx, id, dir, client, info)
+	m, err = p.attach(ctx, id, dir, client, info)
+	if err != nil || m == nil {
+		return m, err
+	}
+	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
+	}
+
+	return m, nil
+}
+
+// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
+func (m *machine) reseed(ctx context.Context) error {
+	marker := filepath.Join(m.dir, reseedFile)
+	pending, err := exists(marker)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: read the reseed marker: %w", m.id, err)
+	}
+	if !pending {
+		return nil
+	}
+	if err := m.control.Load().Reseed(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: reseed the restored guest: %w", m.id, err)
+	}
+	if err := os.Remove(marker); err != nil {
+		return fmt.Errorf("sandbox %s: clear the reseed marker: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
@@ -303,7 +332,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -453,14 +482,14 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == fcapi.StateRunning
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
 func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.File.Close()
+	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
 		err := supervisor.Logs(ctx, opened, out, version)
@@ -533,7 +562,10 @@ func awaitEnded(m *machine) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		info, err := m.client.State()
+		// Each read ends with the wait, so a vmm that takes the dial and never answers costs the grace and not callTimeout (SHARD-388).
+		probe, cancel := context.WithTimeout(ctx, max(time.Until(deadline), probeFloor))
+		info, err := m.client.State(probe)
+		cancel()
 		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
 		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil

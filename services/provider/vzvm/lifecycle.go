@@ -259,7 +259,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	m, err := p.lookup(ctx, id, dir, r)
+	m, err := p.lookupToStop(ctx, id, dir, r, grace)
 	if err != nil || m == nil {
 		return err
 	}
@@ -291,17 +291,28 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	return p.end(ctx, m)
 }
 
-// end cuts the VM under the guest, which records no exit, and waits for the shim to go.
+// end cuts the VM under the guest, which records no exit; a shim that does not go in time is killed by the pid behind its socket (SHARD-349).
 func (p *Provider) end(ctx context.Context, m *machine) error {
-	if _, err := m.client.Stop(); err != nil && !absent(err) {
-		return fmt.Errorf("stop the vm of sandbox %s: %w", m.id, err)
-	}
-	ended, err := m.awaitGone(ctx, killGrace)
+	deadline := time.Now().Add(killGrace / 2)
+	stopCtx, cancel := context.WithDeadline(ctx, deadline)
+	_, stopErr := m.client.Stop(stopCtx)
+	cancel()
+	// A stop whose sandbox ended answers success, so the request's own error counts only when the shim stays.
+	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
 		return err
 	}
 	if !ended {
-		return fmt.Errorf("the vm of sandbox %s still runs %s after a forced stop", m.id, killGrace)
+		if err := m.client.Kill(); err != nil && !absent(err) {
+			return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err))
+		}
+		ended, err = m.awaitGone(ctx, killGrace/2)
+		if err != nil {
+			return err
+		}
+	}
+	if !ended {
+		return errors.Join(stopErr, fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2))
 	}
 	p.forget(m)
 
