@@ -250,6 +250,9 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return nil
 }
 
+// AdoptStaging keeps the snapshot staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
+func (p *Provider) AdoptStaging(string) error { return nil }
+
 // Fork restores the save in dir as a new sandbox under the spec's id and address; the source is not touched.
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	if !p.cfg.SaveRestore {

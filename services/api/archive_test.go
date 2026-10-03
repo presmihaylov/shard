@@ -1,9 +1,14 @@
 package api_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -99,6 +104,122 @@ func TestGetArchiveThatDiesMidwayAbortsTheResponse(t *testing.T) {
 	if _, err := io.ReadAll(resp.Body); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("reading the cut tar gave %v, want io.ErrUnexpectedEOF", err)
 	}
+}
+
+// A client that read the trailer closes the body, and the hang-up that shuts the exec is the end of a whole copy, not a failure (SHARD-410).
+func TestAClientThatHangsUpAfterTheTrailerLogsNoFailure(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileDir}
+	s.verbs.content = wholeTar(t)
+	s.verbs.hangUpErr = &fs.PathError{Op: "read", Path: "|0", Err: os.ErrClosed}
+
+	body := archiveStream(t, s)
+	tr := tar.NewReader(body)
+	for {
+		_, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("the trailer never reached the client: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			t.Fatalf("read an entry: %v", err)
+		}
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("close the body: %v", err)
+	}
+
+	// The close waits for the handler, so the log is final.
+	s.server.Close()
+	if logged := s.log.String(); logged != "" {
+		t.Fatalf("the daemon logged %q after a whole copy, want nothing", logged)
+	}
+}
+
+// A tar can end at any entry, so a client that hangs up before the trailer was cut, even at an entry boundary, and the daemon says so.
+func TestAClientThatHangsUpBeforeTheTrailerStillLogs(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileDir}
+	whole := wholeTar(t)
+	s.verbs.content = whole[:len(whole)-1024]
+	s.verbs.hangUpErr = &fs.PathError{Op: "read", Path: "|0", Err: os.ErrClosed}
+
+	body := archiveStream(t, s)
+	if _, err := tar.NewReader(body).Next(); err != nil {
+		t.Fatalf("read the first header: %v", err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("close the body: %v", err)
+	}
+
+	// The response write can see the hang-up before the exec does, so either side's error is the cut.
+	s.server.Close()
+	if logged := s.log.String(); !strings.Contains(logged, "api: archive /work from sandbox "+s.running.ID+": ") {
+		t.Fatalf("the daemon logged %q after a cut copy, want the failure", logged)
+	}
+}
+
+// Only the client's own hang-up ends a whole tar quietly: an exec that fails after the trailer still logs and cuts the response.
+func TestAFailureAfterTheTrailerStillLogs(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileDir}
+	s.verbs.content = wholeTar(t)
+	s.verbs.bodyErr = errors.New("the guest went away")
+
+	if _, err := io.ReadAll(archiveStream(t, s)); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("reading the tar gave %v, want io.ErrUnexpectedEOF", err)
+	}
+
+	s.server.Close()
+	if logged := s.log.String(); !strings.Contains(logged, "the guest went away") {
+		t.Fatalf("the daemon logged %q, want the guest's failure", logged)
+	}
+}
+
+// wholeTar is one file and the trailer, 64 KiB in all, so the last of the server's 32 KiB reads is big enough to reach the client unbuffered.
+func wholeTar(t *testing.T) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	data := bytes.Repeat([]byte("w"), 64<<10-3*512)
+	if err := tw.WriteHeader(&tar.Header{Name: "work/blob", Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("write the header: %v", err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatalf("write the data: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("write the trailer: %v", err)
+	}
+	if buf.Len() != 64<<10 {
+		t.Fatalf("the tar is %d bytes, want 64 KiB", buf.Len())
+	}
+
+	return buf.String()
+}
+
+// archiveStream opens a get of /work and answers its body, bounded so a trailer the server holds back fails the test rather than hanging it.
+func archiveStream(t *testing.T, s seeded) io.ReadCloser {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/archive?path=/work", nil)
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	resp, err := s.server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /archive: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the get answered %d, want 200", resp.StatusCode)
+	}
+
+	return resp.Body
 }
 
 func TestArchiveRefusalsAnswerTheirCodes(t *testing.T) {

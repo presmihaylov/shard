@@ -87,6 +87,71 @@ func TestPauseRecordsASandboxTheProviderLost(t *testing.T) {
 	}
 }
 
+// A client that hangs up mid-checkpoint must not cut the save, because the guest does not survive one that broke off.
+func TestPauseOutlivesTheClientThatAskedForIt(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	sb, err := svc.Pause(ctx, "sandbox1")
+	if err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	if l.provider.pauseCtxErr != nil {
+		t.Errorf("the provider paused under a context that said %v, want one the client cannot cancel", l.provider.pauseCtxErr)
+	}
+	if sb.State != models.StatePaused {
+		t.Errorf("the record is %s, want paused", sb.State)
+	}
+}
+
+// A pause that lost the guest leaves nothing to stop or resume, so the record ends failed with the reason.
+func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, l := newService(t, &recorder{}, running())
+	l.repo.snapshotDir = dir
+	l.provider.lose = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	var lost *models.LostError
+	if !errors.As(err, &lost) {
+		t.Fatalf("pause returned %v, want the lost sandbox", err)
+	}
+
+	// The checkpoint an earlier pause left must not pass for this one.
+	sb := l.repo.sb
+	if sb.State != models.StateFailed || sb.PID != 0 || !strings.Contains(sb.FailedReason, "no space left on device") {
+		t.Errorf("the record is %s with pid %d and reason %q, want failed with pid 0 and the checkpoint's reason", sb.State, sb.PID, sb.FailedReason)
+	}
+}
+
+// A delete that spends the pause budget after a good checkpoint leaves the pause context done, and the record must still say paused.
+func TestPauseThatSpentItsBudgetStillRecordsTheSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.PauseBudget = 50 * time.Millisecond })
+	l.repo.snapshotDir = dir
+	l.provider.spendBudget = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "is paused") {
+		t.Fatalf("pause returned %v, want the deadline and that the sandbox is paused", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir {
+		t.Errorf("the record is %s with pid %d and snapshot %q, want paused with pid 0 and %s", sb.State, sb.PID, sb.Snapshot, dir)
+	}
+}
+
 // A complete snapshot outranks a failed host cleanup: the record must say paused, or start throws it away.
 func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 	dir := t.TempDir()
