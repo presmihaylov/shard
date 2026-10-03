@@ -91,9 +91,14 @@ holds entries the mount would hide, when a file at `<root>.xfs` is not an XFS im
 free space is under 10 GiB. It never falls back to a full copy. No other provider provisions or
 probes anything (SHARD-264).
 
-To undo the bootstrap by hand, unmount the image from the root, remove the `/etc/fstab` line whose
-device is `<root>.xfs`, then delete `<root>.xfs` and the root. Remove the fstab line before the next
-boot, or it mounts the image again.
+To undo the bootstrap by hand, first stop every sandbox with `shard stop`, then stop the daemon
+(`systemctl stop shard`) and keep it stopped. A sandbox outlives the daemon, and a live VM or daemon
+holds files under the mount, so an unmount fails busy and a lazy one detaches live state. Then unmount
+the image from the root, remove its `/etc/fstab` line, and delete `<root>.xfs`, `<root>.xfs.lock` and
+the root. The daemon writes the line as `<root>.xfs <root> xfs loop,nofail 0 0` and escapes each path
+the way `getmntent` reads it: `\134` for a backslash, `\040` for a space, `\011` for a tab and `\012`
+for a newline, so a grep for a root with a space in it must search for `\040`. Remove the fstab line
+before the next boot, or it mounts the image again.
 
 ## Reconcile at start
 
