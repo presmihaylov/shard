@@ -14,12 +14,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostclean"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -49,6 +52,75 @@ const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1
 const dindImage = "docker:28-dind"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
+
+// reaperEnv makes the test binary the reaper, which outlives a run a timeout or a signal ended and gives the host back.
+const reaperEnv = "VZVM_REAPER"
+
+// rootName starts the name of every root this suite makes, so a sweep or a refusal touches no other run's.
+const rootName = "shard-vzit-"
+
+func rootPrefix() string { return filepath.Join(os.TempDir(), rootName) }
+
+func init() {
+	if os.Getenv(reaperEnv) == "1" {
+		os.Exit(reap())
+	}
+	guardHost = holdHost
+}
+
+// holdHost refuses a host an earlier run left, then starts the reaper; the release ends the hold and waits for its sweep.
+func holdHost() (func() error, error) {
+	if err := hostclean.Refuse(rootPrefix()); err != nil {
+		return nil, err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the test binary: %w", err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("open the reaper pipe: %w", err)
+	}
+
+	reaper := exec.Command(self)
+	reaper.Env = append(os.Environ(), reaperEnv+"=1")
+	reaper.Stdin = r
+	reaper.Stderr = os.Stderr
+	if err := reaper.Start(); err != nil {
+		return nil, errors.Join(fmt.Errorf("start the reaper: %w", err), r.Close(), w.Close())
+	}
+	if err := r.Close(); err != nil {
+		return nil, errors.Join(fmt.Errorf("close the reaper end of the pipe: %w", err), w.Close())
+	}
+
+	return func() error {
+		if err := w.Close(); err != nil {
+			return fmt.Errorf("end the hold on the reaper: %w", err)
+		}
+		if err := reaper.Wait(); err != nil {
+			return fmt.Errorf("the reaper: %w", err)
+		}
+
+		return nil
+	}, nil
+}
+
+// reap sweeps once the pipe the run holds reads EOF, which is how the run ends however it ends; a signal to the group must not end it first.
+func reap() int {
+	signal.Ignore(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGPIPE)
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		fmt.Fprintln(os.Stderr, "vzvm reaper: wait for the run to end:", err)
+
+		return 1
+	}
+	if err := hostclean.Sweep(rootPrefix()); err != nil {
+		fmt.Fprintln(os.Stderr, "vzvm reaper:", err)
+
+		return 1
+	}
+
+	return 0
+}
 
 const (
 	redirectPort = 30080
@@ -83,7 +155,7 @@ func newVMHarnessFor(t *testing.T, ref string) *vmHarness {
 		t.Skipf("no guest kernel at %s: build one with make kernel, or set SHARD_KERNEL", kernel)
 	}
 
-	root, err := os.MkdirTemp("", "vz") //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp("", rootName) //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatal(err)
 	}

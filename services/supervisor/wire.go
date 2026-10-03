@@ -117,13 +117,15 @@ type ExecHeader struct {
 	WorkDir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
 	Groups  []uint32 `json:"groups,omitempty"`
+	// Lookup says User is what the caller named, for the guest to resolve against its live passwd; an older guest refuses a name.
+	Lookup bool `json:"lookup,omitempty"`
 	// TTY gives the command a pseudo terminal the guest allocates; Rows and Cols size it.
 	TTY  bool   `json:"tty,omitempty"`
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 }
 
-// The streams an exec frame carries in its first byte, the API's numbers; the host sends stdin, its close and resize.
+// The streams an exec frame carries in its first byte, the API's numbers; the host sends stdin, its close, resize and cancel.
 const (
 	StreamStdin      byte = 0
 	StreamStdout     byte = 1
@@ -132,10 +134,14 @@ const (
 	StreamStdinClose byte = 4
 	StreamStarted    byte = 6
 	StreamResize     byte = 7
+	StreamCancel     byte = 8
 )
 
 // MaxPayload bounds one frame, so a longer write goes as several and no reader allocates for more.
 const MaxPayload = 1 << 20
+
+// ErrMessageTooLong is a control line past MaxPayload; the reader refuses it before it holds more (SHARD-340).
+var ErrMessageTooLong = errors.New("a message runs past the 1 MiB bound")
 
 // frameHeader is the stream byte, three bytes of zero, and the payload length, big endian.
 const frameHeader = 8
@@ -216,6 +222,9 @@ func WriteMessage(w io.Writer, value any) error {
 	if err != nil {
 		return fmt.Errorf("encode a message: %w", err)
 	}
+	if len(encoded) > MaxPayload {
+		return fmt.Errorf("send a message: %w", ErrMessageTooLong)
+	}
 
 	if _, err := w.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("send a message: %w", err)
@@ -224,17 +233,27 @@ func WriteMessage(w io.Writer, value any) error {
 	return nil
 }
 
-// ReadMessage takes the next JSON line into value. A closed peer reads as io.EOF, unwrapped.
+// ReadMessage takes the next JSON line into value, up to MaxPayload before its newline. A closed peer reads as io.EOF, unwrapped.
 func ReadMessage(r *bufio.Reader, value any) error {
-	line, err := r.ReadBytes('\n')
-	if errors.Is(err, io.EOF) && len(line) == 0 {
-		return io.EOF
-	}
-	if err != nil {
-		return fmt.Errorf("read a message: %w", err)
-	}
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(line)+len(chunk) > MaxPayload+1 {
+			return fmt.Errorf("read a message: %w", ErrMessageTooLong)
+		}
+		line = append(line, chunk...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) && len(line) == 0 {
+			return io.EOF
+		}
+		if err != nil {
+			return fmt.Errorf("read a message: %w", err)
+		}
 
-	return DecodeFrame(line, value)
+		return DecodeFrame(line, value)
+	}
 }
 
 // ReadHeader takes the exec header a byte at a time, so the frames behind it stay in the connection.

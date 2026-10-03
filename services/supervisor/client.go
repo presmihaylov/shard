@@ -27,6 +27,9 @@ const dialInterval = 50 * time.Millisecond
 // requestTimeout bounds a request on top of its caller's context, so a guest that never answers frees the verb (SHARD-339).
 const requestTimeout = 30 * time.Second
 
+// cancelBudget bounds the cancel frame of an exec, so a guest that stopped reading never holds the close.
+const cancelBudget = time.Second
+
 // Control is the host end of the control connection. A request waits for the guest's answer; the events between them queue for Next.
 type Control struct {
 	conn net.Conn
@@ -272,15 +275,19 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 		return models.ExitStatus{}, err
 	}
 
+	var writes sync.Mutex
 	// A cancelled context closes the connection, which is what unblocks the frame reader below.
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	stop := context.AfterFunc(ctx, func() { cancelExec(conn, &writes) })
 	defer stop()
 
-	var writes sync.Mutex
 	go feedStdin(conn, &writes, spec.Stdin)
 	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
 	exit, err := readExec(conn, id, spec)
+	if err != nil && stop() {
+		// A host that gives up on the exec ends the command with it; only a daemon that dies leaves one running.
+		cancelExec(conn, &writes)
+	}
 	if err != nil && ctx.Err() != nil {
 		return models.ExitStatus{}, fmt.Errorf("exec %q: %w", header.Argv[0], ctx.Err())
 	}
@@ -289,6 +296,16 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 	}
 
 	return exit, nil
+}
+
+// cancelExec tells the guest to kill the command, then closes: a connection that only drops is a host that went away, and the command runs on.
+func cancelExec(conn net.Conn, writes *sync.Mutex) {
+	// The deadline comes first, so a write held by a guest that stopped reading frees the lock within the budget.
+	_ = conn.SetWriteDeadline(time.Now().Add(cancelBudget))
+	writes.Lock()
+	_ = WriteFrame(conn, StreamCancel, nil)
+	writes.Unlock()
+	_ = conn.Close()
 }
 
 // feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed write is the guest gone, which the frame reader reports.

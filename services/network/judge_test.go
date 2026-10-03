@@ -3,7 +3,9 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,5 +201,42 @@ func TestAddressesApplyTheChainsToTheJudge(t *testing.T) {
 	fail = errors.New("the policy store is unreadable")
 	if err := a.ReapplyAll(t.Context()); err == nil || !errors.Is(err, fail) {
 		t.Fatalf("a failed compile was not reported: %v", err)
+	}
+}
+
+// A held sandbox fails its own apply and no other, and ReapplyAll reports it and succeeds; without a report it fails.
+func TestAddressesFailOnlyTheHeldSandbox(t *testing.T) {
+	cause := errors.New("resolve api.example.com through the sandbox nameservers: no such host")
+	held := &HeldChains{Errs: map[string]error{"sb-2": cause}}
+	source := chainsFn(func(context.Context) ([]Chain, error) {
+		return []Chain{{Address: judgedGuest, Policy: true}, {Address: otherGuest, Policy: true}}, held
+	})
+	var reported []string
+	report := func(format string, v ...any) { reported = append(reported, fmt.Sprintf(format, v...)) }
+	a, err := NewAddresses(Config{Root: t.TempDir(), Subnet: netip.MustParsePrefix("10.200.0.0/29"), Egress: source, Report: report})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.Allocate(t.Context(), "sb-1"); err != nil {
+		t.Fatalf("the sandbox that compiled failed with the held one: %v", err)
+	}
+	if !a.Fronted(otherGuest) {
+		t.Error("the held sandbox's chain did not land with the rest")
+	}
+	if err := a.Reapply(t.Context(), "sb-2"); !errors.Is(err, cause) || !strings.Contains(err.Error(), "sb-2") {
+		t.Errorf("the held sandbox's own reapply = %v, want its cause", err)
+	}
+	if err := a.ReapplyAll(t.Context()); err != nil {
+		t.Fatalf("ReapplyAll failed on a held sandbox: %v", err)
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0], "sb-2") || !strings.Contains(reported[0], "api.example.com") {
+		t.Errorf("reported %q, want one line that names sb-2 and the name", reported)
+	}
+
+	a.report = nil
+	var got *HeldChains
+	if err := a.ReapplyAll(t.Context()); !errors.As(err, &got) {
+		t.Errorf("ReapplyAll with no report = %v, want the held error", err)
 	}
 }

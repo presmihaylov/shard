@@ -2,8 +2,11 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,9 +16,63 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 )
 
-// EgressSource says what every fronted sandbox compiles to; nil is no policy and no secret anywhere.
+// EgressSource says what every fronted sandbox compiles to; nil is no policy and no secret anywhere. A *HeldChains error comes with every chain.
 type EgressSource interface {
 	Chains(ctx context.Context) ([]Chain, error)
+}
+
+// HeldChains is a compile that held some sandboxes on their last good chain or a closed one; the chains that come with it are whole.
+type HeldChains struct {
+	// Errs is why each held sandbox did not compile, by id.
+	Errs map[string]error
+}
+
+func (h *HeldChains) Error() string {
+	ids := slices.Sorted(maps.Keys(h.Errs))
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("sandbox %s: %v", id, h.Errs[id]))
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+// splitHeld keeps the chains of a held compile, which are whole, and drops those of a compile that failed outright.
+func splitHeld(chains []Chain, err error) ([]Chain, *HeldChains, error) {
+	var held *HeldChains
+	if errors.As(err, &held) {
+		return chains, held, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return chains, nil, nil
+}
+
+// heldFor narrows an apply's error to one sandbox: a held compile fails only the sandbox it held.
+func heldFor(err error, id string) error {
+	var held *HeldChains
+	if !errors.As(err, &held) {
+		return err
+	}
+	if cause, found := held.Errs[id]; found {
+		return fmt.Errorf("compile the egress policy of sandbox %s: %w", id, cause)
+	}
+
+	return nil
+}
+
+// heldReported is what ReapplyAll answers for an apply that held some sandboxes; a nil report keeps the error.
+func heldReported(err error, report func(format string, v ...any)) error {
+	var held *HeldChains
+	if !errors.As(err, &held) || report == nil {
+		return err
+	}
+	// shard ruled log-and-continue (SHARD-335): a held sandbox gets a closed chain; one sandbox must not block the rest.
+	report("egress: held %v", held)
+
+	return nil
 }
 
 // Chain is the egress of one fronted sandbox, keyed by its address: its web ports go to the proxy, and when
@@ -87,7 +144,10 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	fmt.Fprintf(&b, "\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tiifname %q ct state established,related accept\n", s.cfg.Bridge)
 	for _, chain := range chains {
-		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr %s tcp dport { %d, %d } accept\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
+		proxied := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s tcp dport { %d, %d }", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
+		// Each rule counts only its own sandbox's connections, so one sandbox past its share never refuses another (SHARD-350).
+		over := fmt.Sprintf("%s ct count over %d", proxied, proxy.MaxSourceConns)
+		fmt.Fprintf(&b, "\t\t%s %s\n\t\t%s drop\n\t\t%s accept\n", over, logStatement(RuleLimit), over, proxied)
 	}
 	// Every sandbox may ask the resolver, so one whose policy was detached keeps resolving; the resolver judges by source.
 	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s udp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
@@ -200,7 +260,7 @@ const (
 	RuleIPv6    = "ipv6"
 	// RuleStack is a VM host's drop: the frames end in the daemon, so nothing a policy allows leaves except through the proxy.
 	RuleStack = "stack"
-	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit the stack's when a sandbox holds its share of flows.
+	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit a new flow or proxy connection past the sandbox's share.
 	RuleUnapplied = "unapplied"
 	RuleLimit     = netstack.RuleLimit
 	// RuleRedirect is the stack's drop of a fronted sandbox's 80 or 443 that its connection tracking kept off the proxy.
