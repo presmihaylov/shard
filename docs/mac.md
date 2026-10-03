@@ -76,12 +76,16 @@ A terminal that closes takes the daemon with it. To have launchd hold it instead
 in `packaging/launchd/shard.daemon.plist` is the mirror of the Linux unit: it starts the daemon at
 boot as your user, brings it back one second after a crash and not after a clean exit, and leaves
 every VM alone when the daemon stops, so a restart re-adopts them. The daemon writes to
-`/var/log/shard/daemon.log`. `__USER__` in the file is the account the root belongs to, so `sed` puts
-yours in:
+`/var/log/shard/daemon.log`, and `packaging/launchd/shard.newsyslog.conf` rotates it: at 10 MiB
+newsyslog renames it aside, keeps seven old files, and sends the daemon a SIGHUP, on which it reopens
+`daemon.log` and keeps running. `__USER__` in both files is the account the root belongs to, so `sed`
+puts yours in:
 
 ```
 curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.daemon.plist
+curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.newsyslog.conf
 sudo install -d -m0755 -o "$USER" /var/log/shard
+sed "s/__USER__/$USER/" shard.newsyslog.conf | sudo tee /etc/newsyslog.d/shard.conf >/dev/null
 sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/shard.daemon.plist >/dev/null
 sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
 ```
@@ -92,7 +96,7 @@ take it out:
 
 ```
 sudo launchctl bootout system/shard.daemon
-sudo rm /Library/LaunchDaemons/shard.daemon.plist
+sudo rm /Library/LaunchDaemons/shard.daemon.plist /etc/newsyslog.d/shard.conf
 ```
 
 The bootout ends the daemon and nothing else: a running sandbox stays up until a daemon adopts it
