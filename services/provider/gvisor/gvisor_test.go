@@ -48,6 +48,16 @@ func newProviderOver(t *testing.T, script string, opts ...runsc.Option) *gvisor.
 		t.Fatalf("New: %v", err)
 	}
 
+	// The fake runsc answers pid 42, so a stand-in /proc keeps that pid alive.
+	proc := filepath.Join(dir, "proc")
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o755); err != nil {
+		t.Fatalf("make the stand-in /proc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1 42 42 0 -1 4194560"), 0o600); err != nil {
+		t.Fatalf("write the stat of pid 42: %v", err)
+	}
+	p.SetProcRoot(proc)
+
 	return p
 }
 

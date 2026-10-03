@@ -42,7 +42,7 @@ const MaxDiskMiB = ext4.MaxDiskSize >> 20
 // Repository is the part of sandboxstate.Repository the lifecycle verbs drive.
 type Repository interface {
 	Reader
-	Create(sb models.Sandbox) (models.Sandbox, error)
+	Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error)
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
 	Dir(id string) (string, error)
@@ -382,6 +382,21 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		}
 	}
 
+	var admit []func(dir string) error
+	reserved := ""
+	disks, admits := s.cfg.Provider.(diskAdmitter)
+	if admits {
+		admit = append(admit, func(dir string) error {
+			// A disk the root has no room for is the request's fault, refused before the record a later failure would leave.
+			if err := disks.AdmitDisk(dir, req.Resources); err != nil {
+				return &RequestError{Err: err}
+			}
+			reserved = dir
+
+			return nil
+		})
+	}
+
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
 		Name:           req.Name,
 		Image:          ref,
@@ -396,12 +411,23 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Health:         startingHealth(req.Health),
 		Restart:        withRestartDefaults(req.Restart),
 		CreatedAt:      time.Now().UTC(),
-	})
+	}, admit...)
 	if err != nil {
+		// The record or the name failed after the admission, so nothing will ever write that disk.
+		if reserved != "" {
+			disks.ReleaseDisk(reserved)
+		}
+
 		return models.Sandbox{}, err
 	}
 
 	return sb, nil
+}
+
+// diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
+type diskAdmitter interface {
+	AdmitDisk(dir string, res models.Resources) error
+	ReleaseDisk(dir string)
 }
 
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to

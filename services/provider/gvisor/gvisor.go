@@ -58,7 +58,7 @@ type Provider struct {
 	caps    models.Capabilities
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
-	// procRoot is where the kernel publishes a process's command line. A test points it at a directory it wrote.
+	// procRoot is where the kernel publishes a process's command line and state. A test points it at a directory it wrote.
 	procRoot string
 	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
 	killProcess func(pid int) error
@@ -788,8 +788,9 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 // stale reports an alive runsc state whose pid is not this sandbox's live sentry (SHARD-411).
 func (p *Provider) stale(id string, state runsc.State) (bool, error) {
 	stat, err := os.ReadFile(filepath.Join(p.procRoot, strconv.Itoa(state.PID), "stat"))
+	// PID 1 can reap the sentry between runsc's probe and this read, and a stopped sandbox must not read as running again (SHARD-437).
 	if vanished(err) {
-		return state.Status == runsc.StatusPaused, nil
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read the state of the sandbox process %d: %w", state.PID, err)
