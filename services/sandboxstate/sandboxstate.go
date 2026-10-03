@@ -88,9 +88,9 @@ func (r *Repository) snapshotDir(id string) string {
 	return filepath.Join(r.root, snapshotsDir, id)
 }
 
-// Create generates the id, claims it and writes the record. It returns the sandbox that it stored.
+// Create generates the id, claims it, runs each admit on its directory and writes the record. It returns the sandbox that it stored.
 // It takes no lock: the mkdir that claims the id is atomic, and the record write is atomic too.
-func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (r *Repository) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
 	if sb.ID != "" {
 		return models.Sandbox{}, fmt.Errorf("the sandbox carries the id %q, which the repository generates", sb.ID)
 	}
@@ -102,6 +102,13 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	id, err := r.claimID()
 	if err != nil {
 		return models.Sandbox{}, err
+	}
+
+	// An admit runs before the record, so a refusal leaves nothing a verb can see.
+	for _, check := range admit {
+		if err := check(r.dir(id)); err != nil {
+			return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		}
 	}
 
 	sb.ID = id

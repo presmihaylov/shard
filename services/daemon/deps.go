@@ -62,6 +62,8 @@ type deps struct {
 	runnerSvc *runsc.Runner
 
 	unreadableLogSvc *sandboxstate.UnreadableLog
+	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
+	states *taskStates
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.

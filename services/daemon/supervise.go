@@ -16,15 +16,18 @@ type Task interface {
 
 // supervise restarts the task with backoff until ctx ends or the task says it is done.
 func (d *Daemon) supervise(ctx context.Context, t Task) {
+	name := t.Name()
 	backoff := d.minBackoff
 	for {
+		d.states.running(name)
 		started := time.Now()
 		err := run(ctx, t)
 		if ctx.Err() != nil {
 			return
 		}
 		if err == nil {
-			d.log.Printf("task %s is done", t.Name())
+			d.log.Printf("task %s is done", name)
+			d.states.done(name)
 
 			return
 		}
@@ -33,7 +36,8 @@ func (d *Daemon) supervise(ctx context.Context, t Task) {
 		if time.Since(started) >= d.healthyAfter {
 			backoff = d.minBackoff
 		}
-		d.log.Printf("task %s failed, restart in %s: %v", t.Name(), backoff, err)
+		d.log.Printf("task %s failed, restart in %s: %v", name, backoff, err)
+		d.states.backoff(name, err)
 
 		select {
 		case <-ctx.Done():

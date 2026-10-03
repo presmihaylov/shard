@@ -183,7 +183,7 @@ substrate call that wedges never pins that lock: a `stop` or `rm` on that sandbo
 still runs. A tick the substrate does not answer within the deadline logs one line, leaves the record
 untouched, and asks again next tick. The tick takes the lock only to write, and reads the record
 again first, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
-One tick the substrate answers has three outcomes.
+One tick the substrate answers has four outcomes.
 
 The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
 stays `running` and the tick writes the exit into `exit_status`. `shard ls` then shows `running
@@ -196,6 +196,12 @@ The sandbox process is gone. Nothing but the host or a crash ends a running sand
 daemon's back, so the tick makes the record `stopped` with `pid` 0 and `stopped_reason` `the sandbox
 process died`. A `start` brings it back. The daemon does not start it again on its own; a restart
 policy for a process that died is SHARD-188.
+
+`shard-init` itself died. On Firecracker `shard-init` tells the host why before the VM halts, with
+the exit code 125, as `docs/provider-vz.md` says. The tick makes the record `stopped` with `pid` 0,
+`exit_status` 125 and `stopped_reason` `shard-init failed: <reason>`, and logs one line. A `start`
+brings it back and clears both. A run whose last report never landed ends the same way, with the
+loss as the reason, but its `start` answers with the loss until `rm` drops the sandbox.
 
 The host ended it for its memory. A sandbox that overruns its `--memory` bound is ended by the host,
 whole: the kernel kills every process in its cgroup, `shard-init` included, and `runsc` still holds
@@ -220,8 +226,10 @@ the last one in `oom_restarted_at`, and `shard ls` shows the policy in its `REST
 `on-oom 2` when the count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from
 the last, then 2, 4 and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds
 `the N starts again the limit allows are spent`. A `shard start` by hand still works, and clears the
-reason. A sandbox the record says `stopped` is never started again by the daemon, so a `stop` in the
-window is final. A `fork` or `clone` inherits the policy with a fresh count.
+reason. While a start again waits, the record says `stopped` with pid 0, the reason adds
+`it starts again at <time>`, and `oom_restart_due` holds that time, so no verb reads the dead
+process (SHARD-425); `shard ls` still lists it. A `stop` in the wait calls the start again off, and
+a `shard start` runs it at once. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 
@@ -322,6 +330,11 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id o
 curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf&mode=600'
 curl --unix-socket /var/lib/shard/shard.sock -o app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
 curl --unix-socket /var/lib/shard/shard.sock -I 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/ls?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"path":"/srv/cache","mode":"700","parents":true}' http://localhost/v0/sandboxes/<id or name>/mkdir
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/cache&recursive=true'
+tar -cf - app | curl --unix-socket /var/lib/shard/shard.sock -T - 'http://localhost/v0/sandboxes/<id or name>/archive?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/<id or name>/archive?path=/srv/app' | tar -xf -
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/policies/web
 curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
@@ -414,6 +427,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   replays it again. A stalled client is closed with no exit, and the record says how much it lost.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
   TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
+  An exec that a signal ends reports code 128+n and signal 0 on every provider. Only the entrypoint's exit status carries the signal.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;
   409 `exec_running` while the command still runs.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
@@ -453,6 +467,34 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   {"type", "size", "mode", "uid", "gid", "mtime"}`, `type` one of `file`, `dir`, `symlink` or
   `other`. It never follows a final symlink. A refusal has the status alone. `shard cp` speaks all
   three.
+- `GET /v0/sandboxes/{id}/ls?path=` answers 200 `{"entries": [{"name", "type", "size", "mode", "uid",
+  "gid", "mtime"}]}`, sorted by name, each entry its own lstat. It follows a final symlink to the
+  directory. A guest that fails after the 200 leaves the closing `]}` off, so a cut listing never
+  parses. 400 for a path that is not a directory; 404; 409 as above.
+- `POST /v0/sandboxes/{id}/mkdir` takes `{"path", "mode", "parents", "user"}` and answers 204. `mode`
+  is an octal string, `"755"` by default and at most `"777"`, set past the umask. `parents: true` is
+  `mkdir -p`: it makes what leads to the path and takes a directory already there. `user` is as a
+  put's. 400 for a bad mode, or a path already there unless `parents` is set and it is a directory;
+  404 for a missing parent; 409 as above.
+- `DELETE /v0/sandboxes/{id}/files?path=&recursive=` removes the path and answers 204. A symlink goes,
+  never its target. A directory with anything in it needs `recursive=true`, and `/` is never
+  deleted. It runs as the entrypoint user. 400 for `/` or a full directory without `recursive`; 404;
+  409 as above.
+- `PUT /v0/sandboxes/{id}/archive?path=&user=` unpacks the tar body, chunked or sized, under the
+  guest directory `path` and answers 204 once every entry is on disk. `user` is as a put's, and the
+  unpack runs as that user, who owns every entry. Each file lands through a temp name. The guest
+  refuses an absolute name, a `..`, an entry under a symlink that leaves `path`, a hard link to a
+  file the tar did not carry, a device node and a fifo. Directories take their modes once their
+  entries are in, and one already there keeps its own. The body is held to the same idle bound as a
+  put's. 400 for a refused entry, a body that is not a tar or a `path` that is not a directory; 404;
+  409 as above.
+- `GET /v0/sandboxes/{id}/archive?path=` answers 200 `application/x-tar` with the path and its
+  `X-Shard-Stat`, the top entry named after the path's base name and a directory's entries in
+  lexical order. A guest that fails after the 200 aborts the chunked body, so a cut tar never reads
+  as a whole one. 400 for `/`; 404; 409 as above. `shard cp` copies a directory through both. A copy
+  out unpacks what the sandbox sends, so it refuses an entry or a symlink that leaves the
+  destination, a device node and a hard link to a file the tar did not carry, drops setuid and
+  setgid, and stops past 64 GiB or 1048576 entries.
 - `POST /v0/sandboxes/{id}/secrets/{name}` grants a stored secret to a created or stopped sandbox and
   answers 200 with the record: the placeholder lands in the bundle environment, the proxy CA in the
   writable layer. 404; 400 when the host holds no such secret, or when the guest environment already
@@ -538,7 +580,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
-| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
 | `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead: it SIGKILLs the sandbox's own runsc processes, matched by its cgroup and by its id on their command line, then finishes the teardown, and answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
@@ -618,7 +660,7 @@ agree on what each request is, and an unknown route is a `403` too. The eight ca
 | `sandbox:read` | list, get, `logs` and `egress-log` |
 | `sandbox:write` | create, start, stop, pause, resume, fork and clone |
 | `sandbox:delete` | `rm` |
-| `exec` | every `exec` route, and every `files` route |
+| `exec` | every `exec` route, and every `files`, `ls`, `mkdir` and `archive` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |
@@ -631,6 +673,16 @@ narrow: the front skips the `Connection: close` rewrite only when all four hands
 present, and it reads the daemon's status line first. A `101` is the connection the WebSocket needs; a
 non-101 answer ends after that one response, so a request pipelined behind a handshake the daemon does
 not upgrade never reaches the daemon.
+
+The route check is coarse: `create` maps to `sandbox:write` alone, yet a create can name secrets and
+a policy, which `secret:*` and `policy:*` otherwise guard. So the daemon checks the token's scopes a
+second time: a create that names a secret needs `secret:*`, and a create that names a policy needs
+`policy:*`, or the daemon answers `403` with the code `forbidden` and names the missing scope before
+it builds anything. The front carries the token's scopes to the daemon in an `X-Shard-Scopes` header,
+stamped on every request it forwards and stripped of any copy the client sent, so a forged header can
+only remove a right. A request with no such header reached the daemon socket directly, which is the
+operator's own channel and keeps every right. A `fork` and a `clone` keep the source sandbox's grants
+by design, so they need only `sandbox:write`.
 
 A token is minted on the server, from the same secret, and never over the API:
 

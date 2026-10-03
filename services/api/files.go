@@ -145,3 +145,87 @@ func setStat(w http.ResponseWriter, stat models.FileStat) error {
 
 	return nil
 }
+
+// listDir streams the entries of the guest directory at ?path=, so no listing has to fit in the daemon's memory.
+func (h *Handler) listDir(w http.ResponseWriter, r *http.Request) {
+	listing, err := h.lifecycle.ListDir(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	// The 200 is out, so a failure now goes to the daemon's log; the body then lacks its closing bracket, which no client parses.
+	if err := writeEntries(w, listing); err != nil {
+		h.log.Printf("api: ls %s in sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+	}
+}
+
+// writeEntries closes the JSON only once the guest has said it sent every entry, so a cut listing never parses as a whole one.
+func writeEntries(w io.Writer, listing sandbox.Listing) error {
+	if _, err := io.WriteString(w, `{"entries":[`); err != nil {
+		return errors.Join(fmt.Errorf("write the listing: %w", err), listing.Close())
+	}
+	for sep := ""; ; sep = "," {
+		entry, err := listing.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return errors.Join(err, listing.Close())
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return errors.Join(fmt.Errorf("encode the entry %s: %w", entry.Name, err), listing.Close())
+		}
+		if _, err := io.WriteString(w, sep+string(encoded)); err != nil {
+			return errors.Join(fmt.Errorf("write the listing: %w", err), listing.Close())
+		}
+	}
+	if err := listing.Close(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "]}"); err != nil {
+		return fmt.Errorf("write the listing: %w", err)
+	}
+
+	return nil
+}
+
+// makeDir makes the directory the JSON body names.
+func (h *Handler) makeDir(w http.ResponseWriter, r *http.Request) {
+	var req sandbox.MkdirRequest
+	if err := decode(w, r, &req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := h.lifecycle.MakeDir(r.Context(), r.PathValue("id"), req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteFile removes the guest path at ?path=; ?recursive=true takes a directory and everything in it.
+func (h *Handler) deleteFile(w http.ResponseWriter, r *http.Request) {
+	recursive, err := boolQuery(r, "recursive")
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := h.lifecycle.DeleteFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"), recursive); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

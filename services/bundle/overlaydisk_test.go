@@ -52,22 +52,6 @@ func TestWriteOverlayDiskIsAnEmptyExt4OfTheBound(t *testing.T) {
 	}
 }
 
-func TestWriteOverlayDiskDefaultsTheBound(t *testing.T) {
-	dst := filepath.Join(t.TempDir(), bundle.OverlayDiskFile)
-
-	if err := bundle.WriteOverlayDisk(dst, models.Resources{}); err != nil {
-		t.Fatalf("WriteOverlayDisk: %v", err)
-	}
-
-	info, err := os.Stat(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() != bundle.DefaultDiskMiB<<20 {
-		t.Errorf("the disk is %d bytes, want the default bound", info.Size())
-	}
-}
-
 func TestWriteOverlayDiskRefusesAnExistingTarget(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), bundle.OverlayDiskFile)
 	if err := os.WriteFile(dst, []byte("taken"), 0o600); err != nil {

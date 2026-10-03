@@ -22,3 +22,9 @@ type FileStat struct {
 	GID   uint32    `json:"gid"`
 	MTime time.Time `json:"mtime"`
 }
+
+// FileEntry is one name in a guest directory with its own stat, never what a symlink points to.
+type FileEntry struct {
+	Name string `json:"name"`
+	FileStat
+}

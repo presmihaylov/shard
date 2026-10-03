@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,11 +71,20 @@ func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
 	}
 }
 
+// oomBound is the smallest --memory the suite's provider takes, so the bomb meets the bound soonest.
+func oomBound() string {
+	if bound := itestResources().MemoryMiB; bound != 0 {
+		return strconv.FormatInt(bound, 10)
+	}
+
+	return "64"
+}
+
 // createBound makes a sandbox with the smallest bound the daemon takes, and the restart policy when asked.
 func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script string) string {
 	t.Helper()
 
-	args := []string{"--memory", "64"}
+	args := []string{"--memory", oomBound()}
 	if restart {
 		args = append(args, "--restart-on-oom")
 	}
@@ -88,7 +98,7 @@ func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script 
 func createBoundMax(t *testing.T, app App, out *bytes.Buffer, max int, script string) string {
 	t.Helper()
 
-	id := createWith(t, app, out, "--memory", "64", fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
+	id := createWith(t, app, out, "--memory", oomBound(), fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	return id

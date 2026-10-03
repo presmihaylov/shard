@@ -135,7 +135,7 @@ func (f *fakeLifecycleRepo) Update(id string, mutate func(*models.Sandbox) error
 }
 
 // Create hands out the id of the fork, and the record is kept beside the source's for the test to read.
-func (f *fakeLifecycleRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (f *fakeLifecycleRepo) Create(sb models.Sandbox, _ ...func(dir string) error) (models.Sandbox, error) {
 	if err := f.r.record("repo.Create"); err != nil {
 		return models.Sandbox{}, err
 	}

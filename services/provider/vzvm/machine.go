@@ -69,9 +69,17 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		return m, nil
 	}
 
-	client, info, err := vz.Adopt(ctx, filepath.Join(dir, socketFile))
+	socket := filepath.Join(dir, socketFile)
+	began := time.Now()
+	probe, cancel := context.WithTimeout(ctx, adoptBound)
+	client, info, err := vz.Adopt(probe, socket)
+	cancel()
 	if absent(err) {
 		return nil, nil
+	}
+	// A shim silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-387).
+	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil {
+		return nil, p.kill(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
 	}
 	if err != nil {
 		return nil, err
