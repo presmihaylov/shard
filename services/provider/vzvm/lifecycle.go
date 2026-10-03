@@ -100,6 +100,9 @@ func checkResources(res models.Resources) error {
 	if res.MemoryMiB < MinMemoryMiB {
 		return fmt.Errorf("%s needs at least %d MiB of memory, got %d", Name, MinMemoryMiB, res.MemoryMiB)
 	}
+	if err := bundle.CheckGrowBound(bundle.DiskBound(res)); err != nil {
+		return fmt.Errorf("%s: %w", Name, err)
+	}
 
 	return nil
 }

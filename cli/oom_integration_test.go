@@ -73,17 +73,11 @@ func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
 func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script string) string {
 	t.Helper()
 
-	args := []string{"create", "--memory", "64"}
+	args := []string{"--memory", "64"}
 	if restart {
 		args = append(args, "--restart-on-oom")
 	}
-	args = append(args, testImage, "--", "/bin/sh", "-c", script)
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	id := strings.TrimSpace(out.String())
-	out.Reset()
+	id := createWith(t, app, out, append(args, testImage, "--", "/bin/sh", "-c", script)...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	return id
@@ -93,13 +87,7 @@ func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script 
 func createBoundMax(t *testing.T, app App, out *bytes.Buffer, max int, script string) string {
 	t.Helper()
 
-	args := []string{"create", "--memory", "64", fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script}
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	id := strings.TrimSpace(out.String())
-	out.Reset()
+	id := createWith(t, app, out, "--memory", "64", fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	return id

@@ -20,7 +20,7 @@ var allStates = []models.State{
 func TestCanTransitionTo(t *testing.T) {
 	legal := map[models.State]map[models.State]bool{
 		models.StatePending:      {models.StateRunning: true, models.StateFailed: true},
-		models.StateCreated:      {models.StateRunning: true, models.StateStopped: true},
+		models.StateCreated:      {models.StateRunning: true, models.StateStopped: true, models.StateFailed: true},
 		models.StateRunning:      {models.StatePaused: true, models.StateStopped: true, models.StateUnresponsive: true},
 		models.StatePaused:       {models.StateRunning: true, models.StateStopped: true},
 		models.StateUnresponsive: {models.StateRunning: true, models.StateStopped: true},
