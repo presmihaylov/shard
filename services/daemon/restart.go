@@ -28,6 +28,7 @@ func (t restartPolicy) Run(ctx context.Context) error {
 	}
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
+	failures := sandboxErrors{logger: logger, task: t.Name()}
 
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
@@ -45,6 +46,8 @@ func (t restartPolicy) Run(ctx context.Context) error {
 		}
 		// A root with no policy on a running record needs no substrate, so a host without runsc keeps its daemon.
 		if !slices.ContainsFunc(sandboxes, sandbox.UnderRestartPolicy) {
+			failures.tick(ctx, nil)
+
 			continue
 		}
 
@@ -52,8 +55,7 @@ func (t restartPolicy) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := svc.RecordRestarts(ctx, sandboxes, func(line string) { logger.Print(line) }); err != nil {
-			return err
-		}
+		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
+		failures.tick(ctx, svc.RecordRestarts(ctx, sandboxes, func(line string) { logger.Print(line) }))
 	}
 }

@@ -12,6 +12,9 @@ var ErrUnsupported = errors.New("verb not supported")
 // could record how the entrypoint ended. It is a normal outcome of a stop, not a failure.
 var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited")
 
+// ErrExitFileTooLarge is an exit file past any record shard-init writes, which only a guest that reached the file can make.
+var ErrExitFileTooLarge = errors.New("the exit file is larger than any exit record")
+
 // CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {

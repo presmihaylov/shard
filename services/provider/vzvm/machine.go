@@ -339,7 +339,7 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 			return errors.New("an exit event carries no status")
 		}
 
-		return supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit)
+		return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
 	case supervisor.KindRestarts:
 		if event.Restarts == nil {
 			return errors.New("a restarts event carries no count")
@@ -438,7 +438,7 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 			return err
 		}
 		if !found || last != *state.Exit {
-			if err := supervisor.AppendExit(path, *state.Exit); err != nil {
+			if err := supervisor.WriteExit(path, *state.Exit); err != nil {
 				return err
 			}
 		}

@@ -825,3 +825,41 @@ func TestLookPathResolvesRelativeNamesAgainstTheWorkDir(t *testing.T) {
 		t.Fatal("a name outside the workdir resolved")
 	}
 }
+
+// fd 0 is the host's exit file, opened for append; on sysbox guest root can append to it too (SHARD-365).
+func TestFileReporterKeepsOneExitRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exit.json")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	stdin := os.Stdin
+	os.Stdin = f
+	t.Cleanup(func() { os.Stdin = stdin })
+
+	if _, err := f.WriteString(strings.Repeat("guest bytes with no newline ", 1<<15)); err != nil {
+		t.Fatal(err)
+	}
+	for code := range 300 {
+		if err := (fileReporter{}).exited(models.ExitStatus{Code: code % 256}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(models.ExitReport{Kind: models.ExitReportKind, Code: 299 % 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(blob) != "\n"+string(want)+"\n" {
+		t.Fatalf("the exit file holds %d bytes, want only the last record %s", len(blob), want)
+	}
+}
