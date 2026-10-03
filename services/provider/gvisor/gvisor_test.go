@@ -289,6 +289,33 @@ echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 	}
 }
 
+// A cut after the delete leaves runsc holding nothing, and the release must still sweep the cgroup and drop the view (SHARD-366).
+func TestReleaseFreesASandboxACutPauseLeftAfterItsDelete(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	cgroups := t.TempDir()
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *state*) echo 'FetchSpec failed: loading container: file does not exist' >&2; exit 1;; esac`)
+	dir := frozenSentry(t, p, cgroups)
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.Remove(filepath.Join(cg, "cgroup.procs")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Release of a sandbox runsc no longer holds: %v", err)
+	}
+
+	if _, err := os.Stat(cg); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the cgroup %s is still there (%v), want it swept before the unmount", cg, err)
+	}
+	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("release of a sandbox runsc no longer holds ran %q, want neither a thaw nor a signal", got)
+	}
+}
+
 // Release ends a sandbox outright, so it must refuse one that runs.
 func TestReleaseRefusesARunningSandbox(t *testing.T) {
 	work := t.TempDir()

@@ -951,7 +951,7 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 	return errors.Join(os.RemoveAll(tmp), b.Unmount())
 }
 
-// Release ends a sentry a cut pause left frozen past its checkpoint, beside the snapshot that pause installed in dir (SHARD-366).
+// Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the snapshot in dir (SHARD-366).
 func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
 		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
@@ -965,8 +965,8 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if err != nil {
 		return err
 	}
-	if !status.Alive() || status.State != models.StatePaused {
-		return fmt.Errorf("sandbox %s is %s on %s: only a frozen sandbox is released beside its snapshot", id, status.State, Name)
+	if status.Alive() && status.State != models.StatePaused {
+		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its snapshot", id, status.State, Name)
 	}
 
 	b, err := p.open(id)
