@@ -89,7 +89,7 @@ var helps = map[string]verbHelp{
 			{"--policy <name>", "the egress policy the host enforces; without one, the sandbox reaches the internet but nothing private", ""},
 			{"--workdir <dir>", "the directory the entrypoint starts in", ""},
 			{"--user <user>", "the user the entrypoint runs as", ""},
-			{"--memory <MiB>", "the memory bound; 0 is unbounded on Linux, but vz refuses it because the VM needs a size", ""},
+			{"--memory <MiB>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128 or more", ""},
 			{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
 			{"--disk <MiB>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11 so its journal fits", ""},
 			{"--restart-on-oom[=N]", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row, and it needs --memory", ""},

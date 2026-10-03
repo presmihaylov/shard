@@ -101,7 +101,7 @@ a running sandbox instead of refusing it, because nothing else drops the rootfs 
 **`fork` is not a transition.** It takes a `paused` source only, because it reads the snapshot the
 pause wrote, and it refuses any other state. It creates a second sandbox in `running` and leaves the
 source `paused`. A snapshot is immutable and a resume does not consume it, so one `pause` followed by
-`fork --count N` is the primitive for a warm pool.
+one `shard fork <source>` per new sandbox is the primitive for a warm pool.
 
 **`clone` is not a transition either.** It creates a second sandbox in `running` over a copy of the
 files that a `stopped` or `paused` source kept. It runs the entrypoint from the beginning, so it acts
