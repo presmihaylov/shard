@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1650,6 +1651,74 @@ func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
 			}
 			awaitExit(t, shim)
 		})
+	}
+}
+
+// A retried pause ends the shim a crashed pause left by its recorded pid, though its full socket queue refuses every dial (SHARD-423).
+func TestARetriedPauseEndsALeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The crash state by hand: a complete snapshot, a record that says paused, and the shim still up.
+	snap := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snap, "snapshot.json"), []byte(`{"pause":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
+	fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatalf("the retried Pause over a frozen leftover with a full queue: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// The cleanup of a failed boot kills a shim whose full socket queue refuses the stop, and does not read it gone (SHARD-423).
+func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	dir, err := os.MkdirTemp("", "vzq") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	// A process that never accepts on the socket stands for the frozen shim.
+	stand := exec.Command("sleep", "60")
+	stand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- stand.Wait() }()
+	t.Cleanup(func() {
+		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the stand-in shim: %v", err)
+		}
+	})
+	fillQueue(t, socket)
+
+	if err := vzvm.EndShim("a", vz.Open(socket), stand.Process.Pid); err != nil {
+		t.Fatalf("EndShim over a shim with a full queue: %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopGrace):
+		t.Fatal("the shim outlived the cleanup of its failed boot")
 	}
 }
 

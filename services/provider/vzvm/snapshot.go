@@ -102,15 +102,24 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	if held {
 		return p.end(ctx, m)
 	}
-	client, _, err := vz.Adopt(ctx, filepath.Join(stateDir, socketFile))
+	socket := filepath.Join(stateDir, socketFile)
+	client, _, err := vz.Adopt(ctx, socket)
+	// A full socket queue refuses the dial too, so a refused leftover is ended by the pid its attach recorded, and gone only once that is (SHARD-423).
+	if refused(err) {
+		client, err = vz.Open(socket), nil
+	}
 	if absent(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	shim, err := readShim(stateDir)
+	if err != nil {
+		return err
+	}
 
-	return p.end(ctx, &machine{id: id, dir: stateDir, client: client})
+	return p.end(ctx, &machine{id: id, dir: stateDir, client: client, shim: shim})
 }
 
 // stageSnapshot writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
