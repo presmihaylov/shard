@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -361,8 +362,21 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 	}
 }
 
-// firecrackerDir is where under the root the firecracker daemon keeps the initrd it builds from the guest init.
-const firecrackerDir = "firecracker"
+const (
+	// firecrackerDir is where under the root the firecracker daemon keeps the initrd it builds from the guest init.
+	firecrackerDir = "firecracker"
+	// jailDir is where under the root the jailer makes each vmm's chroot (SHARD-306).
+	jailDir = "jail"
+)
+
+// checkJailRoot refuses at start a firecracker root on a mount the jailer cannot use (SHARD-306).
+func checkJailRoot(root, provider string) error {
+	if provider != firecracker.Name {
+		return nil
+	}
+
+	return fcapi.CheckChrootBase(root)
+}
 
 // newFirecracker builds the microVM provider: the vmm on PATH, the guest kernel fetched once, and the static init the initrd carries.
 func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, error) {
@@ -373,6 +387,10 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 	if err != nil {
 		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Binary, err)
 	}
+	jailer, err := exec.LookPath(firecracker.Jailer)
+	if err != nil {
+		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Jailer, err)
+	}
 
 	guest, err := d.guestKernel()
 	if err != nil {
@@ -380,12 +398,14 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 	}
 
 	return firecracker.New(firecracker.Config{
-		Binary: binary,
-		Kernel: guest.Path,
-		Init:   d.cfg.InitPath,
-		Dir:    filepath.Join(d.cfg.Root, firecrackerDir),
-		Dirs:   dirs,
-		Log:    d.logger(),
+		Binary:   binary,
+		Jailer:   jailer,
+		JailBase: filepath.Join(d.cfg.Root, jailDir),
+		Kernel:   guest.Path,
+		Init:     d.cfg.InitPath,
+		Dir:      filepath.Join(d.cfg.Root, firecrackerDir),
+		Dirs:     dirs,
+		Log:      d.logger(),
 	})
 }
 
