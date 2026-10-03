@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,12 +21,17 @@ import (
 
 // recorder is the shared log of what the fakes were asked to do and in which order.
 type recorder struct {
+	// mu guards calls: an exec's pipes record from their own goroutine while a handler records from its.
+	mu    sync.Mutex
 	fail  []string
 	calls []string
 	live  map[string]bool
 }
 
 func (r *recorder) record(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.calls = append(r.calls, name)
 
 	if slices.Contains(r.fail, name) {
@@ -33,6 +39,21 @@ func (r *recorder) record(name string) error {
 	}
 
 	return nil
+}
+
+// seen answers a copy of the calls so far, which a test reads while an exec's goroutine may still record.
+func (r *recorder) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.calls)
+}
+
+func (r *recorder) forget() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.calls = nil
 }
 
 // fakeImages hands a create through the daemon a rootfs without a registry.

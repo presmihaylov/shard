@@ -41,6 +41,8 @@ type machine struct {
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the vmm: one vsock connection per call.
@@ -83,7 +85,36 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 		}
 	}
 
-	return p.attach(ctx, id, dir, client, info)
+	m, err = p.attach(ctx, id, dir, client, info)
+	if err != nil || m == nil {
+		return m, err
+	}
+	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
+	}
+
+	return m, nil
+}
+
+// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
+func (m *machine) reseed(ctx context.Context) error {
+	marker := filepath.Join(m.dir, reseedFile)
+	pending, err := exists(marker)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: read the reseed marker: %w", m.id, err)
+	}
+	if !pending {
+		return nil
+	}
+	if err := m.control.Load().Reseed(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: reseed the restored guest: %w", m.id, err)
+	}
+	if err := os.Remove(marker); err != nil {
+		return fmt.Errorf("sandbox %s: clear the reseed marker: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
@@ -259,7 +290,7 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 
 // attach opens the control connection to the guest and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
@@ -315,6 +346,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -389,6 +421,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try.
 			p.keep(m, control.Close())
 			time.Sleep(pollInterval)
@@ -449,7 +482,7 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == fcapi.StateRunning
 }
@@ -529,7 +562,10 @@ func awaitEnded(m *machine) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		info, err := m.client.State()
+		// Each read ends with the wait, so a vmm that takes the dial and never answers costs the grace and not callTimeout (SHARD-388).
+		probe, cancel := context.WithTimeout(ctx, max(time.Until(deadline), probeFloor))
+		info, err := m.client.State(probe)
+		cancel()
 		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
 		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil

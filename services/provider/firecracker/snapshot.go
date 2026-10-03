@@ -50,7 +50,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(ctx)
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
@@ -76,6 +76,10 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if err := m.client.Snapshot(filepath.Join(tmp, snapshotState), filepath.Join(tmp, memoryFile)); err != nil {
 		return fmt.Errorf("snapshot the vm: %w", err)
 	}
+	// The vmm wrote vmstate and memory with its own umask, so tighten them here; a restore hard-links the memory and inherits this mode.
+	if err := secureSnapshot(tmp); err != nil {
+		return err
+	}
 	// The copy shares the overlay's blocks or is refused: a fork that copied every byte is not what the verb promises.
 	if err := bundle.Reflink(filepath.Join(stateDir, bundle.OverlayDiskFile), filepath.Join(tmp, bundle.OverlayDiskFile)); err != nil {
 		return fmt.Errorf("copy the overlay: %w", err)
@@ -84,8 +88,19 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, snapshotFileMode); err != nil {
 		return fmt.Errorf("mark the snapshot complete: %w", err)
+	}
+
+	return nil
+}
+
+// secureSnapshot tightens the files the vmm wrote to the snapshot file mode; SHARD-306's jail changes the owner or group here too.
+func secureSnapshot(dir string) error {
+	for _, name := range []string{snapshotState, memoryFile} {
+		if err := os.Chmod(filepath.Join(dir, name), snapshotFileMode); err != nil {
+			return fmt.Errorf("tighten %s: %w", name, err)
+		}
 	}
 
 	return nil
@@ -172,6 +187,9 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 			return nil, fmt.Errorf("mark the restore of sandbox %s in flight: %w", id, err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(stateDir, reseedFile), nil, 0o600); err != nil {
+		return nil, fmt.Errorf("mark sandbox %s for a reseed: %w", id, err)
+	}
 	snap := fcapi.Snapshot{
 		State:  filepath.Join(dir, snapshotState),
 		Memory: filepath.Join(stateDir, memoryFile),
@@ -192,6 +210,9 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	m, err := p.up(ctx, id, stateDir, client, info)
 	if err != nil {
 		return nil, err
+	}
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
 	}
 
 	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.

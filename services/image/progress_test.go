@@ -47,13 +47,27 @@ func TestPullReportsTheImageItsLayersAndWhereItWent(t *testing.T) {
 	progress.Close()
 
 	got := events(t, progress)
-	if want := []string{image.StatusPulling, image.StatusLayer, image.StatusLayer, image.StatusPulled}; !slices.Equal(statuses(got), want) {
+	want := []string{image.StatusPulling, image.StatusLayer, image.StatusLayer, image.StatusUnpacking, image.StatusUnpacked, image.StatusUnpacked, image.StatusPulled}
+	if !slices.Equal(statuses(got), want) {
 		t.Fatalf("the pull said %v, want %v", statuses(got), want)
 	}
 
-	start, end := got[0], got[3]
+	start, unpacking, end := got[0], got[3], got[6]
 	if start.Reference != ref || start.Digest != img.Digest || start.Layers != 2 || start.Bytes != got[1].Bytes+got[2].Bytes {
 		t.Errorf("the pull started with %+v, want %s %s, two layers and their bytes", start, ref, img.Digest)
+	}
+	if unpacking.Reference != ref || unpacking.Digest != img.Digest || unpacking.Layers != 2 {
+		t.Errorf("the unpack started with %+v, want %s %s and two layers", unpacking, ref, img.Digest)
+	}
+	// The downloads land in any order and the unpack goes in manifest order, so the digests compare as a set.
+	downloaded := []string{got[1].Digest, got[2].Digest}
+	for i, e := range got[4:6] {
+		if e.Layer != i+1 || e.Layers != 2 || !slices.Contains(downloaded, e.Digest) {
+			t.Errorf("unpack step %d said %+v, want layer %d of 2, one of %v", i+1, e, i+1, downloaded)
+		}
+	}
+	if got[4].Digest == got[5].Digest {
+		t.Errorf("both unpack steps named %s", got[4].Digest)
 	}
 	if end.Path != img.RootFS || end.Digest != img.Digest {
 		t.Errorf("the pull ended with %+v, want the rootfs %s", end, img.RootFS)

@@ -52,6 +52,7 @@ type host struct {
 	makeImage func(context.Context, string, int64) error
 	mount     func(context.Context, string, string) error
 	fstab     func(string, string) error
+	migrate   func(string, string) error
 }
 
 var machine = host{
@@ -66,6 +67,7 @@ var machine = host{
 	makeImage: xfs.MakeImage,
 	mount:     xfs.Mount,
 	fstab:     xfs.Fstab,
+	migrate:   xfs.MigrateFstab,
 }
 
 // Ensure leaves cfg.Dir on a reflink filesystem for Firecracker, and touches nothing for any other provider.
@@ -94,8 +96,9 @@ func ensure(ctx context.Context, cfg Config, h host) (err error) {
 	if err != nil {
 		return err
 	}
+	// A host provisioned before SHARD-353 is already mounted here, so repair its old fstab line without a reprovision.
 	if fs.Reflink {
-		return nil
+		return h.migrate(ImagePath(cfg.Dir), cfg.Dir)
 	}
 
 	if err := refuse(cfg, h, fs); err != nil {

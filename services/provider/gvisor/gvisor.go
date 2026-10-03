@@ -60,6 +60,8 @@ type Provider struct {
 	procRoot string
 	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
 	killProcess func(pid int) error
+	// killPinned is the SIGKILL a restore gets, sent only if still holds once the process is pinned. A test records it too.
+	killPinned func(pid int, still func() (bool, error)) error
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -70,7 +72,7 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
 	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
 
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill}, nil
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill, killPinned: pidfdKill}, nil
 }
 
 func sigkill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
@@ -491,9 +493,8 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 
 // Remove deletes runsc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
-	// runsc delete --force exits 0 for an id it never held, so only a status read says who owns the rootfs.
-	status, err := p.Status(ctx, id)
-	if err != nil {
+	// First, so a restore cannot bring the sandbox up again after the teardown below.
+	if err := p.killRestores(ctx, id); err != nil {
 		return err
 	}
 
@@ -511,8 +512,13 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
-	// The repository removes the directory after this, and it must never remove a live mount.
-	return p.unmount(id, status.Exists)
+	// The cgroup is gone, so no process of the sandbox holds the rootfs, whether or not the runtime knew it.
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	return b.Unmount()
 }
 
 // unmount drops the merged view. The upper layer stays, which is what a later create reads back.
@@ -926,7 +932,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
-		return p.runsc.Restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
+		return p.restore(ctx, id, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())
@@ -985,7 +991,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	spec.Resources = rt.Resources
 
 	err = p.bringUp(ctx, spec, b.ExitFile, func(out, exit *os.File) error {
-		return p.runsc.Restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
+		return p.restore(ctx, spec.ID, runsc.RestoreOptions{Bundle: b.Dir, Image: dir, Stdout: out, Stderr: out, Stdin: exit})
 	})
 	if err != nil {
 		return errors.Join(err, b.Unmount())

@@ -78,6 +78,22 @@ func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
 }
 
+// stalledImages holds every pull until its context ends, the way a registry that never answers does.
+type stalledImages struct {
+	r       *recorder
+	entered chan struct{}
+}
+
+func (f stalledImages) Pull(ctx context.Context, _ string) (image.Image, error) {
+	if err := f.r.record("images.Pull"); err != nil {
+		return image.Image{}, err
+	}
+	close(f.entered)
+	<-ctx.Done()
+
+	return image.Image{}, ctx.Err()
+}
+
 // fakeRepo holds one record, so a test says what it held before the verb ran and reads what it holds after.
 type fakeRepo struct {
 	r  *recorder
