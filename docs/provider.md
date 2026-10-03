@@ -224,6 +224,15 @@ one that cannot, so no `pause` ever fails halfway for it. And the vmm's state na
 `overlay.raw` by path, which the load opens before the drive is swapped for the fork's own copy, so
 a snapshot outlives neither a moved root nor a removed source.
 
+Every writable drive runs with the cache type `Writeback`, so a guest `fsync` returns only once the
+vmm has flushed the data to the host disk; the firecracker default, `Unsafe`, drops the flush. The
+read-only EROFS base keeps the default. The vmm fixes the cache type when it boots, and a snapshot
+keeps the one its vmm ran with, so a sandbox created before this release, and any snapshot taken
+before it, keep `Unsafe`: a daemon restart adopts the running vmm as it is, and a `resume` or a
+`fork` of such a snapshot loads its saved drive. A `stop` and a `start` boot a fresh vmm with
+`Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a sandbox to get
+there.
+
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
 over a root it turns into an XFS image, `create` with `--memory`, the vmm's host cgroup and its
 bounds, `logs`, `exec`, an entrypoint that exits, a guest that outgrows its memory and comes back
