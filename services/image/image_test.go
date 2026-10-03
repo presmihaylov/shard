@@ -401,6 +401,77 @@ func TestPullWaitsForThePullInFlight(t *testing.T) {
 	}
 }
 
+// TestAWriterWaitingForThePullInFlightLeavesOnItsContext: an rm of a pending create cancels its pull,
+// and that pull must not sit behind the first one until the first pull ends.
+func TestAWriterWaitingForThePullInFlightLeavesOnItsContext(t *testing.T) {
+	gate := &blockedBlobs{next: ggcr.New(), arrived: make(chan struct{}, 1), released: make(chan struct{})}
+	server := httptest.NewServer(gate)
+	t.Cleanup(server.Close)
+	t.Cleanup(gate.release)
+
+	ref := pushImage(t, server, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newServiceAt(t, t.TempDir(), server)
+
+	gate.arm()
+
+	pulled := make(chan error, 1)
+	go func() {
+		_, err := svc.Pull(t.Context(), ref)
+		pulled <- err
+	}()
+
+	select {
+	case <-gate.arrived:
+	case err := <-pulled:
+		t.Fatalf("the first Pull ended before it fetched a blob: %v", err)
+	}
+
+	writers := []struct {
+		verb  string
+		write func(context.Context) error
+	}{
+		{"Pull", func(ctx context.Context) error {
+			_, err := svc.Pull(ctx, ref)
+			return err
+		}},
+		{"Claim", func(ctx context.Context) error {
+			_, err := svc.Claim(ctx, ref, func(image.Image) error { return nil })
+			return err
+		}},
+		{"Remove", func(ctx context.Context) error { return svc.Remove(ctx, ref, func() error { return nil }) }},
+	}
+	for _, w := range writers {
+		ctx, cancel := context.WithCancel(t.Context())
+		waited := make(chan error, 1)
+		go func() { waited <- w.write(ctx) }()
+
+		select {
+		case err := <-waited:
+			cancel()
+			t.Fatalf("%s ran beside the first Pull and returned %v", w.verb, err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		cancel()
+
+		select {
+		case err := <-waited:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("%s returned %v on a cancel, want context.Canceled", w.verb, err)
+			}
+		case <-time.After(5 * time.Second):
+			gate.release()
+			t.Fatalf("%s still waits for the first Pull 5s after its context ended", w.verb)
+		}
+	}
+
+	gate.release()
+
+	if err := <-pulled; err != nil {
+		t.Fatalf("the first Pull: %v", err)
+	}
+}
+
 // blockedBlobs is a registry that holds every blob request open, so a pull can be caught mid-flight.
 type blockedBlobs struct {
 	next     http.Handler
@@ -538,5 +609,55 @@ func TestClaimKeepsTheRootFSUntilTheRecordIsWritten(t *testing.T) {
 
 	if _, err := os.Stat(rootfs); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the rootfs outlived the removal: %v", err)
+	}
+}
+
+// SHARD-359: a pull while a removal is past its check must not hand out the rootfs the removal then deletes.
+func TestPullWaitsForARemovalPastItsCheck(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	checked := make(chan struct{})
+	release := make(chan struct{})
+	removed := make(chan error, 1)
+	go func() {
+		removed <- svc.Remove(context.Background(), ref, func() error {
+			close(checked)
+			<-release
+
+			return nil
+		})
+	}()
+	<-checked
+
+	var img image.Image
+	var pullErr error
+	pulled := make(chan struct{})
+	go func() {
+		defer close(pulled)
+		img, pullErr = svc.Pull(context.Background(), ref)
+	}()
+
+	// A pull that waits for the removal never returns here, so the removal goes on after a beat either way.
+	select {
+	case <-pulled:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+
+	if err := <-removed; err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	<-pulled
+	if pullErr != nil {
+		t.Fatalf("Pull during the removal: %v", pullErr)
+	}
+
+	if _, err := os.Stat(img.RootFS); err != nil {
+		t.Errorf("the pull handed out a rootfs the removal then took: %v", err)
 	}
 }

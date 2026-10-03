@@ -98,7 +98,9 @@ inode bitmaps, and widens every block group to 8192 inodes, mke2fs's one per 16 
 `tar2ext4` sizes the table to the tar and left a small `--disk` under 16 spare inodes (SHARD-254);
 `ext4.Grow` can add block groups to a copy offline, up to `ext4.MaxDiskSize`,
 128 MiB short of 16 TiB, where its 32-bit block count ends; `sandbox.MaxDiskMiB` is derived from it,
-so a `--disk` the daemon accepts is one the writer can grow to. Every sandbox gets an APFS clone of the base
+and the provider refuses a `--disk` whose last block group cannot hold its own metadata, so a bound
+the daemon accepts is one the writer can grow to, unless it is under the image's own disk, which only
+the clone finds (SHARD-280). Every sandbox gets an APFS clone of the base
 (`clonefile(2)`: instant, and the blocks are shared until written), grown to its `--disk` bound,
 attached as virtio-blk, and the clone is the writable layer. `bundle.CloneRootDisk` does both and
 reports whether the blocks are shared; on a volume that is not APFS it falls back to a copy, and the
@@ -119,7 +121,7 @@ connects to each after boot, retrying until the listener is up:
 | Port | Stream | Carries |
 |---|---|---|
 | 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
-| 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
+| 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s, the offsets of the oldest output byte it holds and of the next; the host answers with one, the byte to resume from, then reads raw bytes and acks each write to `output.log` with the offset after it. The guest holds up to 1 MiB no host acked, so a daemon restart loses and repeats nothing; `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` is a guest from before the protocol: the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 | 5003 | files | one connection per operation: a `FileHeader` line naming `stat`, `put` or `get` and an absolute guest path, then a `FileReply` line with the file's shape or the guest's reason; a put sends its bytes after the header, a get receives them after the reply (SHARD-42) |
 
@@ -130,8 +132,9 @@ exactly the size the reply promised. Neither takes a directory.
 Every new control connection hears `state` first (ready, the last exit, the count), written on the
 supervisor's own goroutine before any event, so a daemon that restarts, or re-attaches after a
 restore, loses nothing. A request returns once the guest has done it: `readdress` answers after the
-address and the route are set, so a fork is never exposed on its source address in between. A closed
-exec connection kills the command, which is how a cancelled `Exec` ends it. The host writes the exit record and the
+address and the route are set, so a fork is never exposed on its source address in between. A cancelled
+`Exec` sends a `cancel` frame, which kills the command. An exec connection that only closes is a daemon
+that went away, so the command runs on and its output drains, as on gVisor (SHARD-270). The host writes the exit record and the
 count into the same files gVisor's pipe fills, so `Wait`, `ExitStatus` and `inspect` are unchanged.
 `services/supervisor` holds the wire and the host client, which the Firecracker provider reuses. The
 same binary runs the protocol over `-transport unix:<dir>` in the unit tests, on any OS. The host
@@ -187,13 +190,21 @@ out after thirty idle seconds; a refused one gets no answer, as a netfilter drop
 drop is written into the sandbox's egress log with the shape of a host drop: `rule` is the rule that
 refused a judged flow, `private` for the floor, `local` for the gateway's own ports and for any
 address the Mac owns, which the input chain refuses on Linux, `unapplied` for a flow that arrived
-before the daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow
-past the 1024 a sandbox may hold open or the 4096 the stack may, `redirect` for a fronted guest's 80
-or 443 that connection tracking kept off the proxy since it first saw the flow before the guest was
-fronted, and `stack` for a frame the forwarders never take, ICMP, a fragment, or a port the daemon
-serves reached on an address other than the gateway. The bound is the same two a second with a burst
-of ten the chains log at. Nothing reaches the Mac, the LAN or the internet except through the proxy
-or a flow the policy allowed, and `docs/egress.md` has the per-substrate row.
+before the daemon's first apply, since a VM adopted at startup gets no window, `limit` for a flow, a
+proxied connection included, past the 1024 a sandbox may hold open or the 4096 the stack may,
+`redirect` for a fronted guest's 80 or 443 that connection tracking kept off the proxy since it
+first saw the flow before the guest was fronted, and `stack` for a frame the forwarders never take,
+ICMP, a fragment, or a port the daemon serves reached on an address other than the gateway. The
+bound is the same two a second with a burst of ten the chains log at. Nothing reaches the Mac, the
+LAN or the internet except through the proxy or a flow the policy allowed, and `docs/egress.md` has
+the per-substrate row.
+
+Each end of the socketpair has a 1 MiB send buffer and a 4 MiB receive buffer, the four to one
+Apple asks for. At the macOS default of 4 KiB a full peer refuses the third 1514 byte frame with
+`ENOBUFS`, and a 1 MB download filled it (SHARD-384). A frame the guest end still has no room for is
+back-pressure, not a fault: the link tries it five times over about 1.5 ms, then drops it for TCP to
+send again. The pump never ends on `ENOBUFS` or `EAGAIN`. The daemon log counts the dropped frames
+per sandbox, at the first drop, at most once in ten seconds after it, and when the link closes.
 
 Rejected: the framework's NAT attachment. It gives the guest `bridge100` at `192.168.64.1/24` with a
 route to the LAN and the Mac, and the only filter for it is `pf`, which needs root and is host state

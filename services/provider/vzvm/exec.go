@@ -6,7 +6,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -72,13 +71,9 @@ func headerOf(r record, spec models.ExecSpec) (supervisor.ExecHeader, error) {
 		Groups:  r.Run.Groups,
 		TTY:     spec.TTY,
 	}
+	// The guest resolves a named user, because the image on the host misses a user the sandbox added (SHARD-356).
 	if spec.User != "" {
-		identity, err := bundle.ResolveUser(r.RootFS, spec.User)
-		if err != nil {
-			return supervisor.ExecHeader{}, err
-		}
-		header.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
-		header.Groups = identity.Groups
+		header.User, header.Groups, header.Lookup = spec.User, nil, true
 	}
 	if spec.TTY && spec.Stdin != nil {
 		size, err := pty.SizeOf(spec.Stdin)

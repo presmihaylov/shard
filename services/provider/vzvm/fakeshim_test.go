@@ -1,6 +1,7 @@
 package vzvm_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -15,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,10 +33,14 @@ import (
 const (
 	fakeShimEnv = "VZVM_FAKE_SHIM"
 	fakeInitEnv = "VZVM_FAKE_INIT"
+	fakeRunEnv  = "VZVM_FAKE_RUN"
 )
 
 // initBinary is the shard-init the fake shim runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
+
+// guardHost is the integration suite's hold on the host for the run, and its release; a plain test run leaves it nil.
+var guardHost func() (release func() error, err error)
 
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeShimEnv) == "1" {
@@ -48,7 +55,23 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (code int) {
+	if guardHost != nil {
+		release, err := guardHost()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vzvm tests:", err)
+
+			return 1
+		}
+		defer func() {
+			if err := release(); err != nil {
+				fmt.Fprintln(os.Stderr, "give the host back:", err)
+
+				code = 1
+			}
+		}()
+	}
+
 	initBinary = os.Getenv(fakeInitEnv)
 	if initBinary == "" {
 		dir, err := os.MkdirTemp("", "vzinit")
@@ -67,9 +90,18 @@ func runTests(m *testing.M) int {
 			return 1
 		}
 	}
+	// A shim runs in its own group, which a timeout or a kill of this run never reaches: it inherits the read end and goes at EOF.
+	var run [2]int
+	if err := syscall.Pipe(run[:]); err != nil {
+		fmt.Fprintln(os.Stderr, "make the run pipe:", err)
+
+		return 1
+	}
+	syscall.CloseOnExec(run[1])
 	// Every shim the provider starts from here is this binary, and inherits the switch.
 	os.Setenv(fakeShimEnv, "1")
 	os.Setenv(fakeInitEnv, initBinary)
+	os.Setenv(fakeRunEnv, strconv.Itoa(run[0]))
 
 	return m.Run()
 }
@@ -85,6 +117,13 @@ func fakeShim() error {
 	if err := json.Unmarshal([]byte(*encoded), &cfg); err != nil {
 		return fmt.Errorf("decode -config: %w", err)
 	}
+	fd, err := strconv.Atoi(os.Getenv(fakeRunEnv))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", fakeRunEnv, err)
+	}
+	// The guest has no use for the run's pipe.
+	syscall.CloseOnExec(fd)
+	run := os.NewFile(uintptr(fd), "run")
 
 	listener, err := vz.Listen(cfg.Socket)
 	if err != nil {
@@ -98,6 +137,11 @@ func fakeShim() error {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	served := make(chan error, 1)
 	go func() { served <- vz.Serve(listener, machine, logger) }()
+	runEnded := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, run)
+		runEnded <- err
+	}()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
@@ -117,16 +161,24 @@ func fakeShim() error {
 			machine.mu.Unlock()
 			machine.dropStreams()
 		case <-signals:
-			if err := machine.Stop(); err != nil {
-				return err
-			}
-			<-machine.exited
-
-			return errors.Join(listener.Close(), <-served)
+			return stopFake(machine, listener, served)
+		case err := <-runEnded:
+			// No test is left to stop this sandbox, so the shim does.
+			return errors.Join(err, stopFake(machine, listener, served))
 		case <-machine.exited:
 			return errors.Join(listener.Close(), <-served)
 		}
 	}
+}
+
+// stopFake ends the guest, then the socket.
+func stopFake(machine *fakeMachine, listener net.Listener, served <-chan error) error {
+	if err := machine.Stop(); err != nil {
+		return err
+	}
+	<-machine.exited
+
+	return errors.Join(listener.Close(), <-served)
 }
 
 // fakeMachine is a shard-init process in its own group: a pause is SIGSTOP, a save a marker file, a stop SIGKILL.
@@ -164,6 +216,9 @@ const holdDialsFile = "hold-dials"
 
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
+
+// floodFile in the state directory floods the next control stream past its state line, as guest root writing to PID 1's control fd would.
+const floodFile = "flood-control"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -408,6 +463,12 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Join(err, conn.Close())
 	}
+	flood := false
+	if port == supervisor.ControlPort {
+		if flood, err = m.take(floodFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if held || time.Now().Before(m.holdUntil) {
@@ -417,8 +478,12 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if port == supervisor.ControlPort {
 		m.controls++
 	}
+	s := &stream{Conn: conn, machine: m}
+	if flood {
+		return &flooded{stream: s}, nil
+	}
 
-	return &stream{Conn: conn, machine: m}, nil
+	return s, nil
 }
 
 // dropStreams ends every stream to the guest at once, which is what a reset of the transport looks like to both ends.
@@ -471,6 +536,26 @@ func (s *stream) Read(p []byte) (int, error) {
 		s.machine.dropStreams()
 
 		return 0, net.ErrClosed
+	}
+
+	return n, err
+}
+
+// flooded passes the guest's state line, then reads as one line that never ends.
+type flooded struct {
+	*stream
+	passed bool
+}
+
+func (f *flooded) Read(p []byte) (int, error) {
+	if f.passed {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+	}
+	n, err := f.stream.Read(p)
+	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
+		f.passed = true
+
+		return end + 1, err
 	}
 
 	return n, err

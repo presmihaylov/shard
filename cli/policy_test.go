@@ -25,8 +25,8 @@ func TestPolicyCreateStoresTheRulesInOrder(t *testing.T) {
 	if out.String() != "web\n" {
 		t.Errorf("policy create printed %q, want the name", out.String())
 	}
-	if slices.Contains(r.calls, "net.ReapplyAll") {
-		t.Errorf("a policy no sandbox holds was applied: %v", r.calls)
+	if slices.Contains(r.seen(), "net.ReapplyAll") {
+		t.Errorf("a policy no sandbox holds was applied: %v", r.seen())
 	}
 
 	policies, err := d.policies()
@@ -72,8 +72,8 @@ func TestPolicyCreateEnforcesAtOnceOnTheSandboxesThatHoldIt(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"policy", "create", "--allow", "any", "web"}); err != nil {
 		t.Fatalf("policy create: %v", err)
 	}
-	if !slices.Contains(r.calls, "net.ReapplyAll") {
-		t.Errorf("the new rules did not reach the host: %v", r.calls)
+	if !slices.Contains(r.seen(), "net.ReapplyAll") {
+		t.Errorf("the new rules did not reach the host: %v", r.seen())
 	}
 
 	// The store holds the policy, but the host still enforces the old rules: the operator must know.
@@ -129,12 +129,12 @@ func TestPolicyRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	}
 
 	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox2"}}
-	r.calls = nil
+	r.forget()
 	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err != nil {
 		t.Fatalf("policy rm with no holder: %v", err)
 	}
-	if slices.Contains(r.calls, "net.ReapplyAll") {
-		t.Errorf("rm of an unheld policy touched the host: %v", r.calls)
+	if slices.Contains(r.seen(), "net.ReapplyAll") {
+		t.Errorf("rm of an unheld policy touched the host: %v", r.seen())
 	}
 
 	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err == nil || !strings.Contains(err.Error(), "not found") {

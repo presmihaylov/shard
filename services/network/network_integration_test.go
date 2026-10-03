@@ -4,6 +4,7 @@ package network_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -240,6 +241,44 @@ func TestReleaseIsIdempotent(t *testing.T) {
 			t.Fatalf("the %s Release: %v", when, err)
 		}
 	}
+}
+
+// A start that fails must keep the address its stopped record names, or the next create takes it (SHARD-386).
+func TestAFailedAllocateKeepsTheLeaseItHeld(t *testing.T) {
+	for _, tap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tap=%t", tap), func(t *testing.T) {
+			egress := &lapsing{}
+			s, _ := newServiceWith(t, network.Config{Tap: tap, Egress: egress})
+			held := allocate(t, s, "amber-otter")
+
+			egress.broken = true
+			if _, err := s.Allocate(t.Context(), "amber-otter"); err == nil {
+				t.Fatal("Allocate succeeded over a compile that fails")
+			}
+			egress.broken = false
+
+			next := allocate(t, s, "brisk-heron")
+			if next.Address == held.Address {
+				t.Errorf("the next sandbox got %s, which the failed one still holds", held.Address)
+			}
+
+			again := allocate(t, s, "amber-otter")
+			if again.Address != held.Address {
+				t.Errorf("the sandbox came back on %s, want %s", again.Address, held.Address)
+			}
+		})
+	}
+}
+
+// lapsing fails its compile while broken is set, which is what a policy name that stops resolving does.
+type lapsing struct{ broken bool }
+
+func (l *lapsing) Chains(context.Context) ([]network.Chain, error) {
+	if l.broken {
+		return nil, errors.New("resolve a lapsed name: no such host")
+	}
+
+	return nil, nil
 }
 
 // The mapping Sysbox CE hands every container; the test only needs one that is not the host's.

@@ -49,10 +49,10 @@ func TestTheGettersBuildOneLayerUnderConcurrentAsks(t *testing.T) {
 
 // --provider picks the substrate by name. A name shard does not know fails the first ask, not a sandbox.
 func TestTheProviderIsPickedByName(t *testing.T) {
-	// Both runners look their binary up on PATH, and neither substrate is installed where the tests run.
+	// Every runner and the AppArmor parser are looked up on PATH, and none is installed where the tests run.
 	bin := t.TempDir()
-	for _, binary := range []string{"runsc", "sysbox-runc", "runc"} {
-		if err := os.WriteFile(filepath.Join(bin, binary), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	for binary, code := range map[string]int{"runsc": 1, "sysbox-runc": 1, "runc": 1, "apparmor_parser": 0} {
+		if err := os.WriteFile(filepath.Join(bin, binary), fmt.Appendf(nil, "#!/bin/sh\nexit %d\n", code), 0o755); err != nil {
 			t.Fatalf("write the fake %s: %v", binary, err)
 		}
 	}
