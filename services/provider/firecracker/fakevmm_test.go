@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -56,6 +57,14 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
+	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
+	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeVMMEnv) == "1" && slices.Contains(os.Args[1:], "--exec-file") {
 		if err := fakeJailer(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake jailer:", err)
@@ -175,7 +184,7 @@ func fakeVMM() error {
 	if err != nil {
 		return err
 	}
-	f := &fake{dir: os.Getenv(fakeStateEnv), state: "Not started", streams: map[net.Conn]struct{}{}}
+	f := &fake{dir: os.Getenv(fakeStateEnv), state: "Not started", streams: map[net.Conn]struct{}{}, sending: map[chan struct{}]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -217,6 +226,8 @@ type fake struct {
 	severed bool
 	// frozen is what the guest was last told, freeze or thaw, which a snapshot keeps the way its memory would.
 	frozen bool
+	// sending is every guest-to-host copy still open, which a guest that powers off drains through before the vmm dies.
+	sending map[chan struct{}]struct{}
 }
 
 // bootFile is written in the state directory at the start, with what the vmm was told to boot.
@@ -491,6 +502,7 @@ func (f *fake) start() error {
 	go func() {
 		// The exit is the guest powering off, which ends firecracker; the group kill takes an entrypoint that ignored TERM along.
 		_ = cmd.Wait()
+		f.drain()
 		_ = syscall.Kill(-os.Getpid(), syscall.SIGKILL)
 	}()
 
@@ -610,13 +622,39 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		closeWrite(guest)
 		done <- struct{}{}
 	}()
+	sent := make(chan struct{})
+	f.mu.Lock()
+	f.sending[sent] = struct{}{}
+	f.mu.Unlock()
 	go func() {
 		_, _ = io.Copy(toHost, guest)
 		closeWrite(conn)
+		f.mu.Lock()
+		delete(f.sending, sent)
+		f.mu.Unlock()
+		close(sent)
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
+}
+
+// drain lets what a guest wrote before it powered off reach the host, as the vsock device delivers it before firecracker exits.
+func (f *fake) drain() {
+	f.mu.Lock()
+	pending := make([]chan struct{}, 0, len(f.sending))
+	for sent := range f.sending {
+		pending = append(pending, sent)
+	}
+	f.mu.Unlock()
+	deadline := time.After(time.Second)
+	for _, sent := range pending {
+		select {
+		case <-sent:
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // writeFunc lets a method stand in for one direction of a stream.

@@ -53,7 +53,9 @@ const (
 	restartsFile = "restarts.json"
 	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
 	oomFile = "oom"
-	logFile = "output.log"
+	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
+	logFile              = "output.log"
 	// memoryFile is the guest memory in a snapshot, and a link to it in a state directory from before the jail.
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
@@ -174,6 +176,8 @@ type Provider struct {
 	// chown and ownTap give a jail's files and the tap to the vmm's uid; a test without root swaps them.
 	chown  func(path string, uid, gid int) error
 	ownTap func(name string, uid, gid int) error
+	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
+	lostRuns map[string]error
 }
 
 func New(cfg Config) (*Provider, error) {
@@ -207,7 +211,8 @@ func New(cfg Config) (*Provider, error) {
 
 	return &Provider{
 		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
-		machines: map[string]*machine{}, spawning: map[string]bool{}, chown: os.Chown, ownTap: netns.ChownTap,
+		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
+		chown: os.Chown, ownTap: netns.ChownTap,
 	}, nil
 }
 
@@ -233,6 +238,14 @@ func (p *Provider) Capabilities() models.Capabilities {
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }
+
+// AdmitDisk reserves the overlay a create writes into dir, before the sandbox has a record, so a refusal leaves none.
+func (p *Provider) AdmitDisk(dir string, res models.Resources) error {
+	return bundle.Reserve(filepath.Join(dir, bundle.OverlayDiskFile), bundle.DiskBytes(res))
+}
+
+// ReleaseDisk gives back what AdmitDisk reserved for a create that ended before its record.
+func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 
 // Close drops what this process holds of every vmm and leaves the VMs running, which is what a daemon exit does.
 func (p *Provider) Close() error {

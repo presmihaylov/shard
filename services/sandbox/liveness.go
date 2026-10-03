@@ -22,6 +22,9 @@ const OOMKilledReason = "ran out of memory and the host ended it"
 // DiedReason is what a record says once the liveness task found the sandbox process gone with no stop behind it.
 const DiedReason = "the sandbox process died"
 
+// SupervisorFailedReason is what a record says once shard-init itself died, followed by the reason it gave.
+const SupervisorFailedReason = "shard-init failed"
+
 // Liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
 // stops a sandbox whose process is gone, and starts an OOM-killed one again when its record asks.
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
@@ -93,6 +96,9 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		}
 
 		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
+	}
+	if status.SupervisorFailed != "" {
+		return s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report)
 	}
 
 	return s.recordDied(sb.ID, report)
@@ -217,6 +223,29 @@ func (s *Service) recordDied(id string, report func(string)) error {
 	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, DiedReason))
 
 	return nil
+}
+
+// recordSupervisorFailed stops the record of a sandbox whose shard-init died, with its exit and the reason it gave.
+func (s *Service) recordSupervisorFailed(id, why string, report func(string)) error {
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateStopped
+		rec.PID = 0
+		supervisorFailed(rec, why)
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %s, but its record was not updated: %w", id, SupervisorFailedReason, err)
+	}
+	report(fmt.Sprintf("sandbox %s: %s: %s, the record now says stopped", id, SupervisorFailedReason, why))
+
+	return nil
+}
+
+// supervisorFailed makes shard-init's death the record's exit, as runsc wait reads its 125 on gVisor.
+func supervisorFailed(rec *models.Sandbox, why string) {
+	rec.StoppedReason = SupervisorFailedReason + ": " + why
+	rec.ExitStatus = &models.ExitStatus{Code: models.SupervisorFailedExitCode}
 }
 
 // handleOOMKilled runs the memory decision: start the sandbox again when its record asks and the limit allows,
