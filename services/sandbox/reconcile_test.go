@@ -361,6 +361,32 @@ func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
 	}
 }
 
+// A pause cut before its checkpoint was complete finished nothing, so the reconcile leaves the frozen sentry alone.
+func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	lab.repo.snapshots = t.TempDir()
+	partial := filepath.Join(lab.repo.snapshots, "sandbox1.tmp")
+	if err := os.MkdirAll(partial, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partial, "checkpoint.img"), []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if len(provider.released) != 0 {
+		t.Errorf("the substrate released %v, want nothing: no complete checkpoint stands beside the sentry", provider.released)
+	}
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
 // Without the mark the checkpoint is what an earlier pause and resume left, and the run after it is gone.
 func TestReconcileStopsARunningRecordOverACheckpointItNeverMarked(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}

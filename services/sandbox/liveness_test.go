@@ -181,6 +181,25 @@ func TestLivenessLeavesAnUnmarkedFrozenSandboxAlone(t *testing.T) {
 	}
 }
 
+// A pause cut before its checkpoint was complete finished nothing, so the tick leaves the frozen sentry alone.
+func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *testing.T) {
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, frozen())
+	lab.l.repo.snapshotDir = t.TempDir()
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release: no complete checkpoint stands beside the sentry", lab.r.snapshot())
+	}
+	if got := lab.l.repo.sb; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
 func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	lab := newLivenessLab(t, optedIn(), oomKilled())
