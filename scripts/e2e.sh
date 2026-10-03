@@ -1544,7 +1544,7 @@ alone_in() {
 
 # no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
 no_command_steps() {
-	local id clone code refusal policy
+	local id clone code refusal policy started took
 
 	step "create with no command runs only shard-init and stays up"
 	id=$(shard create "${IMAGE}")
@@ -1555,7 +1555,11 @@ no_command_steps() {
 	alone_in "${id}" "after the create"
 
 	step "stop a sandbox with no command and find no exit"
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	started=$(date +%s.%N)
+	shard stop "${id}" >/dev/null
+	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+	# Nothing runs under shard-init, so the stop never spends the 30 s grace (SHARD-460).
+	awk -v t="${took}" 'BEGIN { exit !(t < 10) }' || fail "the stop of a sandbox with no command took ${took} s"
 	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard ls --all does not list the sandbox with no command stopped"
 	# The image's CMD would have exited by now and its status would land at the stop, so none proves it never ran.
 	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
@@ -1565,7 +1569,7 @@ no_command_steps() {
 	shard start "${id}" >/dev/null
 	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running after the start"
 	alone_in "${id}" "after a start"
-	shard stop --time "${GRACE}" "${id}" >/dev/null
+	shard stop "${id}" >/dev/null
 	clone=$(shard clone "${id}")
 	track_sandbox "${clone}"
 	[ "$(listed_state "${clone}")" = "running" ] || fail "the clone of the sandbox with no command is not running"
