@@ -115,7 +115,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return "", err
 	}
 	if cut != "" {
-		if err := s.recordCutPause(sb.ID, cut, report); err != nil {
+		if err := s.recordCutPause(sb.ID, sb.State, cut, report); err != nil {
 			return "", err
 		}
 
@@ -146,7 +146,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	}
 	// An unresponsive record whose process answers again keeps its run, so it is no fresh start (SHARD-421).
 	if state == models.StateRunning && sb.State == models.StateUnresponsive {
-		if err := s.recordAnswered(sb.ID, report); err != nil {
+		if err := s.recordAnswered(sb.ID, status, report); err != nil {
 			return "", err
 		}
 
@@ -340,9 +340,10 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 	return dir, nil
 }
 
-// markedSnapshot is the complete snapshot a marked pause installed for a record that still says running; empty for none.
+// markedSnapshot is the complete snapshot a marked pause installed for a record still live, answering or not; empty for none.
 func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
-	if sb.State != models.StateRunning || !sb.Pausing {
+	// A daemon cut after the checkpoint can leave the mark over a silent shim, and its death must still find the pause (SHARD-442).
+	if !sb.State.Live() || !sb.Pausing {
 		return "", nil
 	}
 
@@ -382,11 +383,11 @@ func (s *Service) dropMark(id string, report func(string)) error {
 }
 
 // recordCutPause records the pause a cut pause completed on the host, and reports the correction.
-func (s *Service) recordCutPause(id, dir string, report func(string)) error {
+func (s *Service) recordCutPause(id string, was models.State, dir string, report func(string)) error {
 	if err := s.recordPaused(id, dir); err != nil {
 		return err
 	}
-	report(fmt.Sprintf("sandbox %s said running and a pause the daemon never recorded left a complete snapshot: the record now says paused", id))
+	report(fmt.Sprintf("sandbox %s said %s and a pause the daemon never recorded left a complete snapshot: the record now says paused", id, was))
 
 	return nil
 }

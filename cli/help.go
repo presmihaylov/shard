@@ -76,7 +76,7 @@ var helps = map[string]verbHelp{
 		},
 	},
 	"create": {
-		usage:   []string{"create [flags] <image> [-- <argv>...]"},
+		usage:   []string{"create [flags] <image> [<argv>...]"},
 		summary: "create a sandbox, start its entrypoint and print its id",
 		args: []row{
 			{"<image>", "the image to run; create pulls it first when it is not on disk"},
@@ -102,13 +102,13 @@ var helps = map[string]verbHelp{
 			{"--health-retries <n>", "how many failed probes in a row mark the sandbox unhealthy", strconv.Itoa(sandbox.DefaultHealthRetries)},
 		},
 		notes: []string{
-			"The flags go before the image, and the command after --. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
+			"The flags go before the image. The command follows the image; an optional -- may precede it. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
 		},
-		example: "shard create --name web --memory 512 python:3.12 -- python -m http.server",
+		example: "shard create --name web --memory 512 python:3.12 python -m http.server",
 	},
 	"exec": {
-		usage:   []string{"exec [flags] <id|name> -- <argv>..."},
+		usage:   []string{"exec [flags] <id|name> <argv>..."},
 		summary: "run a command in a running sandbox",
 		args:    []row{sandboxArg, {"<argv>", "the command to run and its arguments"}},
 		flags: []flagHelp{
@@ -118,8 +118,8 @@ var helps = map[string]verbHelp{
 			{"--workdir <dir>", "the directory the command starts in", ""},
 			{"--user <user>", "the user the command runs as", ""},
 		},
-		notes:   []string{"The flags go before the id, and the command after --. shard exits with the exit code of the command."},
-		example: "shard exec -it web -- /bin/sh",
+		notes:   []string{"The flags go before the id or name. The command follows it; an optional -- may precede the command. shard exits with the exit code of the command."},
+		example: "shard exec -it web /bin/sh",
 	},
 	"ls": {
 		usage:   []string{"ls [--all]"},

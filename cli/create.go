@@ -128,11 +128,11 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 		return req, nil
 	}
 
-	if rest[0] != "--" {
-		return sandbox.CreateRequest{}, fmt.Errorf("unexpected argument %q: the flags go before the image and the command after --", rest[0])
+	if rest[0] == "--" {
+		rest = rest[1:]
 	}
 
-	req.Command = rest[1:]
+	req.Command = rest
 	if len(req.Command) == 0 {
 		return sandbox.CreateRequest{}, errors.New("-- takes the command to run, and nothing followed it")
 	}

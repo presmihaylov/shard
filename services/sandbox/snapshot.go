@@ -112,6 +112,7 @@ func (s *Service) recordPaused(id, dir string) error {
 		sb.PID = 0
 		sb.Snapshot = dir
 		sb.Pausing = false
+		sb.UnresponsiveReason = ""
 
 		return nil
 	})

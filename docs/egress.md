@@ -22,7 +22,7 @@ broadcast. It names that deny `local`.
 
 ```
 shard policy create --allow api.openai.com --deny any locked
-shard create --policy locked python:3.12 -- python agent.py
+shard create --policy locked python:3.12 python agent.py
 ```
 
 A policy is a name and an ordered list of rules. The first rule that matches a packet decides, and

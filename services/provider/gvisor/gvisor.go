@@ -184,7 +184,7 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	}
 	defer func() { err = errors.Join(err, exit.Close()) }()
 
-	// runsc rmdirs every cgroup it made on delete, the parent included, so the parent must be shard's.
+	// A teardown rmdirs the sandbox's own cgroup, so its parent must exist and be shard's, never the host cgroup root.
 	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return err
 	}
@@ -455,7 +455,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 
-	// runsc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
+	// runsc refuses to signal a container whose entrypoint never started, so only safeDelete ends that one.
 	if status.State == models.StateCreated {
 		if err := p.safeDelete(ctx, id); err != nil {
 			return err
@@ -529,7 +529,7 @@ func (p *Provider) kill(ctx context.Context, id string) error {
 	return nil
 }
 
-// Remove deletes runsc's own state. The record and the state directory belong to the repository.
+// Remove ends the sandbox and forgets runsc's own state. The record and the state directory belong to the repository.
 func (p *Provider) Remove(ctx context.Context, id string) error {
 	// First, so a restore cannot bring the sandbox up again after the teardown below.
 	if err := p.killRestores(ctx, id); err != nil {
@@ -809,7 +809,7 @@ func (p *Provider) stale(id string, state runsc.State) (bool, error) {
 		return false, nil
 	}
 
-	// a clean pause deletes the container, so a paused one with a live pid is a cut pause whose pid Linux reused unless it is still in this sandbox's cgroup.
+	// a clean pause ends the container in runsc, so a paused one with a live pid is a cut pause whose pid Linux reused unless it is still in this sandbox's cgroup.
 	return p.foreignPid(state.PID, id)
 }
 
@@ -883,9 +883,7 @@ func stateOf(status runsc.Status) models.State {
 	}
 }
 
-// Pause writes the sandbox into dir and then deletes it from runsc, because runsc still names a
-// checkpointed container until it is deleted. runsc then holds nothing, as after a stop before
-// the entrypoint ran, and the snapshot plus the state directory is everything a resume needs.
+// Pause checkpoints the sandbox into dir, then safeDelete sweeps its cgroup and forgets runsc's state, so the snapshot plus the state directory is everything a resume needs.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	status, err := p.Status(ctx, id)
 	if err != nil {
@@ -926,7 +924,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged delete holds no lock.
+	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged teardown holds no lock.
 	return p.release(ctx, id, b, tmp)
 }
 
@@ -975,8 +973,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	return p.release(ctx, id, b, dir+".tmp")
 }
 
-// Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
-// as a new runsc container: the one the pause deleted is gone for good.
+// Resume brings the sandbox back from the snapshot in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
 		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)

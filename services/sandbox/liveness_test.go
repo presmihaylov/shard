@@ -253,6 +253,32 @@ func TestLivenessStopsAnUnresponsiveSandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
+// An unresponsive sandbox the host ends for its memory, or whose shard-init dies, keeps only the reason it stopped for (SHARD-441).
+func TestLivenessStopsAnUnresponsiveSandboxWithItsOwnReasonAlone(t *testing.T) {
+	const why = "exec the entrypoint: no such file"
+	for _, tc := range []struct {
+		name   string
+		status models.Status
+		want   string
+	}{
+		{name: "the host ended it for its memory", status: oomKilled(), want: sandbox.OOMKilledReason},
+		{name: "its shard-init died", status: models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}, want: sandbox.SupervisorFailedReason + ": " + why},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, unresponsive(), tc.status)
+
+			if err := lab.tick(t, unresponsive(), time.Now()); err != nil {
+				t.Fatalf("Liveness: %v", err)
+			}
+
+			got := lab.l.repo.sb
+			if got.State != models.StateStopped || got.StoppedReason != tc.want || got.UnresponsiveReason != "" {
+				t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, tc.want)
+			}
+		})
+	}
+}
+
 // A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
 func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	dir := t.TempDir()
@@ -274,6 +300,81 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
 		t.Errorf("the pass reported %v, want one line on the pause", lab.reports)
+	}
+}
+
+// A daemon cut after the checkpoint leaves its mark over a frozen shim, and the tick must keep the pause through its silence and its death (SHARD-442).
+func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, silentShim())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	silent := lab.l.repo.sb
+	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Snapshot != "" {
+		t.Fatalf("the record is %s with mark %v and snapshot %q, want unresponsive with the mark kept and no pause: the shim may still answer", silent.State, silent.Pausing, silent.Snapshot)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, silent, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
+		t.Errorf("the record is %s with pid %d, snapshot %q, mark %v and the reasons %q and %q; want paused with pid 0, %s, no mark and no reason", got.State, got.PID, got.Snapshot, got.Pausing, got.UnresponsiveReason, got.StoppedReason, dir)
+	}
+	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
+		t.Errorf("the passes reported %v, want the silence and then the pause of an unresponsive record", lab.reports)
+	}
+}
+
+// A silent shim that answers running again ran past the pause, so the tick drops the mark with the answer and its death stops the record (SHARD-442).
+func TestLivenessDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(sb.PID))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	answered := lab.l.repo.sb
+	if answered.State != models.StateRunning || answered.Pausing || answered.Snapshot != "" {
+		t.Fatalf("after the answer the record is %s with mark %v and snapshot %q, want running with no mark and no pause", answered.State, answered.Pausing, answered.Snapshot)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, answered, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("after the death the record is %s with snapshot %q, want stopped with none: the checkpoint is older than the run", got.State, got.Snapshot)
+	}
+}
+
+// A shim that answers frozen beside its checkpoint ran nothing past the pause, so the mark stays.
+func TestLivenessKeepsTheMarkWhenASilentShimAnswersFrozen(t *testing.T) {
+	sb := unresponsive()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, pausedAlive(sb.PID))
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; !got.Pausing {
+		t.Errorf("the record is %s with no mark, want the mark kept: a frozen guest ran nothing past the pause", got.State)
 	}
 }
 

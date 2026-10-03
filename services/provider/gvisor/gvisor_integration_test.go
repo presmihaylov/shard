@@ -682,9 +682,7 @@ func teardownOnSignal() {
 	}()
 }
 
-// sweepCgroups removes what a failed create leaves at the cgroup root. runsc removes its own cgroup
-// on delete, but one left behind silently unbounds the next sandbox that takes the same id, and the
-// ids here repeat on every run.
+// sweepCgroups removes what a failed create leaves at the cgroup root, because a leftover cgroup silently unbounds the next sandbox that takes the same id, and the ids here repeat on every run.
 func sweepCgroups() {
 	left, err := filepath.Glob(filepath.Join(cgroup.Root, bundle.CgroupsPath("shard-1?-*")))
 	if err != nil {

@@ -237,7 +237,7 @@ func TestSweepKillsWhatACutShortCreateLeft(t *testing.T) {
 	}
 }
 
-// A sandbox runsc deleted, or one that never got as far as a process, is the ordinary rm and has nothing to sweep.
+// A sandbox a teardown already ended, or one that never got as far as a process, is the ordinary rm and has nothing to sweep.
 func TestSweepPassesACgroupThatIsGoneOrEmpty(t *testing.T) {
 	h := newHost(t)
 

@@ -60,9 +60,9 @@ shard pull "${IMAGE}" >/dev/null
 
 echo "# shard on a box with no /dev/kvm: pause, resume and fork on gVisor"
 
-show shard create --name web "${IMAGE}" -- /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
+show shard create --name web "${IMAGE}" /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
 sleep 2
-show shard exec web -- /bin/sh -c 'echo hello > /root/state'
+show shard exec web /bin/sh -c 'echo hello > /root/state'
 show shard logs web
 PID=$(pid_of web)
 RSS_BEFORE=$(rss "${PID}")
@@ -79,14 +79,14 @@ show ls -la "$(shard inspect web | grep -o '"snapshot": *"[^"]*"' | cut -d'"' -f
 
 timed shard resume web
 sleep 2
-show shard exec web -- cat /root/state
+show shard exec web cat /root/state
 echo "  the loop went on from where the pause froze it:"
 show shard logs web
 
 timed shard fork --name web-2 web
 show shard ls
-show shard exec web-2 -- cat /root/state
-show shard exec web-2 -- hostname
+show shard exec web-2 cat /root/state
+show shard exec web-2 hostname
 
 echo
 echo "# E2B quotes ~4 s/GiB to pause and ~1 s to resume, with a cloud round trip inside those numbers."

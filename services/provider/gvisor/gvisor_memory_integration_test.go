@@ -259,8 +259,7 @@ func guestTmpfsMiB(t *testing.T, log, mount string) int64 {
 	return 0
 }
 
-// TestRemovingOneSandboxLeavesItsSiblingBound pins who owns the parent cgroup: runsc rmdirs every
-// cgroup it made on delete, so a parent it made would make the first rm fail while a sibling lives.
+// TestRemovingOneSandboxLeavesItsSiblingBound pins who owns the parent cgroup: a teardown rmdirs only the sandbox's own, so a parent it owned would make the first rm fail while a sibling lives.
 func TestRemovingOneSandboxLeavesItsSiblingBound(t *testing.T) {
 	h := newHarness(t)
 

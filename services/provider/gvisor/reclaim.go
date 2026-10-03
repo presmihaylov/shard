@@ -84,7 +84,7 @@ func (p *Provider) removeCgroup(ctx context.Context, id string) error {
 	}
 }
 
-// sweep kills what a bring-up cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
+// sweep kills the processes the cgroup still holds from a bring-up cut short; runsc may already have saved that sandbox, so safeDelete forgets its state only after this clears the cgroup (SHARD-440).
 func (p *Provider) sweep(ctx context.Context, id string) error {
 	dir := cgroupDir(p.cgroupRoot, id)
 

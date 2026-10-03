@@ -149,7 +149,7 @@ expect_exec_in() {
 	shift 3
 
 	local got
-	if ! got=$(shard exec "${id}" -- "$@"); then
+	if ! got=$(shard exec "${id}" "$@"); then
 		fail "shard exec $* wrote the right bytes and then exited non-zero"
 	fi
 
@@ -165,7 +165,7 @@ holds() {
 }
 
 # nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
-nap_alive() { shard exec "${ID}" -- /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
+nap_alive() { shard exec "${ID}" /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
 
 # listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
 listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
@@ -192,7 +192,7 @@ fronted() {
 entrypoint_clock() {
 	local clock
 	# Anchored to argv0: shard-init, PID 1, carries the entrypoint's command line mid-argv, so it never counts (SHARD-329).
-	clock=$(shard exec "$1" -- /bin/sh -c 'p=$(pgrep -f "^/bin/sleep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
+	clock=$(shard exec "$1" /bin/sh -c 'p=$(pgrep -f "^/bin/sleep 600") && echo "$p $(cut -d" " -f22 /proc/$p/stat)"') ||
 		fail "the guest runs no sleep 600 entrypoint to read a clock from"
 	[[ "${clock}" =~ ^[0-9]+\ [0-9]+$ ]] || fail "the guest gave '${clock}' for the entrypoint, want one pid and its start time"
 	printf '%s\n' "${clock}"
@@ -212,7 +212,7 @@ expect_network() {
 # so the probe waits two seconds and the check is that it gave up.
 expect_blocked() {
 	local id="$1" note="$2" got
-	got=$(shard exec "${id}" -- /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 && echo reachable || echo blocked')
+	got=$(shard exec "${id}" /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 && echo reachable || echo blocked')
 	expect "${got}" "blocked" "${note}"
 }
 
@@ -229,7 +229,7 @@ seen() {
 # each secret in a header, and prints the lines the echo answered with.
 fetch() {
 	local id="$1" scheme="$2" host="$3"
-	shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" --header \"X-Shaped: \$E2E_SHAPED\" ${scheme}://${host}/"
+	shard exec "${id}" /bin/sh -c "wget -q -O - --header \"Authorization: Bearer \$E2E_TOKEN\" --header \"X-Shaped: \$E2E_SHAPED\" ${scheme}://${host}/"
 }
 
 # expect_fronted fails when a tls request from the sandbox to the granted host does not carry the real value,
@@ -247,7 +247,7 @@ expect_fronted() {
 # guest builds the header the way every client does: base64 of "user:placeholder".
 basic_of() {
 	local id="$1" host="$2" got line
-	got=$(shard exec "${id}" -- /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" https://${host}/") ||
+	got=$(shard exec "${id}" /bin/sh -c "wget -q -O - --header \"Authorization: Basic \$(printf '%s' \"api:\$E2E_TOKEN\" | base64)\" https://${host}/") ||
 		fail "the basic auth request to ${host} failed"
 	line=$(grep '^authorization=' <<<"${got}") || fail "the echo saw no authorization header: ${got}"
 	printf '%s' "${line#authorization=}"
@@ -259,7 +259,7 @@ basic() { seen "Basic $(printf 'api:%s' "$1" | base64 | tr -d '\n')"; }
 # expect_env_clean greps the guest's environment on the host: the value in an exec's argv would land in guest memory.
 expect_env_clean() {
 	local env
-	env=$(shard exec "$1" -- /bin/sh -c env) || fail "env did not run in $1"
+	env=$(shard exec "$1" /bin/sh -c env) || fail "env did not run in $1"
 	grep -qF -- "${SECRET_VALUE}" <<<"${env}" && fail "the environment of $1 holds the value"
 	say "the value is not in the guest's environment"
 }
@@ -668,7 +668,7 @@ snapshot_steps() {
 	step "pause the sandbox"
 	# A restore keeps the guest's processes; a restart makes new ones. The entrypoint's pid and start
 	# time tell the two apart from outside, and the file proves the layer went with the memory.
-	shard exec "${ID}" -- /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
+	shard exec "${ID}" /bin/sh -c 'echo before-the-pause > /root/at-pause' >/dev/null
 	CLOCK_BEFORE=$(entrypoint_clock "${ID}")
 	say "the entrypoint is guest pid and start time ${CLOCK_BEFORE} before the pause"
 	PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
@@ -695,7 +695,7 @@ snapshot_steps() {
 	[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
 
 	CODE=0
-	REFUSAL=$(shard exec "${ID}" -- /bin/true 2>&1) || CODE=$?
+	REFUSAL=$(shard exec "${ID}" /bin/true 2>&1) || CODE=$?
 	[ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
 	echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
 	say "exec refused the paused sandbox and named the resume"
@@ -726,7 +726,7 @@ snapshot_steps() {
 	expect_exec_in "${FORK_ID}" "reachable" "the fork gets out through the NAT" \
 		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 	expect_exec_in "${FORK_ID}" "e2e-fork" "the fork carries its own hostname" /bin/hostname
-	shard exec "${FORK_ID}" -- /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
+	shard exec "${FORK_ID}" /bin/sh -c 'echo fork-only > /root/fork-only' >/dev/null
 
 	step "resume the sandbox"
 	# The fork read the snapshot and left it, so the resume still has it to load.
@@ -743,7 +743,7 @@ snapshot_steps() {
 	expect_fronted "${ID}" "the proxy fronts the sandbox after the resume"
 
 	CODE=0
-	shard exec "${ID}" -- /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
+	shard exec "${ID}" /bin/cat /root/fork-only >/dev/null 2>&1 || CODE=$?
 	[ "${CODE}" != "0" ] || fail "the source sees the file the fork wrote"
 	say "the source does not see what the fork wrote"
 
@@ -934,7 +934,7 @@ say "policy create refuses a raw-port name rule, an in-label wildcard, the old s
 
 step "create a sandbox"
 # The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" -- /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+ID=$(shard create --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
 [ -n "${ID}" ] || fail "create printed no id"
 say "create printed the id ${ID}"
 
@@ -964,7 +964,7 @@ SANDBOX_PID=$(grep -o '"pid": *[0-9]*' "${RECORD}" | grep -o '[0-9]*$')
 # The driver's scratch lives under the root and the driver dies with the daemon, so /tmp must stay as it was.
 TMP_EXECS_BEFORE=$(find /tmp -maxdepth 1 -name 'shard-exec-*' | wc -l)
 # The exec is in flight when the daemon goes: its client dies with the stream, its guest process must not.
-(shard exec "${ID}" -- /bin/sleep 313 >/dev/null 2>&1 || true) &
+(shard exec "${ID}" /bin/sleep 313 >/dev/null 2>&1 || true) &
 EXEC_CLIENT_PID=$!
 for _ in $(seq 1 50); do
 	nap_alive && break
@@ -1000,12 +1000,12 @@ say "the host still holds the egress chain of the sandbox"
 expect_exec "alive" "the guest process of the exec in flight outlived the daemon" \
 	/bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null && echo alive'
 # The pause step reads the entrypoint by name, so the nap must be gone before it: nothing reattaches to it.
-shard exec "${ID}" -- /bin/sh -c 'pkill -f "[s]leep 313"' >/dev/null
+shard exec "${ID}" /bin/sh -c 'pkill -f "[s]leep 313"' >/dev/null
 wait "${EXEC_CLIENT_PID}" 2>/dev/null || true
 say "the client of that exec is gone, and no verb reattaches to it"
 
 step "reconcile a sandbox the host lost while the daemon was down"
-RECONCILE_ID=$(shard create --name e2e-lost "${IMAGE}" -- /bin/sleep 600)
+RECONCILE_ID=$(shard create --name e2e-lost "${IMAGE}" /bin/sleep 600)
 RECONCILE_RECORD="${SHARD_ROOT}/sandboxes/${RECONCILE_ID}/sandbox.json"
 RECONCILE_LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECONCILE_RECORD}" | cut -d'"' -f4)
 RECONCILE_PID=$(grep -o '"pid": *[0-9]*' "${RECONCILE_RECORD}" | grep -o '[0-9]*$')
@@ -1134,9 +1134,9 @@ holds "${ID}" shard_front ls --all || fail "ls over the front does not list the 
 say "ls over the front lists the sandbox"
 holds "daemon" shard_front version || fail "version over the front does not name the daemon"
 say "version over the front reaches the daemon"
-GOT=$(shard_front exec "${ID}" -- /bin/cat /tmp/marker) || fail "exec over the front failed"
+GOT=$(shard_front exec "${ID}" /bin/cat /tmp/marker) || fail "exec over the front failed"
 expect "${GOT}" "shard-e2e" "exec over the front read what the first exec wrote"
-GOT=$(printf 'over-tls\n' | shard_front exec -i "${ID}" -- /bin/cat) || fail "exec with stdin over the front failed"
+GOT=$(printf 'over-tls\n' | shard_front exec -i "${ID}" /bin/cat) || fail "exec with stdin over the front failed"
 expect "${GOT}" "over-tls" "the websocket of an exec passes through the front both ways"
 
 step "a read-only token reads through the front but is refused a write"
@@ -1188,14 +1188,14 @@ nft list table inet shard | grep -c "dnat ip to .*:30080" >/dev/null || fail "th
 say "the host turns the sandbox's 80 and 443 to the proxy"
 # The guest trusts the proxy CA beside the image's own roots, at the path the image already reads.
 CA_LINE=$(sed -n 2p "${SHARD_ROOT}/proxy/ca.crt")
-GUEST_BUNDLE=$(shard exec "${ID}" -- /bin/sh -c 'cat "$SSL_CERT_FILE"')
+GUEST_BUNDLE=$(shard exec "${ID}" /bin/sh -c 'cat "$SSL_CERT_FILE"')
 echo "${GUEST_BUNDLE}" | grep -q "${CA_LINE}" || fail "the guest's \$SSL_CERT_FILE does not hold the proxy CA"
 [ "$(echo "${GUEST_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the guest's bundle holds the proxy CA alone"
 say "the guest trusts the proxy CA and still trusts the image's roots"
 
 step "a grant opens nothing: the policy alone decides the host"
 # The policy so far names 1.1.1.1 and the other host, so the granted host falls to the catch-all at the resolver.
-DENIED=$(shard exec "${ID}" -- /bin/sh -c "wget -S -O - --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1" || true)
+DENIED=$(shard exec "${ID}" /bin/sh -c "wget -S -O - --header \"Authorization: Bearer \$E2E_TOKEN\" http://${ECHO_HOST}/ 2>&1" || true)
 grep -q "bad address" <<<"${DENIED}" || fail "the granted host the policy does not allow answered '${DENIED}'"
 grep -q "authorization=" <<<"${DENIED}" && fail "the echo answered a request the resolver should have refused"
 say "a granted host the policy does not allow does not resolve, and the echo never sees the request"
@@ -1305,7 +1305,7 @@ expect_exec "blocked" "the floor holds under the policy: the gateway is dropped"
 expect_exec "blocked" "the floor holds under the policy: a non-web port on the host is dropped" \
 	/bin/sh -c 'wget -T 2 -q -O /dev/null http://10.87.0.1:5432/ >/dev/null 2>&1 && echo reachable || echo blocked'
 # IPv6 matches no rule in the forward path, so the port it came in on drops it and logs the drop.
-shard exec "${ID}" -- /bin/sh -c 'ping -6 -c 1 -W 2 ff02::1%eth0 || ping6 -c 1 -W 2 ff02::1%eth0' >/dev/null 2>&1 || true
+shard exec "${ID}" /bin/sh -c 'ping -6 -c 1 -W 2 ff02::1%eth0 || ping6 -c 1 -W 2 ff02::1%eth0' >/dev/null 2>&1 || true
 say "the guest sent an IPv6 packet, which the port must drop"
 holds '"policy": "e2e-policy"' shard inspect "${ID}" || fail "inspect does not name the policy"
 holds '"egress"' shard inspect "${ID}" || fail "inspect does not print what the host enforces"
@@ -1313,7 +1313,7 @@ say "inspect names the policy and what the host enforces"
 
 # A policy change reaches a live sandbox at once, and never waits for the next start.
 shard policy create --deny any e2e-policy >/dev/null
-BLOCKED=$(shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
+BLOCKED=$(shard exec "${ID}" /bin/sh -c 'ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo blocked')
 expect "${BLOCKED}" "blocked" "a deny-all policy blocks the probe the moment it is stored"
 shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_network "after the policy was put back"
@@ -1377,8 +1377,8 @@ FOLLOW_LOG=$(mktemp)
 shard logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
 FOLLOW_PID=$!
 
-shard exec "${ID}" -- /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
-shard exec "${ID}" -- /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1' >/dev/null 2>&1 || true
+shard exec "${ID}" /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
+shard exec "${ID}" /bin/sh -c 'ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1' >/dev/null 2>&1 || true
 
 for _ in $(seq 1 20); do
 	grep -q '"verdict":"deny"' "${FOLLOW_LOG}" && grep -q '"source":"host"' "${FOLLOW_LOG}" && break
@@ -1399,7 +1399,7 @@ NDJSON_HEADERS=$(mktemp)
 curl -sN -D "${NDJSON_HEADERS}" --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/egress-log?follow=true" >"${NDJSON_LOG}" 2>&1 &
 NDJSON_PID=$!
 
-shard exec "${ID}" -- /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
+shard exec "${ID}" /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
 
 for _ in $(seq 1 30); do
 	[ "$(grep -c '"verdict":"deny"' "${NDJSON_LOG}" || true)" -gt "${DENIES_BEFORE}" ] && break
@@ -1427,11 +1427,11 @@ say "the cgroup is /sys/fs/cgroup/shard/${ID} and nothing is at the root"
 step "propagate the exit code of a command that failed"
 # The || keeps the failure a condition rather than an error, which the exit handler would report.
 CODE=0
-shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
+shard exec "${ID}" /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "a non-zero exit inside the sandbox reached this shell"
 
 step "carry stdin into a command"
-GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" -- /bin/cat)
+GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" /bin/cat)
 expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
 
 # These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, health, the policy and a live follow.
@@ -1781,7 +1781,7 @@ oom_restart_steps() {
 
 	step "an OOM-killed sandbox that asked for restart comes back"
 	# The bomb overruns the bound on the first run only, so the sandbox it comes back as sleeps and can be used.
-	id=$(shard create --memory 64 --restart-on-oom "${IMAGE}" -- /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	id=$(shard create --memory 64 --restart-on-oom "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
@@ -1796,7 +1796,7 @@ oom_restart_steps() {
 
 	step "the OOM restart cap spends on a loop that never runs calm"
 	# A gvisor death sits ~30s at memory.high, past the 10s window, but only a calm run resets the count (SHARD-332).
-	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" -- /bin/sh -c "${OOM_BOMB}")
+	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" /bin/sh -c "${OOM_BOMB}")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
@@ -1824,7 +1824,7 @@ disk_bound_steps() {
 	say "the API refuses a negative disk bound, 400"
 
 	step "a write past the disk bound fails in the guest and stops on the host"
-	id=$(shard create --disk 64 "${IMAGE}" -- /bin/sleep 600)
+	id=$(shard create --disk 64 "${IMAGE}" /bin/sleep 600)
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	grep -q '"disk_mib": *64' "${rec}" || fail "the record does not carry the disk bound: $(cat "${rec}")"
@@ -1840,7 +1840,7 @@ disk_bound_steps() {
 	say "the host holds ${image_mib} MiB of image and ${state_mib} MiB of state, under the bound"
 
 	step "the disk survives a stop and a start"
-	shard exec "${id}" -- /bin/sh -c 'echo before-the-stop > /root/marker' >/dev/null
+	shard exec "${id}" /bin/sh -c 'echo before-the-stop > /root/marker' >/dev/null
 	shard stop --time "${GRACE}" "${id}" >/dev/null
 	# sysbox-runc holds a stopped sandbox, and sysbox-mgr chowns its upper layer back at delete, so the disk stays up until then.
 	disk_mount=$(mount | grep " on ${SHARD_ROOT}/sandboxes/${id}/disk " || true)
@@ -1897,7 +1897,7 @@ snapshot_refusals() {
 # on purpose: the sandbox already holds a cgroup of its own, and the daemon is what is under test.
 docker_steps() {
 	step "run dockerd inside a sandbox on ${PROVIDER}"
-	DIND_ID=$(shard create --name e2e-dind "${DIND_IMAGE}" -- /usr/local/bin/dockerd)
+	DIND_ID=$(shard create --name e2e-dind "${DIND_IMAGE}" /usr/local/bin/dockerd)
 	[ -n "${DIND_ID}" ] || fail "create printed no id for the dockerd sandbox"
 	DIND_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${DIND_ID}/sandbox.json" | cut -d'"' -f4)
 	say "the dockerd sandbox is ${DIND_ID} on the link ${DIND_LINK}"
@@ -1905,7 +1905,7 @@ docker_steps() {
 	# dockerd takes a few seconds to open its socket; the log names the failure when it never does.
 	local ready=0
 	for _ in $(seq 1 150); do
-		shard exec "${DIND_ID}" -- docker info >/dev/null 2>&1 && ready=1 && break
+		shard exec "${DIND_ID}" docker info >/dev/null 2>&1 && ready=1 && break
 		sleep 0.2
 	done
 	[ "${ready}" = "1" ] || fail "docker info never answered inside ${DIND_ID}: $(shard logs "${DIND_ID}" | tail -n 20)"
@@ -2041,9 +2041,9 @@ for CLONE_ID in "$@"; do
 done
 say "both clones run the entrypoint again over the source's files, each on its own address"
 
-shard exec "$1" -- /bin/sh -c 'echo clone-only > /root/clone-only' >/dev/null
+shard exec "$1" /bin/sh -c 'echo clone-only > /root/clone-only' >/dev/null
 CODE=0
-shard exec "$2" -- /bin/cat /root/clone-only >/dev/null 2>&1 || CODE=$?
+shard exec "$2" /bin/cat /root/clone-only >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "clone $2 sees the file clone $1 wrote"
 [ ! -e "${SHARD_ROOT}/sandboxes/${ID}/overlay/upper/root/clone-only" ] || fail "the source's layer holds what a clone wrote"
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the clones changed the source's state"
@@ -2103,7 +2103,7 @@ say "rm returned"
 
 step "grant a secret to a sandbox that was created without one"
 # This sandbox is created unfronted, so the grant is what plants the placeholder, the CA and the dnat.
-GRANT_ID=$(shard create "${IMAGE}" -- /bin/sh -c 'exec /bin/sleep 600')
+GRANT_ID=$(shard create "${IMAGE}" /bin/sh -c 'exec /bin/sleep 600')
 GRANT_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
 expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder before the grant" /bin/sh -c 'echo "$E2E_TOKEN"'
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null 2>&1 && fail "secret grant took a running sandbox"
@@ -2115,7 +2115,7 @@ holds '"E2E_TOKEN"' shard inspect "${GRANT_ID}" || fail "inspect does not name t
 shard start "${GRANT_ID}" >/dev/null
 expect_exec_in "${GRANT_ID}" "mock-E2E_TOKEN" "the granted guest sees the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
-GRANT_BUNDLE=$(shard exec "${GRANT_ID}" -- /bin/sh -c 'cat "$SSL_CERT_FILE"')
+GRANT_BUNDLE=$(shard exec "${GRANT_ID}" /bin/sh -c 'cat "$SSL_CERT_FILE"')
 echo "${GRANT_BUNDLE}" | grep -q "${CA_LINE}" || fail "the late grant did not plant the proxy CA"
 [ "$(echo "${GRANT_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the late bundle holds the proxy CA alone"
 say "the grant planted the proxy CA beside the image's roots"

@@ -12,7 +12,7 @@ import (
 )
 
 func TestParseCreateTheGoalCommand(t *testing.T) {
-	req, err := parseCreate([]string{"python:3.12", "--", "python", "-c", "print(1)"})
+	req, err := parseCreate([]string{"python:3.12", "python", "-c", "print(1)"})
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
@@ -152,7 +152,6 @@ func TestParseCreateRejections(t *testing.T) {
 	cases := map[string][]string{
 		"no image":               {},
 		"only flags":             {"--user", "nobody"},
-		"a flag after the image": {"alpine:3.20", "--user", "nobody"},
 		"an empty argv":          {"alpine:3.20", "--"},
 		"an unknown flag":        {"--forever", "alpine:3.20"},
 		"the old init flag":      {"--shard-init", "/opt/shard-init", "alpine:3.20"},
@@ -215,5 +214,31 @@ func TestParseCreateRefusesABadOrDoubledSecret(t *testing.T) {
 func TestParseCreateRefusesABadPolicyName(t *testing.T) {
 	if _, err := parseCreate([]string{"--policy", "Bad Name", "alpine"}); err == nil {
 		t.Error("parseCreate accepted a bad policy name")
+	}
+}
+
+func TestParseCreatePreservesArguments(t *testing.T) {
+	command := []string{"sh", "-c", "echo ready", "", "--", "--help", "--name", "guest", "-it"}
+	for _, separator := range [][]string{nil, {"--"}} {
+		args := []string{"--name", "lab", "alpine:3.22"}
+		args = append(args, separator...)
+		args = append(args, command...)
+		req, err := parseCreate(args)
+		if err != nil {
+			t.Fatalf("parseCreate: %v", err)
+		}
+		if req.Name != "lab" || req.Image != "alpine:3.22" || !slices.Equal(req.Command, command) {
+			t.Errorf("parseCreate = %+v, want the guest arguments intact", req)
+		}
+	}
+}
+
+func TestParseCreateTakesACommandThatStartsWithAHyphen(t *testing.T) {
+	req, err := parseCreate([]string{"alpine:3.22", "--guest", "-it"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if !slices.Equal(req.Command, []string{"--guest", "-it"}) {
+		t.Errorf("command = %v, want the guest command intact", req.Command)
 	}
 }

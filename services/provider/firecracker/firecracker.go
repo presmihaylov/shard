@@ -258,7 +258,7 @@ func (p *Provider) AdmitDisk(dir string, res models.Resources) error {
 // ReleaseDisk gives back what AdmitDisk reserved for a create that ended before its record.
 func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 
-// Close drops what this process holds of every vmm and leaves the VMs running, which is what a daemon exit does.
+// Close drops what this process holds of every vmm and leaves the VMs running; only tests call it, because the daemon relies on its own process exit.
 func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines

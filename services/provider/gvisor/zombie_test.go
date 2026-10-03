@@ -150,8 +150,7 @@ func awaitZombie(t *testing.T, pid int) {
 	t.Fatalf("the child %d never became a zombie", pid)
 }
 
-// A stop deletes the sandbox and a start remakes it, so a read of /proc races the exit. The kernel
-// answers ESRCH for a process that goes away between the open and the read, not ENOENT.
+// A stop ends the sandbox and a start remakes it, so a read of /proc races the exit: the kernel answers ESRCH for a process that goes away between the open and the read, not ENOENT.
 func TestVanishedReadsBothWaysAProcessGoesAway(t *testing.T) {
 	cases := map[string]struct {
 		err  error

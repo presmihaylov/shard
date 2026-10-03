@@ -23,7 +23,7 @@ const terminalReadBudget = 5 * time.Second
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	out, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "echo seven; exit 7")
+	out, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "echo seven; exit 7")
 
 	var exit *ExitError
 	if !errors.As(err, &exit) {
@@ -41,7 +41,7 @@ func TestExecReturnsTheCommandExitCode(t *testing.T) {
 func TestExecWritesTheCommandOutput(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	out, err := runExec(t, app, "exec", id, "--", "/bin/echo", "hello from the sandbox")
+	out, err := runExec(t, app, "exec", id, "/bin/echo", "hello from the sandbox")
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -55,11 +55,11 @@ func TestExecWritesTheCommandOutput(t *testing.T) {
 func TestTwoExecsShareTheSandbox(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	if _, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "echo shared > /exec-state"); err != nil {
+	if _, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "echo shared > /exec-state"); err != nil {
 		t.Fatalf("the first exec: %v", err)
 	}
 
-	out, err := runExec(t, app, "exec", id, "--", "/bin/cat", "/exec-state")
+	out, err := runExec(t, app, "exec", id, "/bin/cat", "/exec-state")
 	if err != nil {
 		t.Fatalf("the second exec: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestTwoExecsShareTheSandbox(t *testing.T) {
 func TestExecAppliesItsOwnEnvAndWorkDir(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	out, err := runExec(t, app, "exec", "--env", "SHARD_EXEC=set", "--workdir", "/tmp", id, "--", "/bin/sh", "-c", "pwd; echo $SHARD_EXEC")
+	out, err := runExec(t, app, "exec", "--env", "SHARD_EXEC=set", "--workdir", "/tmp", id, "/bin/sh", "-c", "pwd; echo $SHARD_EXEC")
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestExecAppliesItsOwnEnvAndWorkDir(t *testing.T) {
 func TestExecRunsAsTheUserItWasGiven(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	out, err := runExec(t, app, "exec", "--user", "nobody", id, "--", "/bin/sh", "-c", "id -u; cat /proc/1/status | grep '^Uid:'")
+	out, err := runExec(t, app, "exec", "--user", "nobody", id, "/bin/sh", "-c", "id -u; cat /proc/1/status | grep '^Uid:'")
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestExecRunsAsTheUserItWasGiven(t *testing.T) {
 func TestExecInheritsTheUserTheEntrypointRunsAs(t *testing.T) {
 	app, id := sandboxAs(t, "nobody")
 
-	out, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "id -u")
+	out, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "id -u")
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestExecInheritsTheUserTheEntrypointRunsAs(t *testing.T) {
 func TestExecRefusesAnIdShardDoesNotHold(t *testing.T) {
 	app, _ := runningSandbox(t)
 
-	_, err := runExec(t, app, "exec", "quiet-otter-0000", "--", "/bin/true")
+	_, err := runExec(t, app, "exec", "quiet-otter-0000", "/bin/true")
 	if err == nil {
 		t.Fatal("exec accepted an id shard does not hold")
 	}
@@ -135,7 +135,7 @@ func TestExecRefusesASandboxThatIsStopped(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 
-	_, err := runExec(t, app, "exec", id, "--", "/bin/true")
+	_, err := runExec(t, app, "exec", id, "/bin/true")
 	if err == nil {
 		t.Fatal("exec ran a command in a sandbox that is stopped")
 	}
@@ -149,7 +149,7 @@ func TestExecRefusesASandboxThatIsStopped(t *testing.T) {
 func TestExecAnswersACommandThatNeverRanWithAShellExitCode(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	if _, err := runExec(t, app, "exec", id, "--", "/bin/sh", "-c", "echo x > /not-executable"); err != nil {
+	if _, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "echo x > /not-executable"); err != nil {
 		t.Fatalf("write the file the sandbox may not run: %v", err)
 	}
 
@@ -158,9 +158,9 @@ func TestExecAnswersACommandThatNeverRanWithAShellExitCode(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"a command that is not there", []string{"exec", id, "--", "/bin/nope"}, 127},
-		{"a workdir that is not there", []string{"exec", "--workdir", "/no/such/dir", id, "--", "/bin/true"}, 127},
-		{"a file the sandbox may not run", []string{"exec", id, "--", "/not-executable"}, 126},
+		{"a command that is not there", []string{"exec", id, "/bin/nope"}, 127},
+		{"a workdir that is not there", []string{"exec", "--workdir", "/no/such/dir", id, "/bin/true"}, 127},
+		{"a file the sandbox may not run", []string{"exec", id, "/not-executable"}, 126},
 	}
 
 	for _, c := range cases {
@@ -189,7 +189,7 @@ func TestConcurrentExecsAllSucceed(t *testing.T) {
 	dir := t.TempDir()
 	for i := range 3 {
 		go func() {
-			failures <- runExecTo(app, filepath.Join(dir, fmt.Sprintf("out-%d", i)), "exec", id, "--", "/bin/sh", "-c", "sleep 1; echo done")
+			failures <- runExecTo(app, filepath.Join(dir, fmt.Sprintf("out-%d", i)), "exec", id, "/bin/sh", "-c", "sleep 1; echo done")
 		}()
 	}
 
@@ -238,7 +238,7 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 	app.Out, app.Err = terminal.Replica, terminal.Replica
 	app.in = terminal.Replica
 
-	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "--", "/bin/sh", "-c", "stty size; exit 7"})
+	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "/bin/sh", "-c", "stty size; exit 7"})
 
 	var exit *ExitError
 	if !errors.As(runErr, &exit) {
@@ -279,7 +279,7 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 		flags = append(flags, "--user", user)
 	}
 
-	id := createWith(t, app, out, append(flags, testImage, "--", "/bin/true")...)
+	id := createWith(t, app, out, append(flags, testImage, "/bin/true")...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	awaitEntrypoint(t, app, id)

@@ -54,9 +54,9 @@ fails.
 In a second terminal:
 
 ```
-shard create --memory 512 python:3.12 -- python -c 'print(1)'
+shard create --memory 512 python:3.12 python -c 'print(1)'
 shard logs <id>
-shard exec <id> -- uname -a
+shard exec <id> uname -a
 shard pause <id>
 shard resume <id>
 shard stop <id>
@@ -246,7 +246,7 @@ install -d -m0700 ~/.shard
 limactl shell shard sudo cat /etc/shard/serve.crt > ~/.shard/ca.pem
 export SHARD_REMOTE=https://localhost:2376
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
-shard create alpine:3.20 -- sh -c 'echo hello from the VM'
+shard create alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>
 shard ls
 ```
