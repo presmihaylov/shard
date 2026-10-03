@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/lograte"
 	"github.com/presmihaylov/shard/services/api"
 )
 
@@ -31,8 +33,11 @@ const DefaultListen = ":2376"
 const (
 	// headBytes bounds the request head the front reads before it decides, so no client grows one forever.
 	headBytes = 64 * 1024
-	// headTimeout bounds a client that connects and then sends nothing.
-	headTimeout = 10 * time.Second
+	// defaultHeadTimeout bounds a client that connects and then sends nothing.
+	defaultHeadTimeout = 10 * time.Second
+	// acceptBackoffMin and acceptBackoffMax bound the wait after an Accept that ran out of a resource, as net/http's do.
+	acceptBackoffMin = 5 * time.Millisecond
+	acceptBackoffMax = time.Second
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
@@ -40,6 +45,9 @@ const unauthorized = `{"error":{"code":"unauthorized","message":"the request car
 
 // forbidden is the answer to a valid token whose scopes do not reach the route: the socket is never dialed for it.
 const forbidden = `{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}`
+
+// badRequestLine is the answer to a request line net/http would not parse, so the front never checks a route the daemon reads otherwise.
+const badRequestLine = `{"error":{"code":"invalid_request","message":"the request line does not parse"}}`
 
 // Config is the wiring one front needs.
 type Config struct {
@@ -59,13 +67,17 @@ type Config struct {
 
 // Server is one front, over one secret and one daemon socket.
 type Server struct {
-	listen string
-	socket string
-	secret []byte
-	tokens *ledger
-	caps   *capMux
-	tls    *tls.Config
-	log    *log.Logger
+	listen      string
+	socket      string
+	secret      []byte
+	tokens      *ledger
+	caps        *capMux
+	tls         *tls.Config
+	preAuth     *preAuth
+	headTimeout time.Duration
+	log         *log.Logger
+	// refusals bounds the lines a flood past the pre-auth cap writes, per source.
+	refusals *lograte.Log
 }
 
 // New reads the secret and the TLS pair, so every reason to refuse is known before anything binds.
@@ -107,14 +119,24 @@ func New(cfg Config) (*Server, error) {
 		out = io.Discard
 	}
 
+	total, err := preAuthTotal()
+	if err != nil {
+		return nil, err
+	}
+
+	logger := log.New(out, "", log.LstdFlags)
+
 	return &Server{
-		listen: listen,
-		socket: filepath.Join(cfg.Root, api.SocketFile),
-		secret: secret,
-		tokens: tokens,
-		caps:   caps,
-		tls:    &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
-		log:    log.New(out, "", log.LstdFlags),
+		listen:      listen,
+		socket:      filepath.Join(cfg.Root, api.SocketFile),
+		secret:      secret,
+		tokens:      tokens,
+		caps:        caps,
+		tls:         &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
+		preAuth:     newPreAuth(total, preAuthPerSource),
+		headTimeout: defaultHeadTimeout,
+		log:         logger,
+		refusals:    lograte.New(logger, "serve"),
 	}, nil
 }
 
@@ -213,27 +235,63 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	return nil
 }
 
-// accept takes connections until the listener dies, and answers each on its own goroutine.
+// accept takes connections until the listener dies, and answers each within the pre-auth cap on its own goroutine.
 func (s *Server) accept(ctx context.Context, listener net.Listener) error {
 	var live sync.WaitGroup
 	defer live.Wait()
 
+	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if !exhausted(err) {
+				return fmt.Errorf("accept on %s: %w", listener.Addr(), err)
+			}
+			backoff = s.waitOut(ctx, err, backoff)
 
-			return fmt.Errorf("accept on %s: %w", listener.Addr(), err)
+			continue
+		}
+		backoff = 0
+
+		source := sourceOf(conn.RemoteAddr())
+		if !s.preAuth.enter(source) {
+			s.refusals.Printf(source, "refused a connection from %s: it is past the cap on connections that show no token yet, %d in total and %d per source", source, s.preAuth.total, s.preAuth.perSource)
+			if err := conn.Close(); !quiet(err) {
+				s.log.Printf("close the connection from %s past the cap: %v", source, err)
+			}
+
+			continue
 		}
 
-		live.Go(func() { s.handle(ctx, conn) })
+		live.Go(func() { s.handle(ctx, conn, sync.OnceFunc(func() { s.preAuth.leave(source) })) })
 	}
 }
 
-// handle checks the token, then stops reading: the rest is bytes both ways, WebSocket included.
-func (s *Server) handle(ctx context.Context, conn net.Conn) {
+// exhausted reports an Accept error that a connection closing elsewhere cures, which net/http waits out rather than dies on.
+func exhausted(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
+}
+
+// waitOut sleeps the next step of the backoff after an Accept that ran out of a resource, and answers that step.
+func (s *Server) waitOut(ctx context.Context, err error, last time.Duration) time.Duration {
+	next := min(max(2*last, acceptBackoffMin), acceptBackoffMax)
+	s.log.Printf("%v; accepting again in %s", err, next)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(next):
+	}
+
+	return next
+}
+
+// handle checks the token, then stops reading: the rest is bytes both ways. leave frees the pre-auth slot.
+func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
+	defer leave()
+
 	closeConn := func() {
 		if err := conn.Close(); !quiet(err) {
 			s.log.Printf("close the connection from %s: %v", conn.RemoteAddr(), err)
@@ -251,7 +309,14 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	sub, ok, forbid, reason := s.authorize(head)
+	method, target, ok := requestLine(head)
+	if !ok {
+		s.reject(conn)
+
+		return
+	}
+
+	sub, ok, forbid, reason := s.authorize(head, method, target)
 	if !ok {
 		if forbid {
 			s.forbid(conn, sub)
@@ -263,6 +328,8 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), sub)
+	// A logs -f or an exec attach holds its connection for long, and a valid client must not be refused for that.
+	leave()
 
 	upstream, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socket)
 	if err != nil {
@@ -284,7 +351,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 
 // readHead reads up to the blank line that ends the headers, which is all the front ever parses.
 func (s *Server) readHead(conn net.Conn) ([]byte, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(headTimeout)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(s.headTimeout)); err != nil {
 		return nil, fmt.Errorf("set the deadline of the request head: %w", err)
 	}
 
@@ -329,7 +396,7 @@ func readHead(r io.Reader) ([]byte, error) {
 // authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
 // reach the route; nothing is dialed without all three. It answers the subject, whether the request is
 // authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
-func (s *Server) authorize(head []byte) (string, bool, bool, string) {
+func (s *Server) authorize(head []byte, method string, target *url.URL) (string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
 		return "", false, false, "no valid token"
@@ -358,11 +425,6 @@ func (s *Server) authorize(head []byte) (string, bool, bool, string) {
 		return sub, false, false, "the token is revoked"
 	}
 
-	method, target, ok := requestLine(head)
-	if !ok {
-		return "", false, false, "no valid token"
-	}
-
 	need, known := s.caps.capability(method, target)
 	if !known || !covers(scopes, need) {
 		return sub, false, true, ""
@@ -371,24 +433,50 @@ func (s *Server) authorize(head []byte) (string, bool, bool, string) {
 	return sub, true, false, ""
 }
 
-// requestLine parses the method and the target of the head, so the front can find the route's capability.
+// requestLine parses the method and the target as net/http does, on the ASCII space alone, so the front checks the route the daemon serves.
 func requestLine(head []byte) (string, *url.URL, bool) {
 	line, _, found := bytes.Cut(head, []byte("\r\n"))
 	if !found {
 		return "", nil, false
 	}
 
-	parts := bytes.Fields(line)
-	if len(parts) < 2 {
+	method, rest, found := strings.Cut(string(line), " ")
+	uri, proto, both := strings.Cut(rest, " ")
+	if !found || !both || !validMethod(method) {
+		return "", nil, false
+	}
+	if _, _, ok := http.ParseHTTPVersion(proto); !ok {
 		return "", nil, false
 	}
 
-	target, err := url.ParseRequestURI(string(parts[1]))
+	// A CONNECT to a host:port is an authority alone, which net/http parses behind a scheme it then drops.
+	authority := method == http.MethodConnect && !strings.HasPrefix(uri, "/")
+	if authority {
+		uri = "http://" + uri
+	}
+	target, err := url.ParseRequestURI(uri)
 	if err != nil {
 		return "", nil, false
 	}
+	if authority {
+		target.Scheme = ""
+	}
 
-	return string(parts[0]), target, true
+	return method, target, true
+}
+
+// methodChars are the bytes RFC 9110 allows in a method, the set net/http checks.
+const methodChars = "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// validMethod reports whether method is an RFC 9110 token: Trim leaves nothing only when every byte is in the set.
+func validMethod(method string) bool {
+	return method != "" && strings.Trim(method, methodChars) == ""
+}
+
+// reject answers 400 and closes. The daemon would refuse the line too, so nothing is dialed.
+func (s *Server) reject(conn net.Conn) {
+	s.log.Printf("rejected the connection from %s: the request line does not parse", conn.RemoteAddr())
+	s.answer(conn, "400 Bad Request", badRequestLine)
 }
 
 // refuse answers 401 and closes. Nothing is dialed, so a request with no valid token never reaches the daemon.

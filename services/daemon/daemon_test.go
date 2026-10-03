@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,6 +58,34 @@ func TestRunRefusesASecondDaemon(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("the first daemon ended with %v", err)
+	}
+}
+
+func TestRunNamesItsPidUntilItEnds(t *testing.T) {
+	root := t.TempDir()
+	held := &fakeTask{}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- fast(New(root, io.Discard, held)).Run(ctx) }()
+
+	waitHeld(t, held)
+
+	pid := filepath.Join(root, PIDFile)
+	got, err := os.ReadFile(pid)
+	if err != nil {
+		t.Fatalf("read the pid file: %v", err)
+	}
+	if want := strconv.Itoa(os.Getpid()) + "\n"; string(got) != want {
+		t.Errorf("the pid file holds %q, want %q", got, want)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the daemon ended with %v", err)
+	}
+	if _, err := os.Stat(pid); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the pid file outlived the daemon: %v", err)
 	}
 }
 

@@ -112,6 +112,16 @@ func runChild(spec string) int {
 	case "say":
 		fmt.Println(arg)
 		return 0
+	case "spew":
+		// A MiB of stdout, more than a pipe holds, then the marker file ARG, so a test sees the output never held it.
+		if _, err := os.Stdout.Write(make([]byte, 1<<20)); err != nil {
+			return 2
+		}
+		if err := os.WriteFile(arg, nil, 0o600); err != nil {
+			return 2
+		}
+		time.Sleep(time.Minute)
+		return 0
 	}
 
 	fmt.Fprintln(os.Stderr, "unknown child role:", spec)

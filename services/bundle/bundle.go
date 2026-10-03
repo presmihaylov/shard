@@ -14,6 +14,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -60,15 +61,23 @@ type Bundle struct {
 type Service struct {
 	// initPath is the host shard-init binary, bind mounted read-only into every sandbox.
 	initPath string
+	// seccomp and apparmor are the substrate's confinement; gVisor sets neither, because its sentry is the boundary.
+	seccomp  func(*specs.Spec) (*specs.LinuxSeccomp, error)
+	apparmor string
 }
 
 // New takes the host path of the shard-init binary, which is /usr/local/bin/shard-init on the box.
-func New(initPath string) (*Service, error) {
+func New(initPath string, opts ...Option) (*Service, error) {
 	if initPath == "" {
 		return nil, errors.New("no shard-init path: every sandbox needs the supervisor")
 	}
 
-	return &Service{initPath: initPath}, nil
+	s := &Service{initPath: initPath}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s, nil
 }
 
 // Build lays out the bundle for spec over the image config and writes config.json. It does not mount.
@@ -122,6 +131,8 @@ type Runtime struct {
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
+	// Binds are the mounts from the host over RootFS, so a lookup finds /.shard/init where the guest does.
+	Binds []runc.Bind
 }
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
@@ -149,7 +160,20 @@ func (b Bundle) Runtime() (Runtime, error) {
 		WorkDir:   spec.Process.Cwd,
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
+		Binds:     binds(spec.Mounts),
 	}, nil
+}
+
+// binds keeps the mounts that show a host path to the guest, in order, since a later one hides an earlier one under it.
+func binds(mounts []specs.Mount) []runc.Bind {
+	var out []runc.Bind
+	for _, m := range mounts {
+		if m.Type == "bind" || slices.Contains(m.Options, "bind") || slices.Contains(m.Options, "rbind") {
+			out = append(out, runc.Bind{Guest: m.Destination, Host: m.Source})
+		}
+	}
+
+	return out
 }
 
 // supervisorFlag reads back a flag the supervisor was given. Its own process user is root, so the
@@ -230,7 +254,8 @@ func layout(b Bundle) error {
 		// Overlay takes the merged root's mode from the upper layer, not from the mount point.
 		{b.Upper, 0o755},
 		{b.Work, 0o750},
-		{b.ShardDir, 0o750},
+		// Others may only traverse it, as sysbox looks /.shard/init up as the exec user; the files in it stay 0600.
+		{b.ShardDir, 0o751},
 		{b.Tmp, 0o777 | os.ModeSticky},
 	}
 
@@ -253,7 +278,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		return nil, err
 	}
 
-	return &specs.Spec{
+	rs := &specs.Spec{
 		Version: specs.Version,
 		Root: &specs.Root{
 			Path: "rootfs",
@@ -296,7 +321,19 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			ReadonlyPaths:     readonlyPaths,
 			RootfsPropagation: "rprivate",
 		},
-	}, nil
+	}
+	rs.Process.ApparmorProfile = s.apparmor
+	if s.seccomp == nil {
+		return rs, nil
+	}
+
+	filter, err := s.seccomp(rs)
+	if err != nil {
+		return nil, fmt.Errorf("build the seccomp filter: %w", err)
+	}
+	rs.Linux.Seccomp = filter
+
+	return rs, nil
 }
 
 // supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint is its child.
