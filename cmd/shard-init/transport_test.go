@@ -298,6 +298,27 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 	}
 }
 
+// With no command the entrypoint pid is 0, so pid 0 and a negative pid must never reach kill(2) as a group.
+func TestTransportSignalRefusesAProcessGroup(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{}); err != nil {
+		t.Fatalf("run with no command: %v", err)
+	}
+
+	for _, pid := range []int{0, -1} {
+		err = c.Signal(t.Context(), pid, "KILL")
+		if err == nil || !strings.Contains(err.Error(), "names a process group") {
+			t.Fatalf("signal to pid %d gave %v, want the refusal", pid, err)
+		}
+	}
+}
+
 // A short seed would rekey the crng from little more than the state every fork of the save shares (SHARD-293).
 func TestTransportRefusesAShortReseed(t *testing.T) {
 	for _, seed := range [][]byte{nil, make([]byte, supervisor.SeedSize-1)} {

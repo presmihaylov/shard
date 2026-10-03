@@ -393,6 +393,11 @@ func (g *guest) spawn(ep entrypoint, files []*os.File, tty bool) (int, <-chan mo
 
 // signal reaches only a process the supervisor started, so a guest pid the host guessed is refused.
 func (g *guest) signal(pid int, sig syscall.Signal) error {
+	// With no command the entrypoint pid is 0, and kill(0) or a negative pid reaches a process group that holds PID 1.
+	if pid <= 0 {
+		return fmt.Errorf("pid %d names a process group, not a process shard-init started", pid)
+	}
+
 	var err error
 	g.run(func() {
 		_, isExec := g.waiters[pid]
