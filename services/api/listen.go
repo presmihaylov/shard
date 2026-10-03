@@ -25,7 +25,7 @@ const (
 	rootMode  = fs.FileMode(0o600)
 	// readHeaderTimeout bounds a client that connects and sends nothing, so it cannot hold a slot forever.
 	readHeaderTimeout = 10 * time.Second
-	// readTimeout bounds a slow body; net/http clears it once the body is in, so a long verb is never cut.
+	// readTimeout bounds a slow body, and the gap between the reads of a streamed put; net/http clears it once the body is in.
 	readTimeout   = 30 * time.Second
 	shutdownGrace = 5 * time.Second
 )

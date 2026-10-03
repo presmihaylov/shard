@@ -26,6 +26,9 @@ const GuestInitPath = guestShardDir + "/init"
 
 const exitFileName = "exit.json"
 
+// exitChannelFileName names the sealed memfd a sysbox create gave PID 1. Only the daemon writes it.
+const exitChannelFileName = "exit-channel.json"
+
 // readyFileName is written once the entrypoint is forked. runsc start unblocks the task and reads
 // nothing back, so this file is the only proof the entrypoint ever ran.
 const readyFileName = "started"
@@ -41,9 +44,11 @@ type Bundle struct {
 	// ShardDir is bind mounted at guestShardDir, and shard-init writes ReadyFile and RestartFile into it.
 	ShardDir string
 	// ExitFile sits at the state directory root, off every bind mount, so the guest cannot forge an exit.
-	ExitFile    string
-	ReadyFile   string
-	RestartFile string
+	ExitFile string
+	// ExitChannelFile names the sealed memfd a sysbox PID 1 holds as fd 0, beside ExitFile for the same reason.
+	ExitChannelFile string
+	ReadyFile       string
+	RestartFile     string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -61,8 +66,9 @@ type Bundle struct {
 type Service struct {
 	// initPath is the host shard-init binary, bind mounted read-only into every sandbox.
 	initPath string
-	// seccomp is the substrate's filter; gVisor sets none, because its sentry is the boundary.
-	seccomp func(*specs.Spec) (*specs.LinuxSeccomp, error)
+	// seccomp and apparmor are the substrate's confinement; gVisor sets neither, because its sentry is the boundary.
+	seccomp  func(*specs.Spec) (*specs.LinuxSeccomp, error)
+	apparmor string
 }
 
 // New takes the host path of the shard-init binary, which is /usr/local/bin/shard-init on the box.
@@ -219,17 +225,18 @@ func newBundle(stateDir string) (Bundle, error) {
 	disk := filepath.Join(stateDir, "disk")
 	shardDir := filepath.Join(disk, "shard")
 	b := Bundle{
-		Dir:         filepath.Join(stateDir, "bundle"),
-		RootFS:      filepath.Join(stateDir, "bundle", "rootfs"),
-		ShardDir:    shardDir,
-		ExitFile:    filepath.Join(stateDir, exitFileName),
-		ReadyFile:   filepath.Join(shardDir, readyFileName),
-		RestartFile: filepath.Join(shardDir, restartFileName),
-		Upper:       filepath.Join(disk, "upper"),
-		Work:        filepath.Join(disk, "work"),
-		Tmp:         filepath.Join(disk, "tmp"),
-		Disk:        disk,
-		Image:       filepath.Join(stateDir, "disk.img"),
+		Dir:             filepath.Join(stateDir, "bundle"),
+		RootFS:          filepath.Join(stateDir, "bundle", "rootfs"),
+		ShardDir:        shardDir,
+		ExitFile:        filepath.Join(stateDir, exitFileName),
+		ExitChannelFile: filepath.Join(stateDir, exitChannelFileName),
+		ReadyFile:       filepath.Join(shardDir, readyFileName),
+		RestartFile:     filepath.Join(shardDir, restartFileName),
+		Upper:           filepath.Join(disk, "upper"),
+		Work:            filepath.Join(disk, "work"),
+		Tmp:             filepath.Join(disk, "tmp"),
+		Disk:            disk,
+		Image:           filepath.Join(stateDir, "disk.img"),
 	}
 
 	// A colon or a comma would be read as a separator in the mount options, and overlayfs has no escape.
@@ -321,6 +328,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			RootfsPropagation: "rprivate",
 		},
 	}
+	rs.Process.ApparmorProfile = s.apparmor
 	if s.seccomp == nil {
 		return rs, nil
 	}
