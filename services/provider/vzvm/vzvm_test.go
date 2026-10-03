@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1624,4 +1625,48 @@ func awaitExit(t *testing.T, pid int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("process %d did not exit", pid)
+}
+
+// A frozen shim whose socket queue a verb's dials filled refuses every dial after, which is not a shim gone (SHARD-423).
+func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			h, spec, shim := frozenShim(t, restart)
+			dir, err := h.stateDir(spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err != nil || status.State != models.StateUnresponsive || status.PID != shim {
+				t.Errorf("Status over a frozen shim with a full queue = %+v, %v; want unresponsive with pid %d", status, err, shim)
+			}
+			if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+				t.Fatalf("Remove over a frozen shim with a full queue: %v", err)
+			}
+			awaitExit(t, shim)
+		})
+	}
+}
+
+// fillQueue dials a socket nothing accepts until the kernel refuses, as the bounded execs on a frozen shim did.
+func fillQueue(t *testing.T, socket string) {
+	t.Helper()
+	for range 512 {
+		conn, err := net.Dial("unix", socket)
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatalf("%s still takes dials after 512", socket)
 }

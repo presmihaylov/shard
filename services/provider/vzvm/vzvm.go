@@ -14,6 +14,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -41,6 +42,8 @@ const (
 	initrdFile = "initrd.cpio"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// shimFile names the shim the last attach verified, which a refused dial cannot (SHARD-423).
+	shimFile = "shim.json"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
@@ -204,6 +207,23 @@ func readRecord(dir string) (record, bool, error) {
 
 func writeRecord(dir string, r record) error {
 	return writeJSON(filepath.Join(dir, recordFile), r)
+}
+
+// readShim is the shim the last attach recorded; zero when none did, as a shim an older daemon booted.
+func readShim(dir string) (vz.Process, error) {
+	blob, err := os.ReadFile(filepath.Join(dir, shimFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return vz.Process{}, nil
+	}
+	if err != nil {
+		return vz.Process{}, fmt.Errorf("read the shim record: %w", err)
+	}
+	var shim vz.Process
+	if err := json.Unmarshal(blob, &shim); err != nil {
+		return vz.Process{}, fmt.Errorf("decode the shim record in %s: %w", dir, err)
+	}
+
+	return shim, nil
 }
 
 func writeJSON(path string, value any) error {

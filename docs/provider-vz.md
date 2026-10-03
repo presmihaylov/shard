@@ -41,7 +41,9 @@ found no process`. A shim that goes silent for 5 s is never killed for it, wheth
 it or a restart meets it only by its socket: its sandbox reads `unresponsive` with the shim's pid
 until a probe answers, and `stop` kills it by that pid with no grace (SHARD-421, SHARD-422). A shim
 a restart found silent gets one request that every later probe shares, so its socket queue never
-fills. A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
+fills. A queue that fills anyway refuses every dial, as the socket of a dead shim does, so the daemon
+reads a refused shim gone only once the pid and start time the last attach wrote to `shim.json` are
+gone, and `stop` kills that pid with the group it leads (SHARD-423). A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
 daemon dials the control and the logs streams again while the shim says the VM runs, so `logs -f`
 and the events resume where they stopped. The new control connection opens with the guest's state,
 and an exit or a restart that landed while no stream was open is recorded from that replay, so

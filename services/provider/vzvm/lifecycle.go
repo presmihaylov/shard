@@ -74,7 +74,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile, shimFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -303,6 +303,10 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	stopCtx, cancel := context.WithDeadline(ctx, deadline)
 	_, stopErr := m.client.Stop(stopCtx)
 	cancel()
+	// A refused stop is a shim gone, or a frozen one whose full socket queue takes nothing; the wait would hear from neither (SHARD-423).
+	if absent(stopErr) {
+		return p.kill(ctx, m)
+	}
 	// A stop whose sandbox ended answers success, so the request's own error counts only when the shim stays.
 	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
@@ -322,7 +326,12 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 
 // kill ends the shim by the pid the kernel attests behind its socket, never by a name.
 func (p *Provider) kill(ctx context.Context, m *machine) error {
-	if err := m.client.Kill(); err != nil && !absent(err) {
+	err := m.client.Kill()
+	// A full socket queue refuses the dial that names the pid, so the pid the attach verified is killed instead (SHARD-423).
+	if absent(err) {
+		err = m.shim.Kill()
+	}
+	if err != nil {
 		return fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err)
 	}
 	ended, err := m.awaitGone(ctx, killGrace/2)
@@ -346,7 +355,7 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{diskFile, recordFile, socketFile} {
+	for _, name := range []string{diskFile, recordFile, socketFile, shimFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}

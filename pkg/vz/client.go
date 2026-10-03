@@ -180,15 +180,8 @@ func (c *Client) Kill() error {
 	if err != nil {
 		return fmt.Errorf("kill: %w", err)
 	}
-	// Start made the shim lead its own group; one that leads none dies alone.
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
-		return nil
-	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill the shim %d: %w", pid, err)
-	}
 
-	return nil
+	return killPID(pid)
 }
 
 // Connect opens one vsock connection to a guest port; the returned stream is that connection.

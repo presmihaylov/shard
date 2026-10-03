@@ -1,0 +1,172 @@
+package vz
+
+import (
+	"bufio"
+	"errors"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestTargetNeverNamesTheDaemonsOwnGroup(t *testing.T) {
+	const shim, daemon, other = 4100, 4000, 4200
+	cases := []struct {
+		name      string
+		pgid, own int
+		want      int
+	}{
+		{"the shim leads its own group", shim, daemon, -shim},
+		{"the shim is in a group it does not lead", other, daemon, shim},
+		{"the shim is in the daemon's group", daemon, daemon, shim},
+		{"the group the shim leads is the daemon's", shim, shim, shim},
+	}
+	for _, c := range cases {
+		if got := target(shim, c.pgid, c.own); got != c.want {
+			t.Errorf("%s: target = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestKillOfAShimInTheDaemonsGroupSignalsItAlone(t *testing.T) {
+	shim, waitShim := child(t, exec.Command("sleep", "60"), nil)
+	sibling, _ := child(t, exec.Command("sleep", "60"), nil)
+	pgid, err := syscall.Getpgid(shim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pgid != syscall.Getpgrp() {
+		t.Fatalf("the shim's group is %d, want this test's own %d", pgid, syscall.Getpgrp())
+	}
+	p, err := Identify(shim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill = %v", err)
+	}
+	reaped(t, waitShim)
+	// A signal to the group would have reached the sibling by now, and Identify reads a zombie as gone.
+	time.Sleep(200 * time.Millisecond)
+	if _, err := Identify(sibling); err != nil {
+		t.Errorf("a process in the test's own group after Kill: %v", err)
+	}
+}
+
+func TestKillEndsTheGroupTheShimLeads(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "sleep 60 & echo $!; wait")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, wait := child(t, cmd, &syscall.SysProcAttr{Setpgid: true})
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(member, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Error(err)
+		}
+	})
+	p, err := Identify(shim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill = %v", err)
+	}
+	reaped(t, wait)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := Identify(member); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d of the group the shim led still runs 5s after Kill", member)
+		}
+	}
+}
+
+func TestAliveRefusesAZombieAndAPidWithAnotherStartTime(t *testing.T) {
+	pid, wait := child(t, exec.Command("sleep", "60"), nil)
+	p, err := Identify(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive, err := p.Alive(); err != nil || !alive {
+		t.Fatalf("Alive of a running child = %t, %v", alive, err)
+	}
+	if alive, err := (Process{PID: pid, Start: p.Start + 1}).Alive(); err != nil || alive {
+		t.Errorf("Alive with another start time = %t, %v; want false", alive, err)
+	}
+
+	// Nothing reaps the child before reaped, so it stays a zombie in between.
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		alive, err := p.Alive()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !alive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a killed child still reads alive after 5s")
+		}
+	}
+	if err := p.Kill(); err != nil {
+		t.Errorf("Kill of a zombie = %v, want nothing done", err)
+	}
+	reaped(t, wait)
+	if _, err := Identify(pid); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("Identify of a reaped pid = %v, want ESRCH", err)
+	}
+}
+
+// child runs cmd and kills it when the test ends; nothing reaps it before the wait it returns.
+func child(t *testing.T, cmd *exec.Cmd, attr *syscall.SysProcAttr) (int, func() error) {
+	t.Helper()
+	cmd.SysProcAttr = attr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := sync.OnceValue(cmd.Wait)
+	t.Cleanup(func() {
+		if err := syscall.Kill(cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+
+	return cmd.Process.Pid, wait
+}
+
+// reaped collects the exit of a killed child, which must come within 5s.
+func reaped(t *testing.T, wait func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- wait() }()
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child still runs 5s after its kill")
+	}
+}
