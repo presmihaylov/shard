@@ -855,6 +855,20 @@ func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
 	}
 }
 
+// rm of a dead sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+func TestRemoveOfADeadSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
 // A sandbox that died or that the host killed for its memory takes its execs with it, as a stop does (SHARD-362).
 func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
 	cases := []struct {
