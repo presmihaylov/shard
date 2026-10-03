@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// DefaultLogCap is the size past which a Mac daemon moves its log aside itself, between two newsyslog runs.
-const DefaultLogCap = 64 << 20
+// logCap is the size past which a Mac daemon moves its log aside itself, between two newsyslog runs.
+const logCap = 64 << 20
 
 // LogOverflow is the suffix of the one file a capped log moves to; newsyslog's own archives end in .0 to .6.
 const LogOverflow = ".overflow"

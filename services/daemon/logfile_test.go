@@ -16,7 +16,7 @@ import (
 
 func TestLogReopenReopensOnEachHangup(t *testing.T) {
 	reopened := make(chan string)
-	task := logReopen{path: "/var/log/shard/daemon.log", limit: DefaultLogCap, interval: time.Hour, hangups: make(chan os.Signal, 1), out: io.Discard, reopen: func(path string) error {
+	task := logReopen{path: "/var/log/shard/daemon.log", limit: logCap, interval: time.Hour, hangups: make(chan os.Signal, 1), out: io.Discard, reopen: func(path string) error {
 		reopened <- path
 		return nil
 	}}
@@ -46,7 +46,7 @@ func TestLogReopenReopensOnEachHangup(t *testing.T) {
 // A failed reopen leaves the daemon writing into the rotated file, so the restart must try again without a second rotation.
 func TestLogReopenKeepsTheHangupItCouldNotServe(t *testing.T) {
 	refused := errors.New("permission denied")
-	task := logReopen{path: "/var/log/shard/daemon.log", limit: DefaultLogCap, interval: time.Hour, hangups: make(chan os.Signal, 1), out: io.Discard, reopen: func(string) error { return refused }}
+	task := logReopen{path: "/var/log/shard/daemon.log", limit: logCap, interval: time.Hour, hangups: make(chan os.Signal, 1), out: io.Discard, reopen: func(string) error { return refused }}
 	task.hangups <- syscall.SIGHUP
 
 	if err := task.Run(t.Context()); !errors.Is(err, refused) {

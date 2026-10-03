@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,9 +13,6 @@ import (
 	"github.com/presmihaylov/shard/services/daemon"
 )
 
-// maxLogMax is 1 TiB in MiB, far past any disk the log shares and short of an overflow in bytes.
-const maxLogMax = 1 << 20
-
 // daemon runs the resident process systemd starts: the background work, the API socket and the sandbox lifecycle.
 func (a App) daemon(ctx context.Context, args []string) error {
 	if len(args) == 1 && args[0] == "status" {
@@ -26,21 +22,12 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	logPath := flags.String("log", "", "the file to write the daemon's output to and reopen on SIGHUP; a Mac only")
-	logMax := flags.Int64("log-max", daemon.DefaultLogCap>>20, "the MiB past which the daemon moves --log to <path>.overflow itself")
 
 	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the daemon flags: %w", err)
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(flags.Args(), " "))
-	}
-	if *logMax < 1 || *logMax > maxLogMax {
-		return fmt.Errorf("--log-max is %d MiB, want 1 to %d", *logMax, maxLogMax)
-	}
-	capped := false
-	flags.Visit(func(f *flag.Flag) { capped = capped || f.Name == "log-max" })
-	if capped && *logPath == "" {
-		return errors.New("--log-max caps the file --log names, so it needs --log")
 	}
 
 	return daemon.Run(ctx, daemon.Config{
@@ -52,7 +39,6 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		InitPath:    a.InitPath,
 		Provider:    a.Provider,
 		LogPath:     *logPath,
-		LogCap:      *logMax << 20,
 	})
 }
 
