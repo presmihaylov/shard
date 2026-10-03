@@ -35,3 +35,9 @@ func (p *Provider) Install(ctx context.Context, id, dir string) error {
 
 	return err
 }
+
+// RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.
+const RestoringFile = restoringFile
+
+// ReseedFile is the marker a restore keeps until its guest is reseeded, which a test writes to stand in for a daemon cut before the reseed.
+const ReseedFile = reseedFile

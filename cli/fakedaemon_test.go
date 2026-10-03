@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -105,6 +106,7 @@ func (f *fakeDaemon) build() {
 		f.stores = sandbox.NewStores(sandbox.StoresConfig{
 			Repo:        f.repoSvc,
 			Policies:    f.policySvc,
+			Compiler:    egress.New(f.policySvc, f.repoSvc, netip.MustParseAddr("10.87.0.1"), network.DefaultNameservers, docsResolver{}),
 			Secrets:     f.secretSvc,
 			Images:      f.imageSvc,
 			Network:     func() (sandbox.Reapplier, error) { return f.netSvc, nil },
@@ -114,6 +116,17 @@ func (f *fakeDaemon) build() {
 }
 
 func (f *fakeDaemon) policies() (*egress.Store, error) { return f.policySvc, nil }
+
+// docsResolver answers every name with a documentation address and .invalid with nothing, as RFC 6761 has it, so no test asks the network.
+type docsResolver struct{}
+
+func (docsResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	if strings.HasSuffix(host, ".invalid") {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+
+	return []netip.Addr{netip.MustParseAddr("203.0.113.7")}, nil
+}
 
 // Daemon answers as the real process does, over the provider the test gave the daemon.
 func (f *fakeDaemon) Daemon() (api.Daemon, error) {

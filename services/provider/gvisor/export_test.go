@@ -6,6 +6,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/runsc"
 )
 
 // BoundMemory drives what create does to the cgroup runsc just made. A test cannot reach it through
@@ -33,6 +34,42 @@ func (p *Provider) SetProcRoot(root string) {
 // SetKill replaces the SIGKILL a reclaim sends, so a test records the pids instead of killing anything.
 func (p *Provider) SetKill(kill func(pid int) error) {
 	p.killProcess = kill
+	p.killPinned = func(pid int, still func() (bool, error)) error {
+		ok, err := still()
+		if err != nil || !ok {
+			return err
+		}
+
+		return kill(pid)
+	}
+}
+
+// SetKillPinned replaces the pinned SIGKILL a restore gets, so a test can change the process between the scan and the kill.
+func (p *Provider) SetKillPinned(kill func(pid int, still func() (bool, error)) error) {
+	p.killPinned = kill
+}
+
+// PidfdKill is the pinned SIGKILL itself, reachable over a child process the test owns.
+func PidfdKill(pid int, still func() (bool, error)) error {
+	return pidfdKill(pid, still)
+}
+
+// LastRestore is the file a fork or resume records its restore in, under the sandbox's state directory.
+const LastRestore = lastRestore
+
+// Restore is the launch fork and resume share: it records the restore, then runs runsc.
+func (p *Provider) Restore(ctx context.Context, id string, opts runsc.RestoreOptions) error {
+	return p.restore(ctx, id, opts)
+}
+
+// RestoreArgs is the command line the provider's runner gives a restore, which the record keeps.
+func (p *Provider) RestoreArgs(id string, opts runsc.RestoreOptions) []string {
+	return p.runsc.RestoreArgs(id, opts)
+}
+
+// StateDir is where the provider looks for a sandbox's own files.
+func (p *Provider) StateDir(id string) (string, error) {
+	return p.dirs(id)
 }
 
 // Sweep is the kill Remove runs on what a cut-short create left in the cgroup, reachable without runsc.
@@ -43,6 +80,16 @@ func (p *Provider) Sweep(ctx context.Context, id string) error {
 // BringUp is the launch create, fork and resume share, with the runsc verb a test scripts.
 func (p *Provider) BringUp(ctx context.Context, spec models.SandboxSpec, exitFile string, up func(out, exit *os.File) error) error {
 	return p.bringUp(ctx, spec, exitFile, up)
+}
+
+// RunscExecutable is the binary a restore's /proc/<pid>/exe must name for the kill to touch it.
+func (p *Provider) RunscExecutable() string {
+	return p.runsc.Executable()
+}
+
+// KillRestores is the kill Remove runs first on a runsc restore of the sandbox, reachable without runsc.
+func (p *Provider) KillRestores(ctx context.Context, id string) error {
+	return p.killRestores(ctx, id)
 }
 
 // RemoveCgroup is the sweep Remove runs after runsc delete, reachable without runsc.

@@ -2,12 +2,15 @@
 package store
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // WriteFile lands data at path or leaves what was there. A reader never sees a partial file.
@@ -33,6 +36,45 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 	}
 
 	return SyncDir(dir)
+}
+
+// WriteFileIfChanged is WriteFile that leaves a file already holding data with perm alone, so a full disk fails no write that changes nothing.
+func WriteFileIfChanged(path string, data []byte, perm fs.FileMode) error {
+	same, err := holds(path, data, perm)
+	if err != nil {
+		return err
+	}
+	if same {
+		return nil
+	}
+
+	return WriteFile(path, data, perm)
+}
+
+// holds neither follows a symlink nor waits on a fifo: neither holds data, so the write replaces it.
+func holds(path string, data []byte, perm fs.FileMode) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != perm || info.Size() != int64(len(data)) {
+		return false, nil
+	}
+	held, err := io.ReadAll(f)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	return bytes.Equal(held, data), nil
 }
 
 // WriteFileIn is WriteFile with name resolved inside root, so no symlink under root leads the write out of it.

@@ -181,7 +181,9 @@ record can free what the record names, then stops the daemon and sweeps the
 mounts, the sandboxes those roots still record, and the roots. The root also
 holds the runtime's own state, so a root removed before its sandboxes leaves
 their processes, cgroups and namespaces on the host with nothing left to name
-them (SHARD-162). It runs on a pass, on a failure and on an interrupt, and
+them (SHARD-162). Last it drops the bridge and the two nft tables every root
+shares, but only once no sandbox has a port on the bridge and no daemon serves
+the proxy (SHARD-272). It runs on a pass, on a failure and on an interrupt, and
 `pkg/hostclean` is the one place that does it.
 
 **Unit tests keep the daemon out of it.** A `services/` test calls `services/`, and

@@ -45,7 +45,7 @@ Usage:
   shard exec [flags] <id|name> -- <argv>...
                            run a command in a sandbox that is already running
   shard start <id|name>    run a stopped sandbox again, over everything it kept
-  shard pause <id|name>    write a snapshot of a running sandbox and free its memory
+  shard pause <id|name>    write a snapshot of a running sandbox and free its memory; the daemon gives up after 10 min
   shard resume <id|name>   run a paused sandbox again from its snapshot
   shard fork [--name <name>] <id|name>
                            start a new sandbox from the snapshot of another
@@ -66,7 +66,7 @@ Usage:
   shard image prune        remove every pulled image no sandbox references
   shard secret set --to <host>... [--placeholder <string>] <NAME> [VALUE]
                            store a secret granted to those hosts; set again to rotate the value
-                           the guest sees the placeholder, and the proxy puts the value in its place on a granted HTTPS request
+                           the guest sees the placeholder, and the proxy puts the value in its place in a header of a granted HTTPS request
                            the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
                            put -- before a VALUE that starts with -
                            --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key
@@ -86,7 +86,8 @@ Usage:
                            hand a created or stopped sandbox a stored policy, replacing the one it holds
   shard policy detach <id|name>
                            leave the sandbox with no policy, and with its secrets untouched
-  shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
+  shard daemon [--log <path>]
+                           run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd, or launchd on a Mac, starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
   shard tokens mint --name <sub> [--duration <dur>] [--scopes <list>] [--tokens-file <path>] --secret-file <path>
@@ -123,8 +124,8 @@ Create flags, which must precede the image:
   --restart-retries <n>    the starts again before the supervisor gives up, unlimited by default; always takes none
   --restart-backoff <dur>  the wait before the first start again, in whole seconds, 1s by default; it doubles each time, up to 60s
   --health-command <cmd>   a shell command the daemon runs in the sandbox every interval, which passes on exit 0
-  --health-interval <dur>  the time between two probes, in whole seconds, 30s by default
-  --health-timeout <dur>   the time one probe gets to answer, in whole seconds, 10s by default
+  --health-interval <dur>  the time between two probes, in whole seconds, 30s by default, 1h at most
+  --health-timeout <dur>   the time one probe gets to answer, in whole seconds, 10s by default, 10m at most
   --health-retries <n>     the failed probes in a row that make the sandbox unhealthy, 3 by default
 
 Exec flags, which must precede the id or name:
@@ -140,6 +141,9 @@ Stop flags, which must precede the id or name:
 Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
+
+Daemon flags:
+  --log <path>             the file to write the daemon's output to, reopened on SIGHUP so newsyslog can rotate it; a Mac only
 
 Serve flags:
   --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)

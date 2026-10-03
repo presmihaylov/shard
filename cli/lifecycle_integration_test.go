@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // stubbornEntrypoint ignores SIGTERM, so only the kill after the grace ends it.
@@ -238,7 +240,7 @@ func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
 	}
 }
 
-// TestASecondRmFindsNothingToFree: the record dies last, so an id with no record has nothing else left either.
+// TestASecondRmFindsNothingToFree: the record dies last, so a second rm fails on the id and a second rm --force only warns.
 func TestASecondRmFindsNothingToFree(t *testing.T) {
 	app, out := newCreateApp(t)
 
@@ -248,8 +250,13 @@ func TestASecondRmFindsNothingToFree(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
 		t.Fatalf("the first rm: %v", err)
 	}
-	if err := app.Run(t.Context(), []string{"rm", id}); err != nil {
-		t.Fatalf("the second rm: %v", err)
+
+	var missing *client.NotFoundError
+	if err := app.Run(t.Context(), []string{"rm", id}); !errors.As(err, &missing) {
+		t.Errorf("the second rm returned %v, want the id not found", err)
+	}
+	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
+		t.Fatalf("the second rm --force: %v", err)
 	}
 }
 

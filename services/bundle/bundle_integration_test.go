@@ -4,7 +4,6 @@ package bundle_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -74,8 +73,8 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 	t.Cleanup(func() { b.Unmount() })
 
 	id := "shard-11-keepalive"
-	runscRoot := start(t, b, id)
-	requireCleanExit(t, b)
+	runscRoot, logPath := start(t, b, id)
+	requireCleanExit(t, b, logPath)
 
 	// The entrypoint is gone and the supervisor is not, so exec must still land in a live sandbox.
 	out, err := runsc(runscRoot, "exec", id, "/bin/echo", "still-here").CombinedOutput()
@@ -158,12 +157,13 @@ func pullTestImage(t *testing.T) image.Image {
 func runSandbox(t *testing.T, b bundle.Bundle, id string) {
 	t.Helper()
 
-	runscRoot := start(t, b, id)
-	requireCleanExit(t, b)
+	runscRoot, logPath := start(t, b, id)
+	requireCleanExit(t, b, logPath)
 	stop(t, runscRoot, id)
 }
 
-func start(t *testing.T, b bundle.Bundle, id string) string {
+// start returns the runsc root and the log that holds shard-init's console.
+func start(t *testing.T, b bundle.Bundle, id string) (string, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -181,13 +181,20 @@ func start(t *testing.T, b bundle.Bundle, id string) string {
 		t.Fatalf("create %s: %v", logPath, err)
 	}
 
+	// shard-init reports the exit on its fd 0, so the exit file is its stdin, as every provider hands it.
+	exit, err := os.OpenFile(b.ExitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open the exit channel %s: %v", b.ExitFile, err)
+	}
+
 	cmd := runsc(runscRoot, "run", "--detach", "--bundle", b.Dir, id)
+	cmd.Stdin = exit
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
 	runErr := cmd.Run()
-	if err := logFile.Close(); err != nil {
-		t.Fatalf("close %s: %v", logPath, err)
+	if err := errors.Join(logFile.Close(), exit.Close()); err != nil {
+		t.Fatalf("close the console and the exit channel: %v", err)
 	}
 	if runErr != nil {
 		t.Fatalf("runsc run: %v: %s", runErr, readFile(t, logPath))
@@ -201,7 +208,7 @@ func start(t *testing.T, b bundle.Bundle, id string) string {
 		exec.Command("umount", "-l", filepath.Join(runscRoot, "null-netns")).Run()
 	})
 
-	return runscRoot
+	return runscRoot, logPath
 }
 
 func stop(t *testing.T, runscRoot, id string) {
@@ -216,30 +223,28 @@ func stop(t *testing.T, runscRoot, id string) {
 }
 
 // This is what Provider.Wait will do: runsc wait would block forever on a supervisor.
-func requireCleanExit(t *testing.T, b bundle.Bundle) {
+func requireCleanExit(t *testing.T, b bundle.Bundle, logPath string) {
 	t.Helper()
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		blob, err := os.ReadFile(b.ExitFile)
+		status, found, err := bundle.ReadExitStatus(b.ExitFile)
 		if err != nil {
+			t.Fatalf("read the exit status: %v", err)
+		}
+		if !found {
 			time.Sleep(100 * time.Millisecond)
 
 			continue
 		}
-
-		var status models.ExitStatus
-		if err := json.Unmarshal(blob, &status); err != nil {
-			t.Fatalf("read the exit status from %s: %v", b.ExitFile, err)
-		}
 		if status.Code != 0 {
-			t.Fatalf("the entrypoint exited with %+v, want code 0", status)
+			t.Fatalf("the entrypoint exited with %+v, want code 0; the console said: %s", status, readFile(t, logPath))
 		}
 
 		return
 	}
 
-	t.Fatalf("the entrypoint exit status never appeared at %s", b.ExitFile)
+	t.Fatalf("the entrypoint exit status never appeared at %s; the console said: %s", b.ExitFile, readFile(t, logPath))
 }
 
 // The sandbox needs no network here, and no cgroup: SHARD-13 and the provider own those.

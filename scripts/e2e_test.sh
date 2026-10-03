@@ -117,6 +117,13 @@ check "what it unmounted, deepest first" "$(tr '\n' ',' <"${UMOUNTED}")" \
 rm -f "${UMOUNTED}"
 
 echo
+echo "== a host net probe that cannot run fails, so the teardown never reads it as nothing"
+ss() { return 1; }
+(proxy_listeners) >/dev/null 2>&1
+check "a failed ss" "$?" "1"
+unset -f ss
+
+echo
 echo "== teardown gives the host back on the failure path"
 SHARD_CALLS=$(mktemp)
 IP_CALLS=$(mktemp)
@@ -124,6 +131,12 @@ STUB_MOUNTS=""
 
 shard() { printf '%s\n' "$*" >>"${SHARD_CALLS}"; }
 ip() { printf '%s\n' "$*" >>"${IP_CALLS}"; }
+# The self-test never reads the host, and a port on the bridge keeps the host net sweep, which has its own section, out of these calls.
+STUB_PORTS="shardv1"
+STUB_LISTENERS=""
+STUB_PROBE_FAILS=""
+bridge_ports() { [ "${STUB_PROBE_FAILS}" != ports ] || return 1; [ -z "${STUB_PORTS}" ] || printf '%s\n' "${STUB_PORTS}"; }
+proxy_listeners() { [ "${STUB_PROBE_FAILS}" != listeners ] || return 1; printf '%s' "${STUB_LISTENERS}"; }
 
 SHARD_ROOT=$(mktemp -d)
 touch "${SHARD_ROOT}/sandbox.json"
@@ -380,10 +393,50 @@ check "the exec carries no value" "$(grep -c "${SECRET_VALUE}" "${SHARD_CALLS}")
 rm -f "${SHARD_CALLS}"
 
 echo
+echo "== the teardown drops the bridge and the tables only once no run holds them"
+NET_CALLS=$(mktemp)
+nft() { printf 'nft %s\n' "$*" >>"${NET_CALLS}"; }
+ip() { printf 'ip %s\n' "$*" >>"${NET_CALLS}"; }
+
+STUB_PORTS=$'shardv3\nshardv4'
+clear_host_net 2>/dev/null
+check "a sandbox port keeps them" "${HOST_NET_KEPT}" "the bridge still has the ports shardv3 shardv4"
+check "a sandbox port deletes nothing" "$(cat "${NET_CALLS}")" ""
+
+STUB_PORTS=""
+STUB_LISTENERS='LISTEN 0 4096 *:30080 *:* users:(("shard",pid=4242,fd=9))'
+clear_host_net 2>/dev/null
+check "a live daemon keeps them" "$(printf '%s' "${HOST_NET_KEPT}" | grep -c 'a daemon still serves the proxy: .*pid=4242')" "1"
+check "a live daemon deletes nothing" "$(cat "${NET_CALLS}")" ""
+(check_host_net_clear) >/dev/null 2>&1
+check "the end check takes what it had to keep" "$?" "0"
+
+STUB_LISTENERS=""
+for STUB_PROBE_FAILS in ports listeners; do
+	clear_host_net 2>/dev/null
+	check "a failed ${STUB_PROBE_FAILS} probe keeps them" "$(printf '%s' "${HOST_NET_PROBE_ERROR}" | grep -c 'could not be listed')" "1"
+	check "a failed ${STUB_PROBE_FAILS} probe deletes nothing" "$(cat "${NET_CALLS}")" ""
+	(check_host_net_clear) >/dev/null 2>&1
+	check "the end check fails a keep on a failed ${STUB_PROBE_FAILS} probe" "$?" "1"
+done
+STUB_PROBE_FAILS=""
+
+clear_host_net 2>/dev/null
+check "nothing holds them" "${HOST_NET_KEPT}" ""
+check "both tables and the bridge go" "$(cat "${NET_CALLS}")" "$(printf '%s\n' "nft list table inet shard" "nft delete table inet shard" "nft list table bridge shard" "nft delete table bridge shard" "ip link show shard0" "ip link del shard0")"
+(check_host_net_clear) >/dev/null 2>&1
+check "the end check fails a bridge still there" "$?" "1"
+ip() { return 1; }
+nft() { return 1; }
+(check_host_net_clear) >/dev/null 2>&1
+check "the end check takes a host with neither" "$?" "0"
+rm -f "${NET_CALLS}"
+
+echo
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "e2e self-test FAILED: ${FAILURES} guards broke" >&2
 
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock and the env check"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check and the host net sweep"

@@ -32,6 +32,7 @@ type seeded struct {
 	verbs    *fakeLifecycle
 	stores   *fakeStores
 	egress   *fakeEgressLog
+	handler  http.Handler
 	server   *httptest.Server
 }
 
@@ -57,10 +58,11 @@ func seed(t *testing.T) seeded {
 
 	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
 
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, io.Discard))
+	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, io.Discard)
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, egress: egressLog, server: server}
+	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, egress: egressLog, handler: handler, server: server}
 }
 
 // fakeProcess is a daemon that says it runs sysbox, or one whose provider cannot be built.
