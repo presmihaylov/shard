@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/erofs"
 	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
@@ -46,7 +47,7 @@ type Service struct {
 
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
 	// pull's rollback deletes the blobs another pull has written but not yet indexed.
-	write sync.Mutex
+	write chan struct{}
 	// removal holds a cache hit back while a removal is past its check, so a create never gets a rootfs that is going.
 	removal sync.RWMutex
 }
@@ -89,7 +90,7 @@ func WithErofs() Option {
 
 // New prepares the image tree under root, which is /var/lib/shard/images on the box.
 func New(root string, opts ...Option) (*Service, error) {
-	s := &Service{root: root}
+	s := &Service{root: root, write: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -124,8 +125,11 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 		return img, nil
 	}
 
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return Image{}, err
+	}
+	defer unlock()
 
 	return s.pullLocked(ctx, ref)
 }
@@ -133,8 +137,11 @@ func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 // Claim pulls ref and runs record before it lets go of the tree, so a removal that sweeps by
 // reachability cannot delete a rootfs whose sandbox record is still on its way to disk.
 func (s *Service) Claim(ctx context.Context, ref string, record func(Image) error) (Image, error) {
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return Image{}, err
+	}
+	defer unlock()
 
 	img, err := s.pullLocked(ctx, ref)
 	if err != nil {
@@ -251,16 +258,29 @@ func (s *Service) List() ([]Image, error) {
 	return images, nil
 }
 
+// lock takes the write lock, or gives up when ctx ends first, so an rm of a pending create is not held by another pull.
+func (s *Service) lock(ctx context.Context) (func(), error) {
+	select {
+	case s.write <- struct{}{}:
+		return func() { <-s.write }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for the image write in flight: %w", ctx.Err())
+	}
+}
+
 // Orphaned names the digests whose rootfs a Remove of ref would delete.
 func (s *Service) Orphaned(ref string) ([]string, error) {
 	return s.store.Orphaned(ref)
 }
 
 // Remove deletes ref and the rootfs nothing else in the index names, once free says no sandbox needs it.
-func (s *Service) Remove(_ context.Context, ref string, free func() error) error {
+func (s *Service) Remove(ctx context.Context, ref string, free func() error) error {
 	// The removal reclaims by reachability too, so it waits for a pull the same way a pull waits.
-	s.write.Lock()
-	defer s.write.Unlock()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	removed := s.unindex(ref, free)
 	if removed != nil && !errors.Is(removed, ErrNotReclaimed) {
@@ -459,11 +479,15 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 		progress.Add(Event{Status: StatusUnpacked, Digest: digest.String(), Layer: i + 1, Layers: len(layers)})
 	}
 
+	// A host crash after the rename must not leave a torn tree that unpacked() then trusts (SHARD-355).
+	if err := store.SyncFS(tmp); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 
-	return nil
+	return store.SyncDir(parent)
 }
 
 // unpackDisk builds the ext4 image from the layer tars, which keep the owners a directory unpack loses without root.
@@ -516,12 +540,28 @@ func stageFile(path string, build func(tmp string) error) error {
 	if err := build(tmp.Name()); err != nil {
 		return err
 	}
+	if err := syncFile(tmp.Name()); err != nil {
+		return err
+	}
 
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp.Name(), err)
 	}
 
-	return nil
+	return store.SyncDir(filepath.Dir(path))
+}
+
+// syncFile flushes what an outside tool wrote to path, since only an fd of our own can fsync it.
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", path, err), f.Close())
+	}
+
+	return f.Close()
 }
 
 func applyLayer(ctx context.Context, dir string, layer v1.Layer) (err error) {

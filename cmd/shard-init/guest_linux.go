@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -110,6 +111,14 @@ func mountRoot(boot guestBoot) error {
 	}
 	if err := unix.Mount(boot.Overlay, "/overlay", "ext4", 0, ""); err != nil {
 		return fmt.Errorf("mount %s on /overlay: %w", boot.Overlay, err)
+	}
+	// Opened without CLOEXEC, so the re-exec inherits it for rootDisk: the move onto the root leaves the upper no path.
+	upper, err := unix.Open("/overlay", unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open /overlay: %w", err)
+	}
+	if err := os.Setenv(upperEnv, strconv.Itoa(upper)); err != nil {
+		return fmt.Errorf("name the upper disk for the re-exec: %w", err)
 	}
 	// The guest lays the upper and work directories itself, so the host and shard-init share no name for them.
 	for _, dir := range []string{"/overlay/upper", "/overlay/work"} {
@@ -367,8 +376,8 @@ const (
 )
 
 // freezeRoot flushes the root disk and holds every write to it, so a clone of a paused VM reads a whole disk.
-func freezeRoot() error {
-	err := rootIoctl(fifreeze)
+func freezeRoot(root *os.File) error {
+	err := rootIoctl(root, fifreeze)
 	// EBUSY is a root already frozen, by a freeze whose answer never reached the host.
 	if err == nil || errors.Is(err, unix.EBUSY) {
 		return nil
@@ -378,8 +387,8 @@ func freezeRoot() error {
 }
 
 // thawRoot lets the root disk take writes again.
-func thawRoot() error {
-	err := rootIoctl(fithaw)
+func thawRoot(root *os.File) error {
+	err := rootIoctl(root, fithaw)
 	// EINVAL is a root that is not frozen.
 	if err == nil || errors.Is(err, unix.EINVAL) {
 		return nil
@@ -388,18 +397,37 @@ func thawRoot() error {
 	return fmt.Errorf("thaw the root: %w", err)
 }
 
-// rootIoctl is a test process's no-op, as it is not PID 1 and "/" is the host's.
-func rootIoctl(req uint) error {
-	if os.Getpid() != 1 {
+// rootIoctl is a test process's no-op, as it opened no root and "/" is the host's.
+func rootIoctl(root *os.File, req uint) error {
+	if root == nil {
 		return nil
 	}
-	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open the root: %w", err)
-	}
-	defer unix.Close(fd)
 
-	return unix.IoctlSetInt(fd, req, 0)
+	return unix.IoctlSetInt(int(root.Fd()), req, 0)
+}
+
+// upperEnv names the fd the first image opened on the overlay's upper disk, which the move onto the root leaves no path to.
+const upperEnv = "SHARD_INIT_UPPER_FD"
+
+// rootDisk opens what a freeze holds: the overlay's upper disk, as overlayfs takes no FIFREEZE, or the root disk itself.
+func rootDisk() (*os.File, error) {
+	upper := os.Getenv(upperEnv)
+	if upper == "" {
+		root, err := os.Open("/")
+		if err != nil {
+			return nil, fmt.Errorf("open the root: %w", err)
+		}
+
+		return root, nil
+	}
+	fd, err := strconv.Atoi(upper)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", upperEnv, err)
+	}
+	// A guest process that inherited it would hold a path out of its root.
+	unix.CloseOnExec(fd)
+
+	return os.NewFile(uintptr(fd), "/overlay"), nil
 }
 
 // powerOff ends the VM once the stop is done, by a reboot where the vmm only exits on one; a test process is not PID 1 and just exits.

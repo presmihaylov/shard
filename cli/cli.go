@@ -51,6 +51,9 @@ Usage:
                            start a new sandbox from the snapshot of another
   shard clone [--name <name>] <id|name>
                            start a new sandbox over a copy of the files a stopped or paused one kept
+  shard cp [--user <user>] <src> <id|name>:<path>
+  shard cp <id|name>:<path> <dst>
+                           copy one file into or out of a running sandbox; a directory destination takes the file under its own name
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
@@ -66,7 +69,7 @@ Usage:
   shard image prune        remove every pulled image no sandbox references
   shard secret set --to <host>... [--placeholder <string>] <NAME> [VALUE]
                            store a secret granted to those hosts; set again to rotate the value
-                           the guest sees the placeholder, and the proxy puts the value in its place on a granted HTTPS request
+                           the guest sees the placeholder, and the proxy puts the value in its place in a header of a granted HTTPS request
                            the value comes from VALUE, from stdin when VALUE is - or stdin is a pipe, else from a prompt with the echo off
                            put -- before a VALUE that starts with -
                            --placeholder overrides the default mock-NAME, for an SDK that checks the shape of a key
@@ -86,7 +89,8 @@ Usage:
                            hand a created or stopped sandbox a stored policy, replacing the one it holds
   shard policy detach <id|name>
                            leave the sandbox with no policy, and with its secrets untouched
-  shard daemon             run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd starts it
+  shard daemon [--log <path>]
+                           run the resident process that owns the sandbox lifecycle, the background work, the API socket and the proxy; systemd, or launchd on a Mac, starts it
   shard daemon status      print the version, pid, start time, socket, provider, capabilities and proxy ports of the daemon, one per line
   shard serve [flags]      accept TLS on a TCP address, verify the token each request carries and pass the bytes to the daemon socket; its own unit starts it
   shard tokens mint --name <sub> [--duration <dur>] [--scopes <list>] [--tokens-file <path>] --secret-file <path>
@@ -140,6 +144,9 @@ Stop flags, which must precede the id or name:
 Rm flags, which must precede the id or name:
   --force                  stop the sandbox first if it is still up
   --time <duration>        how long --force gives the entrypoint before it is killed
+
+Daemon flags:
+  --log <path>             the file to write the daemon's output to, reopened on SIGHUP so newsyslog can rotate it; a Mac only
 
 Serve flags:
   --listen <addr>          the address to accept on (default ` + serve.DefaultListen + `)
@@ -284,6 +291,8 @@ func (a App) run(ctx context.Context, args []string) error {
 		return a.fork(ctx, args[1:])
 	case "clone":
 		return a.clone(ctx, args[1:])
+	case "cp":
+		return a.cp(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":

@@ -61,6 +61,30 @@ func TestResolveRefusesALinkAtSomethingThatIsNotAnID(t *testing.T) {
 	}
 }
 
+// SHARD-374: a legacy names/Morning-fern-b8b0 link survives the upgrade, and a case-insensitive filesystem folds the
+// lower-case ref onto it; Resolve must follow only an exact entry, or an rm of the lower-case id deletes the wrong sandbox.
+func TestResolveDoesNotFollowALegacyMixedCaseLink(t *testing.T) {
+	r, root := repo(t)
+
+	legacy := filepath.Join(root, "names", "Morning-fern-b8b0")
+	if err := os.Symlink("../sandboxes/sleepy-cat-0001", legacy); err != nil {
+		t.Fatalf("plant the legacy link: %v", err)
+	}
+
+	// The data-loss path exists only where the filesystem folds the case; elsewhere the ref never reaches the link.
+	if _, err := os.Readlink(filepath.Join(root, "names", "morning-fern-b8b0")); err != nil {
+		t.Logf("the filesystem is case-sensitive, so the fold cannot happen here; asserting the invariant only")
+	}
+
+	id, err := r.Resolve("morning-fern-b8b0")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if id != "morning-fern-b8b0" {
+		t.Errorf("Resolve followed the legacy mixed-case link and returned %q, want the ref itself", id)
+	}
+}
+
 func TestResolveLeavesAReferenceNothingHolds(t *testing.T) {
 	r, _ := repo(t)
 

@@ -61,6 +61,19 @@ func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
 	}
 }
 
+// A stop detaches the disk the count sits on, and a missing count read there as zero wrote 0 over the record (SHARD-401).
+func TestRestartCountRefusesADirectoryThatIsNotThere(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk", "shard", "restarts.json")
+
+	count, err := bundle.Bundle{RestartFile: path}.RestartCount()
+	if err == nil {
+		t.Fatalf("RestartCount() = %+v with no directory under the file, want an error", count)
+	}
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), path) {
+		t.Errorf("the refusal is %q, and it must name the file and wrap ErrNotExist", err)
+	}
+}
+
 func TestBuildRefusesAnImageWithNothingToRun(t *testing.T) {
 	_, err := newService(t).Build(newSpec(t))
 	if err == nil {
@@ -134,6 +147,19 @@ func TestBuildCreatesTheOverlayLayers(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o755 {
 		t.Errorf("got the upper layer mode %o, want 755", info.Mode().Perm())
+	}
+}
+
+// A non-root user runs /.shard/init, which sysbox looks up as that user, and cannot list or change /.shard (SHARD-415).
+func TestAnyGuestUserTraversesTheShardDirAndNoneChangesIt(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	info, err := os.Stat(b.ShardDir)
+	if err != nil {
+		t.Fatalf("stat the shard directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o751 {
+		t.Errorf("got the shard directory mode %o, want 751", info.Mode().Perm())
 	}
 }
 

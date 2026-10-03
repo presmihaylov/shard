@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // Version is the Linux release packaging/kernel builds; packaging/kernel/version.mk must say the same.
@@ -121,7 +123,7 @@ func New(root string, opts ...Option) *Service {
 }
 
 // Ensure returns the kernel for arch, downloading it on first use. Every call hashes the file, so a
-// kernel that changed on disk never boots.
+// kernel that changed on disk never boots: a release file is fetched again, a local one is refused.
 func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	if s.local != "" {
 		return s.verified(s.local, arch, s.localSHA256)
@@ -136,7 +138,12 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := os.Stat(path); err == nil {
-		return s.verified(path, arch, a.sha256)
+		k, err := s.verified(path, arch, a.sha256)
+		if !errors.Is(err, ErrChecksum) {
+			return k, err
+		}
+		// A crash can leave a cut file behind, and the release still holds the right bytes (SHARD-355).
+		s.log.Printf("kernel: %v, so the daemon fetches it again", err)
 	}
 
 	url, err := URL(arch)
@@ -176,9 +183,11 @@ func (s *Service) download(ctx context.Context, url, path, want string) error {
 	}
 	part := f.Name()
 	h := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(f, h), resp.Body)
-	closeErr := f.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
+	_, err = io.Copy(io.MultiWriter(f, h), resp.Body)
+	if err == nil {
+		err = f.Sync()
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
 		return errors.Join(err, os.Remove(part))
 	}
 
@@ -187,7 +196,11 @@ func (s *Service) download(ctx context.Context, url, path, want string) error {
 		return errors.Join(fmt.Errorf("%w: got %s, want %s", ErrChecksum, got, want), os.Remove(part))
 	}
 
-	return os.Rename(part, path)
+	if err := os.Rename(part, path); err != nil {
+		return errors.Join(err, os.Remove(part))
+	}
+
+	return store.SyncDir(filepath.Dir(path))
 }
 
 // verified hashes the file at path and returns it as a Kernel only when the hash is want.
