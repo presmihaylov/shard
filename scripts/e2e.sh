@@ -1433,7 +1433,7 @@ step "carry stdin into a command"
 GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" /bin/cat)
 expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
 
-# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, health, the policy and a live follow.
+# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, the dropped health field, the policy and a live follow.
 # Each is one function that makes its own sandboxes over the socket, asserts, and removes them.
 
 # track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
@@ -1635,59 +1635,14 @@ exec_cap_steps() {
 	drop_sandbox "${id}"
 }
 
-# health_steps drives the health probe to healthy, to unhealthy, through a flap, and refuses one with no command (SHARD-54).
+# health_steps proves the daemon takes no health probe: a create body that names one is refused (SHARD-455).
 health_steps() {
-	local id rec
-
-	step "a command health check reaches healthy"
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/true\"],\"interval\":1,\"retries\":2}}" | json_field id)
-	[ -n "${id}" ] || fail "the healthy-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"healthy"' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"healthy"' "${rec}" || fail "a passing probe never reached healthy: $(cat "${rec}")"
-	say "a command health check reaches healthy"
-	drop_sandbox "${id}"
-
-	step "a failing probe reaches unhealthy after the retries"
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/false\"],\"interval\":1,\"retries\":2}}" | json_field id)
-	[ -n "${id}" ] || fail "the failing-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"unhealthy"' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"unhealthy"' "${rec}" || fail "a failing probe never reached unhealthy: $(cat "${rec}")"
-	grep -q '"failures": *[2-9]' "${rec}" || fail "the unhealthy record counts fewer than the 2 retries: $(cat "${rec}")"
-	say "a failing probe reaches unhealthy after the retries it allows"
-	drop_sandbox "${id}"
-
-	step "a flapping probe stays healthy and resets its failures"
-	# The probe fails once and then passes, so the one failure it counted folds back to zero at the next pass.
-	id=$(api_create "?wait=true" "{\"image\":\"${IMAGE}\",\"command\":[\"/bin/sleep\",\"600\"],\"health\":{\"command\":[\"/bin/sh\",\"-c\",\"if [ -e /tmp/probed ]; then exit 0; fi; touch /tmp/probed; exit 1\"],\"interval\":1,\"retries\":3}}" | json_field id)
-	[ -n "${id}" ] || fail "the flapping-probe sandbox was not created"
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 100); do
-		grep -q '"status": *"healthy"' "${rec}" && grep -q '"failures": *0' "${rec}" && break
-		sleep 0.2
-	done
-	grep -q '"status": *"healthy"' "${rec}" || fail "the flapping probe did not settle healthy: $(cat "${rec}")"
-	grep -q '"failures": *0' "${rec}" || fail "the flapping probe did not reset its failures: $(cat "${rec}")"
-	grep -q '"status": *"unhealthy"' "${rec}" && fail "the flapping probe reached unhealthy on one failure: $(cat "${rec}")"
-	say "a flapping probe stays healthy and resets its failures"
-	drop_sandbox "${id}"
-
-	step "refuse a health check with no command"
-	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"interval\":1}}"
-	[ "${REPLY_CODE}" = "400" ] || fail "a health check with no command answered ${REPLY_CODE}, want 400"
+	step "refuse a create body that names a health check"
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"command\":[\"/bin/true\"]}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a create body with a health check answered ${REPLY_CODE}, want 400"
 	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
-	grep -q 'health names no command' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing command: ${REPLY_BODY}"
-	say "the API refuses a health check with no command, 400 invalid_request"
+	grep -q 'unknown field' <<<"${REPLY_BODY}" || fail "the refusal does not name the unknown field: ${REPLY_BODY}"
+	say "the API refuses a create body that names a health check, 400 invalid_request"
 }
 
 # restart_policy_steps drives the supervisor policy: on-failure, always, a clean exit, a bare outlive, and refusals (SHARD-55).

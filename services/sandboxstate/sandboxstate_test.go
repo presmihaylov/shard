@@ -1,6 +1,7 @@
 package sandboxstate_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -861,6 +862,54 @@ func TestACorruptRecordIsAnError(t *testing.T) {
 
 	if _, err := r.Get(sb.ID); err == nil {
 		t.Fatal("Get returned a sandbox from a corrupt record")
+	}
+}
+
+// A record from a daemon that still ran health probes loads, and its health fields are ignored (SHARD-455).
+func TestARecordWithHealthFieldsStillLoads(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	path := filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the record: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("decode the record: %v", err)
+	}
+	fields["health_check"] = map[string]any{"command": []string{"/bin/sh", "-c", "test -e /ready"}, "interval": 30, "timeout": 10, "retries": 3}
+	fields["health"] = map[string]any{"status": "unhealthy", "checked_at": "2026-10-03T12:00:00Z", "failures": 3}
+	old, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("encode the old record: %v", err)
+	}
+	if err := os.WriteFile(path, old, 0o640); err != nil {
+		t.Fatalf("write the old record: %v", err)
+	}
+
+	got, err := r.Get(sb.ID)
+	if err != nil {
+		t.Fatalf("Get of a record with health fields: %v", err)
+	}
+	if !reflect.DeepEqual(got, sb) {
+		t.Errorf("the record reads %+v, want %+v", got, sb)
+	}
+	listed, err := r.List()
+	if err != nil || len(listed) != 1 || listed[0].ID != sb.ID {
+		t.Errorf("List = %v, %v, want the one record", listed, err)
+	}
+
+	if err := r.Update(sb.ID, func(*models.Sandbox) error { return nil }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the rewritten record: %v", err)
+	}
+	if strings.Contains(string(rewritten), "health") {
+		t.Errorf("the rewritten record is %s, want no health field", rewritten)
 	}
 }
 

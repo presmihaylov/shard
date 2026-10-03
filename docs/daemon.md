@@ -44,9 +44,6 @@ how to install.
   says `running`, and makes the record agree. It records an entrypoint that exited, stops a sandbox
   whose process is gone, and brings back a sandbox that the host ended for its memory. The section
   "Liveness" below has the details.
-- The health check is the `health-check` task. It runs the probe a sandbox was created with, on the
-  interval that probe named, and keeps the result on the record. The section "Health check" below
-  has the details.
 - The restart policy is applied by `shard-init`, which starts the entrypoint again under the policy
   the sandbox was created with. The `restart-policy` task copies the restart count onto the record
   every second. The section "Restart policy" below has the details.
@@ -267,33 +264,20 @@ time. No verb therefore reads the dead process (SHARD-425), and `shard ls` still
 A `stop` during the wait cancels the start again, and a `shard start` runs it at once. A `fork` or
 `clone` inherits the policy with a fresh count.
 
-## Health check
+## Health checks
 
-When a sandbox was created with a probe, the daemon probes it while it runs, and the record says
-what the probes found. `--health-command <cmd>` (`"health": {"command": [...]}` in the create body,
-where the flag wraps its string as `/bin/sh -c`) runs the argv in the sandbox through the provider's
-`exec`. The probe passes on exit 0. A signal, or a command that could not start, fails it.
-`--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
-`retries` in the body, in whole seconds) default to 30 s, 10 s and 3. A
-create refuses an interval over 3600 s or a timeout over 600 s, and the error names the bound.
+The daemon runs no probe of its own (SHARD-455). It watches the sandbox process and the
+entrypoint, through the liveness task and the restart policy, and never the application inside. A
+client that wants to know whether its workload is up runs the check itself with `shard exec`, on
+its own schedule, and acts on the exit code:
 
-The record carries the probe in `health_check`, with every default filled in, and the result in
-`health` as `{"status", "checked_at", "failures"}`. The status is `starting` until the first probe
-passes, `healthy` from then on, and `unhealthy` once `retries` probes in a row have failed. A probe
-that passes sets the status back to `healthy` and clears the count. `checked_at` records the last
-probe. Both fields are absent on a sandbox that has no probe. `shard ls` shows the status in its
-`HEALTH` column, with the count beside it while the count is above zero, as `unhealthy 3/3`. Each
-change of status is one line in the daemon log, with the reason for a failure.
+```
+shard exec web sh -c 'test -e /ready'
+```
 
-The task ticks every second and starts each due probe on its own, so a slow probe holds back no
-other sandbox. A sandbox's next probe waits for its last one to end, so it runs at most one timeout
-late. A command probe that outruns its timeout is ended inside the sandbox. There is no start
-period. The first probe runs on the first tick after the create, and a slow entrypoint counts its
-failures from the start, so set `retries` and `interval` to allow for it. Every new run starts over
-at `starting`. A new run is a `start`, a start again after an OOM, a `clone`, or a daemon that finds
-the sandbox running at reconcile. A `resume` and a `fork` keep the result, as they keep the process.
-Nothing acts on `unhealthy` yet. The status is for the operator and the API, and a later task set
-may restart on it.
+`exec` exits with the command's code, so a script can stop or restart the sandbox on a failure. A
+record that an older daemon wrote with `health_check` and `health` still loads. The daemon ignores
+both fields and drops them at the next write of the record.
 
 ## Restart policy
 
@@ -426,20 +410,20 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   something that is not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "health": {"command",
-  "interval", "timeout", "retries"}, "restart": {"policy", "retries",
-  "backoff"}}` and answers 201 with the record. `command` is the start command. The image's own
-  ENTRYPOINT and CMD never run, so a body with no `command` starts only `shard-init`, and the
-  sandbox stays up. A cached image needs no pull, so the create builds and starts the sandbox before
-  it answers, and the record says `running`. A claim that fails at that point gives everything back,
-  and the create answers 500. An uncached image makes the record
-  `pending`, and the create answers before the download. The daemon pulls, builds and starts behind
-  it, and the record lands on `running` or `failed` with a one-line `failed_reason`. A background
-  pull or start that fails is therefore read from the record, and does not come back as an error.
-  With `?wait=true` the create holds until the record leaves `pending`, then answers the `running`
-  or `failed` record it reached, so a caller reads the settled record without a poll. The plain
-  create answers at once. A wait that sends `Accept: application/x-ndjson` streams the pull instead:
-  one `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled record. The create
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "restart":
+  {"policy", "retries", "backoff"}}` and answers 201 with the record. `command` is the start
+  command. The image's own ENTRYPOINT and CMD never run, so a body with no `command` starts only
+  `shard-init`, and the sandbox stays up. A body that still names `health` is refused with 400, as
+  any field the route does not know. A cached image needs no pull, so the create builds and starts
+  the sandbox before it answers, and the record says `running`. A claim that fails at that point
+  gives everything back, and the create answers 500. An uncached image makes the record `pending`,
+  and the create answers before the download. The daemon pulls, builds and starts behind it, and the
+  record lands on `running` or `failed` with a one-line `failed_reason`. A background pull or start
+  that fails is therefore read from the record, and does not come back as an error. With
+  `?wait=true` the create holds until the record leaves `pending`, then answers the `running` or
+  `failed` record it reached, so a caller reads the settled record without a poll. The plain create
+  answers at once. A wait that sends `Accept: application/x-ndjson` streams the pull instead: one
+  `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled record. The create
   answers 400 when the body does not decode, when a field does not validate, or when the body names
   a secret or a policy the host does not hold. It answers 409 `name_taken` when another sandbox
   already holds the name.
