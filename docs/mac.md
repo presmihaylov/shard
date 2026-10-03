@@ -43,6 +43,9 @@ The build writes the signed VM shim and the guest supervisor under the root
 (`docs/macos-signing.md`) and fetches the release kernel for this Mac into the root, checked against
 its hash (`docs/kernel.md`). A daemon of the same build finds all three in place; a new build
 replaces the shim and the supervisor, and the kernel is fetched again only when its tag moves.
+If the build fails over a root with records, the daemon does not start: a release endpoint it cannot
+reach holds it for up to 5 minutes, then it exits with the error, and under launchd it starts again
+and retries. Over an empty root the daemon starts, and only the verb that needs the provider fails.
 
 In a second terminal:
 
