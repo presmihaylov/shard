@@ -145,7 +145,7 @@ type fakeEgressLog struct {
 	records []egress.Record
 }
 
-func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, error) { return f.records, nil }
+func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, int, error) { return f.records, 0, nil }
 
 // Follow hands over what the log holds and then ends as a removed sandbox does.
 func (f fakeEgressLog) Follow(_ context.Context, _ models.Sandbox, yield func(egress.Record) error) error {

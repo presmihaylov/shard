@@ -86,7 +86,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
 	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
@@ -540,6 +540,33 @@ func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size san
 	return svc.ResizeExec(ctx, ref, execID, size)
 }
 
+func (l *lifecycle) StatFile(ctx context.Context, ref, path string) (models.FileStat, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, err
+	}
+
+	return svc.StatFile(ctx, ref, path)
+}
+
+func (l *lifecycle) ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadFile(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteFile(ctx, ref, req, src)
+}
+
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {
@@ -745,52 +772,4 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// egressLogRotation keeps every sandbox's decision log bounded. It renames rather than truncates, so an
-// O_APPEND writer that holds the old file keeps writing into a file the reader still prints.
-type egressLogRotation struct {
-	deps *deps
-}
-
-const (
-	// maxEgressLog is what one log may reach before it is renamed, and one renamed file is kept behind it.
-	maxEgressLog      = 8 << 20
-	egressLogInterval = time.Minute
-)
-
-func (egressLogRotation) Name() string { return "egress-log-rotation" }
-
-func (t egressLogRotation) Run(ctx context.Context) error {
-	repo, err := t.deps.repo()
-	if err != nil {
-		return err
-	}
-
-	decisions, err := t.deps.egressLog()
-	if err != nil {
-		return err
-	}
-
-	ticker := time.NewTicker(egressLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-
-		sandboxes, err := repo.List()
-		if err != nil {
-			return err
-		}
-
-		for _, sb := range sandboxes {
-			if err := decisions.Rotate(sb.ID, maxEgressLog); err != nil {
-				return err
-			}
-		}
-	}
 }

@@ -2,83 +2,93 @@ package supervisor
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
-	"io/fs"
-	"net"
-	"time"
+
+	"github.com/presmihaylov/shard/models"
 )
 
-// The operations a files connection carries, one per connection: the header names it, the reply ends it.
+// InitPath is where a container sandbox mounts shard-init; a VM's shard-init answers the same path with itself.
+const InitPath = "/.shard/init"
+
+// FilesMode is shard-init's one argument for a files operation, which it serves over its stdin and stdout.
+const FilesMode = "files"
+
+// The operations a files exec carries, one per exec: the header names it, the reply ends it.
 const (
 	OpStat = "stat"
 	OpPut  = "put"
 	OpGet  = "get"
 )
 
-// FileHeader opens a files connection. Size and Mode ride a put; the bytes follow the header line.
+// The codes a refusal carries, so the host answers 404 or 400 for what the guest refused and 500 for the rest.
+const (
+	FileNotFound = "not_found"
+	FileInvalid  = "invalid"
+)
+
+// FileHeader opens a files operation. Size, Mode and Parents ride a put; the bytes follow the header line.
 type FileHeader struct {
-	Op   string `json:"op"`
-	Path string `json:"path"`
-	Size int64  `json:"size,omitempty"`
-	Mode uint32 `json:"mode,omitempty"`
+	Op      string `json:"op"`
+	Path    string `json:"path"`
+	Size    int64  `json:"size,omitempty"`
+	Mode    uint32 `json:"mode,omitempty"`
+	Parents bool   `json:"parents,omitempty"`
 }
 
-// FileReply answers the header. Stat is the file as the guest sees it; on a get its Size bytes follow the line.
+// FileReply answers the header with the path's stat, or with why not. On a get the file's bytes follow the line, to the end of the stream.
 type FileReply struct {
-	Stat  *FileStat `json:"stat,omitempty"`
-	Error string    `json:"error,omitempty"`
+	Stat  *models.FileStat `json:"stat,omitempty"`
+	Error string           `json:"error,omitempty"`
+	Code  string           `json:"code,omitempty"`
 }
 
-// FileStat is the shape of one guest path, in the fs.FileMode bits the host reads directly.
-type FileStat struct {
-	Name    string    `json:"name"`
-	Size    int64     `json:"size"`
-	Mode    uint32    `json:"mode"`
-	ModTime time.Time `json:"modtime"`
-	Dir     bool      `json:"dir,omitempty"`
+// FileError is the guest's refusal of one operation, in the guest's own words.
+type FileError struct {
+	Op      string
+	Path    string
+	Code    string
+	Message string
 }
 
-// Stat asks the guest for the shape of one path.
-func Stat(ctx context.Context, dial Dialer, path string) (FileStat, error) {
-	conn, r, err := openFiles(ctx, dial, FileHeader{Op: OpStat, Path: path})
-	if err != nil {
-		return FileStat{}, err
-	}
-	defer conn.Close()
+func (e *FileError) Error() string {
+	return fmt.Sprintf("%s %s: %s", e.Op, e.Path, e.Message)
+}
 
-	reply, err := readReply(r, OpStat, path)
+// Stat asks the guest for the shape of one path. It never follows a final symlink.
+func Stat(conn io.ReadWriter, path string) (models.FileStat, error) {
+	r, err := open(conn, FileHeader{Op: OpStat, Path: path})
 	if err != nil {
-		return FileStat{}, err
+		return models.FileStat{}, err
 	}
 
-	return *reply.Stat, nil
+	return readReply(r, OpStat, path)
 }
 
-// Put lands size bytes of src at path in the guest, as one file with mode; the guest reports only once the whole file is in place.
-func Put(ctx context.Context, dial Dialer, path string, mode fs.FileMode, size int64, src io.Reader) error {
-	conn, r, err := openFiles(ctx, dial, FileHeader{Op: OpPut, Path: path, Size: size, Mode: uint32(mode)})
+// Put lands header.Size bytes of src at header.Path as one file; the guest answers only once the whole file is in place.
+func Put(conn io.ReadWriter, header FileHeader, src io.Reader) error {
+	header.Op = OpPut
+	r, err := open(conn, header)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 
 	noted := &notedReader{Reader: src}
-	n, err := io.CopyN(conn, noted, size)
-	if noted.err != nil {
-		// The source ran out or failed; the close below is what lets the guest drop its half-copied temp name.
-		return fmt.Errorf("put %s: read the source after %d of %d bytes: %w", path, n, size, noted.err)
+	n, err := io.CopyN(conn, noted, header.Size)
+	// A reader may hand over its last bytes with io.EOF, as an http body does, so only a short copy is the source's fault.
+	if n < header.Size && noted.err != nil {
+		// The source ran out or failed; the caller's close is what lets the guest drop its half-copied temp name.
+		return fmt.Errorf("put %s: read the source after %d of %d bytes: %w", header.Path, n, header.Size, noted.err)
 	}
 	if err != nil {
-		// A guest that refused the header hung up mid-copy, and its reason beats the broken pipe.
-		if _, replyErr := readReply(r, OpPut, path); replyErr != nil {
+		// A guest that refused the header stopped reading, and its reason beats the broken pipe.
+		if _, replyErr := readReply(r, OpPut, header.Path); replyErr != nil {
 			return replyErr
 		}
 
-		return fmt.Errorf("put %s: send %d bytes: %w", path, size, err)
+		return fmt.Errorf("put %s: send %d bytes: %w", header.Path, header.Size, err)
 	}
-	if _, err := readReply(r, OpPut, path); err != nil {
+	if _, err := readReply(r, OpPut, header.Path); err != nil {
 		return err
 	}
 
@@ -100,53 +110,42 @@ func (n *notedReader) Read(p []byte) (int, error) {
 	return count, err
 }
 
-// Get copies one guest file into dst and returns its shape; a short stream is an error, never a short file.
-func Get(ctx context.Context, dial Dialer, path string, dst io.Writer) (FileStat, error) {
-	conn, r, err := openFiles(ctx, dial, FileHeader{Op: OpGet, Path: path})
+// Get answers one guest file's stat and a reader of its bytes to the end of the stream, since a /proc file's Size is not its length; conn tells a cut end from a whole one.
+func Get(conn io.ReadWriter, path string) (models.FileStat, io.Reader, error) {
+	r, err := open(conn, FileHeader{Op: OpGet, Path: path})
 	if err != nil {
-		return FileStat{}, err
+		return models.FileStat{}, nil, err
 	}
-	defer conn.Close()
 
-	reply, err := readReply(r, OpGet, path)
+	stat, err := readReply(r, OpGet, path)
 	if err != nil {
-		return FileStat{}, err
+		return models.FileStat{}, nil, err
 	}
-	if _, err := io.CopyN(dst, r, reply.Stat.Size); err != nil {
-		return FileStat{}, fmt.Errorf("get %s: receive %d bytes: %w", path, reply.Stat.Size, err)
+
+	return stat, r, nil
+}
+
+// open sends the header and answers a reader of what the guest says back.
+func open(conn io.ReadWriter, header FileHeader) (*bufio.Reader, error) {
+	if err := WriteMessage(conn, header); err != nil {
+		return nil, fmt.Errorf("%s %s: %w", header.Op, header.Path, err)
+	}
+
+	return bufio.NewReader(conn), nil
+}
+
+// readReply takes the guest's answer; a refusal comes back as a FileError with the guest's code.
+func readReply(r *bufio.Reader, op, path string) (models.FileStat, error) {
+	var reply FileReply
+	if err := ReadMessage(r, &reply); err != nil {
+		return models.FileStat{}, fmt.Errorf("%s %s: read the guest's reply: %w", op, path, err)
+	}
+	if reply.Error != "" {
+		return models.FileStat{}, &FileError{Op: op, Path: path, Code: reply.Code, Message: reply.Error}
+	}
+	if reply.Stat == nil {
+		return models.FileStat{}, fmt.Errorf("%s %s: the guest answered with no stat", op, path)
 	}
 
 	return *reply.Stat, nil
-}
-
-// openFiles dials the files port and sends the header; the connection closes with ctx, which is what ends a stalled copy.
-func openFiles(ctx context.Context, dial Dialer, header FileHeader) (net.Conn, *bufio.Reader, error) {
-	conn, err := dial(ctx, FilesPort)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open a files connection: %w", err)
-	}
-	context.AfterFunc(ctx, func() { _ = conn.Close() })
-	if err := WriteMessage(conn, header); err != nil {
-		_ = conn.Close()
-
-		return nil, nil, fmt.Errorf("%s %s: %w", header.Op, header.Path, err)
-	}
-
-	return conn, bufio.NewReader(conn), nil
-}
-
-// readReply takes the guest's answer; its error text is the guest's own, behind the operation and the path.
-func readReply(r *bufio.Reader, op, path string) (FileReply, error) {
-	var reply FileReply
-	if err := ReadMessage(r, &reply); err != nil {
-		return FileReply{}, fmt.Errorf("%s %s: %w", op, path, err)
-	}
-	if reply.Error != "" {
-		return FileReply{}, fmt.Errorf("%s %s: %s", op, path, reply.Error)
-	}
-	if reply.Stat == nil {
-		return FileReply{}, fmt.Errorf("%s %s: the guest answered with no stat", op, path)
-	}
-
-	return reply, nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -78,7 +79,57 @@ type fakeLifecycle struct {
 	ended chan struct{}
 	// pulled is what a create reports to the progress on its context.
 	pulled []image.Event
+
+	// file is what a put named and landed, and stat and content what a stat or a get answers.
+	file      sandbox.FileWrite
+	landed    string
+	fileOp    string
+	filePath  string
+	stat      models.FileStat
+	content   string
+	bodyErr   error
+	closedErr error
 }
+
+func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
+	f.ref, f.fileOp, f.filePath = ref, "stat", path
+
+	return f.stat, f.err
+}
+
+// ReadFile answers content as the body; bodyErr cuts it after the content, the way a guest that died midway does.
+func (f *fakeLifecycle) ReadFile(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	f.ref, f.fileOp, f.filePath = ref, "read", path
+	if f.err != nil {
+		return models.FileStat{}, nil, f.err
+	}
+
+	body := io.Reader(strings.NewReader(f.content))
+	if f.bodyErr != nil {
+		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+
+	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) WriteFile(_ context.Context, ref string, req sandbox.FileWrite, src io.Reader) error {
+	f.ref, f.fileOp, f.file = ref, "write", req
+	if f.err != nil {
+		return f.err
+	}
+
+	landed, err := io.ReadAll(src)
+	f.landed = string(landed)
+
+	return err
+}
+
+type fakeBody struct {
+	io.Reader
+	err error
+}
+
+func (b fakeBody) Close() error { return b.err }
 
 func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
@@ -344,6 +395,22 @@ func (f *fakeLifecycle) write(w io.Writer) error {
 }
 
 // send answers with the status and the decoded body, or a nil body on a 204.
+func head(t *testing.T, server *httptest.Server, path string) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, server.URL+path, nil)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", path, err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode
+}
+
 func send(t *testing.T, server *httptest.Server, method, path, body string) (int, map[string]any) {
 	t.Helper()
 

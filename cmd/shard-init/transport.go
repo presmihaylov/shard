@@ -69,8 +69,8 @@ func serveTransport(name string, boot guestBoot) error {
 		}
 	}
 
-	listeners := make([]net.Listener, 0, 4)
-	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort, supervisor.FilesPort} {
+	listeners := make([]net.Listener, 0, 3)
+	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort} {
 		l, err := listen(port)
 		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
@@ -95,7 +95,6 @@ func serveTransport(name string, boot guestBoot) error {
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
 	go logs.accept(listeners[2])
-	go t.acceptFiles(listeners[3])
 
 	if err := t.g.supervise(); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))

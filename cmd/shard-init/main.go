@@ -19,6 +19,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
@@ -43,6 +44,10 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 var errNoHost = errors.New("no host attached")
 
 func main() {
+	// The daemon runs [/.shard/init files] through an exec for one file operation, as the user that exec runs as.
+	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
+		os.Exit(runFiles())
+	}
 	// The bounded child runs this first, so it gives up PID 1's OOM exemption before the workload can fork.
 	if len(os.Args) > 2 && os.Args[1] == exposeFlag {
 		fmt.Fprintln(os.Stderr, "shard-init:", expose(os.Args[2], os.Args[3:]))
@@ -672,6 +677,10 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 
 // lookPath resolves argv[0] on the entrypoint's own PATH, in the entrypoint's own directory: in a VM shard-init's environ is the kernel's, which has none.
 func lookPath(ep entrypoint) (string, error) {
+	// A VM mounts no /.shard/init, so the daemon's files exec there runs this binary.
+	if ep.argv[0] == supervisor.InitPath {
+		return selfBinary, nil
+	}
 	if strings.Contains(ep.argv[0], "/") {
 		return executable(ep.dir, ep.argv[0])
 	}
