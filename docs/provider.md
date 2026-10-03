@@ -530,8 +530,9 @@ caller allocates on the host, and a pipe cannot be one.
   userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a
   rule that lives inside the sandbox.
 
-Every verb takes an id, because a sandbox outlives the `shard daemon` that created it, and the next
-daemon finds it by that id alone.
+A verb that acts on a sandbox names it by its id, as an argument or in the spec, because a sandbox
+outlives the `shard daemon` that created it, and the next daemon finds it by that id alone. `Name`,
+`Capabilities`, `CheckResources` and `AdoptStaging` act on no sandbox, so they take no id.
 
 ## What the conformance suite proves
 
