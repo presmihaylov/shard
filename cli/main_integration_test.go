@@ -239,7 +239,7 @@ func spawnDaemon(env ...string) (*testDaemon, error) {
 		return nil, fmt.Errorf("make a daemon log: %w", err)
 	}
 
-	cmd := exec.Command(shard, "--root", root, "--provider", itestProvider, "daemon")
+	cmd := exec.Command(shard, "--root", root, "daemon", "--provider", itestProvider)
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Env = append(os.Environ(), env...)
 	if err := cmd.Start(); err != nil {
@@ -345,7 +345,7 @@ func ownDaemon(t *testing.T, env ...string) (App, *bytes.Buffer) {
 func appFor(root string) (App, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 
-	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: 5 * time.Minute}, out
+	return App{Version: "test", Root: root, Out: out, Err: out}, out
 }
 
 // daemonClient reads what a verb left, over the same socket every verb speaks to.

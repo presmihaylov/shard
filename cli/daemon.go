@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -15,16 +13,15 @@ import (
 
 // daemon runs the resident process systemd starts: the background work, the API socket and the sandbox lifecycle.
 func (a App) daemon(ctx context.Context, args []string) error {
-	if len(args) == 1 && args[0] == "status" {
-		return a.daemonStatus(ctx)
-	}
-
-	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	logPath := flags.String("log", "", "the file for the daemon's output, reopened on SIGHUP (Mac only)")
+	flags := newFlags("daemon")
+	logPath := flags.String("log", "", "")
+	provider := flags.String("provider", "", "")
+	timeout := flags.Duration("timeout", DefaultTimeout, "")
+	var insecure []string
+	flags.Var((*hostList)(&insecure), "insecure-registry", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the daemon flags: %w", err)
+		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(flags.Args(), " "))
@@ -34,17 +31,30 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		Version:     a.Version,
 		Root:        a.Root,
 		Out:         a.Out,
-		Insecure:    a.Insecure,
-		PullTimeout: a.Timeout,
+		Insecure:    insecure,
+		PullTimeout: *timeout,
 		InitPath:    a.InitPath,
-		Provider:    a.Provider,
+		Provider:    *provider,
 		LogPath:     *logPath,
 	})
 }
 
 // daemonStatus prints what the daemon on the socket says about itself, one field per line.
-func (a App) daemonStatus(ctx context.Context) error {
-	d, err := a.client().Daemon(ctx)
+func (a App) daemonStatus(ctx context.Context, args []string) error {
+	rest, err := parseArgs("daemon status", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("daemon status takes no argument, got %d", len(rest))
+	}
+
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	d, err := c.Daemon(ctx)
 	if err != nil {
 		return err
 	}

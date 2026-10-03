@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 )
 
 // logsOptions is one parsed shard logs invocation.
@@ -21,27 +19,31 @@ func (a App) logs(ctx context.Context, args []string) error {
 		return err
 	}
 
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
 	if opts.egress && opts.follow {
-		return a.client().FollowEgressLog(ctx, opts.id, a.Out, a.Err)
+		return c.FollowEgressLog(ctx, opts.id, a.Out, a.Err)
 	}
 
 	if opts.egress {
-		return a.client().EgressLog(ctx, opts.id, a.Out, a.Err)
+		return c.EgressLog(ctx, opts.id, a.Out, a.Err)
 	}
 
-	return a.client().Logs(ctx, opts.id, opts.follow, a.Out)
+	return c.Logs(ctx, opts.id, opts.follow, a.Out)
 }
 
 func parseLogs(args []string) (logsOptions, error) {
 	var opts logsOptions
 
-	flags := flag.NewFlagSet("shard logs", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.follow, "f", false, "keep printing until the sandbox stops")
-	flags.BoolVar(&opts.egress, "egress", false, "print the egress decisions instead of the entrypoint output")
+	flags := newFlags("logs")
+	flags.BoolVar(&opts.follow, "f", false, "")
+	flags.BoolVar(&opts.egress, "egress", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return logsOptions{}, fmt.Errorf("parse the logs flags: %w", err)
+		return logsOptions{}, err
 	}
 
 	rest := flags.Args()

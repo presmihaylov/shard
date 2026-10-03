@@ -8,11 +8,20 @@ import (
 
 // inspect prints the record the daemon decoded, so a script reads one field with jq.
 func (a App) inspect(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("inspect takes one sandbox id, got %d", len(args))
+	rest, err := parseArgs("inspect", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("inspect takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().GetSandbox(ctx, args[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.GetSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

@@ -99,7 +99,11 @@ func TestCpPutThatDiesMidwayLeavesTheOldFileWhole(t *testing.T) {
 	}
 
 	cut := &failingReader{r: io.LimitReader(rand.NewChaCha8([32]byte{}), cpTestSize/2)}
-	err := app.client().PutFile(t.Context(), id, sandbox.FileWrite{Path: "/tmp/keep", Mode: 0o644, Size: cpTestSize}, cut)
+	c, err := app.client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.PutFile(t.Context(), id, sandbox.FileWrite{Path: "/tmp/keep", Mode: 0o644, Size: cpTestSize}, cut)
 	if err == nil {
 		t.Fatal("a put cut at half its size succeeded")
 	}
@@ -185,7 +189,11 @@ func TestPutArchiveRefusesAnEntryThatLeaves(t *testing.T) {
 		t.Fatalf("close the tar: %v", err)
 	}
 
-	err := app.client().PutArchive(t.Context(), id, "/tmp/in", "", &buf)
+	c, err := app.client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.PutArchive(t.Context(), id, "/tmp/in", "", &buf)
 	if err == nil || !strings.Contains(err.Error(), "../escape") {
 		t.Fatalf("an archive that climbs out gave %v, want its refusal", err)
 	}

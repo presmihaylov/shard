@@ -2,25 +2,22 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-// serve runs the TCP front as its own unprivileged process, so the daemon never binds TCP itself.
+// serve runs shard serve as its own unprivileged process, so the daemon never binds TCP itself.
 func (a App) serve(ctx context.Context, args []string) error {
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	listen := flags.String("listen", serve.DefaultListen, "the address to listen on")
-	cert := flags.String("cert", "", "the tls certificate to serve")
-	key := flags.String("key", "", "the key for that certificate")
-	secret := flags.String("secret-file", "", "the file holding the secret that signs and checks every token")
-	tokensFile := flags.String("tokens-file", "", "the ledger of minted tokens, instead of the one beside the secret file")
+	flags := newFlags("serve")
+	listen := flags.String("listen", serve.DefaultListen, "")
+	cert := flags.String("cert", "", "")
+	key := flags.String("key", "", "")
+	secret := flags.String("secret-file", "", "")
+	tokensFile := flags.String("tokens-file", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the serve flags: %w", err)
+		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("serve takes no arguments, got %d", flags.NArg())

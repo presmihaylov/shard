@@ -141,6 +141,14 @@ func TestTheNamedProviderWinsOverTheHost(t *testing.T) {
 	}
 }
 
+// A typo fails before the root is read, so a root another substrate made does not change the refusal.
+func TestAnUnknownProviderIsRefusedByName(t *testing.T) {
+	_, err := selectProvider("kvm", recordUnder(t, "gvisor"), openable(t))
+	if want := `unknown provider "kvm": shard knows gvisor, sysbox, runc, vz and firecracker`; err == nil || err.Error() != want {
+		t.Errorf("--provider kvm: %v, want %q", err, want)
+	}
+}
+
 // SHARD-275: a root is bound to what made it, so --provider may only name that one again.
 func TestTheNamedProviderMustMatchTheRecords(t *testing.T) {
 	kvm := openable(t)

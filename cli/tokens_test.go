@@ -20,7 +20,7 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	app, flags, secret := newFrontApp(t, &out)
 
 	// Mint over the front's own secret, so the record lands in the ledger the front reads and the front accepts it.
-	if err := app.tokens([]string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	printed := strings.TrimSpace(out.String())
@@ -70,12 +70,12 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	}
 	app := App{Version: "test", Root: dir, Out: &out}
 
-	if err := app.tokens([]string{"mint", "--name", "ci", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 
 	out.Reset()
-	if err := app.tokens([]string{"ls", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "ls", "--secret-file", secret}); err != nil {
 		t.Fatalf("ls: %v", err)
 	}
 	listing := out.String()
@@ -86,12 +86,12 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	// Pull the id from the listing, then revoke that one id; the flags come before the id.
 	id := tokenID(t, listing, "ci")
 	out.Reset()
-	if err := app.tokens([]string{"revoke", "--secret-file", secret, id}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--secret-file", secret, id}); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
 	out.Reset()
-	if err := app.tokens([]string{"ls", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "ls", "--secret-file", secret}); err != nil {
 		t.Fatalf("ls after revoke: %v", err)
 	}
 	if !strings.Contains(out.String(), "revoked") {
@@ -108,10 +108,10 @@ func TestTokensRevokeRefusesNoLedgerAndAnUnknownID(t *testing.T) {
 	}
 	app := App{Version: "test", Root: dir, Out: io.Discard}
 
-	if err := app.tokens([]string{"revoke", "some-id"}); err == nil {
+	if err := app.Run(t.Context(), []string{"tokens", "revoke", "some-id"}); err == nil {
 		t.Error("revoke ran with no --secret-file or --tokens-file")
 	}
-	if err := app.tokens([]string{"revoke", "--secret-file", secret, "no-such-id"}); err == nil {
+	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--secret-file", secret, "no-such-id"}); err == nil {
 		t.Error("revoke reported success for an id the ledger does not hold")
 	}
 }
@@ -139,7 +139,7 @@ func TestTokensMintRefusesNoName(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	if err := app.tokens([]string{"mint", "--secret-file", secret}); err == nil {
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--secret-file", secret}); err == nil {
 		t.Error("mint signed a token with no name")
 	}
 }
@@ -152,8 +152,13 @@ func TestTokensMintRefusesAShortSecret(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	if err := app.tokens([]string{"mint", "--name", "ci", "--secret-file", secret}); err == nil {
-		t.Error("mint signed a token with a secret under 32 bytes")
+	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret})
+	if err == nil {
+		t.Fatal("mint signed a token with a secret under 32 bytes")
+	}
+	// The refusal names the verb that ran and the bound, never shard serve.
+	if msg := err.Error(); !strings.HasPrefix(msg, "tokens mint: ") || !strings.Contains(msg, "31 bytes") || strings.Contains(msg, "shard serve") {
+		t.Errorf("the refusal is %q, want tokens mint, the byte count and no shard serve", msg)
 	}
 }
 
@@ -166,7 +171,7 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	err := app.tokens([]string{"mint", "--name", "ci", "--scopes", "sandbox:read,sandbox:raed", "--secret-file", secret})
+	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", "sandbox:read,sandbox:raed", "--secret-file", secret})
 	if err == nil {
 		t.Fatal("mint signed a token with the scope sandbox:raed")
 	}
@@ -190,7 +195,7 @@ func TestTokensMintTakesEveryScopeTheFrontKnows(t *testing.T) {
 	for _, scope := range everyScope {
 		var out bytes.Buffer
 		app := App{Version: "test", Root: dir, Out: &out}
-		if err := app.tokens([]string{"mint", "--name", "ci", "--scopes", scope, "--secret-file", secret}); err != nil {
+		if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", scope, "--secret-file", secret}); err != nil {
 			t.Fatalf("mint with the scope %s: %v", scope, err)
 		}
 

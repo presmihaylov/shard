@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/services/image"
 )
@@ -29,7 +28,7 @@ func newStoreApp(t *testing.T, out *bytes.Buffer) (App, string) {
 
 	serveDaemon(t, &fakeDaemon{app: App{Root: root}, imageSvc: images})
 
-	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute}, root
+	return App{Version: "test", Root: root, Out: out, Err: out}, root
 }
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
@@ -39,11 +38,22 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 		t.Fatalf("Run(nil): %v", err)
 	}
 
-	if !strings.Contains(out.String(), "Usage:") {
+	if !strings.HasPrefix(out.String(), "Usage: shard ") {
 		t.Errorf("Run(nil) printed %q, want the usage", out.String())
 	}
-	if !strings.Contains(out.String(), "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(out.String(), "firecracker on a Linux host whose /dev/kvm opens") {
-		t.Errorf("Run(nil) printed %q, want every provider and the host default", out.String())
+}
+
+// The daemon's help names every provider and what a host picks, since --provider is its flag now.
+func TestDaemonHelpNamesEveryProviderAndTheHostDefault(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := newApp(t, &out).Run(t.Context(), []string{"daemon", "--help"}); err != nil {
+		t.Fatalf("daemon --help: %v", err)
+	}
+	// The help wraps at 80 columns, so the words are read back as one line.
+	got := strings.Join(strings.Fields(out.String()), " ")
+	if !strings.Contains(got, "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(got, "firecracker on a Linux host whose /dev/kvm opens") {
+		t.Errorf("daemon --help printed %q, want every provider and the host default", out.String())
 	}
 }
 
@@ -135,22 +145,54 @@ func TestRootMustBeAbsolute(t *testing.T) {
 	}
 }
 
-func TestTimeoutFlagIsParsed(t *testing.T) {
-	var out bytes.Buffer
+// The three daemon flags once came before the verb; there they are refused, by name, with the command that takes them.
+func TestDaemonFlagsBeforeTheVerbNameWhereTheyGo(t *testing.T) {
+	cases := map[string][]string{
+		"--timeout is a shard daemon flag: shard daemon --timeout 5m":                            {"--timeout", "5m", "image", "ls"},
+		"--insecure-registry is a shard daemon flag: shard daemon --insecure-registry r.example": {"--insecure-registry", "r.example", "ls"},
+		"--provider is a shard daemon flag: shard daemon --provider gvisor":                      {"--provider", "gvisor", "daemon"},
+	}
 
-	app, _ := newStoreApp(t, &out)
+	for want, args := range cases {
+		var out bytes.Buffer
 
-	if err := app.Run(t.Context(), []string{"--timeout", "5s", "image", "ls"}); err != nil {
-		t.Fatalf("image ls: %v", err)
+		err := newApp(t, &out).Run(t.Context(), args)
+		if err == nil || err.Error() != want {
+			t.Errorf("%v returned %v, want %q", args, err, want)
+		}
 	}
 }
 
 func TestBadTimeoutIsRejected(t *testing.T) {
 	var out bytes.Buffer
 
-	err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--timeout", "never", "image", "ls"})
-	if err == nil {
-		t.Fatal("a bad --timeout returned no error")
+	err := newApp(t, &out).Run(t.Context(), []string{"daemon", "--timeout", "5"})
+	if want := `invalid value "5" for --timeout: want a duration such as 10s`; err == nil || err.Error() != want {
+		t.Errorf("daemon --timeout 5 returned %v, want %q", err, want)
+	}
+}
+
+// A flag error names the flag the way the help does, and says the unit, with nothing of Go's flag package in it.
+func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
+	cases := map[string][]string{
+		`invalid value "512m" for --memory: want MiB as a plain number`: {"create", "--memory", "512m", "alpine"},
+		`invalid value "1g" for --disk: want MiB as a plain number`:     {"create", "--disk", "1g", "alpine"},
+		`invalid value "5" for --time: want a duration such as 10s`:     {"stop", "--time", "5", "web"},
+		`invalid value "x" for --health-retries: want a whole number`:   {"create", "--health-retries", "x", "alpine"},
+		`invalid value "maybe" for --all: want true or false`:           {"ls", "--all=maybe"},
+		`--time needs a value: a duration such as 10s`:                  {"rm", "--time"},
+		`unknown flag --bogus; run shard create --help`:                 {"create", "--bogus", "alpine"},
+		`unknown flag -x; run shard pause --help`:                       {"pause", "-x"},
+		`unknown flag --bogus; run shard --help`:                        {"--bogus", "ls"},
+	}
+
+	for want, args := range cases {
+		var out bytes.Buffer
+
+		err := newApp(t, &out).Run(t.Context(), args)
+		if err == nil || err.Error() != want {
+			t.Errorf("%v returned %v, want %q", args, err, want)
+		}
 	}
 }
 
@@ -162,7 +204,7 @@ func TestVerbHelpPrintsItsFlagsAndExitsZero(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "Usage of shard create:") || !strings.Contains(got, "-memory") {
+	if !strings.HasPrefix(got, "Usage: shard create ") || !strings.Contains(got, "--memory <MiB>") {
 		t.Errorf("create --help printed %q, want the create usage and its flags", got)
 	}
 }
@@ -190,11 +232,11 @@ func TestUsageListsVerbHelp(t *testing.T) {
 	}
 }
 
-func TestUsageStatesTheTokenMintDefaultsAndFlags(t *testing.T) {
+func TestTokensMintHelpStatesItsDefaultsAndFlags(t *testing.T) {
 	var out bytes.Buffer
 
-	if err := newApp(t, &out).Run(t.Context(), nil); err != nil {
-		t.Fatalf("Run(nil): %v", err)
+	if err := newApp(t, &out).Run(t.Context(), []string{"tokens", "mint", "--help"}); err != nil {
+		t.Fatalf("tokens mint --help: %v", err)
 	}
 
 	got := out.String()

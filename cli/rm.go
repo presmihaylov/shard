@@ -3,9 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/presmihaylov/shard/services/client"
@@ -26,7 +24,10 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	c := a.client()
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
 
 	sb, err := c.GetSandbox(ctx, opts.id)
 
@@ -65,13 +66,12 @@ func (a App) removeMissing(opts rmOptions, err error) error {
 func parseRm(args []string) (rmOptions, error) {
 	var opts rmOptions
 
-	flags := flag.NewFlagSet("shard rm", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up, and warn instead of failing on an id that does not exist")
-	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
+	flags := newFlags("rm")
+	flags.BoolVar(&opts.force, "force", false, "")
+	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return rmOptions{}, fmt.Errorf("parse the rm flags: %w", err)
+		return rmOptions{}, err
 	}
 
 	if opts.grace < 0 {

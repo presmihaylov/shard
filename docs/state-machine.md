@@ -69,12 +69,12 @@ finished. A `created` record at a restart is a fork or clone the daemon dropped,
 `failed`. The daemon first stops a copy that still runs and tears down its substrate, because a
 restore that the old daemon started can still run where the runtime cannot see it.
 
-**A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running` means
-that the sandbox is up. It does not mean that a workload executes in it. When the entrypoint finishes,
-the sandbox stays `running` and you can still `exec`, `pause` or `fork` it. E2B, Modal, Vercel and
-Daytona all work this way. There is no fifth state for an exited entrypoint. Instead, the liveness
-task writes the exit into `exit_status` on the record, which stays `running`, so `shard ls` prints
-`running (exited 0)`. `stop` is the only thing that ends a sandbox.
+**A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
+means that the sandbox is up. It does not mean that a workload executes in it. When the entrypoint
+finishes, the sandbox stays `running` and you can still `exec` or `pause` it, and `fork` it once
+paused. E2B, Modal, Vercel and Daytona all work this way. There is no fifth state for an exited
+entrypoint. Instead, the liveness task writes the exit into `exit_status` on the record, which stays
+`running`, so `shard ls` prints `running (exited 0)`. `stop` is the only thing that ends a sandbox.
 
 **`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends
 it.** On vz the daemon probes each shim within 5 s, both a shim it holds and one that it meets only
@@ -121,9 +121,10 @@ them.
 **`rm` is not a state.** It removes the record and everything under it. `Provider.Remove` force-ends
 a running sandbox instead of refusing it, because nothing else drops the rootfs mount.
 
-**`fork` is not a transition.** It creates a second sandbox in `running` and leaves the source in
-whatever state it was in. A snapshot is immutable and a resume does not consume it, so one `pause`
-followed by `fork --count N` is the primitive for a warm pool.
+**`fork` is not a transition.** It takes a `paused` source only, because it reads the snapshot the
+pause wrote, and it refuses any other state. It creates a second sandbox in `running` and leaves the
+source `paused`. A snapshot is immutable and a resume does not consume it, so one `pause` followed by
+one `shard fork <source>` per new sandbox is the primitive for a warm pool.
 
 **`clone` is not a transition either.** It creates a second sandbox in `running` over a copy of the
 files that a `stopped` or `paused` source kept. It runs the entrypoint from the beginning, so it acts

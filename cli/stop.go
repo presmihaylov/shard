@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -23,7 +21,12 @@ func (a App) stop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().StopSandbox(ctx, opts.id, opts.grace)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.StopSandbox(ctx, opts.id, opts.grace)
 	if err != nil {
 		return err
 	}
@@ -34,12 +37,11 @@ func (a App) stop(ctx context.Context, args []string) error {
 func parseStop(args []string) (stopOptions, error) {
 	var opts stopOptions
 
-	flags := flag.NewFlagSet("shard stop", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long the entrypoint gets before it is killed")
+	flags := newFlags("stop")
+	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return stopOptions{}, fmt.Errorf("parse the stop flags: %w", err)
+		return stopOptions{}, err
 	}
 
 	// A grace below zero is not a spelling of kill it now, which is what zero already spells.

@@ -472,7 +472,7 @@ start_daemon() {
 		trust="${ECHO_DIR}/trust.pem"
 	fi
 	# The daemon binds the supervisor by this path into every sandbox, so a PREFIX run tests the shard-init it installed.
-	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" --provider "${PROVIDER}" daemon >"${DAEMON_LOG}" 2>&1 &
+	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider "${PROVIDER}" >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
@@ -859,7 +859,7 @@ fi
 
 step "read what the host picks"
 # info asks the host, not the socket, so it says what a daemon started without --provider would run on.
-info_field() { shard "$@" info | awk -v name="${FIELD}" '$1 == name { $1 = ""; sub(/^ +/, ""); print }'; }
+info_field() { shard info | awk -v name="${FIELD}" '$1 == name { $1 = ""; sub(/^ +/, ""); print }'; }
 WANT_PICK=gvisor
 WANT_REASON="no /dev/kvm"
 # The probe opens the node, so a /dev/kvm this host will not open leaves the pick at gvisor.
@@ -869,7 +869,15 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
 fi
 expect "$(FIELD=provider info_field)" "${WANT_PICK}" "the host picks ${WANT_PICK} while the root holds no record"
 expect "$(FIELD=reason info_field)" "${WANT_REASON}" "info names the reason it picked ${WANT_PICK}"
-expect "$(FIELD=provider info_field --provider sysbox)" "sysbox" "--provider overrides what the host would pick"
+# --provider is the daemon's own flag, so before the verb it is refused with the command that takes it. No pipe: grep -q closes one early under pipefail.
+CODE=0
+REFUSAL=$(shard --provider sysbox info 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "info took --provider before the verb"
+case "${REFUSAL}" in
+*"shard daemon --provider sysbox"*) ;;
+*) fail "info said '${REFUSAL}', want it to name shard daemon --provider sysbox" ;;
+esac
+say "info refuses --provider and names shard daemon --provider"
 
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.

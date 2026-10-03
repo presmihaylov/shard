@@ -77,10 +77,10 @@ create failing.
 container on the host kernel. Only `--provider`, or a root they already made records under, can name
 either one.
 
-`shard info` prints the substrate and the reason. It asks the host and the root instead of the
-socket. So it answers before a daemon exists, and it says what a daemon started now would run.
-`shard daemon status` says what the daemon that is already up runs on. The two differ when that
-daemon was started with other flags.
+`shard info` prints the substrate and the reason. It takes no flags, and it asks the host and the
+root instead of the socket. So it answers before a daemon exists, and it says what a daemon started
+now with no `--provider` would run. `shard daemon status` says what the daemon that is already up
+runs on. The two differ when that daemon was started with `--provider`.
 
 ```
 $ shard info

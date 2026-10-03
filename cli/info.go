@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"text/tabwriter"
@@ -8,15 +9,17 @@ import (
 	"github.com/presmihaylov/shard/services/daemon"
 )
 
-// info prints the substrate a daemon started now over this root would run sandboxes on, and why. It
-// asks the host and not the socket, so it answers before a daemon exists; what the one already up
-// runs is shard daemon status, which can differ when that daemon was started with other flags.
-func (a App) info(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("info takes no argument, got %s", strings.Join(args, " "))
+// info prints the provider a daemon started now over this root with no --provider would pick, and why; it asks the host, not the socket.
+func (a App) info(_ context.Context, args []string) error {
+	rest, err := parseArgs("info", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("info takes no argument, got %s", strings.Join(rest, " "))
 	}
 
-	selected, err := daemon.SelectProvider(a.Provider, a.Root)
+	selected, err := daemon.SelectProvider("", a.Root)
 	if err != nil {
 		return err
 	}

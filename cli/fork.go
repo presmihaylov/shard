@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"io"
 
 	"github.com/presmihaylov/shard/services/sandbox"
 )
@@ -16,7 +14,12 @@ func (a App) fork(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().ForkSandbox(ctx, source, req)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.ForkSandbox(ctx, source, req)
 	if err != nil {
 		return err
 	}
@@ -28,12 +31,11 @@ func (a App) fork(ctx context.Context, args []string) error {
 func parseCopy(verb string, args []string) (string, sandbox.CopyRequest, error) {
 	var req sandbox.CopyRequest
 
-	flags := flag.NewFlagSet("shard "+verb, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.StringVar(&req.Name, "name", "", "a handle every verb takes in place of the id")
+	flags := newFlags(verb)
+	flags.StringVar(&req.Name, "name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return "", sandbox.CopyRequest{}, fmt.Errorf("parse the %s flags: %w", verb, err)
+		return "", sandbox.CopyRequest{}, err
 	}
 	if named(flags) {
 		if err := sandbox.ValidName(req.Name); err != nil {

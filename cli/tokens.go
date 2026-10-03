@@ -1,11 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,36 +12,17 @@ import (
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-// tokens groups the local verbs that mint, list and revoke the tokens the front checks. None reaches the daemon.
-func (a App) tokens(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("tokens takes a subcommand: mint, ls or revoke")
-	}
-
-	switch args[0] {
-	case "mint":
-		return a.tokensMint(args[1:])
-	case "ls", "list":
-		return a.tokensList(args[1:])
-	case "revoke":
-		return a.tokensRevoke(args[1:])
-	}
-
-	return fmt.Errorf("unknown tokens subcommand %q; want mint, ls or revoke", args[0])
-}
-
 // tokensMint signs one token for a subject, records it in the ledger, and prints the record. The daemon never sees the secret.
-func (a App) tokensMint(args []string) error {
-	flags := flag.NewFlagSet("tokens mint", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	name := flags.String("name", "", "the subject the token names")
-	duration := flags.Duration("duration", 0, "how long the token stays valid; the default, 0, never expires")
-	secretFile := flags.String("secret-file", "", "the file holding the secret that signs the token")
-	tokensFile := flags.String("tokens-file", "", "the ledger to record the token in, instead of the one beside the secret file")
-	scopes := flags.String("scopes", "", "a comma-separated list of scopes the token carries; empty means every verb")
+func (a App) tokensMint(_ context.Context, args []string) error {
+	flags := newFlags("tokens mint")
+	name := flags.String("name", "", "")
+	duration := flags.Duration("duration", 0, "")
+	secretFile := flags.String("secret-file", "", "")
+	tokensFile := flags.String("tokens-file", "", "")
+	scopes := flags.String("scopes", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the tokens mint flags: %w", err)
+		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens mint takes no arguments, got %d", flags.NArg())
@@ -53,10 +33,13 @@ func (a App) tokensMint(args []string) error {
 	if *duration < 0 {
 		return fmt.Errorf("tokens mint needs a --duration in the future, got %s", *duration)
 	}
+	if *secretFile == "" {
+		return errors.New("tokens mint needs --secret-file: it holds the secret that signs the token")
+	}
 
 	secret, err := serve.ReadSecret(*secretFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("tokens mint: %w", err)
 	}
 
 	minted, err := serve.IssueToken(secret, serve.TokensPath(*secretFile, *tokensFile), *name, parseScopes(*scopes), *duration)
@@ -73,14 +56,13 @@ func (a App) tokensMint(args []string) error {
 }
 
 // tokensList lists every token the ledger records, with the status a request would see now.
-func (a App) tokensList(args []string) error {
-	flags := flag.NewFlagSet("tokens ls", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	secretFile := flags.String("secret-file", "", "the file whose directory holds the ledger")
-	tokensFile := flags.String("tokens-file", "", "the ledger file to use instead of the one beside the secret file")
+func (a App) tokensList(_ context.Context, args []string) error {
+	flags := newFlags("tokens ls")
+	secretFile := flags.String("secret-file", "", "")
+	tokensFile := flags.String("tokens-file", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the tokens ls flags: %w", err)
+		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens ls takes no arguments, got %d", flags.NArg())
@@ -107,15 +89,14 @@ func (a App) tokensList(args []string) error {
 
 // tokensRevoke marks a token revoked by its id, or every token of a subject with --name, so the next request fails.
 // Put the flags before the id: flag parsing stops at the first argument.
-func (a App) tokensRevoke(args []string) error {
-	flags := flag.NewFlagSet("tokens revoke", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	secretFile := flags.String("secret-file", "", "the file whose directory holds the ledger")
-	tokensFile := flags.String("tokens-file", "", "the ledger file to use instead of the one beside the secret file")
-	name := flags.String("name", "", "revoke every token of this subject instead of one id")
+func (a App) tokensRevoke(_ context.Context, args []string) error {
+	flags := newFlags("tokens revoke")
+	secretFile := flags.String("secret-file", "", "")
+	tokensFile := flags.String("tokens-file", "", "")
+	name := flags.String("name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return fmt.Errorf("parse the tokens revoke flags: %w", err)
+		return err
 	}
 	if *secretFile == "" && *tokensFile == "" {
 		return errors.New("tokens revoke needs --secret-file or --tokens-file: it names the ledger to write")

@@ -456,7 +456,6 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 		Root:    root,
 		Out:     out,
 		Err:     out,
-		Timeout: time.Minute,
 	}, f
 }
 

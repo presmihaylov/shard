@@ -210,7 +210,7 @@ type SubstrateTimeoutError struct {
 }
 
 func (e *SubstrateTimeoutError) Error() string {
-	return fmt.Sprintf("the substrate did not answer within %s for sandbox %s", e.Budget, e.ID)
+	return fmt.Sprintf("the provider did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
 
 // sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
@@ -1031,7 +1031,7 @@ func (s *Service) awaitStopped(ctx context.Context, id string) (models.Status, e
 			return models.Status{}, ctx.Err()
 		}
 		if err != nil && sctx.Err() != nil {
-			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the provider did not answer", id, bound)
 		}
 		if err != nil {
 			return models.Status{}, err
@@ -1040,7 +1040,7 @@ func (s *Service) awaitStopped(ctx context.Context, id string) (models.Status, e
 			return status, nil
 		}
 		if !time.Now().Before(deadline) {
-			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the provider still reports %s", id, bound, status.State)
 		}
 
 		select {

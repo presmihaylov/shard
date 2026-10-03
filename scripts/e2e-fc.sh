@@ -39,7 +39,7 @@ start_daemon() {
 	fi
 	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" \
 		SHARD_KERNEL="${SHARD_KERNEL:-}" SHARD_KERNEL_SHA256="${SHARD_KERNEL_SHA256:-}" \
-		"${PREFIX}/shard" --root "${SHARD_ROOT}" --provider firecracker daemon >"${DAEMON_LOG}" 2>&1 &
+		"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider firecracker >"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
