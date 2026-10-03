@@ -34,6 +34,8 @@ const (
 	fakeShimEnv = "VZVM_FAKE_SHIM"
 	fakeInitEnv = "VZVM_FAKE_INIT"
 	fakeRunEnv  = "VZVM_FAKE_RUN"
+	// impostorRole runs the binary with a shim's arguments, serving nothing, as a process that only claims a socket would.
+	impostorRole = "impostor"
 )
 
 // initBinary is the shard-init the fake shim runs in place of a VM, built once per test run unless the env names one.
@@ -43,6 +45,11 @@ var initBinary string
 var guardHost func() (release func() error, err error)
 
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeShimEnv) == impostorRole {
+		time.Sleep(time.Hour)
+
+		return
+	}
 	if os.Getenv(fakeShimEnv) == "1" {
 		if err := fakeShim(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake shim:", err)

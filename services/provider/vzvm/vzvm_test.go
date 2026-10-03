@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -38,6 +40,7 @@ type harness struct {
 	provider    *vzvm.Provider
 	root        string
 	disk        string
+	shim        string
 	saveRestore bool
 	// log is what the provider logged, read while it still writes.
 	log *safeBuffer
@@ -81,7 +84,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 
-	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore, log: &safeBuffer{}}
+	h := &harness{root: root, disk: baseDisk(t, root), shim: os.Args[0], saveRestore: saveRestore, log: &safeBuffer{}}
 	h.open(t)
 
 	return h
@@ -92,7 +95,7 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 	t.Helper()
 
 	p, err := vzvm.New(vzvm.Config{
-		Shim:        os.Args[0],
+		Shim:        h.shim,
 		Kernel:      "kernel",
 		Init:        initBinary,
 		Dir:         h.root,
@@ -1604,7 +1607,12 @@ func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
 func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
 	t.Helper()
-	h := newHarness(t)
+
+	return frozenShimOn(t, newHarness(t), restart)
+}
+
+func frozenShimOn(t *testing.T, h *harness, restart bool) (*harness, models.SandboxSpec, int) {
+	t.Helper()
 	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
@@ -1749,6 +1757,281 @@ func awaitExit(t *testing.T, pid int) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("process %d did not exit", pid)
+}
+
+// A frozen shim whose socket queue a verb's dials filled refuses every dial after, which is not a shim gone (SHARD-423).
+func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	cases := []struct {
+		name              string
+		restart, recorded bool
+	}{
+		{"the same daemon", false, true},
+		{"a restarted daemon", true, true},
+		{"an upgrade from a daemon that recorded no shim", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			installShim(t, h)
+			h, spec, shim := frozenShimOn(t, h, c.restart)
+			dir, err := h.stateDir(spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !c.recorded {
+				forgetShim(t, dir)
+				upgrade(t, h.shim)
+			}
+			fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err != nil || status.State != models.StateUnresponsive || status.PID != shim {
+				t.Errorf("Status over a frozen shim with a full queue = %+v, %v; want unresponsive with pid %d", status, err, shim)
+			}
+			if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+				t.Fatalf("Remove over a frozen shim with a full queue: %v", err)
+			}
+			awaitExit(t, shim)
+		})
+	}
+}
+
+// A retried pause ends the shim a crashed pause left by its recorded pid, though its full socket queue refuses every dial (SHARD-423).
+func TestARetriedPauseEndsALeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The crash state by hand: a complete snapshot, a record that says paused, and the shim still up.
+	snap := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snap, "snapshot.json"), []byte(`{"pause":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
+	fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatalf("the retried Pause over a frozen leftover with a full queue: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// A resume ends the shim a crashed pause of an older daemon left before it boots the save, though no pid is recorded and the queue is full (SHARD-423).
+func TestAResumeEndsAnUnrecordedLeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	blob, err := os.ReadFile(filepath.Join(dir, "vm.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(blob, &r); err != nil {
+		t.Fatal(err)
+	}
+	// The crash state by hand: a complete save of this machine, a record that says paused, and the shim still up.
+	snap := t.TempDir()
+	files := map[string]string{"snapshot.json": `{"pause":1,"machine_id":"` + r.MachineID + `"}`, "vm.vzvmstate": r.MachineID, "checkpoint.img": ""}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(snap, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(filepath.Join(dir, "disk.img"), filepath.Join(snap, "disk.img")); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
+	fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatalf("Resume over an unrecorded leftover with a full queue: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// A killed shim an older daemon booted leaves a socket that refuses every dial and no live process started on it, so it reads stopped (SHARD-423).
+func TestAKilledShimWithNoRecordReadsStopped(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	if err := syscall.Kill(shim, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, shim)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped || status.PID != 0 {
+		t.Errorf("Status over a killed shim with no record = %+v, %v; want stopped with no pid", status, err)
+	}
+}
+
+// A live process with a shim's arguments for the socket of a killed shim, run from another file, is no shim: it reads stopped and Remove leaves it be (SHARD-423).
+func TestAProcessThatOnlyClaimsTheSocketIsNoShim(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	if err := syscall.Kill(shim, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, shim)
+	exited := impostor(t, filepath.Join(dir, "shim.sock"))
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped || status.PID != 0 {
+		t.Errorf("Status with an impostor on the socket = %+v, %v; want stopped with no pid", status, err)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		t.Errorf("Remove ended the impostor: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// impostor runs a copy of this test binary under another name with the arguments Start gives the shim of socket.
+func impostor(t *testing.T, socket string) <-chan error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "impostor")
+	copyBinary(t, path)
+	config, err := json.Marshal(vz.Config{Socket: socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, "-config", string(config))
+	cmd.Env = append(os.Environ(), fakeShimEnv+"="+impostorRole)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("end the impostor: %v", err)
+		}
+	})
+
+	return exited
+}
+
+// installShim runs the shims from a copy of this test binary where a daemon installs its own, so an upgrade can replace it.
+func installShim(t *testing.T, h *harness) {
+	t.Helper()
+	h.shim = filepath.Join(h.root, "shard-vz-shim")
+	copyBinary(t, h.shim)
+	h.reopen(t)
+}
+
+// upgrade renames a new shim over the file a live shim runs from, as vzshim.Install does.
+func upgrade(t *testing.T, shim string) {
+	t.Helper()
+	copyBinary(t, shim+".new")
+	if err := os.Rename(shim+".new", shim); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyBinary(t *testing.T, path string) {
+	t.Helper()
+	body, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// forgetShim drops shim.json, which a daemon from before SHARD-423 never wrote.
+func forgetShim(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, "shim.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The cleanup of a failed boot kills a shim whose full socket queue refuses the stop, and does not read it gone (SHARD-423).
+func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	dir, err := os.MkdirTemp("", "vzq") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	// A process that never accepts on the socket stands for the frozen shim.
+	stand := exec.Command("sleep", "60")
+	stand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- stand.Wait() }()
+	t.Cleanup(func() {
+		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the stand-in shim: %v", err)
+		}
+	})
+	fillQueue(t, socket)
+
+	if err := vzvm.EndShim("a", vz.Open(socket), stand.Process.Pid); err != nil {
+		t.Fatalf("EndShim over a shim with a full queue: %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopGrace):
+		t.Fatal("the shim outlived the cleanup of its failed boot")
+	}
+}
+
+// fillQueue dials a socket nothing accepts until the kernel refuses, as the bounded execs on a frozen shim did.
+func fillQueue(t *testing.T, socket string) {
+	t.Helper()
+	for range 512 {
+		conn, err := net.Dial("unix", socket)
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatalf("%s still takes dials after 512", socket)
 }
 
 // An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
