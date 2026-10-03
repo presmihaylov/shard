@@ -553,8 +553,7 @@ type Lister interface {
 	List() ([]models.Sandbox, error)
 }
 
-// ListReadable returns the readable records when one will not decode and, when logf is not nil, logs the
-// unreadable ones by file; any other list error stops the caller, so it fails closed (SHARD-343).
+// ListReadable returns the readable records when one will not decode, logs the unreadable ones by file when logf is not nil, and fails closed on any other list error (SHARD-343).
 func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
 	sandboxes, err := l.List()
 	if err == nil {
