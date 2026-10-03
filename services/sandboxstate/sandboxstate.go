@@ -351,9 +351,7 @@ func (r *Repository) Delete(id string) error {
 	return nil
 }
 
-// SweepSnapshotTmp removes an orphan snapshot .tmp under the root: staging no record reaches. It runs once
-// at daemon start. A .tmp a record still names is left to the provider that wrote it, which the reconcile
-// asks next and which reports it (SHARD-368, SHARD-428).
+// SweepSnapshotTmp removes, once at daemon start, each snapshot .tmp no record reaches; one a record names is left to its provider and the reconcile (SHARD-368, SHARD-428).
 func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

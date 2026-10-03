@@ -200,6 +200,41 @@ func (l *reconcileLab) run(t *testing.T) error {
 
 func runOnce(_ string, run func() error) error { return run() }
 
+// retryTwice runs the step again after it passed, as the reserve does after a full disk cut a record write short.
+func retryTwice(_ string, run func() error) error {
+	if err := run(); err != nil {
+		return err
+	}
+
+	return run()
+}
+
+// A retried record write ran the staging adoption twice, so a provider that keeps the staging reported it twice (SHARD-428).
+func TestReconcileReportsAKeptStagingOnceAcrossARetry(t *testing.T) {
+	p := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
+	lab := newReconcileLab(t, p, models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42})
+	lab.repo.snapshots = t.TempDir()
+	staging := filepath.Join(lab.repo.snapshots, "sandbox1") + ".tmp"
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := lab.repo.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if err := lab.svc.ReconcileAll(t.Context(), records, func(line string) { lab.reports = append(lab.reports, line) }, retryTwice); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "kept the snapshot staging "+staging) {
+		t.Errorf("the start reported %q, want one line that the provider kept %s", lab.reports, staging)
+	}
+	if len(p.adopted) != 1 {
+		t.Errorf("the provider was asked to adopt %v, want the staging once", p.adopted)
+	}
+}
+
 func alive(pid int) models.Status {
 	return models.Status{Exists: true, State: models.StateRunning, PID: pid}
 }
