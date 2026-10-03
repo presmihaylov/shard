@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 
 	"github.com/presmihaylov/shard/services/api"
 )
@@ -21,6 +23,29 @@ const (
 	capSecret        capability = "secret:*"
 	capPolicy        capability = "policy:*"
 )
+
+// capabilities are the eight a scope can name besides "*", in the order docs/daemon.md lists them.
+var capabilities = []capability{capDaemonRead, capSandboxRead, capSandboxWrite, capSandboxDelete, capExec, capImage, capSecret, capPolicy}
+
+// checkScopes refuses a scope that is neither "*" nor a capability, because the front would answer 403 to every request the token makes.
+func checkScopes(scopes []string) error {
+	for _, s := range scopes {
+		if s != "*" && !slices.Contains(capabilities, capability(s)) {
+			return fmt.Errorf("unknown scope %q: a scope is * or one of %s", s, strings.Join(capabilityNames(), ", "))
+		}
+	}
+
+	return nil
+}
+
+func capabilityNames() []string {
+	names := make([]string, 0, len(capabilities))
+	for _, c := range capabilities {
+		names = append(names, string(c))
+	}
+
+	return names
+}
 
 // routeCapabilities maps each daemon route to the capability it needs. Every api.Route has an entry, and the front refuses to start when one does not.
 var routeCapabilities = map[string]capability{

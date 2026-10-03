@@ -274,16 +274,12 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 
 	app, out := newCreateApp(t)
 
-	args := []string{"create"}
+	var flags []string
 	if user != "" {
-		args = append(args, "--user", user)
-	}
-	if err := app.Run(t.Context(), append(args, testImage, "--", "/bin/true")); err != nil {
-		t.Fatalf("create: %v", err)
+		flags = append(flags, "--user", user)
 	}
 
-	id := strings.TrimSpace(out.String())
-	out.Reset()
+	id := createWith(t, app, out, append(flags, testImage, "--", "/bin/true")...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	awaitEntrypoint(t, app, id)

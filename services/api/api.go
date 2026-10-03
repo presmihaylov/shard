@@ -33,7 +33,7 @@ type Lifecycle interface {
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
-	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error)
+	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error)
 	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
 	GetExec(ctx context.Context, ref, execID string) (models.Exec, error)
 	WaitExec(ctx context.Context, ref, execID string) (models.Exec, error)

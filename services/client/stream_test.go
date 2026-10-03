@@ -39,6 +39,8 @@ type execDaemon struct {
 	skipInput bool
 	// waits reads the input until the client goes away, the way a command that never exits does.
 	waits bool
+	// record is what a plain GET of the exec answers, which a client asks once a stream ends with no exit.
+	record string
 
 	// req is what the client asked for, attached the path it opened, and input what it typed at the command.
 	req      sandbox.ExecRequest
@@ -55,6 +57,12 @@ func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		answer(http.StatusCreated, `{"exec":"`+d.execID+`","state":"running"}`)(w, r)
+
+		return
+	}
+
+	if r.Header.Get("Upgrade") == "" {
+		answer(http.StatusOK, d.record)(w, r)
 
 		return
 	}
@@ -167,7 +175,7 @@ func TestExecCreatesThenAttachesAndReportsTheExitStatus(t *testing.T) {
 	if daemon.input != "typed\n" {
 		t.Errorf("the daemon read %q, want typed", daemon.input)
 	}
-	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin {
+	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin || !daemon.req.Attach {
 		t.Errorf("the daemon was asked for %+v", daemon.req)
 	}
 }
@@ -276,13 +284,53 @@ func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 }
 
 // Every exec ends with an exit or a failure, so a session that ends with neither is a failure and not a zero.
+// A daemon that detached a stalled client closed the socket with no word, so the record says what happened.
 func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
-	daemon := &execDaemon{t: t, hangUp: true}
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", hangUp: true, record: `{"id":"1a2b3c4d5e6f7a8b","state":"running","lost_bytes":4096}`}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
-	if err == nil || !strings.Contains(err.Error(), "without an exit status") {
-		t.Fatalf("Exec returned %v, want the missing exit status named", err)
+
+	// No frame text, as a hang-up leaves nothing better to say than the record does.
+	want := "the exec in sandbox sandbox1 ended without an exit status: the stream to the daemon dropped; the daemon detaches a client that takes no output for 30s, and exec 1a2b3c4d5e6f7a8b is running with 4096 bytes of output lost"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Exec returned %q, want %q", err, want)
+	}
+}
+
+// A record the client cannot read leaves the cut stream named on its own, one line as logs -f prints it.
+func TestExecReportsOnlyTheCutWhenTheRecordIsGone(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", hangUp: true}
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.Header.Get("Upgrade") == "" {
+			answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"exec 1a2b3c4d5e6f7a8b does not exist"}}`)(w, r)
+
+			return
+		}
+		daemon.ServeHTTP(w, r)
+	})
+
+	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
+	want := "the exec in sandbox sandbox1 ended without an exit status: the stream to the daemon dropped"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Exec returned %q, want %q", err, want)
+	}
+}
+
+// A command that passed while some of its output was evicted unread is still a failure to this client.
+func TestExecReportsOutputTheDaemonLost(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", out: "tail\n", exit: &api.ExitMessage{LostBytes: 512}}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+	status, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"cat", "big"}}, client.ExecStreams{Stdout: &out})
+
+	var lost *client.LostOutputError
+	if !errors.As(err, &lost) || lost.Bytes != 512 || lost.Exit.Code != 0 || status.Code != 0 {
+		t.Fatalf("Exec = %+v, %v; want a LostOutputError of 512 bytes on code 0", status, err)
+	}
+	if out.String() != "tail\n" {
+		t.Errorf("stdout = %q, want what did arrive", out.String())
 	}
 }
 
@@ -420,6 +468,8 @@ type followDaemon struct {
 	messages []message
 	code     websocket.StatusCode
 	reason   string
+	// hangUp ends the follow with no close frame, as a daemon that died does.
+	hangUp bool
 
 	asked string
 }
@@ -447,6 +497,10 @@ func (d *followDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := api.Send(context.Background(), conn, m.stream, []byte(m.payload)); err != nil {
 			d.t.Errorf("send a message of stream %d: %v", m.stream, err)
 		}
+	}
+
+	if d.hangUp {
+		return
 	}
 
 	if err := conn.Close(d.code, d.reason); err != nil {
@@ -491,6 +545,36 @@ func TestLogsFollowReportsAFailureOfTheFollow(t *testing.T) {
 	}
 }
 
+func TestLogsFollowSaysOneLineWhenTheDaemonDrops(t *testing.T) {
+	daemon := &followDaemon{t: t, messages: []message{{stream: api.StreamStdout, payload: "hello\n"}}, hangUp: true}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+
+	err := c.Logs(t.Context(), "sandbox1", true, &out)
+
+	want := "follow the output of sandbox sandbox1: the stream to the daemon dropped"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Logs returned %q, want %q", err, want)
+	}
+	if out.String() != "hello\n" {
+		t.Errorf("the follow wrote %q before the drop", out.String())
+	}
+}
+
+// A daemon that answered wrong is not one that went away, so its error keeps its own words.
+func TestLogsFollowKeepsAMessageThatNamesNoStreamApartFromADrop(t *testing.T) {
+	daemon := &followDaemon{t: t, messages: []message{{text: true, payload: "hello"}}, code: websocket.StatusNormalClosure}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+
+	err := c.Logs(t.Context(), "sandbox1", true, &out)
+	if err == nil || !strings.Contains(err.Error(), "names no stream") || strings.Contains(err.Error(), "dropped") {
+		t.Fatalf("Logs returned %v, want the message that names no stream", err)
+	}
+}
+
 func TestFollowEgressLogPrintsEveryRecordAndWhyItEnded(t *testing.T) {
 	daemon := &followDaemon{t: t, messages: []message{
 		{text: true, payload: `{"rule":"1"}`},
@@ -525,6 +609,23 @@ func TestFollowEgressLogReportsAFailureOfTheFollow(t *testing.T) {
 	err := c.FollowEgressLog(t.Context(), "sandbox1", &out, &errOut)
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("FollowEgressLog returned %v", err)
+	}
+}
+
+func TestFollowEgressLogSaysOneLineWhenTheDaemonDrops(t *testing.T) {
+	daemon := &followDaemon{t: t, messages: []message{{text: true, payload: `{"rule":"1"}`}}, hangUp: true}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out, errOut bytes.Buffer
+
+	err := c.FollowEgressLog(t.Context(), "sandbox1", &out, &errOut)
+
+	want := "follow the egress log of sandbox sandbox1: the stream to the daemon dropped"
+	if err == nil || err.Error() != want {
+		t.Fatalf("FollowEgressLog returned %q, want %q", err, want)
+	}
+	if out.String() != `{"rule":"1"}`+"\n" {
+		t.Errorf("the follow printed %q before the drop", out.String())
 	}
 }
 

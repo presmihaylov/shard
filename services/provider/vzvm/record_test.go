@@ -110,7 +110,7 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: readOnly, Cursor: filepath.Join(dir, cursorFile)}, supervisor.LogsVersion)
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: readOnly, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion)
 		close(done)
 	}()
 	if _, err := guest.Write(supervisor.LogsHeader(0, 6)); err != nil {
@@ -148,7 +148,7 @@ func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T)
 
 	done := make(chan struct{})
 	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile)}, supervisor.LogsVersion+1)
+		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion+1)
 		close(done)
 	}()
 
@@ -268,5 +268,26 @@ func TestAnAdoptedStreamCarriesTheStopOfItsReplay(t *testing.T) {
 	}
 	if m.control.Load() != fresh {
 		t.Fatal("the machine does not hold the adopted stream")
+	}
+}
+
+// A named user goes to the guest as named, because the image on the host misses a user the sandbox added (SHARD-356).
+func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
+	r := record{RootFS: t.TempDir(), Run: supervisor.RunSpec{User: "1000:1000", Groups: []uint32{1000, 10}}}
+
+	header, err := headerOf(r, models.ExecSpec{Argv: []string{"id"}, User: "bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.User != "bob" || header.Groups != nil || !header.Lookup {
+		t.Errorf("named exec header: user %q, groups %v, lookup %v; want bob, none, true", header.User, header.Groups, header.Lookup)
+	}
+
+	header, err = headerOf(r, models.ExecSpec{Argv: []string{"id"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.User != "1000:1000" || !reflect.DeepEqual(header.Groups, []uint32{1000, 10}) || header.Lookup {
+		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the entrypoint's resolved ids", header.User, header.Groups, header.Lookup)
 	}
 }
