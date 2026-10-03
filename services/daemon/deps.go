@@ -627,6 +627,8 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		return nil, err
 	}
 
+	logger := d.logger()
+
 	return sandbox.New(sandbox.Config{
 		Repo:          repo,
 		Images:        images,
@@ -639,6 +641,7 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		ProxyCA:       d.proxyCA,
 		PullTimeout:   d.cfg.PullTimeout,
 		HostMemoryMiB: hostMemory >> 20,
+		Report:        func(line string) { logger.Print(line) },
 	}), nil
 }
 

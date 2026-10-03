@@ -105,6 +105,8 @@ type Config struct {
 	ProbeBudget time.Duration
 	// StartBudget overrides DefaultStartBudget, which only a test has a reason to do.
 	StartBudget time.Duration
+	// Report takes a transition a verb records on its own, as the background loops report theirs; only a test leaves it nil.
+	Report func(string)
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -169,6 +171,15 @@ type StateError struct {
 
 func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
 
+// wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
+func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
+	if sb.State == models.StateUnresponsive {
+		fix = sb.UnresponsiveReason + ": " + fix
+	}
+
+	return &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
+}
+
 // FailedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
 // A create that never reached running is terminal, so an operator reads the reason and then removes it.
 func FailedGuard(id string, sb models.Sandbox) error {
@@ -220,6 +231,14 @@ func (s *Service) mutex(id string) *sync.Mutex {
 	}
 
 	return m
+}
+
+// report logs a transition a verb recorded, where the daemon logs the ones its loops record.
+func (s *Service) report(line string) {
+	if s.cfg.Report == nil {
+		return
+	}
+	s.cfg.Report(line)
 }
 
 // probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.
@@ -653,7 +672,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if sb.State != models.StateStopped {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "start takes a stopped sandbox", Code: models.CodeSandboxNotStopped}
+		return models.Sandbox{}, wrongState(id, sb, "start takes a stopped sandbox", models.CodeSandboxNotStopped)
 	}
 
 	if err := s.start(ctx, id); err != nil {

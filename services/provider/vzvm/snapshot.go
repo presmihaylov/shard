@@ -36,8 +36,11 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if m != nil {
 		status = m.status(p)
 	}
+	if status.State == models.StateUnresponsive {
+		return &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: models.VerbPause, Reason: status.Reason}
+	}
 	if status.State != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox%s", id, status.State, Name, because(status))
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, status.State, Name)
 	}
 
 	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.

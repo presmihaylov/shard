@@ -31,7 +31,7 @@ stateDiagram-v2
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
-| `running` | `unresponsive` | the liveness tick, when the substrate process missed its probe bound | yes: vz |
+| `running` | `unresponsive` | the liveness tick, or an `exec` or `pause` whose probe the substrate process missed | yes: vz |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz |
 | `unresponsive` | `stopped` | `stop` | yes: vz |
 | `paused` | `running` | `resume` | yes: gVisor |
@@ -72,7 +72,9 @@ a `SIGSTOP` or starved by a host under load, makes the record `unresponsive`: it
 run, and `unresponsive_reason` names the shim's pid. Nothing kills it, because a thawed shim gives back
 the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer within 5s)`, and
 `shard inspect` holds the state and the reason. `exec`, `start` and `pause` refuse it with the reason,
-and `exec` adds `wait for it to answer, or end it with shard stop <id>`. When a later probe answers,
+and `exec` adds `wait for it to answer, or end it with shard stop <id>`. An `exec` or a `pause` that
+finds the shim silent writes `unresponsive` at once, not at the next tick, and a `pause` spends one
+5 s bound on it (SHARD-424). When a later probe answers,
 the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one more probe of
 1 s, then kill it by its pid with no grace (SHARD-421).
 
