@@ -36,7 +36,7 @@ stateDiagram-v2
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
-| `running` | `unresponsive` | the liveness tick, or a vz `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
+| `running` | `unresponsive` | the liveness tick, or an `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
 | `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
 | `paused` | `running` | `resume` | yes: gVisor |
@@ -89,9 +89,10 @@ not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When
 answers, the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one
 more probe of 1 s, then kill it with no grace (SHARD-421). The kill goes through a pin that the
 kernel holds on the process, never through a bare pid, so a process that took the pid since is never
-hit. On Firecracker the same holds for a vmm that a restart meets only by its socket, with a bound
-of 4 s and a reason that names the vmm's pid (SHARD-392). There the pin is a pidfd that the adopt
-took on the connection that the vmm never answered.
+hit. On Firecracker the same holds, with a bound of 4 s and a reason that names the vmm's pid, both
+for a vmm that the daemon holds and for one that a restart meets only by its socket (SHARD-392,
+SHARD-439). There the pin is a pidfd that the attach or the adopt took on a connection that the vmm
+answered, or never answered.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the

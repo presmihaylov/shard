@@ -51,6 +51,9 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	if m != nil {
 		status = m.status(p)
 	}
+	if status.State == models.StateUnresponsive {
+		return nil, &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: models.VerbPause, Reason: status.Reason}
+	}
 	if status.State != models.StateRunning {
 		return nil, fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox%s", id, status.State, Name, because(status))
 	}
