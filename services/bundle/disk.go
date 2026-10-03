@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/ext4"
 )
 
 // DefaultDiskMiB is the disk a sandbox gets when it names no bound: 10 GiB, sparse, so an unwritten sandbox costs the host nothing.
@@ -57,6 +58,22 @@ func DiskBound(r models.Resources) int64 {
 	}
 
 	return r.DiskMiB
+}
+
+// CheckGrowBound refuses a bound ext4.Grow cannot reach from a smaller image, and names the nearest bounds it can.
+func CheckGrowBound(mib int64) error {
+	if ext4.LastGroupFits(mib * bytesPerMiB) {
+		return nil
+	}
+	below, above := mib-1, mib+1
+	for !ext4.LastGroupFits(below * bytesPerMiB) {
+		below--
+	}
+	for !ext4.LastGroupFits(above * bytesPerMiB) {
+		above++
+	}
+
+	return fmt.Errorf("a %d MiB disk ends on a block group too small for its own metadata; use %d or %d MiB", mib, below, above)
 }
 
 // DiskBytes is the image size the bound asks for.

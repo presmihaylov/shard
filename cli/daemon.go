@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -16,8 +18,16 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	if len(args) == 1 && args[0] == "status" {
 		return a.daemonStatus(ctx)
 	}
-	if len(args) != 0 {
-		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(args, " "))
+
+	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	logPath := flags.String("log", "", "the file to write the daemon's output to and reopen on SIGHUP; a Mac only")
+
+	if err := parseVerb(flags, args); err != nil {
+		return fmt.Errorf("parse the daemon flags: %w", err)
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(flags.Args(), " "))
 	}
 
 	return daemon.Run(ctx, daemon.Config{
@@ -28,6 +38,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		PullTimeout: a.Timeout,
 		InitPath:    a.InitPath,
 		Provider:    a.Provider,
+		LogPath:     *logPath,
 	})
 }
 

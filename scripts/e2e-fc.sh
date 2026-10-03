@@ -248,6 +248,8 @@ say "logs shows what the entrypoint wrote"
 step "exec a command in the microVM"
 expect_exec "shard-e2e" "the command ran and wrote a file" /bin/sh -c 'echo shard-e2e > /tmp/marker; cat /tmp/marker'
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+expect_exec "pong" "a listener on 127.0.0.1 answers, so lo is up" \
+	/bin/sh -c '(echo pong | nc -l -p 7077 -s 127.0.0.1 -w 3 &); sleep 1; nc -w 3 127.0.0.1 7077 </dev/null'
 expect_exec "kept" "a file lands on the overlay disk, which a stop keeps" /bin/sh -c 'echo kept > /root/kept; cat /root/kept'
 CODE=0
 shard exec "${ID}" -- /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?

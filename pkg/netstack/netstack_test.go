@@ -3,6 +3,7 @@ package netstack
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -43,6 +44,14 @@ func attach(t *testing.T, host *Stack, addr netip.Addr) *Stack {
 	t.Helper()
 
 	hostEnd, guestEnd := wire(t)
+
+	return attachOver(t, host, addr, hostEnd, guestEnd)
+}
+
+// attachOver is attach over a host end the test chose, which may fail its writes.
+func attachOver(t *testing.T, host *Stack, addr netip.Addr, hostEnd io.ReadWriteCloser, guestEnd *os.File) *Stack {
+	t.Helper()
+
 	if _, err := host.Attach(hostEnd, addr); err != nil {
 		t.Fatalf("attach %s: %v", addr, err)
 	}
@@ -525,4 +534,95 @@ func TestAFrameTheGuestDidNotSendIsReportedOnItsLink(t *testing.T) {
 		}
 		await(t, Drop{Guest: guestA, Destination: destination, Protocol: "ipv6"})
 	})
+}
+
+// fullFrames is a host end whose guest has no room for the next full writes, which fail with err.
+type fullFrames struct {
+	io.ReadWriteCloser
+	full int
+	err  error
+}
+
+func (f *fullFrames) Write(frame []byte) (int, error) {
+	if f.full > 0 {
+		f.full--
+
+		return 0, &os.PathError{Op: "write", Path: "vmnet-host", Err: f.err}
+	}
+
+	return f.ReadWriteCloser.Write(frame)
+}
+
+// A guest socket with no room drops the frame and counts it, and the link carries the next one: the pump never ends on back-pressure (SHARD-384).
+func TestAFullGuestSocketDropsTheFrameAndKeepsTheLink(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.ENOBUFS, syscall.EAGAIN} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			counts := make(chan uint64, 16)
+			host, err := New(Config{Address: gateway, Overflow: func(guest netip.Addr, dropped uint64) {
+				if guest != guestA {
+					t.Errorf("overflow on %s, want %s", guest, guestA)
+				}
+				counts <- dropped
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostEnd, guestEnd := wire(t)
+			// Three frames find the guest full on every try.
+			guest := attachOver(t, host, guestA, &fullFrames{ReadWriteCloser: hostEnd, full: 3 * busyTries, err: errno}, guestEnd)
+			if err := guest.knows(gateway, host.cfg.MAC); err != nil {
+				t.Fatal(err)
+			}
+			if err := host.knows(guestA, net.HardwareAddr{0x02, 0, 0, 0, 0, guestA.As4()[3]}); err != nil {
+				t.Fatal(err)
+			}
+
+			conn, err := host.ListenPacket(5353)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			client, err := guest.dialUDP(netip.AddrPortFrom(gateway, 5353))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			if _, err := client.Write([]byte("hi")); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 8)
+			_, from, err := conn.ReadFrom(buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, reply := range []string{"one", "two", "three", "four"} {
+				if _, err := conn.WriteTo([]byte(reply), from); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			n, err := client.Read(buf)
+			if err != nil || string(buf[:n]) != "four" {
+				t.Fatalf("read %q, %v; want the frame after the three dropped", buf[:n], err)
+			}
+
+			if got := <-counts; got != 1 {
+				t.Errorf("first overflow report counts %d, want 1", got)
+			}
+			if err := host.Close(); err != nil {
+				t.Fatalf("close the host stack: %v", err)
+			}
+			if got := <-counts; got != 3 {
+				t.Errorf("the report on close counts %d, want 3", got)
+			}
+			select {
+			case got := <-counts:
+				t.Errorf("a third report counts %d; the limit allows the first and the one on close", got)
+			default:
+			}
+		})
+	}
 }
