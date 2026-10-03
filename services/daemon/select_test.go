@@ -220,8 +220,7 @@ func TestARootWithAnUnreadableRecordStillSelectsAndNotes(t *testing.T) {
 	}
 }
 
-// SHARD-343: when no record reads, the root's substrate is unknown, so a probe must refuse rather than relabel a
-// runc or gvisor root as something the host happens to support; only --provider recovers it.
+// SHARD-343: when no record reads, the root's substrate is unknown, so a probe refuses rather than relabel a runc or gvisor root; only --provider recovers it.
 func TestARootWhereNoRecordReadsRefusesAutoSelection(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sandboxes", "abcdef012345")
