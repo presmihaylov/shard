@@ -136,7 +136,12 @@ one:
   daemon deletes it first, without a thaw, the way the pause would have. If the daemon stopped after
   that delete, runsc holds nothing but the rootfs is still mounted, and the daemon unmounts it once
   the sandbox's cgroup is empty, so `rm --force` still frees the record. A substrate that cannot
-  release a frozen sandbox keeps the record as it is.
+  release a frozen sandbox keeps the record as it is. A marked record the substrate says is
+  `running` stays `running` and loses the mark: that pause is over and never took this run, so a
+  later death of the run is a stop, not a pause. On vz this is a pause cut after its snapshot, whose
+  shim the next daemon runs on. Any other live state, frozen or unresponsive, proves no such run and
+  keeps the mark. The liveness tick asks the substrate again under the sandbox's lock before it drops
+  a mark, because a pause can commit after the tick's first probe.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted

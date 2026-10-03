@@ -127,6 +127,13 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return models.StatePaused, nil
 	}
 
+	// A run the substrate carried on past a cut pause holds no pause, and the mark over its checkpoint would make its death one (SHARD-429).
+	if ranPast(sb, status) {
+		if err := s.dropMark(sb.ID, report); err != nil {
+			return "", err
+		}
+	}
+
 	state, err := reconciled(sb, status)
 	if err != nil {
 		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
@@ -357,6 +364,26 @@ func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
 	}
 
 	return dir, nil
+}
+
+// ranPast is a marked record the substrate says runs; a frozen or unresponsive one proves no run past the pause.
+func ranPast(sb models.Sandbox, status models.Status) bool {
+	return sb.State == models.StateRunning && sb.Pausing && status.Alive() && status.State == models.StateRunning
+}
+
+// dropMark clears the mark of a pause the substrate ran on past, and reports the correction.
+func (s *Service) dropMark(id string, report func(string)) error {
+	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+		sb.Pausing = false
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s runs on past a cut pause but its record was not updated: %w", id, err)
+	}
+	report(fmt.Sprintf("sandbox %s said running and the substrate runs it on past a pause the daemon never recorded: the record drops the pause mark", id))
+
+	return nil
 }
 
 // recordCutPause records the pause a cut pause completed on the host, and reports the correction.

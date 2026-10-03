@@ -341,6 +341,82 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	}
 }
 
+// A run the substrate carried on past its pause's snapshot holds no pause, so a later death of it is no pause either (SHARD-429).
+func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with no mark: the substrate runs it on", got.State, got.Pausing)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness after the death: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
+		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	}
+}
+
+func TestLivenessKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, unproven(42))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with the mark kept", got.State, got.Pausing)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness after the death: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir {
+		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
+	}
+}
+
+// The tick probes before it takes the lock, so a pause can commit after the probe; only a probe under the lock drops the mark.
+func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.repo.snapshotDir = dir
+	// The second Status finds the sandbox gone into the snapshot the first one predated.
+	lab.l.provider.exits = func() {}
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
+	}
+}
+
 // shard-init's own death is the sandbox exit, and its reason is what inspect shows (SHARD-290).
 func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
