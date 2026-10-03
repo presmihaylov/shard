@@ -253,6 +253,60 @@ type fakeLifecycleProvider struct {
 	execID string
 	// serve stands in for the guest end of an exec, as a files exec needs.
 	serve func(spec models.ExecSpec) (models.ExitStatus, error)
+
+	// appMu guards the app's files, which a run's attach polls while its stop writes them.
+	appMu    sync.Mutex
+	restarts models.RestartCount
+	appExit  *models.ExitStatus
+	// stopApps is the force of every StopApp, in order; endOnStop is the exit a stop leaves, nil to leave the app running.
+	stopApps  []bool
+	endOnStop *models.ExitStatus
+}
+
+func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return f.restarts, nil
+}
+
+func (f *fakeLifecycleProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return f.appExit, nil
+}
+
+func (f *fakeLifecycleProvider) StopApp(_ context.Context, _ string, force bool) error {
+	if err := f.r.record("provider.StopApp"); err != nil {
+		return err
+	}
+
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+	f.stopApps = append(f.stopApps, force)
+	if f.endOnStop != nil {
+		f.appExit = f.endOnStop
+		f.restarts.Ended = true
+	}
+
+	return nil
+}
+
+// endApp is shard-init writing the app's last exit and ending its restart policy.
+func (f *fakeLifecycleProvider) endApp(exit models.ExitStatus, restarts int) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	f.appExit = &exit
+	f.restarts = models.RestartCount{Count: restarts, Ended: true}
+}
+
+func (f *fakeLifecycleProvider) stops() []bool {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return slices.Clone(f.stopApps)
 }
 
 func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {

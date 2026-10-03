@@ -727,6 +727,7 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
 	sb.Secrets = []string{"api-token"}
 	sb.Policy = "locked"
+	sb.Command = []string{"python", "-m", "http.server"}
 	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
 
 	return sb

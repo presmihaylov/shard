@@ -44,13 +44,13 @@ func parseRestart(policy string, retries int, backoff, reset time.Duration) (res
 	return parsed, nil
 }
 
-// checkRestartFile is the file mode's half of the policy: the count needs a place to land.
-func checkRestartFile(policy restartPolicy, file string) error {
-	if policy.policy == models.RestartNo {
+// checkRestartFile is the file mode's half of the policy: the count and the end of the app need a place to land.
+func checkRestartFile(policy restartPolicy, file string, argv []string) error {
+	if len(argv) == 0 && policy.policy == models.RestartNo {
 		return nil
 	}
 	if file == "" {
-		return errors.New("-restart-file is required with a restart policy")
+		return errors.New("-restart-file is required with an entrypoint or a restart policy")
 	}
 	if !filepath.IsAbs(file) {
 		return fmt.Errorf("-restart-file must be an absolute path, got %q", file)

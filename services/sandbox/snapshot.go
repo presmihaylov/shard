@@ -285,6 +285,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		Resources:  src.Resources,
 		Secrets:    slices.Clone(src.Secrets),
 		Policy:     src.Policy,
+		Command:    slices.Clone(src.Command),
 		Restart:    src.Restart,
 		ExitStatus: src.ExitStatus,
 	})
@@ -358,6 +359,7 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 		Resources: src.Resources,
 		Secrets:   slices.Clone(src.Secrets),
 		Policy:    src.Policy,
+		Command:   slices.Clone(src.Command),
 		Restart:   freshRestart(src.Restart),
 	})
 	defer claim.unlock()

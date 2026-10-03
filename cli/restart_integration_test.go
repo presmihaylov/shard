@@ -17,7 +17,7 @@ func TestTheSupervisorStartsTheEntrypointAgainUntilThePolicyGivesUp(t *testing.T
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	id := createWith(t, app, out, "--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 1")
+	id := runDetachedWith(t, app, out, "--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 1")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitRestarts(t, app, id, func(c models.RestartCount) bool { return c.GaveUp })
@@ -54,7 +54,7 @@ func TestAlwaysStartsTheEntrypointAgainWithoutEnd(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	id := createWith(t, app, out, "--restart", "always", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 0")
+	id := runDetachedWith(t, app, out, "--restart", "always", "--restart-backoff", "1s", testImage, "--", "/bin/sh", "-c", "exit 0")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The old default gave up at five, so a sixth start again with no give-up proves always never does.

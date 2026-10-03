@@ -531,6 +531,36 @@ func TestTransportKillForcesTheEntrypointDown(t *testing.T) {
 	}
 }
 
+// A VM's run stops its app over the control channel: the stop terms it, ends the policy, and the guest stays up.
+func TestTransportStopAppEndsTheAppAndKeepsTheGuest(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000"), Restart: models.RestartAlways, Backoff: time.Millisecond}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindReady)
+
+	if err := c.StopApp(t.Context(), false); err != nil {
+		t.Fatalf("stop the app: %v", err)
+	}
+	exit := awaitKind(t, c, supervisor.KindExit)
+	if exit.Exit == nil || exit.Exit.Signal != int(syscall.SIGTERM) {
+		t.Fatalf("exit = %+v, want signal SIGTERM", exit.Exit)
+	}
+	restarts := awaitKind(t, c, supervisor.KindRestarts)
+	if restarts.Restarts == nil || !restarts.Restarts.Ended || restarts.Restarts.Count != 0 {
+		t.Fatalf("restarts = %+v, want the app ended with no start again", restarts.Restarts)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("the guest ended with its app: %v", err)
+	}
+}
+
 // A kill of a guest whose entrypoint already exited ends nothing, so a host lost before the cut must read the freeze off the replay and thaw it (SHARD-344).
 func TestTransportKillReplaysFrozenOnTheNextHost(t *testing.T) {
 	cmd, dial := startTransport(t)

@@ -378,6 +378,11 @@ func (t *transport) handle(m supervisor.Message) error {
 	case supervisor.KindStop:
 		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace; a frozen root would hold the entrypoint's last writes.
 		return errors.Join(t.thaw(), syscall.Kill(os.Getpid(), syscall.SIGTERM))
+	case supervisor.KindStopApp:
+		var err error
+		t.g.run(func() { err = t.g.stopApp(m.Force) })
+
+		return err
 	case supervisor.KindReaddress:
 		if m.Address == nil {
 			return errors.New("a readdress message names no address")

@@ -80,6 +80,11 @@ type fakeLifecycle struct {
 	// pulled is what a create reports to the progress on its context.
 	pulled []image.Event
 
+	// appExit is how an attach or a wait says the app ended, appErr how it failed after the 101, and stoppedApp what an app/stop asked.
+	appExit    models.AppExit
+	appErr     error
+	stoppedApp bool
+
 	// file is what a put named and landed, and stat and content what a stat or a get answers.
 	file      sandbox.FileWrite
 	landed    string
@@ -477,6 +482,50 @@ func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer)
 	}
 
 	return f.reason, nil
+}
+
+// AttachApp refuses before the 101 on err; otherwise it writes the lines and ends like the app did, or on the client.
+func (f *fakeLifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
+	f.ref = ref
+
+	if f.err != nil {
+		return models.AppExit{}, f.err
+	}
+	w, err := open()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+	if err := f.write(w); err != nil {
+		return models.AppExit{}, err
+	}
+
+	if f.stops != nil {
+		defer close(f.ended)
+
+		select {
+		case <-f.stops:
+		case <-ctx.Done():
+			return models.AppExit{}, ctx.Err()
+		}
+	}
+
+	return f.appExit, f.appErr
+}
+
+func (f *fakeLifecycle) WaitApp(_ context.Context, ref string) (models.AppExit, error) {
+	f.ref, f.waited = ref, ref
+
+	if f.err != nil {
+		return models.AppExit{}, f.err
+	}
+
+	return f.appExit, f.appErr
+}
+
+func (f *fakeLifecycle) StopApp(_ context.Context, ref string, force bool) error {
+	f.ref, f.stoppedApp, f.force = ref, true, force
+
+	return f.err
 }
 
 func (f *fakeLifecycle) write(w io.Writer) error {

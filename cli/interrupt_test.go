@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"os"
@@ -13,10 +13,10 @@ const settle = 200 * time.Millisecond
 // The first stop signal belongs to the work, which cancels and gives its claims back. Only the
 // second one belongs to the process.
 func TestTheFirstStopSignalCancelsAndTheSecondLeaves(t *testing.T) {
-	signals := make(chan os.Signal, stopSignals)
+	signals := make(chan os.Signal, 2)
 	cancelled, left := make(chan struct{}), make(chan struct{})
 
-	go escape(signals, func() { close(cancelled) }, func() { close(left) })
+	go NewInterrupts(signals, func() { close(cancelled) }, func() { close(left) }).Watch()
 
 	signals <- os.Interrupt
 	<-cancelled
@@ -34,16 +34,38 @@ func TestTheFirstStopSignalCancelsAndTheSecondLeaves(t *testing.T) {
 // The second signal can arrive while the first is still being handled. A channel registered only
 // after the cancellation would never see it, and the user then needed a third to leave.
 func TestNoStopSignalIsLostBehindTheCancellation(t *testing.T) {
-	signals := make(chan os.Signal, stopSignals)
+	signals := make(chan os.Signal, 2)
 	signals <- os.Interrupt
 	signals <- os.Interrupt
 
 	left := make(chan struct{})
-	go escape(signals, func() {}, func() { close(left) })
+	go NewInterrupts(signals, func() {}, func() { close(left) }).Watch()
 
 	select {
 	case <-left:
 	case <-time.After(settle):
 		t.Fatal("a second stop signal that arrived during the cancellation was dropped")
+	}
+}
+
+// A verb that took the signals gets every one of them, and neither the cancel nor the leave runs.
+func TestATakenSignalReachesTheVerbAlone(t *testing.T) {
+	signals := make(chan os.Signal)
+	escaped := make(chan string, 2)
+	interrupts := NewInterrupts(signals, func() { escaped <- "cancel" }, func() { escaped <- "leave" })
+	go interrupts.Watch()
+
+	taken := interrupts.take()
+	for range 3 {
+		signals <- os.Interrupt
+		if got := <-taken; got != os.Interrupt {
+			t.Fatalf("the verb got %v, want the interrupt", got)
+		}
+	}
+
+	select {
+	case what := <-escaped:
+		t.Fatalf("a taken signal also ran the %s", what)
+	case <-time.After(settle):
 	}
 }

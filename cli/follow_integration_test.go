@@ -14,7 +14,7 @@ import (
 // SHARD-164: a follow without the WebSocket handshake is a chunked body, so curl -N reads it and the body ends on its own.
 func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 	app, out := newCreateApp(t)
-	id := create(t, app, out, "/bin/sh", "-c", "echo marker; exec sleep 600")
+	id := runDetached(t, app, out, "/bin/sh", "-c", "echo marker; exec sleep 600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	contentType, body := newRawClient(t, app).follow("/v0/sandboxes/" + id + "/logs?follow=true")
@@ -38,7 +38,7 @@ func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 
 func TestEgressLogFollowOverPlainHTTPEndsOnTheRemove(t *testing.T) {
 	app, out := newCreateApp(t)
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	contentType, body := newRawClient(t, app).follow("/v0/sandboxes/" + id + "/egress-log?follow=true")
