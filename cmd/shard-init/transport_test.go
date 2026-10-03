@@ -116,7 +116,7 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	}
 	defer c.Close()
 
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("exit:7"), Env: os.Environ()}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:7"), Env: os.Environ()}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	exit := awaitKind(t, c, supervisor.KindExit)
@@ -134,10 +134,10 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the state: %v", err)
 	}
-	if state.Kind != supervisor.KindState || !state.Ready || state.Exit == nil || state.Exit.Code != 7 {
-		t.Fatalf("state = %+v, want ready with exit code 7", state)
+	if state.Kind != supervisor.KindState || !state.Ready || state.Exit == nil || state.Exit.Code != 7 || state.Logs != supervisor.LogsVersion {
+		t.Fatalf("state = %+v, want ready with exit code 7 and logs version %d", state, supervisor.LogsVersion)
 	}
-	if err := again.Run(supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
+	if err := again.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
 		t.Fatalf("a second run gave %v, want ErrEntrypointNotStarted", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestTransportRunFailureNamesTheBinary(t *testing.T) {
 	}
 	defer c.Close()
 
-	err = c.Run(supervisor.RunSpec{Argv: []string{"/nonexistent/entrypoint"}})
+	err = c.Run(t.Context(), supervisor.RunSpec{Argv: []string{"/nonexistent/entrypoint"}})
 	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), "/nonexistent/entrypoint") {
 		t.Fatalf("run gave %v, want ErrEntrypointNotStarted naming the binary", err)
 	}
@@ -164,7 +164,7 @@ func TestTransportExecMovesTheStreams(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestTransportExecNotStartedReports127(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -233,11 +233,11 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	err = c.Signal(os.Getpid(), "KILL")
+	err = c.Signal(t.Context(), os.Getpid(), "KILL")
 	if err == nil || !strings.Contains(err.Error(), "not a process shard-init started") {
 		t.Fatalf("signal gave %v, want the refusal", err)
 	}
@@ -261,7 +261,7 @@ func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -289,6 +289,59 @@ func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 	t.Fatalf("pid %d still runs after the cancel", pid)
 }
 
+// A hang-up with no cancel frame is a daemon restart: the command runs on and its output drains, as on gVisor (SHARD-270).
+func TestTransportExecOutlivesAHangUp(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	conn, err := dial(ctx, supervisor.ExecPort)
+	if err != nil {
+		t.Fatalf("open an exec connection: %v", err)
+	}
+	marker := filepath.Join(shortDir(t), "drained")
+	if err := supervisor.WriteMessage(conn, supervisor.ExecHeader{Argv: childArgv("spew:" + marker)}); err != nil {
+		t.Fatalf("write the header: %v", err)
+	}
+	stream, payload, err := supervisor.ReadFrame(conn)
+	if err != nil || stream != supervisor.StreamStarted {
+		t.Fatalf("first frame = %d %v, want the started frame", stream, err)
+	}
+	var started supervisor.StartedFrame
+	if err := supervisor.DecodeFrame(payload, &started); err != nil {
+		t.Fatalf("decode the started frame: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(started.PID, syscall.SIGKILL); err != nil {
+			t.Errorf("kill pid %d: %v", started.PID, err)
+		}
+	})
+	if err := conn.Close(); err != nil {
+		t.Fatalf("hang up: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the command never got past its output after the hang-up: %v", err)
+	}
+	if err := syscall.Kill(started.PID, 0); err != nil {
+		t.Fatalf("pid %d is gone after a hang-up: %v", started.PID, err)
+	}
+}
+
 // syncBuffer is a bytes.Buffer the logs goroutine and the test can share.
 type syncBuffer struct {
 	mu  sync.Mutex
@@ -301,6 +354,9 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 
 	return b.buf.Write(p)
 }
+
+// Resume takes all the guest holds, as a log that never saw this guest does.
+func (b *syncBuffer) Resume(from, _ uint64) (uint64, error) { return from, nil }
 
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
@@ -318,7 +374,7 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 	}
 	defer c.Close()
 	// The entrypoint speaks before any logs connection exists, so the bytes must wait for one.
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("say:first line")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("say:first line")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -327,7 +383,7 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 	defer cancel()
 	var logs syncBuffer
 	done := make(chan error, 1)
-	go func() { done <- supervisor.Logs(logsCtx, dial, &logs) }()
+	go func() { done <- supervisor.Logs(logsCtx, dial, &logs, supervisor.LogsVersion) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "first line") {
 		time.Sleep(20 * time.Millisecond)
@@ -347,10 +403,10 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := c.Stop(); err != nil {
+	if err := c.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -387,26 +443,26 @@ func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 
 	c := attach(false)
 	for range 2 {
-		if err := c.Freeze(); err != nil {
+		if err := c.Freeze(t.Context()); err != nil {
 			t.Fatalf("freeze: %v", err)
 		}
 	}
 	c = attach(true)
 	for range 2 {
-		if err := c.Thaw(); err != nil {
+		if err := c.Thaw(t.Context()); err != nil {
 			t.Fatalf("thaw: %v", err)
 		}
 	}
 	c = attach(false)
 
 	// A stop still ends a frozen guest.
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := c.Freeze(); err != nil {
+	if err := c.Freeze(t.Context()); err != nil {
 		t.Fatalf("freeze: %v", err)
 	}
-	if err := c.Stop(); err != nil {
+	if err := c.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	awaitKind(t, c, supervisor.KindExit)
@@ -430,7 +486,7 @@ func TestTransportExecWithNoStdinSeesEOF(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -455,7 +511,7 @@ func TestTransportRefusedExecsLeakNoDescriptor(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer c.Close()
-	if err := c.Run(supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

@@ -138,25 +138,39 @@ func mountOnce(source, target, fstype string, flags uintptr) error {
 
 // confine takes CAP_SYS_PTRACE out of the bounding set, so no guest process can open PID 1's fds, and
 // puts the guest in its own cgroup namespace, so a runtime inside it makes cgroups under the sandbox's bound.
-func confine() error {
+func confine() (*os.File, error) {
 	if os.Getenv(capbsetEnv) == "" {
 		// The bounding set and the namespace are per thread, and exec carries the calling thread's, so a re-exec gives them to the whole runtime.
 		runtime.LockOSThread()
 		if err := unix.Prctl(unix.PR_CAPBSET_DROP, unix.CAP_SYS_PTRACE, 0, 0, 0); err != nil {
-			return fmt.Errorf("drop CAP_SYS_PTRACE from the bounding set: %w", err)
+			return nil, fmt.Errorf("drop CAP_SYS_PTRACE from the bounding set: %w", err)
 		}
 		if err := unix.Unshare(unix.CLONE_NEWCGROUP); err != nil {
-			return fmt.Errorf("unshare the cgroup namespace: %w", err)
+			return nil, fmt.Errorf("unshare the cgroup namespace: %w", err)
 		}
 
-		return syscall.Exec("/proc/self/exe", os.Args, append(os.Environ(), capbsetEnv+"=1"))
+		return nil, syscall.Exec("/proc/self/exe", os.Args, append(os.Environ(), capbsetEnv+"=1"))
 	}
 	// PID 1 stays undumpable, so a root exec cannot read the supervisor's sockets through /proc/1/fd.
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-		return fmt.Errorf("clear the dumpable flag: %w", err)
+		return nil, fmt.Errorf("clear the dumpable flag: %w", err)
+	}
+	if err := upLoopback(); err != nil {
+		return nil, err
 	}
 
 	return remountCgroup()
+}
+
+// upLoopback is the guest's own job: no host reaches into a VM to set lo up, as it does in a netns, and 127.0.0.1 needs it.
+func upLoopback() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open the ioctl socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	return setFlags(fd, "lo", unix.IFF_UP|unix.IFF_RUNNING)
 }
 
 // applyAddress sets the interface by ioctl, as the image has no iproute2 to shell out to.

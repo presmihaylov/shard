@@ -25,7 +25,9 @@ const (
 	rootMode  = fs.FileMode(0o600)
 	// readHeaderTimeout bounds a client that connects and sends nothing, so it cannot hold a slot forever.
 	readHeaderTimeout = 10 * time.Second
-	shutdownGrace     = 5 * time.Second
+	// readTimeout bounds a slow body; net/http clears it once the body is in, so a long verb is never cut.
+	readTimeout   = 30 * time.Second
+	shutdownGrace = 5 * time.Second
 )
 
 // Listen binds the socket under root and reports the mode it set and the group it gave it, empty without one.
@@ -104,7 +106,7 @@ func restrict(path, group string) (fs.FileMode, string, error) {
 
 // Serve returns nil once ctx ends; any other end is the listener dying, an error so the daemon restarts it.
 func Serve(ctx context.Context, listener net.Listener, handler http.Handler) error {
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout}
 
 	served := make(chan struct{})
 	shutdown := make(chan error, 1)

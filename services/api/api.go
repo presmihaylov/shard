@@ -33,7 +33,7 @@ type Lifecycle interface {
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
-	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error)
+	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error)
 	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
 	GetExec(ctx context.Context, ref, execID string) (models.Exec, error)
 	WaitExec(ctx context.Context, ref, execID string) (models.Exec, error)
@@ -108,7 +108,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	}
 	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: errorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
+		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: ErrorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
 	})
 
 	return mux
@@ -195,11 +195,11 @@ type listResponse struct {
 
 // errorResponse is every refusal, one object under error and nothing else at the root.
 type errorResponse struct {
-	Error errorObject `json:"error"`
+	Error ErrorObject `json:"error"`
 }
 
-// errorObject is a code for a program, a line for a human, and the holders an in_use names.
-type errorObject struct {
+// ErrorObject is a code for a program, a line for a human, and the holders an in_use names.
+type ErrorObject struct {
 	Code    models.Code `json:"code"`
 	Message string      `json:"message"`
 	Holders []string    `json:"holders,omitempty"`
@@ -347,7 +347,7 @@ func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyAttachRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -374,7 +374,7 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, sb)
 }
 
-// createSandbox answers the new record two ways: ?wait=true blocks until it leaves pending, the default at once.
+// createSandbox answers the new record at once, or with ?wait=true once it leaves pending, streaming the pull when asked.
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	wait, err := boolQuery(r, "wait")
 	if err != nil {
@@ -384,8 +384,27 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req sandbox.CreateRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
+
+		return
+	}
+
+	if wait && streamed(r) {
+		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
+			sb, err := h.lifecycle.Create(ctx, req)
+			if err != nil {
+				return ProgressLine{}, err
+			}
+
+			if err := h.lifecycle.WaitState(ctx, sb.ID); err != nil {
+				return ProgressLine{}, err
+			}
+
+			sb, err = sandbox.Get(h.repo, sb.ID)
+
+			return ProgressLine{Sandbox: &sb}, err
+		})
 
 		return
 	}
@@ -433,7 +452,7 @@ type stopRequest struct {
 
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	var req stopRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -513,7 +532,7 @@ func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
 // copySandbox is the body a fork and a clone share: both name the new sandbox and answer its record.
 func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
 	var req sandbox.CopyRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -541,8 +560,11 @@ func classify(err error) (int, models.Code) {
 	var execExited *sandbox.ExecExitedError
 	var execRunning *sandbox.ExecRunningError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
+	var tooLarge *http.MaxBytesError
 
 	switch {
+	case errors.As(err, &tooLarge):
+		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
@@ -569,9 +591,12 @@ func classify(err error) (int, models.Code) {
 	}
 }
 
+// maxBody caps a JSON body, which the decoder holds whole; no route needs more than a few KiB.
+const maxBody = 1 << 20
+
 // decode reads a JSON body into out. An empty body is the zero value; a field no route knows is refused.
-func decode(r *http.Request, out any) error {
-	dec := json.NewDecoder(r.Body)
+func decode(w http.ResponseWriter, r *http.Request, out any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(out)
@@ -582,7 +607,16 @@ func decode(r *http.Request, out any) error {
 		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
 	}
 
-	return nil
+	// The decoder stops after one value, so the rest is read to its end and padding meets the cap before a verb runs.
+	err = dec.Decode(&json.RawMessage{})
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
+	}
+
+	return &sandbox.RequestError{Err: errors.New("decode the request body: it holds more than one JSON value")}
 }
 
 // graceQuery reads ?grace= in seconds, for the stop an rm --force does; absent is the default.
@@ -651,15 +685,21 @@ func partial(err error) ([]string, error) {
 
 // writeError answers err with the status and the code its type says, and the holders when a store entry is held.
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
+	status, body := errorBody(err)
+	h.writeJSON(w, status, body)
+}
+
+// errorBody is the status and the object err answers; a stream that already sent its status writes only the object.
+func errorBody(err error) (int, errorResponse) {
 	status, code := classify(err)
-	body := errorResponse{Error: errorObject{Code: code, Message: err.Error()}}
+	body := errorResponse{Error: ErrorObject{Code: code, Message: err.Error()}}
 
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
 		body.Error.Holders = held.Users
 	}
 
-	h.writeJSON(w, status, body)
+	return status, body
 }
 
 // writeJSON encodes first, so a value that cannot be encoded never leaves a 200 with half a body.

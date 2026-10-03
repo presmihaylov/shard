@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/proxy"
@@ -69,6 +70,11 @@ type hostNetwork interface {
 type front interface {
 	ListenTCP(port uint16) (net.Listener, error)
 	ListenPacket(port uint16) (net.PacketConn, error)
+}
+
+// reserve is the space every write a start makes may take back once on a full root.
+func (d *deps) reserve() reserve {
+	return newReserve(d.cfg.Root, d.logger())
 }
 
 // logger writes where the daemon does; a test builds deps with no Out, and a fetch must not panic on it.
@@ -150,7 +156,7 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
 	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
-	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns}
+	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf}
 	// A microVM's link is a tap its vmm opens, on the same bridge and under the same rules as a veth.
 	cfg.Tap = d.providerName() == firecracker.Name
 	svc, err := network.New(cfg, manager)
@@ -172,7 +178,14 @@ func (d *deps) providerLocked() (models.Provider, error) {
 		return nil, err
 	}
 
-	provider, err := d.newProvider(repo.Dir)
+	// The vz and Firecracker builds write the initrd when shard-init changed.
+	var provider models.Provider
+	err = d.reserve().retry("the provider build", func() error {
+		var err error
+		provider, err = d.newProvider(repo.Dir)
+
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +204,7 @@ func (d *deps) addressesLocked() (*network.Addresses, error) {
 	if err != nil {
 		return nil, err
 	}
-	svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root, Egress: source})
+	svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root, Egress: source, Report: d.logger().Printf})
 	if err != nil {
 		return nil, err
 	}
@@ -227,6 +240,7 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 		Redirects:  map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
 		Redirected: addresses.Fronted,
 		Drops:      drops.report,
+		Overflow:   drops.overflow,
 		Judge:      addresses.Judge,
 	})
 	if err != nil {
@@ -252,6 +266,11 @@ func (s *stackDrops) report(d netstack.Drop) {
 		// The frame is refused already, so a log that cannot be written closes no door; the daemon log carries it.
 		s.out.Printf("egress log: sandbox at %s: %v", d.Guest, err)
 	}
+}
+
+// overflow counts the frames a guest's network device had no room for; TCP sends them again, and UDP loses them.
+func (s *stackDrops) overflow(guest netip.Addr, dropped uint64) {
+	s.out.Printf("stack: sandbox at %s had no room for %d frames so far, and the stack dropped them", guest, dropped)
 }
 
 // frontLocked is what the proxy and the resolver listen through, so one task serves either host the same way.
@@ -292,19 +311,24 @@ func (d *deps) newProvider(dirs func(string) (string, error)) (models.Provider, 
 
 		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return gvisor.New(runner, bundles, dirs) })
 	case sysbox.Name:
-		runner, err := runccli.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runccli.WithBinary(sysbox.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+		runner, err := runccli.New(filepath.Join(d.cfg.Root, "sysbox-runc"), runccli.WithBinary(sysbox.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)), runccli.WithNoNewKeyring())
 		if err != nil {
 			return nil, err
 		}
 
-		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return sysbox.New(runner, bundles, dirs) })
+		// Sysbox drops AppArmor and re-admits the keyring calls to Docker's allow-list, so the keyring deny-list is what holds (SHARD-367).
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return sysbox.New(runner, bundles, dirs) }, bundle.WithSeccomp(bundle.KeyringProfile))
 	case runc.Name:
-		runner, err := runccli.New(filepath.Join(d.cfg.Root, "runc"), runccli.WithBinary(runc.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+		runner, err := runccli.New(filepath.Join(d.cfg.Root, "runc"), runccli.WithBinary(runc.Binary), runccli.WithExecDir(filepath.Join(d.cfg.Root, execDir)), runccli.WithNoNewKeyring())
+		if err != nil {
+			return nil, err
+		}
+		confinement, err := bundle.DockerDefault()
 		if err != nil {
 			return nil, err
 		}
 
-		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) })
+		return d.onBundles(func(bundles *bundle.Service) (models.Provider, error) { return runc.New(runner, bundles, dirs) }, confinement...)
 	case vzvm.Name:
 		return d.newVZ(dirs)
 	case firecracker.Name:
@@ -338,12 +362,13 @@ func (d *deps) newFirecracker(dirs firecracker.StateDirs) (models.Provider, erro
 		Init:   d.cfg.InitPath,
 		Dir:    filepath.Join(d.cfg.Root, firecrackerDir),
 		Dirs:   dirs,
+		Log:    d.logger(),
 	})
 }
 
 // onBundles builds a Linux substrate over the OCI bundle service; a VM has an initrd and a disk instead, so vz never comes here.
-func (d *deps) onBundles(build func(*bundle.Service) (models.Provider, error)) (models.Provider, error) {
-	bundles, err := bundle.New(d.cfg.InitPath)
+func (d *deps) onBundles(build func(*bundle.Service) (models.Provider, error), opts ...bundle.Option) (models.Provider, error) {
+	bundles, err := bundle.New(d.cfg.InitPath, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +435,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 		Stack:       stack,
 		Dirs:        dirs,
 		SaveRestore: vz.HostSaveRestore(),
+		Log:         d.logger(),
 	})
 }
 
@@ -621,17 +647,24 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		return nil, err
 	}
 
+	hostMemory, err := hostmem.Total()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.New(sandbox.Config{
-		Repo:         repo,
-		Images:       images,
-		Network:      net,
-		Provider:     provider,
-		Secrets:      secrets,
-		Policies:     policies,
-		Substrate:    sub,
-		Environments: envs,
-		ProxyCA:      d.proxyCA,
-		PullTimeout:  d.cfg.PullTimeout,
+		Repo:          repo,
+		Images:        images,
+		Network:       net,
+		Provider:      provider,
+		Secrets:       secrets,
+		Policies:      policies,
+		Substrate:     sub,
+		Environments:  envs,
+		ProxyCA:       d.proxyCA,
+		PullTimeout:   d.cfg.PullTimeout,
+		HostMemoryMiB: hostMemory >> 20,
+		HostCPUs:      runtime.NumCPU(),
 	}), nil
 }
 
@@ -660,9 +693,15 @@ func (d *deps) stores() (*sandbox.Stores, error) {
 		return nil, err
 	}
 
+	compiler, err := d.egressLocked()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.NewStores(sandbox.StoresConfig{
 		Repo:        repo,
 		Policies:    policies,
+		Compiler:    compiler,
 		Secrets:     secrets,
 		Images:      images,
 		Network:     func() (sandbox.Reapplier, error) { return d.net() },

@@ -62,19 +62,19 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 	if err := writeRecord(dir, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
-	if err := m.readdress(r); err != nil {
+	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 	if !run {
 		return nil
 	}
 
-	return p.run(m, r)
+	return p.run(ctx, m, r)
 }
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, recordFile, diskFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, logFile, cursorFile, recordFile, diskFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -99,6 +99,9 @@ func checkResources(res models.Resources) error {
 	}
 	if res.MemoryMiB < MinMemoryMiB {
 		return fmt.Errorf("%s needs at least %d MiB of memory, got %d", Name, MinMemoryMiB, res.MemoryMiB)
+	}
+	if err := bundle.CheckGrowBound(bundle.DiskBound(res)); err != nil {
+		return fmt.Errorf("%s: %w", Name, err)
 	}
 
 	return nil
@@ -186,7 +189,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 	if m != nil && m.status(p).Alive() {
-		return p.run(m, r)
+		return p.run(ctx, m, r)
 	}
 	if err := p.release(ctx, m); err != nil {
 		return err
@@ -196,22 +199,22 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.readdress(r); err != nil {
+	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 
-	return p.run(m, r)
+	return p.run(ctx, m, r)
 }
 
 // run asks the guest to fork the entrypoint; the guest answers once it has, or with why it could not.
-func (p *Provider) run(m *machine, r record) error {
+func (p *Provider) run(ctx context.Context, m *machine, r record) error {
 	p.mu.Lock()
 	started := m.started
 	p.mu.Unlock()
 	if started {
 		return fmt.Errorf("the entrypoint of sandbox %s already runs", m.id)
 	}
-	if err := m.control.Load().Run(r.Run); err != nil {
+	if err := m.control.Load().Run(ctx, r.Run); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 	p.mu.Lock()
@@ -256,18 +259,26 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	m, err := p.lookup(ctx, id, dir, r)
+	m, err := p.lookupToStop(ctx, id, dir, r, grace)
 	if err != nil || m == nil {
 		return err
 	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
+	// One deadline covers the request and the wait, so a guest that never answers still gets its forced stop on time (SHARD-339).
+	deadline := time.Now().Add(grace)
+	stopCtx, cancel := context.WithDeadline(ctx, deadline)
+	err = m.control.Load().Stop(stopCtx)
+	cancel()
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
+	}
 	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
-	if err := m.control.Load().Stop(); err != nil && !m.status(p).Alive() {
+	if err != nil && !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
-	ended, err := m.awaitGone(ctx, grace)
+	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
 		return err
 	}
@@ -280,17 +291,28 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	return p.end(ctx, m)
 }
 
-// end cuts the VM under the guest, which records no exit, and waits for the shim to go.
+// end cuts the VM under the guest, which records no exit; a shim that does not go in time is killed by the pid behind its socket (SHARD-349).
 func (p *Provider) end(ctx context.Context, m *machine) error {
-	if _, err := m.client.Stop(); err != nil && !absent(err) {
-		return fmt.Errorf("stop the vm of sandbox %s: %w", m.id, err)
-	}
-	ended, err := m.awaitGone(ctx, killGrace)
+	deadline := time.Now().Add(killGrace / 2)
+	stopCtx, cancel := context.WithDeadline(ctx, deadline)
+	_, stopErr := m.client.Stop(stopCtx)
+	cancel()
+	// A stop whose sandbox ended answers success, so the request's own error counts only when the shim stays.
+	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
 		return err
 	}
 	if !ended {
-		return fmt.Errorf("the vm of sandbox %s still runs %s after a forced stop", m.id, killGrace)
+		if err := m.client.Kill(); err != nil && !absent(err) {
+			return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err))
+		}
+		ended, err = m.awaitGone(ctx, killGrace/2)
+		if err != nil {
+			return err
+		}
+	}
+	if !ended {
+		return errors.Join(stopErr, fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2))
 	}
 	p.forget(m)
 

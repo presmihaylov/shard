@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -28,6 +29,11 @@ func (f *fakePolicies) Get(name string) (models.Policy, error) {
 }
 
 func (f *fakePolicies) List() ([]models.Policy, error) { return []models.Policy{f.policy}, nil }
+
+// fakeCompiler is the host compile, which refuses with err when set.
+type fakeCompiler struct{ err error }
+
+func (f fakeCompiler) Compiles(context.Context, models.Policy) error { return f.err }
 
 func (f *fakePolicies) Remove(name string) error { f.removed = name; return nil }
 
@@ -111,7 +117,7 @@ func TestPolicyShowFailsWhenARecordDoesNotReadBack(t *testing.T) {
 func TestSetPolicySaysThePolicyLandedWhenItCannotTellWhoHoldsIt(t *testing.T) {
 	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
 	repo := &fakeRepo{r: &recorder{fail: []string{"repo.List"}}}
-	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies, Compiler: fakeCompiler{}})
 
 	_, err := stores.SetPolicy(t.Context(), "web", sandbox.PolicyRequest{})
 	if err == nil {
@@ -122,6 +128,23 @@ func TestSetPolicySaysThePolicyLandedWhenItCannotTellWhoHoldsIt(t *testing.T) {
 	}
 	if policies.policy.Name != "web" {
 		t.Error("the policy was not stored before the holders were read")
+	}
+}
+
+// A stored name that does not resolve would fail the creates of every other sandbox, so it is refused before the store (SHARD-276).
+func TestSetPolicyRefusesANameThatDoesNotResolve(t *testing.T) {
+	policies := &fakePolicies{}
+	compiler := fakeCompiler{err: errors.New(`rule "allow gone.example.com": resolve gone.example.com: no such host`)}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: &fakeRepo{r: &recorder{}}, Policies: policies, Compiler: compiler})
+
+	_, err := stores.SetPolicy(t.Context(), "web", sandbox.PolicyRequest{Rules: []sandbox.RuleText{{Action: models.ActionAllow, Rule: "gone.example.com"}}})
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "policy web") || !strings.Contains(err.Error(), "gone.example.com") {
+		t.Fatalf("SetPolicy = %v, want a refusal that names the policy and the host", err)
+	}
+	if policies.policy.Name != "" {
+		t.Errorf("the policy %+v was stored", policies.policy)
 	}
 }
 

@@ -24,7 +24,7 @@ func WriteInitrd(initPath, dst string) error {
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("finish the initrd: %w", err)
 	}
-	if err := store.WriteFile(dst, archive.Bytes(), 0o600); err != nil {
+	if err := store.WriteFileIfChanged(dst, archive.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write the initrd: %w", err)
 	}
 

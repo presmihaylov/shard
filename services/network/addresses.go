@@ -17,6 +17,7 @@ type Addresses struct {
 	subnet  netip.Prefix
 	gateway netip.Addr
 	egress  EgressSource
+	report  func(format string, v ...any)
 	judge   Judge
 	// ensure serializes compile and apply, so an older snapshot never lands after a newer one; the host Service has the same lock.
 	ensure sync.Mutex
@@ -34,7 +35,7 @@ func NewAddresses(cfg Config) (*Addresses, error) {
 		return nil, err
 	}
 
-	return &Addresses{pool: p, subnet: cfg.Subnet, gateway: gateway, egress: cfg.Egress}, nil
+	return &Addresses{pool: p, subnet: cfg.Subnet, gateway: gateway, egress: cfg.Egress, report: cfg.Report}, nil
 }
 
 // Gateway is the one address the stack answers for.
@@ -56,7 +57,7 @@ func (a *Addresses) Allocate(ctx context.Context, id string) (models.NetworkSpec
 	if err != nil {
 		return models.NetworkSpec{}, err
 	}
-	if err := a.apply(ctx); err != nil {
+	if err := heldFor(a.apply(ctx), id); err != nil {
 		return models.NetworkSpec{}, err
 	}
 
@@ -82,11 +83,13 @@ func (a *Addresses) Reapply(ctx context.Context, id string) error {
 		return err
 	}
 
-	return a.apply(ctx)
+	return heldFor(a.apply(ctx), id)
 }
 
 // ReapplyAll is Reapply for a change that names no sandbox.
-func (a *Addresses) ReapplyAll(ctx context.Context) error { return a.apply(ctx) }
+func (a *Addresses) ReapplyAll(ctx context.Context) error {
+	return heldReported(a.apply(ctx), a.report)
+}
 
 func (a *Addresses) apply(ctx context.Context) error {
 	a.ensure.Lock()
@@ -96,11 +99,14 @@ func (a *Addresses) apply(ctx context.Context) error {
 
 		return nil
 	}
-	chains, err := a.egress.Chains(ctx)
+	chains, held, err := splitHeld(a.egress.Chains(ctx))
 	if err != nil {
 		return fmt.Errorf("compile the egress chains: %w", err)
 	}
 	a.judge.Apply(chains)
+	if held != nil {
+		return held
+	}
 
 	return nil
 }

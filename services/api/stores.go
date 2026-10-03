@@ -90,7 +90,7 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -139,7 +139,7 @@ func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.SecretRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -201,8 +201,18 @@ func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 	var req pullRequest
-	if err := decode(r, &req); err != nil {
+	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
+
+		return
+	}
+
+	if streamed(r) {
+		h.streamProgress(w, r, http.StatusOK, "pull "+req.Ref, func(ctx context.Context) (ProgressLine, error) {
+			img, err := h.stores.PullImage(ctx, req.Ref)
+
+			return ProgressLine{Image: &img}, err
+		})
 
 		return
 	}

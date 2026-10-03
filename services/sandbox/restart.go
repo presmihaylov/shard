@@ -88,7 +88,10 @@ func UnderRestartPolicy(sb models.Sandbox) bool {
 
 // recordRestarts reads the record again under the lock, because a stop may have landed since the list.
 func (s *Service) recordRestarts(ctx context.Context, id string, report func(string)) error {
-	unlock := s.lock(id)
+	unlock, ok := s.tryLock(id)
+	if !ok {
+		return nil
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)

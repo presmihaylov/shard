@@ -90,10 +90,17 @@ disagrees with it gets a 400.
 
 A denied request gets a 403 with a one-line JSON body naming the host, the port, the rule and the
 reason. A request the upstream leg fails gets a 502 with a fixed body and never the error, which can
-quote the request after a secret value went into it. The proxy rewrites a body of up to 8 MiB; a
-longer one streams through unchanged. It reads the policy, the secret and the sandbox records on
-every request, so a change lands on the next request; a connection that is already open is not cut.
+quote the request after a secret value went into it. A secret value goes into request headers alone,
+so every body streams through unchanged (SHARD-337). One sandbox holds at most 32 MiB at once of the
+bytes a value adds to a request, from the rewrite until the request is forwarded; past it a request
+gets a 503. It reads the policy, the secret and the sandbox records on every request, so a change lands on the next
+request; a connection that is already open is not cut.
 The proxy logs one line per request and never a header value, a body or a secret.
+
+A keep-alive connection that sends no next request is closed after 60 seconds. A sandbox holds at
+most 1024 connections open to the proxy, over both ports: on Linux the host's input chain drops the
+next one and writes it to the egress log as `limit`, on a VM host the stack does (SHARD-350). The
+proxy also counts by source and refuses past 1024, with a daemon log line that names the cap.
 
 The rules for a fronted sandbox follow its record like its chain: a stopped sandbox keeps them, `rm`
 removes them and `start` writes them again.
@@ -179,8 +186,16 @@ nothing. What that means:
 
 - A host whose addresses rotate can drift from the rule until the next apply. Store the policy again
   to apply it again.
-- A name in a policy rule that does not resolve fails the apply, and with it the create, the start
-  or the policy command that asked for it. The host keeps the rules it had.
+- A name in a policy rule that does not resolve holds only the sandboxes whose policy names it. The
+  create or the start of such a sandbox fails. One that runs keeps its last good chain while its
+  policy is unchanged, and otherwise gets a closed chain: web goes to the proxy, DNS to the resolver,
+  and the rest is dropped. The last good chain lives in memory, so after a daemon restart it is the
+  closed one. Every other sandbox, the daemon start, the proxy and the resolver go on, and the daemon
+  log names each held sandbox and the name.
+- A held sandbox comes back on the first apply after the name resolves again: a create, start, rm or
+  policy edit of any sandbox, or a daemon restart. Nothing retries on a timer.
+- Policy create and update resolve every name first, even when no sandbox holds the policy, and
+  refuse one that does not resolve. A failed sandbox never runs, so the apply skips its policy.
 - A CDN address shared by many hosts is allowed for all of them on the host table. The proxy closes
   that for 80 and 443 by matching the name in the request.
 

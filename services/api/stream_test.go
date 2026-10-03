@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -385,6 +386,38 @@ func TestAFailureMessageNestsUnderError(t *testing.T) {
 	}
 	if want := `{"error":{"code":"internal","message":"runsc: boom"}}`; string(encoded) != want {
 		t.Errorf("the failure encodes to %s, want %s", encoded, want)
+	}
+}
+
+// Output the buffer evicted before any client took it rides on the exit, so the client knows its copy has a gap.
+func TestExecSaysTheBytesTheBufferLost(t *testing.T) {
+	s := seed(t)
+	s.verbs.out = "tail\n"
+	s.verbs.lost = 512
+
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/exec/1a2b3c4d5e6f7a8b")
+
+	got := read(t, conn)
+	if got.ended != api.StreamExit || got.exit != (api.ExitMessage{LostBytes: 512}) {
+		t.Errorf("the session ended with stream %d and %+v, want the exit with 512 lost bytes", got.ended, got.exit)
+	}
+}
+
+// A detach for a stall ends the socket from the daemon's side, and no exit follows on it.
+func TestExecDetachEndsTheSession(t *testing.T) {
+	s := seed(t)
+	s.verbs.stall = true
+
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/exec/1a2b3c4d5e6f7a8b")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	stream, _, err := api.Receive(ctx, conn)
+	if err == nil {
+		t.Fatalf("the daemon sent a message of stream %d to a detached client, want the session ended", stream)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the session ran on after the daemon detached the client")
 	}
 }
 
