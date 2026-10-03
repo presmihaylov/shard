@@ -277,8 +277,8 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		if !m.status(p).Alive() {
 			return p.release(ctx, m)
 		}
-		// A guest with no stream, or no answer within the grace, is past waiting for.
-		return p.end(ctx, m)
+		// A guest with no stream, or no answer within the grace, is past waiting for; it still flushes before the cut.
+		return p.endLive(ctx, m)
 	}
 	ended, err := m.awaitGone(ctx, time.Until(deadline))
 	if err != nil {
@@ -286,6 +286,27 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 	if ended {
 		return p.settle(ctx, m)
+	}
+	// The grace outran the stop, so the guest flushes its disk before the cut (SHARD-344, shard ruling f4b0942e).
+	return p.endLive(ctx, m)
+}
+
+// endLive cuts a VM whose guest may still run: it gives the guest a bounded window to flush first, so a forced stop loses nothing the entrypoint wrote (SHARD-344).
+func (p *Provider) endLive(ctx context.Context, m *machine) error {
+	// The guest's flush rides the vmm, so a vmm too frozen to answer is cut at once and the stop keeps its bound.
+	probe, cancelProbe := context.WithTimeout(ctx, probeFloor)
+	_, err := m.client.State(probe)
+	cancelProbe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: no flush before the forced stop, the vmm does not answer: %v\n", m.id, err)
+
+		return p.end(ctx, m)
+	}
+	// The flush is best effort and off the verb's deadline; a responsive guest syncs within flushGrace, a hung one is cut with the VM anyway.
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushGrace)
+	defer cancel()
+	if err := m.control.Load().Kill(flushCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: flush before the forced stop: %v\n", m.id, err)
 	}
 
 	return p.end(ctx, m)

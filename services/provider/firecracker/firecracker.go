@@ -81,6 +81,8 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after a forced stop of the VM, which nothing in the guest can refuse.
 	killGrace = 10 * time.Second
+	// flushGrace bounds the best-effort flush a forced stop asks of the guest; a slower or hung guest is cut with the VM.
+	flushGrace = 5 * time.Second
 	// probeFloor is the least one vmm state read gets, so a wait whose time ran out still asks once (SHARD-388).
 	probeFloor = time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
