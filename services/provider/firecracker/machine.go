@@ -10,10 +10,13 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -40,6 +43,8 @@ type machine struct {
 	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
 	freezesOverlay bool
 	cancel         context.CancelFunc
+	// followed is closed once follow has landed the guest's last event, so a stop that saw the vmm go reads all of them (SHARD-290).
+	followed chan struct{}
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
@@ -184,16 +189,39 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	if !ended {
 		return fmt.Errorf("the vmm of sandbox %s still answers %s after its guest went", m.id, killGrace)
 	}
-	p.forget(m)
 
-	return m.close()
+	return p.settle(ctx, m)
 }
 
+// settle lets the vmm go once follow has landed what the guest sent before it went; a boot that never followed has nothing to wait for.
+func (p *Provider) settle(ctx context.Context, m *machine) error {
+	if m.followed != nil {
+		select {
+		case <-m.followed:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the last events of sandbox %s: %w", m.id, ctx.Err())
+		case <-time.After(killGrace):
+			return fmt.Errorf("the last events of sandbox %s still land %s after its vmm went", m.id, killGrace)
+		}
+	}
+	p.forget(m)
+	if err := m.close(); err != nil {
+		return err
+	}
+
+	return p.lost(m.id)
+}
+
+// forget drops the machine and keeps what its loop could not land, which the files would otherwise answer for.
 func (p *Provider) forget(m *machine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.machines[m.id] == m {
-		delete(p.machines, m.id)
+	if p.machines[m.id] != m {
+		return
+	}
+	delete(p.machines, m.id)
+	if m.lost != nil {
+		p.lostRuns[m.id] = m.lost
 	}
 }
 
@@ -213,7 +241,7 @@ func (p *Provider) spawn(id string) (done func()) {
 // boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile, oomFile, cursorFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, cursorFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -357,6 +385,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
+	m.followed = make(chan struct{})
 	go p.follow(m)
 	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
@@ -369,6 +398,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 
 // follow lands every event the guest sends where the file readers look, until the VM is gone.
 func (p *Provider) follow(m *machine) {
+	defer close(m.followed)
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
@@ -418,6 +448,8 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
 	case supervisor.KindOOM:
 		return m.markOOM()
+	case supervisor.KindSupervisorFailed:
+		return m.markSupervisorFailed(event)
 	}
 
 	return nil
@@ -433,6 +465,41 @@ func (m *machine) markOOM() error {
 	}
 
 	return nil
+}
+
+// markSupervisorFailed lands shard-init's own death as the sandbox exit, with its reason, before the halt takes the guest.
+func (m *machine) markSupervisorFailed(event supervisor.Message) error {
+	if event.Exit == nil {
+		return errors.New("a supervisor-failed event carries no status")
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(oneLine(event.Error)), 0o600); err != nil {
+		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
+	}
+
+	return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
+}
+
+// maxReason bounds what a guest's reason may take of a record, a log line and a column of ls.
+const maxReason = 256
+
+// oneLine makes the guest's reason safe for a record and a log line: no control bytes, valid UTF-8, at most maxReason bytes.
+func oneLine(reason string) string {
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+
+		return r
+	}, strings.ToValidUTF8(reason, "?"))
+	if len(clean) <= maxReason {
+		return clean
+	}
+	cut := maxReason
+	for !utf8.RuneStart(clean[cut]) {
+		cut--
+	}
+
+	return clean[:cut]
 }
 
 // reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.
