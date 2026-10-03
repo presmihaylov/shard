@@ -46,7 +46,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
 	}
 
-	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
@@ -265,6 +265,11 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	p.mu.Unlock()
 
 	return m, nil
+}
+
+// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+func (p *Provider) AdoptStaging(dir string) error {
+	return os.RemoveAll(dir + ".tmp")
 }
 
 // Fork brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; the source is not touched.

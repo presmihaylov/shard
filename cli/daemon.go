@@ -65,5 +65,27 @@ func (a App) daemonStatus(ctx context.Context) error {
 		return fmt.Errorf("write the output: %w", err)
 	}
 
+	if len(d.Tasks) == 0 {
+		return nil
+	}
+
+	var backoff []string
+	tw := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(tw, "\ntask\tstate\trestarts\tlast_error")
+	for _, t := range d.Tasks {
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", t.Name, t.State, t.Restarts, t.LastError)
+		if t.State == daemon.TaskBackoff {
+			backoff = append(backoff, t.Name)
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("write the output: %w", err)
+	}
+
+	// A task that restarts in a loop is an unhealthy daemon, so the exit code says so to a script.
+	if len(backoff) > 0 {
+		return fmt.Errorf("tasks in backoff: %s", strings.Join(backoff, ", "))
+	}
+
 	return nil
 }

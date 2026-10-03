@@ -39,6 +39,7 @@ type Reconciler interface {
 type Daemon struct {
 	root       string
 	tasks      []Task
+	states     *taskStates
 	log        *log.Logger
 	reconciler Reconciler
 
@@ -52,6 +53,7 @@ func New(root string, out io.Writer, tasks ...Task) *Daemon {
 	return &Daemon{
 		root:         root,
 		tasks:        tasks,
+		states:       newTaskStates(tasks),
 		log:          log.New(out, "", log.LstdFlags),
 		minBackoff:   defaultMinBackoff,
 		maxBackoff:   defaultMaxBackoff,

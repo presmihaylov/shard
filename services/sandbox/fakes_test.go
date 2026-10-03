@@ -2,9 +2,11 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -99,7 +101,9 @@ type fakeRepo struct {
 	r  *recorder
 	sb models.Sandbox
 	// left is what List answers with.
-	left    []models.Sandbox
+	left []models.Sandbox
+	// listErr is the non-fatal error List returns beside left, for the unreadable-record path.
+	listErr error
 	missing bool
 	deleted bool
 	// created is the record as Create was handed it, so a test says what the request put in it.
@@ -138,7 +142,7 @@ func (f *fakeRepo) List() ([]models.Sandbox, error) {
 		return nil, err
 	}
 
-	return f.left, nil
+	return f.left, f.listErr
 }
 
 func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
@@ -314,6 +318,18 @@ type fakeProvider struct {
 	source  string
 	paused  bool
 	resumed bool
+	// lose makes the pause end the sandbox the way a checkpoint that broke off does.
+	lose bool
+	// pauseCtxErr is what the pause's context said when the pause began, so a test sees a client's cancel.
+	pauseCtxErr error
+	// spendBudget makes the pause write its checkpoint and then wait out its deadline, the way a wedged delete does.
+	spendBudget bool
+	// cleanupFails makes the pause write its checkpoint and then fail the delete, with the sentry gone.
+	cleanupFails bool
+	// cleanupFreezes makes the pause write its checkpoint and then fail the delete, with the sentry still frozen.
+	cleanupFreezes bool
+	// mounted is a merged view runsc no longer holds: Stop refuses it the way the gVisor orphan guard does, and only Release frees it.
+	mounted bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -441,9 +457,36 @@ func (f *fakeProvider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
 }
 
-func (f *fakeProvider) Pause(_ context.Context, _ string, dir string) error {
+func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
+	f.pauseCtxErr = ctx.Err()
 	if err := f.r.record("provider.Pause"); err != nil {
 		return err
+	}
+	if f.lose {
+		f.status = models.Status{}
+
+		return &models.LostError{Sandbox: id, Err: fmt.Errorf("checkpoint sandbox %s: no space left on device", id)}
+	}
+	if f.spendBudget || f.cleanupFails || f.cleanupFreezes {
+		if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+			return err
+		}
+	}
+	if f.cleanupFreezes {
+		f.status = frozen()
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: device or resource busy", id)
+	}
+	if f.cleanupFails {
+		f.status = models.Status{}
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: device or resource busy", id)
+	}
+	if f.spendBudget {
+		<-ctx.Done()
+		f.status = models.Status{}
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: %w", id, ctx.Err())
 	}
 	f.paused, f.snapshotDir = true, dir
 	f.status = models.Status{Exists: true, State: models.StatePaused}
@@ -470,6 +513,8 @@ func (f *fakeProvider) Fork(_ context.Context, dir string, spec models.SandboxSp
 
 	return nil
 }
+
+func (f *fakeProvider) AdoptStaging(string) error { return nil }
 
 func (f *fakeProvider) Clone(_ context.Context, source string, spec models.SandboxSpec) error {
 	if err := f.r.record("provider.Clone"); err != nil {
@@ -528,6 +573,9 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	if err := f.r.record("provider.Stop"); err != nil {
 		return err
 	}
+	if f.mounted && !f.status.Exists {
+		return errors.New("runsc does not hold sandbox sandbox1 but its rootfs is still mounted")
+	}
 	f.stopped, f.grace = true, grace
 	if f.aliveAfterStop == 0 {
 		f.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: f.failsOnStop}
@@ -538,6 +586,21 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	}
 
 	return nil
+}
+
+// Release frees what a cut pause left beside its snapshot, the frozen sentry and the merged view alike.
+func (f *fakeProvider) Release(_ context.Context, _, _ string) error {
+	if err := f.r.record("provider.Release"); err != nil {
+		return err
+	}
+	f.status, f.mounted = models.Status{}, false
+
+	return nil
+}
+
+// frozen is a sentry a pause froze and never deleted, which runsc still reports paused and alive.
+func frozen() models.Status {
+	return models.Status{Exists: true, State: models.StatePaused, PID: 42}
 }
 
 // Reclaim is the raw kill a wedged substrate gets, and it frees the substrate the way Stop's kill does.
@@ -570,6 +633,10 @@ func (f *fakeProvider) Remove(ctx context.Context, _ string) error {
 }
 
 func (f *fakeProvider) Status(ctx context.Context, _ string) (models.Status, error) {
+	// A real provider runs its probe under ctx, so after a wedged pause a done ctx fails it at once.
+	if err := ctx.Err(); f.spendBudget && err != nil {
+		return models.Status{}, fmt.Errorf("status: %w", err)
+	}
 	if f.statusGate != nil {
 		select {
 		case <-f.statusGate:

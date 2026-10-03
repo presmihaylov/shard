@@ -5,8 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -27,7 +27,13 @@ func newProvider(t *testing.T) *gvisor.Provider {
 func newProviderOver(t *testing.T, script string, opts ...runsc.Option) *gvisor.Provider {
 	t.Helper()
 
-	dir := t.TempDir()
+	return newProviderIn(t, t.TempDir(), script, opts...)
+}
+
+// newProviderIn is newProviderOver with the state directory of sandbox id at dir/id, for a test that lays a bundle there.
+func newProviderIn(t *testing.T, dir, script string, opts ...runsc.Option) *gvisor.Provider {
+	t.Helper()
+
 	binary := filepath.Join(dir, "runsc")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatalf("write the fake runsc: %v", err)
@@ -103,15 +109,14 @@ func TestForkTakesOnlyASnapshotAndAFreeId(t *testing.T) {
 	}
 }
 
-// A snapshot that failed must leave the sandbox running and the snapshot it had, even after a Ctrl-C.
-func TestAFailedCheckpointThawsTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
+// The sentry exits after any checkpoint, so a failed one loses the sandbox: nothing to thaw, the old snapshot kept.
+func TestAFailedCheckpointLosesTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
 	work := t.TempDir()
 	calls := filepath.Join(work, "calls")
-	// The checkpoint reports itself and then blocks, so the cut-off never races the fake runsc.
-	started, release := fifo(t, filepath.Join(work, "started")), heldOpen(t, filepath.Join(work, "release"))
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
-case "$*" in *checkpoint*) echo yes > `+started+`; cat `+release+`;; esac
+case "$*" in *checkpoint*) echo "save failed: no space left on device" >&2; exit 1;; esac
 echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	p.SetCgroupRoot(t.TempDir())
 
 	dir := filepath.Join(t.TempDir(), "snap")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -121,41 +126,224 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 		t.Fatal(err)
 	}
 
-	// The checkpoint outlives the context, which is what a Ctrl-C in the middle of one looks like.
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() { done <- p.Pause(ctx, "amber-otter-1a2b", dir) }()
-
-	running := make(chan error, 1)
-	go func() {
-		_, err := os.ReadFile(started)
-		running <- err
-	}()
-
-	select {
-	case err := <-running:
-		if err != nil {
-			t.Fatalf("wait for the checkpoint to start: %v", err)
-		}
-	case err := <-done:
-		t.Fatalf("Pause returned %v before it reached the checkpoint", err)
-	}
-	cancel()
-
-	if err := <-done; err == nil {
-		t.Fatal("Pause returned no error for a checkpoint that was cut short")
+	err := p.Pause(t.Context(), "amber-otter-1a2b", dir)
+	var lost *models.LostError
+	if !errors.As(err, &lost) || !strings.Contains(err.Error(), "no space left on device") {
+		t.Fatalf("Pause returned %v, want the lost sandbox with the checkpoint's reason", err)
 	}
 
-	if got := unitFile(t, calls); !strings.Contains(got, "resume amber-otter-1a2b") {
-		t.Errorf("the sandbox was not thawed after the failed checkpoint: %s", got)
+	got := unitFile(t, calls)
+	if strings.Contains(got, "resume") || !strings.Contains(got, "delete --force amber-otter-1a2b") {
+		t.Errorf("the failed checkpoint ran %q, want a delete and no thaw", got)
 	}
 	if got := unitFile(t, filepath.Join(dir, "checkpoint.img")); got != "old" {
 		t.Errorf("the old snapshot is %q after a failed pause, want it kept", got)
 	}
 	if _, err := os.Stat(dir + ".tmp"); err == nil {
 		t.Error("the failed checkpoint left its temporary directory behind")
+	}
+}
+
+// The service bounds a pause the client let go of, and the delete after a good checkpoint must keep that bound.
+func TestAWedgedDeleteAfterACheckpointEndsAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "amber-otter-1a2b")
+	for _, layer := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, layer), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderIn(t, dir, `case "$*" in *delete*) exec sleep 60;; esac
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	p.SetCgroupRoot(t.TempDir())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := p.Pause(ctx, "amber-otter-1a2b", filepath.Join(t.TempDir(), "snap"))
+	if err == nil {
+		t.Fatal("Pause returned nil, want the delete cut at the deadline")
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("Pause took %s over a wedged delete, want it ended near the 500ms deadline", took)
+	}
+}
+
+// runsc never probes a paused sandbox, so a sentry gone after a checkpoint must read as stopped, not paused.
+func TestStatusReadsAPausedSandboxWhoseSentryIsGoneAsStopped(t *testing.T) {
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
+	cgroupRoot, proc := t.TempDir(), t.TempDir()
+	p.SetCgroupRoot(cgroupRoot)
+	p.SetProcRoot(proc)
+
+	status, err := p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Alive() || !status.Exists || status.PID != 0 {
+		t.Errorf("Status of a paused sandbox with no sentry is %+v, want stopped and still held by runsc", status)
+	}
+
+	// A frozen sentry is still there, in its own cgroup, and only a resume brings it back.
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cgroupDir := filepath.Join(cgroupRoot, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cgroupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroupDir, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err = p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != models.StatePaused || status.PID != 42 {
+		t.Errorf("Status of a frozen sandbox is %+v, want paused with its pid", status)
+	}
+}
+
+// runsc refuses to signal or thaw a paused sandbox whose sentry is gone, so stop must ask it for neither.
+func TestStopEndsAPausedSandboxWhoseSentryIsGone(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
+	p.SetCgroupRoot(t.TempDir())
+	p.SetProcRoot(t.TempDir())
+
+	err := p.Stop(t.Context(), "amber-otter-1a2b", time.Second)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Stop of a paused sandbox with no sentry: %v", err)
+	}
+
+	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("stop of a paused sandbox with no sentry ran %q, want neither a thaw nor a signal", got)
+	}
+}
+
+// frozenSentry lays the proc and cgroup entries of a sentry a pause froze, and a snapshot beside it, and answers that snapshot.
+func frozenSentry(t *testing.T, p *gvisor.Provider, cgroups string) string {
+	t.Helper()
+
+	proc := t.TempDir()
+	p.SetProcRoot(proc)
+	p.SetCgroupRoot(cgroups)
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "snap")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return dir
+}
+
+// A cut pause leaves the sentry frozen past its checkpoint, so the release must delete it and never thaw it (SHARD-366).
+func TestReleaseDeletesAFrozenSandboxWithoutAThaw(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	cgroups := t.TempDir()
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *delete*) rm -f `+cg+`/cgroup.procs ;; esac
+echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
+	dir := frozenSentry(t, p, cgroups)
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Release of a frozen sandbox: %v", err)
+	}
+
+	got := unitFile(t, calls)
+	if !strings.Contains(got, "delete --force") {
+		t.Errorf("release of a frozen sandbox ran %q, want a forced delete", got)
+	}
+	if strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("release of a frozen sandbox ran %q, want neither a thaw nor a signal: the guest would run past its snapshot", got)
+	}
+}
+
+// A cut after the delete leaves runsc holding nothing, and the release must still sweep the cgroup and drop the view (SHARD-366).
+func TestReleaseFreesASandboxACutPauseLeftAfterItsDelete(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	cgroups := t.TempDir()
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *state*) echo 'FetchSpec failed: loading container: file does not exist' >&2; exit 1;; esac`)
+	dir := frozenSentry(t, p, cgroups)
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.Remove(filepath.Join(cg, "cgroup.procs")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Release of a sandbox runsc no longer holds: %v", err)
+	}
+
+	if _, err := os.Stat(cg); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the cgroup %s is still there (%v), want it swept before the unmount", cg, err)
+	}
+	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("release of a sandbox runsc no longer holds ran %q, want neither a thaw nor a signal", got)
+	}
+}
+
+// Release ends a sandbox outright, so it must refuse one that runs.
+func TestReleaseRefusesARunningSandbox(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	dir := frozenSentry(t, p, t.TempDir())
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	if err == nil || !strings.Contains(err.Error(), "amber-otter-1a2b") {
+		t.Errorf("Release of a running sandbox returned %v, want a refusal that names it", err)
+	}
+	if got := unitFile(t, calls); strings.Contains(got, "delete") {
+		t.Errorf("release of a running sandbox ran %q, want no delete", got)
+	}
+}
+
+// The callers hand Release a context with no deadline, so its own bound must cover the probe before the delete.
+func TestReleaseEndsAWedgedProbeAtItsOwnBound(t *testing.T) {
+	p := newProviderOver(t, `case "$*" in *state*) exec sleep 60;; esac`)
+	dir := frozenSentry(t, p, t.TempDir())
+
+	start := time.Now()
+	if err := p.Release(t.Context(), "amber-otter-1a2b", dir); err == nil {
+		t.Fatal("Release returned nil over a runsc that never answered")
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Errorf("Release took %s over a wedged probe, want it ended at its own bound", took)
 	}
 }
 
@@ -244,35 +432,6 @@ func unitFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-// fifo is the test's channel into the fake runsc: an open blocks until the other side opens too.
-func fifo(t *testing.T, path string) string {
-	t.Helper()
-
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Fatalf("make the fifo %s: %v", path, err)
-	}
-
-	return path
-}
-
-// heldOpen keeps a write end of the fifo, so the reader a killed fake leaves behind sees EOF and exits.
-// The open is O_RDWR because a write-only open would block until that reader arrives, which it may never do.
-func heldOpen(t *testing.T, path string) string {
-	t.Helper()
-
-	f, err := os.OpenFile(fifo(t, path), os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("hold the fifo %s open: %v", path, err)
-	}
-	t.Cleanup(func() {
-		if err := f.Close(); err != nil {
-			t.Errorf("close the fifo %s: %v", path, err)
-		}
-	})
-
-	return path
-}
-
 // A clone copies the layer, so a source that still writes it is refused before anything is laid out.
 func TestCloneRefusesASourceThatIsLive(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
@@ -309,4 +468,21 @@ func readDir(t *testing.T, dir string) []os.DirEntry {
 	}
 
 	return entries
+}
+
+// A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
+func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshot")
+	tmp := dir + ".tmp"
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("stage a cut pause: %v", err)
+	}
+
+	if err := (&gvisor.Provider{}).AdoptStaging(dir); err != nil {
+		t.Fatalf("AdoptStaging: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
 }

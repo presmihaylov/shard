@@ -143,8 +143,11 @@ On gVisor a supervisor that fails its own bookkeeping exits 125 and the host rea
 `supervisor-failed` on the control connection, with the reason and the exit code 125, and waits up
 to ten seconds for a host to attach when none is, then exits (SHARD-42). The Firecracker provider
 records the 125 as the sandbox exit and the reason as its stopped reason, which `inspect` and `ls`
-show as `shard-init failed: <reason>` until the next start (SHARD-290). The vz provider ignores the
-event today and reads the halt as the guest gone.
+show as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot, before
+any listener exists, opens the control connection with the same message, so a Firecracker start
+answers with the reason and the 125 at once, not after the 30 second grace (SHARD-416). The vz
+provider ignores the event today and reads the halt as the guest gone; at boot its start fails at
+once on the unexpected opener, without the reason, and records no 125.
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection the host

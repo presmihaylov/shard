@@ -112,6 +112,9 @@ func mountRoot(boot guestBoot) error {
 	if err := unix.Mount(boot.Overlay, "/overlay", "ext4", 0, ""); err != nil {
 		return fmt.Errorf("mount %s on /overlay: %w", boot.Overlay, err)
 	}
+	if err := refuseReadOnlyMount("/overlay", boot.Overlay); err != nil {
+		return err
+	}
 	// Opened without CLOEXEC, so the re-exec inherits it for rootDisk: the move onto the root leaves the upper no path.
 	upper, err := unix.Open("/overlay", unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -128,6 +131,23 @@ func mountRoot(boot guestBoot) error {
 	}
 	if err := unix.Mount("overlay", "/newroot", "overlay", 0, "lowerdir=/base,upperdir=/overlay/upper,workdir=/overlay/work"); err != nil {
 		return fmt.Errorf("mount the overlay of %s over %s on /newroot: %w", boot.Overlay, boot.Base, err)
+	}
+	// A corrupt disk leaves the ext4 rw but makes overlayfs fall back to a read-only root, so re-check the merged mount, not just the ext4.
+	if err := refuseReadOnlyMount("/newroot", boot.Overlay); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// refuseReadOnlyMount fails the boot when mountPath mounted read-only, which a corrupt disk does, since the sandbox would then drop every write.
+func refuseReadOnlyMount(mountPath, device string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(mountPath, &st); err != nil {
+		return fmt.Errorf("statfs the overlay %s at %s: %w", device, mountPath, err)
+	}
+	if st.Flags&unix.ST_RDONLY != 0 {
+		return fmt.Errorf("the overlay %s mounted read-only at %s, which a corrupt disk does; the sandbox cannot persist writes", device, mountPath)
 	}
 
 	return nil
@@ -449,6 +469,16 @@ func powerOff(reboot bool) error {
 	if err := unix.Reboot(cmd); err != nil {
 		return fmt.Errorf("power off: %w", err)
 	}
+
+	return nil
+}
+
+// syncDisk flushes every filesystem before the host cuts the VM, so an unsynced kill loses nothing the entrypoint wrote; a test process is not PID 1.
+func syncDisk() error {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	unix.Sync()
 
 	return nil
 }
