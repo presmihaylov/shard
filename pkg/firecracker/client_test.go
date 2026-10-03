@@ -121,7 +121,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 			"machine": `{"vcpu_count":2,"mem_size_mib":256}`,
 			"boot":    `{"kernel_image_path":"/kernels/vmlinux","initrd_path":"/kernels/initrd.cpio","boot_args":"console=ttyS0 -- -transport vsock"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
-			"overlay": `{"drive_id":"overlay","path_on_host":"` + filepath.Join(root, "overlay.raw") + `","is_root_device":false,"is_read_only":false}`,
+			"overlay": `{"drive_id":"overlay","path_on_host":"` + filepath.Join(root, "overlay.raw") + `","is_root_device":false,"is_read_only":false,"cache_type":"Writeback"}`,
 			"network": `{"iface_id":"eth0","host_dev_name":"shardv2","guest_mac":"02:fc:0a:57:00:02"}`,
 			"vsock":   `{"guest_cid":3,"uds_path":"` + cfg.Vsock + `"}`,
 		}[name]
@@ -375,7 +375,7 @@ func TestRestoreBringsTheSnapshotUpInAFreshVmmWithItsOwnTapVsockAndDisk(t *testi
 			"network": `{"guest_mac":"02:fc:0a:57:00:02","host_dev_name":"shardv3","iface_id":"eth0"}`,
 			"vsock":   `{"guest_cid":3,"uds_path":"` + snap.Vsock + `"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
-			"overlay": `{"drive_id":"overlay","is_read_only":false,"is_root_device":false,"path_on_host":"` + overlay + `"}`,
+			"overlay": `{"cache_type":"Writeback","drive_id":"overlay","is_read_only":false,"is_root_device":false,"path_on_host":"` + overlay + `"}`,
 		}[name]
 		if got != want {
 			t.Fatalf("the restored %s = %s, want %s", name, got, want)

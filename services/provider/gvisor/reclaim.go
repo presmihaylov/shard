@@ -63,7 +63,12 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 		return err
 	}
 	if len(ours) == 0 {
-		return fmt.Errorf("no process of %v in the cgroup of sandbox %s names it, so none was killed", pids, id)
+		// A sentry mid-exit still holds the cgroup with an empty cmdline, so it names nothing yet leaves within the grace; only a pid that stays past the grace is foreign (SHARD-411).
+		if err := p.awaitEmpty(ctx, dir, id); err != nil {
+			return fmt.Errorf("no process of %v in the cgroup of sandbox %s names it, so none was killed", pids, id)
+		}
+
+		return nil
 	}
 
 	for _, pid := range ours {

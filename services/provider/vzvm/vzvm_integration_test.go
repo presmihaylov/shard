@@ -40,6 +40,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The suite wants the shard kernel; a Mac without one skips it, and SHARD_KERNEL names one elsewhere.
@@ -282,6 +283,38 @@ func TestASmallDiskHoldsThousandsOfFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(log), "2000") {
 		t.Fatalf("the guest did not count 2000 files:\n%s", log)
+	}
+}
+
+// A files exec as a non-root user holds none of PID 1's capabilities, so the guest kernel refuses what that user may not write (SHARD-286).
+func TestANonRootFilesExecMeetsItsUsersPermissions(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t, "/bin/true")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	put := func(guestPath string) error {
+		conn, err := supervisor.OpenFiles(t.Context(), func(ctx context.Context, exec models.ExecSpec) (models.ExitStatus, error) {
+			return h.provider.Exec(ctx, spec.ID, exec)
+		}, "nobody")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := "mine\n"
+
+		return errors.Join(supervisor.Put(conn, supervisor.FileHeader{Path: guestPath, Size: int64(len(body)), Mode: 0o644}, strings.NewReader(body)), conn.Close())
+	}
+
+	if err := put("/tmp/owned"); err != nil {
+		t.Fatalf("a put into /tmp as nobody: %v", err)
+	}
+	if err := put("/etc/owned"); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("a put into /etc as nobody gave %v, want permission denied", err)
 	}
 }
 

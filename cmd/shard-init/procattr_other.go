@@ -15,3 +15,6 @@ func sysProcAttr(credential *syscall.Credential, _ []uintptr, tty bool, _ *os.Fi
 
 // setUndumpable is a no-op off Linux, where no sandbox runs and the tests never fork a guest.
 func setUndumpable() error { return nil }
+
+// dropCapabilities is a no-op off Linux, where no capability exists to drop.
+func dropCapabilities() error { return nil }

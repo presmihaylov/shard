@@ -165,8 +165,8 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 // runsc never probes a paused sandbox, so a sentry gone after a checkpoint must read as stopped, not paused.
 func TestStatusReadsAPausedSandboxWhoseSentryIsGoneAsStopped(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
-	p.SetCgroupRoot(t.TempDir())
-	proc := t.TempDir()
+	cgroupRoot, proc := t.TempDir(), t.TempDir()
+	p.SetCgroupRoot(cgroupRoot)
 	p.SetProcRoot(proc)
 
 	status, err := p.Status(t.Context(), "amber-otter-1a2b")
@@ -177,11 +177,18 @@ func TestStatusReadsAPausedSandboxWhoseSentryIsGoneAsStopped(t *testing.T) {
 		t.Errorf("Status of a paused sandbox with no sentry is %+v, want stopped and still held by runsc", status)
 	}
 
-	// A frozen sentry is still there, and only a resume brings it back.
+	// A frozen sentry is still there, in its own cgroup, and only a resume brings it back.
 	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cgroupDir := filepath.Join(cgroupRoot, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cgroupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroupDir, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

@@ -112,6 +112,8 @@ type Config struct {
 	StartBudget time.Duration
 	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
 	PauseBudget time.Duration
+	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
+	PutCleanupGrace time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.

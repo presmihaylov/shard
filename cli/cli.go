@@ -51,6 +51,9 @@ Usage:
                            start a new sandbox from the snapshot of another
   shard clone [--name <name>] <id|name>
                            start a new sandbox over a copy of the files a stopped or paused one kept
+  shard cp [--user <user>] <src> <id|name>:<path>
+  shard cp <id|name>:<path> <dst>
+                           copy one file into or out of a running sandbox; a directory destination takes the file under its own name
   shard stop [flags] <id|name>
                            end a sandbox and keep everything it holds
   shard rm [flags] <id|name>
@@ -288,6 +291,8 @@ func (a App) run(ctx context.Context, args []string) error {
 		return a.fork(ctx, args[1:])
 	case "clone":
 		return a.clone(ctx, args[1:])
+	case "cp":
+		return a.cp(ctx, args[1:])
 	case "stop":
 		return a.stop(ctx, args[1:])
 	case "rm":
