@@ -97,8 +97,10 @@ func TestFirecrackerBuildsOnAFreshRoot(t *testing.T) {
 		t.Skipf("firecracker is refused on %s before any directory is made", runtime.GOOS)
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "firecracker"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a stand-in on PATH must be executable
-		t.Fatal(err)
+	for _, name := range []string{"firecracker", "jailer"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // a stand-in on PATH must be executable
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", bin)
 	kernel := filepath.Join(t.TempDir(), "vmlinux")

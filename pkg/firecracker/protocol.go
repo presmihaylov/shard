@@ -84,8 +84,3 @@ type networkOverride struct {
 type vsockOverride struct {
 	Path string `json:"uds_path"`
 }
-
-type partialDrive struct {
-	ID   string `json:"drive_id"`
-	Path string `json:"path_on_host"`
-}

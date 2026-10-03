@@ -13,11 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/peercred"
 )
 
@@ -27,81 +28,145 @@ type Client struct {
 	vsock  string
 }
 
-// Start spawns firecracker in its own group, so it outlives this process, puts the microVM in over the API and boots it; the console goes to cfg.Console.
-func Start(ctx context.Context, binary string, cfg Config) (*Client, Info, error) {
-	client := &Client{socket: cfg.Socket, vsock: cfg.Vsock}
-	cmd, err := client.spawn(ctx, binary, cfg.Console, cfg.Cgroup)
+// Start runs firecracker through the jailer, puts the microVM in over the API and boots it; the vmm leads its own session, so it outlives this process.
+func Start(ctx context.Context, jail Jail, cfg Config) (*Client, Info, error) {
+	client := jailed(jail, cfg.Socket, cfg.Vsock)
+	pid, err := client.spawn(ctx, jail, cfg.Socket, cfg.Console)
 	if err != nil {
 		return nil, Info{}, err
 	}
 	if err := client.configure(cfg); err != nil {
-		return nil, Info{}, errors.Join(err, end(cmd))
+		return nil, Info{}, errors.Join(err, end(pid))
 	}
 
-	return client.up(cmd)
+	return client.up(pid)
 }
 
-// Restore spawns a fresh firecracker and brings the snapshot back in it, running; a snapshot loads only into a process that booted nothing.
-func Restore(ctx context.Context, binary string, snap Snapshot) (*Client, Info, error) {
-	client := &Client{socket: snap.Socket, vsock: snap.Vsock}
-	cmd, err := client.spawn(ctx, binary, snap.Console, snap.Cgroup)
+// Restore runs a fresh firecracker through the jailer and brings the snapshot back in it, running; a snapshot loads only into a process that booted nothing.
+func Restore(ctx context.Context, jail Jail, snap Snapshot) (*Client, Info, error) {
+	client := jailed(jail, snap.Socket, snap.Vsock)
+	pid, err := client.spawn(ctx, jail, snap.Socket, snap.Console)
 	if err != nil {
 		return nil, Info{}, err
 	}
 	if err := client.load(snap); err != nil {
-		return nil, Info{}, errors.Join(err, end(cmd))
+		return nil, Info{}, errors.Join(err, end(pid))
 	}
 
-	return client.up(cmd)
+	return client.up(pid)
 }
 
-// spawn execs firecracker on the socket and waits for its API; the process is the caller's to end when what follows fails.
-func (c *Client) spawn(ctx context.Context, binary, console, group string) (*exec.Cmd, error) {
+// jailed is the client of a vmm in jail, which dials its sockets by their host paths.
+func jailed(jail Jail, socket, vsock string) *Client {
+	client := &Client{socket: jail.Host(socket)}
+	if vsock != "" {
+		client.vsock = jail.Host(vsock)
+	}
+
+	return client
+}
+
+// spawn runs the jailer on the socket and waits for the vmm's API; the vmm is the caller's to end when what follows fails.
+func (c *Client) spawn(ctx context.Context, jail Jail, socket, console string) (int, error) {
 	if err := c.claim(); err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	log, err := os.OpenFile(console, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open the console log: %w", err)
+		return 0, fmt.Errorf("open the console log: %w", err)
 	}
 	defer log.Close()
 
-	cmd := exec.Command(binary, "--api-sock", c.socket)
+	pid, err := runJailer(ctx, jail, socket, log)
+	if err != nil {
+		return 0, err
+	}
+	vmm, err := watch(pid)
+	if err != nil {
+		return 0, errors.Join(err, end(pid))
+	}
+	err = c.await(ctx, vmm, console)
+
+	return pid, errors.Join(err, vmm.release())
+}
+
+// runJailer runs the jailer to its exit, which comes once it cloned the vmm and wrote its pid; a refusal is on the jailer's stderr, the console.
+func runJailer(ctx context.Context, jail Jail, socket string, log *os.File) (int, error) {
+	// No --resource-limit: the jailer's 2048 open files outlast the vsock muxer's cap of 1023 connections, the one fd count a sandbox grows.
+	args := []string{
+		"--id", jail.ID, "--exec-file", jail.Exec, "--uid", strconv.Itoa(jail.UID), "--gid", strconv.Itoa(jail.UID),
+		"--chroot-base-dir", jail.Base, "--cgroup-version", "2", "--parent-cgroup", jail.Cgroup, "--new-pid-ns",
+	}
+	cmd := exec.Command(jail.Jailer, append(args, "--", "--api-sock", socket)...)
 	cmd.Stdout = log
 	cmd.Stderr = log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The jailer has the vmm call setsid when it leads a session itself, so the vmm leads a group KillPID ends whole.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start firecracker: %w", err)
+		return 0, fmt.Errorf("start the jailer: %w", err)
 	}
-	// The guest's memory is mapped when the API configures the machine, which is after this, so the cgroup is charged all of it.
-	if group != "" {
-		if err := cgroup.Add(group, cmd.Process.Pid); err != nil {
-			return nil, errors.Join(fmt.Errorf("bound firecracker %d: %w", cmd.Process.Pid, err), end(cmd), reap(cmd))
-		}
-	}
-	// The waiter comes after the move: cgroup.procs takes a number, and a reaped one is a number the kernel may have given away.
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
-	if err := c.await(ctx, cmd, exited, console); err != nil {
-		return nil, err
+	select {
+	case err := <-exited:
+		if err != nil {
+			return 0, fmt.Errorf("the jailer exited before the vmm ran (%w): %s", err, tail(log.Name()))
+		}
+	case <-ctx.Done():
+		return 0, errors.Join(ctx.Err(), abandon(jail, cmd.Process.Pid, exited))
+	case <-time.After(startTimeout):
+		return 0, errors.Join(fmt.Errorf("the jailer did not exit within %s: %s", startTimeout, tail(log.Name())), abandon(jail, cmd.Process.Pid, exited))
 	}
 
-	return cmd, nil
+	return pidOf(jail)
+}
+
+// abandon ends a jailer that did not exit, and the vmm it may have cloned and named already.
+func abandon(jail Jail, jailer int, exited <-chan error) error {
+	if err := KillPID(jailer); err != nil {
+		return fmt.Errorf("end the jailer: %w", err)
+	}
+	// The jailer leads the group the kill went to, so its wait error is that kill.
+	<-exited
+	pid, err := pidOf(jail)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return end(pid)
+}
+
+// pidOf reads the vmm's host pid, which the jailer writes into the chroot once it cloned the vmm.
+func pidOf(jail Jail) (int, error) {
+	path := jail.Host(filepath.Base(jail.Exec) + ".pid")
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read the vmm pid: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(blob)))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("the jailer wrote %q to %s, not a pid", blob, path)
+	}
+
+	return pid, nil
 }
 
 // up reads the state the microVM settled in, which is what every spawn reports back.
-func (c *Client) up(cmd *exec.Cmd) (*Client, Info, error) {
+func (c *Client) up(pid int) (*Client, Info, error) {
 	info, err := c.State(context.Background())
 	if err != nil {
-		return nil, Info{}, errors.Join(fmt.Errorf("read the state after the boot: %w", err), end(cmd))
+		return nil, Info{}, errors.Join(fmt.Errorf("read the state after the boot: %w", err), end(pid))
 	}
 
 	return c, info, nil
 }
 
-// load puts the snapshot in, paused, swaps the drives the caller names while nothing runs, then resumes the guest.
+// load puts the snapshot in, paused, then resumes the guest; each drive opens the in-jail path the snapshot recorded, which is this jail's own file.
 func (c *Client) load(snap Snapshot) error {
 	body := snapshotLoad{
 		StatePath: snap.State,
@@ -117,11 +182,6 @@ func (c *Client) load(snap Snapshot) error {
 	}
 	if err := c.put("/snapshot/load", body); err != nil {
 		return err
-	}
-	for _, d := range snap.Drives {
-		if err := c.UpdateDrive(d.ID, d.Path); err != nil {
-			return err
-		}
 	}
 
 	return c.Resume()
@@ -140,11 +200,6 @@ func (c *Client) Resume() error {
 // Snapshot writes the device state and the whole guest memory to two files; firecracker wants the microVM paused first.
 func (c *Client) Snapshot(state, memory string) error {
 	return c.put("/snapshot/create", snapshotCreate{Type: "Full", StatePath: state, MemoryPath: memory})
-}
-
-// UpdateDrive points a drive the guest already has at another host file; firecracker reopens it in place.
-func (c *Client) UpdateDrive(id, path string) error {
-	return c.patch("/drives/"+id, partialDrive{ID: id, Path: path})
 }
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.
@@ -173,25 +228,30 @@ func absent(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
 }
 
-// await polls the API until this process answers; one that exits or stays silent is reported with its console.
-func (c *Client) await(ctx context.Context, cmd *exec.Cmd, exited <-chan error, console string) error {
+// await polls the API until the vmm answers; one that exits or stays silent is reported with its console.
+func (c *Client) await(ctx context.Context, vmm *process, console string) error {
 	deadline := time.After(startTimeout)
 	for {
 		info, err := c.State(ctx)
-		if err == nil && info.PID != cmd.Process.Pid {
-			return errors.Join(fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, c.socket), end(cmd))
+		if err == nil && info.PID != vmm.pid {
+			return errors.Join(fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, c.socket), end(vmm.pid))
 		}
 		if err == nil {
 			return nil
 		}
+		gone, watchErr := vmm.exited()
+		if watchErr != nil {
+			return errors.Join(watchErr, end(vmm.pid))
+		}
+		if gone {
+			return fmt.Errorf("firecracker %d exited before its api answered: %s", vmm.pid, tail(console))
+		}
 
 		select {
 		case <-ctx.Done():
-			return errors.Join(ctx.Err(), end(cmd))
-		case waitErr := <-exited:
-			return fmt.Errorf("firecracker exited before its api answered (%w): %s", waitErr, tail(console))
+			return errors.Join(ctx.Err(), end(vmm.pid))
 		case <-deadline:
-			return errors.Join(fmt.Errorf("the api socket did not answer within %s: %s", startTimeout, tail(console)), end(cmd))
+			return errors.Join(fmt.Errorf("the api socket did not answer within %s: %s", startTimeout, tail(console)), end(vmm.pid))
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -287,7 +347,7 @@ func (c *Client) owner() (int, error) {
 	return pid, nil
 }
 
-// KillPID ends the vmm pid with the group Start made it lead, so nothing it spawned outlives it; one that leads no group dies alone.
+// KillPID sends SIGKILL and no other signal, to the group the vmm leads or else to it alone: as PID 1 of its pid namespace it drops any signal it has no handler for.
 func KillPID(pid int) error {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
 		return nil
@@ -439,19 +499,9 @@ func faultOf(blob []byte) string {
 }
 
 // end kills a firecracker that never came up, so a failed start leaves no microVM behind.
-func end(cmd *exec.Cmd) error {
-	if err := KillPID(cmd.Process.Pid); err != nil {
+func end(pid int) error {
+	if err := KillPID(pid); err != nil {
 		return fmt.Errorf("the firecracker that did not come up: %w", err)
-	}
-
-	return nil
-}
-
-// reap waits for a firecracker the caller just killed, on the one path where no waiter runs yet; that kill is how it dies.
-func reap(cmd *exec.Cmd) error {
-	var exit *exec.ExitError
-	if err := cmd.Wait(); err != nil && !errors.As(err, &exit) {
-		return fmt.Errorf("wait for the firecracker that did not come up: %w", err)
 	}
 
 	return nil

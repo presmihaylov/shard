@@ -11,11 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -24,8 +27,11 @@ import (
 // Name is the substrate, as the record and every refusal name it.
 const Name = "firecracker"
 
-// Binary is the vmm the provider drives, on PATH wherever firecracker is installed.
-const Binary = "firecracker"
+// Binary is the vmm the provider drives, and Jailer what spawns it, both on PATH wherever firecracker is installed.
+const (
+	Binary = "firecracker"
+	Jailer = "jailer"
+)
 
 // cmdline boots the guest onto the serial console and hands shard-init the vsock transport, its two disks in attach order, and -reboot: firecracker exits on a guest reboot, never on a power off.
 const cmdline = "console=ttyS0 reboot=k panic=1 pci=off -- -transport vsock -base /dev/vda -overlay /dev/vdb -console /dev/ttyS0 -reboot"
@@ -38,7 +44,8 @@ const MaxVCPUs = 32
 
 // The files under a sandbox's state directory, all the provider's own; the overlay disk is bundle.OverlayDiskFile.
 const (
-	recordFile   = "vm.json"
+	recordFile = "vm.json"
+	// socketFile and vsockFile are where a vmm a daemon before the jail spawned still answers (SHARD-306).
 	socketFile   = "firecracker.sock"
 	vsockFile    = "vsock.sock"
 	consoleFile  = "console.log"
@@ -49,12 +56,11 @@ const (
 	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
 	supervisorFailedFile = "supervisor-failed"
 	logFile              = "output.log"
-	initrdFile           = "initrd.cpio"
-	// memoryFile is the guest memory a restore mapped, a hard link to the snapshot's own; a fresh boot has none.
+	// memoryFile is the guest memory in a snapshot, and a link to it in a state directory from before the jail.
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
-	// restoringFile marks a fork's restore in flight: its vmm loaded the source's overlay and may not have swapped to this one's yet (SHARD-321).
+	// restoringFile marks a fork's restore in flight, whose guest holds the source's address until the readdress (SHARD-321).
 	restoringFile = "restoring"
 	// reseedFile marks a restored guest still on the snapshot's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
 	reseedFile = "reseed"
@@ -66,8 +72,37 @@ const (
 	snapshotFile  = "snapshot.json"
 	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
 	checkpointFile = "checkpoint.img"
-	// snapshotFileMode is the one place the snapshot files get their mode; SHARD-306's jail changes the owner or group here too.
+	// snapshotFileMode is the one place the snapshot files get their mode, once they are root's again.
 	snapshotFileMode os.FileMode = 0o600
+)
+
+// The files under Config.Dir, the provider's own.
+const (
+	initrdFile = "initrd.cpio"
+	// execFile is the copy of Binary the jailer runs, under a name of its own, so the jail path does not follow a symlink's target.
+	execFile   = "firecracker"
+	kernelFile = "vmlinux"
+	uidFile    = "next-uid"
+)
+
+// The files in a jail, as the vmm names them; the jailer makes the jail its "/".
+const (
+	jailKernel  = "/vmlinux"
+	jailInitrd  = "/initrd"
+	jailBase    = "/base.erofs"
+	jailOverlay = "/" + bundle.OverlayDiskFile
+	jailState   = "/" + snapshotState
+	jailMemory  = "/" + memoryFile
+	apiSocket   = "/api.sock"
+	jailVsock   = "/v.sock"
+	// jailSnap is where a pause has the vmm write its snapshot, apart from the memory a restored vmm maps.
+	jailSnap = "/snap"
+)
+
+// Every vmm runs as a uid of its own, gid the same, in a range clear of Sysbox, the /etc/subuid defaults and the systemd ranges.
+const (
+	firstUID = 0x70000000
+	lastUID  = 0x7FFDFFFF
 )
 
 // The drive ids on the API, in the order the guest sees them as /dev/vda and /dev/vdb.
@@ -89,22 +124,34 @@ const (
 	startGrace = 30 * time.Second
 )
 
-// SocketFiles names every socket the provider binds in a sandbox's state directory, so the daemon refuses a root they do not fit under.
-func SocketFiles() []string { return []string{socketFile, vsockFile} }
+// JailSockets names every socket a sandbox's vmm binds in its jail under base, so the daemon refuses a root they do not fit under.
+func JailSockets(base, id string) []string {
+	root := jailRoot(base, id)
+
+	return []string{filepath.Join(root, apiSocket), filepath.Join(root, jailVsock)}
+}
+
+// jailRoot is the chroot the jailer makes for the sandbox: the base, the exec file's name, the id, then root.
+func jailRoot(base, id string) string {
+	return filepath.Join(base, execFile, id, "root")
+}
 
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes.
 type StateDirs func(id string) (string, error)
 
 // Config is what the provider boots every microVM with.
 type Config struct {
-	// Binary is the firecracker to spawn, and Kernel the guest kernel it boots.
+	// Binary is the firecracker to run, Jailer the jailer that runs it, and Kernel the guest kernel it boots.
 	Binary string
+	Jailer string
 	Kernel string
 	// Init is a static linux shard-init for the host's arch, which becomes the initrd's /init.
 	Init string
-	// Dir is where the provider writes the initrd it builds from Init.
-	Dir  string
-	Dirs StateDirs
+	// Dir is where the provider keeps its copies of Binary and Kernel, and the initrd it builds from Init.
+	Dir string
+	// JailBase is the jailer's chroot base, on the reflink filesystem of Dir and the state directories, so each jail gets its files by reference.
+	JailBase string
+	Dirs     StateDirs
 	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
 	Log *log.Logger
 }
@@ -114,6 +161,8 @@ var _ models.Provider = (*Provider)(nil)
 // Provider implements models.Provider on Firecracker.
 type Provider struct {
 	cfg    Config
+	exec   string
+	kernel string
 	initrd string
 	// cgroupRoot is the host cgroup v2 mount, under which every vmm is bounded. A test points it at a directory it owns, or at nothing.
 	cgroupRoot string
@@ -123,28 +172,63 @@ type Provider struct {
 	machines map[string]*machine
 	// spawning is every sandbox this process is bringing a vmm up for, which no lookup may take for a leftover.
 	spawning map[string]bool
+
+	// uids orders the uid counter, apart from mu, so a spawn's file write holds up no status.
+	uids sync.Mutex
+	// chown and ownTap give a jail's files and the tap to the vmm's uid; a test without root swaps them.
+	chown  func(path string, uid, gid int) error
+	ownTap func(name string, uid, gid int) error
 	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
 	lostRuns map[string]error
 }
 
 func New(cfg Config) (*Provider, error) {
-	if cfg.Binary == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.Dirs == nil {
-		return nil, errors.New("the firecracker provider needs a binary, a kernel, a shard-init, a directory and a state directory lookup")
+	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil {
+		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base and a state directory lookup")
 	}
 
 	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.
 	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create the firecracker directory: %w", err)
 	}
+	if err := os.MkdirAll(cfg.JailBase, 0o700); err != nil {
+		return nil, fmt.Errorf("create the jail base: %w", err)
+	}
 	initrd := filepath.Join(cfg.Dir, initrdFile)
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
+		return nil, err
+	}
+	// The jailer copies the exec file into each jail with its mode, and the vmm runs it as a uid that owns nothing else.
+	exec := filepath.Join(cfg.Dir, execFile)
+	if err := copyIn(cfg.Binary, exec, 0o755); err != nil {
+		return nil, err
+	}
+	kernel := filepath.Join(cfg.Dir, kernelFile)
+	if err := copyIn(cfg.Kernel, kernel, 0o600); err != nil {
 		return nil, err
 	}
 	if cfg.Log == nil {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{}}, nil
+	return &Provider{
+		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
+		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
+		chown: os.Chown, ownTap: netns.ChownTap,
+	}, nil
+}
+
+// copyIn puts a copy of src at dst, which a jail can then take by reference; an unchanged copy is not written again.
+func copyIn(src, dst string, perm os.FileMode) error {
+	blob, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	if err := store.WriteFileIfChanged(dst, blob, perm); err != nil {
+		return fmt.Errorf("copy %s in: %w", src, err)
+	}
+
+	return nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -201,6 +285,54 @@ type record struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
+	// UID is the uid and gid the vmm runs as, which a start and a resume keep; zero is a record from before the jail (SHARD-306).
+	UID int `json:"uid,omitempty"`
+	// Jail is the chroot the vmm runs in; empty is a vmm a daemon before the jail spawned, which answers in the state directory.
+	Jail string `json:"jail,omitempty"`
+}
+
+// sockets is where the sandbox's vmm answers: in its jail, or in the state directory for one spawned before the jail.
+func (r record) sockets(dir string) (api, vsock string) {
+	if r.Jail == "" {
+		return filepath.Join(dir, socketFile), filepath.Join(dir, vsockFile)
+	}
+
+	return filepath.Join(r.Jail, apiSocket), filepath.Join(r.Jail, jailVsock)
+}
+
+// nextUID hands out the uid of a new vmm; none is used twice, so nothing a gone sandbox left is open to a new one.
+func (p *Provider) nextUID() (int, error) {
+	p.uids.Lock()
+	defer p.uids.Unlock()
+	path := filepath.Join(p.cfg.Dir, uidFile)
+	next, err := readUID(path)
+	if err != nil {
+		return 0, err
+	}
+	if next < firstUID || next > lastUID {
+		return 0, fmt.Errorf("the next uid in %s is %d, outside %d..%d, so no sandbox can get a uid of its own", path, next, firstUID, lastUID)
+	}
+	if err := store.WriteFile(path, []byte(strconv.Itoa(next+1)), 0o600); err != nil {
+		return 0, fmt.Errorf("write the next uid: %w", err)
+	}
+
+	return next, nil
+}
+
+func readUID(path string) (int, error) {
+	blob, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return firstUID, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the next uid: %w", err)
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(blob)))
+	if err != nil {
+		return 0, fmt.Errorf("parse the next uid in %s: %w", path, err)
+	}
+
+	return uid, nil
 }
 
 func (p *Provider) dir(id string) (string, error) {
