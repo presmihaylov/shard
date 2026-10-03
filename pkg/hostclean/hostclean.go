@@ -230,7 +230,11 @@ func Release(root string) error {
 // Refuse fails a run on a root an earlier run of the same package left, because its lease pool lives
 // in that root: a new pool would hand out an address the old one holds and delete that sandbox's veth.
 func Refuse(prefixes ...string) error {
-	parentMade = !exists(parentPath)
+	_, err := os.Stat(parentPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat the cgroup parent %s: %w", parentPath, err)
+	}
+	parentMade = errors.Is(err, os.ErrNotExist)
 	left, err := Find(prefixes...)
 	if err != nil {
 		return err

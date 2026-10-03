@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/pkg/xfs"
@@ -400,5 +401,22 @@ func TestSweepDropsOnlyACgroupParentTheRunMade(t *testing.T) {
 				t.Errorf("leftParent = %v, want the parent named %v", described(left), !tc.had)
 			}
 		})
+	}
+}
+
+// A parent Refuse cannot stat is no proof that it is absent, so the run fails rather than take the parent as its own (SHARD-377).
+func TestRefuseFailsOnACgroupParentItCannotStat(t *testing.T) {
+	useFstab(t, "")
+	orig := parentPath
+	t.Cleanup(func() { parentPath, parentMade = orig, false })
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parentPath = filepath.Join(file, cgroupParent)
+
+	err := Refuse(filepath.Join(t.TempDir(), "shard-itest"))
+	if err == nil || !strings.Contains(err.Error(), parentPath) || parentMade {
+		t.Errorf("Refuse = %v with parentMade %v, want an error naming %s and the parent not taken", err, parentMade, parentPath)
 	}
 }
