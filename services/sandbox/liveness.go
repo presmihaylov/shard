@@ -17,8 +17,7 @@ const DiedReason = "the sandbox process died"
 // SupervisorFailedReason is what a record says once shard-init itself died, followed by the reason it gave.
 const SupervisorFailedReason = "shard-init failed"
 
-// Liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
-// and stops a sandbox whose process is gone, with the OOM as the reason when the host ended it for its memory.
+// Liveness records each entrypoint exit, and stops a sandbox whose process is gone, with the OOM as its reason if there was one.
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
@@ -251,8 +250,7 @@ func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, re
 	return nil
 }
 
-// recordDied stops the record of a sandbox whose process is gone with no stop behind it, so exec reads
-// the truth and start can bring it back over the disk it kept.
+// recordDied stops the record of a sandbox that died with no stop behind it, so start can bring it back over its disk.
 func (s *Service) recordDied(id, reason string, report func(string)) error {
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped

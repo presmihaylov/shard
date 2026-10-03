@@ -26,8 +26,7 @@ const DefaultStopSettle = 5 * time.Second
 // cannot pin a sandbox's lock or run a verb past its own timeout.
 const DefaultProbeBudget = 10 * time.Second
 
-// DefaultStartBudget bounds one start's substrate work, so a wedged runtime fails the verb fast and typed.
-// It exceeds gvisor's start grace, so a slow but live start is not cut short.
+// DefaultStartBudget bounds one start's substrate work, past gvisor's start grace so a slow but live start is not cut short.
 const DefaultStartBudget = 60 * time.Second
 
 // DefaultPauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.

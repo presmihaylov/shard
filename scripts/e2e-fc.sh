@@ -569,4 +569,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM restart, network, policy, proxy, daemon restart, reconcile, fork refused by name, pause, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, fork refused by name, pause, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"

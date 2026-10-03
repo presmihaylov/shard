@@ -10,8 +10,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
-// stops a sandbox whose process is gone, and starts an OOM-killed one again when its record asks.
+// liveness makes each running record agree with the substrate every tick.
 type liveness struct {
 	deps      *deps
 	lifecycle *lifecycle
