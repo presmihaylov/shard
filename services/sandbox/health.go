@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -18,13 +17,25 @@ const (
 	DefaultHealthRetries  = 3
 )
 
-// validHealthCheck refuses a probe that names no command, or a setting below what the probe needs.
+// The longest interval and timeout a create takes, so no record goes more than 70 min without a probe result.
+const (
+	MaxHealthInterval = 3600
+	MaxHealthTimeout  = 600
+)
+
+// validHealthCheck refuses a probe that names no command, or a setting outside what the probe needs.
 func validHealthCheck(hc models.HealthCheck) error {
 	if len(hc.Command) == 0 {
 		return errors.New("health names no command")
 	}
 	if hc.Interval < 0 || hc.Timeout < 0 || hc.Retries < 0 {
 		return errors.New("health.interval, timeout and retries are counts and cannot be negative")
+	}
+	if hc.Interval > MaxHealthInterval {
+		return fmt.Errorf("health.interval is at most %d seconds, got %d", MaxHealthInterval, hc.Interval)
+	}
+	if hc.Timeout > MaxHealthTimeout {
+		return fmt.Errorf("health.timeout is at most %d seconds, got %d", MaxHealthTimeout, hc.Timeout)
 	}
 
 	return nil
@@ -59,24 +70,18 @@ func startingHealth(hc *models.HealthCheck) *models.Health {
 	return &models.Health{Status: models.HealthStarting}
 }
 
-// CheckHealth probes every running record whose probe is due, side by side, and reports each change of status.
-func (s *Service) CheckHealth(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(sandboxes))
-	for i, sb := range sandboxes {
-		if sb.State != models.StateRunning || !probeDue(sb, now) {
-			continue
-		}
-		wg.Go(func() { errs[i] = s.probeAndRecord(ctx, sb, now, report) })
+// CheckHealth probes one record if its probe is due and reports a change of status; the daemon runs each sandbox's probe on its own.
+func (s *Service) CheckHealth(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
+	if !ProbeDue(sb, now) {
+		return nil
 	}
-	wg.Wait()
 
-	return errors.Join(errs...)
+	return s.probeAndRecord(ctx, sb, now, report)
 }
 
-// probeDue says the run has a probe and its interval has passed since the last one, or none ran yet.
-func probeDue(sb models.Sandbox, now time.Time) bool {
-	if sb.HealthCheck == nil || sb.Health == nil {
+// ProbeDue says the run is running with a probe, and its interval has passed since the last one, or none ran yet.
+func ProbeDue(sb models.Sandbox, now time.Time) bool {
+	if sb.State != models.StateRunning || sb.HealthCheck == nil || sb.Health == nil {
 		return false
 	}
 

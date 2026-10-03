@@ -48,7 +48,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(ctx)
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
@@ -102,7 +102,7 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	if held {
 		return p.end(ctx, m)
 	}
-	client, _, err := vz.Adopt(filepath.Join(stateDir, socketFile))
+	client, _, err := vz.Adopt(ctx, filepath.Join(stateDir, socketFile))
 	if absent(err) {
 		return nil
 	}
@@ -155,7 +155,7 @@ func runAgain(m *machine) error {
 	m.pausing = false
 	control := m.control.Load()
 
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}

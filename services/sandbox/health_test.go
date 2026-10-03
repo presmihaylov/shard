@@ -29,7 +29,7 @@ func newHealthLab(t *testing.T, sb models.Sandbox) *healthLab {
 func (l *healthLab) tick(t *testing.T, listed models.Sandbox, now time.Time) error {
 	t.Helper()
 
-	return l.svc.CheckHealth(t.Context(), []models.Sandbox{listed}, now, func(line string) { l.reports = append(l.reports, line) })
+	return l.svc.CheckHealth(t.Context(), listed, now, func(line string) { l.reports = append(l.reports, line) })
 }
 
 // probed is a running sandbox with a command probe on its first run, as the create leaves it.

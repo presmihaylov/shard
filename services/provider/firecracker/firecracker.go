@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,6 +54,8 @@ const (
 	cursorFile = "output.cursor"
 	// restoringFile marks a fork's restore in flight: its vmm loaded the source's overlay and may not have swapped to this one's yet (SHARD-321).
 	restoringFile = "restoring"
+	// reseedFile marks a restored guest still on the snapshot's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
+	reseedFile = "reseed"
 )
 
 // The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.
@@ -60,6 +64,8 @@ const (
 	snapshotFile  = "snapshot.json"
 	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
 	checkpointFile = "checkpoint.img"
+	// snapshotFileMode is the one place the snapshot files get their mode; SHARD-306's jail changes the owner or group here too.
+	snapshotFileMode os.FileMode = 0o600
 )
 
 // The drive ids on the API, in the order the guest sees them as /dev/vda and /dev/vdb.
@@ -73,9 +79,14 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after a forced stop of the VM, which nothing in the guest can refuse.
 	killGrace = 10 * time.Second
+	// probeFloor is the least one vmm state read gets, so a wait whose time ran out still asks once (SHARD-388).
+	probeFloor = time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
 	startGrace = 30 * time.Second
 )
+
+// SocketFiles names every socket the provider binds in a sandbox's state directory, so the daemon refuses a root they do not fit under.
+func SocketFiles() []string { return []string{socketFile, vsockFile} }
 
 // StateDirs answers where a sandbox's directory is. sandboxstate.Repository.Dir is what shard passes.
 type StateDirs func(id string) (string, error)
@@ -90,6 +101,8 @@ type Config struct {
 	// Dir is where the provider writes the initrd it builds from Init.
 	Dir  string
 	Dirs StateDirs
+	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
+	Log *log.Logger
 }
 
 var _ models.Provider = (*Provider)(nil)
@@ -120,6 +133,9 @@ func New(cfg Config) (*Provider, error) {
 	initrd := filepath.Join(cfg.Dir, initrdFile)
 	if err := bundle.WriteInitrd(cfg.Init, initrd); err != nil {
 		return nil, err
+	}
+	if cfg.Log == nil {
+		cfg.Log = log.New(io.Discard, "", 0)
 	}
 
 	return &Provider{cfg: cfg, initrd: initrd, cgroupRoot: cgroup.Root, machines: map[string]*machine{}, spawning: map[string]bool{}}, nil
@@ -175,7 +191,7 @@ type record struct {
 	// Nameservers and Hostname are the resolver files the guest writes itself, as a VM has no upper layer.
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
-	// RootFS is the image tree an exec resolves a named user against.
+	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
@@ -241,4 +257,24 @@ func (p *Provider) LogPath(id string) (string, error) {
 	}
 
 	return filepath.Join(dir, logFile), nil
+}
+
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+func (p *Provider) HeldLogs(id string) ([]string, error) {
+	dir, err := p.dir(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{filepath.Join(dir, consoleFile)}, nil
+}
+
+// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+func (p *Provider) BoundOutputLog(id string, max int64) error {
+	dir, err := p.dir(id)
+	if err != nil {
+		return err
+	}
+
+	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
 }
