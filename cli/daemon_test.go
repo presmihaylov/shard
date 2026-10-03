@@ -65,11 +65,11 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// shortRoot skips t.TempDir, whose path carries the test name past the 104 bytes a macOS socket path allows.
+// shortRoot skips t.TempDir and a Mac's $TMPDIR, both past the root a vz sandbox's socket path leaves room for.
 func shortRoot(t *testing.T) string {
 	t.Helper()
 
-	root, err := os.MkdirTemp("", "shard") //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp("/tmp", "shard") //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}

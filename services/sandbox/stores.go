@@ -43,10 +43,16 @@ type Reapplier interface {
 	ReapplyAll(ctx context.Context) error
 }
 
+// Compiler is the host compile a policy passes before it is stored.
+type Compiler interface {
+	Compiles(ctx context.Context, policy models.Policy) error
+}
+
 // StoresConfig is every layer the store verbs drive.
 type StoresConfig struct {
 	Repo     Reader
 	Policies PolicyStore
+	Compiler Compiler
 	Secrets  SecretStore
 	Images   ImageStore
 	// Network is built on the first policy change a sandbox holds, so a daemon without one needs no root.
@@ -113,6 +119,11 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 
 	if err := egress.Validate(policy); err != nil {
 		return PolicyView{}, &RequestError{Err: err}
+	}
+
+	// A stored name that does not resolve fails every apply while a sandbox holds it, other sandboxes' creates included.
+	if err := s.cfg.Compiler.Compiles(ctx, policy); err != nil {
+		return PolicyView{}, &RequestError{Err: fmt.Errorf("policy %s: %w", name, err)}
 	}
 
 	if err := s.cfg.Policies.Set(policy); err != nil {

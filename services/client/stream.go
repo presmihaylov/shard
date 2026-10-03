@@ -39,10 +39,23 @@ type execsResult struct {
 	Execs []models.Exec `json:"execs"`
 }
 
+// LostOutputError is a command that ended with output the daemon's buffer evicted before any client took it.
+type LostOutputError struct {
+	Sandbox string
+	Exit    models.ExitStatus
+	Bytes   int64
+}
+
+func (e *LostOutputError) Error() string {
+	return fmt.Sprintf("the exec in sandbox %s exited with code %d, and %d bytes of its output were lost before any client read them", e.Sandbox, e.Exit.Code, e.Bytes)
+}
+
 // Exec starts the command, then attaches over a WebSocket; a command that never ran is a CommandNotStartedError.
 func (c *Client) Exec(ctx context.Context, ref string, req sandbox.ExecRequest, streams ExecStreams) (models.ExitStatus, error) {
 	// The daemon gives the command no stdin unless this client has one to type into it.
 	req.Stdin = streams.Stdin != nil
+	// The attach follows at once, so the daemon keeps the output for it rather than evict any.
+	req.Attach = true
 
 	exec, err := c.CreateExec(ctx, ref, req)
 	if err != nil {
@@ -73,7 +86,7 @@ func (c *Client) AttachExec(ctx context.Context, ref, execID string, streams Exe
 	if err != nil {
 		return models.ExitStatus{}, missing(ref, err)
 	}
-	defer func() { err = errors.Join(err, closeStream(conn)) }()
+	defer func() { err = errors.Join(err, closeStream(conn, err)) }()
 
 	if streams.Started != nil {
 		streams.Started(execID)
@@ -82,7 +95,24 @@ func (c *Client) AttachExec(ctx context.Context, ref, execID string, streams Exe
 	// Nothing waits for this copier: it blocks on a terminal this process does not own.
 	go sendInput(ctx, conn, streams)
 
-	return readExec(ctx, conn, ref, streams)
+	exit, err = readExec(ctx, conn, ref, streams)
+	var cut *cutError
+	if errors.As(err, &cut) {
+		return models.ExitStatus{}, c.cutShort(ctx, ref, execID, cut)
+	}
+
+	return exit, err
+}
+
+// cutShort asks the record why a stream ended early, since a daemon that detaches a stalled client says nothing on the wire.
+func (c *Client) cutShort(ctx context.Context, ref, execID string, cut *cutError) error {
+	rec, err := c.GetExec(ctx, ref, execID)
+	// shard ruled in SHARD-283 (29e34095) that a record the daemon cannot answer leaves the cut line alone, as logs -f prints it.
+	if err != nil {
+		return cut
+	}
+
+	return fmt.Errorf("%w; the daemon detaches a client that takes no output for %s, and exec %s is %s with %d bytes of output lost", cut, sandbox.ExecStallBound, execID, rec.State, rec.LostBytes)
 }
 
 // ListExecs answers every exec the sandbox holds, oldest id first.
@@ -178,14 +208,46 @@ func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, 
 	return conn, nil
 }
 
-// closeStream ends a session both sides are done with; one the library closed on a cancelled context reports nothing.
-func closeStream(conn *websocket.Conn) error {
+// closeStream ends a session both sides are done with; one the library closed reports nothing, and a dropped one is only let go, as nobody reads a close.
+func closeStream(conn *websocket.Conn, ended error) error {
+	var dropped *droppedError
+	if errors.As(ended, &dropped) {
+		if err := conn.CloseNow(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("let go of the dropped stream: %w", err)
+		}
+
+		return nil
+	}
+
 	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("close the stream: %w", err)
 	}
 
 	return nil
 }
+
+// dropped names a failed read; one the connection ending caused says only that, as the library's frame text means nothing to an operator.
+func dropped(what string, err error) error {
+	cut := errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET)
+	if !cut {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+
+	return &droppedError{what: what, err: err}
+}
+
+// droppedError is a stream that ended with no word from the daemon; the cause stays in the chain and out of the text.
+type droppedError struct {
+	what string
+	err  error
+}
+
+func (e *droppedError) Error() string { return e.what + ": the stream to the daemon dropped" }
+
+func (e *droppedError) Unwrap() error { return e.err }
 
 // sendInput forwards the keyboard and then says so, because a guest that reads waits for the end of it.
 func sendInput(ctx context.Context, conn *websocket.Conn, streams ExecStreams) {
@@ -261,13 +323,22 @@ func readExec(ctx context.Context, conn *websocket.Conn, ref string, streams Exe
 	}
 }
 
+// cutError is a session that ended before its exit with no interrupt on this side.
+type cutError struct {
+	err error
+}
+
+func (e *cutError) Error() string { return e.err.Error() }
+
+func (e *cutError) Unwrap() error { return e.err }
+
 // ended names a session that ended before its exit, which only an interrupt on this side does on purpose.
 func ended(ctx context.Context, err error, ref string) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("the exec in sandbox %s: %w", ref, ctx.Err())
 	}
 
-	return fmt.Errorf("the exec in sandbox %s ended without an exit status: %w", ref, err)
+	return &cutError{err: dropped("the exec in sandbox "+ref+" ended without an exit status", err)}
 }
 
 // exitOf reads the exit message; one that carries an error is a command the sandbox never ran, with a shell's code.
@@ -281,7 +352,12 @@ func exitOf(payload []byte, ref string) (models.ExitStatus, error) {
 		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: ref, Reason: exit.Error, Code: exit.Code}
 	}
 
-	return models.ExitStatus{Code: exit.Code, Signal: exit.Signal}, nil
+	status := models.ExitStatus{Code: exit.Code, Signal: exit.Signal}
+	if exit.LostBytes > 0 {
+		return status, &LostOutputError{Sandbox: ref, Exit: status, Bytes: exit.LostBytes}
+	}
+
+	return status, nil
 }
 
 // failureOf reads a failure message into the error a refusal before the 101 would have been.
@@ -355,7 +431,7 @@ func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) 
 	if err != nil {
 		return missing(ref, err)
 	}
-	defer func() { err = errors.Join(err, closeStream(conn)) }()
+	defer func() { err = errors.Join(err, closeStream(conn, err)) }()
 
 	for {
 		stream, payload, err := api.Receive(ctx, conn)
@@ -364,7 +440,7 @@ func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) 
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("follow the output of sandbox %s: %w", ref, err)
+			return dropped("follow the output of sandbox "+ref, err)
 		}
 
 		switch stream {
@@ -414,7 +490,7 @@ func (c *Client) FollowEgressLog(ctx context.Context, ref string, out, errOut io
 	if err != nil {
 		return missing(ref, err)
 	}
-	defer func() { err = errors.Join(err, closeStream(conn)) }()
+	defer func() { err = errors.Join(err, closeStream(conn, err)) }()
 
 	for {
 		kind, record, err := conn.Read(ctx)
@@ -439,7 +515,7 @@ func (c *Client) FollowEgressLog(ctx context.Context, ref string, out, errOut io
 func egressLogEnd(err error, ref string, errOut io.Writer) error {
 	var closed websocket.CloseError
 	if !errors.As(err, &closed) {
-		return fmt.Errorf("follow the egress log of sandbox %s: %w", ref, err)
+		return dropped("follow the egress log of sandbox "+ref, err)
 	}
 
 	if closed.Code != websocket.StatusNormalClosure {

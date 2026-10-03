@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/erofs"
 	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
@@ -47,6 +48,8 @@ type Service struct {
 	// write serializes the writers of the tree. reclaim sweeps it by reachability, so without it one
 	// pull's rollback deletes the blobs another pull has written but not yet indexed.
 	write sync.Mutex
+	// removal holds a cache hit back while a removal is past its check, so a create never gets a rootfs that is going.
+	removal sync.RWMutex
 }
 
 // Image is one pulled image, unpacked and ready for a bundle. It crosses the daemon socket as JSON.
@@ -110,9 +113,16 @@ func New(root string, opts ...Option) (*Service, error) {
 // Pull fetches ref and unpacks it. A second pull of the same reference needs no network.
 func (s *Service) Pull(ctx context.Context, ref string) (Image, error) {
 	// The cache is read before the lock, so a pulled image still runs while another pull downloads.
+	s.removal.RLock()
 	img, found, err := s.cached(ref)
-	if err != nil || found {
-		return img, err
+	s.removal.RUnlock()
+	if err != nil {
+		return Image{}, err
+	}
+	if found {
+		ProgressFrom(ctx).Add(landed(StatusCached, img))
+
+		return img, nil
 	}
 
 	s.write.Lock()
@@ -140,17 +150,24 @@ func (s *Service) Claim(ctx context.Context, ref string, record func(Image) erro
 }
 
 func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
+	progress := ProgressFrom(ctx)
+
 	// Whoever held the lock may have been pulling this very reference.
 	img, found, err := s.cached(ref)
-	if err != nil || found {
-		return img, err
+	if err != nil {
+		return Image{}, err
+	}
+	if found {
+		progress.Add(landed(StatusCached, img))
+
+		return img, nil
 	}
 
 	if err := s.sweepStaging(); err != nil {
 		return Image{}, err
 	}
 
-	pulled, err := s.store.Pull(ctx, ref)
+	pulled, err := s.store.Pull(ctx, ref, pullReport{p: progress})
 	if err != nil {
 		return Image{}, errors.Join(err, s.reclaim())
 	}
@@ -160,7 +177,13 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, errors.Join(err, s.store.Remove(ref))
 	}
 
-	return s.describe(pulled)
+	img, err = s.describe(pulled)
+	if err != nil {
+		return Image{}, err
+	}
+	progress.Add(landed(StatusPulled, img))
+
+	return img, nil
 }
 
 // cached answers with the image the store already holds unpacked. A tag we hold is not re-resolved:
@@ -240,12 +263,26 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 	s.write.Lock()
 	defer s.write.Unlock()
 
-	if err := free(); err != nil {
-		return err
+	removed := s.unindex(ref, free)
+	if removed != nil && !errors.Is(removed, ErrNotReclaimed) {
+		return removed
 	}
 
-	// A host whose images are all cached never reaches the sweep in Pull, so the reclaim verb runs it.
+	// The staged trees go after the removal lock, so a big image rm never stalls a cached create.
 	if err := s.sweepStaging(); err != nil {
+		return errors.Join(removed, fmt.Errorf("%w: %w", ErrNotReclaimed, err))
+	}
+
+	return removed
+}
+
+// unindex checks, moves the artifacts of what only ref needs to staging names, and drops ref from the index.
+func (s *Service) unindex(ref string, free func() error) error {
+	// A create writes its record before it pulls, so free sees that record or the create's cache hit waits for the end.
+	s.removal.Lock()
+	defer s.removal.Unlock()
+
+	if err := free(); err != nil {
 		return err
 	}
 
@@ -255,22 +292,13 @@ func (s *Service) Remove(_ context.Context, ref string, free func() error) error
 		return err
 	}
 
-	// The rootfs goes first: index.json is the record of what the store holds, so it changes last.
-	// A staging name first, so a removal that dies half way leaves no rootfs that looks unpacked.
+	// The artifacts go first: index.json is the record of what the store holds, so it changes last.
 	for _, digest := range orphaned {
-		dir := s.rootfsDir(digest)
-		staged := filepath.Join(filepath.Dir(dir), stagingPrefix+"rm-"+filepath.Base(dir))
-		if err := os.Rename(dir, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stage %s for removal: %w", dir, err)
-		}
-		if err := os.RemoveAll(staged); err != nil {
-			return fmt.Errorf("remove %s: %w", dir, err)
-		}
-		if err := os.Remove(s.diskPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove the disk of %s: %w", digest, err)
-		}
-		if err := os.Remove(s.erofsPath(digest)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove the erofs image of %s: %w", digest, err)
+		for _, path := range []string{s.rootfsDir(digest), s.diskPath(digest), s.erofsPath(digest)} {
+			staged := filepath.Join(filepath.Dir(path), stagingPrefix+"rm-"+filepath.Base(path))
+			if err := os.Rename(path, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stage %s for removal: %w", path, err)
+			}
 		}
 	}
 
@@ -347,7 +375,7 @@ func (s *Service) unpacked(img registry.Image) bool {
 	return true
 }
 
-// sweepStaging drops the tree a killed pull left mid-unpack. It runs under the lock and never in
+// sweepStaging drops what a removal staged and the tree a killed pull left mid-unpack. It runs under the lock and never in
 // New, because a staging tree another writer holds is a live unpack rather than debris.
 func (s *Service) sweepStaging() error {
 	for _, dir := range artifactDirs {
@@ -383,7 +411,6 @@ func (s *Service) unpack(ctx context.Context, img registry.Image) error {
 	if err != nil {
 		return err
 	}
-
 	if err := s.unpackDir(ctx, img, layers); err != nil {
 		return err
 	}
@@ -419,17 +446,29 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 
+	progress := ProgressFrom(ctx)
+	progress.Add(Event{Status: StatusUnpacking, Reference: img.Reference, Digest: img.Digest, Layers: len(layers)})
 	for i, layer := range layers {
 		if err := applyLayer(ctx, tmp, layer); err != nil {
 			return fmt.Errorf("apply layer %d of %s: %w", i, img.Reference, err)
 		}
+
+		digest, err := layer.Digest()
+		if err != nil {
+			return fmt.Errorf("read the digest of layer %d of %s: %w", i, img.Reference, err)
+		}
+		progress.Add(Event{Status: StatusUnpacked, Digest: digest.String(), Layer: i + 1, Layers: len(layers)})
 	}
 
+	// A host crash after the rename must not leave a torn tree that unpacked() then trusts (SHARD-355).
+	if err := store.SyncFS(tmp); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 
-	return nil
+	return store.SyncDir(parent)
 }
 
 // unpackDisk builds the ext4 image from the layer tars, which keep the owners a directory unpack loses without root.
@@ -438,6 +477,8 @@ func (s *Service) unpackDisk(ctx context.Context, img registry.Image, layers []v
 	if _, err := os.Stat(disk); err == nil {
 		return nil
 	}
+
+	ProgressFrom(ctx).Add(Event{Status: StatusBuilding, Path: disk})
 
 	return stageFile(disk, func(tmp string) error {
 		if err := buildDisk(ctx, tmp, layers); err != nil {
@@ -454,6 +495,8 @@ func (s *Service) unpackErofs(ctx context.Context, img registry.Image) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
+
+	ProgressFrom(ctx).Add(Event{Status: StatusBuilding, Path: path})
 
 	return stageFile(path, func(tmp string) error {
 		if err := erofs.Build(ctx, tmp, s.rootfsDir(img.Digest)); err != nil {
@@ -478,12 +521,28 @@ func stageFile(path string, build func(tmp string) error) error {
 	if err := build(tmp.Name()); err != nil {
 		return err
 	}
+	if err := syncFile(tmp.Name()); err != nil {
+		return err
+	}
 
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp.Name(), err)
 	}
 
-	return nil
+	return store.SyncDir(filepath.Dir(path))
+}
+
+// syncFile flushes what an outside tool wrote to path, since only an fd of our own can fsync it.
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", path, err), f.Close())
+	}
+
+	return f.Close()
 }
 
 func applyLayer(ctx context.Context, dir string, layer v1.Layer) (err error) {

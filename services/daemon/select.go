@@ -36,28 +36,20 @@ func SelectProvider(named, root string) (Selection, error) {
 }
 
 func selectProvider(named, root, kvm string) (Selection, error) {
+	made, err := madeBy(root)
+	if err != nil {
+		return Selection{}, err
+	}
+	if named != "" && made.Provider != "" && named != made.Provider {
+		return Selection{}, fmt.Errorf("--provider %s contradicts the root, which is %s's: %s; name %s or leave --provider out", named, made.Provider, made.Reason, made.Provider)
+	}
 	if named != "" {
 		return Selection{Provider: named, Reason: "named by --provider"}, nil
 	}
-
-	// A root that already holds records keeps the substrate that made them: no other one can read them.
-	recorded, err := sandboxstate.RecordedProvider(root)
-	if err != nil {
-		return Selection{}, fmt.Errorf("read what made the records under %s: %w", root, err)
-	}
-	if recorded != "" {
-		return Selection{Provider: recorded, Reason: "it made the records under " + root}, nil
+	if made.Provider != "" {
+		return made, nil
 	}
 
-	// A firecracker root keeps its records inside its data image, which hides them whenever it is not mounted.
-	image := datadir.ImagePath(root)
-	_, err = os.Stat(image)
-	if err == nil {
-		return Selection{Provider: firecracker.Name, Reason: "it made the data image " + image}, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return Selection{}, fmt.Errorf("stat %s: %w", image, err)
-	}
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.
 	if runtime.GOOS == "darwin" {
 		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}, nil
@@ -76,4 +68,27 @@ func selectProvider(named, root, kvm string) (Selection, error) {
 	}
 
 	return Selection{Provider: firecracker.Name, Reason: kvm + " opens"}, nil
+}
+
+// madeBy names the substrate that made what is under root, or none for a fresh root. No other one can read it.
+func madeBy(root string) (Selection, error) {
+	recorded, err := sandboxstate.RecordedProvider(root)
+	if err != nil {
+		return Selection{}, fmt.Errorf("read what made the records under %s: %w", root, err)
+	}
+	if recorded != "" {
+		return Selection{Provider: recorded, Reason: "it made the records under " + root}, nil
+	}
+
+	// A firecracker root keeps its records inside its data image, which hides them whenever it is not mounted.
+	image := datadir.ImagePath(root)
+	_, err = os.Stat(image)
+	if err == nil {
+		return Selection{Provider: firecracker.Name, Reason: "it made the data image " + image}, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return Selection{}, fmt.Errorf("stat %s: %w", image, err)
+	}
+
+	return Selection{}, nil
 }

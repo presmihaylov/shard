@@ -41,6 +41,8 @@ type machine struct {
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the vmm: one vsock connection per call.
@@ -68,14 +70,51 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if info.State == fcapi.StateNotStarted {
 		return nil, p.endUnloaded(id, client, info.PID)
 	}
-	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
+	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before it swapped off the source's overlay.
 	if info.State == fcapi.StatePaused {
+		restoring, err := exists(filepath.Join(dir, restoringFile))
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: read the restore marker: %w", id, err)
+		}
+		// A fork's restore was in flight, so this vmm may hold the source's live disk: end it, never resume it onto the source (SHARD-321).
+		if restoring {
+			return nil, p.endUnloaded(id, client, info.PID)
+		}
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
 	}
 
-	return p.attach(ctx, id, dir, client, info)
+	m, err = p.attach(ctx, id, dir, client, info)
+	if err != nil || m == nil {
+		return m, err
+	}
+	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
+	if err := m.reseed(ctx); err != nil {
+		return nil, errors.Join(err, p.end(ctx, m))
+	}
+
+	return m, nil
+}
+
+// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
+func (m *machine) reseed(ctx context.Context) error {
+	marker := filepath.Join(m.dir, reseedFile)
+	pending, err := exists(marker)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: read the reseed marker: %w", m.id, err)
+	}
+	if !pending {
+		return nil
+	}
+	if err := m.control.Load().Reseed(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: reseed the restored guest: %w", m.id, err)
+	}
+	if err := os.Remove(marker); err != nil {
+		return fmt.Errorf("sandbox %s: clear the reseed marker: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
@@ -100,6 +139,19 @@ func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
 func absent(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+}
+
+// exists reports whether a stat found the path; a missing path is no error, any other stat failure is.
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, err
 }
 
 // release lets a vmm whose guest has gone finish exiting, and forgets it, so a new boot can claim the socket.
@@ -143,7 +195,7 @@ func (p *Provider) spawn(id string) (done func()) {
 // boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile, oomFile} {
+	for _, stale := range []string{exitFile, restartsFile, oomFile, cursorFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -217,7 +269,7 @@ func guestMAC(address netip.Addr) string {
 }
 
 // readdress gives the guest the address the record names, once the control stream is up; a fork's memory holds the source's, MAC included.
-func (m *machine) readdress(r record) error {
+func (m *machine) readdress(ctx context.Context, r record) error {
 	if r.Address == "" {
 		return nil
 	}
@@ -229,7 +281,7 @@ func (m *machine) readdress(r record) error {
 		Interface: "eth0", MAC: guestMAC(prefix.Addr()), IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
 		Nameservers: r.Nameservers, Hostname: r.Hostname,
 	}
-	if err := m.control.Load().Readdress(address); err != nil {
+	if err := m.control.Load().Readdress(ctx, address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
 	}
 
@@ -238,7 +290,7 @@ func (m *machine) readdress(r record) error {
 
 // attach opens the control connection to the guest and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
@@ -254,6 +306,10 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	}
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
+	}
+	// The guest answered, so a fork's restore swapped off the source and resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
+	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())
 	}
 	if err := p.reconcile(m, state); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
@@ -276,7 +332,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, out)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -290,6 +346,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -345,7 +402,7 @@ func (m *machine) markOOM() error {
 	if err := os.WriteFile(filepath.Join(m.dir, oomFile), nil, 0o600); err != nil {
 		return fmt.Errorf("mark sandbox %s killed by its memory bound: %w", m.id, err)
 	}
-	if err := m.control.Load().Stop(); err != nil {
+	if err := m.control.Load().Stop(context.Background()); err != nil {
 		return fmt.Errorf("end sandbox %s after its memory bound: %w", m.id, err)
 	}
 
@@ -364,6 +421,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try.
 			p.keep(m, control.Close())
 			time.Sleep(pollInterval)
@@ -424,24 +482,28 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == fcapi.StateRunning
 }
 
-// followLogs appends what the logs connection carries to the log file, and opens it again after a drop while the VM runs.
-func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out io.WriteCloser) {
+// followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
+func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
 	defer out.Close()
-	sink := &logSink{w: out}
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
-		err := supervisor.Logs(ctx, opened, sink)
+		err := supervisor.Logs(ctx, opened, out, version)
 		if ctx.Err() != nil {
 			return
 		}
 		// A file that refuses the log blocks the guest on its output pipe, so every read of the sandbox says so; a redial would not help.
-		if sink.err != nil {
-			p.keep(m, fmt.Errorf("the log stopped: %w", sink.err))
+		if out.Err != nil {
+			p.keep(m, fmt.Errorf("the log stopped: %w", out.Err))
+
+			return
+		}
+		if errors.Is(err, supervisor.ErrLogsVersion) {
+			p.keep(m, fmt.Errorf("the log stopped: %w", err))
 
 			return
 		}
@@ -455,21 +517,6 @@ func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, ou
 		opened = m.dial
 		time.Sleep(pollInterval)
 	}
-}
-
-// logSink keeps the first write failure of the log file, which the connection's own errors would otherwise hide.
-type logSink struct {
-	w   io.Writer
-	err error
-}
-
-func (s *logSink) Write(b []byte) (int, error) {
-	n, err := s.w.Write(b)
-	if err != nil && s.err == nil {
-		s.err = err
-	}
-
-	return n, err
 }
 
 // close ends what this process holds of the vmm; the vmm itself, and its VM, are the stop's business.
@@ -515,7 +562,10 @@ func awaitEnded(m *machine) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		info, err := m.client.State()
+		// Each read ends with the wait, so a vmm that takes the dial and never answers costs the grace and not callTimeout (SHARD-388).
+		probe, cancel := context.WithTimeout(ctx, max(time.Until(deadline), probeFloor))
+		info, err := m.client.State(probe)
+		cancel()
 		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
 		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil

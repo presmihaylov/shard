@@ -64,6 +64,45 @@ func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T)
 	}
 }
 
+// A stop on a guest that never answers holds its sandbox, and the pass must go on to the rest (SHARD-339).
+func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+	gate := make(chan struct{})
+	lab.l.provider.stopGate = gate
+	lab.l.provider.stopEntered = make(chan struct{})
+	entered := lab.l.provider.stopEntered
+
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second)
+		stopped <- err
+	}()
+	<-entered
+
+	ticked := make(chan error, 1)
+	go func() { ticked <- lab.tick(t, running(), time.Now()) }()
+	select {
+	case err := <-ticked:
+		if err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the liveness pass waited on the sandbox the stop holds")
+	}
+	if lab.l.repo.sb.ExitStatus != nil {
+		t.Errorf("the pass wrote exit %+v to the record the stop holds", lab.l.repo.sb.ExitStatus)
+	}
+
+	close(gate)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if n := lab.svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the stop and the pass that skipped it", n)
+	}
+}
+
 func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
 	lab := newLivenessLab(t, running(), alive(42))
 
@@ -198,16 +237,120 @@ func TestLivenessResetsTheOOMCountAfterAHealthyRun(t *testing.T) {
 	}
 }
 
+// throttled is a live sandbox the host has held at its memory throttle the given number of times.
+func throttled(count int64) models.Status {
+	status := alive(42)
+	status.Throttles = count
+
+	return status
+}
+
+// A gvisor OOM loop sits at memory.high for longer than the reset window, and the cap must still spend (SHARD-332).
+func TestLivenessSpendsTheOOMLimitOfARunHeldAtTheThrottle(t *testing.T) {
+	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	sb := optedIn()
+	sb.MaxOOMRestarts = 2
+	sb.OOMRestarts = 2
+	sb.StartedAt = start
+	sb.OOMRestartedAt = start.Add(-time.Hour)
+	lab := newLivenessLab(t, sb, throttled(0))
+
+	for i, count := range []int64{40, 90, 160, 230, 310, 380} {
+		lab.l.provider.status = throttled(count)
+		if err := lab.tick(t, sb, start.Add(time.Duration(i+1)*5*time.Second)); err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	}
+	if got := lab.l.repo.sb; got.HealthyRun || got.MemoryThrottles != 380 || !got.CalmSince.Equal(start.Add(30*time.Second)) {
+		t.Fatalf("the record says healthy %t at %d throttles calm since %v, want unhealthy at 380 since the last tick", got.HealthyRun, got.MemoryThrottles, got.CalmSince)
+	}
+
+	oom := oomKilled()
+	oom.Throttles = 420
+	lab.l.provider.status = oom
+	if err := lab.tick(t, sb, start.Add(35*time.Second)); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || !strings.Contains(got.StoppedReason, "the 2 starts again the limit allows are spent") {
+		t.Errorf("the record says %s with the reason %q, want stopped with the limit spent", got.State, got.StoppedReason)
+	}
+	if lab.l.provider.started {
+		t.Error("a run held at the throttle for 35 s reset its count and was started again")
+	}
+}
+
+// A run seen ten seconds under the throttle latches healthy, so the throttled OOM that ends it still resets the count.
+func TestLivenessResetsTheOOMCountAfterACalmRunUnderTheThrottle(t *testing.T) {
+	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	sb := optedIn()
+	sb.MaxOOMRestarts = 2
+	sb.OOMRestarts = 2
+	sb.StartedAt = start
+	sb.OOMRestartedAt = start.Add(-time.Hour)
+	lab := newLivenessLab(t, sb, throttled(0))
+
+	for i, count := range []int64{0, 0, 70, 300} {
+		lab.l.provider.status = throttled(count)
+		if err := lab.tick(t, sb, start.Add(time.Duration(i+1)*5*time.Second)); err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	}
+	if got := lab.l.repo.sb; !got.HealthyRun || got.MemoryThrottles != 300 {
+		t.Fatalf("the record says healthy %t at %d throttles, want the calm 10 s latched through the throttle", got.HealthyRun, got.MemoryThrottles)
+	}
+
+	oom := oomKilled()
+	oom.Throttles = 900
+	lab.l.provider.status = oom
+	if err := lab.tick(t, sb, start.Add(40*time.Second)); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.OOMRestarts != 1 {
+		t.Errorf("the record says %s with %d starts again, want running with the count reset then 1", got.State, got.OOMRestarts)
+	}
+	// The start again is a new run, which has to earn its own calm.
+	if got.HealthyRun || got.MemoryThrottles != 0 || !got.CalmSince.IsZero() {
+		t.Errorf("the new run kept healthy %t, %d throttles, calm since %v, want all three cleared", got.HealthyRun, got.MemoryThrottles, got.CalmSince)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "started again, 1 of 2") {
+		t.Errorf("the pass reported %v, want the count reset to 1 of 2", lab.reports)
+	}
+}
+
+// Only a sandbox that asked for OOM restarts needs the count, so no other record is written on every tick.
+func TestLivenessKeepsNoThrottleCountWithoutRestartOnOOM(t *testing.T) {
+	sb := running()
+	sb.StartedAt = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	lab := newLivenessLab(t, sb, throttled(500))
+
+	if err := lab.tick(t, sb, sb.StartedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if got := lab.l.repo.sb; got.MemoryThrottles != 0 || got.HealthyRun || !got.CalmSince.IsZero() {
+		t.Errorf("a sandbox with no OOM restart kept %d throttles, healthy %t, calm since %v", got.MemoryThrottles, got.HealthyRun, got.CalmSince)
+	}
+}
+
 func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	sb := optedIn()
 	sb.OOMRestarts = 2
 	sb.OOMRestartedAt = now.Add(-time.Second)
-	lab := newLivenessLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, alive(42))
+	runExecToItsEnd(t, lab.svc)
+	lab.l.provider.status = oomKilled()
 
 	// Two starts again put the wait at 2 s, and only one has passed.
 	if err := lab.tick(t, sb, now); err != nil {
 		t.Fatalf("Liveness: %v", err)
+	}
+	if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon holds %d execs of the killed sandbox through the wait, want none (SHARD-362)", held)
 	}
 	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 2 || lab.l.provider.started {
 		t.Errorf("the record says %s with %d starts again inside the wait, want it untouched", got.State, got.OOMRestarts)

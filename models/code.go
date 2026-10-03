@@ -5,6 +5,7 @@ type Code string
 
 const (
 	CodeInvalidRequest    Code = "invalid_request"
+	CodeBodyTooLarge      Code = "body_too_large"
 	CodeNotFound          Code = "not_found"
 	CodeSandboxNotRunning Code = "sandbox_not_running"
 	CodeSandboxNotStopped Code = "sandbox_not_stopped"

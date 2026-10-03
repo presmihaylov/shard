@@ -197,6 +197,34 @@ func TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory(t *testing.T) {
 	}
 }
 
+// TestARunningSandboxReportsHowOftenTheHostHeldItAtTheThrottle feeds the OOM reset (SHARD-332).
+func TestARunningSandboxReportsHowOftenTheHostHeldItAtTheThrottle(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	root := fakeCgroup(t, id, "134217728")
+	writeEvents(t, root, id, "low 0\nhigh 355\nmax 0\noom 0\noom_kill 0\n")
+
+	p := newProviderOver(t, `printf '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	p.SetCgroupRoot(root)
+
+	status, err := p.Status(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Throttles != 355 {
+		t.Errorf("Throttles = %d, want the 355 of memory.events high", status.Throttles)
+	}
+
+	p.SetCgroupRoot(t.TempDir())
+	status, err = p.Status(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Status with no cgroup: %v", err)
+	}
+	if status.Throttles != 0 {
+		t.Errorf("Throttles with no cgroup = %d, want 0", status.Throttles)
+	}
+}
+
 func writeEvents(t *testing.T, root, id, body string) {
 	t.Helper()
 

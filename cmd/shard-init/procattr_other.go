@@ -2,11 +2,14 @@
 
 package main
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
 
 // Only Linux carries ambient capabilities, and only Linux ever runs a sandbox. This keeps the
 // package building on a developer machine, where the tests never drop to another user.
-func sysProcAttr(credential *syscall.Credential, _ []uintptr, tty bool) *syscall.SysProcAttr {
+func sysProcAttr(credential *syscall.Credential, _ []uintptr, tty bool, _ *os.File) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Credential: credential, Setsid: tty, Setctty: tty, Ctty: 0}
 }
 

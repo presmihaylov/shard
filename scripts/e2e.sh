@@ -45,6 +45,12 @@ LONE_PORT=${LONE_PORT:-12377}
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
 HOST_LINK_PREFIX="shardv"
+# The bridge the daemon makes, host-wide like its two policy tables, and its own name with no override: a wrong one would delete a bridge this run never made.
+HOST_BRIDGE="shard0"
+# Who held the bridge and the tables when the teardown had to keep them, and empty when it dropped them.
+HOST_NET_KEPT=""
+# The failed probe that made the teardown keep them without knowing, which fails the run.
+HOST_NET_PROBE_ERROR=""
 
 STEP="startup"
 ID=""
@@ -385,6 +391,70 @@ unmount_under() {
 wipe_root() {
 	unmount_under "${SHARD_ROOT}"
 	rm -rf "${SHARD_ROOT}" || true
+	clear_host_net
+}
+
+# bridge_ports lists the links on the host bridge, which on a veth or a tap is a sandbox of any root, and fails when it cannot read them.
+bridge_ports() { [ ! -e "/sys/class/net/${HOST_BRIDGE}" ] || ls -A "/sys/class/net/${HOST_BRIDGE}/brif"; }
+
+# proxy_listeners lists what serves the proxy ports, which every daemon binds whatever its root.
+proxy_listeners() { ss -Hltnp "( sport = :${PROXY_PLAIN_PORT} or sport = :${PROXY_TLS_PORT} )"; }
+
+# host_net_holder names what still uses the bridge and the tables, prints nothing once nothing does, and fails on a probe it could not run.
+host_net_holder() {
+	local ports listeners
+	if ! ports=$(bridge_ports); then
+		echo "the ports of the bridge ${HOST_BRIDGE} could not be listed"
+
+		return 1
+	fi
+	if [ -n "${ports}" ]; then
+		echo "the bridge still has the ports $(printf '%s' "${ports}" | tr '\n' ' ')"
+
+		return
+	fi
+	if ! listeners=$(proxy_listeners); then
+		echo "the listeners on the proxy ports could not be listed"
+
+		return 1
+	fi
+	[ -z "${listeners}" ] || echo "a daemon still serves the proxy: ${listeners}"
+}
+
+# clear_host_net drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them or a probe cannot tell.
+clear_host_net() {
+	local table
+	HOST_NET_PROBE_ERROR=""
+	if ! HOST_NET_KEPT=$(host_net_holder); then
+		HOST_NET_PROBE_ERROR="${HOST_NET_KEPT}"
+	fi
+	if [ -n "${HOST_NET_KEPT}" ]; then
+		echo "teardown: kept the bridge ${HOST_BRIDGE} and the shard nft tables, because ${HOST_NET_KEPT}" >&2
+
+		return 0
+	fi
+	for table in inet bridge; do
+		if nft list table "${table}" shard >/dev/null 2>&1; then
+			nft delete table "${table}" shard
+		fi
+	done
+	if ip link show "${HOST_BRIDGE}" >/dev/null 2>&1; then
+		ip link del "${HOST_BRIDGE}"
+	fi
+}
+
+# check_host_net_clear fails a run that left the bridge or a table nothing held, or kept them on a failed probe, and names the holder of one it had to keep.
+check_host_net_clear() {
+	[ -z "${HOST_NET_PROBE_ERROR}" ] || fail "the teardown could not tell whether another run holds the bridge ${HOST_BRIDGE}: ${HOST_NET_PROBE_ERROR}"
+	if [ -n "${HOST_NET_KEPT}" ]; then
+		say "the bridge ${HOST_BRIDGE} and the shard nft tables stay, because ${HOST_NET_KEPT}"
+
+		return
+	fi
+	ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
+	nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
+	nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
+	say "the bridge ${HOST_BRIDGE} and both shard nft tables are gone"
 }
 
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.
@@ -977,6 +1047,8 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+expect_exec "pong" "a listener on 127.0.0.1 answers, so lo is up" \
+	/bin/sh -c '(echo pong | nc -l -p 7077 -s 127.0.0.1 -w 3 &); sleep 1; nc -w 3 127.0.0.1 7077 </dev/null'
 
 step "reach the daemon through the tcp front"
 SERVE_DIR=$(mktemp -d /tmp/shard-e2e-serve.XXXXXX)
@@ -1688,7 +1760,7 @@ OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s 
 # OOM_POLLS bounds the wait for several kills at one 5 s tick each, with their backoff, like the integration test's budget.
 OOM_POLLS="${OOM_POLLS:-360}"
 
-# oom_restart_steps refuses an OOM restart with no bound, brings one back, and asserts the restart cap per provider (SHARD-56). It runs on every provider (SHARD-191).
+# oom_restart_steps refuses an OOM restart with no bound, brings one back, and spends the restart cap (SHARD-56). It runs on every provider (SHARD-191).
 oom_restart_steps() {
 	local id rec
 
@@ -1714,26 +1786,11 @@ oom_restart_steps() {
 	say "an OOM-killed sandbox that asked for restart comes back and runs"
 	drop_sandbox "${id}"
 
-	step "the OOM restart cap: reset on gvisor, spent on sysbox and runc"
-	# The cap outcome differs by death speed, so each provider asserts its own (Pres rules memory.high in tasks.md; that PR changes this step).
-	# gvisor deaths take ~30s under memory.high, past the 10s reset, so the count resets and the cap never spends.
-	# sysbox and runc deaths take ~5s, inside the 10s reset, so the count never resets and the cap spends.
+	step "the OOM restart cap spends on a loop that never runs calm"
+	# A gvisor death sits ~30s at memory.high, past the 10s window, but only a calm run resets the count (SHARD-332).
 	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" -- /bin/sh -c "${OOM_BOMB}")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
-	if [ "${PROVIDER}" = "gvisor" ]; then
-		marker="sandbox ${id} ran out of memory and the host ended it: started again, 1 of 2"
-		for _ in $(seq 1 "${OOM_POLLS}"); do
-			[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] && break
-			sleep 1
-		done
-		[ "$(grep -c "${marker}" "${DAEMON_LOG}" || true)" -ge 3 ] || fail "the capped OOM loop did not come back three times on gvisor: $(cat "${rec}")"
-		grep -q 'are spent' "${rec}" && fail "the capped OOM loop gave up on gvisor, but the reset must keep it unspent: $(cat "${rec}")"
-		grep -q '"state": *"running"' "${rec}" || fail "the capped OOM loop did not settle running on gvisor: $(cat "${rec}")"
-		say "on gvisor the capped OOM loop resets across healthy runs and never spends the limit"
-		drop_sandbox "${id}"
-		return
-	fi
 	for _ in $(seq 1 "${OOM_POLLS}"); do
 		grep -q '"state": *"stopped"' "${rec}" && grep -q 'the 2 starts again the limit allows are spent' "${rec}" && break
 		sleep 1
@@ -2169,8 +2226,11 @@ holds "${IMAGE%%:*}" shard image ls && fail "image ls still lists the pruned ima
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
-shard rm "${ID}" >/dev/null 2>&1
-say "a second rm is idempotent"
+CODE=0
+REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "a second rm exited 0 on an id that does not exist"
+expect "${REFUSAL}" "shard: no sandbox ${ID}" "a second rm fails on the id it no longer finds"
+expect "$(shard rm --force "${ID}" 2>&1)" "shard: warning: sandbox ${ID} does not exist, so there is nothing to remove" "a second rm --force only warns, so a teardown stays idempotent"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
@@ -2186,6 +2246,7 @@ teardown
 [ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
 ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
 say "the run's own root, the echo's netns and its link are gone"
+check_host_net_clear
 
 trap - EXIT
 echo
