@@ -845,7 +845,7 @@ process is a separate, unprivileged one. It runs from its own unit,
 
 ```
 useradd --system --no-create-home --gid shard shard
-install -d -m0750 /etc/shard
+install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
 cp packaging/systemd/shard-serve.service /etc/systemd/system/
@@ -855,8 +855,10 @@ systemctl enable --now shard-serve
 The unit runs as `shard:shard`, which is the group the socket is given. It reads the signing key
 from a root-owned `0640` file that the group can read, named with `--signing-key-file`. Give every
 `tokens` verb for that front the same flag, so the token lands in the ledger the front reads:
-`shard tokens mint --name ci --signing-key-file /etc/shard/serve.secret`. The account has no other
-privilege. It cannot read a state file, and the daemon still applies every rule of every verb.
+`shard tokens mint --name ci --signing-key-file /etc/shard/serve.secret`. The setgid bit on
+`/etc/shard` gives the ledger that a root `tokens mint` creates the group `shard`, so the front can
+read it at `0640`. The account has no other privilege. It cannot read a state file, and the daemon
+still applies every rule of every verb.
 
 A script or a CI job reaches a front instead of the socket with two variables:
 
