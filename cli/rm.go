@@ -67,7 +67,7 @@ func parseRm(args []string) (rmOptions, error) {
 
 	flags := flag.NewFlagSet("shard rm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up, and warn rather than fail on an id that does not exist")
+	flags.BoolVar(&opts.force, "force", false, "stop the sandbox first if it is still up, and warn instead of failing on an id that does not exist")
 	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "how long --force gives the entrypoint before it is killed")
 
 	if err := parseVerb(flags, args); err != nil {

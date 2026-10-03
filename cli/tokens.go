@@ -36,10 +36,10 @@ func (a App) tokensMint(args []string) error {
 	flags := flag.NewFlagSet("tokens mint", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	name := flags.String("name", "", "the subject the token names")
-	duration := flags.Duration("duration", 0, "how long the token is valid; the default, 0, never expires")
+	duration := flags.Duration("duration", 0, "how long the token stays valid; the default, 0, never expires")
 	secretFile := flags.String("secret-file", "", "the file holding the secret that signs the token")
-	tokensFile := flags.String("tokens-file", "", "the ledger to record the token in; overrides the one beside the secret file")
-	scopes := flags.String("scopes", "", "a comma-separated list of scopes the token carries; empty is every verb")
+	tokensFile := flags.String("tokens-file", "", "the ledger to record the token in, instead of the one beside the secret file")
+	scopes := flags.String("scopes", "", "a comma-separated list of scopes the token carries; empty means every verb")
 
 	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the tokens mint flags: %w", err)
@@ -77,7 +77,7 @@ func (a App) tokensList(args []string) error {
 	flags := flag.NewFlagSet("tokens ls", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	secretFile := flags.String("secret-file", "", "the file whose directory holds the ledger")
-	tokensFile := flags.String("tokens-file", "", "the ledger file; overrides the one beside the secret file")
+	tokensFile := flags.String("tokens-file", "", "the ledger file to use instead of the one beside the secret file")
 
 	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the tokens ls flags: %w", err)
@@ -111,7 +111,7 @@ func (a App) tokensRevoke(args []string) error {
 	flags := flag.NewFlagSet("tokens revoke", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	secretFile := flags.String("secret-file", "", "the file whose directory holds the ledger")
-	tokensFile := flags.String("tokens-file", "", "the ledger file; overrides the one beside the secret file")
+	tokensFile := flags.String("tokens-file", "", "the ledger file to use instead of the one beside the secret file")
 	name := flags.String("name", "", "revoke every token of this subject instead of one id")
 
 	if err := parseVerb(flags, args); err != nil {
