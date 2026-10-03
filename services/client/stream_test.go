@@ -208,6 +208,52 @@ func TestExecCarriesTheTokenOfAFrontOnEveryConnection(t *testing.T) {
 	}
 }
 
+// A proxy routes by Host and answers an empty 200 to a site it does not hold, so every request names the --remote host. (SHARD-466)
+func TestARemoteNamesItsOwnHostOnEveryRequest(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", exit: &api.ExitMessage{}, skipInput: true}
+
+	var want string
+	seen := make(chan string, 3)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Method + " " + r.Host
+		if r.Host != want {
+			return
+		}
+		if r.URL.Path == "/v0/version" {
+			answer(http.StatusOK, `{"version":"v-test"}`)(w, r)
+
+			return
+		}
+		daemon.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	want = strings.TrimPrefix(server.URL, "https://")
+
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	c, err := client.NewRemote(server.URL, "front-token-value", ca)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	if _, err := c.Version(t.Context()); err != nil {
+		t.Errorf("a GET through a proxy that routes by Host: %v", err)
+	}
+	if _, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{}); err != nil {
+		t.Errorf("an exec through a proxy that routes by Host: %v", err)
+	}
+
+	for _, step := range []string{"the GET", "the POST", "the upgrade"} {
+		select {
+		case got := <-seen:
+			if !strings.HasSuffix(got, " "+want) {
+				t.Errorf("%s was %q, want Host %s", step, got, want)
+			}
+		default:
+			t.Errorf("%s never reached the proxy", step)
+		}
+	}
+}
+
 // A command that never ran exits with the code a shell answers and a reason, and rebuilds as the typed error.
 func TestExecReportsACommandThatNeverRan(t *testing.T) {
 	daemon := &execDaemon{t: t, exit: &api.ExitMessage{Code: 127, Error: "failed to load /bin/nope: no such file or directory"}}

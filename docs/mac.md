@@ -157,7 +157,7 @@ The steps below use Lima, because it is a shell script and takes a file.
 ### The VM
 
 One Lima file covers arm64 on Apple silicon and amd64 on Intel. It has no host mounts, and it
-forwards port 2376:
+forwards port 8443, where Caddy gives the front HTTPS:
 
 ```yaml
 # shard.yaml
@@ -170,8 +170,8 @@ cpus: 2
 memory: "2GiB"
 mounts: []
 portForwards:
-  - guestPort: 2376
-    hostPort: 2376
+  - guestPort: 8443
+    hostPort: 8443
 ```
 
 `mounts: []` matters, because Lima mounts `~` into the VM by default, and a VM with the Mac's home
@@ -209,14 +209,26 @@ what each one needs from the kernel.
 ### The daemon, and the front for the Mac's CLI
 
 Inside the VM, the daemon runs as root. The front is only for driving it from the Mac, and a shell in
-the VM needs only the daemon. The front runs beside the daemon with a self-signed certificate for
-`localhost`, because that is where the Mac reaches the forwarded port:
+the VM needs only the daemon. The front speaks plain HTTP on `127.0.0.1:2376`, so Caddy runs beside
+it with a certificate of its own CA for `localhost`, because that is where the Mac reaches the
+forwarded port:
 
 ```
 limactl shell shard sudo -i
+apt-get install -y caddy
+cat > /etc/caddy/Caddyfile <<'CADDY'
+{
+	skip_install_trust
+}
+localhost:8443 {
+	tls internal
+	reverse_proxy 127.0.0.1:2376 {
+		flush_interval -1
+	}
+}
+CADDY
+systemctl restart caddy
 install -d -m0750 /etc/shard && cd /etc/shard
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
-  -subj /CN=shard -addext subjectAltName=DNS:localhost -keyout serve.key -out serve.crt
 umask 077
 shard tokens mint --name mac > mac.token
 shard daemon --provider gvisor
@@ -228,8 +240,7 @@ the mint. `--provider runc` or `--provider sysbox` picks one of the other two. T
 the foreground, so the front needs a second shell:
 
 ```
-limactl shell shard sudo shard serve --listen :2376 \
-  --cert /etc/shard/serve.crt --key /etc/shard/serve.key
+limactl shell shard sudo shard serve
 ```
 
 On a Linux host the two processes run from the systemd units in `packaging/systemd`, and the front
@@ -244,8 +255,8 @@ behind them:
 ```
 install -d -m0700 ~/.shard
 (umask 077 && limactl shell shard sudo cat /etc/shard/mac.token > ~/.shard/token)
-limactl shell shard sudo cat /etc/shard/serve.crt > ~/.shard/ca.pem
-export SHARD_REMOTE=https://localhost:2376
+limactl shell shard sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt > ~/.shard/ca.pem
+export SHARD_REMOTE=https://localhost:8443
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
 shard create alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>

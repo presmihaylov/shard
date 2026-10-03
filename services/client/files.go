@@ -141,7 +141,7 @@ func (c *Client) fileRequest(ctx context.Context, method, ref, route string, que
 		body = io.NopCloser(body)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, "http://shard"+path+"?"+query.Encode(), body) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint("http", path+"?"+query.Encode()), body) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 	if err != nil {
 		return nil, fmt.Errorf("build the request for %s %s: %w", method, path, err)
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -55,14 +56,13 @@ func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App
 		t.Fatalf("write the token file: %v", err)
 	}
 
-	cert, key := selfSigned(t, dir)
-	address := startFront(t, serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SigningKeyFile: secret, Root: app.Root, Out: frontLog})
+	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", SigningKeyFile: secret, Root: app.Root, Out: frontLog})
 
 	return app, []string{"--remote", "https://" + address, "--token-file", token, "--ca-file", cert}, secret
 }
 
-// startFront serves one front over cfg until the test ends, and answers the address it bound.
-func startFront(t *testing.T, cfg serve.Config) string {
+// startFront serves one front over cfg until the test ends, behind TLS in place of the proxy, and answers the address it bound and the certificate.
+func startFront(t *testing.T, cfg serve.Config) (string, string) {
 	t.Helper()
 
 	front, err := serve.New(cfg)
@@ -75,9 +75,16 @@ func startFront(t *testing.T, cfg serve.Config) string {
 		t.Fatalf("serve.Listen: %v", err)
 	}
 
+	cert, key := selfSigned(t, t.TempDir())
+	pair, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		t.Fatalf("load the key pair: %v", err)
+	}
+	proxied := tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
+
 	ctx, cancel := context.WithCancel(t.Context())
 	ended := make(chan error, 1)
-	go func() { ended <- front.Serve(ctx, listener) }()
+	go func() { ended <- front.Serve(ctx, proxied) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-ended; err != nil {
@@ -85,7 +92,7 @@ func startFront(t *testing.T, cfg serve.Config) string {
 		}
 	})
 
-	return listener.Addr().String()
+	return listener.Addr().String(), cert
 }
 
 // The remote front comes from SHARD_REMOTE too, so a shell exports it once. (SHARD-194)
@@ -287,14 +294,11 @@ func TestTheTokenOrderReachesTheFront(t *testing.T) {
 	}
 }
 
-func TestServeRefusesArgumentsAndAPairItLacks(t *testing.T) {
+func TestServeRefusesAnArgument(t *testing.T) {
 	app := App{Version: "test", Root: t.TempDir(), Out: io.Discard}
 
 	if err := app.serve(t.Context(), []string{"127.0.0.1:2376"}); err == nil {
 		t.Error("serve took an argument")
-	}
-	if err := app.serve(t.Context(), []string{"--listen", "127.0.0.1:0"}); err == nil {
-		t.Error("serve started with no certificate and no key")
 	}
 }
 

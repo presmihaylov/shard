@@ -1,5 +1,5 @@
 // Package client is the typed side of the daemon's REST API, for the CLI. It speaks the unix
-// socket, or the same routes over tls to a shard serve front.
+// socket, or the same routes over https to the proxy in front of a shard serve front.
 package client
 
 import (
@@ -30,15 +30,14 @@ const DefaultTimeout = 30 * time.Second
 // DefaultRoot is where shard keeps everything on the box, and the one root the systemd unit serves.
 const DefaultRoot = "/var/lib/shard"
 
-// remotePort is the port a --remote with none named is dialed on, which is what shard serve binds.
-const remotePort = "2376"
-
 // Client talks to one daemon. It is safe for concurrent use.
 type Client struct {
 	// target is the socket path or the host url, which is what an error names.
 	target string
-	// dialer is the whole of the transport switch: the unix socket, or tls to a shard serve front.
+	// dialer is the whole of the transport switch: the unix socket, or tls to the proxy in front of shard serve.
 	dialer func(ctx context.Context) (net.Conn, error)
+	// authority is the Host of every request: shard on the socket, and otherwise the --remote host a proxy routes by.
+	authority string
 	// token is the bearer token a front checks. The socket takes none: its mode is the check.
 	token string
 	// hint is what a connect error tells the operator to check for this target.
@@ -111,7 +110,7 @@ func (e *APIError) Error() string { return e.Message }
 func New(root string) *Client {
 	socket := filepath.Join(root, api.SocketFile)
 
-	c := &Client{target: socket, hint: hint(root), Timeout: DefaultTimeout}
+	c := &Client{target: socket, authority: "shard", hint: hint(root), Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}
@@ -120,14 +119,14 @@ func New(root string) *Client {
 	return c
 }
 
-// NewRemote dials a shard serve front over TLS, a byte proxy onto the socket, with its bearer token.
+// NewRemote dials the https proxy in front of a shard serve front, a byte proxy onto the socket, with its bearer token.
 func NewRemote(host, token string, ca []byte) (*Client, error) {
 	parsed, err := url.Parse(host)
 	if err != nil {
 		return nil, fmt.Errorf("parse the host %q: %w", host, err)
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, fmt.Errorf("--remote must be an https url, as https://box.example.com:2376, got %q", host)
+		return nil, fmt.Errorf("--remote must be an https url, as https://shard.example.com, got %q", host)
 	}
 	if token == "" {
 		return nil, errors.New("--remote needs a token: shard serve answers 401 without one")
@@ -136,10 +135,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		return nil, fmt.Errorf("the token %w", err)
 	}
 
-	address := parsed.Host
-	if parsed.Port() == "" {
-		address = net.JoinHostPort(parsed.Hostname(), remotePort)
-	}
+	address := remoteAddress(parsed)
 
 	settings := &tls.Config{ServerName: parsed.Hostname(), MinVersion: tls.VersionTLS12}
 	if len(ca) > 0 {
@@ -150,7 +146,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		settings.RootCAs = pool
 	}
 
-	c := &Client{target: host, token: token, hint: "shard serve on " + parsed.Host, Timeout: DefaultTimeout}
+	c := &Client{target: host, authority: parsed.Host, token: token, hint: "the proxy at " + parsed.Host + " and the shard serve behind it", Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&tls.Dialer{Config: settings}).DialContext(ctx, "tcp", address)
 	}
@@ -159,9 +155,23 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	return c, nil
 }
 
+// remoteAddress is the host and port a --remote dials: 443, where every proxy and tunnel answers, when the url names no port.
+func remoteAddress(parsed *url.URL) string {
+	if parsed.Port() == "" {
+		return net.JoinHostPort(parsed.Hostname(), "443")
+	}
+
+	return parsed.Host
+}
+
 // Format prints the target alone, whatever the verb, so a client in a log line never shows its token.
 func (c Client) Format(f fmt.State, _ rune) {
 	fmt.Fprintf(f, "shard client for %s", c.target)
+}
+
+// endpoint is the url of one route. The dialer picks the connection; the url carries only the path and the Host.
+func (c *Client) endpoint(scheme, path string) string {
+	return scheme + "://" + c.authority + path
 }
 
 // transport sends every request that net/http builds over this client's own dialer.
@@ -417,7 +427,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, in, out any,
 		payload = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(call, method, "http://shard"+path, payload)
+	req, err := http.NewRequestWithContext(call, method, c.endpoint("http", path), payload)
 	if err != nil {
 		return nil, fmt.Errorf("build the request for %s %s: %w", method, path, err)
 	}

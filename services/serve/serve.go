@@ -1,12 +1,11 @@
-// Package serve is the TCP front of the daemon: it terminates TLS, verifies the JWT each request
-// carries and then splices it onto the daemon's unix socket, byte for byte.
+// Package serve is the TCP front of the daemon: it speaks plain HTTP behind a proxy that terminates TLS,
+// verifies the JWT each request carries and then splices it onto the daemon's unix socket, byte for byte.
 package serve
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -26,8 +25,8 @@ import (
 	"github.com/presmihaylov/shard/services/api"
 )
 
-// DefaultListen is what the front binds when no address is named, as dockerd's TLS port.
-const DefaultListen = ":2376"
+// DefaultListen is loopback, so only a proxy on the same host reaches the plain HTTP front.
+const DefaultListen = "127.0.0.1:2376"
 
 const (
 	// headBytes bounds the request head the front reads before it decides, so no client grows one forever.
@@ -37,6 +36,8 @@ const (
 	// acceptBackoffMin and acceptBackoffMax bound the wait after an Accept that ran out of a resource, as net/http's do.
 	acceptBackoffMin = 5 * time.Millisecond
 	acceptBackoffMax = time.Second
+	// lingerFor bounds the drain before a close, as net/http's rstAvoidanceDelay does.
+	lingerFor = 500 * time.Millisecond
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
@@ -52,9 +53,6 @@ const badRequestLine = `{"error":{"code":"invalid_request","message":"the reques
 type Config struct {
 	// Listen defaults to DefaultListen when empty.
 	Listen string
-	// CertFile and KeyFile are the TLS pair. Without both the front refuses to start; it never serves plain tcp.
-	CertFile string
-	KeyFile  string
 	// SigningKeyFile holds the HS256 key that signs and checks every token; empty means <Root>/auth/signing-key, created on first use. Its value is never logged.
 	SigningKeyFile string
 	// TokensFile overrides the ledger path; empty means the ledger beside the signing key file.
@@ -71,7 +69,6 @@ type Server struct {
 	signingKey  []byte
 	tokens      *ledger
 	caps        *capMux
-	tls         *tls.Config
 	preAuth     *preAuth
 	headTimeout time.Duration
 	log         *log.Logger
@@ -79,11 +76,8 @@ type Server struct {
 	refusals *lograte.Log
 }
 
-// New loads the signing key and the TLS pair, so every reason to refuse is known before anything binds.
+// New loads the signing key and the ledger, so every reason to refuse is known before anything binds.
 func New(cfg Config) (*Server, error) {
-	if cfg.CertFile == "" || cfg.KeyFile == "" {
-		return nil, errors.New("shard serve needs --cert and --key: it terminates tls and never accepts plain tcp")
-	}
 	if cfg.Root == "" {
 		return nil, errors.New("shard serve needs a root: the daemon socket it fronts sits under it")
 	}
@@ -101,11 +95,6 @@ func New(cfg Config) (*Server, error) {
 	caps, err := newCapMux()
 	if err != nil {
 		return nil, err
-	}
-
-	pair, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load the certificate %s and the key %s: %w", cfg.CertFile, cfg.KeyFile, err)
 	}
 
 	listen := cfg.Listen
@@ -131,7 +120,6 @@ func New(cfg Config) (*Server, error) {
 		signingKey:  signingKey,
 		tokens:      tokens,
 		caps:        caps,
-		tls:         &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
 		preAuth:     newPreAuth(total, preAuthPerSource),
 		headTimeout: defaultHeadTimeout,
 		log:         logger,
@@ -151,19 +139,29 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	server.log.Printf("serve listening on %s over tls, in front of %s", listener.Addr(), server.socket)
+	server.log.Printf("serve listening on %s over plain http, in front of %s", listener.Addr(), server.socket)
+	if !loopback(listener.Addr()) {
+		server.log.Printf("serve: %s is not loopback, so a token crosses the network in clear text up to this port", listener.Addr())
+	}
 
 	return server.Serve(ctx, listener)
 }
 
-// Listen binds the TCP address under TLS. There is no plaintext listener to bind.
+// Listen binds the TCP address. TLS is the job of the proxy in front.
 func (s *Server) Listen() (net.Listener, error) {
-	listener, err := tls.Listen("tcp", s.listen, s.tls)
+	listener, err := net.Listen("tcp", s.listen)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", s.listen, err)
 	}
 
 	return listener, nil
+}
+
+// loopback reports whether addr is reachable from this host alone.
+func loopback(addr net.Addr) bool {
+	tcp, ok := addr.(*net.TCPAddr)
+
+	return ok && tcp.IP.IsLoopback()
 }
 
 // Serve answers until ctx ends; any other end is the listener dying, an error so the unit restarts it.
@@ -454,6 +452,17 @@ func (s *Server) answer(conn net.Conn, status, body string) {
 	head := fmt.Sprintf("HTTP/1.1 %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", status, len(body)+1)
 	if _, err := io.WriteString(conn, head+body+"\n"); !quiet(err) {
 		s.log.Printf("answer %s to %s: %v", status, conn.RemoteAddr(), err)
+
+		return
+	}
+
+	if err := closeWrite(conn); err != nil {
+		s.log.Printf("end the answer %s to %s: %v", status, conn.RemoteAddr(), err)
+
+		return
+	}
+	if err := linger(conn); err != nil {
+		s.log.Printf("after the answer %s to %s: %v", status, conn.RemoteAddr(), err)
 	}
 }
 
@@ -586,15 +595,42 @@ func spliceUpgrade(client, upstream net.Conn, head []byte) error {
 }
 
 // endOneResponse relays the rest of a single daemon response and ends. It half-closes the send side, so the
-// daemon reads EOF and closes, and it never reads the client, so a pipelined request cannot reach the daemon.
+// daemon reads EOF and closes, and it never forwards the client, so a pipelined request cannot reach the daemon.
 func endOneResponse(client, upstream net.Conn) error {
-	if half, ok := upstream.(interface{ CloseWrite() error }); ok {
-		if err := half.CloseWrite(); !quiet(err) {
-			return fmt.Errorf("half-close the daemon socket after a non-101 answer: %w", err)
-		}
+	if err := closeWrite(upstream); err != nil {
+		return fmt.Errorf("half-close the daemon socket after a non-101 answer: %w", err)
 	}
 
-	return forward(client, upstream)
+	if err := forward(client, upstream); err != nil {
+		return err
+	}
+
+	return linger(client)
+}
+
+// linger drops what the client still sends until it closes or lingerFor passes, so an unread request does not make the close a reset that destroys the answer.
+func linger(conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(lingerFor)); err != nil {
+		return fmt.Errorf("set the deadline of the drain: %w", err)
+	}
+	if _, err := io.Copy(io.Discard, conn); !quiet(err) {
+		return fmt.Errorf("drain the client before the close: %w", err)
+	}
+
+	return nil
+}
+
+// closeWrite half-closes conn when it can, so the far end reads EOF.
+func closeWrite(conn net.Conn) error {
+	half, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		return nil
+	}
+	if err := half.CloseWrite(); !quiet(err) {
+		return err
+	}
+
+	return nil
 }
 
 // copyBothWays copies each direction until the daemon's answer ends, then ends the other copier's read.
@@ -648,17 +684,7 @@ func forward(dst, src net.Conn) error {
 		err = nil
 	}
 
-	half, ok := dst.(interface{ CloseWrite() error })
-	if !ok {
-		return err
-	}
-
-	closed := half.CloseWrite()
-	if quiet(closed) {
-		closed = nil
-	}
-
-	return errors.Join(err, closed)
+	return errors.Join(err, closeWrite(dst))
 }
 
 // quiet reports the ends that are how a proxied connection stops, rather than a failure to report.

@@ -40,9 +40,9 @@ type App struct {
 	Err io.Writer
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty, and stays empty on a Mac.
 	InitPath string
-	// Remote is the shard serve a verb speaks to instead of the socket, as https://box:2376.
+	// Remote is the https proxy in front of shard serve a verb speaks to instead of the socket, as https://shard.example.com.
 	Remote string
-	// TokenFile is --token-file alone, never SHARD_TOKEN_FILE, so it beats SHARD_API_KEY; CAFile signed the serve certificate.
+	// TokenFile is --token-file alone, never SHARD_TOKEN_FILE, so it beats SHARD_API_KEY; CAFile signed the certificate of the proxy in front of serve.
 	TokenFile string
 	CAFile    string
 

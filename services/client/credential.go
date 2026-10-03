@@ -19,11 +19,11 @@ const (
 
 // RemoteOptions are what a caller names itself; each empty field falls back to the environment.
 type RemoteOptions struct {
-	// Host is the shard serve front, as https://box.example.com:2376; empty reads SHARD_REMOTE.
+	// Host is the https proxy in front of shard serve, as https://shard.example.com; empty reads SHARD_REMOTE.
 	Host string
 	// TokenFile is an explicit token file, as the CLI's --token-file, and beats SHARD_API_KEY and SHARD_TOKEN_FILE.
 	TokenFile string
-	// CAFile signed the front's certificate; empty reads SHARD_CA_FILE, and empty there leaves the host's trust store.
+	// CAFile signed the proxy's certificate; empty reads SHARD_CA_FILE, and empty there leaves the host's trust store.
 	CAFile string
 }
 
@@ -31,7 +31,7 @@ type RemoteOptions struct {
 func NewRemoteFromEnv(opts RemoteOptions) (*Client, error) {
 	host := cmp.Or(opts.Host, os.Getenv(RemoteEnv))
 	if host == "" {
-		return nil, fmt.Errorf("a remote client needs a host: --remote or %s, as https://box.example.com:2376", RemoteEnv)
+		return nil, fmt.Errorf("a remote client needs a host: --remote or %s, as https://shard.example.com", RemoteEnv)
 	}
 
 	token, err := ResolveToken(opts.TokenFile)

@@ -52,10 +52,10 @@ func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
 // oomBound is the smallest --memory the suite's provider takes, so the bomb meets the bound soonest.
 func oomBound() string {
 	if bound := itestResources().MemoryMiB; bound != 0 {
-		return strconv.FormatInt(bound, 10)
+		return strconv.FormatInt(bound, 10) + "MiB"
 	}
 
-	return "64"
+	return "64MiB"
 }
 
 // awaitRecord polls the daemon until the record reads as wanted, and names the record it last saw if never.

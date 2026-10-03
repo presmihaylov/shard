@@ -182,7 +182,7 @@ func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, 
 	options := &websocket.DialOptions{HTTPClient: c.http, HTTPHeader: http.Header{}}
 	c.authorize(options.HTTPHeader)
 
-	conn, resp, err := websocket.Dial(ctx, "ws://shard"+path, options) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
+	conn, resp, err := websocket.Dial(ctx, c.endpoint("ws", path), options) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
@@ -389,7 +389,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 		return c.followLogs(ctx, ref, path+"?follow=true", w)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shard"+path, nil) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("http", path), nil) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 	if err != nil {
 		return fmt.Errorf("build the request for the output of sandbox %s: %w", ref, err)
 	}
