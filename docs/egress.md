@@ -90,13 +90,10 @@ disagrees with it gets a 400.
 
 A denied request gets a 403 with a one-line JSON body naming the host, the port, the rule and the
 reason. A request the upstream leg fails gets a 502 with a fixed body and never the error, which can
-quote the request after a secret value went into it. The proxy holds a body to rewrite only over TLS
-to a host a secret of the sandbox is granted to, and only up to 8 MiB; every other body streams
-through unchanged. A held body that does not arrive within 30 s gets a 408 and its connection
-closes. One sandbox holds at most 32 MiB at once to put secrets in, which counts each held body and
-each byte a value adds to a request, from the rewrite until the request is forwarded; past it a
-request gets a 503. It
-reads the policy, the secret and the sandbox records on every request, so a change lands on the next
+quote the request after a secret value went into it. A secret value goes into request headers alone,
+so every body streams through unchanged (SHARD-337). One sandbox holds at most 32 MiB at once of the
+bytes a value adds to a request, from the rewrite until the request is forwarded; past it a request
+gets a 503. It reads the policy, the secret and the sandbox records on every request, so a change lands on the next
 request; a connection that is already open is not cut.
 The proxy logs one line per request and never a header value, a body or a secret.
 

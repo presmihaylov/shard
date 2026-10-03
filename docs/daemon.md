@@ -695,8 +695,9 @@ client off Linux drives sandboxes, because the daemon itself runs on Linux alone
 
 The daemon takes an exclusive flock on `daemon.lock` under the root and refuses to start while
 another holds it. It is the only lock shard keeps: the daemon is the single writer of the state, so
-nothing else is contended between processes. The lock dies with the process, so there is no stale
-pid file to clean up. Nothing probes it to decide whether a daemon is up: a client that needs one
+nothing else is contended between processes. The lock dies with the process. Beside it the daemon
+writes `daemon.pid`, for newsyslog to signal on a Mac, and removes it on a clean exit; nothing in
+shard reads it. Neither file is probed to decide whether a daemon is up: a client that needs one
 asks the socket and reads the outcome.
 
 ## Supervision
