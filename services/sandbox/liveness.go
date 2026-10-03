@@ -93,10 +93,6 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
 	}
 
-	if status.Unresponsive {
-		return s.recordDied(sb.ID, UnresponsiveReason, report)
-	}
-
 	return s.recordDied(sb.ID, DiedReason, report)
 }
 

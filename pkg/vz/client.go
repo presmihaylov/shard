@@ -149,26 +149,36 @@ func (c *Client) Save(path string) (Info, error) {
 	return c.call(context.Background(), request{Verb: "save", Path: path})
 }
 
-// Kill ends the shim by the pid behind its socket, which the kernel attests at the dial: a shim too frozen to answer still owns it (SHARD-349).
-func (c *Client) Kill() error {
+// PID is the shim's pid as the kernel attests it at the dial, which a shim too frozen to answer still gives.
+func (c *Client) PID() (int, error) {
 	timeout := c.timeout
 	if timeout == 0 {
 		timeout = callTimeout
 	}
 	conn, err := net.DialTimeout("unix", c.socket, timeout)
 	if err != nil {
-		return fmt.Errorf("kill: dial the shim: %w", err)
+		return 0, fmt.Errorf("dial the shim: %w", err)
 	}
 	pid, err := peercred.PID(conn)
 	if err != nil {
-		return errors.Join(fmt.Errorf("kill: read the peer of the shim socket: %w", err), conn.Close())
+		return 0, errors.Join(fmt.Errorf("read the peer of the shim socket: %w", err), conn.Close())
 	}
 	if err := conn.Close(); err != nil {
-		return fmt.Errorf("kill: close the shim socket: %w", err)
+		return 0, fmt.Errorf("close the shim socket: %w", err)
 	}
 	// A pid of 0 or 1 as a group would be this process's own group, or every process it may signal.
 	if pid <= 1 {
-		return fmt.Errorf("kill: the shim socket names pid %d", pid)
+		return 0, fmt.Errorf("the shim socket names pid %d", pid)
+	}
+
+	return pid, nil
+}
+
+// Kill ends the shim by the pid behind its socket, which the kernel attests at the dial: a shim too frozen to answer still owns it (SHARD-349).
+func (c *Client) Kill() error {
+	pid, err := c.PID()
+	if err != nil {
+		return fmt.Errorf("kill: %w", err)
 	}
 	// Start made the shim lead its own group; one that leads none dies alone.
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {

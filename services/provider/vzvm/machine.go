@@ -66,11 +66,19 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
 		p.probe(ctx, m, adoptBound)
 
 		return m, nil
+	}
+	if found {
+		p.probe(ctx, silent, adoptBound)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+		p.forget(silent)
 	}
 
 	socket := filepath.Join(dir, socketFile)
@@ -81,16 +89,9 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	if absent(err) {
 		return nil, nil
 	}
-	// A shim silent for the whole bound answers no verb either, so it is killed by its socket's peer and reads stopped (SHARD-387).
+	// A shim silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-422).
 	if err != nil && time.Since(began) >= adoptBound && ctx.Err() == nil {
-		if err := p.kill(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)}); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(filepath.Join(dir, unresponsiveFile), nil, 0o600); err != nil {
-			return nil, fmt.Errorf("mark the shim of sandbox %s as killed for its silence: %w", id, err)
-		}
-
-		return nil, nil
+		return p.unanswered(id, dir, socket)
 	}
 	if err != nil {
 		return nil, err
@@ -99,13 +100,54 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	return p.attach(ctx, id, dir, r, client, info, false)
 }
 
+// unanswered keeps a shim an adopt found silent, by the pid behind its socket, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir, socket string) (*machine, error) {
+	client := vz.Open(socket)
+	pid, err := client.PID()
+	if absent(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: read the pid of its silent shim: %w", id, err)
+	}
+	m := &machine{id: id, dir: dir, client: client, pid: pid, silent: true}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if kept, found := p.unadopted[id]; found {
+		return kept, nil
+	}
+	p.unadopted[id] = m
+
+	return m, nil
+}
+
+// waiting says the one request to an unadopted shim is still out past its bound; any other end lets a fresh adopt decide.
+func (p *Provider) waiting(m *machine) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return m.silent && m.asking != nil
+}
+
 // lookupToStop is lookup whose adoption ends by the grace; a shim too frozen to answer is cut by its socket at once (SHARD-349).
 func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, grace time.Duration) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
+	// A shim that missed its probe gets one short probe more, and the stop kills it by its pid with no grace if that is silent too (SHARD-421).
+	if held && m.status(p).State == models.StateUnresponsive {
+		p.probe(ctx, m, probeFloor)
+	}
 	if held {
 		return m, nil
+	}
+	if found {
+		p.probe(ctx, silent, probeFloor)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+		p.forget(silent)
 	}
 
 	socket := filepath.Join(dir, socketFile)
@@ -197,12 +239,15 @@ func (p *Provider) forget(m *machine) {
 	if p.machines[m.id] == m {
 		delete(p.machines, m.id)
 	}
+	if p.unadopted[m.id] == m {
+		delete(p.unadopted, m.id)
+	}
 }
 
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
-	stales := []string{exitFile, restartsFile, oomFile, unresponsiveFile}
+	stales := []string{exitFile, restartsFile, oomFile}
 	// A restored guest still holds the output its cursor places; a fresh one starts its output again.
 	if restore == "" {
 		stales = append(stales, cursorFile)
@@ -643,7 +688,8 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
-	if m.silent {
+	// An unadopted shim has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
+	if m.silent || m.control.Load() == nil {
 		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its shim (pid %d) did not answer within %s", m.pid, adoptBound)}
 	}
 	state := models.StateCreated

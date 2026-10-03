@@ -90,6 +90,7 @@ func fakeShim() error {
 	if err != nil {
 		return err
 	}
+	listener = countingListener{Listener: listener, path: filepath.Join(filepath.Dir(cfg.Socket), acceptsFile)}
 	machine, err := bootFake(cfg)
 	if err != nil {
 		return errors.Join(err, listener.Close())
@@ -164,6 +165,9 @@ const holdDialsFile = "hold-dials"
 
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
+
+// acceptsFile in the state directory, once a test creates it, takes one line per connection the shim accepts, so a test reads what a frozen shim's socket queue held.
+const acceptsFile = "accepts"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -265,6 +269,31 @@ func (m *fakeMachine) setFrozen(frozen bool) error {
 	}
 
 	return nil
+}
+
+type countingListener struct {
+	net.Listener
+	path string
+}
+
+func (l countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return conn, nil
+	}
+	if err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+	_, err = f.WriteString("accept\n")
+	if err := errors.Join(err, f.Close()); err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+
+	return conn, nil
 }
 
 func (m *fakeMachine) State() vz.State {

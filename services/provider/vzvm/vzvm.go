@@ -41,8 +41,6 @@ const (
 	initrdFile = "initrd.cpio"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
-	// unresponsiveFile marks a shim the daemon killed for its silence, so the record names that cause and not a lost process.
-	unresponsiveFile = "unresponsive"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
@@ -61,7 +59,7 @@ const (
 	killGrace = 10 * time.Second
 	// probeFloor is the least one shim state read gets, so a wait whose time ran out still asks once (SHARD-349).
 	probeFloor = time.Second
-	// adoptBound is how long a shim met only by its socket gets to answer before it counts as wedged (SHARD-387).
+	// adoptBound is how long a shim met only by its socket gets to answer before it reads unresponsive (SHARD-422).
 	adoptBound = 5 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
@@ -96,6 +94,8 @@ type Provider struct {
 	mu sync.Mutex
 	// machines is every shim this daemon has spoken to; a shim it has not is adopted by its socket.
 	machines map[string]*machine
+	// unadopted is every shim an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
+	unadopted map[string]*machine
 	// recovering is nil but in a test, which holds the gap between the choice to thaw a lost freeze and that thaw.
 	recovering func()
 }
@@ -110,7 +110,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}, unadopted: map[string]*machine{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -123,6 +123,7 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
 	p.machines = map[string]*machine{}
+	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
