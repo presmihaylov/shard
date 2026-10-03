@@ -23,10 +23,11 @@ const (
 
 // channelLab is a sandbox a restarted daemon finds running: no channel held, PID 1 in its cgroup, fd 0 under a fake /proc.
 type channelLab struct {
-	p   *sysbox.Provider
-	b   bundle.Bundle
-	fd0 string
-	cg  string
+	p       *sysbox.Provider
+	b       bundle.Bundle
+	fd0     string
+	cg      string
+	runtime string
 }
 
 func newChannelLab(t *testing.T) *channelLab {
@@ -61,7 +62,7 @@ func newChannelLab(t *testing.T) *channelLab {
 	}
 
 	cgroupRoot := filepath.Join(dir, "cgroup")
-	lab := &channelLab{p: p, b: b, cg: filepath.Join(cgroupRoot, bundle.CgroupsPath(labID))}
+	lab := &channelLab{p: p, b: b, cg: filepath.Join(cgroupRoot, bundle.CgroupsPath(labID)), runtime: binary}
 	if err := os.MkdirAll(lab.cg, 0o750); err != nil {
 		t.Fatal(err)
 	}

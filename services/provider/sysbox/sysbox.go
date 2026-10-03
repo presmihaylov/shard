@@ -400,6 +400,17 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+	// Hold the page before PID 1 exits: a daemon that restarted since create finds it only through a live PID 1.
+	err = p.collect(ctx, id, b)
+	// A guest that replaced fd 0 has no record left to keep, and must not keep its sandbox from stopping.
+	if err != nil && !errors.Is(err, models.ErrExitChannelReplaced) {
+		return err
+	}
+
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
 	if err := p.runner.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		return err
@@ -416,9 +427,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
+	// Copy the record before Stop returns: with PID 1 gone, this daemon holds the last fd of the page.
+	if err := p.collect(ctx, id, b); err != nil {
+		return err
+	}
+
 	// sysbox-runc still holds a sandbox it has stopped, so the status read above is what owns the mount.
-	b, err := p.openHeld(id, status.Exists)
-	if err != nil {
+	if err := orphaned(b, id, status.Exists); err != nil {
 		return err
 	}
 
