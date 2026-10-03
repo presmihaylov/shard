@@ -1,7 +1,10 @@
 package vzshim
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -52,5 +55,53 @@ func TestTheDaemonLinksTheEmbeddedShimAndTheShimDoesNot(t *testing.T) {
 	}
 	if strings.Contains(string(out), "github.com/presmihaylov/shard/pkg/vzshim\n") {
 		t.Fatal("cmd/shard-vz-shim links pkg/vzshim, so it would embed its own previous build")
+	}
+}
+
+// A host crash can cut an installed file under an intact stamp, so the next install writes it again (SHARD-355).
+func TestACutInstallIsWrittenAgain(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("a guest init build")
+	path, err := place(dir, initName, body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Truncate(path, int64(len(body)/2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := place(dir, initName, body, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(held, body) {
+		t.Fatalf("the install holds %q, want %q", held, body)
+	}
+}
+
+// A stamp an older daemon wrote names no installed bytes, so it never vouches for the file beside it.
+func TestAStampOfTheOldShapeInstallsAgain(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("a guest init build")
+	if err := os.WriteFile(filepath.Join(dir, initName), body, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := filepath.Join(dir, initName+".sha256")
+	if err := os.WriteFile(stamp, fmt.Appendf(nil, "%x\n", sha256.Sum256(body)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := place(dir, initName, body, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.ReadFile(stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(held, stampOf(body, body)) {
+		t.Fatalf("the stamp says %q, want both hashes", held)
 	}
 }
