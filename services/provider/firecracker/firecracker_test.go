@@ -72,16 +72,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
-	p, err := firecracker.New(firecracker.Config{
-		Binary:    os.Args[0],
-		Jailer:    os.Args[0],
-		JailBase:  filepath.Join(h.root, "j"),
-		Kernel:    h.kernel,
-		Init:      initBinary,
-		Dir:       h.root,
-		Dirs:      h.stateDir,
-		Snapshots: h.snapshotDir,
-	})
+	p, err := firecracker.New(h.config())
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
@@ -92,6 +83,20 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	h.provider = p
 
 	return p
+}
+
+// config is what a daemon start hands the provider: this test binary, which answers as the jailer and the vmm.
+func (h *harness) config() firecracker.Config {
+	return firecracker.Config{
+		Binary:    os.Args[0],
+		Jailer:    os.Args[0],
+		JailBase:  filepath.Join(h.root, "j"),
+		Kernel:    h.kernel,
+		Init:      initBinary,
+		Dir:       h.root,
+		Dirs:      h.stateDir,
+		Snapshots: h.snapshotDir,
+	}
 }
 
 // reopen is a daemon restart: the first provider lets go of its vmms, and a second one adopts them.
