@@ -21,6 +21,8 @@ type Jail struct {
 	Base string
 	// Cgroup is the v2 cgroup, relative to the hierarchy's root, the jailer moves itself into before the clone, so the vmm's whole memory is charged to it.
 	Cgroup string
+	// Netns is the network namespace the jailer joins before the clone, so the vmm opens its tap there; empty stays in the jailer's own.
+	Netns string
 }
 
 // Root is the chroot the jailer makes, the vmm's "/"; it names Exec by its base name, so Exec must be no symlink.

@@ -88,6 +88,7 @@ func readSeen(t *testing.T, j firecracker.Jail, socket string) seen {
 func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 	root := shortRoot(t)
 	j, cfg := jail(root, "otter-1a2b"), config(root)
+	j.Netns = "/var/run/netns/otter-1a2b"
 	_, info := start(t, j, cfg)
 
 	if info.State != firecracker.StateRunning {
@@ -105,7 +106,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantArgs := `{"id":"otter-1a2b","uid":1879048192,"gid":1879048192,"cgroupVersion":"2","parentCgroup":"shard/otter-1a2b",` +
-		`"newPidNS":true,"limits":null,"vmm":["--api-sock","/api.sock"]}`
+		`"newPidNS":true,"netns":"/var/run/netns/otter-1a2b","limits":null,"vmm":["--api-sock","/api.sock"]}`
 	if string(argsBlob) != wantArgs {
 		t.Fatalf("the jailer ran with %s, want %s", argsBlob, wantArgs)
 	}

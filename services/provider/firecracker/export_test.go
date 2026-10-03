@@ -37,7 +37,7 @@ func (p *Provider) RenumberSilent(id string, pid int) {
 }
 
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
-func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+func (p *Provider) SetOwners(chown func(name string, uid, gid int) error, ownTap func(namespace, name string, uid, gid int) error) {
 	p.chown, p.ownTap = chown, ownTap
 }
 

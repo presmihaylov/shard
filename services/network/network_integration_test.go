@@ -328,27 +328,64 @@ func TestReleaseUnpinsTheUserNamespace(t *testing.T) {
 	}
 }
 
-// A microVM's link is a tap on the bridge, isolated like a veth and named the same, with no namespace behind it.
-func TestAllocateWithATapBuildsAnIsolatedPortAndNoNamespace(t *testing.T) {
+// A microVM's port is a veth isolated on the bridge, and its tap sits in the namespace, bridged to the guest end.
+func TestAllocateWithATapPutsTheTapInTheNamespace(t *testing.T) {
 	s, _ := newTapService(t)
 	spec := allocate(t, s, "amber-otter")
 
-	if spec.NetnsPath != "" || spec.Userns.Set() {
+	if spec.NetnsPath != netns.NamespacePath("amber-otter") || spec.Userns.Set() {
 		t.Errorf("the spec of a tap names the netns %q and the userns %+v", spec.NetnsPath, spec.Userns)
 	}
-	exists, err := netns.NamespaceExists("amber-otter")
-	if err != nil {
-		t.Fatalf("NamespaceExists: %v", err)
-	}
-	if exists {
-		t.Error("Allocate built a namespace behind a tap")
+	if _, err := os.Stat(spec.NetnsPath); err != nil {
+		t.Fatalf("the namespace at %s: %v", spec.NetnsPath, err)
 	}
 
-	link := run(t, "ip", "-details", "link", "show", spec.HostInterface)
-	for _, want := range []string{"tun type tap", "isolated on", "master " + testBridge} {
-		if !strings.Contains(link, want) {
-			t.Errorf("%s is not %q: %q", spec.HostInterface, want, strings.TrimSpace(link))
+	host := run(t, "ip", "-details", "link", "show", spec.HostInterface)
+	for _, want := range []string{"veth", "isolated on", "master " + testBridge} {
+		if !strings.Contains(host, want) {
+			t.Errorf("the host link %s is not %q: %q", spec.HostInterface, want, strings.TrimSpace(host))
 		}
+	}
+	if strings.Contains(host, "tun type tap") {
+		t.Errorf("the host link %s is a tap: %q", spec.HostInterface, strings.TrimSpace(host))
+	}
+
+	tap := run(t, "ip", "-netns", "amber-otter", "-details", "link", "show", spec.HostInterface)
+	for _, want := range []string{"tun type tap", "master br0"} {
+		if !strings.Contains(tap, want) {
+			t.Errorf("the tap %s in the namespace is not %q: %q", spec.HostInterface, want, strings.TrimSpace(tap))
+		}
+	}
+	guest := run(t, "ip", "-netns", "amber-otter", "-details", "link", "show", "eth0")
+	if !strings.Contains(guest, "master br0") {
+		t.Errorf("eth0 is not a port of br0: %q", strings.TrimSpace(guest))
+	}
+
+	// The vmm talks to the guest itself, so the namespace holds no address to answer for it.
+	addresses := run(t, "ip", "-netns", "amber-otter", "-4", "address", "show")
+	if strings.Contains(addresses, "inet ") {
+		t.Errorf("the namespace of a tap holds an address: %q", strings.TrimSpace(addresses))
+	}
+}
+
+// A vmm from before the namespace left its tap on the host under the port's name, and the next start replaces it.
+func TestAllocateReplacesATapAnOlderVmmLeftOnTheHost(t *testing.T) {
+	s, m := newTapService(t)
+	spec := allocate(t, s, "amber-otter")
+
+	if err := m.DeleteNamespace(t.Context(), "amber-otter"); err != nil {
+		t.Fatalf("DeleteNamespace: %v", err)
+	}
+	if err := m.DeleteLink(t.Context(), spec.HostInterface); err != nil {
+		t.Fatalf("DeleteLink: %v", err)
+	}
+	run(t, "ip", "tuntap", "add", "dev", spec.HostInterface, "mode", "tap")
+
+	allocate(t, s, "amber-otter")
+
+	host := run(t, "ip", "-details", "link", "show", spec.HostInterface)
+	if !strings.Contains(host, "veth") || strings.Contains(host, "tun type tap") {
+		t.Errorf("the host link %s is still the old tap: %q", spec.HostInterface, strings.TrimSpace(host))
 	}
 }
 
@@ -364,7 +401,7 @@ func TestASecondAllocateWithATapReturnsTheSameNetwork(t *testing.T) {
 	}
 }
 
-func TestReleaseDropsTheTapAndTheLease(t *testing.T) {
+func TestReleaseDropsTheTapNamespaceAndTheLease(t *testing.T) {
 	s, m := newTapService(t)
 	spec := allocate(t, s, "amber-otter")
 
@@ -377,7 +414,10 @@ func TestReleaseDropsTheTapAndTheLease(t *testing.T) {
 		t.Fatalf("LinkExists: %v", err)
 	}
 	if exists {
-		t.Errorf("the tap %s survived the release", spec.HostInterface)
+		t.Errorf("the host link %s survived the release", spec.HostInterface)
+	}
+	if _, err := os.Stat(spec.NetnsPath); !os.IsNotExist(err) {
+		t.Errorf("the namespace at %s survived the release: %v", spec.NetnsPath, err)
 	}
 
 	next := allocate(t, s, "brisk-heron")
@@ -399,7 +439,7 @@ func newServiceOwnedBy(t *testing.T, owner netns.IDMapping) (*network.Service, *
 	return newServiceWith(t, network.Config{Userns: func() (netns.IDMapping, error) { return owner, nil }})
 }
 
-// newTapService is newService with a tap per sandbox and no namespace, which is what a microVM gets.
+// newTapService is newService with a tap beside each veth, which is what a microVM gets.
 func newTapService(t *testing.T) (*network.Service, *netns.Manager) {
 	t.Helper()
 
