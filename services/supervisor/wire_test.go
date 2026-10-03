@@ -178,10 +178,10 @@ func TestRunReportsAFailureAsNotStarted(t *testing.T) {
 	}
 }
 
-func TestAppendExitReadsBackThroughBundle(t *testing.T) {
+func TestWriteExitKeepsOnlyTheLastRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "exit.json")
-	for _, exit := range []models.ExitStatus{{Code: 1}, {Code: 0, Signal: 9}} {
-		if err := supervisor.AppendExit(path, exit); err != nil {
+	for i := range 200 {
+		if err := supervisor.WriteExit(path, models.ExitStatus{Code: i % 7, Signal: 9}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,8 +190,15 @@ func TestAppendExitReadsBackThroughBundle(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("read = %v %v", ok, err)
 	}
-	if got.Signal != 9 {
+	if got != (models.ExitStatus{Code: 199 % 7, Signal: 9}) {
 		t.Fatalf("got %+v, want the last record", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 64 {
+		t.Fatalf("the exit file is %d bytes after 200 exits, want one record", info.Size())
 	}
 }
 

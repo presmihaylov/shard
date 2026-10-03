@@ -121,7 +121,7 @@ func TestStartPutsTheMachineInThenBootsIt(t *testing.T) {
 			"machine": `{"vcpu_count":2,"mem_size_mib":256}`,
 			"boot":    `{"kernel_image_path":"/kernels/vmlinux","initrd_path":"/kernels/initrd.cpio","boot_args":"console=ttyS0 -- -transport vsock"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
-			"overlay": `{"drive_id":"overlay","path_on_host":"` + filepath.Join(root, "overlay.raw") + `","is_root_device":false,"is_read_only":false}`,
+			"overlay": `{"drive_id":"overlay","path_on_host":"` + filepath.Join(root, "overlay.raw") + `","is_root_device":false,"is_read_only":false,"cache_type":"Writeback"}`,
 			"network": `{"iface_id":"eth0","host_dev_name":"shardv2","guest_mac":"02:fc:0a:57:00:02"}`,
 			"vsock":   `{"guest_cid":3,"uds_path":"` + cfg.Vsock + `"}`,
 		}[name]
@@ -375,7 +375,7 @@ func TestRestoreBringsTheSnapshotUpInAFreshVmmWithItsOwnTapVsockAndDisk(t *testi
 			"network": `{"guest_mac":"02:fc:0a:57:00:02","host_dev_name":"shardv3","iface_id":"eth0"}`,
 			"vsock":   `{"guest_cid":3,"uds_path":"` + snap.Vsock + `"}`,
 			"base":    `{"drive_id":"base","path_on_host":"/images/base.erofs","is_root_device":false,"is_read_only":true}`,
-			"overlay": `{"drive_id":"overlay","is_read_only":false,"is_root_device":false,"path_on_host":"` + overlay + `"}`,
+			"overlay": `{"cache_type":"Writeback","drive_id":"overlay","is_read_only":false,"is_root_device":false,"path_on_host":"` + overlay + `"}`,
 		}[name]
 		if got != want {
 			t.Fatalf("the restored %s = %s, want %s", name, got, want)
@@ -418,13 +418,31 @@ func TestRestoreReportsARefusedLoadAndEndsTheVmm(t *testing.T) {
 	}
 }
 
+// freeze returns once the kernel reports the vmm stopped, which on Linux is after its last thread stops: SIGSTOP lands on each thread on its own (SHARD-436).
+func freeze(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	var status syscall.WaitStatus
+	_, err := syscall.Wait4(pid, &status, syscall.WUNTRACED, nil)
+	for errors.Is(err, syscall.EINTR) {
+		_, err = syscall.Wait4(pid, &status, syscall.WUNTRACED, nil)
+	}
+	if err != nil {
+		t.Fatalf("wait for the vmm to stop: %v", err)
+	}
+	// Darwin's Stopped() is false for SIGSTOP itself, so the check is the one way this wait goes wrong: the vmm ended.
+	if status.Exited() || status.Signaled() {
+		t.Fatalf("the vmm ended before it stopped: %#x", uint32(status))
+	}
+}
+
 // TestKillEndsAVmmTooWedgedToAnswer is SHARD-339: a stopped vmm takes the dial and never the call, so the kill must not wait for an answer.
 func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 	cfg := config(shortRoot(t))
 	client, info := start(t, cfg)
-	if err := syscall.Kill(info.PID, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	freeze(t, info.PID)
 
 	begun := time.Now()
 	if err := client.Kill(); err != nil {
@@ -440,9 +458,7 @@ func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	cfg := config(shortRoot(t))
 	client, info := start(t, cfg)
-	if err := syscall.Kill(info.PID, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	freeze(t, info.PID)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
