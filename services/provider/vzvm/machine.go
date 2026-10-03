@@ -115,7 +115,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 // unanswered keeps a shim an adopt found silent, by the pid behind its socket, so each later lookup waits on its one request.
 func (p *Provider) unanswered(id, dir, socket string) (*machine, error) {
 	client := vz.Open(socket)
-	shim, err := silentShim(client, dir)
+	shim, err := p.silentShim(client, dir)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox %s: read the pid of its silent shim: %w", id, err)
 	}
@@ -134,10 +134,10 @@ func (p *Provider) unanswered(id, dir, socket string) (*machine, error) {
 }
 
 // silentShim is the shim behind the socket, or the one the last attach recorded while it runs, as a full socket queue refuses the dial; zero is none.
-func silentShim(client *vz.Client, dir string) (vz.Process, error) {
+func (p *Provider) silentShim(client *vz.Client, dir string) (vz.Process, error) {
 	pid, err := client.PID()
 	if refused(err) {
-		return recordedShim(dir)
+		return p.recordedShim(dir)
 	}
 	if absent(err) {
 		return vz.Process{}, nil
@@ -154,8 +154,8 @@ func silentShim(client *vz.Client, dir string) (vz.Process, error) {
 }
 
 // recordedShim is the shim the last attach recorded while it still runs, and zero once it does not.
-func recordedShim(dir string) (vz.Process, error) {
-	shim, err := readShim(dir)
+func (p *Provider) recordedShim(dir string) (vz.Process, error) {
+	shim, err := p.readShim(dir)
 	if err != nil {
 		return vz.Process{}, err
 	}
@@ -217,7 +217,7 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 		return nil, fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
 	}
 	if err != nil {
-		shim, err := readShim(dir)
+		shim, err := p.readShim(dir)
 		if err != nil {
 			return nil, err
 		}

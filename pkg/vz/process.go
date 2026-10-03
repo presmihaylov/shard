@@ -26,9 +26,9 @@ func Identify(pid int) (Process, error) {
 	return Process{PID: pid, Start: start}, nil
 }
 
-// Locate is the live shim started on the config for socket, as one an older daemon booted has no record of its pid; zero is none (SHARD-423).
-func Locate(socket string) (Process, error) {
-	return scan(func(args []string) bool { return serves(args, socket) })
+// Locate is the live shim the binary at shim started on the config for socket, as one an older daemon booted has no record of its pid; zero is none (SHARD-423).
+func Locate(shim, socket string) (Process, error) {
+	return scan(shim, func(args []string) bool { return serves(args, socket) })
 }
 
 // serves says the arguments are the ones Start gives a shim for socket.

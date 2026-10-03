@@ -44,7 +44,9 @@ a restart found silent gets one request that every later probe shares, so its so
 fills. A queue that fills anyway refuses every dial, as the socket of a dead shim does, so the daemon
 reads a refused shim gone only once the pid and start time the last attach wrote to `shim.json` are
 gone, and `stop` kills that pid with the group it leads (SHARD-423). A shim an older daemon booted
-has no `shim.json`, so the daemon finds it by the `-config` its start named the socket in. A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
+has no `shim.json`, so the daemon finds it as a process of its own user that the kernel says runs
+from the installed shim's path, with a `-config` that names the socket. An argv alone is never
+enough. A sleep of the host keeps the VM and the shim; if it resets the vsock streams, the
 daemon dials the control and the logs streams again while the shim says the VM runs, so `logs -f`
 and the events resume where they stopped. The new control connection opens with the guest's state,
 and an exit or a restart that landed while no stream was open is recorded from that replay, so

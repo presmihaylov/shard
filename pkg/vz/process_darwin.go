@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -34,15 +36,33 @@ func startedAt(proc *unix.KinfoProc) int64 {
 	return started.Sec*1e6 + int64(started.Usec)
 }
 
-// scan is the first live process whose arguments match; one whose arguments this user may not read is no shim of this daemon.
-func scan(match func([]string) bool) (Process, error) {
+// scan is the first live process of the daemon's user, run from shim, whose arguments match; argv alone is anyone's to write.
+func scan(shim string, match func([]string) bool) (Process, error) {
+	// The kernel names the executable by its resolved path.
+	want, err := filepath.EvalSymlinks(shim)
+	if err != nil {
+		return Process{}, fmt.Errorf("resolve the shim %s: %w", shim, err)
+	}
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return Process{}, fmt.Errorf("read the process table: %w", err)
 	}
+	euid := os.Geteuid()
 	for i := range procs {
 		pid := int(procs[i].Proc.P_pid)
-		if pid <= 1 || procs[i].Proc.P_stat == zombie {
+		if pid <= 1 || procs[i].Proc.P_stat == zombie || int(procs[i].Eproc.Ucred.Uid) != euid {
+			continue
+		}
+		exe, err := executable(pid)
+		// A process whose file was unlinked runs from no path.
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.ENOENT) {
+			continue
+		}
+		if err != nil {
+			return Process{}, fmt.Errorf("read the executable of pid %d: %w", pid, err)
+		}
+		// An upgrade renames a new shim over the path, and the one an older daemon ran keeps that path.
+		if exe != want {
 			continue
 		}
 		args, err := argsOf(pid)

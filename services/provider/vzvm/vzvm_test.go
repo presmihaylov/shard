@@ -39,6 +39,7 @@ type harness struct {
 	provider    *vzvm.Provider
 	root        string
 	disk        string
+	shim        string
 	saveRestore bool
 
 	next atomic.Int64
@@ -60,7 +61,7 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 
-	h := &harness{root: root, disk: baseDisk(t, root), saveRestore: saveRestore}
+	h := &harness{root: root, disk: baseDisk(t, root), shim: os.Args[0], saveRestore: saveRestore}
 	h.open(t)
 
 	return h
@@ -71,7 +72,7 @@ func (h *harness) open(t *testing.T) *vzvm.Provider {
 	t.Helper()
 
 	p, err := vzvm.New(vzvm.Config{
-		Shim:        os.Args[0],
+		Shim:        h.shim,
 		Kernel:      "kernel",
 		Init:        initBinary,
 		Dir:         h.root,
@@ -1481,7 +1482,12 @@ func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
 // frozenShim starts a sandbox and freezes its shim, across a provider restart when asked, and answers the shim's pid.
 func frozenShim(t *testing.T, restart bool) (*harness, models.SandboxSpec, int) {
 	t.Helper()
-	h := newHarness(t)
+
+	return frozenShimOn(t, newHarness(t), restart)
+}
+
+func frozenShimOn(t *testing.T, h *harness, restart bool) (*harness, models.SandboxSpec, int) {
+	t.Helper()
 	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
@@ -1643,13 +1649,16 @@ func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h, spec, shim := frozenShim(t, c.restart)
+			h := newHarness(t)
+			installShim(t, h)
+			h, spec, shim := frozenShimOn(t, h, c.restart)
 			dir, err := h.stateDir(spec.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !c.recorded {
 				forgetShim(t, dir)
+				upgrade(t, h.shim)
 			}
 			fillQueue(t, filepath.Join(dir, "shim.sock"))
 
@@ -1749,6 +1758,87 @@ func TestAKilledShimWithNoRecordReadsStopped(t *testing.T) {
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped || status.PID != 0 {
 		t.Errorf("Status over a killed shim with no record = %+v, %v; want stopped with no pid", status, err)
+	}
+}
+
+// A live process with a shim's arguments for the socket of a killed shim, run from another file, is no shim: it reads stopped and Remove leaves it be (SHARD-423).
+func TestAProcessThatOnlyClaimsTheSocketIsNoShim(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	if err := syscall.Kill(shim, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, shim)
+	exited := impostor(t, filepath.Join(dir, "shim.sock"))
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped || status.PID != 0 {
+		t.Errorf("Status with an impostor on the socket = %+v, %v; want stopped with no pid", status, err)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		t.Errorf("Remove ended the impostor: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// impostor runs a copy of this test binary under another name with the arguments Start gives the shim of socket.
+func impostor(t *testing.T, socket string) <-chan error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "impostor")
+	copyBinary(t, path)
+	config, err := json.Marshal(vz.Config{Socket: socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, "-config", string(config))
+	cmd.Env = append(os.Environ(), fakeShimEnv+"="+impostorRole)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("end the impostor: %v", err)
+		}
+	})
+
+	return exited
+}
+
+// installShim runs the shims from a copy of this test binary where a daemon installs its own, so an upgrade can replace it.
+func installShim(t *testing.T, h *harness) {
+	t.Helper()
+	h.shim = filepath.Join(h.root, "shard-vz-shim")
+	copyBinary(t, h.shim)
+	h.reopen(t)
+}
+
+// upgrade renames a new shim over the file a live shim runs from, as vzshim.Install does.
+func upgrade(t *testing.T, shim string) {
+	t.Helper()
+	copyBinary(t, shim+".new")
+	if err := os.Rename(shim+".new", shim); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyBinary(t *testing.T, path string) {
+	t.Helper()
+	body, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
 

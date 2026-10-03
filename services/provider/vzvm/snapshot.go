@@ -114,7 +114,7 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 	if err != nil {
 		return err
 	}
-	shim, err := readShim(stateDir)
+	shim, err := p.readShim(stateDir)
 	if err != nil {
 		return err
 	}

@@ -210,10 +210,10 @@ func writeRecord(dir string, r record) error {
 }
 
 // readShim is the shim the last attach recorded, or the live one started on the socket, as an older daemon recorded none; zero is neither.
-func readShim(dir string) (vz.Process, error) {
+func (p *Provider) readShim(dir string) (vz.Process, error) {
 	blob, err := os.ReadFile(filepath.Join(dir, shimFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		return vz.Locate(filepath.Join(dir, socketFile))
+		return vz.Locate(p.cfg.Shim, filepath.Join(dir, socketFile))
 	}
 	if err != nil {
 		return vz.Process{}, fmt.Errorf("read the shim record: %w", err)
