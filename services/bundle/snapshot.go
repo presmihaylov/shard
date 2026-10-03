@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +19,8 @@ import (
 // layersDir is where a snapshot keeps the copy of the writable layers its memory image was taken over.
 const layersDir = "layers"
 
-// Export copies config.json and the writable layers into dir, so a fork restores over what the memory saw.
-func (b Bundle) Export(dir string) error {
+// Export copies config.json and the writable layers into dir, so a fork restores over what the memory saw; ctx ends the copy, which runs while the guest is frozen.
+func (b Bundle) Export(ctx context.Context, dir string) error {
 	source := filepath.Join(b.Dir, "config.json")
 	blob, err := os.ReadFile(source)
 	if err != nil {
@@ -30,7 +31,7 @@ func (b Bundle) Export(dir string) error {
 	}
 
 	for name, layer := range b.layers() {
-		if err := copyTree(layer, filepath.Join(dir, layersDir, name)); err != nil {
+		if err := copyTree(ctx, layer, filepath.Join(dir, layersDir, name)); err != nil {
 			return err
 		}
 	}
@@ -88,8 +89,9 @@ func (s *Service) clone(configPath string, layers map[string]string, sourceExit 
 		return Bundle{}, err
 	}
 
+	// No guest waits frozen on this copy, so nothing cuts it short.
 	for name, layer := range b.layers() {
-		if err := copyTree(layers[name], layer); err != nil {
+		if err := copyTree(context.Background(), layers[name], layer); err != nil {
 			return Bundle{}, err
 		}
 	}
@@ -162,12 +164,12 @@ func (b Bundle) layers() map[string]string {
 }
 
 // copyTree is cp -a, because a file walk would drop the whiteout nodes and trusted xattrs of an upper layer.
-func copyTree(src, dst string) error {
+func copyTree(ctx context.Context, src, dst string) error {
 	if err := os.MkdirAll(dst, 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
 
-	cmd := exec.Command("cp", "-a", src+string(filepath.Separator)+".", dst) // #nosec G204
+	cmd := exec.CommandContext(ctx, "cp", "-a", src+string(filepath.Separator)+".", dst) // #nosec G204
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("copy %s to %s: %w: %s", src, dst, err, out)
 	}

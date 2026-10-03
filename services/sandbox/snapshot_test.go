@@ -542,6 +542,51 @@ func TestForkGivesBackWhatItClaimedWhenTheRestoreFails(t *testing.T) {
 	}
 }
 
+// A cancel during the source's capture lands before any restore, so nothing runs under the fork's claims and they all go back (SHARD-457).
+func TestAForkCutBeforeItsRestoreGivesBackWhatItClaimed(t *testing.T) {
+	r := &recorder{fail: []string{"provider.Fork"}}
+	svc, l := newService(t, r, forkSource())
+	ctx, cancel := context.WithCancel(t.Context())
+	l.provider.onFork = func() {
+		cancel()
+		l.provider.status = models.Status{}
+	}
+
+	_, err := svc.Fork(ctx, "sandbox1", sandbox.CopyRequest{})
+	if err == nil || strings.Contains(err.Error(), "stays on the host") {
+		t.Fatalf("fork = %v, want the cut reported and nothing kept", err)
+	}
+
+	want := []string{"provider.Fork", "provider.Status", "provider.Remove", "net.Release", "repo.Delete"}
+	if got := keep(r.calls, want...); !slices.Equal(got[len(got)-len(want):], want) {
+		t.Errorf("the cut fork ran %v, want %v at the end", got, want)
+	}
+	for _, step := range []string{"provider.Remove", "net.Release"} {
+		if !r.live[step] {
+			t.Errorf("%s ran on the cancelled context, so it could not give anything back", step)
+		}
+	}
+}
+
+// A cancel can cut the restore after it started the guest, so a fork the substrate reports alive is kept (SHARD-457).
+func TestAForkCutInItsRestoreKeepsAForkThatRuns(t *testing.T) {
+	r := &recorder{fail: []string{"provider.Fork"}}
+	svc, l := newService(t, r, forkSource())
+	ctx, cancel := context.WithCancel(t.Context())
+	l.provider.onFork = cancel
+
+	_, err := svc.Fork(ctx, "sandbox1", sandbox.CopyRequest{})
+	if err == nil || !strings.Contains(err.Error(), "sandbox2") || !strings.Contains(err.Error(), "stays on the host") {
+		t.Fatalf("fork = %v, want the kept fork named", err)
+	}
+
+	for _, step := range []string{"provider.Remove", "net.Release", "repo.Delete"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("ran %s after a cut restore; the fork may already run", step)
+		}
+	}
+}
+
 // The copy is half-built while it is given back, so the teardown runs under its lock and no verb sees it.
 func TestAFailedForkUnwindsBeforeItLetsTheCopyGo(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Fork"}}

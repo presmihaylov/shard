@@ -154,7 +154,7 @@ func TestExportRefusesAnExitFileOverTheCap(t *testing.T) {
 	b, _ := build(t, newSpec(t), models.ImageConfig{})
 	write(t, b.ExitFile, strings.Repeat("x", 1<<20))
 
-	if err := b.Export(t.TempDir()); !errors.Is(err, models.ErrExitFileTooLarge) {
+	if err := b.Export(t.Context(), t.TempDir()); !errors.Is(err, models.ErrExitFileTooLarge) {
 		t.Fatalf("Export = %v, want ErrExitFileTooLarge", err)
 	}
 }

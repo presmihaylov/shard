@@ -37,6 +37,8 @@ const (
 	killGrace = 10 * time.Second
 	// startGrace bounds the wait for the supervisor's handshake, which it writes as soon as it forks.
 	startGrace = 30 * time.Second
+	// captureGrace bounds how long a live fork holds its source frozen, so a wedged checkpoint or copy cannot keep it so.
+	captureGrace = 10 * time.Minute
 )
 
 // diagnosticTail bounds what a failed start quotes back from the sandbox's own output.
@@ -90,6 +92,8 @@ type Provider struct {
 	killPinned func(pid int, still func() (bool, error)) error
 	// capturing holds each source a live fork of this process has frozen, which a read must not thaw under it; a cut daemon leaves none, so the next one thaws by the mark.
 	capturing sync.Map
+	// forkMu makes a capture's mark and a read's thaw one step each, so a read never thaws a freeze that began after it looked.
+	forkMu sync.Mutex
 }
 
 func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -769,8 +773,8 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		return models.Status{}, err
 	}
 
-	// A daemon cut inside a live fork left the source frozen with its mark, and the read that finds it thaws it (SHARD-457).
-	if stateOf(state.Status) == models.StatePaused {
+	// A daemon cut inside a live fork left its mark on the source, frozen or not, and a stale mark would pass a later real pause for a cut fork (SHARD-457).
+	if got := stateOf(state.Status); got == models.StatePaused || got == models.StateRunning {
 		thawed, err := p.thawCutFork(ctx, id)
 		if err != nil {
 			return models.Status{}, err
@@ -936,7 +940,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 
 	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
-	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(tmp)); err != nil {
+	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(ctx, tmp)); err != nil {
 		return p.lose(ctx, id, b, tmp, err)
 	}
 
@@ -1116,10 +1120,9 @@ func (p *Provider) capture(ctx context.Context, id, dir string) (err error) {
 	if err != nil {
 		return err
 	}
-	p.capturing.Store(id, struct{}{})
 	defer p.capturing.Delete(id)
-	if err := os.WriteFile(filepath.Join(stateDir, forkFrozenFile), nil, 0o600); err != nil {
-		return fmt.Errorf("mark sandbox %s frozen for its fork: %w", id, err)
+	if err := p.markCapture(id, stateDir); err != nil {
+		return err
 	}
 	thawed := false
 	defer func() {
@@ -1131,16 +1134,33 @@ func (p *Provider) capture(ctx context.Context, id, dir string) (err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create the capture directory %s: %w", dir, err)
 	}
-	if err := p.runsc.Pause(ctx, id); err != nil {
+	frozen, cancel := context.WithTimeout(ctx, captureGrace)
+	defer cancel()
+	if err := p.runsc.Pause(frozen, id); err != nil {
+		return err
+	}
+	if err := p.runsc.CheckpointRunning(frozen, id, dir); err != nil {
 		return err
 	}
 	// The layer is copied while the guest is frozen, so the fork restores over the files its memory saw.
-	if err := errors.Join(p.runsc.CheckpointRunning(ctx, id, dir), src.Export(dir)); err != nil {
+	if err := src.Export(frozen, dir); err != nil {
 		return err
 	}
 	thawed = true
 
 	return p.thaw(ctx, id)
+}
+
+// markCapture holds id for this process's capture and marks it frozen on disk, under forkMu, so a read's thaw never lands between the two.
+func (p *Provider) markCapture(id, stateDir string) error {
+	p.forkMu.Lock()
+	defer p.forkMu.Unlock()
+	p.capturing.Store(id, struct{}{})
+	if err := os.WriteFile(filepath.Join(stateDir, forkFrozenFile), nil, 0o600); err != nil {
+		return fmt.Errorf("mark sandbox %s frozen for its fork: %w", id, err)
+	}
+
+	return nil
 }
 
 // thaw resumes a source a live fork froze, past any cancel and within the kill grace, and drops its mark once runsc says it runs.
@@ -1175,11 +1195,8 @@ func (p *Provider) thaw(ctx context.Context, id string) error {
 	return nil
 }
 
-// thawCutFork thaws a frozen source whose live fork a daemon cut left marked, and says whether it did; a frozen source with no mark, or one this process captures now, is left as it is.
+// thawCutFork thaws a source whose live fork a daemon cut left marked, frozen or already resumed, and says whether it did; a source with no mark, or one this process captures now, is left as it is.
 func (p *Provider) thawCutFork(ctx context.Context, id string) (bool, error) {
-	if _, held := p.capturing.Load(id); held {
-		return false, nil
-	}
 	stateDir, err := p.dirs(id)
 	if err != nil {
 		return false, err
@@ -1190,6 +1207,12 @@ func (p *Provider) thawCutFork(ctx context.Context, id string) (bool, error) {
 	}
 	if err != nil {
 		return false, fmt.Errorf("read the fork mark of sandbox %s: %w", id, err)
+	}
+
+	p.forkMu.Lock()
+	defer p.forkMu.Unlock()
+	if _, held := p.capturing.Load(id); held {
+		return false, nil
 	}
 
 	return true, p.thaw(ctx, id)

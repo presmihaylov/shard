@@ -160,9 +160,10 @@ deletes one. It handles these cases:
   because a pause can commit after the tick's first probe.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports. The daemon drops the exit status of the run that ended.
-- A gVisor source that a live fork froze when the daemon was cut carries a mark beside it, and the
-  first read of it thaws it, at startup or on a liveness tick. The read drops the mark only once the
-  source runs again (SHARD-457).
+- A gVisor source that a live fork marked when the daemon was cut carries the mark beside it, frozen
+  or already running again. The first read of it, at startup or on a liveness tick, thaws a frozen
+  source and drops the mark only once the source runs again. A stale mark on a running source would
+  pass a later real pause for a cut fork, so the read drops it there too (SHARD-457).
 - A record that says `created` becomes `failed`, and its `failed_reason` says `the daemon restarted
   before the fork or clone finished`. No verb leaves a record in `created`. Only the copy of a fork
   or a clone passes through that state, and the caller got an error instead of the id. The daemon

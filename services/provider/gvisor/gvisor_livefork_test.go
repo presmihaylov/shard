@@ -42,10 +42,11 @@ func TestALiveForkCapturesTheSourceAndThawsItBeforeTheRestore(t *testing.T) {
 	assertThawed(t, p, dir)
 }
 
-// A checkpoint that fails still thaws the source, and the fork restores from nothing (SHARD-457).
+// A checkpoint that fails still thaws the source, copies no layer under the frozen guest, and the fork restores from nothing (SHARD-457).
 func TestAFailedCaptureThawsTheSourceAndRestoresNoFork(t *testing.T) {
 	dir := t.TempDir()
 	p, calls := liveForkProvider(t, dir, "", `echo "save failed: no space left on device" >&2; exit 1`)
+	fakeCopy(t, `echo "$*" >> `+filepath.Join(dir, "copies")+`; exec /bin/cp "$@"`)
 
 	err := p.Fork(t.Context(), liveSource, models.SandboxSpec{ID: liveFork, StateDir: filepath.Join(dir, liveFork)})
 	if err == nil || !strings.Contains(err.Error(), "no space left on device") {
@@ -60,6 +61,30 @@ func TestAFailedCaptureThawsTheSourceAndRestoresNoFork(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, liveFork, "capture")); err == nil {
 		t.Error("the failed capture left its directory behind")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "copies")); err == nil {
+		t.Error("the failed checkpoint still copied the source's layer")
+	}
+	assertThawed(t, p, dir)
+}
+
+// A layer copy that hangs is cut by the fork's context, so it cannot hold the source frozen, and the source is thawed (SHARD-457).
+func TestAHungLayerCopyIsCutAndThawsTheSource(t *testing.T) {
+	dir := t.TempDir()
+	p, calls := liveForkProvider(t, dir, "", "")
+	fakeCopy(t, "exec sleep 30")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	started := time.Now()
+	if err := p.Fork(ctx, liveSource, models.SandboxSpec{ID: liveFork, StateDir: filepath.Join(dir, liveFork)}); err == nil {
+		t.Fatal("Fork over a hung layer copy = nil, want the cut")
+	}
+	if took := time.Since(started); took > 10*time.Second {
+		t.Errorf("the fork returned after %s, want the hung copy cut at its deadline", took)
+	}
+	if index(runscCalls(t, calls), "restore") >= 0 {
+		t.Errorf("the cut fork ran %q, want no restore", runscCalls(t, calls))
 	}
 	assertThawed(t, p, dir)
 }
@@ -115,20 +140,40 @@ func TestTheReadAfterADaemonCutInALiveForkThawsTheSource(t *testing.T) {
 	assertThawed(t, p, dir)
 }
 
+// A cut after the resume leaves the mark on a running source, and the next read drops it, so a later real pause is never taken for a cut fork (SHARD-457).
+func TestAReadDropsTheMarkACutForkLeftOnARunningSource(t *testing.T) {
+	dir := t.TempDir()
+	p, calls := liveForkProvider(t, dir, "", "")
+	if err := os.WriteFile(filepath.Join(dir, liveSource, "fork-frozen"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := p.Status(t.Context(), liveSource)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status of a running source with a stale mark = %+v, %v, want running", status, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, liveSource, "fork-frozen")); err == nil {
+		t.Fatal("the read left the stale mark on the running source")
+	}
+
+	// A real pause freezes the source while it checkpoints, and a read in that window must leave it frozen.
+	sourceCgroup(t, p)
+	if err := os.WriteFile(filepath.Join(dir, "frozen-"+liveSource), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := p.Status(t.Context(), liveSource); err != nil || status.State != models.StatePaused {
+		t.Errorf("Status during a real pause = %+v, %v, want paused", status, err)
+	}
+	if got := runscCalls(t, calls); index(got, "resume") >= 0 {
+		t.Errorf("the reads ran %q, want no resume", got)
+	}
+}
+
 // A read of the source while this process captures it sees it frozen and leaves it so, or a thaw would run the guest under the checkpoint (SHARD-457).
 func TestAReadDuringTheCaptureLeavesTheSourceFrozen(t *testing.T) {
 	dir := t.TempDir()
 	p, calls := liveForkProvider(t, dir, "", "touch "+dir+"/checkpointing; sleep 1")
-	// A frozen sentry stays in its sandbox's cgroup, which is what lets a read tell it from a pid Linux reused.
-	cgroups := t.TempDir()
-	p.SetCgroupRoot(cgroups)
-	cg := filepath.Join(cgroups, bundle.CgroupsPath(liveSource))
-	if err := os.MkdirAll(cg, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	sourceCgroup(t, p)
 	read := make(chan models.Status, 1)
 	go func() {
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -216,6 +261,30 @@ case "$*" in
 esac`
 
 	return newProviderIn(t, dir, script), calls
+}
+
+// sourceCgroup keeps the source's sentry in its cgroup, which is what lets a read tell a frozen one from a pid Linux reused.
+func sourceCgroup(t *testing.T, p *gvisor.Provider) {
+	t.Helper()
+	cgroups := t.TempDir()
+	p.SetCgroupRoot(cgroups)
+	cg := filepath.Join(cgroups, bundle.CgroupsPath(liveSource))
+	if err := os.MkdirAll(cg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeCopy puts a cp that runs body on PATH, ahead of the real one.
+func fakeCopy(t *testing.T, body string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "cp"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil { // #nosec G306
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // assertThawed proves the source runs again and carries no fork mark.

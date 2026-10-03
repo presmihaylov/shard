@@ -134,8 +134,10 @@ a running sandbox instead of refusing it, because nothing else drops the rootfs 
 (SHARD-457). It freezes the source for a moment, captures its memory and files, and lets the same
 runtime run on, so the source stays `running` with its pid and its record. It creates a second
 sandbox in `running` from that capture, never from an older snapshot. One `shard fork <source>` per
-new sandbox is the primitive for a warm pool. A daemon cut while the source is frozen leaves a mark
-beside it, and the next read of that source thaws it.
+new sandbox is the primitive for a warm pool. On gVisor the freeze lasts at most 10 minutes, and a
+capture still in flight then fails and thaws the source. A daemon cut while the source is frozen
+leaves a mark beside it, and the next read of that source thaws it. A fork cut before its restore
+gives back everything it claimed, and one cut later keeps a copy that the runtime reports alive.
 
 **`clone` is not a transition either.** It creates a second sandbox in `running` over a copy of the
 files that a `stopped` or `paused` source kept. It runs the entrypoint from the beginning, so it acts

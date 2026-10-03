@@ -283,6 +283,8 @@ type fakeProvider struct {
 	restartsErr error
 	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
 	onRemove func()
+	// onFork runs inside Fork, so a test can say what a fork that fails left on the host.
+	onFork func()
 	// gate, when set, holds Start until it is closed, so a test can put a second verb behind it.
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
@@ -513,6 +515,9 @@ func (f *fakeProvider) Resume(_ context.Context, _ string, dir string) error {
 }
 
 func (f *fakeProvider) Fork(_ context.Context, source string, spec models.SandboxSpec) error {
+	if f.onFork != nil {
+		f.onFork()
+	}
 	if err := f.r.record("provider.Fork"); err != nil {
 		return err
 	}

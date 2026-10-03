@@ -310,14 +310,18 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
-		// An interrupt kills the restore process, not what it may already have restored, and only stop
-		// ends a sandbox, so an unknown outcome is kept.
-		if ctx.Err() != nil {
+		if ctx.Err() == nil {
+			return models.Sandbox{}, err
+		}
+		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
+		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")
+		if perr != nil || probe.Alive() {
 			td.Discard()
 
-			return models.Sandbox{}, fmt.Errorf("the fork into sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
+			return models.Sandbox{}, fmt.Errorf("the fork into sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, errors.Join(err, perr))
 		}
 
+		// The substrate holds no live copy, so nothing runs under the claims and they go back.
 		return models.Sandbox{}, err
 	}
 
