@@ -41,7 +41,7 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 				state = models.StateRunning
 			}
 		}
-		if state == models.StateRunning {
+		if state.Live() {
 			running++
 		}
 	}
@@ -103,6 +103,21 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
+	if state == models.StateUnresponsive {
+		if err := s.recordUnresponsive(sb.ID, sb, status.Reason, report); err != nil {
+			return "", err
+		}
+
+		return state, nil
+	}
+	// An unresponsive record whose process answers again keeps its run, so it is no fresh start (SHARD-421).
+	if state == models.StateRunning && sb.State == models.StateUnresponsive {
+		if err := s.recordAnswered(sb.ID, report); err != nil {
+			return "", err
+		}
+
+		return state, nil
+	}
 	if state == models.StateRunning {
 		if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, sb.ID, false); err != nil {
 			return "", err
@@ -137,6 +152,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 
 		return nil
 	})
@@ -151,6 +167,9 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 // reconciled is the state the record should hold: what the substrate says, and for a paused one what
 // the snapshot on disk says, because a checkpoint holds no process and resume still brings it back.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
+	if status.State == models.StateUnresponsive {
+		return models.StateUnresponsive, nil
+	}
 	if status.Alive() {
 		return models.StateRunning, nil
 	}
@@ -170,7 +189,7 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateFailed, nil
 	}
 
-	if sb.State == models.StateRunning || sb.State == models.StatePaused {
+	if sb.State.Live() || sb.State == models.StatePaused {
 		return models.StateStopped, nil
 	}
 

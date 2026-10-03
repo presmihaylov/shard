@@ -162,6 +162,81 @@ func TestLivenessNamesASandboxTheDaemonKilledForItsSilence(t *testing.T) {
 	}
 }
 
+// silentShim is what vz answers for a held shim that missed its probe bound (SHARD-421).
+func silentShim() models.Status {
+	return models.Status{Exists: true, State: models.StateUnresponsive, PID: 42, Reason: "its shim (pid 42) did not answer within 5s"}
+}
+
+// unresponsive is a running record that liveness marked for its silent shim.
+func unresponsive() models.Sandbox {
+	sb := running()
+	sb.State = models.StateUnresponsive
+	sb.UnresponsiveReason = silentShim().Reason
+
+	return sb
+}
+
+func TestLivenessMarksASilentSandboxUnresponsiveAndNeverEndsIt(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := running()
+	sb.StartedAt = started
+	lab := newLivenessLab(t, sb, silentShim())
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateUnresponsive || got.PID != 42 || got.UnresponsiveReason != silentShim().Reason || !got.StartedAt.Equal(started) {
+		t.Errorf("the record says %s with pid %d, the reason %q and the start %s; want unresponsive with its pid, the reason and its run", got.State, got.PID, got.UnresponsiveReason, got.StartedAt)
+	}
+	if lab.l.provider.stopped {
+		t.Error("liveness stopped a sandbox that only went silent")
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "pid 42") {
+		t.Errorf("the pass reported %v, want one line naming the shim", lab.reports)
+	}
+
+	if err := lab.tick(t, got, time.Now()); err != nil {
+		t.Fatalf("the second Liveness: %v", err)
+	}
+	if len(lab.reports) != 1 {
+		t.Errorf("the second pass reported %v, want nothing new for a sandbox still silent", lab.reports[1:])
+	}
+}
+
+func TestLivenessMakesAnUnresponsiveSandboxRunningOnceItAnswers(t *testing.T) {
+	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	sb := unresponsive()
+	sb.StartedAt = started
+	lab := newLivenessLab(t, sb, alive(42))
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.PID != 42 || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) {
+		t.Errorf("the record says %s with pid %d, the reason %q and the start %s; want running with its run kept", got.State, got.PID, got.UnresponsiveReason, got.StartedAt)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "answers again") {
+		t.Errorf("the pass reported %v, want one line on the answer", lab.reports)
+	}
+}
+
+func TestLivenessStopsAnUnresponsiveSandboxWhoseProcessDied(t *testing.T) {
+	lab := newLivenessLab(t, unresponsive(), gone())
+
+	if err := lab.tick(t, unresponsive(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.DiedReason || got.UnresponsiveReason != "" {
+		t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, sandbox.DiedReason)
+	}
+}
+
 func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	lab := newLivenessLab(t, optedIn(), oomKilled())

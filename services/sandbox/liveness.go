@@ -26,7 +26,7 @@ const DiedReason = "the sandbox process died"
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
-		if sb.State != models.StateRunning {
+		if !sb.State.Live() {
 			continue
 		}
 		if err := s.reconcileLive(ctx, sb, now, report); err != nil {
@@ -41,7 +41,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now 
 // other sandbox must not wait on it. It takes the lock only to write, and bails if the run has since changed.
 func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
-	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || before.State != models.StateRunning || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
+	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || !before.State.Live() || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
 		return err
 	}
 
@@ -66,8 +66,19 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 	if err != nil {
 		return err
 	}
-	if current.State != models.StateRunning || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
+	if !current.State.Live() || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
 		return nil
+	}
+	// A silent substrate process may still answer, so it is marked and never ended here; only stop ends it (SHARD-421).
+	if status.State == models.StateUnresponsive {
+		return s.recordUnresponsive(sb.ID, current, status.Reason, report)
+	}
+	if status.Alive() && current.State == models.StateUnresponsive {
+		if err := s.recordAnswered(sb.ID, report); err != nil {
+			return err
+		}
+		current.State = models.StateRunning
+		current.UnresponsiveReason = ""
 	}
 
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
@@ -157,6 +168,41 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 	return nil
 }
 
+// recordUnresponsive marks a live record whose substrate process missed its probe bound, and keeps its pid and its run.
+func (s *Service) recordUnresponsive(id string, sb models.Sandbox, reason string, report func(string)) error {
+	if sb.State == models.StateUnresponsive && sb.UnresponsiveReason == reason {
+		return nil
+	}
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateUnresponsive
+		rec.UnresponsiveReason = reason
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s did not answer but its record was not updated: %w", id, err)
+	}
+	report(fmt.Sprintf("sandbox %s: %s, the record now says unresponsive until it answers or a stop ends it", id, reason))
+
+	return nil
+}
+
+// recordAnswered makes an unresponsive record running again once its substrate process answers, with its run kept.
+func (s *Service) recordAnswered(id string, report func(string)) error {
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateRunning
+		rec.UnresponsiveReason = ""
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s answers again but its record was not updated: %w", id, err)
+	}
+	report(fmt.Sprintf("sandbox %s answers again, the record now says running", id))
+
+	return nil
+}
+
 // recordDied stops the record of a sandbox whose process is gone with no OOM and no stop behind it, so
 // exec reads the truth and start can bring it back.
 func (s *Service) recordDied(id, reason string, report func(string)) error {
@@ -164,6 +210,7 @@ func (s *Service) recordDied(id, reason string, report func(string)) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.StoppedReason = reason
+		rec.UnresponsiveReason = ""
 
 		return nil
 	})

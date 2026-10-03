@@ -49,6 +49,8 @@ type machine struct {
 	started bool
 	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
 	gone bool
+	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
+	silent bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 }
@@ -64,6 +66,8 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	m, held := p.machines[id]
 	p.mu.Unlock()
 	if held {
+		p.probe(ctx, m, adoptBound)
+
 		return m, nil
 	}
 
@@ -139,6 +143,27 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 	p.forget(m)
 
 	return m.close()
+}
+
+// probe asks a held shim for its state within the bound: a silent one reads unresponsive, an answer clears that, and neither kills it (SHARD-421).
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	gone := m.gone
+	p.mu.Unlock()
+	if gone || m.closed.Load() {
+		return
+	}
+	began := time.Now()
+	probe, cancel := context.WithTimeout(ctx, bound)
+	_, err := m.client.State(probe)
+	cancel()
+	// A fast error is the shim gone, which the event loop reports; only the whole bound in silence counts.
+	if err != nil && (time.Since(began) < bound || ctx.Err() != nil) {
+		return
+	}
+	p.mu.Lock()
+	m.silent = err != nil
+	p.mu.Unlock()
 }
 
 func (p *Provider) forget(m *machine) {
@@ -593,10 +618,22 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	if m.silent {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its shim (pid %d) did not answer within %s", m.pid, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
 	return models.Status{Exists: true, State: state, PID: m.pid}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }

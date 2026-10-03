@@ -169,6 +169,23 @@ func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	}
 }
 
+func TestLsGivesTheReasonASandboxIsUnresponsive(t *testing.T) {
+	var out bytes.Buffer
+
+	sandboxes := []models.Sandbox{{ID: "silent-1", Image: "alpine:3.20", State: models.StateUnresponsive,
+		UnresponsiveReason: "its shim (pid 42) did not answer within 5s", CreatedAt: time.Now()}}
+
+	app := newLsApp(t, &out, sandboxes, nil)
+
+	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "unresponsive (its shim (pid 42) did not answer within 5s)") {
+		t.Errorf("ls printed %q, want the state and the reason beside it", out.String())
+	}
+}
+
 func TestLsShowsTheEntrypointExitOfAStillRunningSandbox(t *testing.T) {
 	var out bytes.Buffer
 

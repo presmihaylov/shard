@@ -185,8 +185,14 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if m != nil && m.status(p).Alive() {
-		return p.run(ctx, m, r)
+	if m != nil {
+		status := m.status(p)
+		if status.State == models.StateUnresponsive {
+			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
+		}
+		if status.Alive() {
+			return p.run(ctx, m, r)
+		}
 	}
 	if err := p.release(ctx, m); err != nil {
 		return err
@@ -259,6 +265,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	m, err := p.lookupToStop(ctx, id, dir, r, grace)
 	if err != nil || m == nil {
 		return err
+	}
+	// A shim that missed its probe gets one short probe more, and is killed by its pid with no grace if that is silent too (SHARD-421).
+	if m.status(p).State == models.StateUnresponsive {
+		p.probe(ctx, m, probeFloor)
+	}
+	if m.status(p).State == models.StateUnresponsive {
+		return p.kill(ctx, m)
 	}
 	if !m.status(p).Alive() {
 		return p.release(ctx, m)

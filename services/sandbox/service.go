@@ -770,6 +770,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
+		sb.UnresponsiveReason = ""
 		if exit != nil {
 			sb.ExitStatus = exit
 		}
