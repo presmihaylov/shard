@@ -17,12 +17,7 @@ func TestTheDaemonProbesASandboxWithACommand(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	args := []string{"create", "--health-command", "test ! -e /sick", "--health-interval", "1s", "--health-retries", "2", testImage, "--", "/bin/sh", "-c", "while true; do sleep 1; done"}
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	id := strings.TrimSpace(out.String())
-	out.Reset()
+	id := createWith(t, app, out, "--health-command", "test ! -e /sick", "--health-interval", "1s", "--health-retries", "2", testImage, "--", "/bin/sh", "-c", "while true; do sleep 1; done")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitHealth(t, app, id, models.HealthHealthy)

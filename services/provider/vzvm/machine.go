@@ -51,6 +51,8 @@ type machine struct {
 	gone bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
+	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
+	refusals *supervisor.Refusals
 }
 
 // dial is the supervisor's Dialer over the shim: one vsock connection per call.
@@ -67,12 +69,38 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		return m, nil
 	}
 
-	client, info, err := vz.Adopt(filepath.Join(dir, socketFile))
+	client, info, err := vz.Adopt(ctx, filepath.Join(dir, socketFile))
 	if absent(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	return p.attach(ctx, id, dir, r, client, info, false)
+}
+
+// lookupToStop is lookup whose adoption ends by the grace; a shim too frozen to answer is cut by its socket at once (SHARD-349).
+func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, grace time.Duration) (*machine, error) {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+	if held {
+		return m, nil
+	}
+
+	socket := filepath.Join(dir, socketFile)
+	probe, cancel := context.WithTimeout(ctx, max(grace, probeFloor))
+	client, info, err := vz.Adopt(probe, socket)
+	cancel()
+	if absent(err) {
+		return nil, nil
+	}
+	if err != nil && ctx.Err() != nil {
+		return nil, fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
+	}
+	if err != nil {
+		return nil, p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(socket)})
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
@@ -161,7 +189,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 
 // attach puts the guest on the stack, opens the control connection and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool) (*machine, error) {
-	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{})}
+	m := &machine{id: id, dir: dir, client: client, pid: info.PID, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -225,7 +253,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -277,6 +305,7 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
+			m.refusals.Note(err)
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -368,6 +397,7 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
+			m.refusals.Note(err)
 			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
 			if err := control.Close(); err != nil {
 				return false, err
@@ -444,14 +474,14 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == vz.StateRunning
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
 func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.File.Close()
+	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
 		err := supervisor.Logs(ctx, opened, out, version)
@@ -513,7 +543,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
 	var stopErr error
-	if _, err := client.Stop(); err != nil && !absent(err) {
+	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
 	m := &machine{id: id, client: client}
@@ -542,7 +572,14 @@ func endShim(id string, client *vz.Client, pid int) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		_, err := m.client.State()
+		// Each read ends with the wait, so a shim that takes the dial and never answers costs the grace and not callTimeout (SHARD-349).
+		probeEnd := deadline
+		if floor := time.Now().Add(probeFloor); floor.After(probeEnd) {
+			probeEnd = floor
+		}
+		probe, cancel := context.WithDeadline(ctx, probeEnd)
+		_, err := m.client.State(probe)
+		cancel()
 		if absent(err) {
 			return true, nil
 		}
