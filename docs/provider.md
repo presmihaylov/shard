@@ -430,7 +430,11 @@ record never answers for it. The two disagree on purpose:
 - a sandbox stopped before its entrypoint ran leaves nothing at the substrate, so the record says
   `stopped` and `Status` reports `Exists: false`.
 
-`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. The
+`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. A
+gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the sentry exits
+after any checkpoint, taken or not: the provider returns `models.LostError` and the record ends
+`failed` (SHARD-336). runsc never probes a paused sandbox, so `Status` reads a paused one whose sentry
+is gone as `stopped`, which `stop` and `rm --force` then end. The
 entrypoint exiting is not a transition, and `Wait` returning does not end anything. Under a restart
 policy `Wait` returns the first exit of the run, not the settled one: the supervisor rewrites the exit
 file per exit and clears nothing, so only a stopped sandbox answers with its last exit. No verb waits

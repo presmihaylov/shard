@@ -316,7 +316,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 		return
 	}
 
-	sub, ok, forbid, reason := s.authorize(head, method, target)
+	sub, scopes, ok, forbid, reason := s.authorize(head, method, target)
 	if !ok {
 		if forbid {
 			s.forbid(conn, sub)
@@ -328,6 +328,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 		return
 	}
 	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), sub)
+	head = stampScopes(head, scopes)
 	// A logs -f or an exec attach holds its connection for long, and a valid client must not be refused for that.
 	leave()
 
@@ -396,41 +397,41 @@ func readHead(r io.Reader) ([]byte, error) {
 // authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
 // reach the route; nothing is dialed without all three. It answers the subject, whether the request is
 // authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
-func (s *Server) authorize(head []byte, method string, target *url.URL) (string, bool, bool, string) {
+func (s *Server) authorize(head []byte, method string, target *url.URL) (string, []string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
-		return "", false, false, "no valid token"
+		return "", nil, false, false, "no valid token"
 	}
 
 	scheme, token, found := strings.Cut(fields.Get("Authorization"), " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {
-		return "", false, false, "no valid token"
+		return "", nil, false, false, "no valid token"
 	}
 
 	sub, scopes, jti, err := verify(s.secret, strings.TrimSpace(token))
 	if err != nil {
-		return "", false, false, "no valid token"
+		return "", nil, false, false, "no valid token"
 	}
 
 	if err := s.tokens.refresh(); err != nil {
 		s.log.Printf("read the ledger: %v", err)
 
-		return sub, false, false, "the ledger is unavailable"
+		return sub, nil, false, false, "the ledger is unavailable"
 	}
 	entry, known := s.tokens.lookup(jti)
 	if !known {
-		return sub, false, false, "the token id is not in the ledger"
+		return sub, nil, false, false, "the token id is not in the ledger"
 	}
 	if entry.Revoked {
-		return sub, false, false, "the token is revoked"
+		return sub, nil, false, false, "the token is revoked"
 	}
 
 	need, known := s.caps.capability(method, target)
 	if !known || !covers(scopes, need) {
-		return sub, false, true, ""
+		return sub, nil, false, true, ""
 	}
 
-	return sub, true, false, ""
+	return sub, scopes, true, false, ""
 }
 
 // requestLine parses the method and the target as net/http does, on the ASCII space alone, so the front checks the route the daemon serves.
@@ -547,6 +548,24 @@ func hasToken(header, token string) bool {
 	}
 
 	return false
+}
+
+// stampScopes drops any X-Shard-Scopes the client sent and appends the token's scopes, so the daemon trusts only the front's copy and a forged header can remove rights, never add them.
+func stampScopes(head []byte, scopes []string) []byte {
+	trimmed := bytes.TrimSuffix(head, []byte("\r\n\r\n"))
+	lines := bytes.Split(trimmed, []byte("\r\n"))
+
+	kept := lines[:1] // the request line carries no header name.
+	for _, line := range lines[1:] {
+		if hasHeaderName(line, api.ScopesHeader) {
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+	kept = append(kept, []byte(api.ScopesHeader+": "+strings.Join(scopes, ",")))
+
+	return append(bytes.Join(kept, []byte("\r\n")), "\r\n\r\n"...)
 }
 
 // setConnectionClose drops any Connection header the client sent and appends Connection: close.

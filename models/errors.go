@@ -54,3 +54,15 @@ func (e *UnsupportedError) Error() string {
 }
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
+
+// LostError is a verb that failed after the substrate had already ended the sandbox, so its record ends failed.
+type LostError struct {
+	Sandbox string
+	Err     error
+}
+
+func (e *LostError) Error() string {
+	return fmt.Sprintf("sandbox %s is lost: %v", e.Sandbox, e.Err)
+}
+
+func (e *LostError) Unwrap() error { return e.Err }
