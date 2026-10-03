@@ -166,6 +166,9 @@ const holdDialsFile = "hold-dials"
 // orderFile in the state directory, once a test creates it, takes one line per freeze, reseed and thaw in the order the guest reads them.
 const orderFile = "control-order"
 
+// controlsFile in the state directory, once a test creates it, takes one line per control stream the host opens, so a test counts the attaches.
+const controlsFile = "controls"
+
 // acceptsFile in the state directory, once a test creates it, takes one line per connection the shim accepts, so a test reads what a frozen shim's socket queue held.
 const acceptsFile = "accepts"
 
@@ -326,15 +329,18 @@ func (m *fakeMachine) has(name string) (bool, error) {
 }
 
 // note appends kind to the order file, when the test made one.
-func (m *fakeMachine) note(kind string) error {
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), orderFile), os.O_WRONLY|os.O_APPEND, 0)
+func (m *fakeMachine) note(kind string) error { return m.appendTo(orderFile, kind) }
+
+// appendTo appends one line to a file in the state directory, when the test made one.
+func (m *fakeMachine) appendTo(name, line string) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(m.dir), name), os.O_WRONLY|os.O_APPEND, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(kind + "\n")
+	_, err = f.WriteString(line + "\n")
 
 	return errors.Join(err, f.Close())
 }
@@ -443,8 +449,14 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 		return conn, conn.Close()
 	}
 	m.streams[conn] = struct{}{}
-	if port == supervisor.ControlPort {
-		m.controls++
+	if port != supervisor.ControlPort {
+		return &stream{Conn: conn, machine: m}, nil
+	}
+	m.controls++
+	if err := m.appendTo(controlsFile, "control"); err != nil {
+		delete(m.streams, conn)
+
+		return nil, errors.Join(err, conn.Close())
 	}
 
 	return &stream{Conn: conn, machine: m}, nil

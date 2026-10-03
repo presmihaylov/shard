@@ -1335,6 +1335,53 @@ func TestStopKillsAnAdoptedShimTooFrozenToAnswerAtOnce(t *testing.T) {
 	}
 }
 
+// Lookups that race once a silent adopted shim answers attach it once, so it gets one control stream and one log pump (SHARD-422).
+func TestLookupsThatRaceAfterAThawAttachTheShimOnce(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
+		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, controlsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(shim, syscall.SIGCONT); err != nil {
+		t.Fatalf("thaw the fake shim: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range cap(errs) {
+		wg.Go(func() {
+			<-start
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err == nil && (status.State != models.StateRunning || status.PID != shim) {
+				err = fmt.Errorf("Status after the thaw = %+v, want running with pid %d", status, shim)
+			}
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	if controls := settledLines(t, filepath.Join(dir, controlsFile)); controls != 1 {
+		t.Errorf("the thawed shim got %d control streams, want 1: each is an attach of its own", controls)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after the thaw: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
 // settledLines is the line count of path once it holds still for a second.
 func settledLines(t *testing.T, path string) int {
 	t.Helper()

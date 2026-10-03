@@ -78,9 +78,16 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		if p.waiting(silent) {
 			return silent, nil
 		}
-		p.forget(silent)
 	}
 
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
 	socket := filepath.Join(dir, socketFile)
 	began := time.Now()
 	probe, cancel := context.WithTimeout(ctx, adoptBound)
@@ -147,9 +154,16 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 		if p.waiting(silent) {
 			return silent, nil
 		}
-		p.forget(silent)
 	}
 
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
 	socket := filepath.Join(dir, socketFile)
 	probe, cancel := context.WithTimeout(ctx, max(grace, probeFloor))
 	client, info, err := vz.Adopt(probe, socket)
@@ -165,6 +179,51 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 	}
 
 	return p.attach(ctx, id, dir, r, client, info, false)
+}
+
+// claim makes this lookup the one that adopts the sandbox's shim once any other adopt of it ends, so the shim is attached once (SHARD-422).
+func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
+	for {
+		p.mu.Lock()
+		busy, taken := p.adopting[id]
+		if !taken {
+			done := make(chan struct{})
+			p.adopting[id] = done
+			p.mu.Unlock()
+
+			return func() {
+				p.mu.Lock()
+				delete(p.adopting, id)
+				p.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: wait for another adopt of its shim: %w", id, ctx.Err())
+		}
+	}
+}
+
+// settled is the shim another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as its request ended.
+func (p *Provider) settled(id string, seen *machine) (*machine, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		return m, true
+	}
+	m, found := p.unadopted[id]
+	if !found {
+		return nil, false
+	}
+	if m != seen {
+		return m, true
+	}
+	delete(p.unadopted, id)
+
+	return nil, false
 }
 
 // absent is a socket with no shim behind it: never made, or its owner exited and the path went with it.

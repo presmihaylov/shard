@@ -96,6 +96,8 @@ type Provider struct {
 	machines map[string]*machine
 	// unadopted is every shim an adopt found silent, held unattached so each lookup waits on its one request and never dials anew.
 	unadopted map[string]*machine
+	// adopting closes when the one adopt in flight for a sandbox ends, so a racing lookup reuses what it made.
+	adopting map[string]chan struct{}
 	// recovering is nil but in a test, which holds the gap between the choice to thaw a lost freeze and that thaw.
 	recovering func()
 }
@@ -110,7 +112,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}, unadopted: map[string]*machine{}}, nil
+	return &Provider{cfg: cfg, initrd: initrd, machines: map[string]*machine{}, unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{}}, nil
 }
 
 func (p *Provider) Name() string { return Name }
