@@ -23,7 +23,7 @@ func TestAFileLogResumesWhereTheFileEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor")}
+	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor"), Max: supervisor.MaxLog}
 	// An earlier boot left its output in the file.
 	if _, err := log.Write([]byte("old\n")); err != nil {
 		t.Fatal(err)
@@ -44,6 +44,99 @@ func TestAFileLogResumesWhereTheFileEnds(t *testing.T) {
 	resume(0, 3, 0)
 	if log.Err != nil {
 		t.Fatalf("Err = %v, want none", log.Err)
+	}
+}
+
+// A write that would take the file past Max renames it first, and the cursor follows the output into the new file.
+func TestAFileLogRotatesBeforeItPassesMax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "output.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, "output.cursor"), Max: 8}
+	defer log.Close()
+	if _, err := log.Write([]byte("old\n")); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := log.Resume(0, 100); err != nil || at != 0 {
+		t.Fatalf("Resume(0, 100) = %d, %v, want 0", at, err)
+	}
+	for _, b := range []string{"0123", "4567"} {
+		if _, err := log.Write([]byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, want := range map[string]string{path: "4567", path + ".1": "old\n0123"} {
+		got, err := os.ReadFile(name)
+		if err != nil || string(got) != want {
+			t.Errorf("%s holds %q, %v, want %q", filepath.Base(name), got, err, want)
+		}
+	}
+	// The guest landed output bytes 0 to 7, so a host that comes back resumes it at 8.
+	if at, err := log.Resume(2, 12); err != nil || at != 8 {
+		t.Fatalf("Resume(2, 12) after the rotation = %d, %v, want 8", at, err)
+	}
+	if log.Err != nil {
+		t.Fatalf("Err = %v, want none", log.Err)
+	}
+}
+
+// A log a daemon before the bound left past Max is bounded with no write, and a FileLog over it resumes the guest where the old file ended.
+func TestBoundLogBoundsALegacyLogWithNoWrite(t *testing.T) {
+	dir := t.TempDir()
+	path, cursor := filepath.Join(dir, "output.log"), filepath.Join(dir, "output.cursor")
+	if err := os.WriteFile(path, []byte("old\n0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The file's byte 4 is the guest's output byte 0, so the file ends at output byte 10.
+	if err := os.WriteFile(cursor, []byte(`{"offset":4,"output":0}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := supervisor.BoundLog(path, cursor, 8); err != nil {
+		t.Fatalf("BoundLog: %v", err)
+	}
+
+	for name, want := range map[string]string{path: "", path + ".1": "23456789"} {
+		got, err := os.ReadFile(name)
+		if err != nil || string(got) != want {
+			t.Errorf("%s holds %q, %v, want %q", filepath.Base(name), got, err, want)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &supervisor.FileLog{File: f, Cursor: cursor, Max: 8}
+	defer log.Close()
+	if at, err := log.Resume(2, 12); err != nil || at != 10 {
+		t.Fatalf("Resume(2, 12) after the bound = %d, %v, want 10", at, err)
+	}
+}
+
+// A log within Max, and one that is not there, are left as they are.
+func TestBoundLogLeavesALogWithinMax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "output.log")
+	if err := os.WriteFile(path, []byte("01234567"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := supervisor.BoundLog(path, filepath.Join(dir, "output.cursor"), 8); err != nil {
+		t.Fatalf("BoundLog: %v", err)
+	}
+	if err := supervisor.BoundLog(filepath.Join(dir, "gone.log"), filepath.Join(dir, "gone.cursor"), 8); err != nil {
+		t.Fatalf("BoundLog of a log that is not there: %v", err)
+	}
+
+	if got, err := os.ReadFile(path); err != nil || string(got) != "01234567" {
+		t.Errorf("output.log holds %q, %v, want it whole", got, err)
+	}
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Errorf("output.log.1 exists: %v", err)
 	}
 }
 

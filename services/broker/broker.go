@@ -51,11 +51,22 @@ func New(records Records, egress *egress.Service, secrets Secrets, log Log) *Bro
 	return &Broker{records: records, egress: egress, secrets: secrets, log: log}
 }
 
-// Decide names the sandbox by its address, resolves the host once, and asks the policy about that address.
+// Decide names the sandbox by its address, judges the host by name first so a host the policy never allows is
+// refused unresolved, then resolves and asks the policy about that address (SHARD-342).
 func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision, error) {
 	sb, err := b.sandbox(req.Source)
 	if err != nil {
 		return proxy.Decision{}, err
+	}
+
+	// Judge the name before any lookup, so a host no rule allows never reaches the resolver and no resolved
+	// address rides back in the reason (SHARD-342).
+	decision, final, err := b.egress.Unresolved(sb, req.Host, req.Port)
+	if err != nil {
+		return proxy.Decision{}, err
+	}
+	if final {
+		return b.denied(sb.ID, req, decision)
 	}
 
 	addrs, err := b.egress.Lookup(ctx, req.Host)
@@ -70,7 +81,7 @@ func (b *Broker) Decide(ctx context.Context, req proxy.Request) (proxy.Decision,
 	}
 	upstream := netip.AddrPortFrom(addrs[0], uint16(req.Port)) //nolint:gosec // the port is 80 or 443
 
-	decision, err := b.egress.Decide(sb, req.Host, req.Port, addrs[0])
+	decision, err = b.egress.Decide(sb, req.Host, req.Port, addrs[0])
 	if err != nil {
 		return proxy.Decision{}, err
 	}
@@ -124,6 +135,22 @@ func (b *Broker) holds(sb models.Sandbox, req proxy.Request) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// denied records and returns a deny reached before any lookup, so its record carries no resolved address and
+// the 403 reason names only the host the guest sent (SHARD-342).
+func (b *Broker) denied(id string, req proxy.Request, decision egress.Decision) (proxy.Decision, error) {
+	rule := ""
+	if decision.Rule.Destination.Kind != "" {
+		rule = egress.FormatRule(decision.Rule.Rule)
+	}
+
+	record := egress.Record{Rule: decision.ID, RuleText: rule, Reason: decision.Reason}
+	if err := b.record(id, req, decision.Action, record); err != nil {
+		return proxy.Decision{}, err
+	}
+
+	return proxy.Decision{Rule: cmp.Or(rule, decision.ID), Reason: decision.Reason}, nil
 }
 
 // Resolve judges one DNS question by its name alone, before any resolver is asked, and logs it under source dns.

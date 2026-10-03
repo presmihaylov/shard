@@ -264,7 +264,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 7 MiB of disk", 6: "at least 7 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
@@ -412,6 +412,42 @@ func TestStopKillsAVMThatHoldsTheStreamAndNeverAnswers(t *testing.T) {
 	}
 }
 
+// A vmm that freezes after its guest answered the stop costs the grace, not a state read's callTimeout (SHARD-388).
+func TestStopEndsOnTimeWhenTheVMMFreezesAfterTheGuestAnswers(t *testing.T) {
+	h := newHarness(t)
+	pidFile := filepath.Join(t.TempDir(), "vmm.pid")
+	// TERM reaches the entrypoint after the guest answered the stop; the sleep lets that answer cross the vmm before it freezes.
+	script := fmt.Sprintf("trap 'sleep 0.3; kill -STOP $(cat %s); while true; do sleep 0.1; done' TERM; echo trapped; while true; do sleep 0.1; done", pidFile)
+	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID == 0 {
+		t.Fatalf("Status after Start = %+v, %v, want running with a pid", status, err)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(status.PID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A TERM before the trap is set ends the entrypoint, and the stop with it, before the vmm freezes.
+	awaitLog(t, h.provider, spec.ID, 0)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, 3*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if took := time.Since(began); took > 8*time.Second {
+		t.Fatalf("Stop took %s on a grace of 3s", took)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
 func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
 	h := newHarness(t)
@@ -500,6 +536,27 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Pause = %+v, %v, want stopped", status, err)
+	}
+}
+
+// The vmm writes vmstate and memory under its own umask, so Pause tightens them: a snapshot the daemon reads is not world-readable.
+func TestPauseTightensTheSnapshotFiles(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
 	}
 }
 
@@ -1427,4 +1484,31 @@ func awaitLog(t *testing.T, p *firecracker.Provider, id string, seen int) int {
 	t.Fatalf("the log of %s did not grow past %d bytes", id, seen)
 
 	return seen
+}
+
+// An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
+func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
+	h := newHarness(t)
+	dir, err := h.stateDir("sb-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "output.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", 11)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.BoundOutputLog("sb-legacy", 10); err != nil {
+		t.Fatalf("BoundOutputLog: %v", err)
+	}
+
+	for name, want := range map[string]int64{path: 0, path + ".1": 10} {
+		info, err := os.Stat(name)
+		if err != nil || info.Size() != want {
+			t.Errorf("%s: %v, want %d bytes", filepath.Base(name), err, want)
+		}
+	}
 }
