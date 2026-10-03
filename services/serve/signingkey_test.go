@@ -327,20 +327,18 @@ func TestRevokeOnNoLedgerCreatesNothing(t *testing.T) {
 }
 
 func TestTheFrontCreatesTheDefaultSigningKey(t *testing.T) {
-	cert, key := keyPair(t)
 	root := shortRoot(t)
 
-	if _, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, Root: root}); err != nil {
+	if _, err := New(Config{Listen: "127.0.0.1:0", Root: root}); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	assertMode(t, filepath.Join(root, "auth", "signing-key"), 0o600)
 }
 
 func TestTheFrontRefusesAMissingSigningKeyFile(t *testing.T) {
-	cert, key := keyPair(t)
 	root := shortRoot(t)
 
-	_, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SigningKeyFile: filepath.Join(root, "missing"), Root: root})
+	_, err := New(Config{Listen: "127.0.0.1:0", SigningKeyFile: filepath.Join(root, "missing"), Root: root})
 	if err == nil {
 		t.Fatal("the front started with a named key file that does not exist")
 	}

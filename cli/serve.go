@@ -11,8 +11,6 @@ import (
 func (a App) serve(ctx context.Context, args []string) error {
 	flags := newFlags("serve")
 	listen := flags.String("listen", serve.DefaultListen, "")
-	cert := flags.String("cert", "", "")
-	key := flags.String("key", "", "")
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 
@@ -25,8 +23,6 @@ func (a App) serve(ctx context.Context, args []string) error {
 
 	return serve.Run(ctx, serve.Config{
 		Listen:         *listen,
-		CertFile:       *cert,
-		KeyFile:        *key,
 		SigningKeyFile: *signingKeyFile,
 		TokensFile:     *tokensFile,
 		Root:           a.Root,
