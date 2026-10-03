@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // fakeRing hands the tailer canned records the way /dev/kmsg would on the box, and then stops.
@@ -50,7 +52,7 @@ func newTailer(t *testing.T, out io.Writer, sandboxes ...models.Sandbox) (*Taile
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
 
-	return NewTailer(root, decisions, &fakeSandboxes{sandboxes: sandboxes}, log.New(out, "", 0)), root, decisions
+	return NewTailer(root, decisions, &fakeSandboxes{sandboxes: sandboxes}, nil, log.New(out, "", 0)), root, decisions
 }
 
 func drops(sequence uint64, at int64, rule string) kmsg.Record {
@@ -70,9 +72,9 @@ func TestTailWritesEveryDropTheRingHolds(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 2 || records[0].Rule != "2" || records[1].Rule != "default" {
 		t.Fatalf("the log holds %+v", records)
@@ -97,9 +99,9 @@ func TestTailSkipsTheSequencesTheCursorAlreadyNames(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "4" {
 		t.Fatalf("the log holds %+v", records)
@@ -117,9 +119,9 @@ func TestTailWritesTheRingWholeWhenTheCursorCannotBeRead(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 {
 		t.Fatalf("the log holds %+v", records)
@@ -140,9 +142,9 @@ func TestTailCountsTheDropsOfASandboxThatIsGone(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read("sb")
+	records, _, err := decisions.Tail("sb")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Fatalf("the log holds %+v", records)
@@ -167,9 +169,9 @@ func TestTailStartsAFreshRootAtTheRingsEnd(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read("sb")
+	records, _, err := decisions.Tail("sb")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Fatalf("the log holds %+v", records)
@@ -197,9 +199,9 @@ func TestTailSettlesTheCursorPastTheStrays(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "2" {
 		t.Fatalf("the log holds %+v", records)
@@ -243,9 +245,9 @@ func TestTailNamesAnIPv6DropByThePortItDiedOn(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != network.RuleIPv6 {
 		t.Fatalf("the log holds %+v", records)
@@ -262,7 +264,7 @@ func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
 	var out strings.Builder
 	root := t.TempDir()
 	decisions := NewLog(goneDirs{root: root})
-	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sandbox(t)}}, log.New(&out, "", 0))
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sandbox(t)}}, nil, log.New(&out, "", 0))
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -284,9 +286,9 @@ func TestTailCountsADropOlderThanTheSandbox(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
@@ -306,9 +308,9 @@ func TestTailLeavesTheLinesTheKernelWroteForSomethingElse(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
@@ -375,15 +377,15 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	gone := sandbox(t)
 	took := models.Sandbox{ID: "sb2", Address: gone.Address, CreatedAt: time.Unix(105, 0).UTC()}
 	decisions := NewLog(staleDirs{root: root, gone: gone.ID})
-	tailer := NewTailer(root, decisions, &relet{sandboxes: []models.Sandbox{gone, took}}, log.New(&out, "", 0))
+	tailer := NewTailer(root, decisions, &relet{sandboxes: []models.Sandbox{gone, took}}, nil, log.New(&out, "", 0))
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "default")}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(took.ID)
+	records, _, err := decisions.Tail(took.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "default" {
 		t.Fatalf("the log of the sandbox that took the address holds %+v", records)
@@ -430,16 +432,16 @@ func TestTailListsAgainForALiveDrop(t *testing.T) {
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
 	repo := &keyedLate{sandbox: sb}
-	tailer := NewTailer(root, decisions, repo, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, decisions, repo, nil, log.New(io.Discard, "", 0))
 
 	ring := liveRing{records: []kmsg.Record{drops(7, 110, "ipv6"), drops(8, 110, "private")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "private" {
 		t.Fatalf("the log holds %+v after %d lists, want the private drop", records, repo.listed)
@@ -449,7 +451,7 @@ func TestTailListsAgainForALiveDrop(t *testing.T) {
 func TestTailListsTheRecordsOnceForTheBacklogsStrays(t *testing.T) {
 	repo := &fakeSandboxes{}
 	root := t.TempDir()
-	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, nil, log.New(io.Discard, "", 0))
 
 	ring := &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 111, "2"), drops(9, 112, "2")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
@@ -458,5 +460,27 @@ func TestTailListsTheRecordsOnceForTheBacklogsStrays(t *testing.T) {
 
 	if repo.listed != 1 {
 		t.Errorf("three strays listed the records %d times, want once", repo.listed)
+	}
+}
+
+// SHARD-403: the live miss path lists on every drop, so an unreadable record there logs once, not per drop.
+func TestTailLogsAnUnreadableRecordOnceOverLiveDrops(t *testing.T) {
+	var out strings.Builder
+	root := t.TempDir()
+	logger := log.New(&out, "", 0)
+	ulog := sandboxstate.NewUnreadableLog(logger.Printf)
+	repo := partialRecords{unreadable: &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}}
+	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, ulog, logger)
+
+	ring := liveRing{records: []kmsg.Record{drops(7, 110, "a"), drops(8, 111, "b"), drops(9, 112, "c")}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if n := strings.Count(out.String(), "broken cannot be read"); n != 1 {
+		t.Fatalf("the unreadable record logged %d times over three live drops, want once:\n%s", n, out.String())
+	}
+	if strings.Contains(out.String(), "cannot be listed") {
+		t.Errorf("a partial list logged the whole-failure line: %q", out.String())
 	}
 }

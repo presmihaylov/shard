@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,7 @@ type seeded struct {
 	egress   *fakeEgressLog
 	handler  http.Handler
 	server   *httptest.Server
+	log      *lockedBuffer
 }
 
 func seed(t *testing.T) seeded {
@@ -58,11 +61,32 @@ func seed(t *testing.T) seeded {
 
 	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
 
-	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, io.Discard)
+	logged := &lockedBuffer{}
+	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, logged)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, egress: egressLog, handler: handler, server: server}
+	return seeded{root: root, repo: repo, policies: policies, running: running, stopped: stopped, verbs: verbs, stores: stores, egress: egressLog, handler: handler, server: server, log: logged}
+}
+
+// lockedBuffer is the daemon's log, which handlers write while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 // fakeProcess is a daemon that says it runs sysbox, or one whose provider cannot be built.
@@ -81,6 +105,10 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 		Socket:    "/var/lib/shard/shard.sock",
 		Provider:  "sysbox",
 		Proxy:     api.Proxy{PlainPort: 30080, TLSPort: 30443},
+		Tasks: []api.TaskState{
+			{Name: "api", State: "running"},
+			{Name: "liveness", State: "backoff", Restarts: 2, LastError: "boom"},
+		},
 	}, nil
 }
 
@@ -88,15 +116,16 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 type fakeEgressLog struct {
 	// holds keeps a follow open until its context ends, the way a live log does while the sandbox runs.
 	holds bool
+	cut   int
 }
 
-func (*fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
-	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, nil
+func (f *fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, int, error) {
+	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, f.cut, nil
 }
 
 // Follow hands over the same line and then ends as a removed sandbox does, so a test needs no clock.
 func (f *fakeEgressLog) Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error {
-	records, err := f.Read(sb)
+	records, _, err := f.Read(sb)
 	if err != nil {
 		return err
 	}
@@ -230,6 +259,10 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 		"provider":     "sysbox",
 		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false},
 		"proxy":        map[string]any{"plain_port": float64(30080), "tls_port": float64(30443)},
+		"tasks": []any{
+			map[string]any{"name": "api", "state": "running", "restarts": float64(0)},
+			map[string]any{"name": "liveness", "state": "backoff", "restarts": float64(2), "last_error": "boom"},
+		},
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Errorf("GET /v0/daemon answered %v, want %v", body, want)
@@ -469,6 +502,24 @@ func TestTheEgressLogAnswersForAnIDAndForAName(t *testing.T) {
 
 		if resp.StatusCode != http.StatusOK || len(records) != 1 || records[0].Host != "web" {
 			t.Errorf("GET the egress log of %s answered %d %+v", ref, resp.StatusCode, records)
+		}
+	}
+}
+
+func TestTheEgressLogNamesWhatItLeftOutOnlyWhenItCut(t *testing.T) {
+	s := seed(t)
+
+	for cut, want := range map[int]string{0: "", 12345: "12345"} {
+		s.egress.cut = cut
+
+		resp, err := s.server.Client().Get(s.server.URL + "/v0/sandboxes/web/egress-log")
+		if err != nil {
+			t.Fatalf("GET the egress log: %v", err)
+		}
+		resp.Body.Close()
+
+		if got := resp.Header.Get(api.EgressCutHeader); got != want {
+			t.Errorf("with %d left out, the %s header is %q, want %q", cut, api.EgressCutHeader, got, want)
 		}
 	}
 }

@@ -554,6 +554,28 @@ func TestSetConnectionCloseForcesConnectionClose(t *testing.T) {
 	}
 }
 
+// The front stamps the token's scopes and drops any the client forged, so the daemon trusts only the front's copy.
+func TestStampScopesReplacesAForgedClientHeader(t *testing.T) {
+	head := []byte("POST /v0/sandboxes HTTP/1.1\r\nHost: box\r\nX-Shard-Scopes: secret:*,policy:*\r\n\r\n")
+
+	got := string(stampScopes(head, []string{"sandbox:write", "exec"}))
+	if strings.Count(got, "X-Shard-Scopes:") != 1 {
+		t.Errorf("the forwarded head is %q, want exactly one X-Shard-Scopes header", got)
+	}
+	if !strings.Contains(got, "X-Shard-Scopes: sandbox:write,exec\r\n") {
+		t.Errorf("the forwarded head is %q, want the token's scopes stamped", got)
+	}
+	if strings.Contains(got, "secret:*") || strings.Contains(got, "policy:*") {
+		t.Errorf("the forwarded head is %q, want the client's forged scopes dropped", got)
+	}
+	if !strings.HasPrefix(got, "POST /v0/sandboxes HTTP/1.1\r\n") {
+		t.Errorf("the forwarded head lost the request line: %q", got)
+	}
+	if !strings.HasSuffix(got, "\r\n\r\n") {
+		t.Errorf("the forwarded head does not end the headers: %q", got)
+	}
+}
+
 // A lone Upgrade header is not a handshake: without all four headers the front must force Connection: close.
 func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
 	full := "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"

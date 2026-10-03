@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
@@ -65,6 +66,20 @@ func TestListHidesTheStoppedSandboxesUnlessAll(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("List with all holds %v, want every row", got)
+	}
+}
+
+// A sandbox that waits out its OOM backoff is about to run again, so ls still shows it.
+func TestListShowsAStoppedSandboxThatWaitsToStartAgain(t *testing.T) {
+	waits := models.Sandbox{ID: "oom-4", State: models.StateStopped, OOMRestartDue: time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)}
+	repo := fakeReader{rows: append(rows(), waits)}
+
+	got, err := sandbox.List(repo, false)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 3 || got[2].ID != "oom-4" {
+		t.Errorf("List holds %v, want the running, the paused and the waiting one", got)
 	}
 }
 

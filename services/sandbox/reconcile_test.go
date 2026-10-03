@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,9 @@ func (r *recRepo) List() ([]models.Sandbox, error) {
 	return out, nil
 }
 
-func (r *recRepo) Create(sb models.Sandbox) (models.Sandbox, error) { return sb, nil }
+func (r *recRepo) Create(sb models.Sandbox, _ ...func(dir string) error) (models.Sandbox, error) {
+	return sb, nil
+}
 
 func (r *recRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 	if r.updateErr != nil {
@@ -89,9 +92,17 @@ type recProvider struct {
 	// removed holds every id Remove was asked to tear down, and removeErr is what Remove answers.
 	removed   []string
 	removeErr error
+	// adopted records every dir a reconcile asked the provider to adopt the staging of.
+	adopted []string
 }
 
 func (p *recProvider) Name() string { return "fake" }
+
+func (p *recProvider) AdoptStaging(dir string) error {
+	p.adopted = append(p.adopted, dir)
+
+	return nil
+}
 
 func (p *recProvider) Status(ctx context.Context, id string) (models.Status, error) {
 	if p.wedge {
@@ -193,6 +204,10 @@ func alive(pid int) models.Status {
 	return models.Status{Exists: true, State: models.StateRunning, PID: pid}
 }
 
+func pausedAlive(pid int) models.Status {
+	return models.Status{Exists: true, State: models.StatePaused, PID: pid}
+}
+
 func gone() models.Status { return models.Status{} }
 
 // unproven is a live substrate that does not say running, such as a vz shim that missed its probe bound.
@@ -223,6 +238,26 @@ func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 	}
 }
 
+// An OOM taken while the daemon was down is a memory decision, not a lost process (SHARD-311).
+func TestReconcileStopsARunningRecordTheHostEndedForMemoryWithItsReason(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.OOMKilledReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, sandbox.OOMKilledReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") || !strings.Contains(lab.reports[0], sandbox.OOMKilledReason) {
+		t.Errorf("the reconcile reported %v, want one line naming the sandbox and its memory", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none with nothing running", lab.net.applied)
+	}
+}
+
 func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
@@ -239,6 +274,23 @@ func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)
+	}
+}
+
+// At daemon start the provider adopts the snapshot staging of every record, so a cut pause's stage is settled before the first verb (SHARD-404).
+func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
+	one := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	two := models.Sandbox{ID: "sandbox2", State: models.StateStopped}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42), "sandbox2": gone()}}
+	lab := newReconcileLab(t, provider, one, two)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	slices.Sort(provider.adopted)
+	if want := []string{"/snapshots/sandbox1", "/snapshots/sandbox2"}; !slices.Equal(provider.adopted, want) {
+		t.Errorf("the reconcile adopted the staging of %v, want %v", provider.adopted, want)
 	}
 }
 
@@ -281,6 +333,24 @@ func TestReconcileKeepsAPausedSandboxThatHoldsItsSnapshot(t *testing.T) {
 	}
 	if lab.net.applied != 0 {
 		t.Errorf("the host rules were re-applied %d times, want none", lab.net.applied)
+	}
+}
+
+// A cut mid-checkpoint leaves the substrate paused but the record still running, so the record must catch up to paused.
+func TestReconcileCatchesUpARunningRecordTheSubstrateHoldsPaused(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": pausedAlive(42)}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 {
+		t.Errorf("the record says %s with pid %d, want paused with no pid", got.State, got.PID)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: a paused sandbox has no netstack", lab.net.applied)
 	}
 }
 

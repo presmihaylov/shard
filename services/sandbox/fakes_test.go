@@ -100,7 +100,9 @@ type fakeRepo struct {
 	r  *recorder
 	sb models.Sandbox
 	// left is what List answers with.
-	left    []models.Sandbox
+	left []models.Sandbox
+	// listErr is the non-fatal error List returns beside left, for the unreadable-record path.
+	listErr error
 	missing bool
 	deleted bool
 	// created is the record as Create was handed it, so a test says what the request put in it.
@@ -139,10 +141,16 @@ func (f *fakeRepo) List() ([]models.Sandbox, error) {
 		return nil, err
 	}
 
-	return f.left, nil
+	return f.left, f.listErr
 }
 
-func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
+	// The repository runs each admission on the claimed directory, before it writes the record.
+	for _, check := range admit {
+		if err := check("/sandboxes/sandbox1"); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
 	if err := f.r.record("repo.Create"); err != nil {
 		return models.Sandbox{}, err
 	}
@@ -262,8 +270,12 @@ type fakeProvider struct {
 	exit   models.ExitStatus
 	// entrypointExit is what the non-blocking ExitStatus reads: nil while the entrypoint still runs.
 	entrypointExit *models.ExitStatus
+	// entrypointErr is what ExitStatus answers instead, as a guest that replaced the exit channel makes it.
+	entrypointErr error
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
+	// failsOnStop is the reason a shard-init that dies on the way down gives, which the stopped status carries.
+	failsOnStop string
 	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
 	restarts    models.RestartCount
 	restartsErr error
@@ -343,6 +355,10 @@ type fakeProvider struct {
 	signaled  chan struct{}
 	signalPID int
 	signalGot string
+	// serve, when set, answers the exec in place of the canned streams, the way shard-init's files mode does.
+	serve func(spec models.ExecSpec) (models.ExitStatus, error)
+	// execCtx is what the last exec ran on, so a test sees whether the exec outlives its request.
+	execCtx context.Context
 }
 
 func (f *fakeProvider) LogPath(string) (string, error) {
@@ -362,8 +378,12 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 		return models.ExitStatus{}, err
 	}
 	f.mu.Lock()
-	f.execID, f.execSpec = id, spec
+	f.execID, f.execSpec, f.execCtx = id, spec, ctx
 	f.mu.Unlock()
+
+	if f.serve != nil {
+		return f.serve(spec)
+	}
 
 	if spec.Report != nil && !f.execNoPID {
 		spec.Report(f.execPID)
@@ -491,6 +511,8 @@ func (f *fakeProvider) Fork(_ context.Context, dir string, spec models.SandboxSp
 	return nil
 }
 
+func (f *fakeProvider) AdoptStaging(string) error { return nil }
+
 func (f *fakeProvider) Clone(_ context.Context, source string, spec models.SandboxSpec) error {
 	if err := f.r.record("provider.Clone"); err != nil {
 		return err
@@ -550,7 +572,7 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	}
 	f.stopped, f.grace = true, grace
 	if f.aliveAfterStop == 0 {
-		f.status = models.Status{Exists: true, State: models.StateStopped}
+		f.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: f.failsOnStop}
 	}
 	if f.stopUnwedges && f.statusGate != nil {
 		close(f.statusGate)
@@ -663,6 +685,9 @@ func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) 
 func (f *fakeProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
 	if err := f.r.record("provider.ExitStatus"); err != nil {
 		return nil, err
+	}
+	if f.entrypointErr != nil {
+		return nil, f.entrypointErr
 	}
 
 	return f.entrypointExit, nil

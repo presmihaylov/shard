@@ -57,7 +57,13 @@ type deps struct {
 	providerSvc  models.Provider
 	secretSvc    *secret.Store
 	policySvc    *egress.Store
-	runnerSvc    *runsc.Runner
+	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
+	logSvc    *egress.Log
+	runnerSvc *runsc.Runner
+
+	unreadableLogSvc *sandboxstate.UnreadableLog
+	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
+	states *taskStates
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.
@@ -85,6 +91,23 @@ func (d *deps) logger() *log.Logger {
 	}
 
 	return log.New(out, "", log.LstdFlags)
+}
+
+// unreadableLog is the shared dedup for the "record cannot be read" line, so one bad record logs once per daemon life across every task (SHARD-403).
+func (d *deps) unreadableLog() *sandboxstate.UnreadableLog {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.unreadableLogLocked()
+}
+
+// unreadableLogLocked is unreadableLog for a caller that already holds d.mu, so stackLocked shares the one dedup.
+func (d *deps) unreadableLogLocked() *sandboxstate.UnreadableLog {
+	if d.unreadableLogSvc == nil {
+		d.unreadableLogSvc = sandboxstate.NewUnreadableLog(d.logger().Printf)
+	}
+
+	return d.unreadableLogSvc
 }
 
 // providerName is the substrate this daemon runs. Run settles it before anything here asks.
@@ -233,7 +256,7 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 		return nil, err
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
-	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
 	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
 		Address:    gateway,
@@ -573,12 +596,23 @@ func (d *deps) egressLocked() (*egress.Service, error) {
 
 // egressLog is the decision log every fronted sandbox gets one file of, under its own state directory.
 func (d *deps) egressLog() (*egress.Log, error) {
-	repo, err := d.repo()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	return egress.NewLog(repo), nil
+	return d.egressLogLocked(repo), nil
+}
+
+func (d *deps) egressLogLocked(repo *sandboxstate.Repository) *egress.Log {
+	if d.logSvc == nil {
+		d.logSvc = egress.NewLog(repo)
+	}
+
+	return d.logSvc
 }
 
 // egressReader is what shard logs --egress reads: the sandbox's own file, which the daemon writes

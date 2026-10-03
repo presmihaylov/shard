@@ -183,6 +183,9 @@ func (c *Control) Freeze(ctx context.Context) error { return c.request(ctx, Mess
 // Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
 func (c *Control) Thaw(ctx context.Context) error { return c.request(ctx, Message{Kind: KindThaw}) }
 
+// Kill ends a stop the grace outran: the guest kills the entrypoint and flushes the disk, so the VM the host then cuts loses nothing it wrote.
+func (c *Control) Kill(ctx context.Context) error { return c.request(ctx, Message{Kind: KindKill}) }
+
 func (c *Control) Close() error { return c.conn.Close() }
 
 // request sends one message and waits for the guest's done, its failure as an error, or the end of ctx.
@@ -396,7 +399,8 @@ func readExec(conn net.Conn, id string, spec models.ExecSpec) (models.ExitStatus
 				return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: exit.Error, Code: exit.Code}
 			}
 
-			return models.ExitStatus{Code: exit.Code, Signal: exit.Signal}, nil
+			// The code alone, because runsc and runc exec report 128+n and no signal, and every provider sends one shape (SHARD-432).
+			return models.ExitStatus{Code: exit.Code}, nil
 		default:
 			return models.ExitStatus{}, fmt.Errorf("the guest sent a frame of stream %d, which the host does not take", stream)
 		}
