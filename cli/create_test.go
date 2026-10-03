@@ -59,6 +59,23 @@ func TestParseCreateFlags(t *testing.T) {
 	}
 }
 
+func TestParseCreateTakesASizeWithAUnit(t *testing.T) {
+	req, err := parseCreate([]string{"--memory", "512MiB", "--disk", "2GiB", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.MemoryMiB != 512 || req.Resources.DiskMiB != 2048 {
+		t.Errorf("resources = %+v, want 512 MiB of memory and a 2048 MiB disk", req.Resources)
+	}
+
+	if req, err = parseCreate([]string{"--memory", "16384GiB", "--disk", "1KB", "alpine:3.20"}); err != nil {
+		t.Fatalf("parseCreate at the memory bound: %v", err)
+	}
+	if req.Resources.MemoryMiB != 1<<24 || req.Resources.DiskMiB != 1 {
+		t.Errorf("resources = %+v, want the 16777216 MiB bound and a 1KB disk rounded up to 1 MiB", req.Resources)
+	}
+}
+
 func TestInitPathFromEnv(t *testing.T) {
 	// A Mac daemon installs the guest init it embeds, so nothing on the host names one.
 	platformDefault := DefaultInitPath
@@ -149,17 +166,20 @@ func TestParseCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
 
 func TestParseCreateRejections(t *testing.T) {
 	cases := map[string][]string{
-		"no image":               {},
-		"only flags":             {"--user", "nobody"},
-		"an empty argv":          {"alpine:3.20", "--"},
-		"an unknown flag":        {"--forever", "alpine:3.20"},
-		"the old init flag":      {"--shard-init", "/opt/shard-init", "alpine:3.20"},
-		"the dropped http probe": {"--health-http", "8080/healthz", "alpine:3.20"},
-		"the dropped probe":      {"--health-command", "true", "alpine:3.20"},
-		"an env with no value":   {"--env", "DEBUG", "alpine:3.20"},
-		"an env with a colon":    {"--env", "DEBUG:1", "alpine:3.20"},
-		"an env with no name":    {"--env", "=1", "alpine:3.20"},
-		"a negative memory":      {"--memory", "-512", "alpine:3.20"},
+		"no image":                {},
+		"only flags":              {"--user", "nobody"},
+		"an empty argv":           {"alpine:3.20", "--"},
+		"an unknown flag":         {"--forever", "alpine:3.20"},
+		"the old init flag":       {"--shard-init", "/opt/shard-init", "alpine:3.20"},
+		"the dropped http probe":  {"--health-http", "8080/healthz", "alpine:3.20"},
+		"the dropped probe":       {"--health-command", "true", "alpine:3.20"},
+		"an env with no value":    {"--env", "DEBUG", "alpine:3.20"},
+		"an env with a colon":     {"--env", "DEBUG:1", "alpine:3.20"},
+		"an env with no name":     {"--env", "=1", "alpine:3.20"},
+		"a negative memory":       {"--memory", "-512", "alpine:3.20"},
+		"a fraction of a GiB":     {"--memory", "0.5GiB", "alpine:3.20"},
+		"a lower-case unit":       {"--disk", "2gib", "alpine:3.20"},
+		"a memory past the bound": {"--memory", "16385GiB", "alpine:3.20"},
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
 		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},

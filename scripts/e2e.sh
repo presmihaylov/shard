@@ -1862,7 +1862,7 @@ disk_bound_steps() {
 	say "the API refuses a negative disk bound, 400"
 
 	step "a write past the disk bound fails in the guest and stops on the host"
-	id=$(shard create --disk 64 "${IMAGE}" /bin/sleep 600)
+	id=$(shard create --disk 64MiB "${IMAGE}" /bin/sleep 600)
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	grep -q '"disk_mib": *64' "${rec}" || fail "the record does not carry the disk bound: $(cat "${rec}")"
