@@ -26,49 +26,64 @@ type snapshot struct {
 
 // Pause writes the paused VM into dir and ends its vmm: the memory and the overlay are on disk, and the record stays for the resume.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
-	stateDir, r, err := p.open(id)
+	m, err := p.install(ctx, id, dir)
 	if err != nil {
 		return err
 	}
+
+	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
+	return errors.Join(os.RemoveAll(dir+".tmp"), p.end(context.WithoutCancel(ctx), m))
+}
+
+// install puts the paused VM's snapshot in dir and answers its vmm, still paused beside it.
+func (p *Provider) install(ctx context.Context, id string, dir string) (*machine, error) {
+	stateDir, r, err := p.open(id)
+	if err != nil {
+		return nil, err
+	}
 	m, err := p.lookup(ctx, id, stateDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	state := models.StateStopped
 	if m != nil {
 		state = m.status(p).State
 	}
 	if state != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
+		return nil, fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
 
+	// The record names where this pause writes before the vCPUs stop, so an adopt can tell a VM frozen past its install (SHARD-427).
+	r.Snapshot = dir
+	if err := writeRecord(stateDir, r); err != nil {
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
+	}
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
 	}
 	info, err := m.client.State()
 	if err != nil {
-		return fmt.Errorf("sandbox %s: %w", id, err)
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
 		if err := m.client.Pause(); err != nil {
-			return fmt.Errorf("pause sandbox %s: %w", id, err)
+			return nil, fmt.Errorf("pause sandbox %s: %w", id, err)
 		}
 	}
 	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
-		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
+		return nil, abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return nil, abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
-	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
-	return errors.Join(os.RemoveAll(tmp), p.end(context.WithoutCancel(ctx), m))
+	return m, nil
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.

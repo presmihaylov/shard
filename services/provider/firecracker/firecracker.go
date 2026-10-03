@@ -167,6 +167,8 @@ type record struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
+	// Snapshot is the directory the last pause wrote into, which an adopt checks before it resumes a paused VM.
+	Snapshot string `json:"snapshot,omitempty"`
 }
 
 func (p *Provider) dir(id string) (string, error) {

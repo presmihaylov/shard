@@ -1,6 +1,8 @@
 package firecracker
 
 import (
+	"context"
+
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 )
@@ -22,7 +24,14 @@ func (p *Provider) Spawning(id string) (done func()) {
 	return p.spawn(id)
 }
 
-// EndUnloaded resumes a read that saw pid answer "Not started", which a test cannot pause inside Status.
-func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int) error {
-	return p.endUnloaded(id, client, pid)
+// EndCut resumes a read that saw pid in a state a cut daemon leaves, which a test cannot pause inside Status.
+func (p *Provider) EndCut(id string, client *fcapi.Client, pid int) error {
+	return p.endCut(id, client, pid)
+}
+
+// Install is a pause cut after its install and before it ended the vmm, which a test cannot cut inside Pause.
+func (p *Provider) Install(ctx context.Context, id, dir string) error {
+	_, err := p.install(ctx, id, dir)
+
+	return err
 }

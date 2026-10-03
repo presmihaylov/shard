@@ -66,10 +66,18 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	}
 	// A vmm that booted and loaded nothing has no guest, so an attach would wait on it until every verb timed out (SHARD-295).
 	if info.State == fcapi.StateNotStarted {
-		return nil, p.endUnloaded(id, client, info.PID)
+		return nil, p.endCut(id, client, info.PID)
 	}
-	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
 	if info.State == fcapi.StatePaused {
+		frozen, err := installed(dir)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that (SHARD-427).
+		if frozen {
+			return nil, p.endCut(id, client, info.PID)
+		}
+		// A pause cut before its install leaves a paused VM with nothing to stand for it, and its stopped guest answers no handshake.
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
@@ -78,8 +86,8 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	return p.attach(ctx, id, dir, client, info)
 }
 
-// endUnloaded ends the vmm of a spawn a daemon was cut in, before the boot or the load; one this process still spawns, or holds since, is left to it.
-func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
+// endCut ends a vmm a daemon was cut in: a spawn before its load, or a pause after its install; one this process still spawns, or holds since, is left to it.
+func (p *Provider) endCut(id string, client *fcapi.Client, pid int) error {
 	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
 	p.mu.Lock()
 	_, held := p.machines[id]
@@ -91,10 +99,28 @@ func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
 
 	// The pid is the vmm judged here: the socket may answer for one a spawn began since.
 	if err := fcapi.KillPID(pid); err != nil {
-		return fmt.Errorf("sandbox %s: end the vmm a cut spawn left: %w", id, err)
+		return fmt.Errorf("sandbox %s: end the vmm a cut daemon left: %w", id, err)
 	}
 
 	return awaitEnded(&machine{id: id, client: client, pid: pid})
+}
+
+// installed says the pause the record names put a complete snapshot in place; the pause verb removes the old checkpoint before any pause, so it is that pause's own.
+func installed(dir string) (bool, error) {
+	r, found, err := readRecord(dir)
+	if err != nil || !found || r.Snapshot == "" {
+		return false, err
+	}
+	path := filepath.Join(r.Snapshot, checkpointFile)
+	_, err = os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat the checkpoint %s: %w", path, err)
+	}
+
+	return true, nil
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.

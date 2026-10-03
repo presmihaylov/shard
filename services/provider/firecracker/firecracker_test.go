@@ -422,6 +422,7 @@ type vm struct {
 	BaseDisk string             `json:"base_disk"`
 	RootFS   string             `json:"rootfs"`
 	Run      supervisor.RunSpec `json:"run"`
+	Snapshot string             `json:"snapshot"`
 }
 
 func readVM(t *testing.T, dir string) vm {
@@ -464,6 +465,9 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	}
 	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory after Pause: %v, want gone", err)
+	}
+	if got := readVM(t, spec.StateDir).Snapshot; got != dir {
+		t.Errorf("the record names the snapshot %q, want %q", got, dir)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
@@ -686,6 +690,36 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	}
 }
 
+// A daemon cut after a pause installed its snapshot leaves the guest frozen beside it; the next daemon ends that vmm and never runs the guest past it (SHARD-427).
+func TestAVMFrozenBesideItsSnapshotIsEndedNotResumed(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Install(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	p := h.reopen(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status of the frozen leftover = %+v, %v, want stopped", status, err)
+	}
+	if _, info, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
+		t.Fatalf("the frozen vmm still answers in state %s after the new daemon read it", info.State)
+	}
+	if err := p.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume from the snapshot the cut pause installed: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || !status.Alive() {
+		t.Fatalf("Status after Resume = %+v, %v, want alive", status, err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after Resume: %v", err)
+	}
+}
+
 // A daemon cut between a fork's spawn and its load leaves a vmm with no guest; the next daemon ends it, so a remove frees the host (SHARD-295).
 func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
 	h := newHarness(t)
@@ -720,7 +754,7 @@ func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.provider.EndUnloaded(spec.ID, client, pid); err != nil {
+	if err := h.provider.EndCut(spec.ID, client, pid); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
@@ -752,7 +786,7 @@ func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	}
 	h.leaveUnloaded(t, spec, os.Args[0])
 
-	if err := h.provider.EndUnloaded(spec.ID, client, info.PID); err != nil {
+	if err := h.provider.EndCut(spec.ID, client, info.PID); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	if !unloaded(socket) {
