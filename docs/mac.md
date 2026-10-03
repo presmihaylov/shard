@@ -44,6 +44,9 @@ The build writes the signed VM shim and the guest supervisor under the root
 its hash (`docs/kernel.md`). A daemon of the same build hashes all three and keeps them; a new build
 replaces the shim and the supervisor, and the kernel is fetched again when its tag moves or its bytes
 changed.
+If the build fails over a root with records, the daemon does not start: a release endpoint it cannot
+reach holds it for up to 5 minutes, then it exits with the error, and under launchd it starts again
+and retries. Over an empty root the daemon starts, and only the verb that needs the provider fails.
 
 In a second terminal:
 
