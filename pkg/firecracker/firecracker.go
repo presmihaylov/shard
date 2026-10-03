@@ -21,8 +21,6 @@ type Jail struct {
 	Base string
 	// Cgroup is the v2 cgroup, relative to the hierarchy's root, the jailer moves itself into before the clone, so the vmm's whole memory is charged to it.
 	Cgroup string
-	// NoFile is the vmm's open file limit; zero keeps the jailer's 2048.
-	NoFile int
 }
 
 // Root is the chroot the jailer makes, the vmm's "/"; it names Exec by its base name, so Exec must be no symlink.
@@ -62,7 +60,7 @@ type Snapshot struct {
 	State  string
 	Memory string
 	// Tap replaces the host device of eth0; empty keeps the one in the snapshot, which two microVMs cannot both open.
-	Tap string
+	Tap     string
 	Vsock   string
 	Socket  string
 	Console string

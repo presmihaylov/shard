@@ -83,6 +83,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// After the datadir, whose mount is the one every jail sits on.
+	if err := checkJailRoot(cfg.Root, cfg.Provider); err != nil {
+		return err
+	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 

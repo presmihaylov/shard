@@ -50,9 +50,10 @@ that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes 
 root; the records or the data image name the one to give.
 
 **A root leaves room for the sockets under it.** A unix socket path holds at most 107 bytes on Linux
-and 103 on macOS, and a microVM's sockets sit under `<root>/sandboxes/<id>/`. So the daemon refuses at
-start a root longer than 55 bytes for Firecracker, 58 for vz, or 96 for the container substrates (92
-on macOS), and the refusal names the longest root that fits (SHARD-358).
+and 103 on macOS. A vz VM's sockets sit under `<root>/sandboxes/<id>/`, and a Firecracker vmm's in
+its jail, `<root>/jail/firecracker/<id>/root/`. So the daemon refuses at start a root longer than 51
+bytes for Firecracker, 58 for vz, or 96 for the container substrates (92 on macOS), and the refusal
+names the longest root that fits (SHARD-358, SHARD-306).
 
 **A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
 before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
@@ -210,9 +211,9 @@ cgroup, and each section says what the VM does instead.
 
 ### What Firecracker does and does not do
 
-`firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker`
-binary on PATH, one `firecracker` process per sandbox, driven over its API socket in the sandbox's
-state directory. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release once
+`firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker` and
+`jailer` binaries on PATH, one `firecracker` process per sandbox, driven over its API socket in its
+jail. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release once
 under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section below
 describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of the
 static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<root>/firecracker`.
@@ -232,13 +233,30 @@ as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes 
 gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
 after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
 
+The daemon spawns every vmm through Firecracker's `jailer`, never as root (SHARD-306). Each sandbox
+gets a uid of its own, and the same gid, from 0x70000000 to 0x7FFDFFFF (1879048192 to 2147352575),
+clear of Sysbox, the `/etc/subuid` defaults and the systemd ranges. A counter in
+`<root>/firecracker/next-uid` hands each uid out once. A restart and a resume keep the uid, and a
+clone and a fork get a new one. The jailer puts itself in the sandbox's cgroup, then starts the vmm
+in new pid and mount namespaces, chrooted into `<root>/jail/firecracker/<id>/root`, with no
+capability and under its seccomp filter. The jail holds the kernel, the initrd, the image and, on a
+restore, the snapshot's state and memory, each a reflinked copy that only the uid can read. The
+overlay is a hard link the uid can write, so the guest writes where `clone` and `pause` read. The tap
+goes to the uid too, which lets the vmm open it with no capability. Every spawn gets a fresh jail,
+and every end of a vmm removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from
+there, so the daemon refuses at start a root on a `nodev` or `noexec` mount. The jailer gets no
+`--resource-limit`: its default of 2048 open files outlasts the vsock muxer's cap of 1023
+connections, the one count of descriptors a sandbox grows. A vmm that a daemon before the jail
+spawned is still adopted at its socket in the state directory, and its next start jails it.
+
 `pause` freezes the guest, stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
 directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
 all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
 leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
 snapshot is what brings it back. `resume` and `fork` each load that snapshot into a fresh vmm, over
-its own reflinked copy of the overlay and a hardlink of the memory file: firecracker maps the memory
-private, so N sandboxes read the one copy on disk and none of them writes it. A snapshot is not
+its own reflinked copy of the overlay and a reflinked copy of the memory file in its jail:
+firecracker maps the memory private, so N sandboxes share the blocks on disk and none of them writes
+them. A snapshot is not
 consumed by either verb. Fork as many sandboxes from one as you like, each on its own writable disk,
 and the source and the snapshot are untouched. A fork restores holding the source's address, MAC and
 hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
@@ -261,9 +279,9 @@ error that says to restart the sandbox first.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
-one that cannot, so no `pause` ever fails halfway for it. And the vmm's state names the source's
-`overlay.raw` by path, which the load opens before the drive is swapped for the fork's own copy, so
-a snapshot outlives neither a moved root nor a removed source.
+one that cannot, so no `pause` ever fails halfway for it. And the vmm's state names each drive by its
+path in the jail, so a load opens the fork's own `overlay.raw`. A snapshot taken before the jail
+names host paths instead, and `resume` and `fork` refuse it: start the sandbox and pause it again.
 
 Every writable drive runs with the cache type `Writeback`, so a guest `fsync` returns only once the
 vmm has flushed the data to the host disk; the firecracker default, `Unsafe`, drops the flush. The
@@ -275,16 +293,16 @@ before it, keep `Unsafe`: a daemon restart adopts the running vmm as it is, and 
 there.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
-over a root it turns into an XFS image, `create` with `--memory`, the vmm's host cgroup and its
-bounds, `logs`, `exec`, an entrypoint that exits, a guest that outgrows its memory and comes back
+over a root it turns into an XFS image, `create` with `--memory`, the vmm's jail, uid and seccomp
+filter, its host cgroup and its bounds, `logs`, `exec`, an entrypoint that exits, a guest that outgrows its memory and comes back
 once under `--restart-on-oom`, one that fills on every boot and spends `--restart-on-oom=2`, the
 policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost while the daemon
 was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop` with the cgroup kept empty, two
-clones by reflink, `start` back into that cgroup, `rm`, and a host with no tap, no vmm, no cgroup,
+clones by reflink, `start` back into that cgroup, `rm`, and a host with no tap, no vmm, no jail, no cgroup,
 no image and no fstab line left. It runs on demand only. It needs `/dev/kvm`, which no CI runner and
 no cloud devbox has, so CI, `make check`, `make e2e` and `make devbox-e2e` never call it: rent a
 bare-metal KVM box, run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`,
-`firecracker` and Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point it
+`firecracker`, `jailer` and Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point it
 at a kernel on the box; unset, the daemon fetches the release.
 
 The guest reaches the resolver and the proxy on the bridge address, so a host firewall that drops

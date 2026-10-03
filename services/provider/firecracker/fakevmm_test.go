@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,11 +26,18 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// The test binary plays firecracker when the provider execs it with this set; the guest is the real shard-init over unix sockets.
+// The test binary plays the jailer and firecracker when the provider execs it with this set; the guest is the real shard-init over unix sockets.
 const (
 	fakeVMMEnv  = "FIRECRACKER_FAKE_VMM"
 	fakeInitEnv = "FIRECRACKER_FAKE_INIT"
+	// fakeJailEnv is the chroot the fake jailer hands the fake vmm, which takes every path it is told as inside it.
+	fakeJailEnv = "FIRECRACKER_FAKE_JAIL"
+	// fakeStateEnv is the sandbox's state directory, where the fake keeps its guest and reads what a test asks of it.
+	fakeStateEnv = "FIRECRACKER_FAKE_STATE"
 )
+
+// jailerFile is written beside the chroot with what the fake jailer was run with.
+const jailerFile = "jailer.json"
 
 // Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads.
 const (
@@ -48,6 +56,14 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeVMMEnv) == "1" && slices.Contains(os.Args[1:], "--exec-file") {
+		if err := fakeJailer(); err != nil {
+			fmt.Fprintln(os.Stderr, "fake jailer:", err)
+			os.Exit(1)
+		}
+
+		return
+	}
 	if os.Getenv(fakeVMMEnv) == "1" {
 		if err := fakeVMM(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake firecracker:", err)
@@ -86,20 +102,80 @@ func runTests(m *testing.M) int {
 	return m.Run()
 }
 
-// fakeVMM is firecracker without KVM: its API on --api-sock, one shard-init process as the guest, and the vsock proxy in front of it.
-func fakeVMM() error {
-	flags := flag.NewFlagSet("fake-firecracker", flag.ContinueOnError)
-	socket := flags.String("api-sock", "", "")
+// jailerArgs is what the fake jailer was run with.
+type jailerArgs struct {
+	ID           string `json:"id"`
+	UID          int    `json:"uid"`
+	GID          int    `json:"gid"`
+	ParentCgroup string `json:"parentCgroup"`
+}
+
+// fakeJailer is the jailer without root: it runs the exec file in a session of its own over the chroot the provider filled, writes its pid there and exits.
+func fakeJailer() error {
+	flags := flag.NewFlagSet("fake-jailer", flag.ContinueOnError)
+	var args jailerArgs
+	flags.StringVar(&args.ID, "id", "", "")
+	execFile := flags.String("exec-file", "", "")
+	flags.IntVar(&args.UID, "uid", -1, "")
+	flags.IntVar(&args.GID, "gid", -1, "")
+	base := flags.String("chroot-base-dir", "", "")
+	flags.String("cgroup-version", "", "")
+	flags.StringVar(&args.ParentCgroup, "parent-cgroup", "", "")
+	flags.Bool("new-pid-ns", false, "")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
-	fmt.Println("fake firecracker: api on", *socket)
 
-	listener, err := net.Listen("unix", *socket)
+	chroot := filepath.Join(*base, filepath.Base(*execFile), args.ID, "root")
+	encoded, err := json.Marshal(args)
 	if err != nil {
 		return err
 	}
-	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(chroot), jailerFile), encoded, 0o600); err != nil {
+		return err
+	}
+	// The harness keeps the state directories beside the jail base, as root/s/<id>.
+	state := filepath.Join(filepath.Dir(*base), "s", args.ID)
+	vmm := exec.Command(*execFile, append([]string{"--id", args.ID}, flags.Args()...)...)
+	vmm.Env = append(os.Environ(), fakeJailEnv+"="+chroot, fakeStateEnv+"="+state)
+	vmm.Stdout = os.Stdout
+	vmm.Stderr = os.Stderr
+	vmm.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := vmm.Start(); err != nil {
+		return err
+	}
+	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(pidFile, vmm.Process.Pid); err != nil {
+		return errors.Join(err, pidFile.Close())
+	}
+
+	return pidFile.Close()
+}
+
+// inJail is where a path the fake vmm is told lives on the host, the way a chroot resolves it.
+func inJail(path string) string {
+	return filepath.Join(os.Getenv(fakeJailEnv), path)
+}
+
+// fakeVMM is firecracker without KVM: its API on --api-sock, one shard-init process as the guest, and the vsock proxy in front of it.
+func fakeVMM() error {
+	flags := flag.NewFlagSet("fake-firecracker", flag.ContinueOnError)
+	flags.String("id", "", "")
+	apiSock := flags.String("api-sock", "", "")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	socket := inJail(*apiSock)
+	fmt.Println("fake firecracker: api on", socket)
+
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	f := &fake{dir: os.Getenv(fakeStateEnv), state: "Not started", streams: map[net.Conn]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -126,7 +202,8 @@ func fakeVMM() error {
 
 // fake is the microVM's state as the API sees it, and the guest process once it is started.
 type fake struct {
-	socket string
+	// dir is the sandbox's state directory, which holds the guest, the bootFile and the files a test puts there.
+	dir string
 
 	mu    sync.Mutex
 	state string
@@ -142,7 +219,7 @@ type fake struct {
 	frozen bool
 }
 
-// bootFile is written beside the api socket at the start, with what the vmm was told to boot.
+// bootFile is written in the state directory at the start, with what the vmm was told to boot.
 const bootFile = "boot.json"
 
 func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +250,7 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	refusal, err := f.apply(r.Method, r.URL.Path, body)
+	refusal, err := f.apply(r.URL.Path, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 
@@ -188,7 +265,7 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // apply takes one request the way firecracker would; a refusal is in its words, an error is the fake's own.
-func (f *fake) apply(method, path string, body []byte) (string, error) {
+func (f *fake) apply(path string, body []byte) (string, error) {
 	switch {
 	case path == "/vm":
 		return f.patchVM(body)
@@ -196,8 +273,6 @@ func (f *fake) apply(method, path string, body []byte) (string, error) {
 		return f.createSnapshot(body)
 	case path == "/snapshot/load":
 		return f.loadSnapshot(body)
-	case strings.HasPrefix(path, "/drives/") && method == http.MethodPatch:
-		return f.patchDrive(body)
 	case path == "/machine-config":
 		var m struct {
 			VCPUs     int64 `json:"vcpu_count"`
@@ -222,7 +297,7 @@ func (f *fake) apply(method, path string, body []byte) (string, error) {
 		if err := json.Unmarshal(body, &d); err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(d.Path); err != nil {
+		if _, err := os.Stat(inJail(d.Path)); err != nil {
 			return "Unable to create the block device: " + err.Error(), nil
 		}
 		f.drives = append(f.drives, body)
@@ -290,15 +365,15 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 0o644 is what a real vmm writes under the daemon's shell umask, so a test proves secureSnapshot tightens it.
-	if err := os.WriteFile(c.StatePath, encoded, 0o644); err != nil {
+	// 0o644 is what a real vmm writes under the daemon's shell umask, so a test proves the pause tightens it.
+	if err := os.WriteFile(inJail(c.StatePath), encoded, 0o644); err != nil {
 		return "", err
 	}
-	// The fake has no guest memory, so the file is a blob: what a restore links to and the tests count the links of.
-	return "", os.WriteFile(c.MemoryPath, []byte("fake guest memory\n"), 0o644)
+	// The fake has no guest memory, so the file is a blob: what a restore puts in its jail.
+	return "", os.WriteFile(inJail(c.MemoryPath), []byte("fake guest memory\n"), 0o644)
 }
 
-// loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices, and the overrides the host paths of this one.
+// loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices by their paths in the jail, and the overrides the tap and the vsock.
 func (f *fake) loadSnapshot(body []byte) (string, error) {
 	var l struct {
 		StatePath string `json:"snapshot_path"`
@@ -313,7 +388,7 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	if err := json.Unmarshal(body, &l); err != nil {
 		return "", err
 	}
-	encoded, err := os.ReadFile(l.StatePath)
+	encoded, err := os.ReadFile(inJail(l.StatePath))
 	if err != nil {
 		return "Load snapshot error: " + err.Error(), nil
 	}
@@ -321,10 +396,10 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	if err := json.Unmarshal(encoded, &state); err != nil {
 		return "Load snapshot error: " + err.Error(), nil
 	}
-	if _, err := os.Stat(l.Memory.Path); err != nil {
+	if _, err := os.Stat(inJail(l.Memory.Path)); err != nil {
 		return "Load snapshot error: " + err.Error(), nil
 	}
-	// The load opens every drive the state names, which are the paths of the sandbox the snapshot was taken from.
+	// The load opens every drive the state names, in this vmm's own jail.
 	for _, raw := range state.Drives {
 		var d struct {
 			Path string `json:"path_on_host"`
@@ -332,7 +407,7 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 		if err := json.Unmarshal(raw, &d); err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(d.Path); err != nil {
+		if _, err := os.Stat(inJail(d.Path)); err != nil {
 			return "Load snapshot error: " + err.Error(), nil
 		}
 	}
@@ -348,7 +423,7 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	}
 	// The fresh guest has no memory of the freeze, so it is frozen again before any host attaches.
 	if state.Frozen {
-		if err := refreeze(filepath.Join(filepath.Dir(f.socket), "guest")); err != nil {
+		if err := refreeze(filepath.Join(f.dir, "guest")); err != nil {
 			return "", fmt.Errorf("freeze the restored guest: %w", err)
 		}
 	}
@@ -361,39 +436,6 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	}
 
 	return "", nil
-}
-
-// patchDrive points a drive the guest already has at another host file, which is how a restore takes its own overlay.
-func (f *fake) patchDrive(body []byte) (string, error) {
-	var patch struct {
-		ID   string `json:"drive_id"`
-		Path string `json:"path_on_host"`
-	}
-	if err := json.Unmarshal(body, &patch); err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(patch.Path); err != nil {
-		return "Unable to patch the block device: " + err.Error(), nil
-	}
-	for i, raw := range f.drives {
-		var fields map[string]any
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			return "", err
-		}
-		if fields["drive_id"] != patch.ID {
-			continue
-		}
-		fields["path_on_host"] = patch.Path
-		swapped, err := json.Marshal(fields)
-		if err != nil {
-			return "", err
-		}
-		f.drives[i] = swapped
-
-		return "", f.persist()
-	}
-
-	return "Invalid block device ID: " + patch.ID, nil
 }
 
 // signal reaches the guest, which stands in for the vCPUs; a vmm that booted nothing has none.
@@ -425,12 +467,12 @@ func (f *fake) persist() error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(filepath.Dir(f.socket), bootFile), encoded, 0o600)
+	return os.WriteFile(filepath.Join(f.dir, bootFile), encoded, 0o600)
 }
 
 // start is the InstanceStart: the guest comes up behind the vsock proxy, its console on this process's stdout.
 func (f *fake) start() error {
-	dir := filepath.Join(filepath.Dir(f.socket), "guest")
+	dir := filepath.Join(f.dir, "guest")
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
@@ -455,7 +497,7 @@ func (f *fake) start() error {
 	if f.vsock == "" {
 		return nil
 	}
-	listener, err := net.Listen("unix", f.vsock)
+	listener, err := net.Listen("unix", inJail(f.vsock))
 	if err != nil {
 		return err
 	}
@@ -559,7 +601,7 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 
 	var toGuest, toHost io.Writer = guest, conn
 	if port == int(supervisor.ControlPort) {
-		c := &control{f: f, dir: filepath.Dir(f.socket), guest: guest, host: conn}
+		c := &control{f: f, dir: f.dir, guest: guest, host: conn}
 		toGuest, toHost = writeFunc(c.intoGuest), writeFunc(c.intoHost)
 	}
 	done := make(chan struct{}, 2)

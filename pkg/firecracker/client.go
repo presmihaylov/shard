@@ -93,12 +93,10 @@ func (c *Client) spawn(ctx context.Context, jail Jail, socket, console string) (
 
 // runJailer runs the jailer to its exit, which comes once it cloned the vmm and wrote its pid; a refusal is on the jailer's stderr, the console.
 func runJailer(ctx context.Context, jail Jail, socket string, log *os.File) (int, error) {
+	// No --resource-limit: the jailer's 2048 open files outlast the vsock muxer's cap of 1023 connections, the one fd count a sandbox grows.
 	args := []string{
 		"--id", jail.ID, "--exec-file", jail.Exec, "--uid", strconv.Itoa(jail.UID), "--gid", strconv.Itoa(jail.UID),
 		"--chroot-base-dir", jail.Base, "--cgroup-version", "2", "--parent-cgroup", jail.Cgroup, "--new-pid-ns",
-	}
-	if jail.NoFile > 0 {
-		args = append(args, "--resource-limit", "no-file="+strconv.Itoa(jail.NoFile))
 	}
 	cmd := exec.Command(jail.Jailer, append(args, "--", "--api-sock", socket)...)
 	cmd.Stdout = log

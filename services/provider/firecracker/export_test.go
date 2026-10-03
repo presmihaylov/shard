@@ -23,8 +23,13 @@ func (p *Provider) Spawning(id string) (done func()) {
 }
 
 // EndUnloaded resumes a read that saw pid answer "Not started", which a test cannot pause inside Status.
-func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int) error {
-	return p.endUnloaded(id, client, pid)
+func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int, jail string) error {
+	return p.endUnloaded(id, client, pid, jail)
+}
+
+// SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
+func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+	p.chown, p.ownTap = chown, ownTap
 }
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.

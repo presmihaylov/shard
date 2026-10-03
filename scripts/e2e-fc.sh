@@ -92,8 +92,19 @@ wipe_root() {
 	clear_host_net
 }
 
-# vmm_pids lists every firecracker process driving a socket under this root, and no other root's.
-vmm_pids() { pgrep -f -- "^firecracker --api-sock ${SHARD_ROOT}/" || true; }
+# vmm_pids lists every firecracker process jailed under this root, and no other root's.
+vmm_pids() {
+	local pid jails
+	jails="$(readlink -f "${SHARD_ROOT}")/jail/"
+	for pid in $(pgrep -x firecracker || true); do
+		case "$(readlink "/proc/${pid}/root" 2>/dev/null || true)" in
+		"${jails}"*) echo "${pid}" ;;
+		esac
+	done
+}
+
+# vmm_status reads one field of the vmm's /proc status.
+vmm_status() { awk -v field="$2:" '$1 == field { print $2 }' "/proc/$1/status"; }
 
 # shard_cgroups lists the sandbox cgroups under the shard parent, which the daemon of every root on the host shares.
 shard_cgroups() { find /sys/fs/cgroup/shard -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
@@ -110,10 +121,10 @@ record_pid() { grep -o '"pid": *[0-9]*' "${SHARD_ROOT}/sandboxes/$1/sandbox.json
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives /dev/kvm, a tap and nft, so this needs root"
 [ -e /dev/kvm ] || fail "no /dev/kvm on this host: firecracker needs bare metal, rent one and run this there"
-for binary in firecracker mkfs.erofs mkfs.xfs ip ss nft iptables go curl openssl; do
+for binary in firecracker jailer mkfs.erofs mkfs.xfs ip ss nft iptables go curl openssl; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
-say "/dev/kvm, firecracker, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
+say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
 # The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
 if iptables -S INPUT 2>/dev/null | grep -qx -- "-P INPUT DROP" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
 	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' (ufw hosts: 'ufw allow in on shard0') and run this again"
@@ -221,6 +232,10 @@ LINK=$(record_field "${ID}" host_interface)
 VMM_PID=$(record_pid "${ID}")
 say "the record holds the address ${ADDRESS} on the tap ${LINK}, driven by pid ${VMM_PID}"
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "the pid in the record is a firecracker process"
+expect "$(readlink "/proc/${VMM_PID}/root")" "$(readlink -f "${SHARD_ROOT}")/jail/firecracker/${ID}/root" "the vmm runs chrooted in its jail"
+VMM_UID=$(vmm_status "${VMM_PID}" Uid)
+[ "${VMM_UID}" -ge 1879048192 ] || fail "the vmm runs as uid ${VMM_UID}, want one from 0x70000000 up"
+expect "$(vmm_status "${VMM_PID}" CapEff) $(vmm_status "${VMM_PID}" Seccomp)" "0000000000000000 2" "the vmm runs as uid ${VMM_UID}, with no capability, under its seccomp filter"
 ip -o link show "${LINK}" | grep -q "master shard0" || fail "the tap ${LINK} is not a port of the bridge"
 absent "a namespace named ${ID}" "$(ip netns list | grep "^${ID}" || true)"
 say "the tap is a bridge port and the guest has no namespace on the host"
@@ -499,9 +514,10 @@ say "image prune removed the image once no sandbox referenced it"
 step "prove the host holds nothing the run left"
 absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
+absent "a jail of this root" "$(find "${SHARD_ROOT}/jail/firecracker" -mindepth 1 -maxdepth 1 2>/dev/null || true)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "a cgroup of this run" "$(run_cgroups)"
-say "the tap, the vmm, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
+say "the tap, the vmm, the jail, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"

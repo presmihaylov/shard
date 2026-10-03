@@ -183,7 +183,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 
-	m, err := p.lookup(ctx, id, dir)
+	m, err := p.lookup(ctx, id, dir, r)
 	if err != nil {
 		return err
 	}
@@ -246,12 +246,12 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if err != nil {
 		return err
 	}
-	_, found, err := readRecord(dir)
+	r, found, err := readRecord(dir)
 	if err != nil || !found {
 		return err
 	}
 
-	m, err := p.lookup(ctx, id, dir)
+	m, err := p.lookup(ctx, id, dir, r)
 	if err != nil || m == nil {
 		return err
 	}
@@ -281,7 +281,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if ended {
 		p.forget(m)
 
-		return m.close()
+		return errors.Join(m.close(), removeJail(m.jail))
 	}
 
 	return p.end(ctx, m)
@@ -301,10 +301,10 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	}
 	p.forget(m)
 
-	return m.close()
+	return errors.Join(m.close(), removeJail(m.jail))
 }
 
-// Remove ends the VM and drops the overlay, the memory, the record and the sockets; the state directory itself is the repository's.
+// Remove ends the VM and drops the overlay, the record and the jail, and what a daemon before the jail left; the state directory itself is the repository's.
 func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err := p.Stop(ctx, id, 0); err != nil {
 		return err
@@ -317,6 +317,10 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}
+	}
+	// The jail is named by the id, so the one a failed create left goes too, with no record to name it.
+	if err := removeJail(jailRoot(p.cfg.JailBase, id)); err != nil {
+		return err
 	}
 
 	// A stopped sandbox keeps its cgroup, empty, because the start that brings it back boots into that one.
@@ -465,7 +469,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	if err != nil {
 		return models.Status{}, err
 	}
-	_, found, err := readRecord(dir)
+	r, found, err := readRecord(dir)
 	if err != nil {
 		return models.Status{}, err
 	}
@@ -473,7 +477,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 		return models.Status{}, nil
 	}
 
-	m, err := p.lookup(ctx, id, dir)
+	m, err := p.lookup(ctx, id, dir, r)
 	if err != nil {
 		return models.Status{}, err
 	}
