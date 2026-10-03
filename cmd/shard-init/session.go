@@ -189,15 +189,14 @@ func dup(f *os.File) (*os.File, error) {
 	return os.NewFile(uintptr(fd), f.Name()), nil
 }
 
-// pump frames one output until it ends; a write that fails means the host hung up, and the child sees a closed pipe.
+// pump frames one output until it ends; once a write fails the host is gone, and the rest is read and dropped so the command never blocks on it.
 func (s *session) pump(stream byte, r io.Reader) {
 	buf := make([]byte, 32<<10)
+	hungUp := false
 	for {
 		n, err := r.Read(buf)
-		if n > 0 {
-			if err := s.write(stream, buf[:n]); err != nil {
-				return
-			}
+		if n > 0 && !hungUp {
+			hungUp = s.write(stream, buf[:n]) != nil
 		}
 		if err != nil {
 			return
@@ -205,17 +204,21 @@ func (s *session) pump(stream byte, r io.Reader) {
 	}
 }
 
-// readFrames takes stdin, its close, and a resize from the host; a connection that ends first is a cancel, and kills the command.
+// readFrames takes stdin, its close, a resize and a cancel from the host; a hang-up with no cancel is a daemon restart, and the command runs on.
 func (s *session) readFrames(g *guest, pid int) {
 	for {
 		stream, payload, err := supervisor.ReadFrame(s.conn)
 		if err != nil {
 			s.closeStdin()
-			g.kill(pid)
 
 			return
 		}
 		switch stream {
+		case supervisor.StreamCancel:
+			s.closeStdin()
+			g.kill(pid)
+
+			return
 		case supervisor.StreamStdin:
 			if _, err := s.stdin.Write(payload); err != nil {
 				s.closeStdin()

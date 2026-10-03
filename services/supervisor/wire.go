@@ -123,7 +123,7 @@ type ExecHeader struct {
 	Cols uint16 `json:"cols,omitempty"`
 }
 
-// The streams an exec frame carries in its first byte, the API's numbers; the host sends stdin, its close and resize.
+// The streams an exec frame carries in its first byte, the API's numbers; the host sends stdin, its close, resize and cancel.
 const (
 	StreamStdin      byte = 0
 	StreamStdout     byte = 1
@@ -132,6 +132,7 @@ const (
 	StreamStdinClose byte = 4
 	StreamStarted    byte = 6
 	StreamResize     byte = 7
+	StreamCancel     byte = 8
 )
 
 // MaxPayload bounds one frame, so a longer write goes as several and no reader allocates for more.

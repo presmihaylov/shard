@@ -118,7 +118,7 @@ connects to each after boot, retrying until the listener is up:
 | Port | Stream | Carries |
 |---|---|---|
 | 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
-| 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started` and 7 `resize` |
+| 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s, the offsets of the oldest output byte it holds and of the next; the host answers with one, the byte to resume from, then reads raw bytes and acks each write to `output.log` with the offset after it. The guest holds up to 1 MiB no host acked, so a daemon restart loses and repeats nothing; `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` is a guest from before the protocol: the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 | 5003 | files | one connection per operation: a `FileHeader` line naming `stat`, `put` or `get` and an absolute guest path, then a `FileReply` line with the file's shape or the guest's reason; a put sends its bytes after the header, a get receives them after the reply (SHARD-42) |
 
@@ -129,8 +129,9 @@ exactly the size the reply promised. Neither takes a directory.
 Every new control connection hears `state` first (ready, the last exit, the count), written on the
 supervisor's own goroutine before any event, so a daemon that restarts, or re-attaches after a
 restore, loses nothing. A request returns once the guest has done it: `readdress` answers after the
-address and the route are set, so a fork is never exposed on its source address in between. A closed
-exec connection kills the command, which is how a cancelled `Exec` ends it. The host writes the exit record and the
+address and the route are set, so a fork is never exposed on its source address in between. A cancelled
+`Exec` sends a `cancel` frame, which kills the command. An exec connection that only closes is a daemon
+that went away, so the command runs on and its output drains, as on gVisor (SHARD-270). The host writes the exit record and the
 count into the same files gVisor's pipe fills, so `Wait`, `ExitStatus` and `inspect` are unchanged.
 `services/supervisor` holds the wire and the host client, which the Firecracker provider reuses. The
 same binary runs the protocol over `-transport unix:<dir>` in the unit tests, on any OS. The host
