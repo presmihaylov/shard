@@ -98,6 +98,9 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	if err := <-stopped; err != nil {
 		t.Fatalf("stop: %v", err)
 	}
+	if n := lab.svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the stop and the pass that skipped it", n)
+	}
 }
 
 func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
@@ -196,7 +199,7 @@ func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 func (l *livenessLab) reconcile(t *testing.T) {
 	t.Helper()
 
-	if err := l.svc.ReconcileAll(t.Context(), []models.Sandbox{l.l.repo.sb}, func(line string) { l.reports = append(l.reports, line) }); err != nil {
+	if err := l.svc.ReconcileAll(t.Context(), []models.Sandbox{l.l.repo.sb}, func(line string) { l.reports = append(l.reports, line) }, runOnce); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
 }

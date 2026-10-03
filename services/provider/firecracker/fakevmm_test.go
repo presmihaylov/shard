@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The test binary plays firecracker when the provider execs it with this set; the guest is the real shard-init over unix sockets.
@@ -25,6 +27,9 @@ const (
 	fakeVMMEnv  = "FIRECRACKER_FAKE_VMM"
 	fakeInitEnv = "FIRECRACKER_FAKE_INIT"
 )
+
+// reseedsFile in the state directory, once a test creates it, takes one line per reseed the guest reads.
+const reseedsFile = "reseeds"
 
 // initBinary is the shard-init the fake vmm runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
@@ -510,9 +515,13 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		return
 	}
 
+	var toGuest io.Writer = guest
+	if port == int(supervisor.ControlPort) {
+		toGuest = reseeds{Writer: guest, path: filepath.Join(filepath.Dir(f.socket), reseedsFile)}
+	}
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(guest, reader)
+		_, _ = io.Copy(toGuest, reader)
 		closeWrite(guest)
 		done <- struct{}{}
 	}()
@@ -523,6 +532,35 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 	}()
 	<-done
 	<-done
+}
+
+// reseeds is the control stream into the guest, which notes each reseed it carries.
+type reseeds struct {
+	io.Writer
+	path string
+}
+
+func (r reseeds) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), `"kind":"`+supervisor.KindReseed+`"`) {
+		if err := note(r.path); err != nil {
+			return 0, err
+		}
+	}
+
+	return r.Writer.Write(p)
+}
+
+func note(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(supervisor.KindReseed + "\n")
+
+	return errors.Join(err, f.Close())
 }
 
 // closeWrite passes a half-close through, so a guest that reads to EOF sees the host's, and the host the guest's.

@@ -34,6 +34,7 @@ type fakeHost struct {
 	steps     []string
 	image     string
 	size      int64
+	migrated  string
 }
 
 func (f *fakeHost) host() host {
@@ -78,6 +79,11 @@ func (f *fakeHost) host() host {
 			f.steps = append(f.steps, "fstab")
 			return nil
 		},
+		migrate: func(image, point string) error {
+			f.steps = append(f.steps, "migrate")
+			f.migrated = image + " " + point
+			return nil
+		},
 	}
 }
 
@@ -102,15 +108,20 @@ func TestEnsureTouchesNothingForAnotherProvider(t *testing.T) {
 	}
 }
 
-func TestEnsureIsANoOpOnAReflinkFilesystem(t *testing.T) {
+// A reflink root is already mounted, so Ensure mounts nothing and only repairs an old fstab line that lacks nofail.
+func TestEnsureRepairsTheFstabLineOnAReflinkFilesystem(t *testing.T) {
 	t.Parallel()
 
+	dir := t.TempDir()
 	f := &fakeHost{probes: []reflink.Filesystem{xfsR}, user: true, noMkfs: true}
-	if err := ensure(t.Context(), Config{Dir: t.TempDir(), Provider: Firecracker}, f.host()); err != nil {
+	if err := ensure(t.Context(), Config{Dir: dir, Provider: Firecracker}, f.host()); err != nil {
 		t.Fatalf("xfs with reflink: %v", err)
 	}
-	if len(f.steps) != 0 {
-		t.Errorf("ran %v on a reflink root", f.steps)
+	if want := []string{"migrate"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
+		t.Errorf("steps %v, want %v", f.steps, want)
+	}
+	if want := ImagePath(dir) + " " + dir; f.migrated != want {
+		t.Errorf("migrated %q, want %q", f.migrated, want)
 	}
 }
 

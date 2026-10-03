@@ -289,6 +289,32 @@ func (m *VM) console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	return nil
 }
 
+// Apple asks for a receive buffer four times the send buffer; at the macOS default of 4 KiB a peer refuses the third full frame (SHARD-384).
+const (
+	framesSendBuffer = 1 << 20
+	framesRecvBuffer = 4 << 20
+)
+
+// frames is the datagram pair the VM and the daemon trade Ethernet frames on, each end sized to hold a burst either way.
+func frames() (guest, host *os.File, err error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("network socketpair: %w", err)
+	}
+	guest = os.NewFile(uintptr(fds[0]), "vmnet-guest")
+	host = os.NewFile(uintptr(fds[1]), "vmnet-host")
+	for _, fd := range fds {
+		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, framesSendBuffer); err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("set the frames send buffer to %d: %w", framesSendBuffer, err), guest.Close(), host.Close())
+		}
+		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, framesRecvBuffer); err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("set the frames receive buffer to %d: %w", framesRecvBuffer, err), guest.Close(), host.Close())
+		}
+	}
+
+	return guest, host, nil
+}
+
 func disk(vmc *vz.VirtualMachineConfiguration, path string) error {
 	if path == "" {
 		return nil
@@ -309,12 +335,11 @@ func disk(vmc *vz.VirtualMachineConfiguration, path string) error {
 
 // One frame per datagram is what the file-handle device wants; the daemon takes the host end by the network verb.
 func (m *VM) network(vmc *vz.VirtualMachineConfiguration) error {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	guest, host, err := frames()
 	if err != nil {
-		return fmt.Errorf("network socketpair: %w", err)
+		return err
 	}
-	guest := os.NewFile(uintptr(fds[0]), "vmnet-guest")
-	m.netHost = os.NewFile(uintptr(fds[1]), "vmnet-host")
+	m.netHost = host
 	m.files = append(m.files, guest, m.netHost)
 
 	attachment, err := vz.NewFileHandleNetworkDeviceAttachment(guest)
