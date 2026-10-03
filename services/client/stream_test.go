@@ -39,6 +39,8 @@ type execDaemon struct {
 	skipInput bool
 	// waits reads the input until the client goes away, the way a command that never exits does.
 	waits bool
+	// record is what a plain GET of the exec answers, which a client asks once a stream ends with no exit.
+	record string
 
 	// req is what the client asked for, attached the path it opened, and input what it typed at the command.
 	req      sandbox.ExecRequest
@@ -55,6 +57,12 @@ func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		answer(http.StatusCreated, `{"exec":"`+d.execID+`","state":"running"}`)(w, r)
+
+		return
+	}
+
+	if r.Header.Get("Upgrade") == "" {
+		answer(http.StatusOK, d.record)(w, r)
 
 		return
 	}
@@ -167,7 +175,7 @@ func TestExecCreatesThenAttachesAndReportsTheExitStatus(t *testing.T) {
 	if daemon.input != "typed\n" {
 		t.Errorf("the daemon read %q, want typed", daemon.input)
 	}
-	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin {
+	if strings.Join(daemon.req.Command, " ") != "sh -c exit 7" || daemon.req.WorkDir != "/srv" || !daemon.req.Stdin || !daemon.req.Attach {
 		t.Errorf("the daemon was asked for %+v", daemon.req)
 	}
 }
@@ -276,13 +284,49 @@ func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 }
 
 // Every exec ends with an exit or a failure, so a session that ends with neither is a failure and not a zero.
+// A daemon that detached a stalled client closed the socket with no word, so the record says what happened.
 func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
-	daemon := &execDaemon{t: t, hangUp: true}
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", hangUp: true, record: `{"id":"1a2b3c4d5e6f7a8b","state":"running","lost_bytes":4096}`}
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
-	if err == nil || !strings.Contains(err.Error(), "without an exit status") {
-		t.Fatalf("Exec returned %v, want the missing exit status named", err)
+	if err == nil || !strings.Contains(err.Error(), "without an exit status") || !strings.Contains(err.Error(), "no output for 30s, and exec 1a2b3c4d5e6f7a8b is running with 4096 bytes of output lost") {
+		t.Fatalf("Exec returned %v, want the missing exit status named with the stall and the lost bytes", err)
+	}
+}
+
+// A record the client cannot read leaves the cut stream named on its own, with why the record is missing.
+func TestExecReportsACutStreamWhenTheRecordIsGone(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", hangUp: true}
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.Header.Get("Upgrade") == "" {
+			answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"exec 1a2b3c4d5e6f7a8b does not exist"}}`)(w, r)
+
+			return
+		}
+		daemon.ServeHTTP(w, r)
+	})
+
+	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
+	if err == nil || !strings.Contains(err.Error(), "without an exit status") || !strings.Contains(err.Error(), "no sandbox sandbox1") {
+		t.Fatalf("Exec returned %v, want the cut stream and the missing record both named", err)
+	}
+}
+
+// A command that passed while some of its output was evicted unread is still a failure to this client.
+func TestExecReportsOutputTheDaemonLost(t *testing.T) {
+	daemon := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", out: "tail\n", exit: &api.ExitMessage{LostBytes: 512}}
+	c := serve(t, shortRoot(t), daemon.ServeHTTP)
+
+	var out bytes.Buffer
+	status, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"cat", "big"}}, client.ExecStreams{Stdout: &out})
+
+	var lost *client.LostOutputError
+	if !errors.As(err, &lost) || lost.Bytes != 512 || lost.Exit.Code != 0 || status.Code != 0 {
+		t.Fatalf("Exec = %+v, %v; want a LostOutputError of 512 bytes on code 0", status, err)
+	}
+	if out.String() != "tail\n" {
+		t.Errorf("stdout = %q, want what did arrive", out.String())
 	}
 }
 

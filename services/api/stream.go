@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,7 +147,7 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	session := &execSession{w: w, r: r, log: h.log, cancel: cancel}
+	session := &execSession{w: w, r: r, log: h.log, ctx: ctx, cancel: cancel}
 	defer session.close()
 
 	stdin, writer := io.Pipe()
@@ -160,9 +161,10 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 		Warn: func(message string) {
 			h.log.Printf("api: exec %s in sandbox %s: %s", r.PathValue("exec"), r.PathValue("id"), message)
 		},
+		Detach: cancel,
 	}
 
-	exit, err := h.lifecycle.Attach(ctx, r.PathValue("id"), r.PathValue("exec"), streams)
+	attached, err := h.lifecycle.Attach(ctx, r.PathValue("id"), r.PathValue("exec"), streams)
 
 	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
 	if !session.answered {
@@ -178,12 +180,17 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The client hung up, so the command runs on and there is no live socket left to send an exit over.
+	// The client hung up or was detached, so the command runs on and there is no live socket left to send an exit over.
 	if ctx.Err() != nil {
+		var stalled *sandbox.StalledError
+		if errors.As(err, &stalled) {
+			h.log.Printf("api: sandbox %s: %v", r.PathValue("id"), stalled)
+		}
+
 		return
 	}
 
-	session.finish(exit, err)
+	session.finish(attached, err)
 }
 
 // isHandshake reports whether the request is the WebSocket opening handshake, so a route serves the plain body without it.
@@ -212,9 +219,11 @@ func hasToken(header, token string) bool {
 
 // execSession is the client side of one exec: the messages it sends in, and the ones the guest sends back.
 type execSession struct {
-	w      http.ResponseWriter
-	r      *http.Request
-	log    *log.Logger
+	w   http.ResponseWriter
+	r   *http.Request
+	log *log.Logger
+	// ctx is the attach's, so a detach also ends a write blocked on a client that stopped reading.
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	// answered says the handshake was answered, in the affirmative or not, so no JSON body follows it.
@@ -278,7 +287,7 @@ func (e *execSession) closeStdin(err error) {
 }
 
 // finish says how the command ended. A command that never ran exits with the code a shell answers for it.
-func (e *execSession) finish(exit models.ExitStatus, err error) {
+func (e *execSession) finish(attached sandbox.Attached, err error) {
 	var notStarted *models.CommandNotStartedError
 	if errors.As(err, &notStarted) {
 		e.send(StreamExit, ExitMessage{Code: notStarted.Code, Error: notStarted.Reason})
@@ -292,11 +301,11 @@ func (e *execSession) finish(exit models.ExitStatus, err error) {
 		return
 	}
 
-	e.send(StreamExit, ExitMessage{Code: exit.Code, Signal: exit.Signal})
+	e.send(StreamExit, ExitMessage{Code: attached.Exit.Code, Signal: attached.Exit.Signal, LostBytes: attached.LostBytes})
 }
 
 func (e *execSession) send(stream byte, payload any) {
-	if err := sendJSON(e.r.Context(), e.conn, stream, payload); err != nil {
+	if err := sendJSON(e.ctx, e.conn, stream, payload); err != nil {
 		e.log.Printf("api: exec: %v", err)
 	}
 }
@@ -304,7 +313,7 @@ func (e *execSession) send(stream byte, payload any) {
 // stream is the io.Writer the guest's output is copied into, one message per copy.
 func (e *execSession) stream(stream byte) io.Writer {
 	return writerFunc(func(p []byte) (int, error) {
-		if err := Send(e.r.Context(), e.conn, stream, p); err != nil {
+		if err := Send(e.ctx, e.conn, stream, p); err != nil {
 			return 0, err
 		}
 
@@ -391,17 +400,18 @@ const (
 	ndjson    = "application/x-ndjson"
 )
 
-// logWriter answers 200 on the first byte and flushes every write, so the body arrives as it is read.
+// logWriter answers its status, 200 when unset, on the first byte and flushes every write, so the body arrives as it is read.
 type logWriter struct {
 	w           http.ResponseWriter
 	contentType string
+	status      int
 	wrote       bool
 }
 
-// header commits the 200 and flushes it, so curl -N sees the response before the first record.
+// header commits the status and flushes it, so curl -N sees the response before the first record.
 func (l *logWriter) header() error {
 	l.w.Header().Set("Content-Type", l.contentType)
-	l.w.WriteHeader(http.StatusOK)
+	l.w.WriteHeader(cmp.Or(l.status, http.StatusOK))
 	l.wrote = true
 
 	if err := http.NewResponseController(l.w).Flush(); err != nil {

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -220,13 +223,58 @@ func TestDecideDeniesAGrantedHostThePolicyDoesNotAllow(t *testing.T) {
 
 	out := request(t, http.MethodGet, "https://other.example.com/")
 	out.Header.Set("Authorization", "Bearer mock-TOKEN")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
 	if out.Header.Get("Authorization") != "Bearer real-TOKEN" {
 		t.Errorf("the allowed granted host did not get the value: %v", out.Header)
 	}
 }
+
+// Only a body Rewrite could put a value in is held, so every other one streams and holds no memory (SHARD-348).
+func TestDecideHoldsTheBodyOnlyWhereAValueCanGoIn(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{
+		{ID: "locked", Policy: "web", Secrets: []string{"TOKEN"}, Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "free", Secrets: []string{"GONE", "TOKEN"}, Address: netip.MustParsePrefix("10.87.0.3/16")},
+	}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com", "evil.example.net"}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{80, 443}},
+		{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationGroup, Value: "any"}},
+	}}
+	b := newBroker(t, records, secrets, web)
+	free := netip.MustParseAddr("10.87.0.3")
+
+	for name, tc := range map[string]struct {
+		req  proxy.Request
+		want bool
+	}{
+		"a granted host over tls":                       {proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, true},
+		"a granted host in cleartext":                   {proxy.Request{Source: source, Host: "api.example.com", Port: 80}, false},
+		"a granted host the policy denies":              {proxy.Request{Source: source, Host: "evil.example.net", Port: 443, TLS: true}, false},
+		"a host no secret is granted to":                {proxy.Request{Source: free, Host: "other.example.com", Port: 443, TLS: true}, false},
+		"a granted host past a secret that was removed": {proxy.Request{Source: free, Host: "evil.example.net", Port: 443, TLS: true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := b.Decide(t.Context(), tc.req)
+			if err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			if got.Hold != tc.want {
+				t.Errorf("Decide = %+v, want Hold %v", got, tc.want)
+			}
+		})
+	}
+
+	broken := newBroker(t, records, failingSecrets{}, web)
+	if _, err := broken.Decide(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}); err == nil {
+		t.Error("an unreadable secret still judged whether to hold the body")
+	}
+}
+
+type failingSecrets struct{ fakeSecrets }
+
+func (failingSecrets) Get(string) (secret.Secret, error) { return secret.Secret{}, errors.New("disk") }
 
 func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "GONE"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
@@ -237,7 +285,7 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	out.Header.Set("Authorization", "Bearer mock-TOKEN")
 	out.Header.Set("X-Gone", "mock-GONE")
 
-	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"token":"mock-TOKEN","gone":"mock-GONE"}`))
+	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"token":"mock-TOKEN","gone":"mock-GONE"}`), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
@@ -253,7 +301,7 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 
 	out = request(t, http.MethodGet, "https://evil.example.net/mock-TOKEN")
 	out.Header.Set("Authorization", "Bearer mock-TOKEN")
-	body, err = b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "evil.example.net", Port: 443, TLS: true}, out, []byte("mock-TOKEN"))
+	body, err = b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "evil.example.net", Port: 443, TLS: true}, out, []byte("mock-TOKEN"), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
@@ -262,7 +310,7 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	}
 
 	// A body too long to hold comes in as nil and goes out as nil: the proxy streams it unchanged.
-	if body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, request(t, http.MethodPut, "https://api.example.com/"), nil); err != nil || body != nil {
+	if body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, request(t, http.MethodPut, "https://api.example.com/"), nil, unlimited); err != nil || body != nil {
 		t.Errorf("a streamed body got %q, %v", body, err)
 	}
 }
@@ -280,7 +328,7 @@ func TestRewriteSubstitutesOnTLSOnly(t *testing.T) {
 	out.Header.Set("Authorization", basic("api", "mock-TOKEN"))
 	out.Header.Set("X-Key", "mock-KEY")
 
-	body, err := plain.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 80}, out, []byte(`{"token":"mock-TOKEN"}`))
+	body, err := plain.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 80}, out, []byte(`{"token":"mock-TOKEN"}`), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite over plain http: %v", err)
 	}
@@ -298,7 +346,7 @@ func TestRewriteSubstitutesOnTLSOnly(t *testing.T) {
 	out.Header.Set("Authorization", basic("api", "mock-TOKEN"))
 	out.Header.Set("X-Key", "mock-KEY")
 
-	body, err = newBroker(t, records, secrets).Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"token":"mock-TOKEN"}`))
+	body, err = newBroker(t, records, secrets).Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"token":"mock-TOKEN"}`), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite over tls: %v", err)
 	}
@@ -324,7 +372,7 @@ func TestRewriteReplacesTheLongestPlaceholderFirst(t *testing.T) {
 	out := request(t, http.MethodPost, "https://api.example.com/mock-TOKEN_B/mock-TOKEN?b=mock-TOKEN_B")
 	out.Header.Set("Authorization", "Bearer mock-TOKEN_B")
 
-	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`))
+	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
@@ -350,7 +398,7 @@ func TestRewriteLeavesASkippedPlaceholderWholeUnderAGrantedPrefix(t *testing.T) 
 	out := request(t, http.MethodPost, "https://api.example.com/mock-TOKEN_B/mock-TOKEN")
 	out.Header.Set("Authorization", "Bearer mock-TOKEN_B")
 
-	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`))
+	body, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, []byte(`{"a":"mock-TOKEN","b":"mock-TOKEN_B"}`), unlimited)
 	if err != nil {
 		t.Fatalf("Rewrite: %v", err)
 	}
@@ -372,7 +420,7 @@ func TestRewriteSwapsACustomPlaceholder(t *testing.T) {
 
 	out := request(t, http.MethodPost, "https://api.example.com/v1/chat")
 	out.Header.Set("Authorization", "Bearer sk_test_shaped01")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 	if out.Header.Get("Authorization") != "Bearer real-SHAPED" {
@@ -381,7 +429,7 @@ func TestRewriteSwapsACustomPlaceholder(t *testing.T) {
 
 	out = request(t, http.MethodPost, "https://other.example.com/v1/chat")
 	out.Header.Set("Authorization", "Bearer sk_test_shaped01")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "other.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 	if out.Header.Get("Authorization") != "Bearer sk_test_shaped01" {
@@ -401,7 +449,7 @@ func TestRewritePutsACustomPlaceholderThatHoldsADefaultOneFirst(t *testing.T) {
 	b := newBroker(t, records, secrets)
 
 	out := request(t, http.MethodPost, "https://api.example.com/sk_mock-TOKEN_live01/mock-TOKEN")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 	if out.URL.Path != "/bbbb/aaaa" {
@@ -433,7 +481,7 @@ func TestRewriteSubstitutesInsideBasicAuth(t *testing.T) {
 			if strings.Contains(tc.sent, "real-TOKEN") {
 				t.Fatalf("the sent header already holds the value: %s", tc.sent)
 			}
-			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 				t.Fatal(err)
 			}
 
@@ -467,7 +515,7 @@ func TestRewriteSubstitutesBothPartsOfBasicAuth(t *testing.T) {
 
 	out := request(t, http.MethodGet, "https://api.example.com/")
 	out.Header.Set("Authorization", basic("mock-TOKEN_B", "mock-TOKEN"))
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 	if out.Header.Get("Authorization") != basic("bbbb", "aaaa") {
@@ -491,7 +539,7 @@ func TestRewriteLeavesAHeaderItCannotSubstituteAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out := request(t, http.MethodGet, "https://"+tc.host+"/")
 			out.Header.Set("Authorization", tc.sent)
-			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: tc.host, Port: 443, TLS: true}, out, nil); err != nil {
+			if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: tc.host, Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 				t.Fatal(err)
 			}
 			if out.Header.Get("Authorization") != tc.sent {
@@ -510,7 +558,7 @@ func TestRewriteLeavesProxyAuthorizationAlone(t *testing.T) {
 	sent := basic("api", "mock-TOKEN")
 	out := request(t, http.MethodGet, "https://api.example.com/")
 	out.Header.Set("Proxy-Authorization", sent)
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 	if out.Header.Get("Proxy-Authorization") != sent {
@@ -531,7 +579,7 @@ func TestRewriteLeavesHopByHopHeadersAlone(t *testing.T) {
 	out.Header.Set("Keep-Alive", "mock-TOKEN")
 	out.Header.Set("X-Named", "mock-TOKEN")
 	out.Header.Set("X-Api-Key", "mock-TOKEN")
-	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil); err != nil {
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
 		t.Fatal(err)
 	}
 
@@ -707,5 +755,77 @@ func TestResolveReadsThePolicyOfTheSandboxThatAsked(t *testing.T) {
 
 	if _, err := b.Resolve(t.Context(), dns.Question{Source: netip.MustParseAddr("10.87.0.9"), Name: "api.example.com"}); err == nil {
 		t.Error("Resolve answered a question from an address no sandbox holds")
+	}
+}
+
+func unlimited(int) error { return nil }
+
+var errCapped = errors.New("the test reserve is spent")
+
+// capped is a reserve that refuses past its limit and counts what it granted.
+type capped struct{ limit, granted int }
+
+func (c *capped) reserve(n int) error {
+	if c.granted+n > c.limit {
+		return fmt.Errorf("%w at %d bytes", errCapped, c.limit)
+	}
+	c.granted += n
+
+	return nil
+}
+
+// A value of 64 KiB behind a placeholder of 8 bytes turns 1 KiB of request into 8 MiB, so the reserve must refuse it before it exists (SHARD-348).
+func TestRewriteReservesWhatAValueAddsBeforeItAllocates(t *testing.T) {
+	const placeholder = "mock-SHO"
+	value := strings.Repeat("v", 64<<10)
+	many := strings.Repeat(placeholder, 128)
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"SHO"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	secrets := fixedSecrets{
+		fakeSecrets: fakeSecrets{"SHO": {Name: "SHO", Placeholder: placeholder, Destinations: []string{"api.example.com"}}},
+		values:      map[string]string{"SHO": value},
+	}
+	b := newBroker(t, records, secrets)
+	req := proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}
+
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+		body   []byte
+	}{
+		{name: "body", body: []byte(many)},
+		{name: "header", header: http.Header{"X-Key": {many}}},
+		{name: "basic", header: http.Header{"Authorization": {"Basic " + base64.StdEncoding.EncodeToString([]byte("u:"+many))}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := request(t, http.MethodPost, "https://api.example.com/v1")
+			maps.Copy(out.Header, tc.header)
+			limit := &capped{limit: 1 << 20}
+
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			body, err := b.Rewrite(t.Context(), req, out, tc.body, limit.reserve)
+			runtime.ReadMemStats(&after)
+
+			if !errors.Is(err, errCapped) || body != nil {
+				t.Fatalf("Rewrite = %d bytes, %v; want the reserve's refusal", len(body), err)
+			}
+			if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+				t.Errorf("the refused rewrite allocated %d bytes", grew)
+			}
+		})
+	}
+
+	out := request(t, http.MethodPost, "https://api.example.com/v1")
+	out.Header.Set("X-Key", placeholder)
+	limit := &capped{limit: 64 << 20}
+	body, err := b.Rewrite(t.Context(), req, out, []byte(many), limit.reserve)
+	if err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if string(body) != strings.Repeat(value, 128) || out.Header.Get("X-Key") != value {
+		t.Fatalf("the rewrite put in the wrong bytes: a body of %d and a header of %d", len(body), len(out.Header.Get("X-Key")))
+	}
+	if held := len(body) + len(value); limit.granted < held {
+		t.Errorf("the rewrite reserved %d bytes and holds %d", limit.granted, held)
 	}
 }

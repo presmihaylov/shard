@@ -33,16 +33,18 @@ func execOf(t *testing.T, _ layers, svc *sandbox.Service, ref string, req sandbo
 		return models.ExitStatus{}, &out, &errOut, err
 	}
 
-	status, err := svc.Attach(t.Context(), ref, exec.ID, streams)
+	attached, err := svc.Attach(t.Context(), ref, exec.ID, streams)
 
-	return status, &out, &errOut, err
+	return attached.Exit, &out, &errOut, err
 }
 
 // attach is the second step alone, for a test that holds the exec id itself.
 func attach(t *testing.T, svc *sandbox.Service, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
 	t.Helper()
 
-	return svc.Attach(t.Context(), ref, execID, streams)
+	attached, err := svc.Attach(t.Context(), ref, execID, streams)
+
+	return attached.Exit, err
 }
 
 // notifyWriter closes wrote the first time it is written to, so a test can wait for the replay to land.
@@ -459,8 +461,8 @@ func TestAttachReplaysAfterADropAndReturnsTheExit(t *testing.T) {
 	second := make(chan error, 1)
 	status := make(chan models.ExitStatus, 1)
 	go func() {
-		exit, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out2})
-		status <- exit
+		attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out2})
+		status <- attached.Exit
 		second <- err
 	}()
 
@@ -713,6 +715,37 @@ func TestExecKeepsTheLastBytesAndMarksItTruncated(t *testing.T) {
 	if !got.Truncated {
 		t.Error("the record is not marked truncated, and the replay lost its oldest bytes")
 	}
+	if got.LostBytes != int64(cap+(1<<20)-out.Len()) {
+		t.Errorf("the record says %d bytes lost, want the %d no client took", got.LostBytes, cap+(1<<20)-out.Len())
+	}
+}
+
+// A create that says a client attaches next holds the output for it, so a command that writes more than
+// the buffer holds still reaches that client byte for byte.
+func TestExecHoldsTheOutputForTheAttachThatFollows(t *testing.T) {
+	const cap = 8 << 20
+
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execOut = strings.Repeat("0123456789abcdef", (cap+(1<<20))/16)
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"cat", "big"}, Attach: true})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+
+	var out bytes.Buffer
+	attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, sandbox.Streams{Stdout: &out})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if out.String() != l.provider.execOut {
+		t.Errorf("the attach got %d bytes, want all %d the command wrote, byte for byte", out.Len(), len(l.provider.execOut))
+	}
+	if attached.LostBytes != 0 {
+		t.Errorf("the attach reports %d bytes lost, want none", attached.LostBytes)
+	}
 }
 
 // A command with stdin reads nothing until a client attaches and types, then ends the input.
@@ -735,11 +768,11 @@ func TestExecStdinReachesTheCommandOnlyThroughAnAttach(t *testing.T) {
 	}
 
 	streams := sandbox.Streams{Stdin: strings.NewReader("hi\n"), Stdout: io.Discard}
-	status, err := svc.Attach(t.Context(), "sandbox1", exec.ID, streams)
+	attached, err := svc.Attach(t.Context(), "sandbox1", exec.ID, streams)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if status.Code != 5 {
+	if status := attached.Exit; status.Code != 5 {
 		t.Errorf("the command ended with code %d, want 5", status.Code)
 	}
 	if l.provider.execInput != "hi\n" {
@@ -787,6 +820,65 @@ func TestStopForgetsTheSandboxExecs(t *testing.T) {
 
 	if _, err := svc.GetExec(t.Context(), "sandbox1", exec.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Errorf("a get after the stop returned %v, want an exec that is not found", err)
+	}
+}
+
+// runExecToItsEnd creates one exec and waits for its exit, so a test changes the substrate under no running command.
+func runExecToItsEnd(t *testing.T, svc *sandbox.Service) {
+	t.Helper()
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+}
+
+// rm of a paused sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
+
+	if _, err := svc.Pause(t.Context(), "sandbox1"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// runsc deletes the sandbox once its checkpoint is written, so rm finds nothing to stop.
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
+// A sandbox that died or that the host killed for its memory takes its execs with it, as a stop does (SHARD-362).
+func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
+	cases := []struct {
+		name   string
+		sb     models.Sandbox
+		status models.Status
+	}{
+		{"died", running(), gone()},
+		{"oom killed", running(), oomKilled()},
+		{"oom killed and started again", optedIn(), oomKilled()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, tc.sb, alive(42))
+			runExecToItsEnd(t, lab.svc)
+			lab.l.provider.status = tc.status
+
+			if err := lab.tick(t, tc.sb, time.Now()); err != nil {
+				t.Fatalf("Liveness: %v", err)
+			}
+			if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+				t.Errorf("the daemon still holds %d execs of the sandbox that ended, want none", held)
+			}
+		})
 	}
 }
 

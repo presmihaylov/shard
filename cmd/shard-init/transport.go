@@ -31,10 +31,12 @@ type transport struct {
 	logs     *logSink
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
-	// frozen is the root held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
+	// frozen is the guest held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
 	frozen atomic.Bool
 	// freezing puts one freeze and its answer before the next, so a freeze undone for want of a host never undoes a later one.
 	freezing sync.Mutex
+	// bound is the sandbox cgroup a freeze stops before it holds the root; nil off a VM.
+	bound *os.File
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -53,8 +55,10 @@ func serveTransport(name string, boot guestBoot) error {
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
+	var bound *os.File
 	if os.Getpid() == 1 {
-		if err := confine(); err != nil {
+		bound, err = confine()
+		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
 	}
@@ -74,8 +78,9 @@ func serveTransport(name string, boot guestBoot) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
-	t := &transport{logs: logs, attached: make(chan struct{}, 1)}
+	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound}
 	t.g = newGuest(t, restartPolicy{})
+	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
 	if boot.set() {
 		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
@@ -291,7 +296,7 @@ func (t *transport) freeze(conn net.Conn, id int) {
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 
-	err := freezeRoot()
+	err := freezeGuest(t.bound)
 	if err == nil {
 		t.frozen.Store(true)
 	}
@@ -345,8 +350,21 @@ func (t *transport) handle(m supervisor.Message) error {
 	}
 }
 
+// freezeGuest stops the guest's processes, then holds the root: a writer the root held first would sleep where no cgroup freeze reaches it.
+func freezeGuest(bound *os.File) error {
+	if err := freezeBound(bound); err != nil {
+		return err
+	}
+	if err := freezeRoot(); err != nil {
+		return errors.Join(err, thawBound(bound))
+	}
+
+	return nil
+}
+
+// thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.
 func (t *transport) thaw() error {
-	if err := thawRoot(); err != nil {
+	if err := errors.Join(thawRoot(), thawBound(t.bound)); err != nil {
 		return err
 	}
 	t.frozen.Store(false)

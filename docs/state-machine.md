@@ -38,8 +38,9 @@ stateDiagram-v2
 the record `pending` and answers at once, unless the image is already pulled: a cached image needs
 no download, so the create runs to `running` before it answers. An uncached one pulls and starts
 behind the record, which lands `running` or, when the pull or the start failed, `failed` with a
-one-line `failed_reason`. `GET ?wait=true` holds until the record leaves `pending`, so `shard create`
-blocks and prints a ready sandbox or the reason it failed. `created` is not where a create lands: it
+one-line `failed_reason`. `shard create` sends `POST ?wait=true`, which holds until the record
+leaves `pending` and streams the pull on the way, so the CLI prints each layer on stderr, then a
+ready sandbox or the reason it failed. `created` is not where a create lands: it
 is the state a fork or clone's copy passes through, and the status a provider reports for a sandbox
 it holds but has not started. No verb parks a sandbox in `created`: a fork or clone drives its copy
 on to `running` with nothing an operator can stop in between, which is why `created --> stopped` is

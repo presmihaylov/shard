@@ -22,18 +22,13 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().CreateSandbox(ctx, req)
+	// The daemon creates in the background; the CLI blocks, so an operator sees the pull, then a ready sandbox or the reason it failed.
+	sb, err := a.client().CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
 		return err
 	}
-
-	// The daemon creates in the background; the CLI blocks, so an operator sees a ready sandbox or the reason it failed.
-	final, err := a.client().WaitSandbox(ctx, sb.ID)
-	if err != nil {
-		return err
-	}
-	if final.State == models.StateFailed {
-		return fmt.Errorf("sandbox %s failed to start: %s", final.ID, final.FailedReason)
+	if sb.State == models.StateFailed {
+		return fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
 	}
 
 	return a.print(sb.ID)

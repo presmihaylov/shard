@@ -338,11 +338,16 @@ func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
 	sb := optedIn()
 	sb.OOMRestarts = 2
 	sb.OOMRestartedAt = now.Add(-time.Second)
-	lab := newLivenessLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, alive(42))
+	runExecToItsEnd(t, lab.svc)
+	lab.l.provider.status = oomKilled()
 
 	// Two starts again put the wait at 2 s, and only one has passed.
 	if err := lab.tick(t, sb, now); err != nil {
 		t.Fatalf("Liveness: %v", err)
+	}
+	if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon holds %d execs of the killed sandbox through the wait, want none (SHARD-362)", held)
 	}
 	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 2 || lab.l.provider.started {
 		t.Errorf("the record says %s with %d starts again inside the wait, want it untouched", got.State, got.OOMRestarts)

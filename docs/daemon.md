@@ -60,7 +60,9 @@ sets `KillMode=process` for the same reason: systemd ends the daemon alone, neve
 
 An exec is a resource the daemon owns for the life of the sandbox. It starts the command at once and
 keeps the last 8 MiB of its output, so a client that drops re-attaches by exec id, replays what it
-missed and streams the rest. One client attaches at a time. The record holds the exit once the
+missed and streams the rest. One client attaches at a time, and the command waits for it rather than
+evict output it has not taken; a client that takes nothing for 30 s (`ExecStallBound`) is detached,
+the command runs on, and `lost_bytes` counts what no client read. The record holds the exit once the
 command ends, `kill` signals it while it runs, and only an `rm` of the exec or a `stop` of the
 sandbox frees it. The daemon keeps at most 32 exited execs per sandbox, so a new exec evicts the
 oldest exited one and the retained output stays bounded; a running exec never counts. An evicted
@@ -322,7 +324,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   or `failed` with a one-line `failed_reason`, so a background pull or start that fails is read from
   the record, not an error. With `?wait=true` the create holds until the record leaves `pending` and
   answers the `running` or `failed` it reached, so a caller reads the settled record without a poll;
-  the plain create answers at once. 400 when the body does not decode or a field does not validate, or
+  the plain create answers at once. A wait that sends `Accept: application/x-ndjson` streams the
+  pull instead: one `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled
+  record. 400 when the body does not decode or a field does not validate, or
   when it names a secret or a policy the host does not hold; 409 `name_taken` when another sandbox
   already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
@@ -343,9 +347,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   copy of the source's files. 400 as fork; 404; 409 when the source is still up.
 
 - `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
-  "size": {"rows", "cols"}}`, validates it, starts the command at once and answers 201 with the exec
+  "size": {"rows", "cols"}, "attach"}`, where `attach` holds the output for the first attach under the
+  same 30 s bound, validates it, starts the command at once and answers 201 with the exec
   record: `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
-  "signal"} or null, "started_at", "exited_at", "truncated"}`. 400 for a body that does not decode or
+  "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. 400 for a body that does not decode or
   a request that names no command; 404; 409 when no command can run in the sandbox.
 - `GET /v0/sandboxes/{id}/exec` answers `{"execs": [...], "next"}` with every exec the sandbox holds.
 - `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
@@ -353,7 +358,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   answers 101 instead and attaches: it replays the buffered output, then streams live to the exit on
   stream 3. 404 when the exec ended with the sandbox, was evicted by the 32-exec cap, or belongs to
   another; 409 `in_use` for a second attach. A drop leaves the command running, so a later attach
-  replays it again.
+  replays it again. A stalled client is closed with no exit, and the record says how much it lost.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
   TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;
@@ -411,7 +416,14 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `GET /v0/images` answers `{"images": [...], "next"}` as `shard image ls` prints them; an entry the daemon
   could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls it and answers 200 with the image. 400 for a
-  reference that does not parse; 500 when the registry or the unpack failed.
+  reference that does not parse; 500 when the registry or the unpack failed. With `Accept:
+  application/x-ndjson` it streams one `{"event"}` line per step, then `{"image"}`.
+
+**A streamed pull says each step as it lands.** An event is `cached` (the image is already on disk),
+`pulling` (the reference, the digest, the layer count and their bytes), one `layer` per layer with
+its bytes and whether it was already on disk, then `pulled` with where the image went. A refusal
+before the first line keeps its status and its JSON body. After the first line the status is sent,
+so a failure is a last `{"error"}` line with the same `code` and `message`.
 - `DELETE /v0/images/{ref}` takes the whole reference, slashes and all, and answers 200 with a
   `warnings` array of what it could not delete under the store. 404; 409 naming every sandbox that
   references it, unless `?force=true`.
@@ -422,8 +434,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 A stream is a WebSocket (RFC 6455) on the same route, opened with the standard handshake. Every
 refusal comes before the 101 as a status and a JSON body. An exec carries binary messages whose
 first byte is the stream and the rest the payload: the client sends 0 (stdin) and 4 (stdin closed,
-empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"error"` when
-the command never ran) and 5 (a failure of the daemon's own, `{"error": {"code", "message"}}`, the
+empty); the daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`, plus `"lost_bytes"` when
+output was lost and `"error"` when the command never ran) and 5 (a failure of the daemon's own, `{"error": {"code", "message"}}`, the
 same object every error body carries). One payload is at most 1 MiB, and a longer write goes as several messages. 3 or 5 ends the
 session and the daemon closes with 1000; a client that closes first leaves the command running, to re-attach by its exec id. A `tty` exec
 carries the guest's terminal on stream 1 alone, because a terminal has no second stream to keep
@@ -551,8 +563,9 @@ It is a local verb like `daemon` and `serve`: it never reaches the daemon, and t
 the secret. `--name` is the subject the front logs, `--duration` defaults to 0, which mints a token
 with no `exp` that never expires, and `--scopes` is a
 comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
-so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
-whole or the bare token, so `shard tokens mint ... >
+so pass `--scopes` for any token but an operator's. A scope that is neither `*` nor one of the eight
+capabilities above is refused, the error lists them, and nothing is recorded. The client's
+`--token-file` takes this object whole or the bare token, so `shard tokens mint ... >
 ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that

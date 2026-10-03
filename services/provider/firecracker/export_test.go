@@ -26,3 +26,6 @@ func (p *Provider) Spawning(id string) (done func()) {
 func (p *Provider) EndUnloaded(id string, client *fcapi.Client, pid int) error {
 	return p.endUnloaded(id, client, pid)
 }
+
+// RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.
+const RestoringFile = restoringFile

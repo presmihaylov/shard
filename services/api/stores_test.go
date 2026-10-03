@@ -46,6 +46,8 @@ type fakeStores struct {
 	listErr error
 	// dns is the word the policy view carries, open or closed.
 	dns string
+	// pulled is what a pull reports to the progress on its context before it answers.
+	pulled []image.Event
 }
 
 func (f *fakeStores) SetPolicy(_ context.Context, name string, req sandbox.PolicyRequest) (sandbox.PolicyView, error) {
@@ -91,8 +93,11 @@ func (f *fakeStores) RemoveSecret(name string, force bool) error {
 	return f.err
 }
 
-func (f *fakeStores) PullImage(_ context.Context, ref string) (image.Image, error) {
+func (f *fakeStores) PullImage(ctx context.Context, ref string) (image.Image, error) {
 	f.ref = ref
+	for _, e := range f.pulled {
+		image.ProgressFrom(ctx).Add(e)
+	}
 	if f.err != nil {
 		return image.Image{}, f.err
 	}

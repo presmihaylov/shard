@@ -171,8 +171,12 @@ func (i Image) Layers() ([]v1.Layer, error) {
 	return layers, nil
 }
 
-// Pull fetches ref and caches it. A caller that cannot use what it got rolls the entry back with Remove.
-func (s *Store) Pull(ctx context.Context, ref string) (Image, error) {
+// Pull fetches ref and caches it, telling progress (nil is quiet); a caller that cannot use the entry rolls it back with Remove.
+func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Image, error) {
+	if progress == nil {
+		progress = quiet{}
+	}
+
 	parsed, err := parseRef(ref)
 	if err != nil {
 		return Image{}, err
@@ -188,7 +192,11 @@ func (s *Store) Pull(ctx context.Context, ref string) (Image, error) {
 		return Image{}, fmt.Errorf("fetch %s: %w", parsed.Name(), err)
 	}
 
-	if err := s.write(parsed.Name(), img); err != nil {
+	if err := announce(parsed.Name(), img, progress); err != nil {
+		return Image{}, fmt.Errorf("fetch %s: %w", parsed.Name(), err)
+	}
+
+	if err := s.write(parsed.Name(), img, progress); err != nil {
 		return Image{}, err
 	}
 
@@ -424,7 +432,7 @@ func (s *Store) reachable() (map[v1.Hash]bool, error) {
 	return reachable, nil
 }
 
-func (s *Store) write(ref string, img v1.Image) error {
+func (s *Store) write(ref string, img v1.Image, progress Progress) error {
 	// The layout writes the config and the manifest with a bare os.Create, so land those two ourselves first.
 	if err := s.writeJSONBlob(img.ConfigName, img.RawConfigFile); err != nil {
 		return err
@@ -435,7 +443,8 @@ func (s *Store) write(ref string, img v1.Image) error {
 	}
 
 	// The layers it does write through a temp file and a rename, and it skips a blob it already has.
-	if err := s.path.WriteImage(img); err != nil {
+	reporting := reportingImage{Image: img, blobs: filepath.Join(string(s.path), "blobs"), progress: progress}
+	if err := s.path.WriteImage(reporting); err != nil {
 		return fmt.Errorf("write the layers of %s: %w", ref, err)
 	}
 

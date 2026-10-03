@@ -263,6 +263,15 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
+	for disk, want := range map[int64]string{1: "at least 7 MiB of disk", 6: "at least 7 MiB of disk", 129: "use 128 or 131 MiB"} {
+		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
+		}
+	}
+	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: bundle.MinOverlayDiskMiB}); err != nil {
+		t.Fatalf("CheckResources(--disk %d) = %v, want nil", bundle.MinOverlayDiskMiB, err)
+	}
 }
 
 // An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
@@ -493,6 +502,27 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	}
 }
 
+// The vmm writes vmstate and memory under its own umask, so Pause tightens them: a snapshot the daemon reads is not world-readable.
+func TestPauseTightensTheSnapshotFiles(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+}
+
 // A resume brings the sandbox back over its own copy of the overlay and a link to the memory the snapshot keeps.
 func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	h := newHarness(t)
@@ -705,6 +735,34 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	}
 	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop after the leftover came back: %v", err)
+	}
+}
+
+// A daemon cut mid-fork leaves a paused VM its load may still hold on the source's overlay; the marker makes the next daemon end it, never resume it onto the live source (SHARD-321).
+func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+
+	// The vCPUs are stopped as a cut fork leaves them, and the marker says the load may still point the overlay at the source.
+	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.StateDir, firecracker.RestoringFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := h.reopen(t)
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status of the half-forked leftover = %+v, %v, want stopped", status, err)
+	}
+	// The refuse ended the vmm, so nothing answers the socket as a live VM; a blind resume would have left it running on the source.
+	if _, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
+		t.Fatal("the vmm a cut fork left still answers; the refuse must end it, not resume it")
 	}
 }
 

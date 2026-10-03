@@ -50,6 +50,8 @@ const (
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
+	// restoringFile marks a fork's restore in flight: its vmm loaded the source's overlay and may not have swapped to this one's yet (SHARD-321).
+	restoringFile = "restoring"
 )
 
 // The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.
@@ -58,6 +60,8 @@ const (
 	snapshotFile  = "snapshot.json"
 	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
 	checkpointFile = "checkpoint.img"
+	// snapshotFileMode is the one place the snapshot files get their mode; SHARD-306's jail changes the owner or group here too.
+	snapshotFileMode os.FileMode = 0o600
 )
 
 // The drive ids on the API, in the order the guest sees them as /dev/vda and /dev/vdb.

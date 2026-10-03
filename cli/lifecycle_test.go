@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,12 +21,17 @@ import (
 
 // recorder is the shared log of what the fakes were asked to do and in which order.
 type recorder struct {
+	// mu guards calls: an exec's pipes record from their own goroutine while a handler records from its.
+	mu    sync.Mutex
 	fail  []string
 	calls []string
 	live  map[string]bool
 }
 
 func (r *recorder) record(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.calls = append(r.calls, name)
 
 	if slices.Contains(r.fail, name) {
@@ -35,15 +41,35 @@ func (r *recorder) record(name string) error {
 	return nil
 }
 
+// seen answers a copy of the calls so far, which a test reads while an exec's goroutine may still record.
+func (r *recorder) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.calls)
+}
+
+func (r *recorder) forget() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.calls = nil
+}
+
 // fakeImages hands a create through the daemon a rootfs without a registry.
 type fakeImages struct {
 	imageService
 	r *recorder
+	// pulled is what a pull reports to the progress on its context.
+	pulled []image.Event
 }
 
-func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
+func (f fakeImages) Pull(ctx context.Context, ref string) (image.Image, error) {
 	if err := f.r.record("images.Pull"); err != nil {
 		return image.Image{}, err
+	}
+	for _, e := range f.pulled {
+		image.ProgressFrom(ctx).Add(e)
 	}
 
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil

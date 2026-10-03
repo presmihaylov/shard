@@ -60,6 +60,82 @@ func TestReadMessageReportsAClosedPeerAsEOF(t *testing.T) {
 	}
 }
 
+// endless is a guest that writes one line and never ends it; it gives up at 64 MiB so a reader with no bound fails the test, not the host.
+type endless struct{ read int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read > 64<<20 {
+		return 0, errors.New("the guest gave up at 64 MiB")
+	}
+	for i := range p {
+		p[i] = 'a'
+	}
+	e.read += len(p)
+
+	return len(p), nil
+}
+
+func TestReadMessageRefusesALineThatNeverEnds(t *testing.T) {
+	guest := &endless{}
+	var m supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(guest), &m); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("err = %v, want ErrMessageTooLong", err)
+	}
+	if guest.read > 2*supervisor.MaxPayload {
+		t.Errorf("the reader took %d bytes before it refused, want about %d", guest.read, supervisor.MaxPayload)
+	}
+}
+
+func TestReadMessageTakesALineUpToTheBound(t *testing.T) {
+	at := `"` + strings.Repeat("a", supervisor.MaxPayload-2) + `"`
+
+	var got string
+	if err := supervisor.ReadMessage(bufio.NewReader(strings.NewReader(at+"\n")), &got); err != nil {
+		t.Fatalf("a line of exactly %d bytes: %v", supervisor.MaxPayload, err)
+	}
+	if len(got) != supervisor.MaxPayload-2 {
+		t.Errorf("decoded %d bytes, want %d", len(got), supervisor.MaxPayload-2)
+	}
+	if err := supervisor.ReadMessage(bufio.NewReader(strings.NewReader(at+" \n")), &got); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("a line one byte past the bound: %v, want ErrMessageTooLong", err)
+	}
+}
+
+func TestWriteMessageRefusesWhatTheReaderWould(t *testing.T) {
+	var sent bytes.Buffer
+	err := supervisor.WriteMessage(&sent, strings.Repeat("a", supervisor.MaxPayload))
+	if !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("err = %v, want ErrMessageTooLong", err)
+	}
+	if sent.Len() != 0 {
+		t.Errorf("%d bytes went out before the refusal", sent.Len())
+	}
+}
+
+// TestALineThatNeverEndsEndsTheControlStream is the guest of SHARD-340: the stream ends with the typed error, and a request after it is refused.
+func TestALineThatNeverEndsEndsTheControlStream(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+
+	go func() {
+		chunk := bytes.Repeat([]byte("a"), 64<<10)
+		for {
+			if _, err := guest.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+
+	c := supervisor.ControlOver(host)
+	if _, err := c.Next(); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("next = %v, want ErrMessageTooLong", err)
+	}
+	if err := c.Thaw(t.Context()); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("thaw after the refusal = %v, want ErrMessageTooLong", err)
+	}
+}
+
 func TestReadHeaderLeavesTheFramesBehindIt(t *testing.T) {
 	var buf bytes.Buffer
 	if err := supervisor.WriteMessage(&buf, supervisor.ExecHeader{Argv: []string{"sh"}}); err != nil {

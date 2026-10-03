@@ -22,11 +22,7 @@ import (
 func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	if err := app.Run(t.Context(), []string{"create", testImage, "--", "/bin/sleep", "600"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	id := strings.TrimSpace(out.String())
+	id := create(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if strings.ContainsAny(id, " \t") {
@@ -78,11 +74,7 @@ func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
 func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	if err := app.Run(t.Context(), []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "id -u"}); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	id := strings.TrimSpace(out.String())
+	id := createWith(t, app, out, "--user", "nobody", testImage, "--", "/bin/sh", "-c", "id -u")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The exit status is the assertion: a supervisor that dropped too could never write it.
@@ -101,12 +93,7 @@ func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	args := []string{"create", "--user", "nobody", testImage, "--", "/bin/sh", "-c", "grep CapEff /proc/self/status"}
-	if err := app.Run(t.Context(), args); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	id := strings.TrimSpace(out.String())
+	id := createWith(t, app, out, "--user", "nobody", testImage, "--", "/bin/sh", "-c", "grep CapEff /proc/self/status")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
@@ -156,7 +143,8 @@ func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) 
 
 	before := holdings(t, app)
 
-	err := app.Run(t.Context(), []string{"create", testImage, "--", "/no/such/entrypoint"})
+	creating, _ := ownStderr(app)
+	err := creating.Run(t.Context(), []string{"create", testImage, "--", "/no/such/entrypoint"})
 	if err == nil {
 		t.Fatal("create reported success for an entrypoint the image does not hold")
 	}

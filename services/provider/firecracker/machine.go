@@ -68,8 +68,16 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if info.State == fcapi.StateNotStarted {
 		return nil, p.endUnloaded(id, client, info.PID)
 	}
-	// Only a pause cut before it ended the vmm leaves a paused VM to adopt, and its stopped guest answers no handshake.
+	// A paused VM to adopt is a pause cut before it ended the vmm, or a fork cut before it swapped off the source's overlay.
 	if info.State == fcapi.StatePaused {
+		restoring, err := exists(filepath.Join(dir, restoringFile))
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: read the restore marker: %w", id, err)
+		}
+		// A fork's restore was in flight, so this vmm may hold the source's live disk: end it, never resume it onto the source (SHARD-321).
+		if restoring {
+			return nil, p.endUnloaded(id, client, info.PID)
+		}
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
@@ -100,6 +108,19 @@ func (p *Provider) endUnloaded(id string, client *fcapi.Client, pid int) error {
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
 func absent(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+}
+
+// exists reports whether a stat found the path; a missing path is no error, any other stat failure is.
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, err
 }
 
 // release lets a vmm whose guest has gone finish exiting, and forgets it, so a new boot can claim the socket.
@@ -254,6 +275,10 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	}
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
+	}
+	// The guest answered, so a fork's restore swapped off the source and resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
+	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())
 	}
 	if err := p.reconcile(m, state); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())

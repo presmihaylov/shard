@@ -8,6 +8,14 @@ import (
 	"os"
 )
 
+// LastGroupFits says whether a disk of size bytes ends on a block group big enough for the metadata Grow lays at its start.
+func LastGroupFits(size int64) bool {
+	blocks := size / BlockSize
+	tail := blocks % blocksPerGroup
+
+	return blocks <= blocksPerGroup || tail == 0 || tail > 2+tableBlocks
+}
+
 // Grow extends an unmounted image from Write to size bytes, adding empty block groups.
 func Grow(path string, size int64) (err error) {
 	if size%BlockSize != 0 {
@@ -54,8 +62,8 @@ func Grow(path string, size int64) (err error) {
 	}
 	inodesPerGroup := sb.InodesPerGroup
 	tableBlocks := inodesPerGroup * inodeSize / BlockSize
-	if tail := newBlocks % blocksPerGroup; newGroups > oldGroups && tail != 0 && tail <= 2+tableBlocks {
-		return fmt.Errorf("ext4: grow %s: the last group holds %d blocks, under its %d of metadata", path, tail, 2+tableBlocks)
+	if newGroups > oldGroups && !LastGroupFits(size) {
+		return fmt.Errorf("ext4: grow %s: the last group holds %d blocks, under its %d of metadata", path, newBlocks%blocksPerGroup, 2+tableBlocks)
 	}
 	if err := f.Truncate(size); err != nil {
 		return fmt.Errorf("ext4: grow %s: %w", path, err)

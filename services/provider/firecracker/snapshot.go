@@ -76,6 +76,10 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if err := m.client.Snapshot(filepath.Join(tmp, snapshotState), filepath.Join(tmp, memoryFile)); err != nil {
 		return fmt.Errorf("snapshot the vm: %w", err)
 	}
+	// The vmm wrote vmstate and memory with its own umask, so tighten them here; a restore hard-links the memory and inherits this mode.
+	if err := secureSnapshot(tmp); err != nil {
+		return err
+	}
 	// The copy shares the overlay's blocks or is refused: a fork that copied every byte is not what the verb promises.
 	if err := bundle.Reflink(filepath.Join(stateDir, bundle.OverlayDiskFile), filepath.Join(tmp, bundle.OverlayDiskFile)); err != nil {
 		return fmt.Errorf("copy the overlay: %w", err)
@@ -84,8 +88,19 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, snapshotFileMode); err != nil {
 		return fmt.Errorf("mark the snapshot complete: %w", err)
+	}
+
+	return nil
+}
+
+// secureSnapshot tightens the files the vmm wrote to the snapshot file mode; SHARD-306's jail changes the owner or group here too.
+func secureSnapshot(dir string) error {
+	for _, name := range []string{snapshotState, memoryFile} {
+		if err := os.Chmod(filepath.Join(dir, name), snapshotFileMode); err != nil {
+			return fmt.Errorf("tighten %s: %w", name, err)
+		}
 	}
 
 	return nil
@@ -117,7 +132,8 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	// The memory holds the address and the run, so the guest is told neither again.
-	_, err = p.restore(ctx, id, stateDir, r, dir)
+	// A resume loads this sandbox's own overlay and swaps to it, so a cut leaves it paused on the right disk: no marker, lookup resumes it.
+	_, err = p.restore(ctx, id, stateDir, r, dir, false)
 
 	return err
 }
@@ -160,10 +176,16 @@ func restoreFiles(dir, stateDir string) error {
 }
 
 // restore brings the snapshot in dir up in a fresh vmm under the sandbox's directory, over the overlay and the memory restoreFiles put there.
-func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string) (*machine, error) {
+// foreign marks a restore whose load opens a different sandbox's overlay than the swap points at, so a cut mid-load must not blind-resume (SHARD-321).
+func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
 	group, err := p.bound(id, r.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
+	}
+	if foreign {
+		if err := os.WriteFile(filepath.Join(stateDir, restoringFile), nil, 0o600); err != nil {
+			return nil, fmt.Errorf("mark the restore of sandbox %s in flight: %w", id, err)
+		}
 	}
 	snap := fcapi.Snapshot{
 		State:  filepath.Join(dir, snapshotState),
@@ -221,7 +243,8 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	if err := writeRecord(spec.StateDir, r); err != nil {
 		return err
 	}
-	m, err := p.restore(ctx, spec.ID, spec.StateDir, r, dir)
+	// The load opens the source's overlay, so a cut before the swap leaves the vmm on it: the marker tells the next daemon to end it, never resume it.
+	m, err := p.restore(ctx, spec.ID, spec.StateDir, r, dir, true)
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}

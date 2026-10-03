@@ -242,7 +242,7 @@ func hostOf(t *testing.T, server *httptest.Server) string {
 func pull(t *testing.T, store *registry.Store, ref string) registry.Image {
 	t.Helper()
 
-	img, err := store.Pull(t.Context(), ref)
+	img, err := store.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("Pull %s: %v", ref, err)
 	}
@@ -369,7 +369,7 @@ func TestPullRefusesPlaintextHTTP(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	_, err = store.Pull(t.Context(), ref)
+	_, err = store.Pull(t.Context(), ref, nil)
 	if err == nil {
 		t.Fatal("Pull over plaintext http returned no error")
 	}
@@ -382,7 +382,7 @@ func TestPullRefusesPlaintextHTTP(t *testing.T) {
 func TestPullRefusesADotDotSegment(t *testing.T) {
 	store := openStore(t, nil)
 
-	_, err := store.Pull(t.Context(), "127.0.0.1:5000/../v2/app:1.0")
+	_, err := store.Pull(t.Context(), "127.0.0.1:5000/../v2/app:1.0", nil)
 	if !errors.Is(err, registry.ErrBadReference) || !strings.Contains(err.Error(), "path segment") {
 		t.Fatalf("got %v, want a rejected .. segment as ErrBadReference", err)
 	}
@@ -392,7 +392,7 @@ func TestPullRefusesAReferenceThatDoesNotParse(t *testing.T) {
 	store := openStore(t, nil)
 
 	for _, ref := range []string{":::not a ref:::", "has space/x:y"} {
-		_, err := store.Pull(t.Context(), ref)
+		_, err := store.Pull(t.Context(), ref, nil)
 		if !errors.Is(err, registry.ErrBadReference) {
 			t.Errorf("Pull(%q) got %v, want ErrBadReference", ref, err)
 		}
