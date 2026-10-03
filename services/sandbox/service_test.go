@@ -219,7 +219,7 @@ func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
 	_, err := svc.Create(t.Context(), req)
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097 MiB is more than the 4096 MiB") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097MiB is more than the 4096 MiB") {
 		t.Fatalf("create = %v, want a request error that names the bound and the host", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
