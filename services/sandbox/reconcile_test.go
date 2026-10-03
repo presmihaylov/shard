@@ -210,6 +210,24 @@ func pausedAlive(pid int) models.Status {
 
 func gone() models.Status { return models.Status{} }
 
+func TestReconcileNamesAProcessTheDaemonKilledForItsSilence(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	killed := models.Status{Exists: true, State: models.StateStopped, Unresponsive: true}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": killed}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.UnresponsiveReason {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, sandbox.UnresponsiveReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.UnresponsiveReason) {
+		t.Errorf("the reconcile reported %v, want one line with the reason", lab.reports)
+	}
+}
+
 func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)

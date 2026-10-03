@@ -110,7 +110,11 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report)
 	}
 
-	return s.recordDied(sb.ID, report)
+	if status.Unresponsive {
+		return s.recordDied(sb.ID, UnresponsiveReason, report)
+	}
+
+	return s.recordDied(sb.ID, DiedReason, report)
 }
 
 // recordCalm keeps the tick's throttle count on the record, and latches a healthy run there, so a daemon restart keeps both.
@@ -217,11 +221,11 @@ func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, re
 
 // recordDied stops the record of a sandbox whose process is gone with no OOM and no stop behind it, so
 // exec reads the truth and start can bring it back.
-func (s *Service) recordDied(id string, report func(string)) error {
+func (s *Service) recordDied(id, reason string, report func(string)) error {
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
-		rec.StoppedReason = DiedReason
+		rec.StoppedReason = reason
 
 		return nil
 	})
@@ -229,7 +233,7 @@ func (s *Service) recordDied(id string, report func(string)) error {
 		return fmt.Errorf("sandbox %s is gone but its record was not updated: %w", id, err)
 	}
 	s.dropExecs(id)
-	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, DiedReason))
+	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, reason))
 
 	return nil
 }

@@ -114,7 +114,9 @@ one:
 
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
-  `shard inspect` carries it in the record. A `start` clears it.
+  `shard inspect` carries it in the record. A `start` clears it. A process the provider killed
+  because it did not answer in its bound says `the daemon killed a sandbox process that did not
+  answer` instead, at the restart and on any later tick.
 - A record that says `running` whose sandbox the host ended for its memory while the daemon was
   down gets the decision the liveness tick makes for an OOM the daemon saw: it becomes `stopped`
   with `ran out of memory and the host ended it`, or the daemon starts it again when the record set

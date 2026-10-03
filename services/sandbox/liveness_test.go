@@ -178,6 +178,22 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
+func TestLivenessNamesASandboxTheDaemonKilledForItsSilence(t *testing.T) {
+	lab := newLivenessLab(t, running(), models.Status{Exists: true, State: models.StateStopped, Unresponsive: true})
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.UnresponsiveReason {
+		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, sandbox.UnresponsiveReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.UnresponsiveReason) {
+		t.Errorf("the pass reported %v, want one line with the reason", lab.reports)
+	}
+}
+
 // A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
 func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	dir := t.TempDir()
