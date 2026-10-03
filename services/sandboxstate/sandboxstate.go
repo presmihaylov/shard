@@ -111,7 +111,11 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	sb.ID = id
 	if err := r.write(sb); err != nil {
 		// Give the id back: no verb can reach a claimed directory that holds no record.
-		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		cleanup := os.RemoveAll(r.dir(id))
+		// write bumped the generation before it failed, so bump again now the unreachable record is gone (SHARD-381).
+		r.gen.Add(1)
+
+		return models.Sandbox{}, errors.Join(err, cleanup)
 	}
 
 	// The name is claimed last, so a crash costs this sandbox its name and never leaks the name to

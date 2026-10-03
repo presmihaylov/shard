@@ -693,6 +693,28 @@ func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
 	}
 }
 
+// SHARD-381: a Create whose write fails after it may have landed the rename must bump the generation again once it removes the record, or a broker that rebuilt mid-cleanup keeps serving the failed sandbox and its secrets.
+func TestCreateBumpsTheGenerationAfterItCleansUpAFailedWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	before := r.Generation()
+
+	// A umask that strips write makes claimID's new record directory reject the record file, so write fails as a landed rename with a failed dir sync does.
+	old := syscall.Umask(0o222)
+	defer syscall.Umask(old)
+
+	if _, err := r.Create(newSandbox()); err == nil {
+		t.Fatalf("Create over a umask that blocks the record write: want an error, got nil")
+	}
+	// write bumps once when the rename may have landed, and the cleanup must bump again once the record is gone.
+	if moved := r.Generation() - before; moved < 2 {
+		t.Errorf("the generation moved %d after a failed-write cleanup, want at least 2", moved)
+	}
+}
+
 // SHARD-381: a delete that touches the disk must move the generation even on a later error, and a delete of an absent sandbox must not, so a reader rebuilds exactly when the set changed.
 func TestDeleteMovesTheGenerationButANotFoundDeleteDoesNot(t *testing.T) {
 	r, _ := repo(t)
