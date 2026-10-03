@@ -90,6 +90,8 @@ type fakeLifecycle struct {
 	content   string
 	bodyErr   error
 	closedErr error
+	// hangUpErr holds an archive open after its content until the request ends, then reads as the exec the hang-up shut.
+	hangUpErr error
 	// entries is what an ls answers, listErr how it fails after them; dir is the mkdir's body, recursive the delete's flag.
 	entries   []models.FileEntry
 	listErr   error
@@ -155,7 +157,7 @@ func (f *fakeLifecycle) DeleteFile(_ context.Context, ref, path string, recursiv
 }
 
 // ReadArchive answers content as the tar, cut by bodyErr the way ReadFile's is.
-func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+func (f *fakeLifecycle) ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
 	f.ref, f.fileOp, f.filePath = ref, "pack", path
 	if f.err != nil {
 		return models.FileStat{}, nil, f.err
@@ -164,6 +166,9 @@ func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models
 	body := io.Reader(strings.NewReader(f.content))
 	if f.bodyErr != nil {
 		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+	if f.hangUpErr != nil {
+		body = io.MultiReader(body, untilDone{ctx: ctx, err: f.hangUpErr})
 	}
 
 	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
@@ -209,6 +214,18 @@ type fakeBody struct {
 }
 
 func (b fakeBody) Close() error { return b.err }
+
+// untilDone blocks until ctx ends, then fails with err.
+type untilDone struct {
+	ctx context.Context
+	err error
+}
+
+func (u untilDone) Read([]byte) (int, error) {
+	<-u.ctx.Done()
+
+	return 0, u.err
+}
 
 func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req

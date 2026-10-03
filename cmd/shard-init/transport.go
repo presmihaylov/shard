@@ -311,6 +311,11 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			continue
 		}
+		if m.Kind == supervisor.KindKill {
+			t.forceStop(conn, m.ID)
+
+			continue
+		}
 		t.answer(conn, m.ID, t.handle(m))
 	}
 }
@@ -405,6 +410,41 @@ func freezeGuest(bound, root *os.File) error {
 	}
 
 	return nil
+}
+
+// forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest and flushes, so the host's cut loses nothing.
+// A host replaced before the answer may have read the guest unfrozen off its replay, so the freeze is undone, as a pause's is.
+func (t *transport) forceStop(conn net.Conn, id int) {
+	t.freezing.Lock()
+	defer t.freezing.Unlock()
+
+	err := t.killAndFreeze()
+	if err == nil {
+		t.frozen.Store(true)
+	}
+	if t.answer(conn, id, err) || err != nil {
+		return
+	}
+	if err := t.thaw(); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: thaw a kill no host heard:", err)
+	}
+}
+
+// killAndFreeze kills the entrypoint, holds every exec and child so none dirties the disk, then flushes it before the cut.
+func (t *transport) killAndFreeze() error {
+	var stopErr error
+	t.g.run(func() {
+		// A gone entrypoint ends nothing here: the published freeze, not a power off, is what a lost cut recovers from.
+		_, stopErr = t.g.stop(syscall.SIGKILL)
+	})
+	if stopErr != nil {
+		return stopErr
+	}
+	if err := freezeBound(t.bound); err != nil {
+		return err
+	}
+
+	return syncDisk()
 }
 
 // thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.

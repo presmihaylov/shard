@@ -423,6 +423,81 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
+func TestTransportKillForcesTheEntrypointDown(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// KindKill is the forced stop: it SIGKILLs the entrypoint, freezes the rest, then flushes before the host cuts the VM.
+	if err := c.Kill(t.Context()); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	exit := awaitKind(t, c, supervisor.KindExit)
+	if exit.Exit == nil || exit.Exit.Signal != int(syscall.SIGKILL) {
+		t.Fatalf("exit = %+v, want signal SIGKILL", exit.Exit)
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the kill")
+	}
+}
+
+// A kill of a guest whose entrypoint already exited ends nothing, so a host lost before the cut must read the freeze off the replay and thaw it (SHARD-344).
+func TestTransportKillReplaysFrozenOnTheNextHost(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	// The entrypoint exits, so the kill finds none to forward to and the guest stays up for the cut.
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:0")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindExit)
+	if err := c.Kill(t.Context()); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	_ = c.Close()
+
+	next, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	defer next.Close()
+	if state := awaitKind(t, next, supervisor.KindState); !state.Frozen {
+		t.Fatal("the replay after a kill says not frozen, so the next host would strand it")
+	}
+
+	// A stop still ends the guest the kill left frozen.
+	if err := next.Stop(t.Context()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the stop")
+	}
+}
+
 // A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
 func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 	cmd, dial := startTransport(t)
