@@ -233,9 +233,9 @@ func TestAKillWhoseControlServerRefusesIsUnreachable(t *testing.T) {
 func TestAFailureKeepsWhatRunscSaid(t *testing.T) {
 	r, _ := fake(t, "", "some new gvisor failure", 1)
 
-	err := r.Delete(t.Context(), "amber-otter-1a2b", false)
+	err := r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false)
 	if err == nil {
-		t.Fatal("Delete reported success on a failing runsc")
+		t.Fatal("Kill reported success on a failing runsc")
 	}
 	if !strings.Contains(err.Error(), "some new gvisor failure") {
 		t.Errorf("got %q, want it to carry what runsc printed", err)
@@ -362,12 +362,13 @@ esac
 	return r, filepath.Dir(argvFile)
 }
 
-// A Ctrl-C mid-create must not kill runsc before it saves its state, so the create finishes and is then deleted.
-func TestACancelledBringUpFinishesAndIsDeleted(t *testing.T) {
+// A Ctrl-C mid-create must not kill runsc before it saves its state, so the create finishes; discard keeps that state and never deletes, and the provider's safeDelete sweeps then forgets it (SHARD-440).
+func TestACancelledBringUpFinishesAndKeepsItsState(t *testing.T) {
 	for verb, bringUp := range bringUps {
 		t.Run(verb, func(t *testing.T) {
 			r, dir := settling(t, verb, `while [ ! -e "$dir/release" ]; do sleep 0.01; done
 	touch "$dir/finished"`)
+			state := savedState(t, r)
 
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -395,20 +396,18 @@ func TestACancelledBringUpFinishesAndIsDeleted(t *testing.T) {
 				t.Errorf("runsc %s never finished: %v", verb, err)
 			}
 
-			calls := argv(t, filepath.Join(dir, "calls"))
-			if last := calls[len(calls)-1]; !strings.HasSuffix(last, "delete --force amber-otter-1a2b") {
-				t.Errorf("the last runsc call was %q, want the %s it finished deleted: %v", last, verb, calls)
-			}
+			assertKept(t, verb, state, argv(t, filepath.Join(dir, "calls")))
 		})
 	}
 }
 
-// A runsc that outlives the grace is killed after all, so a wedged bring-up still returns.
-func TestABringUpThatOutlivesTheGraceIsKilled(t *testing.T) {
+// A runsc that outlives the grace is abandoned, not force-deleted: the grace cancels it, discard keeps the state and signals nothing, so a wedged bring-up still returns and the provider's safeDelete frees it later (SHARD-440).
+func TestABringUpThatOutlivesTheGraceKeepsItsState(t *testing.T) {
 	for verb, bringUp := range bringUps {
 		t.Run(verb, func(t *testing.T) {
 			r, dir := settling(t, verb, "exec sleep 60")
 			r.SetSettle(100 * time.Millisecond)
+			state := savedState(t, r)
 
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -428,11 +427,33 @@ func TestABringUpThatOutlivesTheGraceIsKilled(t *testing.T) {
 				t.Fatalf("%s never returned after the grace ran out", verb)
 			}
 
-			calls := argv(t, filepath.Join(dir, "calls"))
-			if last := calls[len(calls)-1]; !strings.HasSuffix(last, "delete --force amber-otter-1a2b") {
-				t.Errorf("the last runsc call was %q, want a delete of whatever the %s left: %v", last, verb, calls)
-			}
+			assertKept(t, verb, state, argv(t, filepath.Join(dir, "calls")))
 		})
+	}
+}
+
+// savedState lays down the runsc state file a bring-up had already written when its caller gave up, so the test can prove discard keeps it.
+func savedState(t *testing.T, r *runsc.Runner) string {
+	t.Helper()
+
+	if err := os.MkdirAll(r.Root(), 0o755); err != nil {
+		t.Fatalf("make the runsc root: %v", err)
+	}
+
+	return stateFile(t, r.Root(), "amber-otter-1a2b", `{"goferPid":4343}`)
+}
+
+// assertKept proves discard left the saved state in place and ran no delete, so the provider's safeDelete, not discard, decides when a cancelled bring-up's state goes.
+func assertKept(t *testing.T, verb, state string, calls []string) {
+	t.Helper()
+
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("discard dropped the %s state, want it kept for the provider to sweep then forget: %v", verb, err)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "delete") {
+			t.Errorf("discard ran %q after the %s, want no runsc delete: %v", call, verb, calls)
+		}
 	}
 }
 

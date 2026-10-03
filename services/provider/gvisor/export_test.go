@@ -31,9 +31,13 @@ func (p *Provider) SetProcRoot(root string) {
 	p.procRoot = root
 }
 
-// SetKill replaces the SIGKILL a reclaim sends, so a test records the pids instead of killing anything.
+// ProcRoot is the stand-in /proc a test writes into, so it can add a command line beside the stat the provider already made.
+func (p *Provider) ProcRoot() string {
+	return p.procRoot
+}
+
+// SetKill replaces the SIGKILL a teardown sends, so a test records the pids instead of killing anything; it still rechecks the id the way the pinned kill does.
 func (p *Provider) SetKill(kill func(pid int) error) {
-	p.killProcess = kill
 	p.killPinned = func(pid int, still func() (bool, error)) error {
 		ok, err := still()
 		if err != nil || !ok {
@@ -106,3 +110,37 @@ func ZombieStat(stat string) bool {
 func Vanished(err error) bool {
 	return vanished(err)
 }
+
+// SafeDelete is the SHARD-440 teardown: it sweeps the sandbox's own cgroup members through a pinned kill, then forgets runsc's state, and never force-deletes.
+func (p *Provider) SafeDelete(ctx context.Context, id string) error {
+	return p.safeDelete(ctx, id)
+}
+
+// SetRunsc swaps the runsc surface the provider drives, so a teardown test records what it forgot without a real runner.
+func (p *Provider) SetRunsc(r runscCtl) {
+	p.runsc = r
+}
+
+// RunscStub answers every runscCtl method with a zero value, so a test embeds it and overrides only the methods under test.
+type RunscStub struct{}
+
+func (RunscStub) Create(ctx context.Context, id string, opts runsc.CreateOptions) error { return nil }
+func (RunscStub) Exec(ctx context.Context, id string, opts runsc.ExecOptions) (int, error) {
+	return 0, nil
+}
+func (RunscStub) Signal(ctx context.Context, id string, pid int, signal string) error { return nil }
+func (RunscStub) Start(ctx context.Context, id string) error                          { return nil }
+func (RunscStub) Pause(ctx context.Context, id string) error                          { return nil }
+func (RunscStub) Resume(ctx context.Context, id string) error                         { return nil }
+func (RunscStub) Checkpoint(ctx context.Context, id, dir string) error                { return nil }
+func (RunscStub) Restore(ctx context.Context, id string, opts runsc.RestoreOptions) error {
+	return nil
+}
+func (RunscStub) RestoreArgs(id string, opts runsc.RestoreOptions) []string   { return nil }
+func (RunscStub) Kill(ctx context.Context, id, signal string, all bool) error { return nil }
+func (RunscStub) State(ctx context.Context, id string) (runsc.State, error) {
+	return runsc.State{}, nil
+}
+func (RunscStub) Forget(id string) error { return nil }
+func (RunscStub) Executable() string     { return "" }
+func (RunscStub) DropNullNetns() error   { return nil }
