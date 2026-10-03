@@ -200,7 +200,7 @@ func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, 
 		return nil, decodeError(resp.StatusCode, answer)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open %s on %s: %w", what, c.target, err)
+		return nil, fmt.Errorf("open %s on %s: %w", what, c.target, unquoted(err))
 	}
 
 	conn.SetReadLimit(api.MaxPayload + 1)
@@ -402,7 +402,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 		return connect
 	}
 	if err != nil {
-		return fmt.Errorf("GET %s on %s: %w", path, c.target, err)
+		return fmt.Errorf("GET %s on %s: %w", path, c.target, unquoted(err))
 	}
 	defer resp.Body.Close()
 
