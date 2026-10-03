@@ -594,6 +594,24 @@ func (l *lifecycle) DeleteFile(ctx context.Context, ref, path string, recursive 
 	return svc.DeleteFile(ctx, ref, path, recursive)
 }
 
+func (l *lifecycle) ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadArchive(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteArchive(ctx, ref, req, src)
+}
+
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {

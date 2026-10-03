@@ -46,6 +46,8 @@ type Lifecycle interface {
 	ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error)
 	MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error
 	DeleteFile(ctx context.Context, ref, path string, recursive bool) error
+	ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
+	WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -164,6 +166,8 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"DELETE", "/v0/sandboxes/{id}/files"}, h.deleteFile},
 		{Route{"GET", "/v0/sandboxes/{id}/ls"}, h.listDir},
 		{Route{"POST", "/v0/sandboxes/{id}/mkdir"}, h.makeDir},
+		{Route{"PUT", "/v0/sandboxes/{id}/archive"}, h.putArchive},
+		{Route{"GET", "/v0/sandboxes/{id}/archive"}, h.getArchive},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},

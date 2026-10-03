@@ -94,6 +94,8 @@ type fakeLifecycle struct {
 	listErr   error
 	dir       sandbox.MkdirRequest
 	recursive bool
+	// archive is what a put of an archive named.
+	archive sandbox.ArchiveWrite
 }
 
 func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
@@ -149,6 +151,33 @@ func (f *fakeLifecycle) DeleteFile(_ context.Context, ref, path string, recursiv
 	f.ref, f.fileOp, f.filePath, f.recursive = ref, "delete", path, recursive
 
 	return f.err
+}
+
+// ReadArchive answers content as the tar, cut by bodyErr the way ReadFile's is.
+func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	f.ref, f.fileOp, f.filePath = ref, "pack", path
+	if f.err != nil {
+		return models.FileStat{}, nil, f.err
+	}
+
+	body := io.Reader(strings.NewReader(f.content))
+	if f.bodyErr != nil {
+		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+
+	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) WriteArchive(_ context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error {
+	f.ref, f.fileOp, f.archive = ref, "unpack", req
+	if f.err != nil {
+		return f.err
+	}
+
+	landed, err := io.ReadAll(src)
+	f.landed = string(landed)
+
+	return err
 }
 
 type fakeListing struct {

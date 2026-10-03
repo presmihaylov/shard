@@ -141,7 +141,13 @@ func (f *fakeRepo) List() ([]models.Sandbox, error) {
 	return f.left, nil
 }
 
-func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
+	// The repository runs each admission on the claimed directory, before it writes the record.
+	for _, check := range admit {
+		if err := check("/sandboxes/sandbox1"); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
 	if err := f.r.record("repo.Create"); err != nil {
 		return models.Sandbox{}, err
 	}
@@ -265,6 +271,8 @@ type fakeProvider struct {
 	entrypointErr error
 	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
 	waitErr error
+	// failsOnStop is the reason a shard-init that dies on the way down gives, which the stopped status carries.
+	failsOnStop string
 	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
 	restarts    models.RestartCount
 	restartsErr error
@@ -540,7 +548,7 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	}
 	f.stopped, f.grace = true, grace
 	if f.aliveAfterStop == 0 {
-		f.status = models.Status{Exists: true, State: models.StateStopped}
+		f.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: f.failsOnStop}
 	}
 	if f.stopUnwedges && f.statusGate != nil {
 		close(f.statusGate)

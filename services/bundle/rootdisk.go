@@ -21,13 +21,19 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set --disk %d or more", need, DiskBound(r), need)
 	}
 
-	shared, err = CloneFile(base, dst)
+	err = admitDisk(dst, DiskBytes(r), func() error {
+		shared, err = CloneFile(base, dst)
+		if err != nil {
+			return err
+		}
+		if err := ext4.Grow(dst, DiskBytes(r)); err != nil {
+			return errors.Join(fmt.Errorf("grow %s to the %d MiB bound: %w", dst, DiskBound(r), err), os.Remove(dst))
+		}
+
+		return nil
+	})
 	if err != nil {
 		return false, err
-	}
-
-	if err := ext4.Grow(dst, DiskBytes(r)); err != nil {
-		return false, errors.Join(fmt.Errorf("grow %s to the %d MiB bound: %w", dst, DiskBound(r), err), os.Remove(dst))
 	}
 
 	return shared, nil
