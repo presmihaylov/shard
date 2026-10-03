@@ -436,9 +436,9 @@ func TestResumeRecordsASandboxThatCameUpUnderAFailedResume(t *testing.T) {
 	}
 }
 
-func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
+func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 	r := &recorder{}
-	source := pausedSandbox()
+	source := forkSource()
 	source.Image = "docker.io/library/alpine:3.20"
 	source.Resources = models.Resources{MemoryMiB: 256}
 	source.RestartOnOOM = true
@@ -454,8 +454,8 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	if sb.ID != "sandbox2" || sb.Name != "web-2" {
 		t.Errorf("fork answered %+v, want the new id under the new name", sb)
 	}
-	if l.provider.snapshotDir != "/snapshots/sandbox1" {
-		t.Errorf("the provider was told to read %q, want the source's snapshot", l.provider.snapshotDir)
+	if l.provider.forkedFrom != "sandbox1" {
+		t.Errorf("the provider was told to capture %q, want the running source", l.provider.forkedFrom)
 	}
 	if l.provider.spec.ID != "sandbox2" || l.provider.spec.Name != "web-2" || l.provider.spec.StateDir != "/state/sandbox2" {
 		t.Errorf("the provider was handed %+v, want the fork's own id, name and state directory", l.provider.spec)
@@ -483,13 +483,13 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	if sb.NetnsPath != "/run/netns/sandbox2" || sb.HostInterface != "shardv2" {
 		t.Errorf("the fork's record holds the network %+v, want its own netns and interface", sb)
 	}
-	// The memory image carries the source's run, so the exit its entrypoint already had is the fork's too.
+	// The capture carries the source's run, so the exit its entrypoint already had is the fork's too.
 	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
 		t.Errorf("the fork's record holds the exit %+v, want the source's", sb.ExitStatus)
 	}
 
-	// The source is read and nothing more: its record and its snapshot are as they were.
-	if l.repo.sb.State != models.StatePaused || l.repo.sb.Snapshot != "/snapshots/sandbox1" {
+	// The source runs on: its record is as it was.
+	if l.repo.sb.State != models.StateRunning || l.repo.sb.PID != 42 {
 		t.Errorf("the source's record changed to %+v", l.repo.sb)
 	}
 	if l.repo.deleted {
@@ -497,43 +497,27 @@ func TestForkStartsANewSandboxFromTheSnapshot(t *testing.T) {
 	}
 }
 
-// A resume runs on past the snapshot and keeps its name, so a fork of a running or stopped source would copy a stale pause.
-func TestForkRefusesASourceThatIsNotPaused(t *testing.T) {
-	for _, state := range []models.State{models.StateRunning, models.StateStopped} {
+// A fork captures the source as it runs now, so a source that does not run is refused before anything is claimed (SHARD-457).
+func TestForkRefusesASourceThatDoesNotRun(t *testing.T) {
+	for _, state := range []models.State{models.StatePaused, models.StateStopped, models.StateUnresponsive} {
 		r := &recorder{}
-		sb := pausedSandbox()
+		sb := forkSource()
 		sb.State = state
 		svc, _ := newService(t, r, sb)
 
 		_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
 		var refused *sandbox.StateError
-		if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotPaused || !strings.Contains(err.Error(), "pause it first") {
-			t.Errorf("fork of a %s sandbox with a snapshot returned %v, want a not-paused refusal", state, err)
+		if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotRunning || !strings.Contains(err.Error(), "fork takes a running sandbox") {
+			t.Errorf("fork of a %s sandbox returned %v, want a not-running refusal", state, err)
 		}
-		if slices.Contains(r.calls, "repo.Create") {
-			t.Errorf("the refusal of a %s source came after a record was created", state)
+		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "provider.Fork") {
+			t.Errorf("the refusal of a %s source came after a record or a capture: %v", state, r.calls)
 		}
-	}
-}
-
-func TestForkRefusesASourceWithNoSnapshot(t *testing.T) {
-	r := &recorder{}
-	sb := pausedSandbox()
-	sb.Snapshot = ""
-	svc, _ := newService(t, r, sb)
-
-	_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
-	var refused *sandbox.StateError
-	if !errors.As(err, &refused) || refused.Code != models.CodeNoSnapshot {
-		t.Errorf("fork of a paused sandbox with no snapshot returned %v, want a no-snapshot refusal", err)
-	}
-	if slices.Contains(r.calls, "repo.Create") {
-		t.Error("the refusal came after a record was created")
 	}
 }
 
 func TestForkRefusesABadName(t *testing.T) {
-	svc, _ := newService(t, &recorder{}, pausedSandbox())
+	svc, _ := newService(t, &recorder{}, forkSource())
 
 	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{Name: "Web 2"}); err == nil {
 		t.Error("fork accepted a name no verb could take back")
@@ -543,7 +527,7 @@ func TestForkRefusesABadName(t *testing.T) {
 // Everything claimed before the restore goes back when it fails, and the source is left alone.
 func TestForkGivesBackWhatItClaimedWhenTheRestoreFails(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Fork"}}
-	svc, l := newService(t, r, pausedSandbox())
+	svc, l := newService(t, r, forkSource())
 
 	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{}); err == nil {
 		t.Fatal("fork reported success when the restore failed")
@@ -553,7 +537,7 @@ func TestForkGivesBackWhatItClaimedWhenTheRestoreFails(t *testing.T) {
 	if got := keep(r.calls, want...); !slices.Equal(got, want) {
 		t.Errorf("the teardown ran as %v, want %v", got, want)
 	}
-	if l.repo.sb.State != models.StatePaused {
+	if l.repo.sb.State != models.StateRunning {
 		t.Errorf("the source's record changed to %s", l.repo.sb.State)
 	}
 }
@@ -561,7 +545,7 @@ func TestForkGivesBackWhatItClaimedWhenTheRestoreFails(t *testing.T) {
 // The copy is half-built while it is given back, so the teardown runs under its lock and no verb sees it.
 func TestAFailedForkUnwindsBeforeItLetsTheCopyGo(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Fork"}}
-	svc, l := newService(t, r, pausedSandbox())
+	svc, l := newService(t, r, forkSource())
 
 	reached := make(chan struct{})
 	l.provider.onRemove = func() {
@@ -592,7 +576,7 @@ func TestAFailedForkUnwindsBeforeItLetsTheCopyGo(t *testing.T) {
 // The fork is live once the restore returns, so a failure after it keeps the sandbox and its record.
 func TestForkKeepsTheSandboxWhenTheRulesFail(t *testing.T) {
 	r := &recorder{fail: []string{"net.Reapply"}}
-	svc, l := newService(t, r, pausedSandbox())
+	svc, l := newService(t, r, forkSource())
 
 	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{}); err == nil {
 		t.Fatal("fork reported success when the rules failed")
@@ -613,7 +597,7 @@ func TestForkKeepsTheSandboxWhenTheRulesFail(t *testing.T) {
 
 func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 	r := &recorder{}
-	source := pausedSandbox()
+	source := forkSource()
 	source.Policy = "locked"
 	svc, l := newService(t, r, source)
 
@@ -724,7 +708,7 @@ func TestForkAndCloneCarryEveryPolicyField(t *testing.T) {
 		source models.Sandbox
 		copy   func(*sandbox.Service, context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)
 	}{
-		"fork":  {withEveryPolicy(pausedSandbox()), (*sandbox.Service).Fork},
+		"fork":  {withEveryPolicy(forkSource()), (*sandbox.Service).Fork},
 		"clone": {withEveryPolicy(cloneSource()), (*sandbox.Service).Clone},
 	}
 	for name, verb := range verbs {

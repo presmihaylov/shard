@@ -321,7 +321,7 @@ func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 		t.Fatalf("the pause stopped a guest whose root still took writes: %v", err)
 	}
 	fork := h.newSpec(t)
-	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	forkDir, err := h.stateDir(fork.ID)
@@ -542,7 +542,7 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	}
 
 	fork := h.newSpec(t)
-	if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	status, err = h.provider.Status(t.Context(), fork.ID)
@@ -842,7 +842,7 @@ func TestAHostWithoutSaveRefusesTheOptionalVerbs(t *testing.T) {
 	refused := map[string]error{
 		models.VerbPause:  h.provider.Pause(t.Context(), spec.ID, snap),
 		models.VerbResume: h.provider.Resume(t.Context(), spec.ID, snap),
-		models.VerbFork:   h.provider.Fork(t.Context(), snap, h.newSpec(t)),
+		models.VerbFork:   h.provider.Fork(t.Context(), spec.ID, h.newSpec(t)),
 	}
 	for verb, err := range refused {
 		var refusal *models.UnsupportedError

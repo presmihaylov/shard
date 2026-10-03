@@ -266,7 +266,7 @@ func TestForkKeepsTheCountAndCloneStartsItOver(t *testing.T) {
 		RestartCount: models.RestartCount{Count: 2},
 	}
 
-	source := pausedSandbox()
+	source := forkSource()
 	source.Restart = restart
 	svc, _ := newService(t, &recorder{}, source)
 	forked, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})

@@ -272,17 +272,14 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	}
 	defer unlock()
 
-	// A resume runs on past the snapshot and keeps its name, so only a paused source's snapshot is current.
-	if src.State != models.StatePaused {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "pause it first, fork reads what the pause wrote", Code: models.CodeSandboxNotPaused}
-	}
-	if src.Snapshot == "" {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "its record names no snapshot to fork from", Code: models.CodeNoSnapshot}
+	// A fork captures the source as it runs now, never an older snapshot of it, so only a running source is forked (SHARD-457).
+	if src.State != models.StateRunning {
+		return models.Sandbox{}, wrongState(source, src, "fork takes a running sandbox", models.CodeSandboxNotRunning)
 	}
 
 	var td Teardown
 
-	// The memory image holds the source's run, so an entrypoint that had exited before the pause has too.
+	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		Image:          src.Image,
 		Resources:      src.Resources,
@@ -312,7 +309,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
-	if err := s.cfg.Provider.Fork(ctx, src.Snapshot, spec); err != nil {
+	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		// An interrupt kills the restore process, not what it may already have restored, and only stop
 		// ends a sandbox, so an unknown outcome is kept.
 		if ctx.Err() != nil {

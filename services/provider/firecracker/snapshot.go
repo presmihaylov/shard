@@ -334,8 +334,13 @@ func (p *Provider) AdoptStaging(dir string) error {
 	return os.RemoveAll(dir + ".tmp")
 }
 
-// Fork brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; the source is not touched.
-func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
+// Fork refuses by name: the fork of a paused source is gone, and the live fork of a running one comes with SHARD-462 (SHARD-457).
+func (p *Provider) Fork(context.Context, string, models.SandboxSpec) error {
+	return models.Unsupported(Name, models.VerbFork)
+}
+
+// forkSnapshot brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; SHARD-462 builds the live fork on it.
+func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	snap, err := readSnapshot(dir)
 	if err != nil {
 		return err

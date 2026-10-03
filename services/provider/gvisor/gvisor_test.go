@@ -85,30 +85,6 @@ func TestEveryOptionalVerbIsClaimed(t *testing.T) {
 	}
 }
 
-func TestForkTakesOnlyASnapshotAndAFreeId(t *testing.T) {
-	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-	spec := models.SandboxSpec{ID: "amber-otter-1a2b", StateDir: t.TempDir()}
-
-	err := p.Fork(t.Context(), t.TempDir(), spec)
-	if err == nil || !strings.Contains(err.Error(), "no snapshot") {
-		t.Errorf("Fork from an empty directory returned %v, want a refusal that says there is no snapshot", err)
-	}
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// A live id must not be forked over: the rollback would unmount the rootfs the first one runs on.
-	err = p.Fork(t.Context(), dir, spec)
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("Fork over a running id returned %v, want a refusal that says it exists", err)
-	}
-	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
-		t.Errorf("Fork over a running id wrote into its state directory: %v", entries)
-	}
-}
-
 // The sentry exits after any checkpoint, so a failed one loses the sandbox: nothing to thaw, the old snapshot kept.
 func TestAFailedCheckpointLosesTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
 	work := t.TempDir()

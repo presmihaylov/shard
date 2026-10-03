@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vz"
 )
 
@@ -38,3 +39,8 @@ func (p *Provider) FailLinkClose(id string, err error) {
 type failingLink struct{ err error }
 
 func (l failingLink) Close() error { return l.err }
+
+// ForkSnapshot is the restore of a paused snapshot into a new sandbox, which SHARD-463 builds the live fork on and the public Fork no longer offers.
+func (p *Provider) ForkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	return p.forkSnapshot(ctx, dir, spec)
+}

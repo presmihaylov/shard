@@ -186,11 +186,11 @@ var helps = map[string]verbHelp{
 	},
 	"fork": {
 		usage:   []string{"fork [--name <name>] <id|name>"},
-		summary: "copy a paused sandbox, memory and files, into a new running one",
-		args:    []row{{"<id|name>", "the paused sandbox to copy, by its id or by its --name"}},
+		summary: "copy a running sandbox, memory and files, into a new running one",
+		args:    []row{{"<id|name>", "the running sandbox to copy, by its id or by its --name"}},
 		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
-		notes:   []string{"The source must be paused: fork reads the snapshot that the pause wrote, and the source stays paused. It prints the new id. sysbox and runc refuse fork."},
-		example: "shard pause web && shard fork --name web-2 web",
+		notes:   []string{"The source must be running. Fork freezes it for a moment, captures its memory and files, and lets the same sandbox run on, then starts the new one from that capture. It prints the new id. Only gvisor forks for now; the other providers refuse fork."},
+		example: "shard fork --name web-2 web",
 	},
 	"clone": {
 		usage:   []string{"clone [--name <name>] <id|name>"},

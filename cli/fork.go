@@ -7,7 +7,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// fork asks the daemon for a new sandbox from the snapshot of another, and prints the new id.
+// fork asks the daemon for a new sandbox from a capture of a running one, and prints the new id.
 func (a App) fork(ctx context.Context, args []string) error {
 	source, req, err := parseCopy("fork", args)
 	if err != nil {

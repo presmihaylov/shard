@@ -315,8 +315,10 @@ type fakeProvider struct {
 	noFork   bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
-	// snapshotDir is the directory the pause was told to write into, and the one the fork read.
+	// snapshotDir is the directory the pause was told to write into, and the one the resume read.
 	snapshotDir string
+	// forkedFrom is the running source the fork was told to capture.
+	forkedFrom string
 	// source is the sandbox the clone was told to copy.
 	source  string
 	paused  bool
@@ -510,11 +512,11 @@ func (f *fakeProvider) Resume(_ context.Context, _ string, dir string) error {
 	return nil
 }
 
-func (f *fakeProvider) Fork(_ context.Context, dir string, spec models.SandboxSpec) error {
+func (f *fakeProvider) Fork(_ context.Context, source string, spec models.SandboxSpec) error {
 	if err := f.r.record("provider.Fork"); err != nil {
 		return err
 	}
-	f.spec, f.snapshotDir = spec, dir
+	f.spec, f.forkedFrom = spec, source
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
 	return nil
@@ -796,6 +798,11 @@ func running() models.Sandbox {
 }
 
 // pausedSandbox is a sandbox that holds a snapshot, which is what resume, fork and clone are given.
+// forkSource is a running sandbox whose entrypoint already exited, which a fork captures as it is.
+func forkSource() models.Sandbox {
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateRunning, PID: 42, ExitStatus: &models.ExitStatus{Code: 3}}
+}
+
 func pausedSandbox() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1",
 		ExitStatus: &models.ExitStatus{Code: 3}}

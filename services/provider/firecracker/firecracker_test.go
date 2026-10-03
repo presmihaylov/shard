@@ -417,7 +417,7 @@ func TestARestoreRefusesASnapshotFromBeforeTheJail(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "before the jail") {
 		t.Fatalf("Resume from a snapshot before the jail = %v, want a refusal", err)
 	}
-	err = h.provider.Fork(t.Context(), dir, h.forkSpec(t))
+	err = h.provider.ForkSnapshot(t.Context(), dir, h.forkSpec(t))
 	if err == nil || !strings.Contains(err.Error(), "before the jail") {
 		t.Fatalf("Fork from a snapshot before the jail = %v, want a refusal", err)
 	}
@@ -1098,10 +1098,10 @@ func readVM(t *testing.T, dir string) vm {
 	return r
 }
 
-// A host with /dev/kvm has all three snapshot verbs: the vmm writes the snapshot and loads it back.
-func TestCapabilitiesAreTheThreeSnapshotVerbs(t *testing.T) {
+// A host with /dev/kvm pauses and resumes; fork waits for the live fork of SHARD-462 (SHARD-457).
+func TestCapabilitiesArePauseAndResume(t *testing.T) {
 	h := newHarness(t)
-	want := models.Capabilities{Pause: true, Resume: true, Fork: true}
+	want := models.Capabilities{Pause: true, Resume: true}
 	if caps := h.provider.Capabilities(); caps != want {
 		t.Fatalf("Capabilities = %+v, want %+v", caps, want)
 	}
@@ -1252,7 +1252,7 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
 	for _, fork := range forks {
-		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork: %v", err)
 		}
 	}
@@ -1289,7 +1289,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	for _, fork := range forks {
-		if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork: %v", err)
 		}
 	}
@@ -1320,7 +1320,7 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
@@ -1365,7 +1365,7 @@ func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
@@ -1598,7 +1598,7 @@ func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
 		t.Errorf("Resume without a snapshot = %v, want the refusal", err)
 	}
-	if err := h.provider.Fork(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
 		t.Errorf("Fork without a snapshot = %v, want the refusal", err)
 	}
 
@@ -1617,7 +1617,7 @@ func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	}
 	// A fork onto a live sandbox would take the directory from under it.
 	onto := models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
-	if err := h.provider.Fork(t.Context(), dir, onto); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := h.provider.ForkSnapshot(t.Context(), dir, onto); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("Fork onto a live sandbox = %v, want the refusal", err)
 	}
 }
