@@ -184,7 +184,7 @@ func TestCreateBootsTheImageUnderTheOverlay(t *testing.T) {
 	}
 	wantDrives := []string{
 		`{"drive_id":"base","path_on_host":"` + h.erofs + `","is_root_device":false,"is_read_only":true}`,
-		`{"drive_id":"overlay","path_on_host":"` + filepath.Join(spec.StateDir, "overlay.raw") + `","is_root_device":false,"is_read_only":false}`,
+		`{"drive_id":"overlay","path_on_host":"` + filepath.Join(spec.StateDir, "overlay.raw") + `","is_root_device":false,"is_read_only":false,"cache_type":"Writeback"}`,
 	}
 	var drives []string
 	for _, d := range b.Drives {
