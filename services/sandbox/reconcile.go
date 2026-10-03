@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -100,6 +101,9 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
+	if sb.State.Live() && !status.Alive() && status.OOMKilled {
+		return s.reconcileOOMKilled(ctx, sb, status, report)
+	}
 
 	state, err := reconciled(sb, status)
 	if err != nil {
@@ -133,6 +137,22 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
+	// A cut pause the record never recorded: the substrate holds it paused, so the record catches up.
+	if state == models.StatePaused {
+		err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+			rec.State = models.StatePaused
+			rec.PID = 0
+
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("sandbox %s is paused but its record was not updated: %w", sb.ID, err)
+		}
+		report(fmt.Sprintf("sandbox %s said %s and the substrate holds it paused: the record now says paused", sb.ID, sb.State))
+
+		return state, nil
+	}
+
 	// A record that never reached running is a create, fork or clone the daemon dropped: it ends failed, not stopped.
 	if state == models.StateFailed {
 		if err := s.failDropped(ctx, sb, status, report); err != nil {
@@ -156,6 +176,23 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says stopped, %s", sb.ID, sb.State, LostReason))
 
 	return state, nil
+}
+
+// reconcileOOMKilled takes the tick's memory decision without the backoff that bounds a loop of ticks, so no verb reads a running record with no process (SHARD-311).
+func (s *Service) reconcileOOMKilled(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) (models.State, error) {
+	handled := s.handleOOMKilled(ctx, sb.ID, sb, status.Throttles, time.Now().UTC(), report)
+	rec, err := s.cfg.Repo.Get(sb.ID)
+	if err != nil {
+		return "", errors.Join(handled, fmt.Errorf("read the record of sandbox %s: %w", sb.ID, err))
+	}
+	// A start again that failed comes after the record took the stop, so it is not left as it is.
+	if handled != nil && rec.State != sb.State {
+		report(fmt.Sprintf("sandbox %s: %v, the record now says %s", sb.ID, handled, rec.State))
+
+		return rec.State, nil
+	}
+
+	return rec.State, handled
 }
 
 // failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
@@ -217,6 +254,11 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	if status.State == models.StateUnresponsive {
 		return models.StateUnresponsive, nil
 	}
+	// A substrate still reporting paused held a cut pause: keep that truth, or inspect and exec lie (SHARD-411).
+	if status.State == models.StatePaused {
+		return models.StatePaused, nil
+	}
+
 	if status.Alive() {
 		return models.StateRunning, nil
 	}

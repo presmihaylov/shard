@@ -293,8 +293,9 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 	if ended {
 		p.forget(m)
+		closeDown(m)
 
-		return m.close()
+		return nil
 	}
 
 	return p.end(ctx, m)
@@ -317,8 +318,9 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	}
 	if ended {
 		p.forget(m)
+		closeDown(m)
 
-		return m.close()
+		return nil
 	}
 	if err := p.kill(ctx, m); err != nil {
 		return errors.Join(stopErr, err)
@@ -345,8 +347,9 @@ func (p *Provider) kill(ctx context.Context, m *machine) error {
 		return fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2)
 	}
 	p.forget(m)
+	closeDown(m)
 
-	return m.close()
+	return nil
 }
 
 // Remove ends the VM and drops the disk and the record; the state directory itself is the repository's.

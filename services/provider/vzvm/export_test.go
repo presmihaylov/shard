@@ -27,3 +27,14 @@ func (p *Provider) Probe(ctx context.Context, id string, bound time.Duration) {
 func EndShim(id string, client *vz.Client, pid int) error {
 	return endShim(id, client, pid)
 }
+
+// FailLinkClose gives the running sandbox id a link whose close returns err.
+func (p *Provider) FailLinkClose(id string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.machines[id].link = failingLink{err: err}
+}
+
+type failingLink struct{ err error }
+
+func (l failingLink) Close() error { return l.err }

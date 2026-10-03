@@ -140,13 +140,13 @@ func (l *FileLog) rotate(n int64) error {
 		return nil
 	}
 
-	// XFS keeps speculative preallocation past the end of a file closed before, which du counts; a truncate to its own size frees it.
-	if err := l.File.Truncate(info.Size()); err != nil {
-		return fmt.Errorf("free the log's space past its end: %w", err)
-	}
 	path := l.File.Name()
 	if err := os.Rename(path, logfile.Rotated(path)); err != nil {
 		return fmt.Errorf("rotate the log: %w", err)
+	}
+	// Between the rename and the next file, so no follower takes the size or mtime change for a truncate of the live log and reads it twice.
+	if err := freePastEnd(l.File, info.Size()); err != nil {
+		return fmt.Errorf("free the log's space past its end: %w", err)
 	}
 	next, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

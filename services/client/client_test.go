@@ -196,8 +196,12 @@ func TestEgressLogWritesEveryRecordInOneWrite(t *testing.T) {
 	c := serve(t, shortRoot(t), answer(http.StatusOK, body))
 
 	var out countingWriter
-	if err := c.EgressLog(t.Context(), "web", &out); err != nil {
+	var errOut bytes.Buffer
+	if err := c.EgressLog(t.Context(), "web", &out, &errOut); err != nil {
 		t.Fatalf("EgressLog: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("EgressLog wrote %q on stderr for a log it printed whole", errOut.String())
 	}
 
 	// One write, so grep -q closing the pipe early never leaves the CLI a partial write to SIGPIPE on.
@@ -209,6 +213,25 @@ func TestEgressLogWritesEveryRecordInOneWrite(t *testing.T) {
 		`{"time":"2026-01-01T00:00:01Z","source":"proxy","verdict":"allow","rule":"r-1"}` + "\n"
 	if got := out.buf.String(); got != want {
 		t.Errorf("EgressLog wrote\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestEgressLogSaysOnStderrHowManyOlderRecordsTheDaemonLeftOut(t *testing.T) {
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(api.EgressCutHeader, "12345")
+		answer(http.StatusOK, `[{"time":"2026-01-01T00:00:00Z","source":"host","verdict":"deny","rule":"local"}]`)(w, nil)
+	})
+
+	var out, errOut bytes.Buffer
+	if err := c.EgressLog(t.Context(), "web", &out, &errOut); err != nil {
+		t.Fatalf("EgressLog: %v", err)
+	}
+
+	if got := errOut.String(); !strings.Contains(got, "12345") || !strings.Contains(got, "web") {
+		t.Errorf("EgressLog wrote %q on stderr, want the 12345 older records of web named", got)
+	}
+	if strings.Count(out.String(), "\n") != 1 {
+		t.Errorf("EgressLog wrote %q, want the one record and nothing else", out.String())
 	}
 }
 

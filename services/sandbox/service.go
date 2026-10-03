@@ -109,6 +109,8 @@ type Config struct {
 	StartBudget time.Duration
 	// Report takes a transition a verb records on its own, as the background loops report theirs; only a test leaves it nil.
 	Report func(string)
+	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
+	PutCleanupGrace time.Duration
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -884,9 +886,16 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 			// A stopped record cannot confirm it is gone under a wedge, so it falls through to the kill.
 		case err != nil:
 			return err
-		case sb.State == models.StateStopped && !status.Alive():
+		case sb.State == models.StateStopped && !status.Alive() && sb.OOMRestartDue.IsZero():
 			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
 			return nil
+		case sb.State == models.StateStopped && !status.Alive():
+			// A second stop still calls off the start again the record waits on.
+			return s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+				callOffOOMWait(rec)
+
+				return nil
+			})
 		}
 	}
 
@@ -919,6 +928,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
+		callOffOOMWait(sb)
 		if exit != nil {
 			sb.ExitStatus = exit
 		}

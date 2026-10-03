@@ -244,6 +244,7 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"resume", "sandbox1"},
 		{"fork", "sandbox1"},
 		{"clone", "sandbox1"},
+		{"cp", "sandbox1:/srv/app", "/tmp/app"},
 	} {
 		var out bytes.Buffer
 
