@@ -114,6 +114,19 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return s.reconcileOOMKilled(ctx, sb, status, report)
 	}
 
+	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
+	cut, err := s.cutPause(ctx, sb, status)
+	if err != nil {
+		return "", err
+	}
+	if cut != "" {
+		if err := s.recordCutPause(sb.ID, cut, report); err != nil {
+			return "", err
+		}
+
+		return models.StatePaused, nil
+	}
+
 	state, err := reconciled(sb, status)
 	if err != nil {
 		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
@@ -274,6 +287,67 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 
 	// A stopped record is already right.
 	return sb.State, nil
+}
+
+// releaser ends a sandbox a cut pause left frozen beside its snapshot, with no thaw that would run the guest past it.
+type releaser interface {
+	Release(ctx context.Context, id, dir string) error
+}
+
+// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left behind; empty for none.
+func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
+	dir, err := s.markedSnapshot(sb)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		return "", nil
+	}
+	r, ok := s.cfg.Provider.(releaser)
+	if !ok && !status.Alive() {
+		return dir, nil
+	}
+	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
+	if !ok || status.Alive() && status.State != models.StatePaused {
+		return "", nil
+	}
+	// A cut after the delete still leaves the merged view mounted, and only the release frees it (SHARD-366).
+	if err := r.Release(ctx, sb.ID, dir); err != nil {
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left beside its snapshot: %w", sb.ID, err)
+	}
+
+	return dir, nil
+}
+
+// markedSnapshot is the complete snapshot a marked pause installed for a record that still says running; empty for none.
+func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
+	if sb.State != models.StateRunning || !sb.Pausing {
+		return "", nil
+	}
+
+	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
+	if err != nil {
+		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+	}
+	held, err := hasCheckpoint(dir)
+	if err != nil {
+		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+	}
+	if !held {
+		return "", nil
+	}
+
+	return dir, nil
+}
+
+// recordCutPause records the pause a cut pause completed on the host, and reports the correction.
+func (s *Service) recordCutPause(id, dir string, report func(string)) error {
+	if err := s.recordPaused(id, dir); err != nil {
+		return err
+	}
+	report(fmt.Sprintf("sandbox %s said running and a pause the daemon never recorded left a complete snapshot: the record now says paused", id))
+
+	return nil
 }
 
 // hasCheckpoint answers only what it read. A stat that failed for any other reason is not an absence.

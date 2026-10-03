@@ -2,6 +2,8 @@ package sandbox_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -173,6 +175,94 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], sandbox.DiedReason) {
 		t.Errorf("the pass reported %v, want one line on the death", lab.reports)
+	}
+}
+
+// A pause whose own reconcile could not ask the substrate leaves its mark, and the tick must take the checkpoint it wrote (SHARD-366).
+func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, gone())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
+		t.Errorf("the pass reported %v, want one line on the pause", lab.reports)
+	}
+}
+
+// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, which the tick must release (SHARD-366).
+func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, frozen())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	}
+	if !slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", lab.r.snapshot())
+	}
+}
+
+// Without the mark the frozen sentry is no pause this daemon finishes, so the tick neither releases it nor takes the checkpoint.
+func TestLivenessLeavesAnUnmarkedFrozenSandboxAlone(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lab := newLivenessLab(t, running(), frozen())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if got := lab.l.repo.sb; got.Snapshot != "" {
+		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	}
+	if slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release of a sentry no marked pause left", lab.r.snapshot())
+	}
+}
+
+// A pause cut before its checkpoint was complete finished nothing, so the tick leaves the frozen sentry alone.
+func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *testing.T) {
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, frozen())
+	lab.l.repo.snapshotDir = t.TempDir()
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release: no complete checkpoint stands beside the sentry", lab.r.snapshot())
+	}
+	if got := lab.l.repo.sb; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
 	}
 }
 

@@ -619,6 +619,7 @@ func failed(cause error) func(*models.Sandbox) error {
 		sb.State = models.StateFailed
 		sb.FailedReason = cause.Error()
 		sb.PID = 0
+		sb.Pausing = false
 
 		return nil
 	}
