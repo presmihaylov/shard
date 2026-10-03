@@ -736,6 +736,22 @@ func TestStartRefusesASandboxThatIsNotStopped(t *testing.T) {
 	}
 }
 
+// A mark an unfinished pause left would vouch for that pause's checkpoint in the new run, so a start drops it.
+func TestStartDropsTheMarkOfAnUnfinishedPause(t *testing.T) {
+	sb := stopped()
+	sb.Pausing = true
+	svc, _ := newService(t, &recorder{}, sb)
+
+	got, err := svc.Start(t.Context(), "web")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if got.State != models.StateRunning || got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with none", got.State, got.Pausing)
+	}
+}
+
 func TestStartKeepsTheRecordStoppedWhenTheProviderFails(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}}, stopped())
 

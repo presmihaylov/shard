@@ -901,7 +901,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
+	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
@@ -949,6 +949,32 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 
 	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.
 	return errors.Join(os.RemoveAll(tmp), b.Unmount())
+}
+
+// Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the snapshot in dir (SHARD-366).
+func (p *Provider) Release(ctx context.Context, id, dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
+		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
+	}
+
+	// The same bound a lost pause's release has, over the probe too, so a wedged runsc stalls no boot and holds no lock.
+	ctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if status.Alive() && status.State != models.StatePaused {
+		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its snapshot", id, status.State, Name)
+	}
+
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	return p.release(ctx, id, b, dir+".tmp")
 }
 
 // Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
