@@ -38,6 +38,52 @@ func (p *Provider) Reclaim(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
+// safeDelete ends a sandbox: it SIGKILLs the sandbox's own cgroup members through a pidfd, removes the now-idle cgroup, then drops runsc's saved state, so a pid runsc stored and the kernel reused is never force-killed and the state outlives a removal that fails (SHARD-440).
+func (p *Provider) safeDelete(ctx context.Context, id string) error {
+	if err := p.sweep(ctx, id); err != nil {
+		return err
+	}
+	if err := p.removeCgroup(ctx, id); err != nil {
+		return err
+	}
+
+	return p.runsc.Forget(id)
+}
+
+// removeCgroup removes the sandbox's cgroup once it is safe to: the sweep leaves cgroup.procs empty, but a killed task can still hold the cgroup for a moment, so this waits for cgroup.events to report populated 0 and retries a transient EBUSY, all under one kill-grace bound (SHARD-440).
+func (p *Provider) removeCgroup(ctx context.Context, id string) error {
+	dir := cgroupDir(p.cgroupRoot, id)
+
+	kctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	for {
+		populated, err := cgroup.Populated(dir)
+		if errors.Is(err, cgroup.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read the events of the cgroup of sandbox %s: %w", id, err)
+		}
+
+		if !populated {
+			err := cgroup.Remove(dir)
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, syscall.EBUSY) {
+				return err
+			}
+		}
+
+		select {
+		case <-kctx.Done():
+			return fmt.Errorf("the cgroup of sandbox %s stayed busy after SIGKILL: %w", id, kctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
 // sweep kills what a bring-up cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
 func (p *Provider) sweep(ctx context.Context, id string) error {
 	dir := cgroupDir(p.cgroupRoot, id)
@@ -56,7 +102,7 @@ func (p *Provider) sweep(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
-// killNamed SIGKILLs the processes in the cgroup that name the sandbox and waits for the cgroup to empty.
+// killNamed SIGKILLs the processes in the cgroup that name the sandbox, and does it again on each round until the cgroup is empty, because a probe exec can join the cgroup after the last read and would otherwise race the caller's remove (SHARD-440).
 func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) error {
 	ours, err := p.named(pids, id)
 	if err != nil {
@@ -71,30 +117,88 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 		return nil
 	}
 
-	for _, pid := range ours {
-		// ESRCH is a process that went between the list and the kill, which is the outcome wanted anyway.
-		if err := p.killProcess(pid); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
+	kctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	for {
+		for _, pid := range ours {
+			// A pidfd pins the process, then rechecks both its cgroup membership and its id before it signals, so a pid reused between the scan and the kill, inside the cgroup or out, is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
+			if err := p.killPinned(pid, func() (bool, error) { return p.own(dir, pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
+			}
+		}
+
+		left, err := cgroup.Procs(dir)
+		if errors.Is(err, cgroup.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("list the processes of sandbox %s: %w", id, err)
+		}
+		if len(left) == 0 {
+			return nil
+		}
+
+		select {
+		case <-kctx.Done():
+			return fmt.Errorf("sandbox %s still holds processes %v after SIGKILL: %w", id, left, kctx.Err())
+		case <-time.After(pollInterval):
+		}
+
+		// A probe exec may have joined the cgroup since the last read, so kill whatever names the sandbox now.
+		if ours, err = p.named(left, id); err != nil {
+			return err
 		}
 	}
+}
 
-	return p.awaitEmpty(ctx, dir, id)
+// own says whether the pinned pid is still the sandbox's: still in its cgroup, and still naming it; the recheck a kill makes after it pins the process, so a reused pid outside the cgroup is never signalled (SHARD-440).
+func (p *Provider) own(dir string, pid int, id string) (bool, error) {
+	member, err := p.member(dir, pid)
+	if err != nil || !member {
+		return false, err
+	}
+
+	return p.names(pid, id)
+}
+
+// member says whether the pid is still a process of the cgroup, read back after the pin because the scan that listed it may be stale.
+func (p *Provider) member(dir string, pid int) (bool, error) {
+	pids, err := cgroup.Procs(dir)
+	if errors.Is(err, cgroup.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the processes of the cgroup %s: %w", dir, err)
+	}
+
+	return slices.Contains(pids, pid), nil
 }
 
 // named keeps the processes whose command line carries the id as one whole argument, so a sibling sharing a prefix never matches.
 func (p *Provider) named(pids []int, id string) ([]int, error) {
 	var ours []int
 	for _, pid := range pids {
-		args, ok, err := p.argv(pid)
+		ok, err := p.names(pid, id)
 		if err != nil {
 			return nil, err
 		}
-		if ok && slices.Contains(args, id) {
+		if ok {
 			ours = append(ours, pid)
 		}
 	}
 
 	return ours, nil
+}
+
+// names says whether a process still carries the id as one whole argument, the recheck a pinned kill makes after it pins the process and before it signals.
+func (p *Provider) names(pid int, id string) (bool, error) {
+	args, ok, err := p.argv(pid)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	return slices.Contains(args, id), nil
 }
 
 // argv reads a process's command line; false is a process that went away under the read.
