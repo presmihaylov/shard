@@ -297,6 +297,10 @@ func (f *fakeLifecycleProvider) LogPath(string) (string, error) {
 	return f.logPath, nil
 }
 
+func (f *fakeLifecycleProvider) HeldLogs(string) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeLifecycleProvider) Status(context.Context, string) (models.Status, error) {
 	if err := f.r.record("provider.Status"); err != nil {
 		return models.Status{}, err

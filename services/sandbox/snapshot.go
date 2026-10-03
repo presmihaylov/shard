@@ -33,7 +33,10 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	// A stop or a second pause would end or delete the sandbox this one is about to snapshot.
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
@@ -127,7 +130,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	// Two resumes of one sandbox would each restore it; the second waits and then sees it running.
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
@@ -326,7 +332,10 @@ func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (
 		return "", models.Sandbox{}, nil, err
 	}
 
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return "", models.Sandbox{}, nil, err
+	}
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
@@ -371,7 +380,11 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	td.Push(func(context.Context) error { return s.cfg.Repo.Delete(claim.id) })
 
 	// The id exists now, so a stop or an rm can name it: they wait here until the copy is done.
-	claim.unlock = s.lock(claim.id)
+	unlock, err := s.lock(ctx, claim.id)
+	if err != nil {
+		return claim, err
+	}
+	claim.unlock = unlock
 
 	claim.dir, err = s.cfg.Repo.Dir(claim.id)
 	if err != nil {
