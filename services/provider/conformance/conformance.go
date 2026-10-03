@@ -30,6 +30,8 @@ type Subject struct {
 	Shell func(script string) []string
 	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /.
 	Scratch string
+	// SharedScratch says every sandbox's shell writes the one host Scratch, as a fake VM guest's does, so a copy's write cannot be told from its source's.
+	SharedScratch bool
 	// HostLayer says the guest's writable layer is a host directory the daemon writes; a fake VM guest execs on the host, so it stays false.
 	HostLayer bool
 	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes; it may close Provider.
@@ -613,11 +615,13 @@ func Run(t *testing.T, s Subject) {
 		}
 
 		// A fork's own write stays in the fork: the capture copied the source's files, it does not share them.
-		if status, _ := s.exec(t, forks[0].ID, models.ExecSpec{Argv: s.Shell("echo fork > " + s.scratch("conformance-fork"))}); status.Code != 0 {
-			t.Fatalf("the write into the first fork exited %d", status.Code)
-		}
-		if _, out := s.exec(t, source, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
-			t.Errorf("the source reads %q after the first fork wrote its own copy, want source", out)
+		if !s.SharedScratch {
+			if status, _ := s.exec(t, forks[0].ID, models.ExecSpec{Argv: s.Shell("echo fork > " + s.scratch("conformance-fork"))}); status.Code != 0 {
+				t.Fatalf("the write into the first fork exited %d", status.Code)
+			}
+			if _, out := s.exec(t, source, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-fork"))}); !strings.Contains(out, "source") {
+				t.Errorf("the source reads %q after the first fork wrote its own copy, want source", out)
+			}
 		}
 
 		// Only Stop ends a sandbox, and it ends the one it names.

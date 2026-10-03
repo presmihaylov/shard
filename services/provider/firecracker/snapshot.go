@@ -39,35 +39,14 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 // install puts the paused VM's snapshot in dir and answers its vmm, still paused beside it.
 func (p *Provider) install(ctx context.Context, id string, dir string) (*machine, error) {
-	stateDir, r, err := p.open(id)
+	m, r, err := p.snapshotSource(ctx, id, models.VerbPause)
 	if err != nil {
 		return nil, err
 	}
-	m, err := p.lookup(ctx, id, stateDir, r)
-	if err != nil {
-		return nil, err
-	}
-	status := models.Status{State: models.StateStopped}
-	if m != nil {
-		status = m.status(p)
-	}
-	if status.State == models.StateUnresponsive {
-		return nil, &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: models.VerbPause, Reason: status.Reason}
-	}
-	if status.State != models.StateRunning {
-		return nil, fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox%s", id, status.State, Name, because(status))
-	}
-	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
-	if !m.freezesOverlay {
-		return nil, fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
-	}
-	// The Diff over resident pages missed a swapped page; the dirty-page log does not, so a later ticket can drop this (SHARD-450, SHARD-458).
-	if err := p.noSwap(id); err != nil {
-		return nil, err
-	}
-	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
-	if m.jail == "" {
-		return nil, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then pause it", id, Name)
+	stateDir := m.dir
+	// A capture marker that outlived its fork would spare this pause's frozen guest from the SHARD-427 end, should the pause be cut after its install.
+	if err := os.Remove(filepath.Join(stateDir, captureFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("sandbox %s: clear the capture marker: %w", id, err)
 	}
 
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
@@ -100,6 +79,42 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	}
 
 	return m, nil
+}
+
+// snapshotSource answers the vmm of a running sandbox a snapshot for verb can be taken of, and refuses any other.
+func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machine, record, error) {
+	stateDir, r, err := p.open(id)
+	if err != nil {
+		return nil, record{}, err
+	}
+	m, err := p.lookup(ctx, id, stateDir, r)
+	if err != nil {
+		return nil, record{}, err
+	}
+	status := models.Status{State: models.StateStopped}
+	if m != nil {
+		status = m.status(p)
+	}
+	if status.State == models.StateUnresponsive {
+		return nil, record{}, &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: verb, Reason: status.Reason}
+	}
+	if status.State != models.StateRunning {
+		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s: %s takes a running sandbox%s", id, status.State, Name, verb, because(status))
+	}
+	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
+	if !m.freezesOverlay {
+		return nil, record{}, fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which %s needs on %s: restart the sandbox, then %s it", id, verb, Name, verb)
+	}
+	// The Diff over resident pages missed a swapped page; the dirty-page log does not, so a later ticket can drop this (SHARD-450, SHARD-458).
+	if err := p.noSwap(id); err != nil {
+		return nil, record{}, err
+	}
+	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
+	if m.jail == "" {
+		return nil, record{}, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then %s it", id, Name, verb)
+	}
+
+	return m, r, nil
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
@@ -341,12 +356,55 @@ func (p *Provider) AdoptStaging(dir string) error {
 	return os.RemoveAll(dir + ".tmp")
 }
 
-// Fork refuses by name: the fork of a paused source is gone, and the live fork of a running one comes with SHARD-462 (SHARD-457).
-func (p *Provider) Fork(context.Context, string, models.SandboxSpec) error {
-	return models.Unsupported(Name, models.VerbFork)
+// Fork captures the running source into the new sandbox's directory, runs the source on, and brings the capture up as the fork.
+func (p *Provider) Fork(ctx context.Context, source string, spec models.SandboxSpec) error {
+	capture := filepath.Join(spec.StateDir, captureDir)
+	if err := p.capture(ctx, source, capture); err != nil {
+		return errors.Join(err, os.RemoveAll(capture))
+	}
+
+	// The fork's jail took its own copies of the state and the memory, and its overlay is a copy too, so the capture is spent.
+	return errors.Join(p.forkSnapshot(ctx, capture, spec), os.RemoveAll(capture))
 }
 
-// forkSnapshot brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; SHARD-462 builds the live fork on it.
+// capture stages the running source's snapshot in dir, then runs the source on, whatever the capture came to.
+func (p *Provider) capture(ctx context.Context, id, dir string) error {
+	m, err := p.hold(ctx, id, dir)
+	if m == nil {
+		return err
+	}
+
+	// Only a daemon cut before this point leaves the marker, and the next one's adopt runs the source again.
+	return errors.Join(err, runAgain(m), os.Remove(filepath.Join(m.dir, captureFile)))
+}
+
+// hold marks the source, stops it over a frozen guest and stages its snapshot in dir; a machine it answers must run again, error or not.
+func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
+	m, r, err := p.snapshotSource(ctx, id, models.VerbFork)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create the capture directory %s: %w", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, captureFile), nil, 0o600); err != nil {
+		return nil, fmt.Errorf("mark the capture of sandbox %s: %w", id, err)
+	}
+	// A guest process the capture held mid-run would draw from the saved crng key before the fork's reseed, so the guest is frozen first (SHARD-409).
+	if err := m.freeze(ctx); err != nil {
+		return m, fmt.Errorf("sandbox %s: freeze the guest before the capture: %w", id, err)
+	}
+	if err := m.client.Pause(); err != nil {
+		return m, fmt.Errorf("pause sandbox %s for the capture: %w", id, err)
+	}
+	if err := p.stageSnapshot(m, r, m.dir, dir); err != nil {
+		return m, fmt.Errorf("sandbox %s: %w", id, err)
+	}
+
+	return m, nil
+}
+
+// forkSnapshot brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address.
 func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	snap, err := readSnapshot(dir)
 	if err != nil {
