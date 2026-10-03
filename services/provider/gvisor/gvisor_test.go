@@ -442,3 +442,20 @@ func readDir(t *testing.T, dir string) []os.DirEntry {
 
 	return entries
 }
+
+// A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
+func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshot")
+	tmp := dir + ".tmp"
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("stage a cut pause: %v", err)
+	}
+
+	if err := (&gvisor.Provider{}).AdoptStaging(dir); err != nil {
+		t.Fatalf("AdoptStaging: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
+}

@@ -60,6 +60,8 @@ type deps struct {
 	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
 	logSvc    *egress.Log
 	runnerSvc *runsc.Runner
+	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
+	states *taskStates
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.

@@ -267,6 +267,11 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	return m, nil
 }
 
+// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+func (p *Provider) AdoptStaging(dir string) error {
+	return os.RemoveAll(dir + ".tmp")
+}
+
 // Fork brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address; the source is not touched.
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	snap, err := readSnapshot(dir)

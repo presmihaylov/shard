@@ -350,6 +350,9 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: read the supervisor state: %w", id, err), m.close())
 	}
+	if state.Kind == supervisor.KindSupervisorFailed {
+		return nil, errors.Join(m.failedAtBoot(state), m.close())
+	}
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
@@ -477,6 +480,15 @@ func (m *machine) markSupervisorFailed(event supervisor.Message) error {
 	}
 
 	return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
+}
+
+// failedAtBoot lands a death from before the guest listened, and makes its reason the answer to the start (SHARD-416).
+func (m *machine) failedAtBoot(event supervisor.Message) error {
+	if err := m.markSupervisorFailed(event); err != nil {
+		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, oneLine(event.Error))
 }
 
 // maxReason bounds what a guest's reason may take of a record, a log line and a column of ls.

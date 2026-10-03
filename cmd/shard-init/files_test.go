@@ -147,6 +147,51 @@ func refusedAs(t *testing.T, what string, err error, code, text string) {
 	}
 }
 
+// The host puts the op and the path in front of each refusal, so the guest's words must not name the path again (SHARD-407).
+func TestFilesRefusalsNameThePathOnce(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full")
+	if err := os.MkdirAll(filepath.Join(full, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing")
+
+	for _, c := range []struct {
+		what, path string
+		do         func() error
+	}{
+		{what: "a stat of a missing path", path: missing, do: func() error { _, err := statFile(t, open, missing); return err }},
+		{what: "a get of a directory", path: full, do: func() error { _, _, err := getFile(t, open, full); return err }},
+		{what: "a get of a fifo", path: fifo, do: func() error { _, _, err := getFile(t, open, fifo); return err }},
+		{what: "an ls of a file", path: file, do: func() error { _, err := listEntries(t, open, file); return err }},
+		{what: "a mkdir of a directory already there", path: full, do: func() error {
+			return mkdirPath(t, open, supervisor.FileHeader{Path: full, Mode: 0o755})
+		}},
+		{what: "a mkdir with parents over a file", path: file, do: func() error {
+			return mkdirPath(t, open, supervisor.FileHeader{Path: file, Mode: 0o755, Parents: true})
+		}},
+		{what: "a delete of a full directory", path: full, do: func() error { return deleteFile(t, open, full, false) }},
+		{what: "a delete of a missing path", path: missing, do: func() error { return deleteFile(t, open, missing, true) }},
+		{what: "a pack of a missing path", path: missing, do: func() error { _, _, err := getArchive(t, open, missing); return err }},
+		{what: "an unpack into a file", path: file, do: func() error { return putArchive(t, open, file, tarOf(t)) }},
+		{what: "an unpack into a missing path", path: missing, do: func() error { return putArchive(t, open, missing, tarOf(t)) }},
+	} {
+		var refusal *supervisor.FileError
+		if err := c.do(); !errors.As(err, &refusal) || strings.Count(err.Error(), c.path) != 1 {
+			t.Errorf("%s gave %v, want a refusal that names %s once", c.what, err, c.path)
+		}
+	}
+}
+
 func TestFilesStatReportsTheShape(t *testing.T) {
 	open := startFiles(t)
 	dir := t.TempDir()

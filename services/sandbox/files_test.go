@@ -178,7 +178,7 @@ func TestReadFileStreamsTheWholeFile(t *testing.T) {
 	}
 }
 
-// A guest that dies midway through a get fails the close, so the API never reports a short file as whole.
+// A guest that dies midway through a get fails the read with its reason, and the close the API joins to it does not say it again (SHARD-407).
 func TestReadFileFailsTheCloseOfAGetThatDiedMidway(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
@@ -204,11 +204,12 @@ func TestReadFileFailsTheCloseOfAGetThatDiedMidway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if _, err := io.ReadAll(body); err == nil {
+	_, err = io.ReadAll(body)
+	if err == nil {
 		t.Fatal("a body cut at 5 of 10 bytes read to its end with no error")
 	}
-	if err := body.Close(); err == nil || !strings.Contains(err.Error(), "input/output error") {
-		t.Fatalf("close gave %v, want the guest's reason", err)
+	if joined := errors.Join(err, body.Close()); strings.Count(joined.Error(), "input/output error") != 1 {
+		t.Fatalf("the read joined with the close gave %v, want the guest's reason once", joined)
 	}
 }
 

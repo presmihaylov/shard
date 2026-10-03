@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
@@ -39,6 +40,9 @@ type Repository struct {
 	root string
 
 	mu sync.Mutex
+
+	// gen bumps on every durable change to the set, so a reader caches by it and lists the records only when it moves (SHARD-381).
+	gen atomic.Uint64
 }
 
 // New prepares the state tree under root, which is /var/lib/shard on the box.
@@ -114,13 +118,21 @@ func (r *Repository) Create(sb models.Sandbox, admit ...func(dir string) error) 
 	sb.ID = id
 	if err := r.write(sb); err != nil {
 		// Give the id back: no verb can reach a claimed directory that holds no record.
-		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		cleanup := os.RemoveAll(r.dir(id))
+		// Bump again after cleanup: write's own bump already fired, and the counter must move whether or not removal cleared the record (SHARD-381).
+		r.gen.Add(1)
+
+		return models.Sandbox{}, errors.Join(err, cleanup)
 	}
 
 	// The name is claimed last, so a crash costs this sandbox its name and never leaks the name to
 	// a record no verb can reach.
 	if err := r.claimName(sb.Name, id); err != nil {
-		return models.Sandbox{}, errors.Join(err, os.RemoveAll(r.dir(id)))
+		cleanup := os.RemoveAll(r.dir(id))
+		// Bump again after cleanup: write's own bump already fired, and the counter must move whether or not removal cleared the record (SHARD-381).
+		r.gen.Add(1)
+
+		return models.Sandbox{}, errors.Join(err, cleanup)
 	}
 
 	return sb, nil
@@ -314,6 +326,9 @@ func (r *Repository) Delete(id string) error {
 		return err
 	}
 
+	// Past here the delete touches the disk, so bump on every exit: a remove or sync error must not leave a reader serving a gone record that still carries its secret (SHARD-381).
+	defer r.gen.Add(1)
+
 	// The name goes first: a link that outlived its sandbox would answer for an id nothing holds.
 	if err := r.dropName(sb.Name, id); err != nil {
 		return err
@@ -432,6 +447,9 @@ func (r *Repository) Get(id string) (models.Sandbox, error) {
 }
 
 func (r *Repository) write(sb models.Sandbox) error {
+	// store.WriteFile can land the rename then fail its dir sync, so bump on every exit or a reader keeps the old record and serves a revoked secret (SHARD-381).
+	defer r.gen.Add(1)
+
 	data, err := json.MarshalIndent(sb, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode the record of sandbox %s: %w", sb.ID, err)
@@ -443,6 +461,11 @@ func (r *Repository) write(sb models.Sandbox) error {
 	}
 
 	return nil
+}
+
+// Generation returns a counter that moves whenever the set may have changed on disk, so a reader rebuilds only when it moves; it may move without a real change but never misses one.
+func (r *Repository) Generation() uint64 {
+	return r.gen.Load()
 }
 
 // List returns every record it can read, ordered by id, and an error naming the ones it could not.
@@ -502,6 +525,10 @@ func RecordedProvider(root string) (string, error) {
 	}
 
 	r := &Repository{root: root}
+
+	var unreadable error
+	var provider string
+
 	for _, entry := range entries {
 		// Anything that could not be an id is not a sandbox.
 		if !entry.IsDir() || ValidID(entry.Name()) != nil {
@@ -513,15 +540,61 @@ func RecordedProvider(root string) (string, error) {
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
+		// Skip an unreadable record the way List does, so the records a good one names still select (SHARD-343).
 		if err != nil {
-			return "", err
+			unreadable = errors.Join(unreadable, &UnreadableError{ID: entry.Name(), Err: err})
+
+			continue
 		}
-		if sb.Provider != "" {
-			return sb.Provider, nil
+		// Keep scanning past the first provider, so a record that sorts later and cannot be read is still reported (SHARD-343).
+		if provider == "" && sb.Provider != "" {
+			provider = sb.Provider
 		}
 	}
 
-	return "", nil
+	return provider, unreadable
+}
+
+// Lister is the List a ListReadable caller holds, so a package with its own narrower records interface passes it.
+type Lister interface {
+	List() ([]models.Sandbox, error)
+}
+
+// ListReadable returns the readable records when one will not decode, logs the unreadable ones by file when logf is not nil, and fails closed on any other list error (SHARD-343).
+func ListReadable(l Lister, logf func(string, ...any)) ([]models.Sandbox, error) {
+	sandboxes, err := l.List()
+	if err == nil {
+		return sandboxes, nil
+	}
+
+	// A join carrying any error other than an unreadable record is a real failure, so fail closed (SHARD-343).
+	if !onlyUnreadable(err) {
+		return nil, err
+	}
+
+	if logf != nil {
+		logf("some records cannot be read, so they are skipped: %v", err)
+	}
+
+	return sandboxes, nil
+}
+
+// onlyUnreadable reports whether err is non-nil and every error joined into it is an UnreadableError.
+func onlyUnreadable(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		for _, e := range errs {
+			if !onlyUnreadable(e) {
+				return false
+			}
+		}
+
+		return len(errs) > 0
+	}
+
+	var unreadable *UnreadableError
+
+	return errors.As(err, &unreadable)
 }
 
 // generatedIDShape is what generateID makes. A name of that shape could shadow another sandbox's id, so it is

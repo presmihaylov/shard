@@ -9,6 +9,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // healthCheck runs the probe every running record asks for, on its own interval, and logs each change of status.
@@ -62,7 +63,7 @@ func (t healthCheck) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 
-		sandboxes, err := repo.List()
+		sandboxes, err := sandboxstate.ListReadable(repo, logger.Printf)
 		if err != nil {
 			return err
 		}

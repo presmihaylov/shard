@@ -87,7 +87,10 @@ func Run(ctx context.Context, cfg Config) error {
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
 	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
-	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
+	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
+	d.states = dmn.states
+	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -251,6 +254,7 @@ func (p process) Daemon() (api.Daemon, error) {
 		Provider:     provider.Name(),
 		Capabilities: provider.Capabilities(),
 		Proxy:        api.Proxy{PlainPort: proxy.PlainPort, TLSPort: proxy.TLSPort},
+		Tasks:        p.deps.states.snapshot(),
 	}, nil
 }
 
