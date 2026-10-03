@@ -66,9 +66,27 @@ func (h *host) process(pid int, cgroup string, argv ...string) {
 func (h *host) move(pid int, cgroup string) {
 	h.t.Helper()
 
+	old := h.placed[pid]
 	h.placed[pid] = cgroup
 	h.cgroups[cgroup] = true
 	h.render()
+	h.gc(old)
+}
+
+// gc removes a cgroup dir once nothing is placed in it, the way the real teardown rmdirs an emptied cgroup.
+func (h *host) gc(cgroup string) {
+	h.t.Helper()
+
+	for _, placed := range h.placed {
+		if placed == cgroup {
+			return
+		}
+	}
+
+	delete(h.cgroups, cgroup)
+	if err := os.RemoveAll(filepath.Join(h.cgroupRoot, cgroup)); err != nil {
+		h.t.Fatalf("remove the emptied fake cgroup: %v", err)
+	}
 }
 
 // render writes every cgroup.procs from the placement, so a kill shows up as the process leaving its cgroup.
@@ -97,8 +115,10 @@ func (h *host) render() {
 // kill ends a process; one marked gone went between the list and the kill, so it answers ESRCH and is gone from its cgroup too.
 func (h *host) kill(pid int) error {
 	h.killed = append(h.killed, pid)
+	cgroup := h.placed[pid]
 	delete(h.placed, pid)
 	h.render()
+	h.gc(cgroup)
 	// A killed process reads an empty command line until it is reaped.
 	if err := os.WriteFile(filepath.Join(h.procRoot, strconv.Itoa(pid), "cmdline"), nil, 0o600); err != nil {
 		h.t.Fatalf("empty the fake command line: %v", err)

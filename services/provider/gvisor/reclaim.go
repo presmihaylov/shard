@@ -38,13 +38,50 @@ func (p *Provider) Reclaim(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
-// safeDelete ends a sandbox by SIGKILLing its own cgroup members through a pidfd, then dropping runsc's saved state, so a pid runsc stored and the kernel reused is never force-killed (SHARD-440).
+// safeDelete ends a sandbox: it SIGKILLs the sandbox's own cgroup members through a pidfd, removes the now-idle cgroup, then drops runsc's saved state, so a pid runsc stored and the kernel reused is never force-killed and the state outlives a removal that fails (SHARD-440).
 func (p *Provider) safeDelete(ctx context.Context, id string) error {
 	if err := p.sweep(ctx, id); err != nil {
 		return err
 	}
+	if err := p.removeCgroup(ctx, id); err != nil {
+		return err
+	}
 
 	return p.runsc.Forget(id)
+}
+
+// removeCgroup removes the sandbox's cgroup once it is safe to: the sweep leaves cgroup.procs empty, but a killed task can still hold the cgroup for a moment, so this waits for cgroup.events to report populated 0 and retries a transient EBUSY, all under one kill-grace bound (SHARD-440).
+func (p *Provider) removeCgroup(ctx context.Context, id string) error {
+	dir := cgroupDir(p.cgroupRoot, id)
+
+	kctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	for {
+		populated, err := cgroup.Populated(dir)
+		if errors.Is(err, cgroup.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read the events of the cgroup of sandbox %s: %w", id, err)
+		}
+
+		if !populated {
+			err := cgroup.Remove(dir)
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, syscall.EBUSY) {
+				return err
+			}
+		}
+
+		select {
+		case <-kctx.Done():
+			return fmt.Errorf("the cgroup of sandbox %s stayed busy after SIGKILL: %w", id, kctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // sweep kills what a bring-up cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.

@@ -536,14 +536,9 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		return err
 	}
 
-	// safeDelete sweeps the running sandbox's own processes, which hold the rootfs, then drops runsc's state.
+	// safeDelete sweeps the sandbox's own processes, removes its cgroup, then drops runsc's state.
 	if err := p.safeDelete(ctx, id); err != nil {
 		return err
-	}
-
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the next create of the id.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	// The cgroup is gone, so no process of the sandbox holds the rootfs, whether or not the runtime knew it.
@@ -945,13 +940,9 @@ func (p *Provider) lose(ctx context.Context, id string, b bundle.Bundle, tmp str
 
 // release frees what runsc and the host still hold of a sandbox whose sentry has exited after a checkpoint.
 func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp string) error {
+	// safeDelete sweeps the sandbox, removes its cgroup so a stale one does not unbound the resume, then drops the state.
 	if err := p.safeDelete(ctx, id); err != nil {
 		return err
-	}
-
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the resume.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.
