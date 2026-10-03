@@ -21,13 +21,20 @@ import (
 func fileRequest(t *testing.T, s seeded, method, query string, body io.Reader) *http.Response {
 	t.Helper()
 
-	req, err := http.NewRequestWithContext(t.Context(), method, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/files?"+query, body)
+	return sandboxRequest(t, s, method, "files?"+query, body)
+}
+
+// sandboxRequest sends method to the running sandbox's route, which carries its own query.
+func sandboxRequest(t *testing.T, s seeded, method, route string, body io.Reader) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), method, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/"+route, body)
 	if err != nil {
 		t.Fatalf("build the request: %v", err)
 	}
 	resp, err := s.server.Client().Do(req)
 	if err != nil {
-		t.Fatalf("%s /files: %v", method, err)
+		t.Fatalf("%s /%s: %v", method, route, err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
 
@@ -249,6 +256,132 @@ func TestFileRefusalsAnswerTheirCodes(t *testing.T) {
 			}
 			if resp := fileRequest(t, s, http.MethodPut, "path=/srv/x", strings.NewReader("")); resp.StatusCode != c.status { //nolint:bodyclose // fileRequest closes the body in a cleanup
 				t.Fatalf("the put answered %d, want %d", resp.StatusCode, c.status)
+			}
+			for _, route := range []struct{ method, route, body string }{
+				{http.MethodGet, "ls?path=/srv/x", ""},
+				{http.MethodPost, "mkdir", `{"path":"/srv/x"}`},
+				{http.MethodDelete, "files?path=/srv/x", ""},
+			} {
+				resp := sandboxRequest(t, s, route.method, route.route, strings.NewReader(route.body)) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+				if resp.StatusCode != c.status || refusalOf(t, resp).code != string(c.code) {
+					t.Fatalf("%s /%s answered %d, want %d %s", route.method, route.route, resp.StatusCode, c.status, c.code)
+				}
+			}
+		})
+	}
+}
+
+func TestListDirStreamsTheEntries(t *testing.T) {
+	s := seed(t)
+	mtime := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	s.verbs.entries = []models.FileEntry{
+		{Name: "app", FileStat: models.FileStat{Type: models.FileDir, Mode: 0o755, MTime: mtime}},
+		{Name: "run.sh", FileStat: models.FileStat{Type: models.FileRegular, Size: 12, Mode: 0o755, UID: 1000, GID: 1000, MTime: mtime}},
+	}
+
+	resp := sandboxRequest(t, s, http.MethodGet, "ls?path=/srv", nil) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("the ls answered %d %s, want 200 application/json", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	var got struct {
+		Entries []models.FileEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode the listing: %v", err)
+	}
+	if len(got.Entries) != 2 || got.Entries[0] != s.verbs.entries[0] || got.Entries[1] != s.verbs.entries[1] {
+		t.Fatalf("the listing is %+v, want %+v", got.Entries, s.verbs.entries)
+	}
+	if s.verbs.fileOp != "ls" || s.verbs.filePath != "/srv" {
+		t.Fatalf("the orchestrator got a %s of %s, want an ls of /srv", s.verbs.fileOp, s.verbs.filePath)
+	}
+}
+
+// An empty directory is an empty list, never a null a client has to special-case.
+func TestListDirOfAnEmptyDirectoryIsAnEmptyList(t *testing.T) {
+	s := seed(t)
+
+	resp := sandboxRequest(t, s, http.MethodGet, "ls?path=/srv/empty", nil) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != `{"entries":[]}` {
+		t.Fatalf("the ls answered %d %q, %v, want 200 with an empty list", resp.StatusCode, body, err)
+	}
+}
+
+// The 200 is out before the first entry, so a listing the guest cut, or never confirmed, must leave a body no client parses.
+func TestAListingThatFailsAfterThe200NeverParses(t *testing.T) {
+	cases := []struct {
+		name     string
+		listErr  error
+		closeErr error
+	}{
+		{name: "cut midway", listErr: errors.New("ls /srv: 2 entries short: unexpected EOF")},
+		{name: "not confirmed", closeErr: errors.New("/.shard/init files exited 1")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := seed(t)
+			s.verbs.entries = []models.FileEntry{{Name: "app", FileStat: models.FileStat{Type: models.FileDir}}}
+			s.verbs.listErr, s.verbs.closedErr = c.listErr, c.closeErr
+
+			resp := sandboxRequest(t, s, http.MethodGet, "ls?path=/srv", nil) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("the ls answered %d, %v, want 200", resp.StatusCode, err)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(body, &parsed); err == nil {
+				t.Fatalf("the cut listing %q parsed as a whole one", body)
+			}
+		})
+	}
+}
+
+func TestMakeDirTakesTheBody(t *testing.T) {
+	s := seed(t)
+
+	resp := sandboxRequest(t, s, http.MethodPost, "mkdir", strings.NewReader(`{"path":"/srv/a/b","mode":"700","parents":true,"user":"app"}`)) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the mkdir answered %d, want 204", resp.StatusCode)
+	}
+	want := sandbox.MkdirRequest{Path: "/srv/a/b", Mode: "700", Parents: true, User: "app"}
+	if s.verbs.dir != want || s.verbs.ref != s.running.ID {
+		t.Fatalf("the mkdir reached the orchestrator as %+v on %s, want %+v on %s", s.verbs.dir, s.verbs.ref, want, s.running.ID)
+	}
+}
+
+func TestDeleteFileReadsRecursive(t *testing.T) {
+	s := seed(t)
+
+	if resp := fileRequest(t, s, http.MethodDelete, "path=/srv/a&recursive=true", nil); resp.StatusCode != http.StatusNoContent { //nolint:bodyclose // fileRequest closes the body in a cleanup
+		t.Fatalf("the delete answered %d, want 204", resp.StatusCode)
+	}
+	if s.verbs.fileOp != "delete" || s.verbs.filePath != "/srv/a" || !s.verbs.recursive {
+		t.Fatalf("the orchestrator got a %s of %s, recursive %v, want a recursive delete of /srv/a", s.verbs.fileOp, s.verbs.filePath, s.verbs.recursive)
+	}
+}
+
+func TestDirectoryVerbsRefuseWhatTheyCannotRead(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		route  string
+		body   string
+	}{
+		{name: "a mkdir field no route knows", method: http.MethodPost, route: "mkdir", body: `{"path":"/srv/a","perm":"700"}`},
+		{name: "a mkdir body that is not JSON", method: http.MethodPost, route: "mkdir", body: `path=/srv/a`},
+		{name: "recursive that is not a bool", method: http.MethodDelete, route: "files?path=/srv/a&recursive=maybe"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := seed(t)
+
+			resp := sandboxRequest(t, s, c.method, c.route, strings.NewReader(c.body)) //nolint:bodyclose // sandboxRequest closes the body in a cleanup
+			if resp.StatusCode != http.StatusBadRequest || refusalOf(t, resp).code != string(models.CodeInvalidRequest) {
+				t.Fatalf("%s /%s answered %d, want 400 invalid_request", c.method, c.route, resp.StatusCode)
+			}
+			if s.verbs.fileOp != "" {
+				t.Fatalf("the refusal still reached the orchestrator: %s", s.verbs.fileOp)
 			}
 		})
 	}

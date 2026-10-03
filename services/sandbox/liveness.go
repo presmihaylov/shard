@@ -142,8 +142,14 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 		report(fmt.Sprintf("sandbox %s: %v; its entrypoint exit is unknown until the next one", id, err))
 		return nil
 	}
+	if errors.Is(err, models.ErrExitChannelReplaced) {
+		return s.recordExitChannel(id, sb, err.Error(), report)
+	}
 	if err != nil {
 		return fmt.Errorf("read the exit of sandbox %s: %w", id, err)
+	}
+	if err := s.recordExitChannel(id, sb, "", report); err != nil {
+		return err
 	}
 	if exit == nil {
 		return nil
@@ -161,6 +167,29 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 		return fmt.Errorf("sandbox %s entrypoint exited but its record was not updated: %w", id, err)
 	}
 	report(fmt.Sprintf("sandbox %s entrypoint exited (code %d, signal %d): recorded, the sandbox stays running", id, exit.Code, exit.Signal))
+
+	return nil
+}
+
+// recordExitChannel keeps on the record why the exit cannot be read, so inspect names it, and reports each change once.
+func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, report func(string)) error {
+	if sb.ExitChannel == why {
+		return nil
+	}
+
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.ExitChannel = why
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: record its exit channel: %w", id, err)
+	}
+	if why == "" {
+		report(fmt.Sprintf("sandbox %s: its exit channel reads again", id))
+		return nil
+	}
+	report(fmt.Sprintf("sandbox %s: %s; its entrypoint exit is unknown until the channel reads again", id, why))
 
 	return nil
 }

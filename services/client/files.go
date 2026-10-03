@@ -67,6 +67,34 @@ func (c *Client) StatFile(ctx context.Context, ref, guestPath string) (models.Fi
 	return statOf(resp)
 }
 
+// ListDir answers the entries of one guest directory, sorted by name; a listing the guest cut short is an error, never a shorter list.
+func (c *Client) ListDir(ctx context.Context, ref, guestPath string) ([]models.FileEntry, error) {
+	var out struct {
+		Entries []models.FileEntry `json:"entries"`
+	}
+	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/ls?" + url.Values{"path": {guestPath}}.Encode()
+	if err := c.call(ctx, http.MethodGet, path, nil, &out, 0); err != nil {
+		return nil, err
+	}
+
+	return out.Entries, nil
+}
+
+// MakeDir makes one guest directory; with req.Parents it makes what leads to it and takes a directory already there.
+func (c *Client) MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error {
+	return c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/mkdir", req, nil, 0)
+}
+
+// DeleteFile removes one guest path; a directory with anything in it needs recursive.
+func (c *Client) DeleteFile(ctx context.Context, ref, guestPath string, recursive bool) error {
+	query := url.Values{"path": {guestPath}}
+	if recursive {
+		query.Set("recursive", "true")
+	}
+
+	return c.call(ctx, http.MethodDelete, "/v0/sandboxes/"+url.PathEscape(ref)+"/files?"+query.Encode(), nil, nil, 0)
+}
+
 // fileRequest sends one /files call with no deadline of its own, since a file streams for as long as it takes.
 func (c *Client) fileRequest(ctx context.Context, method, ref string, query url.Values, body io.Reader, size int64) (*http.Response, error) {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/files"

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 
@@ -16,9 +17,12 @@ const FilesMode = "files"
 
 // The operations a files exec carries, one per exec: the header names it, the reply ends it.
 const (
-	OpStat = "stat"
-	OpPut  = "put"
-	OpGet  = "get"
+	OpStat   = "stat"
+	OpPut    = "put"
+	OpGet    = "get"
+	OpList   = "ls"
+	OpMkdir  = "mkdir"
+	OpDelete = "delete"
 )
 
 // The codes a refusal carries, so the host answers 404 or 400 for what the guest refused and 500 for the rest.
@@ -27,18 +31,20 @@ const (
 	FileInvalid  = "invalid"
 )
 
-// FileHeader opens a files operation. Size, Mode and Parents ride a put; the bytes follow the header line.
+// FileHeader opens a files operation. Size rides a put, whose bytes follow the header line; Mode and Parents ride a put and a mkdir.
 type FileHeader struct {
-	Op      string `json:"op"`
-	Path    string `json:"path"`
-	Size    int64  `json:"size,omitempty"`
-	Mode    uint32 `json:"mode,omitempty"`
-	Parents bool   `json:"parents,omitempty"`
+	Op        string `json:"op"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size,omitempty"`
+	Mode      uint32 `json:"mode,omitempty"`
+	Parents   bool   `json:"parents,omitempty"`
+	Recursive bool   `json:"recursive,omitempty"`
 }
 
-// FileReply answers the header with the path's stat, or with why not. On a get the file's bytes follow the line, to the end of the stream.
+// FileReply answers the header with the path's stat, or with why not. A get's bytes follow the line to the end of the stream, and an ls's Count entry lines.
 type FileReply struct {
 	Stat  *models.FileStat `json:"stat,omitempty"`
+	Count int              `json:"count,omitempty"`
 	Error string           `json:"error,omitempty"`
 	Code  string           `json:"code,omitempty"`
 }
@@ -62,7 +68,78 @@ func Stat(conn io.ReadWriter, path string) (models.FileStat, error) {
 		return models.FileStat{}, err
 	}
 
-	return readReply(r, OpStat, path)
+	reply, err := readReply(r, OpStat, path)
+	if err != nil {
+		return models.FileStat{}, err
+	}
+
+	return *reply.Stat, nil
+}
+
+// List answers the entries of one guest directory, sorted by name, one line at a time; it follows a final symlink, as ls does.
+func List(conn io.ReadWriter, path string) (*Entries, error) {
+	r, err := open(conn, FileHeader{Op: OpList, Path: path})
+	if err != nil {
+		return nil, err
+	}
+
+	reply, err := readReply(r, OpList, path)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Entries{r: r, path: path, left: reply.Count}, nil
+}
+
+// Entries reads an ls's entries one line at a time, so no listing has to fit in the daemon's memory at once.
+type Entries struct {
+	r    *bufio.Reader
+	path string
+	left int
+}
+
+// Next answers the next entry, io.EOF after the last, and io.ErrUnexpectedEOF when the guest stopped short of its count.
+func (e *Entries) Next() (models.FileEntry, error) {
+	if e.left == 0 {
+		return models.FileEntry{}, io.EOF
+	}
+
+	var entry models.FileEntry
+	err := readLine(e.r, &entry)
+	if errors.Is(err, io.EOF) {
+		return models.FileEntry{}, fmt.Errorf("%s %s: %d entries short: %w", OpList, e.path, e.left, io.ErrUnexpectedEOF)
+	}
+	if err != nil {
+		return models.FileEntry{}, fmt.Errorf("%s %s: read an entry: %w", OpList, e.path, err)
+	}
+	e.left--
+
+	return entry, nil
+}
+
+// Mkdir makes one guest directory at header.Mode; with Parents it makes what leads to it and takes a directory already there.
+func Mkdir(conn io.ReadWriter, header FileHeader) error {
+	header.Op = OpMkdir
+	r, err := open(conn, header)
+	if err != nil {
+		return err
+	}
+
+	_, err = readReply(r, OpMkdir, header.Path)
+
+	return err
+}
+
+// Delete removes one guest path, a final symlink and never its target; a directory with anything in it needs recursive.
+func Delete(conn io.ReadWriter, path string, recursive bool) error {
+	r, err := open(conn, FileHeader{Op: OpDelete, Path: path, Recursive: recursive})
+	if err != nil {
+		return err
+	}
+
+	_, err = readReply(r, OpDelete, path)
+
+	return err
 }
 
 // Put lands header.Size bytes of src at header.Path as one file; the guest answers only once the whole file is in place.
@@ -117,12 +194,12 @@ func Get(conn io.ReadWriter, path string) (models.FileStat, io.Reader, error) {
 		return models.FileStat{}, nil, err
 	}
 
-	stat, err := readReply(r, OpGet, path)
+	reply, err := readReply(r, OpGet, path)
 	if err != nil {
 		return models.FileStat{}, nil, err
 	}
 
-	return stat, r, nil
+	return *reply.Stat, r, nil
 }
 
 // open sends the header and answers a reader of what the guest says back.
@@ -134,18 +211,41 @@ func open(conn io.ReadWriter, header FileHeader) (*bufio.Reader, error) {
 	return bufio.NewReader(conn), nil
 }
 
-// readReply takes the guest's answer; a refusal comes back as a FileError with the guest's code.
-func readReply(r *bufio.Reader, op, path string) (models.FileStat, error) {
+// readReply takes the guest's answer, which always carries a stat; a refusal comes back as a FileError with the guest's code.
+func readReply(r *bufio.Reader, op, path string) (FileReply, error) {
 	var reply FileReply
-	if err := ReadMessage(r, &reply); err != nil {
-		return models.FileStat{}, fmt.Errorf("%s %s: read the guest's reply: %w", op, path, err)
+	if err := readLine(r, &reply); err != nil {
+		return FileReply{}, fmt.Errorf("%s %s: read the guest's reply: %w", op, path, err)
 	}
 	if reply.Error != "" {
-		return models.FileStat{}, &FileError{Op: op, Path: path, Code: reply.Code, Message: reply.Error}
+		return FileReply{}, &FileError{Op: op, Path: path, Code: reply.Code, Message: reply.Error}
 	}
 	if reply.Stat == nil {
-		return models.FileStat{}, fmt.Errorf("%s %s: the guest answered with no stat", op, path)
+		return FileReply{}, fmt.Errorf("%s %s: the guest answered with no stat", op, path)
 	}
 
-	return *reply.Stat, nil
+	return reply, nil
+}
+
+// readLine takes one JSON line of at most MaxPayload bytes, so a guest cannot grow the daemon's memory without bound.
+func readLine(r *bufio.Reader, value any) error {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > MaxPayload {
+			return fmt.Errorf("a line runs past %d bytes", MaxPayload)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) && len(line) == 0 {
+			return io.EOF
+		}
+		if err != nil {
+			return fmt.Errorf("read a line: %w", err)
+		}
+
+		return DecodeFrame(line, value)
+	}
 }

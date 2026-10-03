@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
@@ -45,53 +48,179 @@ func serveFiles(r io.Reader, w io.Writer) error {
 		return fmt.Errorf("read a files header: %w", err)
 	}
 
-	stat, src, err := serveFile(r, header)
+	out, err := serveFile(r, header)
 	if err != nil {
 		return supervisor.WriteMessage(w, supervisor.FileReply{Error: err.Error(), Code: codeOf(err)})
 	}
-	if err := supervisor.WriteMessage(w, supervisor.FileReply{Stat: &stat}); err != nil {
-		return errors.Join(err, closeSource(src))
+	if out.entries != nil {
+		return sendEntries(w, out)
 	}
-	if src == nil {
+	if err := supervisor.WriteMessage(w, supervisor.FileReply{Stat: &out.stat}); err != nil {
+		return errors.Join(err, closeSource(out.file))
+	}
+	if out.file == nil {
 		return nil
 	}
 	// Plain reads to EOF: a /proc or sysfs file's size is not its length, and a zero-copy path would trust it.
-	if _, err := io.Copy(struct{ io.Writer }{w}, struct{ io.Reader }{src}); err != nil {
-		return errors.Join(fmt.Errorf("send %s: %w", header.Path, err), src.Close())
+	if _, err := io.Copy(struct{ io.Writer }{w}, struct{ io.Reader }{out.file}); err != nil {
+		return errors.Join(fmt.Errorf("send %s: %w", header.Path, err), out.file.Close())
 	}
 
-	return src.Close()
+	return out.file.Close()
+}
+
+// served is one operation's answer: the stat the reply carries, and a get's open file or an ls's entries to follow it.
+type served struct {
+	stat    models.FileStat
+	file    *os.File
+	entries []models.FileEntry
+}
+
+// sendEntries writes the reply and then one line per entry, buffered, since a large directory is many small lines.
+func sendEntries(w io.Writer, out served) error {
+	buffered := bufio.NewWriter(w)
+	if err := supervisor.WriteMessage(buffered, supervisor.FileReply{Stat: &out.stat, Count: len(out.entries)}); err != nil {
+		return err
+	}
+	for _, entry := range out.entries {
+		if err := supervisor.WriteMessage(buffered, entry); err != nil {
+			return fmt.Errorf("send the entry %s: %w", entry.Name, err)
+		}
+	}
+	if err := buffered.Flush(); err != nil {
+		return fmt.Errorf("send the entries: %w", err)
+	}
+
+	return nil
 }
 
 // serveFile does the operation and, for a get, hands back the open file, so what the reply describes is what the bytes come from.
-func serveFile(r io.Reader, header supervisor.FileHeader) (models.FileStat, *os.File, error) {
+func serveFile(r io.Reader, header supervisor.FileHeader) (served, error) {
 	if !filepath.IsAbs(header.Path) {
-		return models.FileStat{}, nil, invalidError(fmt.Sprintf("a guest path must be absolute, got %q", header.Path))
+		return served{}, invalidError(fmt.Sprintf("a guest path must be absolute, got %q", header.Path))
 	}
 
 	switch header.Op {
 	case supervisor.OpStat:
-		info, err := os.Lstat(header.Path)
-		if err != nil {
-			return models.FileStat{}, nil, err
-		}
-
-		return statOf(info), nil, nil
+		return lstat(header.Path)
 	case supervisor.OpGet:
 		return openFile(header.Path)
 	case supervisor.OpPut:
 		if err := receiveFile(r, header); err != nil {
-			return models.FileStat{}, nil, err
-		}
-		info, err := os.Lstat(header.Path)
-		if err != nil {
-			return models.FileStat{}, nil, err
+			return served{}, err
 		}
 
-		return statOf(info), nil, nil
+		return lstat(header.Path)
+	case supervisor.OpList:
+		return listDir(header.Path)
+	case supervisor.OpMkdir:
+		return makeDir(header)
+	case supervisor.OpDelete:
+		return deletePath(header)
 	default:
-		return models.FileStat{}, nil, invalidError(fmt.Sprintf("unknown files op %q", header.Op))
+		return served{}, invalidError(fmt.Sprintf("unknown files op %q", header.Op))
 	}
+}
+
+func lstat(path string) (served, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return served{}, err
+	}
+
+	return served{stat: statOf(info)}, nil
+}
+
+// listDir reads the whole directory before the reply, so the reply's count is what follows; a non-nil list marks an ls.
+func listDir(path string) (served, error) {
+	// O_DIRECTORY refuses anything but a directory at the open, so a fifo never blocks it.
+	dir, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return served{}, err
+	}
+	info, err := dir.Stat()
+	if err != nil {
+		return served{}, errors.Join(err, dir.Close())
+	}
+	dirents, err := dir.ReadDir(-1)
+	if err := errors.Join(err, dir.Close()); err != nil {
+		return served{}, err
+	}
+
+	slices.SortFunc(dirents, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	entries := make([]models.FileEntry, 0, len(dirents))
+	for _, dirent := range dirents {
+		entry, err := dirent.Info()
+		// A name removed between the read and its lstat is gone, which is what a later ls would say too.
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return served{}, err
+		}
+		entries = append(entries, models.FileEntry{Name: dirent.Name(), FileStat: statOf(entry)})
+	}
+
+	return served{stat: statOf(info), entries: entries}, nil
+}
+
+// makeDir sets the leaf's mode past the umask; with parents it makes what leads to it and takes a directory already there, as mkdir -p does.
+func makeDir(header supervisor.FileHeader) (served, error) {
+	if header.Parents {
+		if err := os.MkdirAll(filepath.Dir(header.Path), 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, so a non-root entrypoint can still reach the leaf
+			return served{}, err
+		}
+	}
+
+	mode := fs.FileMode(header.Mode).Perm()
+	err := os.Mkdir(header.Path, mode)
+	if errors.Is(err, fs.ErrExist) && header.Parents {
+		return existingDir(header.Path)
+	}
+	if err != nil {
+		return served{}, err
+	}
+	if err := os.Chmod(header.Path, mode); err != nil {
+		return served{}, err
+	}
+
+	return lstat(header.Path)
+}
+
+// existingDir takes what a mkdir -p found in place, which follows a symlink to a directory and refuses anything else.
+func existingDir(path string) (served, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return served{}, err
+	}
+	if !info.IsDir() {
+		return served{}, invalidError(fmt.Sprintf("%s exists and is not a directory", path))
+	}
+
+	return served{stat: statOf(info)}, nil
+}
+
+// deletePath removes the path itself, so a final symlink goes and its target stays; the reply is the stat of what it removed.
+func deletePath(header supervisor.FileHeader) (served, error) {
+	info, err := os.Lstat(header.Path)
+	if err != nil {
+		return served{}, err
+	}
+
+	remove := os.Remove
+	if header.Recursive {
+		remove = os.RemoveAll
+	}
+	err = remove(header.Path)
+	// Linux answers rmdir of a full directory with ENOTEMPTY, and POSIX allows EEXIST.
+	if info.IsDir() && (errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)) {
+		return served{}, invalidError(header.Path + " is a directory that is not empty; pass recursive=true to delete it and everything in it")
+	}
+	if err != nil {
+		return served{}, err
+	}
+
+	return served{stat: statOf(info)}, nil
 }
 
 // invalidError is a request the guest refuses as asked, which the host answers 400 and not 500.
@@ -105,7 +234,7 @@ func codeOf(err error) string {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return supervisor.FileNotFound
-	case errors.As(err, &invalid), errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR):
+	case errors.As(err, &invalid), errors.Is(err, fs.ErrPermission), errors.Is(err, fs.ErrExist), errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ENOTEMPTY):
 		return supervisor.FileInvalid
 	}
 
@@ -113,23 +242,23 @@ func codeOf(err error) string {
 }
 
 // openFile opens a get's source and refuses anything but a regular file: a fifo would block the open, a directory has no bytes.
-func openFile(path string) (models.FileStat, *os.File, error) {
+func openFile(path string) (served, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return models.FileStat{}, nil, err
+		return served{}, err
 	}
 	info, err := f.Stat()
 	if err != nil {
-		return models.FileStat{}, nil, errors.Join(err, f.Close())
+		return served{}, errors.Join(err, f.Close())
 	}
 	if info.IsDir() {
-		return models.FileStat{}, nil, errors.Join(invalidError(path+" is a directory; a get takes one file"), f.Close())
+		return served{}, errors.Join(invalidError(path+" is a directory; a get takes one file"), f.Close())
 	}
 	if !info.Mode().IsRegular() {
-		return models.FileStat{}, nil, errors.Join(invalidError(fmt.Sprintf("%s is a %s, not a regular file; a get takes one file", path, info.Mode().Type())), f.Close())
+		return served{}, errors.Join(invalidError(fmt.Sprintf("%s is a %s, not a regular file; a get takes one file", path, info.Mode().Type())), f.Close())
 	}
 
-	return statOf(info), f, nil
+	return served{stat: statOf(info), file: f}, nil
 }
 
 func closeSource(src *os.File) error {

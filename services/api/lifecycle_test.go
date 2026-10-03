@@ -89,6 +89,11 @@ type fakeLifecycle struct {
 	content   string
 	bodyErr   error
 	closedErr error
+	// entries is what an ls answers, listErr how it fails after them; dir is the mkdir's body, recursive the delete's flag.
+	entries   []models.FileEntry
+	listErr   error
+	dir       sandbox.MkdirRequest
+	recursive bool
 }
 
 func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
@@ -123,6 +128,50 @@ func (f *fakeLifecycle) WriteFile(_ context.Context, ref string, req sandbox.Fil
 
 	return err
 }
+
+// ListDir answers entries, then listErr in place of the end when it is set; closedErr is what the close says.
+func (f *fakeLifecycle) ListDir(_ context.Context, ref, path string) (sandbox.Listing, error) {
+	f.ref, f.fileOp, f.filePath = ref, "ls", path
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return &fakeListing{entries: f.entries, err: f.listErr, closeErr: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) MakeDir(_ context.Context, ref string, req sandbox.MkdirRequest) error {
+	f.ref, f.fileOp, f.dir = ref, "mkdir", req
+
+	return f.err
+}
+
+func (f *fakeLifecycle) DeleteFile(_ context.Context, ref, path string, recursive bool) error {
+	f.ref, f.fileOp, f.filePath, f.recursive = ref, "delete", path, recursive
+
+	return f.err
+}
+
+type fakeListing struct {
+	entries  []models.FileEntry
+	err      error
+	closeErr error
+}
+
+func (l *fakeListing) Next() (models.FileEntry, error) {
+	if len(l.entries) > 0 {
+		entry := l.entries[0]
+		l.entries = l.entries[1:]
+
+		return entry, nil
+	}
+	if l.err != nil {
+		return models.FileEntry{}, l.err
+	}
+
+	return models.FileEntry{}, io.EOF
+}
+
+func (l *fakeListing) Close() error { return l.closeErr }
 
 type fakeBody struct {
 	io.Reader
@@ -394,7 +443,6 @@ func (f *fakeLifecycle) write(w io.Writer) error {
 	return nil
 }
 
-// send answers with the status and the decoded body, or a nil body on a 204.
 func head(t *testing.T, server *httptest.Server, path string) int {
 	t.Helper()
 
@@ -411,6 +459,7 @@ func head(t *testing.T, server *httptest.Server, path string) int {
 	return resp.StatusCode
 }
 
+// send answers with the status and the decoded body, or a nil body on a 204.
 func send(t *testing.T, server *httptest.Server, method, path, body string) (int, map[string]any) {
 	t.Helper()
 

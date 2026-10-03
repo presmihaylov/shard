@@ -88,6 +88,44 @@ func putFile(t *testing.T, open func() io.ReadWriteCloser, header supervisor.Fil
 	return supervisor.Put(conn, header, src)
 }
 
+func listEntries(t *testing.T, open func() io.ReadWriteCloser, path string) ([]models.FileEntry, error) {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	entries, err := supervisor.List(conn, path)
+	if err != nil {
+		return nil, err
+	}
+	var got []models.FileEntry
+	for {
+		entry, err := entries.Next()
+		if errors.Is(err, io.EOF) {
+			return got, nil
+		}
+		if err != nil {
+			return got, err
+		}
+		got = append(got, entry)
+	}
+}
+
+func mkdirPath(t *testing.T, open func() io.ReadWriteCloser, header supervisor.FileHeader) error {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	return supervisor.Mkdir(conn, header)
+}
+
+func deleteFile(t *testing.T, open func() io.ReadWriteCloser, path string, recursive bool) error {
+	t.Helper()
+	conn := open()
+	defer closeFiles(t, conn)
+
+	return supervisor.Delete(conn, path, recursive)
+}
+
 // payload crosses the frame bound several times, so a copy that lands whole did not fit in one write.
 func payload(t *testing.T) []byte {
 	t.Helper()
@@ -256,6 +294,210 @@ func TestFilesPutThatDiesMidwayLeavesTheOldFile(t *testing.T) {
 		t.Fatalf("the old file reads %q (%v), want it untouched", got, err)
 	}
 	assertNoTemp(t, dir)
+}
+
+func TestFilesListAnswersEachEntrySortedWithItsOwnStat(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("hello"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "a"), filepath.Join(dir, "c")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := listEntries(t, open, dir)
+	if err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+	// -1 skips a field: a symlink's own mode differs between Linux and macOS, a directory's size between filesystems.
+	want := []struct {
+		name string
+		typ  models.FileType
+		size int64
+		mode int64
+	}{{"a", models.FileDir, -1, 0o700}, {"b.txt", models.FileRegular, 5, 0o640}, {"c", models.FileSymlink, -1, -1}}
+	if len(got) != len(want) {
+		t.Fatalf("ls gave %+v, want %d entries", got, len(want))
+	}
+	for i, w := range want {
+		if got[i].Name != w.name || got[i].Type != w.typ || (w.mode >= 0 && int64(got[i].Mode) != w.mode) || (w.size >= 0 && got[i].Size != w.size) {
+			t.Fatalf("entry %d is %+v, want %s, a %s of mode %o and size %d", i, got[i], w.name, w.typ, w.mode, w.size)
+		}
+	}
+
+	// A symlink to a directory lists what it points to, as ls does.
+	through, err := listEntries(t, open, filepath.Join(dir, "c"))
+	if err != nil || len(through) != 0 {
+		t.Fatalf("ls through the link gave %+v, %v, want the empty directory a", through, err)
+	}
+}
+
+// A listing past the frame bound proves the entries stream one line each, never as one reply.
+func TestFilesListStreamsALargeDirectory(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	const count = 5000
+	name := strings.Repeat("n", 200)
+	for i := range count {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s-%05d", name, i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := listEntries(t, open, dir)
+	if err != nil || len(got) != count {
+		t.Fatalf("ls gave %d entries, %v, want %d", len(got), err, count)
+	}
+	if got[count-1].Name != fmt.Sprintf("%s-%05d", name, count-1) {
+		t.Fatalf("the last entry is %s, want the highest name", got[count-1].Name)
+	}
+}
+
+func TestFilesListRefusesWhatIsNotADirectory(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := listEntries(t, open, file)
+	refusedAs(t, "an ls of a file", err, supervisor.FileInvalid, "not a directory")
+	_, err = listEntries(t, open, fifo)
+	refusedAs(t, "an ls of a fifo", err, supervisor.FileInvalid, "not a directory")
+	_, err = listEntries(t, open, filepath.Join(dir, "missing"))
+	refusedAs(t, "an ls of a missing path", err, supervisor.FileNotFound, "no such file")
+}
+
+func TestFilesMkdirSetsTheModePastTheUmask(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	path := filepath.Join(dir, "shared")
+	if err := mkdirPath(t, open, supervisor.FileHeader{Path: path, Mode: 0o775}); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o775 {
+		t.Fatalf("the directory is %v, %v, want a directory of mode 0775", info, err)
+	}
+
+	err = mkdirPath(t, open, supervisor.FileHeader{Path: path, Mode: 0o775})
+	refusedAs(t, "a mkdir of a directory already there", err, supervisor.FileInvalid, "file exists")
+}
+
+func TestFilesMkdirWithParentsIsMkdirP(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a", "b", "c")
+
+	err := mkdirPath(t, open, supervisor.FileHeader{Path: path, Mode: 0o700})
+	refusedAs(t, "a mkdir under a missing dir", err, supervisor.FileNotFound, "no such file")
+
+	if err := mkdirPath(t, open, supervisor.FileHeader{Path: path, Mode: 0o700, Parents: true}); err != nil {
+		t.Fatalf("mkdir with parents: %v", err)
+	}
+	leaf, err := os.Stat(path)
+	if err != nil || leaf.Mode().Perm() != 0o700 {
+		t.Fatalf("the leaf is %v, %v, want mode 0700", leaf, err)
+	}
+	if parent, err := os.Stat(filepath.Dir(path)); err != nil || !parent.IsDir() {
+		t.Fatalf("the parent is %v, %v, want a directory", parent, err)
+	}
+
+	// A directory already there is the success mkdir -p gives, and keeps its own mode.
+	if err := mkdirPath(t, open, supervisor.FileHeader{Path: path, Mode: 0o755, Parents: true}); err != nil {
+		t.Fatalf("mkdir with parents of a directory already there: %v", err)
+	}
+	if again, err := os.Stat(path); err != nil || again.Mode().Perm() != 0o700 {
+		t.Fatalf("the leaf is %v, %v, want its mode 0700 untouched", again, err)
+	}
+
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = mkdirPath(t, open, supervisor.FileHeader{Path: file, Mode: 0o755, Parents: true})
+	refusedAs(t, "a mkdir with parents over a file", err, supervisor.FileInvalid, "not a directory")
+}
+
+func TestFilesDeleteRemovesTheLinkAndKeepsItsTarget(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "keep"), []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := deleteFile(t, open, link, true); err != nil {
+		t.Fatalf("delete the link: %v", err)
+	}
+	if _, err := os.Lstat(link); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the link is still there: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "keep")); err != nil || string(got) != "kept" {
+		t.Fatalf("the target reads %q, %v, want it untouched", got, err)
+	}
+}
+
+func TestFilesDeleteTakesAFullDirectoryOnlyWhenRecursive(t *testing.T) {
+	open := startFiles(t)
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "a", "b", "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := deleteFile(t, open, tree, false)
+	refusedAs(t, "a delete of a full directory", err, supervisor.FileInvalid, "pass recursive=true")
+	if _, err := os.Stat(filepath.Join(tree, "a", "b", "file")); err != nil {
+		t.Fatalf("the refused delete still removed something: %v", err)
+	}
+
+	if err := deleteFile(t, open, tree, true); err != nil {
+		t.Fatalf("a recursive delete: %v", err)
+	}
+	if _, err := os.Lstat(tree); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the tree is still there: %v", err)
+	}
+
+	empty := filepath.Join(dir, "empty")
+	if err := os.Mkdir(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteFile(t, open, empty, false); err != nil {
+		t.Fatalf("a delete of an empty directory: %v", err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteFile(t, open, file, false); err != nil {
+		t.Fatalf("a delete of a file: %v", err)
+	}
+
+	err = deleteFile(t, open, filepath.Join(dir, "missing"), true)
+	refusedAs(t, "a delete of a missing path", err, supervisor.FileNotFound, "no such file")
 }
 
 func TestLookPathAnswersTheInitPathWithItself(t *testing.T) {

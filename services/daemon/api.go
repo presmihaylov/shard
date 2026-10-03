@@ -567,6 +567,33 @@ func (l *lifecycle) WriteFile(ctx context.Context, ref string, req sandbox.FileW
 	return svc.WriteFile(ctx, ref, req, src)
 }
 
+func (l *lifecycle) ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListDir(ctx, ref, path)
+}
+
+func (l *lifecycle) MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.MakeDir(ctx, ref, req)
+}
+
+func (l *lifecycle) DeleteFile(ctx context.Context, ref, path string, recursive bool) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.DeleteFile(ctx, ref, path, recursive)
+}
+
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {

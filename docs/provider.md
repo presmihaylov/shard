@@ -16,7 +16,7 @@ another `--provider`: the other substrate has never heard of those sandboxes.
 | Docker inside | no | yes | no | yes | yes |
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
-| Exit code | host-verified, behind the sentry | **guest-attested**, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
+| Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
 | Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every verb |
 
 The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
@@ -127,9 +127,14 @@ root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE` include
 controls PID 1 and the entrypoint: it can write a forged record, drive the exit value or pick the
 signal, and a background write after the real exit makes `inspect` report the forged code. No channel
 on Sysbox is host-readable and guest-unwritable, so there is no mechanism fix: the exit code of a
-Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. The same
-write can grow the file, so the host reads at most 4 KiB of it and empties a larger one, which costs
-that sandbox its exit record until the next exit. Firecracker will verify it behind the VM boundary the way gVisor does behind the sentry.
+Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. The channel
+is a memfd of 4 KiB sealed against growing and shrinking, so no guest write can fill the host's disk
+or memory. After a restart the daemon finds it again through fd 0 of PID 1, confirmed in the sandbox
+cgroup, and takes it only while it is a regular file of 4 KiB with its seals and the inode create
+recorded; anything else `inspect` names as `exit channel replaced`. A stop copies the record before it
+returns. If PID 1 dies while the daemon is down, or the daemon dies inside the stop that ended PID 1,
+its unread exit record is lost with it. Firecracker will verify the exit code behind the VM boundary
+the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
 and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a

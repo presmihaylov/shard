@@ -43,6 +43,9 @@ type Lifecycle interface {
 	StatFile(ctx context.Context, ref, path string) (models.FileStat, error)
 	ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
 	WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error
+	ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error)
+	MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error
+	DeleteFile(ctx context.Context, ref, path string, recursive bool) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -158,6 +161,9 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"GET", "/v0/sandboxes/{id}/files"}, h.getFile},
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
 		{Route{"HEAD", "/v0/sandboxes/{id}/files"}, h.statFile},
+		{Route{"DELETE", "/v0/sandboxes/{id}/files"}, h.deleteFile},
+		{Route{"GET", "/v0/sandboxes/{id}/ls"}, h.listDir},
+		{Route{"POST", "/v0/sandboxes/{id}/mkdir"}, h.makeDir},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
