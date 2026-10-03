@@ -147,6 +147,13 @@ fallback to gVisor.
 **runc carries Docker's default seccomp profile.** It answers the keyring calls with `EPERM`, and
 `runc create` runs with `--no-new-keyring`, so a guest spends none of the host's keyring quota.
 
+**runc carries Docker's AppArmor profile where the module is on.** `shard-default` is Docker's
+`docker-default` under a shard name, rule for rule from `moby/profiles/apparmor`, so it never
+replaces a Docker's own profile on the same host. Every runc sandbox runs under it. A host whose
+module is on and whose `apparmor_parser` is missing would run every sandbox unconfined, so the
+daemon refuses the runc provider there and names the `apparmor` package. A host with the module off
+runs no profile, as Docker does.
+
 ## Required verbs against optional verbs
 
 Fourteen verbs are required. Every substrate must do all of them, and none of them has a capability
