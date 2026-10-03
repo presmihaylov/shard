@@ -33,6 +33,10 @@ const (
 	heldChunk = 32 << 10
 
 	readHeaderTimeout = 30 * time.Second
+	// idleTimeout ends a keep-alive connection that sends no next request, where net/http's default waits for ever (SHARD-350).
+	idleTimeout = 60 * time.Second
+	// MaxSourceConns bounds the connections one source holds open over both ports, the share the host gives each sandbox too (SHARD-350).
+	MaxSourceConns = 1024
 	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
 	maxHeaderBytes = 64 << 10
 	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
@@ -103,6 +107,8 @@ type Server struct {
 	transport *http.Transport
 	goneGrace time.Duration
 	held      budget
+	idle      time.Duration
+	conns     *conns
 }
 
 func New(cfg Config) (*Server, error) {
@@ -120,6 +126,8 @@ func New(cfg Config) (*Server, error) {
 		log:       lograte.New(cfg.Log, "proxy"),
 		goneGrace: clientGoneGrace,
 		held:      budget{limit: heldBudget, by: map[netip.Addr]int{}},
+		idle:      idleTimeout,
+		conns:     &conns{limit: MaxSourceConns, open: map[netip.Addr]int{}},
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -175,10 +183,10 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 	// net/http logs a failed tls handshake per connection, naming the guest after "from".
 	errorLog := s.log.Logger(namedSource)
 	servers := []*http.Server{
-		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
-		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
+		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
+		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
 	}
-	listeners := []net.Listener{plain, tls.NewListener(secure, tlsConfig)}
+	listeners := []net.Listener{s.capped(plain), tls.NewListener(s.capped(secure), tlsConfig)}
 
 	errs := make(chan error, len(servers))
 

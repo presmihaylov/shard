@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -24,6 +26,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // Config is the wiring one resident daemon needs.
@@ -52,14 +55,17 @@ func Run(ctx context.Context, cfg Config) error {
 	cfg.Provider = selected.Provider
 
 	d := &deps{cfg: cfg}
-	// Before the lock: the lock file would be the first entry the xfs mount hides.
-	if err := datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out}); err != nil {
+	// Before the lock: the lock file would be the first entry the xfs mount hides. The reflink probe writes a file under the root.
+	err = d.reserve().retry("the data dir check", func() error {
+		return datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out})
+	})
+	if err != nil {
 		return err
 	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	err = New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	err = New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -79,6 +85,10 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	if err := sweepExecs(filepath.Join(r.deps.cfg.Root, execDir), report); err != nil {
 		return err
 	}
+	// Under the lock, so a daemon refused on it never writes the reserve, and after the sweep gave back what it could.
+	if err := r.deps.reserve().ensure(); err != nil {
+		return err
+	}
 
 	repo, err := r.deps.repo()
 	if err != nil {
@@ -94,12 +104,22 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 		return nil
 	}
 
+	provider, err := r.deps.provider()
+	if err != nil {
+		return err
+	}
+	// No probe has attached a VM yet, so no FileLog writes the output logs this bounds.
+	if err := boundOutputLogs(provider, sandboxes, supervisor.MaxLog); err != nil {
+		// A log it cannot bound is no reason to refuse the daemon, which would then serve no sandbox (SHARD-341).
+		report(fmt.Sprintf("some output logs stay past their bound: %v", err))
+	}
+
 	svc, err := r.lifecycle.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.ReconcileAll(ctx, sandboxes, report)
+	return svc.ReconcileAll(ctx, sandboxes, report, r.deps.reserve().retry)
 }
 
 // sweepExecs removes the exec scratch a daemon that is gone left under dir, and reports how much there was.
@@ -160,7 +180,16 @@ func (t apiTask) Run(ctx context.Context) error {
 		return err
 	}
 
-	listener, mode, group, err := api.Listen(cfg.Root)
+	// The bind makes a new entry under the root, which a full one refuses.
+	var listener net.Listener
+	var mode fs.FileMode
+	var group string
+	err = t.deps.reserve().retry("the socket bind", func() error {
+		var err error
+		listener, mode, group, err = api.Listen(cfg.Root)
+
+		return err
+	})
 	if err != nil {
 		return err
 	}

@@ -301,7 +301,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	pumpCtx, cancelPump := context.WithCancel(context.Background())
 	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile)}, state.Logs)
+	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -449,14 +449,14 @@ func (m *machine) alive() bool {
 	if m.closed.Load() {
 		return false
 	}
-	info, err := m.client.State()
+	info, err := m.client.State(context.Background())
 
 	return err == nil && info.State == fcapi.StateRunning
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
 func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.File.Close()
+	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
 		err := supervisor.Logs(ctx, opened, out, version)
@@ -529,7 +529,10 @@ func awaitEnded(m *machine) error {
 func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, error) {
 	deadline := time.Now().Add(grace)
 	for {
-		info, err := m.client.State()
+		// Each read ends with the wait, so a vmm that takes the dial and never answers costs the grace and not callTimeout (SHARD-388).
+		probe, cancel := context.WithTimeout(ctx, max(time.Until(deadline), probeFloor))
+		info, err := m.client.State(probe)
+		cancel()
 		// Another pid on the socket is a vmm begun since, so the one this machine names is gone.
 		if absent(err) || (err == nil && m.pid != 0 && info.PID != m.pid) {
 			return true, nil

@@ -231,14 +231,14 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	address, _, err := s.pool.allocate(id)
+	address, held, err := s.pool.allocate(id)
 	if err != nil {
 		return models.NetworkSpec{}, err
 	}
 
 	// The lease goes first, so the ruleset Ensure renders pins the port before the guest sends a frame.
 	if err := heldFor(s.Ensure(ctx), id); err != nil {
-		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
+		return models.NetworkSpec{}, errors.Join(err, s.undo(ctx, id, held))
 	}
 
 	built, err := netns.NamespaceExists(id)
@@ -260,10 +260,19 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 	}
 
 	if err := s.attach(ctx, id, address, owner); err != nil {
-		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
+		return models.NetworkSpec{}, errors.Join(err, s.undo(ctx, id, held))
 	}
 
 	return s.spec(id, address, owner), nil
+}
+
+// undo keeps a lease from an earlier call: the record of a stopped or paused sandbox still names that address.
+func (s *Service) undo(ctx context.Context, id string, held bool) error {
+	if held {
+		return s.unlink(ctx, id)
+	}
+
+	return s.Release(ctx, id)
 }
 
 // owner is the mapping the namespaces belong to, asked once per Allocate so the spec and the netns agree.
@@ -400,6 +409,15 @@ func (s *Service) Release(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := s.unlink(ctx, id); err != nil {
+		return err
+	}
+
+	return s.pool.release(id)
+}
+
+// unlink drops the namespace and the host link, and leaves the lease.
+func (s *Service) unlink(ctx context.Context, id string) error {
 	address, found, err := s.pool.find(id)
 	if err != nil {
 		return err
@@ -413,11 +431,7 @@ func (s *Service) Release(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := s.manager.DeleteNamespace(ctx, id); err != nil {
-		return err
-	}
-
-	return s.pool.release(id)
+	return s.manager.DeleteNamespace(ctx, id)
 }
 
 // hostInterface names the host end after the address's offset into the subnet, which is unique and

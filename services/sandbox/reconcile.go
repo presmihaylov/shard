@@ -22,13 +22,19 @@ const ReconcileConcurrency = 16
 
 // ReconcileAll makes the records agree with the substrate, before the daemon serves its first verb.
 // It corrects a record and never deletes one, and it reports one line per record it corrected or could not check.
-func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
+func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, report func(string), retry func(step string, run func() error) error) error {
 	// The probe is the slow part, so run every probe concurrently, then apply the corrections one at a time.
 	probes := s.probeAll(ctx, sandboxes)
 
 	running := 0
 	for i, sb := range sandboxes {
-		state, err := s.applyReconcile(ctx, sb, probes[i].status, probes[i].err, report)
+		var state models.State
+		err := retry("the record of sandbox "+sb.ID, func() error {
+			var err error
+			state, err = s.applyReconcile(ctx, sb, probes[i].status, probes[i].err, report)
+
+			return err
+		})
 		if err != nil {
 			// A daemon that refused to start could not stop or remove this sandbox, nor serve the others (SHARD-341).
 			report(fmt.Sprintf("sandbox %s: %v, the record is left as it is", sb.ID, err))

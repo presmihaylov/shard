@@ -57,6 +57,8 @@ const (
 	pollInterval = 100 * time.Millisecond
 	// killGrace bounds the wait after a forced stop of the VM, which nothing in the guest can refuse.
 	killGrace = 10 * time.Second
+	// probeFloor is the least one shim state read gets, so a wait whose time ran out still asks once (SHARD-349).
+	probeFloor = time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
 )
@@ -217,4 +219,24 @@ func (p *Provider) LogPath(id string) (string, error) {
 	}
 
 	return filepath.Join(dir, logFile), nil
+}
+
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+func (p *Provider) HeldLogs(id string) ([]string, error) {
+	dir, err := p.dir(id)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{filepath.Join(dir, consoleFile)}, nil
+}
+
+// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+func (p *Provider) BoundOutputLog(id string, max int64) error {
+	dir, err := p.dir(id)
+	if err != nil {
+		return err
+	}
+
+	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
 }

@@ -60,15 +60,22 @@ type Bundle struct {
 type Service struct {
 	// initPath is the host shard-init binary, bind mounted read-only into every sandbox.
 	initPath string
+	// seccomp is the substrate's filter; gVisor sets none, because its sentry is the boundary.
+	seccomp func(*specs.Spec) (*specs.LinuxSeccomp, error)
 }
 
 // New takes the host path of the shard-init binary, which is /usr/local/bin/shard-init on the box.
-func New(initPath string) (*Service, error) {
+func New(initPath string, opts ...Option) (*Service, error) {
 	if initPath == "" {
 		return nil, errors.New("no shard-init path: every sandbox needs the supervisor")
 	}
 
-	return &Service{initPath: initPath}, nil
+	s := &Service{initPath: initPath}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s, nil
 }
 
 // Build lays out the bundle for spec over the image config and writes config.json. It does not mount.
@@ -253,7 +260,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		return nil, err
 	}
 
-	return &specs.Spec{
+	rs := &specs.Spec{
 		Version: specs.Version,
 		Root: &specs.Root{
 			Path: "rootfs",
@@ -296,7 +303,18 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			ReadonlyPaths:     readonlyPaths,
 			RootfsPropagation: "rprivate",
 		},
-	}, nil
+	}
+	if s.seccomp == nil {
+		return rs, nil
+	}
+
+	filter, err := s.seccomp(rs)
+	if err != nil {
+		return nil, fmt.Errorf("build the seccomp filter: %w", err)
+	}
+	rs.Linux.Seccomp = filter
+
+	return rs, nil
 }
 
 // supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint is its child.

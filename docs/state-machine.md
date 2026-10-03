@@ -15,7 +15,7 @@ stateDiagram-v2
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
     stopped --> [*]: rm
-    paused --> [*]: rm
+    paused --> [*]: rm --force
     created --> [*]: rm
     failed --> [*]: rm
 ```

@@ -31,6 +31,13 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
   every fronted sandbox's web traffic goes through it. It is restarted like any task after a crash.
 - **Egress log rotation**: the `egress-log-rotation` task renames a sandbox's `egress.jsonl` once it
   passes 8 MiB and keeps one file behind it. Without it the log grows without a bound.
+- **Output log rotation**: a sandbox's `output.log` and a VM's `console.log` keep 16 MiB each,
+  with one older file of up to 16 MiB beside them as `<file>.1`, which `shard logs` prints first.
+  The daemon writes a VM's `output.log` itself and renames it before it passes 16 MiB, so that
+  bound is exact. runsc and runc hold their `output.log` and the VMM holds `console.log`, so the
+  `held-log-rotation` task copies the last 16 MiB of each to `.1` and truncates it in place, every
+  second and at once on a start. That bound is soft by one second of output, nothing bounds a log
+  while the daemon is down, and what a sandbox writes between the copy and the truncate is lost.
 - **The liveness loop**: the `liveness` task asks the substrate about every record that says
   `running`, every 5 s, and makes the record agree. It records an entrypoint that exited, stops a
   sandbox whose process is gone, and brings back one the host ended for its memory. See below.
@@ -43,8 +50,9 @@ On a Mac the same shape is the LaunchDaemon in `packaging/launchd`, installed as
   records. One writer owns them, so they need no lock between processes: the daemon serializes its
   own writes in memory and every client asks it. The value of a secret crosses the socket once, on
   the `PUT`, and is never written anywhere but the secret store, never logged and never listed back.
-  A create pulls the image and writes its sandbox record under the image lock, so `image rm` and
-  `image prune`, which both free by reachability over the records, never sweep a rootfs mid create.
+  A create writes its sandbox record before it pulls, and a cached pull waits for a removal in
+  flight, so `image rm` and `image prune`, which both free by reachability over the records, never
+  sweep a rootfs mid create.
 - **The sandbox lifecycle**: `create`, `start`, `stop`, `rm`, `exec`, `logs`, `pause`, `resume`,
   `fork` and `clone` run inside the daemon, in `services/sandbox`. The image pull of a create happens there too, and the client waits for it with
   no deadline; the pull's progress is not streamed back to the client yet. The daemon serializes the
@@ -127,6 +135,21 @@ count only when the bytes on disk differ, so a start on a full root writes nothi
 A root with no records needs no substrate, so a host without `runsc` still gets a daemon that
 answers the reads and the store verbs.
 
+## A full root
+
+A daemon that cannot start on a full root cannot serve the `rm` that frees it, so it holds 64 MiB
+back in `<root>/.reserve` (SHARD-351). It writes the file under the lock, as real blocks, and only
+when the root has at least four times that free; a fuller root starts without one and logs a line.
+
+Every write a start makes goes through one retry: the reflink probe of the data dir, the initrd of
+the vz and Firecracker providers, the reconcile record writes and the socket bind. When a step
+fails with `ENOSPC`, the daemon deletes `.reserve`, runs the step once more at once and logs one
+line with the step and the free space before and after. A second `ENOSPC` fails the step. The next
+start with room writes the reserve again.
+
+Known limit: on macOS, a Time Machine local snapshot of the Data volume can keep the blocks of a
+deleted file, so the delete gives back less than the reserve. The log line says how much less.
+
 ## Liveness
 
 Every 5 s the `liveness` task asks the substrate about every record that says `running` and makes
@@ -182,7 +205,8 @@ probes found. `--health-command <cmd>` (`"health": {"command": [...]}` in the
 create body, where the flag wraps its string as `/bin/sh -c`) runs the argv in the sandbox through
 the provider's `exec` and passes on exit 0; a signal or a command that could not start fails.
 `--health-interval`, `--health-timeout` and `--health-retries` (`interval`, `timeout`,
-`retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3.
+`retries` in the body, whole seconds like the `grace` of a stop) default to 30 s, 10 s and 3. A
+create refuses an interval over 3600 s or a timeout over 600 s, and the error names the bound.
 
 The record carries the probe in `health_check`, with every default filled in, and the result in
 `health`: `{"status", "checked_at", "failures"}`. The status is `starting` until the first probe
@@ -192,8 +216,9 @@ absent on a sandbox that has no probe. `shard ls` shows the status in its `HEALT
 count beside it while it is above zero, as `unhealthy 3/3`; each change of status is one line in
 the daemon log, with the reason for a failure.
 
-The task ticks every second, probes every due sandbox side by side and waits for the slowest, so a
-probe runs at most one timeout late. A command probe that outruns its timeout is ended inside the
+The task ticks every second and starts each due probe on its own, so a slow probe holds back no
+other sandbox. A sandbox's next probe waits for its last one to end, so it runs at most one timeout
+late. A command probe that outruns its timeout is ended inside the
 sandbox. There is no start period: the first probe runs on the first tick after the
 create, and a slow entrypoint counts its failures from the start, so set `retries` and `interval`
 for it. Every new run starts over at `starting`: a `start`, a start again after an OOM, a `clone`
@@ -456,7 +481,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `body_too_large` | 413 | a JSON body over 1 MiB; the daemon reads no further and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec or pause on a sandbox that is not running, or one the substrate no longer holds |
-| `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up |
+| `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up, and rm without force on a paused one, whose snapshot a resume needs |
 | `sandbox_not_paused` | 409 | resume or fork on a sandbox that is not paused |
 | `sandbox_failed` | 409 | any verb but a get or an `rm` on a create that ended `failed`; the message carries the `failed_reason`, and `rm` frees it |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
@@ -563,8 +588,9 @@ It is a local verb like `daemon` and `serve`: it never reaches the daemon, and t
 the secret. `--name` is the subject the front logs, `--duration` defaults to 0, which mints a token
 with no `exp` that never expires, and `--scopes` is a
 comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
-so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
-whole or the bare token, so `shard tokens mint ... >
+so pass `--scopes` for any token but an operator's. A scope that is neither `*` nor one of the eight
+capabilities above is refused, the error lists them, and nothing is recorded. The client's
+`--token-file` takes this object whole or the bare token, so `shard tokens mint ... >
 ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that

@@ -307,7 +307,7 @@ func (s *Stack) ListenTCP(port uint16) (net.Listener, error) {
 	return listener{Listener: ln, stack: s}, nil
 }
 
-// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects.
+// listener hands on what the stack accepts, less a flow the NAT table redirected for a guest it no longer redirects, or one past the guest's share.
 type listener struct {
 	net.Listener
 	stack *Stack
@@ -325,19 +325,25 @@ func (ln listener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
-		if !stale {
-			return conn, nil
+		l := ln.stack.linkOf(flow.Guest)
+		// What the listener serves holds a goroutine and an upstream for its life, so it spends the guest's share like a forwarded flow (SHARD-350).
+		if !stale && l != nil && l.admit() {
+			return &admitted{Conn: conn, release: sync.OnceFunc(l.release)}, nil
 		}
-		if l := ln.stack.linkOf(flow.Guest); l != nil {
-			l.report(flow.drop(RuleRedirect))
+		rule := RuleLimit
+		if stale {
+			rule = RuleRedirect
+		}
+		if l != nil {
+			l.report(flow.drop(rule))
 		}
 		if err := conn.Close(); err != nil {
-			return nil, fmt.Errorf("close the stale redirect of %s to %s: %w", flow.Guest, flow.Destination, err)
+			return nil, fmt.Errorf("close the %s drop of %s to %s: %w", rule, flow.Guest, flow.Destination, err)
 		}
 	}
 }
 
-// stale finds the flow the NAT table redirected onto conn for a guest it no longer redirects.
+// stale reads the flow on conn, and whether the NAT table redirected it for a guest it no longer redirects.
 func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 	local, err := netip.ParseAddrPort(conn.LocalAddr().String())
 	if err != nil {
@@ -347,6 +353,7 @@ func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 	if err != nil {
 		return Flow{}, false, fmt.Errorf("read the remote address of an accepted flow: %w", err)
 	}
+	flow := Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: local}
 	id := stack.TransportEndpointID{
 		LocalPort:     local.Port(),
 		LocalAddress:  tcpip.AddrFrom4(local.Addr().As4()),
@@ -354,16 +361,35 @@ func (s *Stack) stale(conn net.Conn) (Flow, bool, error) {
 		RemoteAddress: tcpip.AddrFrom4(remote.Addr().As4()),
 	}
 	addr, port, lookupErr := s.stack.IPTables().OriginalDst(id, ipv4.ProtocolNumber, tcp.ProtocolNumber)
-	// No original destination, or the one it landed on, is a flow conntrack never rewrote: the guest dialed the listener itself.
+	// No original destination is a flow conntrack never rewrote: the guest dialed the listener itself.
 	if lookupErr != nil {
-		return Flow{}, false, nil
+		return flow, false, nil
 	}
-	original := netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
-	if original == local || s.redirected(remote.Addr()) {
-		return Flow{}, false, nil
+	flow.Destination = netip.AddrPortFrom(netip.AddrFrom4(addr.As4()), port)
+
+	return flow, flow.Destination != local && !s.redirected(remote.Addr()), nil
+}
+
+// admitted gives back the share its Accept took, on the first Close.
+type admitted struct {
+	net.Conn
+	release func()
+}
+
+func (c *admitted) Close() error {
+	c.release()
+
+	return c.Conn.Close()
+}
+
+// CloseWrite passes on the half-close net/http sends before it closes, which the embedded net.Conn hides.
+func (c *admitted) CloseWrite() error {
+	cw, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("the accepted flow cannot half-close")
 	}
 
-	return Flow{Guest: remote.Addr(), Protocol: "tcp", Destination: original}, true, nil
+	return cw.CloseWrite()
 }
 
 // ListenPacket opens a UDP socket on the stack address; a reply goes out the link that carries its guest.

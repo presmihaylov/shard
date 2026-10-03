@@ -62,9 +62,10 @@ type State struct {
 // Runner runs one runc root. Every container under it is reachable from any shard process,
 // so nothing here is held in memory between commands.
 type Runner struct {
-	binary  string
-	root    string
-	execDir string
+	binary       string
+	root         string
+	execDir      string
+	noNewKeyring bool
 }
 
 // Option configures a Runner.
@@ -78,6 +79,11 @@ func WithBinary(path string) Option {
 // WithExecDir keeps each exec's scratch under dir, off the runc root that it scans, so a restarted daemon can sweep it.
 func WithExecDir(dir string) Option {
 	return func(r *Runner) { r.execDir = dir }
+}
+
+// WithNoNewKeyring has create make no session keyring, which would spend one key of the quota per container.
+func WithNoNewKeyring() Option {
+	return func(r *Runner) { r.noNewKeyring = true }
 }
 
 // New prepares the runc root, which is /var/lib/shard/runc on the box.
@@ -137,7 +143,7 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 		return fmt.Errorf("%s create %s: %w", r.name(), id, err)
 	}
 
-	cmd := r.command(ctx, "create", "--bundle", opts.Bundle, id)
+	cmd := r.command(ctx, createArgs(id, opts.Bundle, r.noNewKeyring)...)
 	cmd.Stdout, cmd.Stderr = opts.Stdout, opts.Stderr
 	cmd.Stdin = opts.Stdin
 
@@ -151,6 +157,16 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 	}
 
 	return nil
+}
+
+// createArgs spells one runc create. The flags precede the id.
+func createArgs(id, bundle string, noNewKeyring bool) []string {
+	args := []string{"create", "--bundle", bundle}
+	if noNewKeyring {
+		args = append(args, "--no-new-keyring")
+	}
+
+	return append(args, id)
 }
 
 // ExecOptions is one process in a container that already runs. It is never the entrypoint, so it has

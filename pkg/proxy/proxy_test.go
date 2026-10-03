@@ -150,8 +150,8 @@ type harness struct {
 	stop func() error
 }
 
-// newHarness runs the proxy over two loopback listeners in front of an upstream that echoes what it got.
-func newHarness(t *testing.T, upstream http.Handler) *harness {
+// newHarness runs the proxy over two loopback listeners in front of an upstream that echoes what it got; each tune edits the server before it serves.
+func newHarness(t *testing.T, upstream http.Handler, tunes ...func(*Server)) *harness {
 	t.Helper()
 
 	ca, err := LoadCA(t.TempDir())
@@ -176,6 +176,10 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 		t.Fatal(err)
 	}
 	h.server = server
+
+	for _, tune := range tunes {
+		tune(server)
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
