@@ -352,8 +352,8 @@ func (r *Repository) Delete(id string) error {
 }
 
 // SweepSnapshotTmp removes an orphan snapshot .tmp under the root: staging no record reaches. It runs once
-// at daemon start. A .tmp a record still names is kept, because the provider that wrote it owns the staging:
-// it clears the .tmp at its next pause, and vz also finishes or discards it on resume or adopt (SHARD-368).
+// at daemon start. A .tmp a record still names is left to the provider that wrote it, which the reconcile
+// asks next and which reports it (SHARD-368, SHARD-428).
 func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -367,7 +367,7 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 		return fmt.Errorf("read the snapshots directory %s: %w", dir, err)
 	}
 
-	swept, kept := 0, 0
+	swept := 0
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
@@ -379,7 +379,6 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 			report(note)
 		}
 		if keep {
-			kept++
 			continue
 		}
 
@@ -389,16 +388,14 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 		}
 		swept++
 	}
-	if swept == 0 && kept == 0 {
+	if swept == 0 {
 		return nil
 	}
 
-	if swept > 0 {
-		if err := store.SyncDir(dir); err != nil {
-			return err
-		}
+	if err := store.SyncDir(dir); err != nil {
+		return err
 	}
-	report(fmt.Sprintf("swept %d orphan snapshot staging directories the last daemon left under %s, and kept %d a record still names", swept, dir, kept))
+	report(fmt.Sprintf("swept %d orphan snapshot staging directories the last daemon left under %s", swept, dir))
 
 	return nil
 }

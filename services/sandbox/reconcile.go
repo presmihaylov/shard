@@ -96,8 +96,8 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return "", fmt.Errorf("find the snapshot staging of sandbox %s: %w", sb.ID, err)
 	}
 	// A cut pause leaves a staged snapshot: the provider finishes its own here or drops a stale one, once at daemon start.
-	if err := s.cfg.Provider.AdoptStaging(dir); err != nil {
-		return "", fmt.Errorf("adopt the snapshot staging of sandbox %s: %w", sb.ID, err)
+	if err := s.adoptStaging(sb.ID, dir, report); err != nil {
+		return "", err
 	}
 
 	var timeout *SubstrateTimeoutError
@@ -350,19 +350,50 @@ func (s *Service) recordCutPause(id, dir string, report func(string)) error {
 	return nil
 }
 
-// hasCheckpoint answers only what it read. A stat that failed for any other reason is not an absence.
+// adoptStaging hands the provider the staging a cut pause left, and says once whether the provider kept or removed it (SHARD-428).
+func (s *Service) adoptStaging(id, dir string, report func(string)) error {
+	staging := dir + ".tmp"
+	held, err := exists(staging)
+	if err != nil {
+		return fmt.Errorf("check the snapshot staging of sandbox %s: %w", id, err)
+	}
+	if err := s.cfg.Provider.AdoptStaging(dir); err != nil {
+		return fmt.Errorf("adopt the snapshot staging of sandbox %s: %w", id, err)
+	}
+	if !held {
+		return nil
+	}
+
+	kept, err := exists(staging)
+	if err != nil {
+		return fmt.Errorf("check the snapshot staging of sandbox %s: %w", id, err)
+	}
+	if kept {
+		report(fmt.Sprintf("sandbox %s: %s kept the snapshot staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
+
+		return nil
+	}
+	report(fmt.Sprintf("sandbox %s: %s removed the snapshot staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
+
+	return nil
+}
+
 func hasCheckpoint(dir string) (bool, error) {
 	if dir == "" {
 		return false, nil
 	}
 
-	path := filepath.Join(dir, checkpointFile)
+	return exists(filepath.Join(dir, checkpointFile))
+}
+
+// exists answers only what it read. A stat that failed for any other reason is not an absence.
+func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("stat the checkpoint %s: %w", path, err)
+		return false, fmt.Errorf("stat %s: %w", path, err)
 	}
 
 	return true, nil
