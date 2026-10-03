@@ -56,12 +56,16 @@ type Lifecycle interface {
 	DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error)
 }
 
-// EgressLog is what shard logs --egress prints: every decision made for one sandbox, oldest first.
+// EgressLog is what shard logs --egress prints: the newest decisions made for one sandbox, oldest first.
 type EgressLog interface {
-	Read(sb models.Sandbox) ([]egress.Record, error)
-	// Follow yields the records the log holds and then every one appended after, until ctx ends.
+	// Read returns the newest records and how many older ones it left out.
+	Read(sb models.Sandbox) ([]egress.Record, int, error)
+	// Follow yields the newest records the log holds and then every one appended after, until ctx ends.
 	Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error
 }
+
+// EgressCutHeader counts the older records an egress log read left out, and is absent when it left out none.
+const EgressCutHeader = "Shard-Egress-Cut"
 
 // Daemon is what GET /v0/daemon answers: the process on this socket, its substrate and its proxy ports.
 type Daemon struct {
@@ -330,13 +334,16 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := h.egressLog.Read(sb)
+	records, cut, err := h.egressLog.Read(sb)
 	if err != nil {
 		h.writeError(w, err)
 
 		return
 	}
 
+	if cut > 0 {
+		w.Header().Set(EgressCutHeader, strconv.Itoa(cut))
+	}
 	h.writeJSON(w, http.StatusOK, records)
 }
 

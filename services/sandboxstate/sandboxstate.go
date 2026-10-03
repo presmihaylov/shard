@@ -183,6 +183,23 @@ func (r *Repository) namePath(name string) string {
 	return filepath.Join(r.root, namesDir, name)
 }
 
+// nameExists reports whether a link spelled exactly ref is on disk. A case-insensitive filesystem lets
+// os.Readlink follow a legacy mixed-case link, so the exact directory entry is what decides (SHARD-374).
+func (r *Repository) nameExists(ref string) (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(r.root, namesDir))
+	if err != nil {
+		return false, fmt.Errorf("read the names directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.Name() == ref {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // Resolve turns what an operator typed into the id every other method takes. A name is a symlink, so
 // this is one readlink; anything else is already an id, and Get answers for one that names nothing.
 func (r *Repository) Resolve(ref string) (string, error) {
@@ -197,6 +214,15 @@ func (r *Repository) Resolve(ref string) (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the name link %s: %w", r.namePath(ref), err)
+	}
+
+	// A case-insensitive filesystem lets readlink follow a legacy mixed-case link, so only an exact entry resolves (SHARD-374).
+	exact, err := r.nameExists(ref)
+	if err != nil {
+		return "", err
+	}
+	if !exact {
+		return ref, nil
 	}
 
 	// A refused target is a broken link, never the operator's mistake, so it is no ValidationError.
@@ -553,9 +579,13 @@ func plainComponent(kind, s string) error {
 	}
 
 	for _, c := range s {
-		alphanumeric := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		// A case-insensitive filesystem folds an upper-case letter onto another record, so ids, names and refs stay lower case (SHARD-374).
+		if c >= 'A' && c <= 'Z' {
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another sandbox", kind, s, c)}
+		}
+		alphanumeric := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a letter, a digit, - or _", kind, s, c)}
+			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a lower-case letter, a digit, - or _", kind, s, c)}
 		}
 	}
 

@@ -36,7 +36,7 @@ type machine struct {
 	closed atomic.Bool
 	// swap orders a replacement against close, so no stream is put in after the shim was let go.
 	swap   sync.Mutex
-	link   *netstack.Link
+	link   io.Closer
 	cancel context.CancelFunc
 	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
 	freezing sync.Mutex
@@ -124,8 +124,9 @@ func (p *Provider) release(ctx context.Context, m *machine) error {
 		return fmt.Errorf("the shim of sandbox %s still answers %s after its guest went", m.id, killGrace)
 	}
 	p.forget(m)
+	closeDown(m)
 
-	return m.close()
+	return nil
 }
 
 func (p *Provider) forget(m *machine) {
@@ -339,7 +340,7 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 			return errors.New("an exit event carries no status")
 		}
 
-		return supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit)
+		return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
 	case supervisor.KindRestarts:
 		if event.Restarts == nil {
 			return errors.New("a restarts event carries no count")
@@ -438,7 +439,7 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 			return err
 		}
 		if !found || last != *state.Exit {
-			if err := supervisor.AppendExit(path, *state.Exit); err != nil {
+			if err := supervisor.WriteExit(path, *state.Exit); err != nil {
 				return err
 			}
 		}
@@ -506,6 +507,14 @@ func (m *machine) close() error {
 	m.swap.Unlock()
 
 	return errors.Join(err, m.closeLink())
+}
+
+// closeDown closes a machine whose VM is down: a fault is logged, never a failed stop, so the record says stopped (SHARD-389).
+func closeDown(m *machine) {
+	if err := m.close(); err != nil {
+		// Log and continue, decided by Pres on 2026-10-03: the VM is already down, so failing the stop would only strand the record at running.
+		fmt.Fprintf(os.Stderr, "vz: sandbox %s stopped, and closing what the daemon held of it failed: %v\n", m.id, err)
+	}
 }
 
 func (m *machine) closeLink() error {

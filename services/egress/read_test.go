@@ -102,7 +102,7 @@ func TestLogReaderOrdersBothSourcesByTime(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	records, err := NewLogReader(log).Read(sb)
+	records, _, err := NewLogReader(log).Read(sb)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
