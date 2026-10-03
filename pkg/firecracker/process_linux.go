@@ -33,7 +33,7 @@ func (p *process) exited() (bool, error) {
 	if p.fd < 0 {
 		return true, nil
 	}
-	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}
+	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}} //nolint:gosec // a kernel fd is a C int
 	n, err := unix.Poll(fds, 0)
 	if errors.Is(err, unix.EINTR) {
 		return false, nil
