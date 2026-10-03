@@ -780,7 +780,9 @@ carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scop
 except an operator's. The verb refuses a scope that is neither `*` nor one of the eight capabilities
 above. The error lists the capabilities, and nothing is recorded. The client's `--token-file` takes
 this object whole or the bare token, so `shard tokens mint ... >
-ci.token` needs no extra step. When the secret is rotated, every token it signed stops verifying at once.
+ci.token` needs no extra step. `SHARD_API_KEY` takes the bare token, the `token` field, as
+`jq -r .token ci.token` prints it. When the secret is rotated, every token it signed stops verifying
+at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart. That
 restart ends no connection that is already spliced.
@@ -831,18 +833,46 @@ The unit runs as `shard:shard`, which is the group the socket is given. It reads
 root-owned `0640` file that the group can read. The account has no other privilege. It cannot read
 a state file, and the daemon still applies every rule of every verb.
 
-The CLI reaches a front instead of the socket with three flags, or the environment behind them:
+A script or a CI job reaches a front instead of the socket with two variables:
+
+```
+export SHARD_REMOTE=https://box.example.com:2376
+export SHARD_API_KEY=<the token field of a shard tokens mint record>
+shard ls
+```
+
+`SHARD_API_KEY` is the raw credential, the `token` field of the record that `shard tokens mint`
+prints. The client sends it as the same bearer token a token file holds, so its scopes, its expiry
+and its revocation apply unchanged. The client trims the whitespace around it, and an empty or blank
+value is unset. It refuses a value that is not a bearer token, such as one with a space or a newline
+in it. That error names `SHARD_API_KEY` and never prints the value, and no error or log line on
+either side holds a token.
+
+The client takes the token from the first of three sources that is set:
+
+1. `--token-file <path>`, a token file named on the command line.
+2. `SHARD_API_KEY`, the raw token.
+3. `SHARD_TOKEN_FILE`, a token file named in the environment.
+
+A token file is the alternative. It holds the mint record whole or the bare token, and the client
+refuses one that everyone on the host can read:
 
 ```
 shard --remote https://box.example.com:2376 --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
 SHARD_REMOTE=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
 ```
 
-`--remote` must be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate
-that signed the front's own. A private CA or a self-signed certificate needs it. Without it, the
-host's own trust store decides. The switch is one transport change inside `services/client`, and
-nothing else changes. The typed calls, the messages and the errors stay the same. It is also the
-one way a client off Linux drives sandboxes, because the daemon itself runs on Linux alone.
+An empty `SHARD_TOKEN_FILE` is unset too. With `--remote` and none of the three, the client refuses
+before it dials, and the error names all three in that order. A Go program gets the same order from
+`client.NewRemoteFromEnv` in `services/client`, which reads `SHARD_REMOTE`, `SHARD_API_KEY`,
+`SHARD_TOKEN_FILE` and `SHARD_CA_FILE`. `client.NewRemote` still takes a host and a raw token.
+
+`--remote` and `--ca-file` can also come from `SHARD_REMOTE` and `SHARD_CA_FILE`. `--remote` must
+be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate that signed the
+front's own. A private CA or a self-signed certificate needs it. Without it, the host's own trust
+store decides. The switch is one transport change inside `services/client`, and nothing else
+changes. The typed calls, the messages and the errors stay the same. It is also the one way a client
+off Linux drives sandboxes, because the daemon itself runs on Linux alone.
 
 ## One daemon per root
 

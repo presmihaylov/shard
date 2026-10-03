@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -138,47 +137,6 @@ func New(cfg Config) (*Server, error) {
 		log:         logger,
 		refusals:    lograte.New(logger, "serve"),
 	}, nil
-}
-
-// ReadToken refuses a file others can read, because the token is the whole of the authentication.
-func ReadToken(path string) (string, error) {
-	if path == "" {
-		return "", errors.New("shard needs --token-file: every request to shard serve carries a bearer token")
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("read the token file %s: %w", path, err)
-	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return "", fmt.Errorf("the token file %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm())
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read the token file %s: %w", path, err)
-	}
-
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return "", fmt.Errorf("the token file %s holds no token", path)
-	}
-
-	// tokens mint writes a JSON record; --token-file takes it whole or the bare token.
-	if strings.HasPrefix(token, "{") {
-		var record struct {
-			Token string `json:"token"`
-		}
-		if err := json.Unmarshal([]byte(token), &record); err != nil {
-			return "", fmt.Errorf("parse the mint record in the token file %s: %w", path, err)
-		}
-		token = strings.TrimSpace(record.Token)
-		if token == "" {
-			return "", fmt.Errorf("the mint record in the token file %s holds no token", path)
-		}
-	}
-
-	return token, nil
 }
 
 // Run binds the front and serves it until ctx ends.

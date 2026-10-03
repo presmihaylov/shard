@@ -500,39 +500,6 @@ func TestMintTokenDefaultsAndWritesTheScopesClaim(t *testing.T) {
 	}
 }
 
-// ReadToken takes the mint record whole or a bare token, and refuses a broken record.
-func TestReadTokenAcceptsTheRecordOrTheBareToken(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) string {
-		t.Helper()
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-		return p
-	}
-
-	for name, path := range map[string]string{
-		"a bare token": write("bare", "  the.jwt.value\n"),
-		"a record":     write("record", `{"token":"the.jwt.value","expires_at":null,"scopes":["*"]}`+"\n"),
-	} {
-		got, err := ReadToken(path)
-		if err != nil {
-			t.Fatalf("%s: ReadToken: %v", name, err)
-		}
-		if got != "the.jwt.value" {
-			t.Errorf("%s: ReadToken answered %q, want the token", name, got)
-		}
-	}
-
-	if _, err := ReadToken(write("broken", "{not json")); err == nil {
-		t.Error("ReadToken accepted a broken record")
-	}
-	if _, err := ReadToken(write("no token", `{"scopes":["*"]}`)); err == nil {
-		t.Error("ReadToken accepted a record with no token")
-	}
-}
-
 func TestSetConnectionCloseForcesConnectionClose(t *testing.T) {
 	head := []byte("GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nConnection: keep-alive\r\n\r\n")
 
@@ -799,27 +766,6 @@ func TestReadSecretRefusesASecretUnder32Bytes(t *testing.T) {
 	// openssl rand -hex 32 prints 64 hex characters, the documented way to make one.
 	if _, err := ReadSecret(secretFile(t, strings.Repeat("0123456789abcdef", 4))); err != nil {
 		t.Errorf("the openssl rand -hex 32 line was refused: %v", err)
-	}
-}
-
-func TestReadTokenRefusesAFileTheHostCanRead(t *testing.T) {
-	path := tokenFile(t, "cli-token")
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-
-	if _, err := ReadToken(path); err == nil {
-		t.Fatal("a world-readable token file was accepted")
-	}
-}
-
-func TestReadTokenTrimsTheFile(t *testing.T) {
-	token, err := ReadToken(tokenFile(t, "cli-token\n"))
-	if err != nil {
-		t.Fatalf("ReadToken: %v", err)
-	}
-	if token != "cli-token" {
-		t.Errorf("ReadToken answered %q, want the trimmed token", token)
 	}
 }
 
@@ -1172,17 +1118,6 @@ func secretFile(t *testing.T, value string) string {
 	path := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
 		t.Fatalf("write the secret file: %v", err)
-	}
-
-	return path
-}
-
-func tokenFile(t *testing.T, value string) string {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
-		t.Fatalf("write the token file: %v", err)
 	}
 
 	return path

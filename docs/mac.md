@@ -251,7 +251,9 @@ shard logs <id>
 shard ls
 ```
 
-The client refuses a token file that everyone can read, which is why the `umask` is there. Every
+The client refuses a token file that everyone can read, which is why the `umask` is there. A script
+or a CI job exports `SHARD_API_KEY` in place of `SHARD_TOKEN_FILE`, set to the `token` field of the
+record in `mac.token`. The key wins when both are set, and the client never prints it. Every
 verb works this way, exec and `logs -f` included, because the front splices the bytes and the daemon
 sees the same requests as it does from the socket. `docs/daemon.md` has the flags, the scopes a token
 carries, and how to revoke a token.

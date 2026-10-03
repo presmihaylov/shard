@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/services/client"
-	"github.com/presmihaylov/shard/services/serve"
 )
 
 // DefaultRoot is where shard keeps everything on the box. The client owns it: its connect hint names the unit there only.
@@ -31,13 +30,6 @@ const DefaultInitPath = "/usr/local/bin/shard-init"
 // InitPathEnv overrides the guest supervisor the daemon uses. It is a property of the install, so it is no create flag.
 const InitPathEnv = "SHARD_INIT_PATH"
 
-// The environment behind the three flags that point a verb at a remote daemon, as docker's DOCKER_HOST does.
-const (
-	RemoteEnv    = "SHARD_REMOTE"
-	TokenFileEnv = "SHARD_TOKEN_FILE" //nolint:gosec // G101: this names a file, and holds no token
-	CAFileEnv    = "SHARD_CA_FILE"
-)
-
 // App is the wiring one shard process needs.
 type App struct {
 	Version string
@@ -50,7 +42,7 @@ type App struct {
 	InitPath string
 	// Remote is the shard serve a verb speaks to instead of the socket, as https://box:2376.
 	Remote string
-	// TokenFile holds the bearer token that serve checks, and CAFile the CA certificate that signed the serve certificate.
+	// TokenFile is --token-file alone, never SHARD_TOKEN_FILE, so it beats SHARD_API_KEY; CAFile signed the serve certificate.
 	TokenFile string
 	CAFile    string
 
@@ -374,34 +366,11 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	return flags.Args(), nil
 }
 
-// fromEnv fills the three remote flags a shell exports once rather than typing on every verb.
+// fromEnv fills --remote from the environment; the client resolves the token and the ca file, so the order lives in one place.
 func (a *App) fromEnv() {
-	for _, pair := range []struct {
-		field *string
-		name  string
-	}{{&a.Remote, RemoteEnv}, {&a.TokenFile, TokenFileEnv}, {&a.CAFile, CAFileEnv}} {
-		if *pair.field == "" {
-			*pair.field = os.Getenv(pair.name)
-		}
+	if a.Remote == "" {
+		a.Remote = os.Getenv(client.RemoteEnv)
 	}
-}
-
-// remoteClient reads the token and the certificate, so a bad one fails before the verb dials.
-func remoteClient(host, tokenFile, caFile string) (*client.Client, error) {
-	token, err := serve.ReadToken(tokenFile)
-	if err != nil {
-		return nil, err
-	}
-
-	var ca []byte
-	if caFile != "" {
-		ca, err = os.ReadFile(caFile)
-		if err != nil {
-			return nil, fmt.Errorf("read the ca file %s: %w", caFile, err)
-		}
-	}
-
-	return client.NewRemote(host, token, ca)
 }
 
 // initPathFromEnv resolves where the guest supervisor lives on this host; empty on a Mac, whose daemon installs the one it embeds.
@@ -429,8 +398,9 @@ func (h *hostList) Set(value string) error {
 
 // client speaks to the daemon on the socket, or through --remote; a verb asks only after its flags parsed, so --help reads no token.
 func (a App) client() (*client.Client, error) {
+	// The token and the certificate are read here, so a bad one fails before the verb dials.
 	if a.Remote != "" {
-		return remoteClient(a.Remote, a.TokenFile, a.CAFile)
+		return client.NewRemoteFromEnv(client.RemoteOptions{Host: a.Remote, TokenFile: a.TokenFile, CAFile: a.CAFile})
 	}
 
 	c := client.New(a.Root)
