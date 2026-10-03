@@ -239,21 +239,24 @@ kills the process. A guest that the host can no longer reach over vsock is still
 `inspect` says so, and `stop` kills it without waiting out a grace that the guest could not hear. A
 daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
 left paused, because that stopped guest would answer no handshake. `--memory` is required, `0` is
-refused by name, and 128 MiB is the least a guest boots with. The guest's network is a tap on the
-same bridge that the veth substrates use. The tap is named `shardv<n>` like a veth, and it is a port
+refused by name, and 128 MiB is the least a guest boots with. The guest's network is a veth on the
+same bridge that the other substrates use. Its host end is named `shardv<n>`, and it is a port
 under the same host rules. The anti-spoof pair, the IPv6 drop and the egress chain key on that
 name. The proxy redirect keys on the leased address, and the private floor keys on the bridge. So a
-policy reads and logs the same on every substrate. The vmm opens the tap as the guest's `eth0`, with
-a MAC derived from the lease. Once the guest is up, and before the entrypoint runs, `shard-init`
-takes the address, the gateway and the resolver over vsock. The next start after a stop leases the
-same address and builds the tap again for the new vmm. `rm` releases both.
+policy reads and logs the same on every substrate. The other end of the veth is in the sandbox's
+own namespace. There a bridge with no address joins it to a tap that is also named `shardv<n>`, so
+the vmm shares no network namespace with the host (SHARD-431). The vmm opens the tap as the guest's
+`eth0`, with a MAC derived from the lease. Once the guest is up, and before the entrypoint runs,
+`shard-init` takes the address, the gateway and the resolver over vsock. The next start after a
+stop leases the same address and builds the namespace and the tap again for the new vmm. `rm`
+releases both.
 
 The daemon spawns every vmm through Firecracker's `jailer`, and never as root (SHARD-306). Each
 sandbox gets a uid of its own, and a gid with the same value, from 0x70000000 to 0x7FFDFFFF
 (1879048192 to 2147352575). That range is clear of Sysbox, the `/etc/subuid` defaults and the
 systemd ranges. A counter in `<root>/firecracker/next-uid` hands out each uid once. A restart and a
 resume keep the uid, and a clone and a fork get a new one. The jailer puts itself in the sandbox's
-cgroup. It then starts the vmm in new pid and mount namespaces, chrooted into
+cgroup and network namespace. It then starts the vmm in new pid and mount namespaces, chrooted into
 `<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter. The jail holds
 the kernel, the initrd and the image. On a restore it also holds the snapshot's state and memory.
 Each of these is a reflinked copy that only the uid can read. The overlay is a hard link that the
@@ -264,7 +267,8 @@ daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no `--reso
 default of 2048 open files outlasts the vsock muxer's cap of 1023 connections, and those
 connections are the one count of descriptors that a sandbox grows. A vmm that a daemon spawned
 before the jail existed is still adopted at its socket in the state directory, and its next start
-jails it.
+jails it. A vmm from before SHARD-431 keeps its host tap until its stop, and its next start or
+resume joins a namespace.
 
 `pause` freezes the guest and stops the vCPUs. It writes the vmm's state and the guest's whole
 memory into the snapshot directory, beside a reflinked copy of `overlay.raw`. It then marks the
@@ -316,15 +320,15 @@ starts the daemon over a root that it turns into an XFS image, and runs `create`
 checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
 and an entrypoint that exits. One guest outgrows its memory and comes back once under
 `--restart-on-oom`, and another fills up on every boot and spends `--restart-on-oom=2`. The run
-then checks the policy and the proxy on the tap, a daemon restart that adopts the vmm, and a vmm
-lost while the daemon was down. After that come `pause`, a `fork` of the paused snapshot, `resume`,
-`stop` with the cgroup kept empty, two clones by reflink, `start` back into that cgroup, and `rm`.
-The last check is a host with no tap, no vmm, no jail, no cgroup, no image and no fstab line left.
-It runs on demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI,
-`make check`, `make e2e` and `make devbox-e2e` never call it. To run it, rent a bare-metal KVM box,
-run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker`, `jailer` and
-Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point the run at a kernel on
-the box. When they are unset, the daemon fetches the release.
+then checks the policy and the proxy on the vmm's link, a daemon restart that adopts the vmm, and a
+vmm lost while the daemon was down. After that come `pause`, a `fork` of the paused snapshot,
+`resume`, `stop` with the cgroup kept empty, two clones by reflink, `start` back into that cgroup,
+and `rm`. The last check is a host with no link, no namespace, no vmm, no jail, no cgroup, no image
+and no fstab line left. It runs on demand only. It needs `/dev/kvm`, which no CI runner and no
+cloud devbox has, so CI, `make check`, `make e2e` and `make devbox-e2e` never call it. To run it,
+rent a bare-metal KVM box, run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`,
+`firecracker`, `jailer` and Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256`
+point the run at a kernel on the box. When they are unset, the daemon fetches the release.
 
 The guest reaches the resolver and the proxy on the bridge address. So a host firewall that drops
 `INPUT` discards those packets after shard's own table has accepted them. A rented box with `ufw` on
@@ -516,8 +520,9 @@ caller allocates on the host, and a pipe cannot be one.
   `Remove` has dropped every mount inside it.
 - The network service owns the namespace, the address and the host interface. `NetworkSpec` is
   allocated before `Create`, so a provider joins a namespace that it did not build, and it never
-  releases one. On `firecracker` the host interface is a tap and there is no namespace. The vmm
-  opens the tap, and the provider addresses the guest with the lease that the spec carries.
+  releases one. On `firecracker` the namespace holds a tap bridged to the veth, and no address. The
+  jailer puts the vmm in the namespace, the vmm opens the tap, and the provider addresses the guest
+  with the lease that the spec carries.
 - The host is the policy of record. On Linux that is host netfilter. On `vz` it is the daemon's own
   userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a
   rule that lives inside the sandbox.

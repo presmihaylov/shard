@@ -201,13 +201,13 @@ func TestTheSpecNamesTheUserNamespaceThatOwnsTheNetns(t *testing.T) {
 	}
 }
 
-// A tap has no namespace for the provider to join, but the rules still find the port by the same name.
-func TestTheSpecOfATapNamesNoNamespace(t *testing.T) {
+// The vmm joins the namespace that holds its tap, and the rules still find the port by the same name.
+func TestTheSpecOfATapNamesItsNamespace(t *testing.T) {
 	s := newService(t, Config{Tap: true})
 
-	got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2"), netns.IDMapping{HostID: 165536, Size: 65536})
-	if got.NetnsPath != "" || got.Userns.Set() {
-		t.Errorf("the spec of a tap joins the netns %q and the userns %+v", got.NetnsPath, got.Userns)
+	got := s.spec("amber-otter", netip.MustParseAddr("10.87.0.2"), netns.IDMapping{})
+	if got.NetnsPath != netns.NamespacePath("amber-otter") || got.Userns.Set() {
+		t.Errorf("the spec of a tap joins the netns %q and the userns %+v, want %q and none", got.NetnsPath, got.Userns, netns.NamespacePath("amber-otter"))
 	}
 	if got.HostInterface != "shardv2" || got.Address != netip.MustParsePrefix("10.87.0.2/16") || got.Gateway != s.Gateway() {
 		t.Errorf("the spec of a tap = %+v, want the address, the gateway and shardv2", got)

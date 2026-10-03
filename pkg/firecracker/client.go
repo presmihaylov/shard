@@ -98,6 +98,9 @@ func runJailer(ctx context.Context, jail Jail, socket string, log *os.File) (int
 		"--id", jail.ID, "--exec-file", jail.Exec, "--uid", strconv.Itoa(jail.UID), "--gid", strconv.Itoa(jail.UID),
 		"--chroot-base-dir", jail.Base, "--cgroup-version", "2", "--parent-cgroup", jail.Cgroup, "--new-pid-ns",
 	}
+	if jail.Netns != "" {
+		args = append(args, "--netns", jail.Netns)
+	}
 	cmd := exec.Command(jail.Jailer, append(args, "--", "--api-sock", socket)...)
 	cmd.Stdout = log
 	cmd.Stderr = log

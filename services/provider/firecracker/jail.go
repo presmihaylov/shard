@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
@@ -23,6 +24,10 @@ func (p *Provider) jail(id, dir string, r *record, snap string) (fcapi.Jail, err
 	j := fcapi.Jail{
 		Jailer: p.cfg.Jailer, Exec: p.exec, ID: id, UID: r.UID, Base: p.cfg.JailBase,
 		Cgroup: strings.TrimPrefix(bundle.CgroupsPath(id), "/"),
+	}
+	// The network service builds the tap inside a netns named for the sandbox, before every spawn.
+	if r.Tap != "" {
+		j.Netns = netns.NamespacePath(id)
 	}
 	r.Jail = j.Root()
 	if err := writeRecord(dir, *r); err != nil {
@@ -69,7 +74,7 @@ func (p *Provider) fill(j fcapi.Jail, dir string, r record, snap string) error {
 		return nil
 	}
 	// The tun driver lets the tap's owner attach with no capability, which the vmm has none of.
-	if err := p.ownTap(r.Tap, r.UID, r.UID); err != nil {
+	if err := p.ownTap(j.ID, r.Tap, r.UID, r.UID); err != nil {
 		return err
 	}
 

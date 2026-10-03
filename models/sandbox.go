@@ -37,7 +37,7 @@ type Sandbox struct {
 	PID       int          `json:"pid"`
 	NetnsPath string       `json:"netns_path"`
 	Address   netip.Prefix `json:"address"`
-	// HostInterface is the host end of the link, a veth or a tap. Netfilter rules target it.
+	// HostInterface is the host end of the veth. Netfilter rules target it.
 	HostInterface string `json:"host_interface"`
 
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.

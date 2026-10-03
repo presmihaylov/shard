@@ -186,7 +186,7 @@ type NetworkSpec struct {
 	Userns  UserNamespace
 	Address netip.Prefix
 	Gateway netip.Addr
-	// HostInterface is the veth or tap on the host side of the link. Netfilter rules target it.
+	// HostInterface is the host end of the veth. Netfilter rules target it.
 	HostInterface string
 	// Nameservers is what the guest resolver reads. Neither substrate resolves a name itself.
 	Nameservers []netip.Addr

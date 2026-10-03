@@ -256,7 +256,7 @@ RECORD="${SHARD_ROOT}/sandboxes/${ID}/sandbox.json"
 ADDRESS=$(record_field "${ID}" address)
 LINK=$(record_field "${ID}" host_interface)
 VMM_PID=$(record_pid "${ID}")
-say "the record holds the address ${ADDRESS} on the tap ${LINK}, driven by pid ${VMM_PID}"
+say "the record holds the address ${ADDRESS} on the link ${LINK}, driven by pid ${VMM_PID}"
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "the pid in the record is a firecracker process"
 JAIL="${SHARD_ROOT}/jail/firecracker/${ID}/root"
 expect "$(stat -L -c %d:%i "/proc/${VMM_PID}/root/")" "$(stat -c %d:%i "${JAIL}")" "the vmm runs chrooted in its jail"
@@ -264,9 +264,19 @@ expect "$(cat "${JAIL}/firecracker.pid")" "${VMM_PID}" "the pid file in the jail
 VMM_UID=$(vmm_status "${VMM_PID}" Uid)
 [ "${VMM_UID}" -ge 1879048192 ] || fail "the vmm runs as uid ${VMM_UID}, want one from 0x70000000 up"
 expect "$(vmm_status "${VMM_PID}" CapEff) $(vmm_status "${VMM_PID}" Seccomp)" "0000000000000000 2" "the vmm runs as uid ${VMM_UID}, with no capability, under its seccomp filter"
-ip -o link show "${LINK}" | grep -q "master shard0" || fail "the tap ${LINK} is not a port of the bridge"
-absent "a namespace named ${ID}" "$(ip netns list | grep "^${ID}" || true)"
-say "the tap is a bridge port and the guest has no namespace on the host"
+# The vmm opens its tap inside the sandbox's netns, so neither of them is on the host (SHARD-431).
+[ -e "/run/netns/${ID}" ] || fail "there is no namespace named ${ID} for the vmm to join"
+VMM_NETNS=$(stat -L -c %d:%i "/proc/${VMM_PID}/ns/net")
+expect "${VMM_NETNS}" "$(stat -L -c %d:%i "/run/netns/${ID}")" "the vmm runs in the namespace ${ID}"
+[ "${VMM_NETNS}" != "$(stat -L -c %d:%i /proc/1/ns/net)" ] || fail "the vmm ${VMM_PID} runs in the host's network namespace"
+HOST_PORT=$(ip -details -o link show "${LINK}")
+grep -q "veth" <<<"${HOST_PORT}" || fail "the host link ${LINK} is not a veth: ${HOST_PORT}"
+grep -q "master ${HOST_BRIDGE}" <<<"${HOST_PORT}" || fail "the host link ${LINK} is not a port of ${HOST_BRIDGE}: ${HOST_PORT}"
+grep -q "tun type tap" <<<"${HOST_PORT}" && fail "the host link ${LINK} is a tap: ${HOST_PORT}"
+NETNS_TAP=$(ip -netns "${ID}" -details -o link show "${LINK}" 2>&1 || true)
+grep -q "tun type tap" <<<"${NETNS_TAP}" || fail "the namespace ${ID} holds no tap ${LINK}: ${NETNS_TAP}"
+grep -q "master br0" <<<"${NETNS_TAP}" || fail "the tap ${LINK} is not a port of br0 in ${ID}: ${NETNS_TAP}"
+say "the host link ${LINK} is a veth port of ${HOST_BRIDGE}, and the vmm and its tap are in the namespace ${ID}"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls lists the sandbox $(listed_state "${ID}"), want running"
 holds "${IMAGE%%:*}" shard image ls || fail "image ls does not list ${IMAGE}"
 say "ls shows the sandbox running, and the image is cached"
@@ -358,10 +368,10 @@ expect_network "after the create"
 expect_exec "resolved" "the guest resolves a name through the daemon's resolver" \
 	/bin/sh -c "timeout 5 nslookup ${OTHER_HOST} >/dev/null 2>&1 && echo resolved"
 
-step "enforce the egress policy on the tap"
+step "enforce the egress policy on the link"
 nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK}"
 nft list table bridge shard | grep -c "iifname \"${LINK}\"" >/dev/null || fail "the host does not pin the address of ${LINK}"
-say "the host holds a chain for the tap and pins its address"
+say "the host holds a chain for the link and pins its address"
 expect_blocked "${ID}" "the guest cannot reach an address the policy denies"
 shard policy create --allow 1.1.1.1 --allow 8.8.8.8 --allow dns --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 expect_exec "reachable" "the same address answers once a rule allows it" \
@@ -524,7 +534,8 @@ step "remove the microVM"
 shard rm "${ID}" >/dev/null
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"
 absent "the address lease" "$([ -e "${LEASE}" ] && echo "${LEASE}" || true)"
-absent "the tap" "$(ip link show "${LINK}" 2>/dev/null || true)"
+absent "the host link" "$(ip link show "${LINK}" 2>/dev/null || true)"
+absent "the namespace" "$([ -e "/run/netns/${ID}" ] && echo "/run/netns/${ID}" || true)"
 absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
 absent "the egress chain" "$(nft list table inet shard | grep "chain egress_${LINK}" || true)"
 absent "the cgroup" "$([ -e "${CGROUP}" ] && echo "${CGROUP}" || true)"
@@ -540,13 +551,13 @@ holds "${IMAGE%%:*}" shard image prune || fail "image prune did not remove the i
 say "image prune removed the image once no sandbox referenced it"
 
 step "prove the host holds nothing the run left"
-absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
+absent "a link of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
 absent "a vmm this run started" "$(started_vmms)"
 absent "a jail of this root" "$(find "${SHARD_ROOT}/jail/firecracker" -mindepth 1 -maxdepth 1 2>/dev/null || true)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "a cgroup of this run" "$(run_cgroups)"
-say "the tap, the vmm, the jail, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
+say "the link, the namespace, the vmm, the jail, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"

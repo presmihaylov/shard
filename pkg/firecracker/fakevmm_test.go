@@ -84,6 +84,7 @@ type jailerArgs struct {
 	CgroupVersion string   `json:"cgroupVersion"`
 	ParentCgroup  string   `json:"parentCgroup"`
 	NewPidNS      bool     `json:"newPidNS"`
+	Netns         string   `json:"netns,omitempty"`
 	Limits        []string `json:"limits"`
 	VMM           []string `json:"vmm"`
 }
@@ -111,6 +112,7 @@ func fakeJailer() error {
 	flags.StringVar(&args.CgroupVersion, "cgroup-version", "", "")
 	flags.StringVar(&args.ParentCgroup, "parent-cgroup", "", "")
 	flags.BoolVar(&args.NewPidNS, "new-pid-ns", false, "")
+	flags.StringVar(&args.Netns, "netns", "", "")
 	flags.Var(&resourceLimits, "resource-limit", "")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
