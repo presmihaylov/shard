@@ -453,12 +453,20 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	// A frozen sentry delivers no signal, and only a pause that broke off leaves one behind.
 	if status.State == models.StatePaused {
 		if err := p.runsc.Resume(ctx, id); err != nil {
+			if errors.Is(err, runsc.ErrUnreachable) {
+				return p.endWedged(ctx, id, status.Exists)
+			}
+
 			return err
 		}
 	}
 
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
 	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
+		if errors.Is(err, runsc.ErrUnreachable) {
+			return p.endWedged(ctx, id, status.Exists)
+		}
+
 		return err
 	}
 
@@ -475,6 +483,18 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 	// runsc still holds a sandbox it has stopped, so the status read above is what owns the mount.
 	return p.unmount(id, status.Exists)
+}
+
+// endWedged ends a cut-paused wedged sentry: sweep kills any pids its own cgroup still holds and takes an empty one as already gone, then runsc delete drops the state (SHARD-411).
+func (p *Provider) endWedged(ctx context.Context, id string, held bool) error {
+	if err := p.sweep(ctx, id); err != nil {
+		return err
+	}
+	if err := p.runsc.Delete(ctx, id, true); err != nil {
+		return err
+	}
+
+	return p.unmount(id, held)
 }
 
 func (p *Provider) kill(ctx context.Context, id string) error {
