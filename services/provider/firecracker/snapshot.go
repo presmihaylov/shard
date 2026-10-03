@@ -158,6 +158,9 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := p.lost(id); err != nil {
+		return err
+	}
 	if _, err := readSnapshot(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
