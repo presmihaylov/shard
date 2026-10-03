@@ -32,10 +32,11 @@ into the rootfs mount and "guest" is a `shard exec` read.
 | The host makes a file in a directory the guest never listed | the new file |
 | The host appends to the file of the rename case | **the old file** with no append |
 
-So host writes fail on gVisor. The atomic put that SHARD-286 needs (temp name, sync, rename) is
-exactly the case the guest never sees, and a file that the host makes in a directory the guest has
-listed stays invisible. Making host writes work needs `--file-access=shared`, which revalidates on
-every file op of every workload to serve a call that is rare.
+So host writes are not a coherent way to put a file on gVisor. The atomic put that SHARD-286 needs
+(temp name, sync, rename) is exactly the case the guest never sees, and a file that the host makes
+in a directory the guest has listed stays invisible. Making host writes coherent needs
+`--file-access=shared`, which revalidates on every file op of every workload to serve a call that
+is rare.
 
 Sysbox and runc were not probed. They share the host kernel, so a host write would be coherent. But
 Sysbox runs the sandbox in a user namespace, so a host write would have to pick the shifted uid
