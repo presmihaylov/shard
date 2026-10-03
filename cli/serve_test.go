@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/serve"
 )
@@ -183,23 +185,48 @@ func TestTheAPIKeyAloneReachesTheFront(t *testing.T) {
 	}
 }
 
-func TestAWrongAPIKeyIsRefusedByTheFront(t *testing.T) {
-	const wrong = "shard464-synthetic-wrong-key"
+// A wrong, revoked or expired key reaches the front and gets its 401, as the same token in a file does. (SHARD-464)
+func TestAKeyTheFrontDoesNotHonourIsRefusedByTheFront(t *testing.T) {
 	var out bytes.Buffer
 	var frontLog syncBuffer
 
-	app, flags, _ := newLoggedFrontApp(t, &out, &frontLog)
-	noRemoteEnv(t)
-	t.Setenv(client.RemoteEnv, flags[1])
-	t.Setenv(client.APIKeyEnv, wrong)
-	t.Setenv(client.CAFileEnv, flags[5])
-
-	err := app.Run(t.Context(), []string{"ls"})
-	if err == nil || !strings.Contains(err.Error(), "no valid bearer token") || strings.Contains(err.Error(), wrong) {
-		t.Errorf("ls with the wrong key returned %v, want the refusal of the front and never the key", err)
+	app, flags, secret := newLoggedFrontApp(t, &out, &frontLog)
+	ledger := serve.TokensPath(secret, "")
+	revoked, err := serve.IssueToken([]byte(frontSecret), ledger, "revoked", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("mint a token: %v", err)
 	}
-	if strings.Contains(frontLog.String(), wrong) {
-		t.Errorf("the front logged the key: %q", frontLog.String())
+	if _, err := serve.RevokeSubject(ledger, "revoked"); err != nil {
+		t.Fatalf("revoke the token: %v", err)
+	}
+	now := time.Now()
+	expired, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		ID: "expired-id", Subject: "expired", IssuedAt: jwt.NewNumericDate(now.Add(-2 * time.Hour)), ExpiresAt: jwt.NewNumericDate(now.Add(-time.Hour)),
+	}).SignedString([]byte(frontSecret))
+	if err != nil {
+		t.Fatalf("sign an expired token: %v", err)
+	}
+
+	for name, key := range map[string]string{
+		"a wrong key":       "shard464-synthetic-wrong-key",
+		"a revoked key":     revoked.Token,
+		"an expired key":    expired,
+		"a key of no token": "shard464 synthetic {key}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			noRemoteEnv(t)
+			t.Setenv(client.RemoteEnv, flags[1])
+			t.Setenv(client.APIKeyEnv, key)
+			t.Setenv(client.CAFileEnv, flags[5])
+
+			err := app.Run(t.Context(), []string{"ls"})
+			if err == nil || !strings.Contains(err.Error(), "no valid bearer token") || strings.Contains(err.Error(), key) {
+				t.Errorf("ls with %s returned %v, want the refusal of the front and never the key", name, err)
+			}
+			if strings.Contains(frontLog.String(), key) {
+				t.Errorf("the front logged the key: %q", frontLog.String())
+			}
+		})
 	}
 }
 

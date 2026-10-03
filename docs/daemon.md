@@ -844,9 +844,10 @@ shard ls
 `SHARD_API_KEY` is the raw credential, the `token` field of the record that `shard tokens mint`
 prints. The client sends it as the same bearer token a token file holds, so its scopes, its expiry
 and its revocation apply unchanged. The client trims the whitespace around it, and an empty or blank
-value is unset. It refuses a value that is not a bearer token, such as one with a space or a newline
-in it. That error names `SHARD_API_KEY` and never prints the value, and no error or log line on
-either side holds a token.
+value is unset. It refuses only a value with a control character inside, such as a newline, because
+no HTTP header carries one, and that error names `SHARD_API_KEY`. A wrong, revoked or expired key
+reaches the front, which answers `401` with "no valid bearer token". No error or log line on either
+side holds a token.
 
 The client takes the token from the first of three sources that is set:
 

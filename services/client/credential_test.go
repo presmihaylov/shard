@@ -242,10 +242,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 	}{
 		{name: "a newline in the key", host: host, key: leakKey + "\n" + leakKey, caFile: ca, mentions: client.APIKeyEnv},
 		{name: "a carriage return in the key", host: host, key: leakKey + "\r\nX-Injected: 1", caFile: ca, mentions: client.APIKeyEnv},
-		{name: "a space in the key", host: host, key: leakKey + " " + leakKey, caFile: ca, mentions: client.APIKeyEnv},
-		{name: "a control byte in the key", host: host, key: leakKey + "\x7f", caFile: ca, mentions: client.APIKeyEnv},
-		{name: "a byte past ascii in the key", host: host, key: leakKey + "\xff", caFile: ca, mentions: client.APIKeyEnv},
-		{name: "a whole mint record in the key", host: host, key: `{"token":"` + leakKey + `"}`, caFile: ca, mentions: client.APIKeyEnv},
+		{name: "a delete byte in the key", host: host, key: leakKey + "\x7f", caFile: ca, mentions: client.APIKeyEnv},
 		{name: "a plain http remote", host: "http://box.example.com:2376", key: leakKey, caFile: ca, mentions: "https"},
 		{name: "a remote that does not parse", host: "https://[::1", key: leakKey, caFile: ca, mentions: "parse"},
 		{name: "a missing ca file", host: host, key: leakKey, caFile: filepath.Join(t.TempDir(), "missing.pem"), mentions: "ca file"},
@@ -284,25 +281,34 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 		}
 	})
 
-	t.Run("a key the front refuses", func(t *testing.T) {
-		noRemoteEnv(t)
-		t.Setenv(client.RemoteEnv, host)
-		t.Setenv(client.APIKeyEnv, leakKey)
-		t.Setenv(client.CAFileEnv, ca)
+	// A key of any shape a header carries reaches the front, so a wrong one gets the 401 of serve and not a guess of the client.
+	for name, key := range map[string]string{
+		"a wrong key":                leakKey,
+		"a space in the key":         leakKey + " " + leakKey,
+		"a tab in the key":           leakKey + "\t" + leakKey,
+		"a byte past ascii in a key": leakKey + "\xff",
+		"a whole mint record":        `{"token":"` + leakKey + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			noRemoteEnv(t)
+			t.Setenv(client.RemoteEnv, host)
+			t.Setenv(client.APIKeyEnv, key)
+			t.Setenv(client.CAFileEnv, ca)
 
-		c, err := client.NewRemoteFromEnv(client.RemoteOptions{})
-		if err != nil {
-			t.Fatalf("NewRemoteFromEnv: %v", err)
-		}
-		_, err = c.Version(t.Context())
-		if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "no valid bearer token") {
-			t.Errorf("Version with the wrong key returned %v, want the refusal of the front and never the key", err)
-		}
-
-		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%d", "%x", "%q"} {
-			if printed := fmt.Sprintf(verb, c) + fmt.Sprintf(verb, *c); strings.Contains(printed, leakKey) {
-				t.Errorf("%s of the client printed the key: %s", verb, printed)
+			c, err := client.NewRemoteFromEnv(client.RemoteOptions{})
+			if err != nil {
+				t.Fatalf("NewRemoteFromEnv: %v", err)
 			}
-		}
-	})
+			_, err = c.Version(t.Context())
+			if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "no valid bearer token") {
+				t.Errorf("Version with the wrong key returned %v, want the refusal of the front and never the key", err)
+			}
+
+			for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%d", "%x", "%q"} {
+				if printed := fmt.Sprintf(verb, c) + fmt.Sprintf(verb, *c); strings.Contains(printed, leakKey) {
+					t.Errorf("%s of the client printed the key: %s", verb, printed)
+				}
+			}
+		})
+	}
 }

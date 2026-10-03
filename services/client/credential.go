@@ -118,17 +118,11 @@ func readTokenFile(path string) (string, error) {
 	return token, nil
 }
 
-// checkToken refuses what RFC 6750 calls no bearer token, so a newline or a pasted record never reaches a header.
+// checkToken refuses the bytes net/http refuses in a header, so a newline never splits a request; any other wrong token is the front's to refuse.
 func checkToken(token string) error {
-	body := strings.TrimRight(token, "=")
-	if body == "" || strings.ContainsFunc(body, func(r rune) bool { return !tokenRune(r) }) {
-		return errors.New("is not a bearer token: one holds only letters, digits and -._~+/, then any =, as the token field of a tokens mint record does")
+	if strings.ContainsFunc(token, func(r rune) bool { return r < ' ' && r != '\t' || r == 0x7f }) {
+		return errors.New("holds a control character, which no HTTP header carries")
 	}
 
 	return nil
-}
-
-// tokenRune is one character of an RFC 6750 b64token, before its = padding.
-func tokenRune(r rune) bool {
-	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || strings.ContainsRune("-._~+/", r)
 }
