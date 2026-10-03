@@ -93,12 +93,12 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.image = img
 
-	runner, err := runc.New(filepath.Join(t.TempDir(), "sysbox-runc"), runc.WithBinary(sysbox.Binary))
+	runner, err := runc.New(filepath.Join(t.TempDir(), "sysbox-runc"), runc.WithBinary(sysbox.Binary), runc.WithNoNewKeyring())
 	if err != nil {
 		t.Fatalf("open the sysbox-runc runner: %v", err)
 	}
 
-	bundles, err := bundle.New(hostInitPath)
+	bundles, err := bundle.New(hostInitPath, bundle.WithSeccomp(bundle.KeyringProfile))
 	if err != nil {
 		t.Fatalf("open the bundle service: %v", err)
 	}
