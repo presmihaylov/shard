@@ -214,6 +214,81 @@ echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 	}
 }
 
+// frozenSentry lays the proc and cgroup entries of a sentry a pause froze, and a snapshot beside it, and answers that snapshot.
+func frozenSentry(t *testing.T, p *gvisor.Provider, cgroups string) string {
+	t.Helper()
+
+	proc := t.TempDir()
+	p.SetProcRoot(proc)
+	p.SetCgroupRoot(cgroups)
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "snap")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return dir
+}
+
+// A cut pause leaves the sentry frozen past its checkpoint, so the release must delete it and never thaw it (SHARD-366).
+func TestReleaseDeletesAFrozenSandboxWithoutAThaw(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	cgroups := t.TempDir()
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *delete*) rm -f `+cg+`/cgroup.procs ;; esac
+echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
+	dir := frozenSentry(t, p, cgroups)
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Release of a frozen sandbox: %v", err)
+	}
+
+	got := unitFile(t, calls)
+	if !strings.Contains(got, "delete --force") {
+		t.Errorf("release of a frozen sandbox ran %q, want a forced delete", got)
+	}
+	if strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("release of a frozen sandbox ran %q, want neither a thaw nor a signal: the guest would run past its snapshot", got)
+	}
+}
+
+// Release ends a sandbox outright, so it must refuse one that runs.
+func TestReleaseRefusesARunningSandbox(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	dir := frozenSentry(t, p, t.TempDir())
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	if err == nil || !strings.Contains(err.Error(), "amber-otter-1a2b") {
+		t.Errorf("Release of a running sandbox returned %v, want a refusal that names it", err)
+	}
+	if got := unitFile(t, calls); strings.Contains(got, "delete") {
+		t.Errorf("release of a running sandbox ran %q, want no delete", got)
+	}
+}
+
 // Pause is the one verb that deletes a sandbox from runsc, so it must never take one it did not see running.
 func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 	cases := map[string]string{

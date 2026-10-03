@@ -90,18 +90,16 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	}
 
 	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
-	if !status.Alive() {
-		dir, err := s.cutPause(sb)
-		if err != nil {
-			return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+	dir, err := s.cutPause(ctx, sb, status)
+	if err != nil {
+		return "", err
+	}
+	if dir != "" {
+		if err := s.recordCutPause(sb.ID, dir, report); err != nil {
+			return "", err
 		}
-		if dir != "" {
-			if err := s.recordCutPause(sb.ID, dir, report); err != nil {
-				return "", err
-			}
 
-			return models.StatePaused, nil
-		}
+		return models.StatePaused, nil
 	}
 
 	state, err := reconciled(sb, status)
@@ -183,22 +181,39 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	return sb.State, nil
 }
 
-// cutPause is the snapshot directory a marked pause completed and never recorded, or empty when there is none.
-func (s *Service) cutPause(sb models.Sandbox) (string, error) {
+// releaser ends a sandbox a cut pause left frozen beside its snapshot, with no thaw that would run the guest past it.
+type releaser interface {
+	Release(ctx context.Context, id, dir string) error
+}
+
+// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left frozen; empty for none.
+func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
 	if sb.State != models.StateRunning || !sb.Pausing {
 		return "", nil
 	}
 
 	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
 	}
 	held, err := hasCheckpoint(dir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
 	}
 	if !held {
 		return "", nil
+	}
+	if !status.Alive() {
+		return dir, nil
+	}
+
+	r, ok := s.cfg.Provider.(releaser)
+	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
+	if !ok || status.State != models.StatePaused {
+		return "", nil
+	}
+	if err := r.Release(ctx, sb.ID, dir); err != nil {
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left frozen beside its snapshot: %w", sb.ID, err)
 	}
 
 	return dir, nil

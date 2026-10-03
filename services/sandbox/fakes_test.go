@@ -294,6 +294,8 @@ type fakeProvider struct {
 	spendBudget bool
 	// cleanupFails makes the pause write its checkpoint and then fail the delete, with the sentry gone.
 	cleanupFails bool
+	// cleanupFreezes makes the pause write its checkpoint and then fail the delete, with the sentry still frozen.
+	cleanupFreezes bool
 
 	// logPath is the file the output is read from, which a test writes into.
 	logPath string
@@ -419,10 +421,15 @@ func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
 
 		return &models.LostError{Sandbox: id, Err: fmt.Errorf("checkpoint sandbox %s: no space left on device", id)}
 	}
-	if f.spendBudget || f.cleanupFails {
+	if f.spendBudget || f.cleanupFails || f.cleanupFreezes {
 		if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
 			return err
 		}
+	}
+	if f.cleanupFreezes {
+		f.status = frozen()
+
+		return fmt.Errorf("delete sandbox %s after its checkpoint: device or resource busy", id)
 	}
 	if f.cleanupFails {
 		f.status = models.Status{}
@@ -521,6 +528,20 @@ func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) er
 }
 
 // Reclaim is the raw kill a wedged substrate gets, and it frees the substrate the way Stop's kill does.
+func (f *fakeProvider) Release(_ context.Context, _, _ string) error {
+	if err := f.r.record("provider.Release"); err != nil {
+		return err
+	}
+	f.status = models.Status{}
+
+	return nil
+}
+
+// frozen is a sentry a pause froze and never deleted, which runsc still reports paused and alive.
+func frozen() models.Status {
+	return models.Status{Exists: true, State: models.StatePaused, PID: 42}
+}
+
 func (f *fakeProvider) Reclaim(_ context.Context, _ string) error {
 	if err := f.r.record("provider.Reclaim"); err != nil {
 		return err

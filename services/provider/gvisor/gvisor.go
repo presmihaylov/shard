@@ -904,6 +904,32 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 	return errors.Join(os.RemoveAll(tmp), b.Unmount())
 }
 
+// Release ends a sentry a cut pause left frozen past its checkpoint, beside the snapshot that pause installed in dir (SHARD-366).
+func (p *Provider) Release(ctx context.Context, id, dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
+		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
+	}
+
+	status, err := p.Status(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !status.Alive() || status.State != models.StatePaused {
+		return fmt.Errorf("sandbox %s is %s on %s: only a frozen sandbox is released beside its snapshot", id, status.State, Name)
+	}
+
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+
+	// The same bound a lost pause's release has, so a wedged delete stalls no boot and holds no lock.
+	ctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	return p.release(ctx, id, b, dir+".tmp")
+}
+
 // Resume brings the sandbox back from the snapshot in dir, over the writable layer the pause kept,
 // as a new runsc container: the one the pause deleted is gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {

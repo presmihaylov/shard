@@ -221,6 +221,44 @@ func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 	}
 }
 
+// A delete that fails after the swap leaves the sentry frozen beside a complete snapshot, which the pause must release (SHARD-366).
+func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
+	dir := t.TempDir()
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "is paused") {
+		t.Fatalf("pause returned %v, want the failure and that the sandbox is paused", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Snapshot, sb.Pausing, dir)
+	}
+	if !slices.Contains(r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", r.snapshot())
+	}
+}
+
+// A release that fails keeps the mark over the checkpoint, so the liveness tick finishes the pause later.
+func TestPauseKeepsItsMarkWhenTheReleaseFails(t *testing.T) {
+	dir := t.TempDir()
+	svc, l := newService(t, &recorder{fail: []string{"provider.Release"}}, running())
+	l.repo.snapshotDir = dir
+	l.provider.cleanupFreezes = true
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "release sandbox sandbox1") {
+		t.Fatalf("pause returned %v, want the failed release", err)
+	}
+
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
+		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	}
+}
+
 func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())

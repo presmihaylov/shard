@@ -116,16 +116,7 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 		return err
 	}
 	if status.Alive() {
-		err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
-			sb.Pausing = false
-
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("sandbox %s still runs but its record was not updated: %w", id, err)
-		}
-
-		return nil
+		return s.settleLivePause(ctx, id, status)
 	}
 
 	// The checkpoint is the last file the provider writes, and this pause removed any older one before it began.
@@ -153,6 +144,38 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	}
 
 	return fmt.Errorf("sandbox %s is gone from %s and its record says stopped", id, s.cfg.Provider.Name())
+}
+
+// settleLivePause is for a failed pause the substrate still holds: running, or frozen beside the snapshot the pause installed.
+func (s *Service) settleLivePause(ctx context.Context, id string, status models.Status) error {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return err
+	}
+
+	// A delete that failed after the swap leaves the sentry frozen past its checkpoint, and a running record would lose the pause (SHARD-366).
+	dir, err := s.cutPause(ctx, sb, status)
+	if err != nil {
+		return err
+	}
+	if dir != "" {
+		if err := s.recordPaused(id, dir); err != nil {
+			return err
+		}
+
+		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot had to be run again", id)
+	}
+
+	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+		sb.Pausing = false
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s still runs but its record was not updated: %w", id, err)
+	}
+
+	return nil
 }
 
 // Resume runs a paused sandbox again from its snapshot. It is the run the pause froze, so the record

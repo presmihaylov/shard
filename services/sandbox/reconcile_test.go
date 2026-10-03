@@ -94,6 +94,20 @@ func (p *recProvider) Status(ctx context.Context, id string) (models.Status, err
 	return p.status[id], nil
 }
 
+// releasingProvider is a substrate that can release a sandbox a cut pause left frozen, the way gVisor can.
+type releasingProvider struct {
+	*recProvider
+
+	released []string
+}
+
+func (p *releasingProvider) Release(_ context.Context, id, dir string) error {
+	p.released = append(p.released, dir)
+	p.status[id] = gone()
+
+	return nil
+}
+
 // recNet counts the re-applies, which is what the host netfilter rules cost after a restart.
 type recNet struct {
 	sandbox.Network
@@ -115,12 +129,12 @@ type reconcileLab struct {
 	reports []string
 }
 
-func newReconcileLab(t *testing.T, provider *recProvider, records ...models.Sandbox) *reconcileLab {
+func newReconcileLab(t *testing.T, provider models.Provider, records ...models.Sandbox) *reconcileLab {
 	return newTunedReconcileLab(t, provider, 0, records...)
 }
 
 // newTunedReconcileLab is newReconcileLab with a probe budget; a zero budget keeps the default.
-func newTunedReconcileLab(t *testing.T, provider *recProvider, budget time.Duration, records ...models.Sandbox) *reconcileLab {
+func newTunedReconcileLab(t *testing.T, provider models.Provider, budget time.Duration, records ...models.Sandbox) *reconcileLab {
 	t.Helper()
 
 	repo := &recRepo{t: t, records: map[string]*models.Sandbox{}}
@@ -284,6 +298,66 @@ func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 	if lab.net.applied != 0 {
 		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, and the reconcile finishes that pause (SHARD-366).
+func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	dir := heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s and no mark", *got, dir)
+	}
+	if len(provider.released) != 1 || provider.released[0] != dir {
+		t.Errorf("the substrate released %v, want the sandbox once beside %s: a resume refuses a live one", provider.released, dir)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
+		t.Errorf("the reconcile reported %v, want one line on the pause", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+	}
+}
+
+// A substrate that cannot release keeps what it holds, so the reconcile does not take the snapshot from under it.
+func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
+		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	}
+}
+
+// Without the mark the frozen sentry is no pause this daemon finishes, so the reconcile never releases it.
+func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
+	lab := newReconcileLab(t, provider, sb)
+	heldCheckpoint(t, lab, "sandbox1")
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" {
+		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	}
+	if len(provider.released) != 0 {
+		t.Errorf("the substrate released %v, want nothing", provider.released)
 	}
 }
 

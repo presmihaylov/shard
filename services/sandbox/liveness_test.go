@@ -136,6 +136,51 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 }
 
+// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, which the tick must release (SHARD-366).
+func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, frozen())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	}
+	if !slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", lab.r.snapshot())
+	}
+}
+
+// Without the mark the frozen sentry is no pause this daemon finishes, so the tick neither releases it nor takes the checkpoint.
+func TestLivenessLeavesAnUnmarkedFrozenSandboxAlone(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lab := newLivenessLab(t, running(), frozen())
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	if got := lab.l.repo.sb; got.Snapshot != "" {
+		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	}
+	if slices.Contains(lab.r.snapshot(), "provider.Release") {
+		t.Errorf("the calls were %v, want no release of a sentry no marked pause left", lab.r.snapshot())
+	}
+}
+
 func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	lab := newLivenessLab(t, optedIn(), oomKilled())
