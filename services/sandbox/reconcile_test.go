@@ -307,6 +307,19 @@ func TestReconcileStopsARunningRecordTheHostEndedForMemoryWithItsReason(t *testi
 	}
 }
 
+// An unresponsive record the host ended for its memory while the daemon was down keeps only the memory reason (SHARD-441).
+func TestReconcileStopsAnUnresponsiveRecordTheHostEndedForMemoryWithThatReasonAlone(t *testing.T) {
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, unresponsive())
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.StoppedReason != sandbox.OOMKilledReason || got.UnresponsiveReason != "" {
+		t.Errorf("the record says %s with the reasons %q and %q, want stopped with %q alone", got.State, got.StoppedReason, got.UnresponsiveReason, sandbox.OOMKilledReason)
+	}
+}
+
 func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
