@@ -112,7 +112,7 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	if err := r.write(sb); err != nil {
 		// Give the id back: no verb can reach a claimed directory that holds no record.
 		cleanup := os.RemoveAll(r.dir(id))
-		// write bumped the generation before it failed, so bump again now the unreachable record is gone (SHARD-381).
+		// Bump again after cleanup: write's own bump already fired, and the counter must move whether or not removal cleared the record (SHARD-381).
 		r.gen.Add(1)
 
 		return models.Sandbox{}, errors.Join(err, cleanup)
@@ -122,7 +122,7 @@ func (r *Repository) Create(sb models.Sandbox) (models.Sandbox, error) {
 	// a record no verb can reach.
 	if err := r.claimName(sb.Name, id); err != nil {
 		cleanup := os.RemoveAll(r.dir(id))
-		// write bumped the generation, so bump again now the unreachable record is gone (SHARD-381).
+		// Bump again after cleanup: write's own bump already fired, and the counter must move whether or not removal cleared the record (SHARD-381).
 		r.gen.Add(1)
 
 		return models.Sandbox{}, errors.Join(err, cleanup)
