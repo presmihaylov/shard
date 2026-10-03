@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+
+	"github.com/presmihaylov/shard/pkg/pidpin"
 )
 
 // Process is a shim by its pid and its start time, so a pid the kernel gave to another process later is never signalled.
@@ -60,37 +62,32 @@ func (p Process) Alive() (bool, error) {
 	return start == p.Start, nil
 }
 
-// Kill ends the process while its pid still names it, and nothing once it does not.
+// Kill ends the process while its pid still names it, and nothing once it does not; the check and the signal reach one pinned process.
 func (p Process) Kill() error {
-	alive, err := p.Alive()
-	if err != nil || !alive {
-		return err
-	}
-
-	return killPID(p.PID)
+	return p.kill(func(*Process) {})
 }
 
-// killPID ends a shim, and the group it leads with it; one that leads none dies alone.
-func killPID(pid int) error {
-	pgid, err := syscall.Getpgid(pid)
+// kill pins the pid, checks the start time and signals through the pin; between runs after the check, where a test moves the pid to another process.
+func (p Process) kill(between func(*Process)) error {
+	if p.PID <= 1 {
+		return nil
+	}
+	pin, err := pidpin.Open(p.PID)
 	if errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the group of the shim %d: %w", pid, err)
+		return fmt.Errorf("kill the shim %d: %w", p.PID, err)
 	}
-	if err := syscall.Kill(target(pid, pgid, syscall.Getpgrp()), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill the shim %d: %w", pid, err)
+	// A pid names one process from its fork to its reap, so a start time that still matches after the pin proves the pin holds this process.
+	alive, err := p.Alive()
+	if err != nil || !alive {
+		return errors.Join(err, pin.Close())
 	}
-
-	return nil
-}
-
-// target is the group when the shim leads it and the daemon is not in it, and the pid alone otherwise.
-func target(pid, pgid, own int) int {
-	if pgid == pid && pgid != own {
-		return -pid
+	between(&p)
+	if err := pin.Kill(); err != nil {
+		return errors.Join(fmt.Errorf("kill the shim %d: %w", pin.PID(), err), pin.Close())
 	}
 
-	return pid
+	return pin.Close()
 }

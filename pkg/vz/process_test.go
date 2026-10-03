@@ -1,36 +1,14 @@
 package vz
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
-
-func TestTargetNeverNamesTheDaemonsOwnGroup(t *testing.T) {
-	const shim, daemon, other = 4100, 4000, 4200
-	cases := []struct {
-		name      string
-		pgid, own int
-		want      int
-	}{
-		{"the shim leads its own group", shim, daemon, -shim},
-		{"the shim is in a group it does not lead", other, daemon, shim},
-		{"the shim is in the daemon's group", daemon, daemon, shim},
-		{"the group the shim leads is the daemon's", shim, shim, shim},
-	}
-	for _, c := range cases {
-		if got := target(shim, c.pgid, c.own); got != c.want {
-			t.Errorf("%s: target = %d, want %d", c.name, got, c.want)
-		}
-	}
-}
 
 func TestOnlyTheArgumentsStartGivesAShimServeItsSocket(t *testing.T) {
 	const socket = "/s/a/shim.sock"
@@ -87,42 +65,21 @@ func TestKillOfAShimInTheDaemonsGroupSignalsItAlone(t *testing.T) {
 	}
 }
 
-func TestKillEndsTheGroupTheShimLeads(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "sleep 60 & echo $!; wait")
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	shim, wait := child(t, cmd, &syscall.SysProcAttr{Setpgid: true})
-	line, err := bufio.NewReader(out).ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
-	member, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := syscall.Kill(member, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			t.Error(err)
-		}
-	})
+// A check and a kill that read the pid apart would end whatever holds it by the kill, so the kill goes through the pin the check judged.
+func TestKillSignalsThePinnedShimWhenItsPidNamesAnotherAfterTheCheck(t *testing.T) {
+	shim, waitShim := child(t, exec.Command("sleep", "60"), nil)
+	innocent, _ := child(t, exec.Command("sleep", "60"), nil)
 	p, err := Identify(shim)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := p.Kill(); err != nil {
-		t.Fatalf("Kill = %v", err)
+	if err := p.kill(func(q *Process) { q.PID = innocent }); err != nil {
+		t.Fatalf("kill = %v", err)
 	}
-	reaped(t, wait)
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := Identify(member); errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pid %d of the group the shim led still runs 5s after Kill", member)
-		}
+	reaped(t, waitShim)
+	if _, err := Identify(innocent); err != nil {
+		t.Fatalf("the process on the pid after the check was hit: %v", err)
 	}
 }
 

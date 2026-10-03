@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -353,8 +354,8 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 // kill ends the shim by the pid the kernel attests behind its socket, never by a name.
 func (p *Provider) kill(ctx context.Context, m *machine) error {
 	err := m.client.Kill()
-	// A full socket queue refuses the dial that names the pid, so the pid the attach verified is killed instead (SHARD-423).
-	if absent(err) {
+	// A full socket queue refuses the dial that names the pid, and a socket that names another pid proves none, so the shim the attach verified is killed instead (SHARD-423).
+	if absent(err) || errors.Is(err, vz.ErrUnproven) {
 		err = m.shim.Kill()
 	}
 	if err != nil {
