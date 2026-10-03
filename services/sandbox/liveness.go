@@ -89,6 +89,15 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		current.UnresponsiveReason = ""
 	}
 
+	// A pause that could not reconcile itself left its mark over the checkpoint it wrote, and maybe a frozen sandbox (SHARD-366).
+	dir, err := s.cutPause(ctx, current, status)
+	if err != nil {
+		return err
+	}
+	if dir != "" {
+		return s.recordCutPause(sb.ID, dir, report)
+	}
+
 	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
 	if status.Alive() {
 		if err := s.recordCalm(sb.ID, current, status.Throttles, now); err != nil {
