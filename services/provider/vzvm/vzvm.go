@@ -46,6 +46,8 @@ const (
 	cursorFile = "output.cursor"
 	// shimFile names the shim the last attach verified, which a refused dial cannot (SHARD-423).
 	shimFile = "shim.json"
+	// supervisorFailedFile holds the reason shard-init gave for a death at boot, which the end of the shim would otherwise take with the guest.
+	supervisorFailedFile = "supervisor-failed"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -49,6 +50,14 @@ func TestMain(m *testing.M) {
 		time.Sleep(time.Hour)
 
 		return
+	}
+	// The shim passes its whole environment to the guest, so only the -transport argv says which one this is.
+	if os.Getenv(bootFailingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := bootFailingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "boot failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
 	}
 	if os.Getenv(fakeShimEnv) == "1" {
 		if err := fakeShim(); err != nil {
