@@ -9,6 +9,9 @@
 	<array>
 		<string>/usr/local/bin/shard</string>
 		<string>daemon</string>
+		<!-- launchd opens the log once, so the daemon opens it itself and reopens it on the SIGHUP newsyslog sends. -->
+		<string>--log</string>
+		<string>/var/log/shard/daemon.log</string>
 	</array>
 	<!-- The root under /var/lib/shard belongs to this user, so nothing runs as root; docs/mac.md puts the name in. -->
 	<key>UserName</key>
@@ -29,6 +32,7 @@
 	<!-- UMask=0077, as a decimal: a unix socket needs write to connect, so it must never sit at 0755 between listen and chmod. -->
 	<key>Umask</key>
 	<integer>63</integer>
+	<!-- The same file, for what the daemon prints before --log takes over, and a refusal to start. -->
 	<key>StandardOutPath</key>
 	<string>/var/log/shard/daemon.log</string>
 	<key>StandardErrorPath</key>

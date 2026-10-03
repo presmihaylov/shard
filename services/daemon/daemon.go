@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +19,9 @@ import (
 
 // LockFile is the singleton flock under the root: one daemon per root, and the only lock shard keeps.
 const LockFile = "daemon.lock"
+
+// PIDFile names the daemon's pid for newsyslog to signal; the lock, not this file, says whether a daemon is up.
+const PIDFile = "daemon.pid"
 
 const (
 	defaultMinBackoff = time.Second
@@ -64,6 +69,13 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	}
 	defer func() { err = errors.Join(err, lock.Release()) }()
 
+	pid := filepath.Join(d.root, PIDFile)
+	if err := store.WriteFile(pid, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write the pid file: %w", err)
+	}
+	// Removed before the lock is released, so a clean exit leaves no pid for newsyslog to signal.
+	defer func() { err = errors.Join(err, removePID(pid)) }()
+
 	d.log.Printf("daemon holds %s with %d tasks", path, len(d.tasks))
 
 	// Under the lock and before the first task, so no verb reads a record the substrate disagrees with.
@@ -92,6 +104,14 @@ func takeLock(path string) (*store.Lock, error) {
 	}
 
 	return lock, nil
+}
+
+func removePID(path string) error {
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove the pid file: %w", err)
+	}
+
+	return nil
 }
 
 // WithReconciler names what the daemon runs over the records once it holds the root.

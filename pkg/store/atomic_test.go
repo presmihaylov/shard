@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -217,5 +218,32 @@ func TestWriteFileIfChangedReplacesOtherBytesOrMode(t *testing.T) {
 	}
 	if string(got) != "second" || info.Mode().Perm() != 0o644 {
 		t.Errorf("got %q at %v, want %q at 0644", got, info.Mode().Perm(), "second")
+	}
+}
+
+// A symlink and a fifo hold no data of their own, so neither is followed or waited on, and both are replaced.
+func TestWriteFileIfChangedReplacesASymlinkAndAFifo(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := WriteFile(target, []byte("same"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+
+	for _, path := range []string{link, fifo} {
+		if err := WriteFileIfChanged(path, []byte("same"), 0o644); err != nil {
+			t.Fatalf("WriteFileIfChanged %s: %v", path, err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Errorf("%s is %v, %v; want a regular file", path, info, err)
+		}
 	}
 }

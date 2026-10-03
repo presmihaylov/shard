@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -24,7 +23,7 @@ func writeResolverFilesIn(etc string, a supervisor.Address) error {
 		hosts += fmt.Sprintf("%s\t%s\n", a.IP, a.Hostname)
 	}
 	for name, content := range map[string]string{"resolv.conf": resolv.String(), "hosts": hosts} {
-		if err := store.WriteFile(filepath.Join(etc, name), []byte(content), 0o644); err != nil { //nolint:gosec // libc reads them as every process
+		if err := writeGuestFile(filepath.Join(etc, name), []byte(content), 0o644); err != nil { //nolint:gosec // libc reads them as every process
 			return fmt.Errorf("write %s: %w", name, err)
 		}
 	}
