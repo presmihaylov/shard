@@ -34,12 +34,12 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	state := models.StateStopped
+	status := models.Status{State: models.StateStopped}
 	if m != nil {
-		state = m.status(p).State
+		status = m.status(p)
 	}
-	if state != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
+	if status.State != models.StateRunning {
+		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox%s", id, status.State, Name, because(status))
 	}
 
 	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
@@ -144,6 +144,9 @@ func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 		return nil
 	}
 	status := m.status(p)
+	if status.State == models.StateUnresponsive {
+		return fmt.Errorf("sandbox %s is %s on %s: resume takes a paused sandbox%s", m.id, status.State, Name, because(status))
+	}
 	if !status.Alive() {
 		return p.release(ctx, m)
 	}

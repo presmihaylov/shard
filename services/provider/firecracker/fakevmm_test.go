@@ -31,6 +31,9 @@ const (
 // reseedsFile in the state directory, once a test creates it, takes one line per reseed the guest reads.
 const reseedsFile = "reseeds"
 
+// controlsFile in the state directory, once a test creates it, takes one line per control stream the host opens, so a test counts the attaches.
+const controlsFile = "controls"
+
 // initBinary is the shard-init the fake vmm runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
 
@@ -517,6 +520,9 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 
 	var toGuest io.Writer = guest
 	if port == int(supervisor.ControlPort) {
+		if err := note(filepath.Join(filepath.Dir(f.socket), controlsFile), "control"); err != nil {
+			return
+		}
 		toGuest = reseeds{Writer: guest, path: filepath.Join(filepath.Dir(f.socket), reseedsFile)}
 	}
 	done := make(chan struct{}, 2)
@@ -542,7 +548,7 @@ type reseeds struct {
 
 func (r reseeds) Write(p []byte) (int, error) {
 	if strings.Contains(string(p), `"kind":"`+supervisor.KindReseed+`"`) {
-		if err := note(r.path); err != nil {
+		if err := note(r.path, supervisor.KindReseed); err != nil {
 			return 0, err
 		}
 	}
@@ -550,7 +556,7 @@ func (r reseeds) Write(p []byte) (int, error) {
 	return r.Writer.Write(p)
 }
 
-func note(path string) error {
+func note(path, line string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -558,7 +564,7 @@ func note(path string) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(supervisor.KindReseed + "\n")
+	_, err = f.WriteString(line + "\n")
 
 	return errors.Join(err, f.Close())
 }

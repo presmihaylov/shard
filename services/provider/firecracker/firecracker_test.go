@@ -479,26 +479,100 @@ func awaitReaped(t *testing.T, pid int) {
 	}
 }
 
-// The startup probe of a new daemon kills a vmm too frozen to answer and reads it stopped, inside the probe budget (SHARD-392).
-func TestStatusAfterARestartKillsAVMMTooFrozenToAnswer(t *testing.T) {
+// A new daemon reads a vmm too frozen to answer unresponsive inside the serve bound, keeps it, and gives it back once it thaws (SHARD-392).
+func TestStatusAfterARestartKeepsAFrozenVMMUnresponsive(t *testing.T) {
 	h := newHarness(t)
 	spec, pid := h.frozenAfterARestart(t)
 
-	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
-	defer cancel()
-	began := time.Now()
-	status, err := h.provider.Status(ctx, spec.ID)
-	if err != nil || status.State != models.StateStopped {
-		t.Fatalf("Status after %s = %+v, %v, want stopped", time.Since(began), status, err)
+	status := h.unresponsive(t, spec.ID, pid)
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the vmm %d is gone after a read: %v", pid, err)
 	}
-	if took := time.Since(began); took > 8*time.Second {
-		t.Fatalf("Status took %s on a frozen vmm", took)
+	_, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err == nil || !strings.Contains(err.Error(), status.Reason) {
+		t.Fatalf("Exec on an unresponsive sandbox = %v, want a refusal that names %q", err, status.Reason)
 	}
-	awaitReaped(t, pid)
+
+	if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status, err = h.provider.Status(t.Context(), spec.ID)
+		if err == nil && status.State == models.StateRunning && status.PID == pid {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("Status after the thaw = %+v, %v, want running on pid %d", status, err, pid)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 7"}})
+	if err != nil || exit.Code != 7 {
+		t.Fatalf("Exec after the thaw = %+v, %v, want exit 7", exit, err)
+	}
 }
 
-// A stop that meets a frozen vmm only by its socket kills it by the adopt bound, not by callTimeout (SHARD-392).
-func TestStopAfterARestartKillsAVMMTooFrozenToAnswer(t *testing.T) {
+// Lookups that meet a thawed vmm at once attach it once, so one control stream follows the guest.
+func TestLookupsThatRaceAThawAttachTheVMMOnce(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+	h.unresponsive(t, spec.ID, pid)
+	controls := filepath.Join(spec.StateDir, controlsFile)
+	if err := os.WriteFile(controls, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+	const lookups = 8
+	errs := make(chan error, lookups)
+	for range lookups {
+		go func() {
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err == nil && status.State != models.StateRunning {
+				err = fmt.Errorf("status %+v, want running", status)
+			}
+			errs <- err
+		}()
+	}
+	for range lookups {
+		if err := <-errs; err != nil {
+			t.Fatalf("a lookup that raced the thaw: %v", err)
+		}
+	}
+	read, err := os.ReadFile(controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened := strings.Count(string(read), "\n"); opened != 1 {
+		t.Fatalf("the host opened %d control streams to one thawed vmm, want 1", opened)
+	}
+}
+
+// A stop after the daemon read the vmm unresponsive kills it by its pid in a short re-probe, not a grace or callTimeout (SHARD-392).
+func TestStopAfterARestartKillsAFrozenVMMReadUnresponsive(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+	h.unresponsive(t, spec.ID, pid)
+
+	began := time.Now()
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after %s: %v", time.Since(began), err)
+	}
+	if took := time.Since(began); took > 3*time.Second {
+		t.Fatalf("Stop took %s on a vmm already read unresponsive", took)
+	}
+	awaitReaped(t, pid)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
+// A stop that is the first to meet a frozen vmm by its socket still ends it by the adopt bound (SHARD-392).
+func TestStopAfterARestartKillsAFrozenVMMNoReadMet(t *testing.T) {
 	h := newHarness(t)
 	spec, pid := h.frozenAfterARestart(t)
 
@@ -514,6 +588,24 @@ func TestStopAfterARestartKillsAVMMTooFrozenToAnswer(t *testing.T) {
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
 	}
+}
+
+// unresponsive reads a frozen vmm the way a booting daemon does, and proves it reads unresponsive on its pid inside the serve bound.
+func (h *harness) unresponsive(t *testing.T, id string, pid int) models.Status {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), sandbox.DefaultProbeBudget)
+	defer cancel()
+	began := time.Now()
+	status, err := h.provider.Status(ctx, id)
+	if err != nil || status.State != models.StateUnresponsive || status.PID != pid || !strings.Contains(status.Reason, strconv.Itoa(pid)) {
+		t.Fatalf("Status after %s = %+v, %v, want unresponsive on pid %d", time.Since(began), status, err, pid)
+	}
+	if took := time.Since(began); took >= 5*time.Second {
+		t.Fatalf("Status took %s on a frozen vmm, past the 5s a daemon has to serve", took)
+	}
+
+	return status
 }
 
 // The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.

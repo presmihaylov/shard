@@ -117,8 +117,8 @@ one:
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
   `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
   `shard inspect` carries it in the record. A `start` clears it. A vz shim that is there but does not
-  answer within 5 s makes the record `unresponsive` instead, with the shim's pid, and is never killed
-  for it.
+  answer within 5 s, or a firecracker vmm that does not answer within 4 s, makes the record
+  `unresponsive` instead, with that process's pid, and is never killed for it.
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint, because a
   checkpoint is what a paused sandbox has instead of a process, and `resume` still brings it back.
   A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an absent

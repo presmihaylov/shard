@@ -33,9 +33,9 @@ stateDiagram-v2
 | `created` | `failed` | the daemon restarted before a fork or clone reached `running` | yes |
 | `running` | `paused` | `pause` | yes: gVisor |
 | `running` | `stopped` | `stop` | yes |
-| `running` | `unresponsive` | the liveness tick, when the substrate process missed its probe bound | yes: vz |
-| `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz |
-| `unresponsive` | `stopped` | `stop` | yes: vz |
+| `running` | `unresponsive` | the liveness tick, when the substrate process missed its probe bound | yes: vz, Firecracker |
+| `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
+| `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
 | `paused` | `running` | `resume` | yes: gVisor |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
@@ -78,7 +78,9 @@ the same VM. `shard ls` prints `unresponsive (its shim (pid N) did not answer wi
 `shard inspect` holds the state and the reason. `exec`, `start` and `pause` refuse it with the reason,
 and `exec` adds `wait for it to answer, or end it with shard stop <id>`. When a later probe answers,
 the next liveness tick writes `running` again. `stop` and `rm --force` give the shim one more probe of
-1 s, then kill it by its pid with no grace (SHARD-421).
+1 s, then kill it by its pid with no grace (SHARD-421). On Firecracker the same holds for a vmm a
+restart meets only by its socket, with a bound of 4 s and a reason that names the vmm's pid
+(SHARD-392).
 
 **`stop` returns once the sandbox has stopped.** The substrate can report one alive for a moment after
 a clean stop, so `stop` waits for it to be gone before it writes the record, and fails without changing

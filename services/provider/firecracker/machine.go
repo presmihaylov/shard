@@ -39,6 +39,10 @@ type machine struct {
 	started bool
 	// gone is set by the event loop once the vmm no longer runs the VM, so a status needs no socket round trip.
 	gone bool
+	// silent is set while a vmm an adopt found silent has not answered; only stop ends it (SHARD-392).
+	silent bool
+	// asking closes once the one state request out to a silent vmm ends; nil when none is out.
+	asking chan struct{}
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
@@ -54,11 +58,27 @@ func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
 func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error) {
 	p.mu.Lock()
 	m, held := p.machines[id]
+	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
 		return m, nil
 	}
+	// The one request to a silent vmm is already out, so a lookup waits only the floor on it, and a stop's opening probe stays short.
+	if found {
+		p.probe(ctx, silent, probeFloor)
+		if p.waiting(silent) {
+			return silent, nil
+		}
+	}
 
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, settled := p.settled(id, silent); settled {
+		return m, nil
+	}
 	socket, vsock := filepath.Join(dir, socketFile), filepath.Join(dir, vsockFile)
 	began := time.Now()
 	probe, cancel := context.WithTimeout(ctx, adoptBound)
@@ -67,9 +87,9 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	if absent(err) {
 		return nil, nil
 	}
-	// A vmm silent for the whole bound answers no verb either, so the peer that took the dial is killed and reads stopped (SHARD-392).
+	// A vmm silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-392).
 	if err != nil && info.PID > 0 && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
-		return nil, p.endJudged(id, fcapi.Open(socket, vsock), info.PID)
+		return p.unanswered(id, dir, fcapi.Open(socket, vsock), info.PID), nil
 	}
 	if err != nil {
 		return nil, err
@@ -139,6 +159,105 @@ func (p *Provider) endJudged(id string, client *fcapi.Client, pid int) error {
 	return awaitEnded(&machine{id: id, client: client, pid: pid})
 }
 
+// unanswered keeps a vmm an adopt found silent, by the pid that took its dial, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir string, client *fcapi.Client, pid int) *machine {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if kept, found := p.unadopted[id]; found {
+		return kept
+	}
+	m := &machine{id: id, dir: dir, client: client, pid: pid, silent: true}
+	p.unadopted[id] = m
+
+	return m
+}
+
+// waiting says a silent vmm has still not answered; an answer, or no vmm left on the socket, lets a fresh adopt decide.
+func (p *Provider) waiting(m *machine) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return m.silent
+}
+
+// probe waits the bound on the one state request out to a silent vmm, and starts it when none is; nothing here kills the vmm.
+func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
+	p.mu.Lock()
+	// A frozen vmm accepts nothing, and every dial waits in its socket queue, so one request at a time keeps that queue from filling.
+	asking := m.asking
+	if asking == nil {
+		asking = make(chan struct{})
+		m.asking = asking
+		go p.ask(context.WithoutCancel(ctx), m, asking)
+	}
+	p.mu.Unlock()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-asking:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// ask puts the one state request to a silent vmm and holds it past the caller; a read that times out leaves it silent for the next probe.
+func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
+	_, err := m.client.State(ctx)
+	p.mu.Lock()
+	m.asking = nil
+	if err == nil || absent(err) {
+		m.silent = false
+	}
+	p.mu.Unlock()
+	close(asking)
+}
+
+// claim makes this lookup the one that adopts the sandbox's vmm once any other adopt of it ends, so a thawed vmm is attached once.
+func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
+	for {
+		p.mu.Lock()
+		busy, taken := p.adopting[id]
+		if !taken {
+			done := make(chan struct{})
+			p.adopting[id] = done
+			p.mu.Unlock()
+
+			return func() {
+				p.mu.Lock()
+				delete(p.adopting, id)
+				p.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: wait for another adopt of its vmm: %w", id, ctx.Err())
+		}
+	}
+}
+
+// settled is the vmm another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as it answered.
+func (p *Provider) settled(id string, seen *machine) (*machine, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, held := p.machines[id]; held {
+		return m, true
+	}
+	m, found := p.unadopted[id]
+	if !found {
+		return nil, false
+	}
+	if m != seen {
+		return m, true
+	}
+	delete(p.unadopted, id)
+
+	return nil, false
+}
+
 // spared is a vmm this process still spawns, or holds since, which a read leaves to its spawn.
 func (p *Provider) spared(id string) bool {
 	// One look under the lock sees the spawn mark or the machine, whichever side of the attach the spawn is on.
@@ -189,6 +308,9 @@ func (p *Provider) forget(m *machine) {
 	defer p.mu.Unlock()
 	if p.machines[m.id] == m {
 		delete(p.machines, m.id)
+	}
+	if p.unadopted[m.id] == m {
+		delete(p.unadopted, m.id)
 	}
 }
 
@@ -601,10 +723,23 @@ func (m *machine) status(p *Provider) models.Status {
 	if m.gone {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
+	// An unadopted vmm has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
+	if m.silent || m.control.Load() == nil {
+		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its vmm (pid %d) did not answer within %s", m.pid, adoptBound)}
+	}
 	state := models.StateCreated
 	if m.started {
 		state = models.StateRunning
 	}
 
 	return models.Status{Exists: true, State: state, PID: m.pid}
+}
+
+// because is what made a sandbox unresponsive, appended to the error of a verb it refuses.
+func because(status models.Status) string {
+	if status.Reason == "" {
+		return ""
+	}
+
+	return ": " + status.Reason
 }
