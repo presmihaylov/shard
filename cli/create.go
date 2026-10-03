@@ -22,18 +22,13 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().CreateSandbox(ctx, req)
+	// The daemon creates in the background; the CLI blocks, so an operator sees the pull, then a ready sandbox or the reason it failed.
+	sb, err := a.client().CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
 		return err
 	}
-
-	// The daemon creates in the background; the CLI blocks, so an operator sees a ready sandbox or the reason it failed.
-	final, err := a.client().WaitSandbox(ctx, sb.ID)
-	if err != nil {
-		return err
-	}
-	if final.State == models.StateFailed {
-		return fmt.Errorf("sandbox %s failed to start: %s", final.ID, final.FailedReason)
+	if sb.State == models.StateFailed {
+		return fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
 	}
 
 	return a.print(sb.ID)
@@ -52,9 +47,9 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.Policy, "policy", "", "the egress policy the host enforces")
 	flags.StringVar(&req.WorkDir, "workdir", "", "the directory the entrypoint starts in")
 	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
-	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB; 0 is unbounded on Linux, and vz refuses it: the VM needs a size")
+	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, at most the host's memory; 0 is unbounded on Linux, and vz refuses it: the VM needs a size")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "the vcpu bound, a whole number; 0 is every host cpu, on vz up to the framework's ceiling")
-	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "the disk bound in MiB over the writable layer and /tmp, 0 for the default")
+	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "the disk bound in MiB over the writable layer and /tmp, 0 for the default; Firecracker needs at least 11 so its journal fits")
 	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "when the entrypoint is started again inside the sandbox: no, on-failure or always")
@@ -62,8 +57,8 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "the wait before the first start again, in whole seconds; it doubles each time")
 	var health healthFlags
 	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox, which passes on exit 0")
-	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds")
-	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds")
+	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds, 1h at most")
+	flags.DurationVar(&health.timeout, "health-timeout", 0, "the time one probe gets to answer, in whole seconds, 10m at most")
 	flags.IntVar(&health.retries, "health-retries", 0, "the failed probes in a row that make the sandbox unhealthy")
 
 	if err := parseVerb(flags, args); err != nil {

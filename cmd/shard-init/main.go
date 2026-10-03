@@ -157,6 +157,8 @@ type entrypoint struct {
 	out *os.File
 	// expose says the child inherits PID 1's OOM exemption and must drop it before the workload runs.
 	expose bool
+	// bound is the cgroup the child is born into; nil leaves it in shard-init's own.
+	bound *os.File
 }
 
 // reporter is where ready, the exit record and the restart count go: files on gVisor, the control connection in a VM.
@@ -199,6 +201,8 @@ type guest struct {
 	oomProbe func() (bool, error)
 	// exempt says PID 1 holds the OOM exemption boundMemory wrote, which every child it forks must give up.
 	exempt bool
+	// bound is the sandbox cgroup every child is born into, fixed before anything forks; nil off a VM.
+	bound *os.File
 	// oom says the bound took every guest process; the guest holds it until the host, with the reason on disk, says stop.
 	oom bool
 }
@@ -600,9 +604,9 @@ func parseID(field string) (uint32, error) {
 	return uint32(id), nil
 }
 
-// start forks a guest process, which gives up the OOM exemption it inherits from an exempt PID 1.
+// start forks a guest process into the bound, which gives up the OOM exemption it inherits from an exempt PID 1.
 func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
-	ep.expose = g.exempt
+	ep.expose, ep.bound = g.exempt, g.bound
 
 	return startProcess(ep, files, tty)
 }
@@ -647,7 +651,7 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 		Dir:   ep.dir,
 		Env:   ep.env,
 		Files: fds,
-		Sys:   sysProcAttr(ep.credential, ambient, tty),
+		Sys:   sysProcAttr(ep.credential, ambient, tty, ep.bound),
 	})
 	// The child holds its own copy of fd 0 now, so our template is spent whichever way the fork went.
 	closeErr := devNull.Close()

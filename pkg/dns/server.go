@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/presmihaylov/shard/pkg/lograte"
 )
 
 const (
@@ -58,7 +60,9 @@ type Config struct {
 
 // Server answers udp and tcp questions from sandboxes with what the director allows.
 type Server struct {
-	cfg      Config
+	cfg Config
+	// log bounds each source's fault lines, since a guest can send a packet that does not parse as fast as its link runs (SHARD-347).
+	log      *lograte.Log
 	inflight chan struct{}
 	timeout  time.Duration
 
@@ -78,7 +82,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("the resolver needs an upstream to forward to")
 	}
 
-	return &Server{cfg: cfg, inflight: make(chan struct{}, maxInflight), timeout: upstreamTimeout, sources: map[netip.Addr]int{}}, nil
+	return &Server{cfg: cfg, log: lograte.New(cfg.Log, "dns"), inflight: make(chan struct{}, maxInflight), timeout: upstreamTimeout, sources: map[netip.Addr]int{}}, nil
 }
 
 // Run listens on the port at the address, over udp and tcp, and serves until ctx ends.
@@ -135,7 +139,7 @@ func (s *Server) serveUDP(ctx context.Context, wg *sync.WaitGroup, conn net.Pack
 
 		source, err := sourceOf(from)
 		if err != nil {
-			s.cfg.Log.Printf("dns: %v", err)
+			s.log.Printf(netip.Addr{}, "dns: %v", err)
 
 			continue
 		}
@@ -149,14 +153,14 @@ func (s *Server) serveUDP(ctx context.Context, wg *sync.WaitGroup, conn net.Pack
 
 			answer, err := s.answer(ctx, source, msg, "udp")
 			if err != nil {
-				s.cfg.Log.Printf("dns: %s: %v", from, err)
+				s.log.Printf(source, "dns: %s: %v", from, err)
 			}
 			if answer == nil {
 				return
 			}
 			// The asker is the only one who could hear a write failure, so the log is where it goes.
 			if _, err := conn.WriteTo(answer, from); err != nil {
-				s.cfg.Log.Printf("dns: %s: write the answer: %v", from, err)
+				s.log.Printf(source, "dns: %s: write the answer: %v", from, err)
 			}
 		}) {
 			s.leave(source)
@@ -178,14 +182,14 @@ func (s *Server) serveTCP(ctx context.Context, wg *sync.WaitGroup, ln net.Listen
 
 		source, err := sourceOf(conn.RemoteAddr())
 		if err != nil {
-			s.cfg.Log.Printf("dns: %v", err)
-			s.close(conn)
+			s.log.Printf(netip.Addr{}, "dns: %v", err)
+			s.close(source, conn)
 
 			continue
 		}
 		// A connection past the source's bound is closed at accept, so a guest cannot hold the resolver open on its siblings.
 		if !s.admit(source) {
-			s.close(conn)
+			s.close(source, conn)
 
 			continue
 		}
@@ -248,19 +252,19 @@ func (s *Server) leave(source netip.Addr) {
 	}
 }
 
-func (s *Server) close(conn net.Conn) {
+func (s *Server) close(source netip.Addr, conn net.Conn) {
 	if err := conn.Close(); err != nil {
-		s.cfg.Log.Printf("dns: %s: close: %v", conn.RemoteAddr(), err)
+		s.log.Printf(source, "dns: %s: close: %v", conn.RemoteAddr(), err)
 	}
 }
 
 // serveConn answers every framed question on one tcp connection until the guest hangs up or goes quiet.
 func (s *Server) serveConn(ctx context.Context, source netip.Addr, conn net.Conn) {
-	defer s.close(conn)
+	defer s.close(source, conn)
 
 	for {
 		if err := conn.SetDeadline(time.Now().Add(idleTimeout)); err != nil {
-			s.cfg.Log.Printf("dns: %s: %v", conn.RemoteAddr(), err)
+			s.log.Printf(source, "dns: %s: %v", conn.RemoteAddr(), err)
 
 			return
 		}
@@ -271,7 +275,7 @@ func (s *Server) serveConn(ctx context.Context, source netip.Addr, conn net.Conn
 			return
 		}
 		if err != nil {
-			s.cfg.Log.Printf("dns: %s: read a tcp question: %v", conn.RemoteAddr(), err)
+			s.log.Printf(source, "dns: %s: read a tcp question: %v", conn.RemoteAddr(), err)
 
 			return
 		}
@@ -283,14 +287,14 @@ func (s *Server) serveConn(ctx context.Context, source netip.Addr, conn net.Conn
 		answer, err := s.answer(ctx, source, msg, "tcp")
 		s.free()
 		if err != nil {
-			s.cfg.Log.Printf("dns: %s: %v", conn.RemoteAddr(), err)
+			s.log.Printf(source, "dns: %s: %v", conn.RemoteAddr(), err)
 		}
 		if answer == nil {
 			continue
 		}
 
 		if _, err := conn.Write(framed(answer)); err != nil {
-			s.cfg.Log.Printf("dns: %s: write the answer: %v", conn.RemoteAddr(), err)
+			s.log.Printf(source, "dns: %s: write the answer: %v", conn.RemoteAddr(), err)
 
 			return
 		}

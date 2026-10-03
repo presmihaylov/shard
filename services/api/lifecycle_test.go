@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -25,6 +26,9 @@ type fakeLifecycle struct {
 	created sandbox.CreateRequest
 	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
 	createdID string
+	// hold is how long Create takes, and heldErr what its context said at the end of it.
+	hold    time.Duration
+	heldErr error
 	// copied is the body a fork or a clone sent.
 	copied sandbox.CopyRequest
 	ref    string
@@ -43,10 +47,13 @@ type fakeLifecycle struct {
 	execID string
 	// attachedExec is the exec the client attached to, and resizedExec the one it resized.
 	attachedExec string
-	// out and errOut are what the command writes on each stream, and exit how it ended.
+	// out and errOut are what the command writes on each stream, exit how it ended, and lost what it evicted unread.
 	out    string
 	errOut string
 	exit   models.ExitStatus
+	lost   int64
+	// stall detaches the client the way the buffer does once it took no output for the bound.
+	stall bool
 	// execErr is how the command failed, apart from err, which is a refusal before the 101.
 	execErr     error
 	resizedExec string
@@ -69,10 +76,19 @@ type fakeLifecycle struct {
 	reason   string
 	// ended is closed when a verb that waited on stops or on the client returns.
 	ended chan struct{}
+	// pulled is what a create reports to the progress on its context.
+	pulled []image.Event
 }
 
-func (f *fakeLifecycle) Create(_ context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
+	if f.hold > 0 {
+		time.Sleep(f.hold)
+		f.heldErr = ctx.Err()
+	}
+	for _, e := range f.pulled {
+		image.ProgressFrom(ctx).Add(e)
+	}
 
 	id := f.createdID
 	if id == "" {
@@ -219,32 +235,38 @@ func (f *fakeLifecycle) DeleteExec(_ context.Context, ref, execID string) error 
 }
 
 // Attach answers the client the way the orchestrator does: it starts the session, writes, and then exits.
-func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error) {
 	f.ref, f.attachedExec = ref, execID
 
 	if f.err != nil {
-		return models.ExitStatus{}, f.err
+		return sandbox.Attached{}, f.err
 	}
 
 	if streams.Started != nil {
 		if err := streams.Started(execID); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 
 	// A command that never ran reads nothing, the way the substrate answers one it could not start.
 	if f.execErr != nil {
-		return models.ExitStatus{}, f.execErr
+		return sandbox.Attached{}, f.execErr
+	}
+
+	if f.stall {
+		streams.Detach()
+
+		return sandbox.Attached{}, &sandbox.StalledError{ID: execID}
 	}
 
 	if f.out != "" {
 		if _, err := streams.Stdout.Write([]byte(f.out)); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 	if f.errOut != "" {
 		if _, err := streams.Stderr.Write([]byte(f.errOut)); err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 	}
 
@@ -255,7 +277,7 @@ func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams 
 		select {
 		case <-f.stops:
 		case <-ctx.Done():
-			return models.ExitStatus{}, ctx.Err()
+			return sandbox.Attached{}, ctx.Err()
 		}
 	}
 
@@ -263,12 +285,12 @@ func (f *fakeLifecycle) Attach(ctx context.Context, ref, execID string, streams 
 	if f.exec.Stdin && streams.Stdin != nil {
 		read, err := io.ReadAll(streams.Stdin)
 		if err != nil {
-			return models.ExitStatus{}, err
+			return sandbox.Attached{}, err
 		}
 		f.input = string(read)
 	}
 
-	return f.exit, nil
+	return sandbox.Attached{Exit: f.exit, LostBytes: f.lost}, nil
 }
 
 func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size sandbox.TerminalSize) error {
@@ -449,6 +471,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		text   string
 	}{
 		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "invalid_request", "secret NOPE"},
+		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
 		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
 		{"a name taken", &sandboxstate.NameTakenError{Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},

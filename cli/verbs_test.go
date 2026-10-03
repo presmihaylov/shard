@@ -39,7 +39,7 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 
 	// The daemon ran the verb: the pull, the record and the start all happened behind the socket.
 	want := []string{"repo.Create", "images.Pull", "net.Allocate", "provider.Create", "provider.Start"}
-	if got := keep(r.calls, want...); !slices.Equal(got, want) {
+	if got := keep(r.seen(), want...); !slices.Equal(got, want) {
 		t.Errorf("the daemon drove %v, want %v", got, want)
 	}
 
@@ -62,8 +62,8 @@ func TestCreatePrintsTheDaemonsRefusalAsItCame(t *testing.T) {
 	if err == nil || err.Error() != "secret NOPE does not exist: run shard secret set --to <host> NOPE first" {
 		t.Errorf("create = %v, want the daemon's refusal as it came", err)
 	}
-	if slices.Contains(r.calls, "images.Pull") {
-		t.Errorf("a refused create still cost a pull: %v", r.calls)
+	if slices.Contains(r.seen(), "images.Pull") {
+		t.Errorf("a refused create still cost a pull: %v", r.seen())
 	}
 }
 
@@ -97,18 +97,34 @@ func TestRmForceStopsThenRemovesThroughTheDaemon(t *testing.T) {
 	}
 }
 
-// The record dies last, so an id with no record has nothing else left either: rm of it is a warning, not a failure.
-func TestRmOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
+// A plain rm of an id with no record fails like every other verb (SHARD-282).
+func TestRmOfAMissingSandboxFails(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
-	if err := app.Run(t.Context(), []string{"rm", "ghost"}); err != nil {
-		t.Fatalf("rm of an id that is already gone: %v", err)
+	err := app.Run(t.Context(), []string{"rm", "ghost"})
+	if err == nil || err.Error() != "no sandbox ghost" {
+		t.Errorf("rm returned %v, want 'no sandbox ghost'", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("rm printed %q, want nothing", out.String())
+	}
+}
+
+// The record dies last, so an id with no record has nothing else left either: rm --force of it is a warning, as rm -f is.
+func TestRmForceOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newClientApp(t, &out, running())
+	d.repoSvc.(*fakeLifecycleRepo).missing = true
+
+	if err := app.Run(t.Context(), []string{"rm", "--force", "ghost"}); err != nil {
+		t.Fatalf("rm --force of an id that is already gone: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != "shard: warning: sandbox ghost does not exist, so there is nothing to remove" {
-		t.Errorf("rm printed %q, want the warning alone", out.String())
+		t.Errorf("rm --force printed %q, want the warning alone", out.String())
 	}
 }
 

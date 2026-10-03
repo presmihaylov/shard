@@ -3,6 +3,7 @@ package supervisor_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -59,6 +60,82 @@ func TestReadMessageReportsAClosedPeerAsEOF(t *testing.T) {
 	}
 }
 
+// endless is a guest that writes one line and never ends it; it gives up at 64 MiB so a reader with no bound fails the test, not the host.
+type endless struct{ read int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read > 64<<20 {
+		return 0, errors.New("the guest gave up at 64 MiB")
+	}
+	for i := range p {
+		p[i] = 'a'
+	}
+	e.read += len(p)
+
+	return len(p), nil
+}
+
+func TestReadMessageRefusesALineThatNeverEnds(t *testing.T) {
+	guest := &endless{}
+	var m supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(guest), &m); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("err = %v, want ErrMessageTooLong", err)
+	}
+	if guest.read > 2*supervisor.MaxPayload {
+		t.Errorf("the reader took %d bytes before it refused, want about %d", guest.read, supervisor.MaxPayload)
+	}
+}
+
+func TestReadMessageTakesALineUpToTheBound(t *testing.T) {
+	at := `"` + strings.Repeat("a", supervisor.MaxPayload-2) + `"`
+
+	var got string
+	if err := supervisor.ReadMessage(bufio.NewReader(strings.NewReader(at+"\n")), &got); err != nil {
+		t.Fatalf("a line of exactly %d bytes: %v", supervisor.MaxPayload, err)
+	}
+	if len(got) != supervisor.MaxPayload-2 {
+		t.Errorf("decoded %d bytes, want %d", len(got), supervisor.MaxPayload-2)
+	}
+	if err := supervisor.ReadMessage(bufio.NewReader(strings.NewReader(at+" \n")), &got); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("a line one byte past the bound: %v, want ErrMessageTooLong", err)
+	}
+}
+
+func TestWriteMessageRefusesWhatTheReaderWould(t *testing.T) {
+	var sent bytes.Buffer
+	err := supervisor.WriteMessage(&sent, strings.Repeat("a", supervisor.MaxPayload))
+	if !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("err = %v, want ErrMessageTooLong", err)
+	}
+	if sent.Len() != 0 {
+		t.Errorf("%d bytes went out before the refusal", sent.Len())
+	}
+}
+
+// TestALineThatNeverEndsEndsTheControlStream is the guest of SHARD-340: the stream ends with the typed error, and a request after it is refused.
+func TestALineThatNeverEndsEndsTheControlStream(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+
+	go func() {
+		chunk := bytes.Repeat([]byte("a"), 64<<10)
+		for {
+			if _, err := guest.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+
+	c := supervisor.ControlOver(host)
+	if _, err := c.Next(); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("next = %v, want ErrMessageTooLong", err)
+	}
+	if err := c.Thaw(t.Context()); !errors.Is(err, supervisor.ErrMessageTooLong) {
+		t.Fatalf("thaw after the refusal = %v, want ErrMessageTooLong", err)
+	}
+}
+
 func TestReadHeaderLeavesTheFramesBehindIt(t *testing.T) {
 	var buf bytes.Buffer
 	if err := supervisor.WriteMessage(&buf, supervisor.ExecHeader{Argv: []string{"sh"}}); err != nil {
@@ -95,7 +172,7 @@ func TestRunReportsAFailureAsNotStarted(t *testing.T) {
 	}()
 
 	c := supervisor.ControlOver(host)
-	err := c.Run(supervisor.RunSpec{Argv: []string{"/missing"}})
+	err := c.Run(t.Context(), supervisor.RunSpec{Argv: []string{"/missing"}})
 	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), "no such file") {
 		t.Fatalf("err = %v, want ErrEntrypointNotStarted with the guest's reason", err)
 	}
@@ -133,6 +210,36 @@ func TestWriteRestartsReadsBackThroughBundle(t *testing.T) {
 	}
 }
 
+// A replay that brings the count already on disk writes nothing, so a full root fails no attach (SHARD-341).
+func TestWriteRestartsLeavesTheSameCountAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restarts.json")
+	count := models.RestartCount{Count: 2, LastAt: time.Date(2026, 10, 2, 19, 0, 0, 0, time.UTC)}
+	if err := supervisor.WriteRestarts(path, count); err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory that refuses a new file fails the write the way a full disk does.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := supervisor.WriteRestarts(path, count); err != nil {
+		t.Fatalf("WriteRestarts of the same count = %v, want no write at all", err)
+	}
+	count.Count++
+	if err := supervisor.WriteRestarts(path, count); err == nil {
+		t.Fatal("WriteRestarts of a new count wrote into a directory that refuses a new file")
+	}
+}
+
 func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 	// A unix socket half-closed by the guest still takes the host's write, so only the reader's end can refuse the request.
 	dir := shortDir(t)
@@ -166,7 +273,7 @@ func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- c.Signal(1, "KILL") }()
+	go func() { done <- c.Signal(t.Context(), 1, "KILL") }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "went away") {
@@ -174,6 +281,61 @@ func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("signal blocked after the reader ended")
+	}
+}
+
+// A guest whose vmm is stopped reads the request and never answers: the request ends at its deadline (SHARD-339).
+func TestARequestTheGuestNeverAnswersEndsAtItsDeadline(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	asked := make(chan supervisor.Message, 2)
+	go func() {
+		r := bufio.NewReader(guest)
+		for {
+			var m supervisor.Message
+			if err := supervisor.ReadMessage(r, &m); err != nil {
+				return
+			}
+			asked <- m
+		}
+	}()
+
+	c := supervisor.ControlOver(host)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop = %v, want the deadline", err)
+	}
+
+	stop := <-asked
+	if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindFailure, ID: stop.ID, Error: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Thaw(t.Context()) }()
+	thaw := <-asked
+	if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindDone, ID: thaw.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("thaw = %v, want its own answer, not the stop's late one", err)
+	}
+}
+
+func TestARequestTheGuestNeverReadsEndsAtItsDeadline(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+
+	c := supervisor.ControlOver(host)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := c.Stop(ctx); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("stop = %v, want the write deadline", err)
+	}
+	if err := c.Thaw(t.Context()); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("thaw after a failed write = %v, want the same refusal", err)
 	}
 }
 
@@ -190,4 +352,74 @@ func shortDir(t *testing.T) string {
 	})
 
 	return dir
+}
+
+// fakeExecGuest takes the header, reports a start, sends the frames given, then reports each stream the host sends until it hangs up.
+func fakeExecGuest(guest net.Conn, then []byte) <-chan byte {
+	got := make(chan byte, 8)
+	go func() {
+		defer close(got)
+		var header supervisor.ExecHeader
+		if err := supervisor.ReadHeader(guest, &header); err != nil {
+			return
+		}
+		if err := supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 7}); err != nil {
+			return
+		}
+		for _, stream := range then {
+			if err := supervisor.WriteFrame(guest, stream, nil); err != nil {
+				return
+			}
+		}
+		for {
+			stream, _, err := supervisor.ReadFrame(guest)
+			if err != nil {
+				return
+			}
+			got <- stream
+		}
+	}()
+
+	return got
+}
+
+func sawCancel(got <-chan byte) bool {
+	seen := false
+	for stream := range got {
+		seen = seen || stream == supervisor.StreamCancel
+	}
+
+	return seen
+}
+
+// A cancel is a frame, because a connection that only drops is a daemon restart, and the guest keeps the command (SHARD-270).
+func TestACancelledExecTellsTheGuest(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	got := fakeExecGuest(guest, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	spec := models.ExecSpec{Report: func(int) { cancel() }}
+	if _, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, spec); !errors.Is(err, context.Canceled) {
+		t.Fatalf("exec = %v, want context.Canceled", err)
+	}
+	if !sawCancel(got) {
+		t.Fatal("the guest never got a cancel frame")
+	}
+}
+
+func TestAnExecTheHostGivesUpOnIsCancelled(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	got := fakeExecGuest(guest, []byte{99})
+
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	if _, err := supervisor.Exec(t.Context(), dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, models.ExecSpec{}); err == nil {
+		t.Fatal("exec took a frame of stream 99")
+	}
+	if !sawCancel(got) {
+		t.Fatal("the guest never got a cancel frame")
+	}
 }

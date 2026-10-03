@@ -24,14 +24,14 @@ func newProvider(t *testing.T) *gvisor.Provider {
 }
 
 // newProviderOver stands a fake runsc up from a shell script, so a hang and a state are both scriptable.
-func newProviderOver(t *testing.T, script string) *gvisor.Provider {
+func newProviderOver(t *testing.T, script string, opts ...runsc.Option) *gvisor.Provider {
 	t.Helper()
 
-	return newProviderIn(t, t.TempDir(), script)
+	return newProviderIn(t, t.TempDir(), script, opts...)
 }
 
 // newProviderIn is newProviderOver with the state directory of sandbox id at dir/id, for a test that lays a bundle there.
-func newProviderIn(t *testing.T, dir, script string) *gvisor.Provider {
+func newProviderIn(t *testing.T, dir, script string, opts ...runsc.Option) *gvisor.Provider {
 	t.Helper()
 
 	binary := filepath.Join(dir, "runsc")
@@ -39,7 +39,7 @@ func newProviderIn(t *testing.T, dir, script string) *gvisor.Provider {
 		t.Fatalf("write the fake runsc: %v", err)
 	}
 
-	runner, err := runsc.New(filepath.Join(dir, "root"), runsc.WithBinary(binary))
+	runner, err := runsc.New(filepath.Join(dir, "root"), append(opts, runsc.WithBinary(binary))...)
 	if err != nil {
 		t.Fatalf("open the runsc runner: %v", err)
 	}

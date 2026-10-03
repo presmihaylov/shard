@@ -67,12 +67,45 @@ func TestEnsureDownloadsOnceAndVerifies(t *testing.T) {
 	if hits != 1 {
 		t.Fatalf("downloaded %d times, want 1", hits)
 	}
+}
 
-	if err := os.WriteFile(k.Path, []byte("tampered"), 0o644); err != nil {
+// A host crash can leave a cut kernel under the release name, so the next start fetches it again (SHARD-355).
+func TestEnsureFetchesACutKernelAgain(t *testing.T) {
+	body := []byte("a kernel of some length")
+	artifacts["test"] = struct{ name, sha256 string }{"Image-test", sum(body)}
+	defer delete(artifacts, "test")
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	var out bytes.Buffer
+	s := New(t.TempDir(), WithHTTPClient(&http.Client{Transport: rewriteTo(srv.URL, http.DefaultTransport)}), WithLogger(log.New(&out, "", 0)))
+	k, err := s.Ensure(context.Background(), "test")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Ensure(context.Background(), "test"); !errors.Is(err, ErrChecksum) {
-		t.Fatalf("tampered file passed: %v", err)
+
+	if err := os.Truncate(k.Path, int64(len(body)/2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ensure(context.Background(), "test"); err != nil {
+		t.Fatalf("a cut kernel was not fetched again: %v", err)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("downloaded %d times, want 2", got)
+	}
+	held, err := os.ReadFile(k.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(held, body) {
+		t.Fatalf("the kernel holds %q, want %q", held, body)
+	}
+	if !strings.Contains(out.String(), "so the daemon fetches it again") {
+		t.Fatalf("log:\n%s", out.String())
 	}
 }
 
