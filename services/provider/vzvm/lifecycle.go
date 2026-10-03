@@ -305,8 +305,9 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	}
 	if ended {
 		p.forget(m)
+		closeDown(m)
 
-		return m.close()
+		return nil
 	}
 	if err := p.kill(ctx, m); err != nil {
 		return errors.Join(stopErr, err)
