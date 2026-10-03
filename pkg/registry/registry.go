@@ -126,7 +126,7 @@ func (t httpsOnly) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.next.RoundTrip(req) //nolint:wrapcheck // a RoundTripper returns the transport's error as it is
 	}
 
-	return nil, fmt.Errorf("refusing plaintext http to %s: pass --insecure-registry %s to allow it", req.URL.Host, req.URL.Host)
+	return nil, fmt.Errorf("refusing plaintext http to %s: start shard daemon with --insecure-registry %s to allow it", req.URL.Host, req.URL.Host)
 }
 
 // Image is one cached image. It carries no layer bytes; ask Layers for those.

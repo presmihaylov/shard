@@ -131,7 +131,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		return nil, fmt.Errorf("--remote must be an https url, as https://box.example.com:2376, got %q", host)
 	}
 	if token == "" {
-		return nil, errors.New("--remote needs a token: a shard serve front answers 401 without one")
+		return nil, errors.New("--remote needs a token: shard serve answers 401 without one")
 	}
 
 	address := parsed.Host

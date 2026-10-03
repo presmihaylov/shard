@@ -143,7 +143,7 @@ func New(cfg Config) (*Server, error) {
 // ReadToken refuses a file others can read, because the token is the whole of the authentication.
 func ReadToken(path string) (string, error) {
 	if path == "" {
-		return "", errors.New("shard needs --token-file: every request to a shard serve front carries a bearer token")
+		return "", errors.New("shard needs --token-file: every request to shard serve carries a bearer token")
 	}
 
 	info, err := os.Stat(path)

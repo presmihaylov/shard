@@ -11,7 +11,12 @@ func (a App) clone(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().CloneSandbox(ctx, source, req)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.CloneSandbox(ctx, source, req)
 	if err != nil {
 		return err
 	}

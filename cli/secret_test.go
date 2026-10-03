@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -49,7 +48,7 @@ func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRep
 
 	serveDaemon(t, &fakeDaemon{app: App{Root: root}, repoSvc: repo, secretSvc: secrets, policySvc: policies})
 
-	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute, in: in}, root
+	return App{Version: "test", Root: root, Out: out, Err: out, in: in}, root
 }
 
 func TestSecretSetLsRmRoundTrip(t *testing.T) {
@@ -203,6 +202,23 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 	}
 }
 
+// A value that starts with - takes a -- before it, after the name or before it, and a misplaced flag is still refused.
+func TestParseSecretSetTakesADashValueAfterADoubleDash(t *testing.T) {
+	for _, args := range [][]string{
+		{"--to", "api.example.com", "KEY", "--", "-v4lue"},
+		{"--to", "api.example.com", "--", "KEY", "-v4lue"},
+	} {
+		opts, err := parseSecretSet(args)
+		if err != nil || opts.name != "KEY" || opts.value != "-v4lue" {
+			t.Errorf("parseSecretSet(%v) = %+v, %v, want KEY with the value -v4lue", args, opts, err)
+		}
+	}
+
+	if _, err := parseSecretSet([]string{"KEY", "--to", "api.example.com"}); err == nil || !strings.Contains(err.Error(), "flags before the name") {
+		t.Errorf("a flag after the name returned %v, want the flag order named", err)
+	}
+}
+
 func TestSecretSetRefusesAPlaceholderTheStoreWillNotTake(t *testing.T) {
 	var out bytes.Buffer
 
@@ -346,7 +362,7 @@ func grantApp(t *testing.T, out *bytes.Buffer, state models.State) (App, *fakeLi
 	}
 	serveDaemon(t, daemon)
 
-	return App{Version: "test", Root: root, Out: out, Err: out, Timeout: time.Minute}, repo, b
+	return App{Version: "test", Root: root, Out: out, Err: out}, repo, b
 }
 
 func TestSecretGrantAndUngrantRoundTrip(t *testing.T) {

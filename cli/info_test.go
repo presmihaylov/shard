@@ -60,17 +60,15 @@ func TestInfoFollowsTheRecordsUnderTheRoot(t *testing.T) {
 	}
 }
 
-// --provider is the answer, whatever the host holds.
-func TestInfoFollowsTheNamedProvider(t *testing.T) {
+// --provider is the daemon's own flag, so info refuses it before the verb and names where it goes.
+func TestInfoRefusesTheProviderFlag(t *testing.T) {
 	var out bytes.Buffer
 
-	app := newApp(t, &out)
-	app.Provider = "sysbox"
-	if err := app.Run(t.Context(), []string{"info"}); err != nil {
-		t.Fatalf("info: %v", err)
+	err := newApp(t, &out).Run(t.Context(), []string{"--provider", "sysbox", "info"})
+	if want := "--provider is a shard daemon flag: shard daemon --provider sysbox"; err == nil || err.Error() != want {
+		t.Errorf("--provider sysbox info returned %v, want %q", err, want)
 	}
-
-	if !strings.Contains(out.String(), "sysbox") || !strings.Contains(out.String(), "--provider") {
-		t.Errorf("info printed %q, want sysbox named by the flag", out.String())
+	if out.Len() != 0 {
+		t.Errorf("a refused info printed %q", out.String())
 	}
 }

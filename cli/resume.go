@@ -7,11 +7,20 @@ import (
 
 // resume asks the daemon to run a paused sandbox again from its snapshot.
 func (a App) resume(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("resume takes one sandbox id, got %d", len(args))
+	rest, err := parseArgs("resume", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return fmt.Errorf("resume takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().ResumeSandbox(ctx, args[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.ResumeSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

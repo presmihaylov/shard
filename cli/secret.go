@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -16,27 +15,6 @@ import (
 
 // maxSecretBytes bounds what set reads, so a stray redirect of a disk image does not become a secret.
 const maxSecretBytes = 64 << 10
-
-func (a App) secret(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New("secret takes a subcommand: set, ls, rm, grant or ungrant")
-	}
-
-	switch args[0] {
-	case "set":
-		return a.secretSet(ctx, args[1:])
-	case "ls", "list":
-		return a.secretList(ctx, args[1:])
-	case "rm", "remove":
-		return a.secretRemove(ctx, args[1:])
-	case "grant":
-		return a.secretGrant(ctx, args[1:])
-	case "ungrant":
-		return a.secretUngrant(ctx, args[1:])
-	}
-
-	return fmt.Errorf("unknown secret subcommand %q; want set, ls, rm, grant or ungrant", args[0])
-}
 
 // secretSetOptions is one parsed shard secret set invocation.
 type secretSetOptions struct {
@@ -61,6 +39,12 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// Before the value is read, so a bad remote fails before the prompt asks for a secret.
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
 	value, err := a.secretValue(opts)
 	if err != nil {
 		return err
@@ -71,7 +55,7 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		fmt.Fprintln(a.Err, cautionOnArgv)
 	}
 
-	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
+	sec, err := c.SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
 	if err != nil {
 		return err
 	}
@@ -136,16 +120,19 @@ func readSecretValue(in io.Reader) (string, error) {
 func parseSecretSet(args []string) (secretSetOptions, error) {
 	var opts secretSetOptions
 
-	flags := flag.NewFlagSet("shard secret set", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.Var((*hostList)(&opts.destinations), "to", "a host the value may go to, repeatable")
-	flags.StringVar(&opts.placeholder, "placeholder", "", "what the guest holds in place of the value, made of letters, digits, _, - and . only (default mock-NAME)")
+	flags := newFlags("secret set")
+	flags.Var((*hostList)(&opts.destinations), "to", "")
+	flags.StringVar(&opts.placeholder, "placeholder", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return secretSetOptions{}, fmt.Errorf("parse the secret set flags: %w", err)
+		return secretSetOptions{}, err
 	}
 
 	rest := flags.Args()
+	// The flags stop at the name, so the -- that guards a value starting with - is still among the arguments.
+	if len(rest) == 3 && rest[1] == "--" {
+		rest = []string{rest[0], rest[2]}
+	}
 	if len(rest) == 0 {
 		return secretSetOptions{}, errors.New("secret set takes a name and an optional value, got none")
 	}
@@ -170,11 +157,20 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 }
 
 func (a App) secretList(ctx context.Context, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("secret ls takes no arguments, got %d", len(args))
+	rest, err := parseArgs("secret ls", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("secret ls takes no arguments, got %d", len(rest))
 	}
 
-	result, err := a.client().ListSecrets(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	result, err := c.ListSecrets(ctx)
 	if err != nil {
 		return err
 	}
@@ -210,7 +206,12 @@ func (a App) secretRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if err := a.client().RemoveSecret(ctx, opts.name, opts.force); err != nil {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	if err := c.RemoveSecret(ctx, opts.name, opts.force); err != nil {
 		return err
 	}
 
@@ -220,12 +221,11 @@ func (a App) secretRemove(ctx context.Context, args []string) error {
 func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 	var opts secretRemoveOptions
 
-	flags := flag.NewFlagSet("shard secret rm", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.force, "force", false, "remove the secret even when a sandbox holds it")
+	flags := newFlags("secret rm")
+	flags.BoolVar(&opts.force, "force", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return secretRemoveOptions{}, fmt.Errorf("parse the secret rm flags: %w", err)
+		return secretRemoveOptions{}, err
 	}
 
 	rest := flags.Args()
@@ -248,7 +248,12 @@ func (a App) secretGrant(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().GrantSecret(ctx, ref, name)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.GrantSecret(ctx, ref, name)
 	if err != nil {
 		return err
 	}
@@ -262,7 +267,12 @@ func (a App) secretUngrant(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().UngrantSecret(ctx, ref, name)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.UngrantSecret(ctx, ref, name)
 	if err != nil {
 		return err
 	}
@@ -271,12 +281,17 @@ func (a App) secretUngrant(ctx context.Context, args []string) error {
 }
 
 func parseGrant(verb string, args []string) (string, string, error) {
-	if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "-") }) {
+	rest, err := parseArgs("secret "+verb, args)
+	if err != nil {
+		return "", "", err
+	}
+	// A sandbox name may start with -, after a --, but a secret name never does: one that seems to is a flag after the sandbox.
+	if len(rest) > 1 && strings.HasPrefix(rest[1], "-") {
 		return "", "", fmt.Errorf("secret %s takes no flags: shard secret %s <id|name> <NAME>", verb, verb)
 	}
-	if len(args) != 2 {
-		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %d arguments", verb, len(args))
+	if len(rest) != 2 {
+		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %d arguments", verb, len(rest))
 	}
 
-	return args[0], args[1], nil
+	return rest[0], rest[1], nil
 }

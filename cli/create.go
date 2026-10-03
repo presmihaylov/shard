@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,8 +21,13 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
 	// The daemon creates in the background; the CLI blocks, so an operator sees the pull, then a ready sandbox or the reason it failed.
-	sb, err := a.client().CreateSandboxAndWait(ctx, req, a.pullProgress())
+	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
 		return err
 	}
@@ -39,30 +43,29 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	var req sandbox.CreateRequest
 	var err error
 
-	flags := flag.NewFlagSet("shard create", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.StringVar(&req.Name, "name", "", "a handle every verb takes in place of the id")
-	flags.Var((*envList)(&req.Env), "env", "an environment variable as KEY=VALUE, repeatable")
-	flags.Var((*secretList)(&req.Secrets), "secret", "a stored secret the guest gets a placeholder for, repeatable")
-	flags.StringVar(&req.Policy, "policy", "", "the egress policy the host enforces")
-	flags.StringVar(&req.WorkDir, "workdir", "", "the directory the entrypoint starts in")
-	flags.StringVar(&req.User, "user", "", "the user the entrypoint runs as")
-	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "the memory bound in MiB, at most the host's memory; 0 is unbounded on Linux, but vz refuses it because the VM needs a size")
-	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)")
-	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "the disk bound in MiB for the writable layer and /tmp, 0 for the default; Firecracker needs at least 11 so its journal fits")
-	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "start the sandbox again when the host ends it for its memory; bare is unlimited, and =N caps the starts in a row")
+	flags := newFlags("create")
+	flags.StringVar(&req.Name, "name", "", "")
+	flags.Var((*envList)(&req.Env), "env", "")
+	flags.Var((*secretList)(&req.Secrets), "secret", "")
+	flags.StringVar(&req.Policy, "policy", "", "")
+	flags.StringVar(&req.WorkDir, "workdir", "", "")
+	flags.StringVar(&req.User, "user", "", "")
+	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "")
+	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
+	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "")
+	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "")
 	var restart restartFlags
-	flags.StringVar(&restart.policy, "restart", "", "when to start the entrypoint again inside the sandbox: no, on-failure or always")
-	flags.IntVar(&restart.retries, "restart-retries", 0, "how many times the supervisor starts the entrypoint again before it gives up")
-	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "how long to wait before the first start again, in whole seconds; the wait doubles each time")
+	flags.StringVar(&restart.policy, "restart", "", "")
+	flags.IntVar(&restart.retries, "restart-retries", 0, "")
+	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "")
 	var health healthFlags
-	flags.StringVar(&health.command, "health-command", "", "a shell command the daemon runs in the sandbox; exit 0 is a pass")
-	flags.DurationVar(&health.interval, "health-interval", 0, "the time between two probes, in whole seconds, 1h at most")
-	flags.DurationVar(&health.timeout, "health-timeout", 0, "how long one probe has to answer, in whole seconds, 10m at most")
-	flags.IntVar(&health.retries, "health-retries", 0, "how many failed probes in a row mark the sandbox unhealthy")
+	flags.StringVar(&health.command, "health-command", "", "")
+	flags.DurationVar(&health.interval, "health-interval", 0, "")
+	flags.DurationVar(&health.timeout, "health-timeout", 0, "")
+	flags.IntVar(&health.retries, "health-retries", 0, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return sandbox.CreateRequest{}, fmt.Errorf("parse the create flags: %w", err)
+		return sandbox.CreateRequest{}, err
 	}
 
 	if req.Health, err = health.request(); err != nil {
@@ -190,10 +193,10 @@ func (o oomRestartFlag) Set(value string) error {
 
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("--restart-on-oom takes a count, got %q", value)
+		return errors.New("want a count")
 	}
 	if n < 0 {
-		return fmt.Errorf("--restart-on-oom is a count and cannot be negative, got %d", n)
+		return errors.New("a count cannot be negative")
 	}
 	*o.max = n
 
@@ -262,7 +265,7 @@ func (c *cpuCount) String() string { return strconv.Itoa(int(*c)) }
 func (c *cpuCount) Set(value string) error {
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("%q is not a whole number of cpus; a fraction is never rounded", value)
+		return errors.New("want a whole number of cpus; a fraction is never rounded")
 	}
 	*c = cpuCount(n)
 
@@ -278,10 +281,10 @@ func (e *envList) String() string { return strings.Join(*e, ",") }
 func (e *envList) Set(value string) error {
 	key, _, found := strings.Cut(value, "=")
 	if !found {
-		return fmt.Errorf("%q is not KEY=VALUE", value)
+		return errors.New("want KEY=VALUE")
 	}
 	if key == "" {
-		return fmt.Errorf("%q has no name", value)
+		return errors.New("want a name before the =")
 	}
 
 	*e = append(*e, value)
@@ -299,7 +302,7 @@ func (s *secretList) Set(value string) error {
 		return err
 	}
 	if slices.Contains(*s, value) {
-		return fmt.Errorf("--secret %s was given twice", value)
+		return errors.New("the same secret was given twice")
 	}
 
 	*s = append(*s, value)

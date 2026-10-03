@@ -358,7 +358,7 @@ func (d *deps) newProvider(dirs, snapshots func(string) (string, error)) (models
 	case firecracker.Name:
 		return d.newFirecracker(dirs, snapshots)
 	default:
-		return nil, fmt.Errorf("unknown provider %q: shard knows %s, %s, %s, %s and %s", d.cfg.Provider, gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name)
+		return nil, unknownProvider(d.cfg.Provider)
 	}
 }
 
