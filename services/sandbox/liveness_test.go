@@ -227,6 +227,32 @@ func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testin
 	}
 }
 
+func TestLivenessKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := running()
+	sb.Pausing = true
+	lab := newLivenessLab(t, sb, unproven(42))
+	lab.l.repo.snapshotDir = dir
+
+	if err := lab.tick(t, sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !got.Pausing {
+		t.Errorf("the record is %s with mark %v, want running with the mark kept", got.State, got.Pausing)
+	}
+
+	lab.l.provider.status = gone()
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness after the death: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir {
+		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
+	}
+}
+
 // The tick probes before it takes the lock, so a pause can commit after the probe; only a probe under the lock drops the mark.
 func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
 	dir := t.TempDir()

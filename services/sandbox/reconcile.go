@@ -239,9 +239,9 @@ func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
 	return dir, nil
 }
 
-// ranPast is a marked record the substrate runs and has not frozen: the pause that marked it is over and never took this run.
+// ranPast is a marked record the substrate says runs; a frozen or unresponsive one proves no run past the pause.
 func ranPast(sb models.Sandbox, status models.Status) bool {
-	return sb.State == models.StateRunning && sb.Pausing && status.Alive() && status.State != models.StatePaused
+	return sb.State == models.StateRunning && sb.Pausing && status.Alive() && status.State == models.StateRunning
 }
 
 // dropMark clears the mark of a pause the substrate ran on past, and reports the correction.

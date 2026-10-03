@@ -110,11 +110,12 @@ one:
   checkpoint is what an earlier pause left, and the record becomes `stopped` as above. The liveness
   tick applies the same rule. On gVisor the sentry can still be frozen beside that checkpoint, so the
   daemon deletes it first, without a thaw, the way the pause would have. A substrate that cannot do
-  that keeps the record as it is. A marked record the substrate runs and has not frozen stays
-  `running` and loses the mark: that pause is over and never took this run, so a later death of the
-  run is a stop, not a pause. On vz this is a pause cut after its snapshot, whose shim the next daemon
-  runs on. The liveness tick asks the substrate again under the sandbox's lock before it drops a
-  mark, because a pause can commit after the tick's first probe.
+  that keeps the record as it is. A marked record the substrate says is `running` stays `running`
+  and loses the mark: that pause is over and never took this run, so a later death of the run is a
+  stop, not a pause. On vz this is a pause cut after its snapshot, whose shim the next daemon runs
+  on. Any other live state, frozen or unresponsive, proves no such run and keeps the mark. The
+  liveness tick asks the substrate again under the sandbox's lock before it drops a mark, because a
+  pause can commit after the tick's first probe.
 - A record that says `stopped` while the substrate holds a live process becomes `running`, with the
   pid the substrate reports, and the exit status of the run that ended is dropped.
 - A record that says `created` is left alone: it never ran.
