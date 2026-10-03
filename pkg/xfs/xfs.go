@@ -129,6 +129,49 @@ func Fstab(image, point string) error {
 	return f.Close()
 }
 
+// RemoveFstab drops the loop-mount line Fstab wrote for image at point; a missing file or line is not an error, and every other line stays.
+func RemoveFstab(image, point string) error {
+	info, err := os.Stat(FstabPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", FstabPath, err)
+	}
+	blob, err := os.ReadFile(FstabPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", FstabPath, err)
+	}
+
+	kept := make([]string, 0)
+	dropped := false
+	for line := range strings.SplitSeq(string(blob), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[0] == image && fields[1] == point && fields[2] == "xfs" && slices.Contains(strings.Split(fields[3], ","), "loop") {
+			dropped = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !dropped {
+		return nil
+	}
+
+	// Write a sibling and rename, so a crash never leaves /etc/fstab half written; keep the file's own mode.
+	tmp := FstabPath + ".shard-tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
+		return errors.Join(fmt.Errorf("chmod %s: %w", tmp, err), os.Remove(tmp))
+	}
+	if err := os.Rename(tmp, FstabPath); err != nil {
+		return errors.Join(fmt.Errorf("rename %s to %s: %w", tmp, FstabPath, err), os.Remove(tmp))
+	}
+
+	return nil
+}
+
 // InFstab reports whether our line already mounts point, and refuses a line that mounts it from another source, type or without loop.
 func InFstab(image, point string) (bool, error) {
 	f, err := os.Open(FstabPath)

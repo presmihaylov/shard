@@ -87,3 +87,50 @@ func TestFstabRefusesAForeignLineAtThePoint(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveFstabDropsOnlyOurLine(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "# static\n/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n"
+	if err := os.WriteFile(FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# static\n/dev/sda1 / ext4 defaults 0 1\n"; string(got) != want {
+		t.Fatalf("fstab = %q, want %q", got, want)
+	}
+}
+
+func TestRemoveFstabKeepsAForeignLineAtThePoint(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	foreign := "/dev/sdb1 /var/lib/shard ext4 defaults 0 1\n"
+	if err := os.WriteFile(FstabPath, []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != foreign {
+		t.Fatalf("fstab = %q, want it kept %q", got, foreign)
+	}
+}
+
+func TestRemoveFstabMissingFileIsNoError(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -4,6 +4,7 @@
 package hostclean
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +13,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
+	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
 // sandboxDir and recordFile are where the daemon keeps a sandbox record, under a root of its own.
@@ -27,6 +31,12 @@ const (
 
 // cgroupParent is the one cgroup the daemon puts every sandbox under, by id.
 const cgroupParent = "shard"
+
+// firecrackerProvider is the provider a record names when the sandbox is a vmm, and socketFile is its api socket beside the record.
+const (
+	firecrackerProvider = "firecracker"
+	socketFile          = "firecracker.sock"
+)
 
 // runtimes maps the provider a record names to the binary whose state the daemon keeps under the root, by that name.
 var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc", "runc": "runc"}
@@ -231,6 +241,12 @@ func sandboxOf(root, id string) []Leftover {
 		state := filepath.Join(root, binary)
 		out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
 	}
+	// A firecracker sandbox is a vmm, not a runtime the record can delete; find it by the api socket beside the record and end it.
+	if rec.Provider == firecrackerProvider {
+		if pid := vmmPID(filepath.Join(root, sandboxDir, id, socketFile)); pid > 0 {
+			out = append(out, Leftover{What: "the firecracker vmm", Path: id, remove: func() error { return firecracker.KillPID(pid) }})
+		}
+	}
 	// A stop keeps the cgroup for the rm that never came.
 	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
 		out = append(out, Leftover{What: "the cgroup", Path: group, remove: func() error { return cgroup.Remove(group) }})
@@ -289,6 +305,31 @@ func exists(path string) bool {
 	return err == nil
 }
 
+// vmmPID is the firecracker that serves this socket, or 0 when none does; a cmdline is NUL joined, so the socket path is one whole argument.
+func vmmPID(sock string) int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+
+	want := []byte(sock)
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(cmdline, want) {
+			return pid
+		}
+	}
+
+	return 0
+}
+
 func leftRoots(prefixes []string) ([]Leftover, error) {
 	roots, err := match(prefixes)
 	if err != nil {
@@ -297,10 +338,28 @@ func leftRoots(prefixes []string) ([]Leftover, error) {
 
 	out := make([]Leftover, 0, len(roots))
 	for _, root := range roots {
+		// Firecracker mounts a sibling <root>.xfs at the root (datadir.ImagePath); its image file and fstab line sit beside the root and outlive a RemoveAll of it.
+		if image := filepath.Clean(root) + ".xfs"; exists(image) {
+			out = append(out, Leftover{What: "the data image", Path: image, remove: removeImage(image, root)})
+		}
 		out = append(out, Leftover{What: "the temp root", Path: root, remove: removeAll(root)})
 	}
 
 	return out, nil
+}
+
+// removeImage drops the fstab line that mounts image at point, then the image; neither being there is not an error.
+func removeImage(image, point string) func() error {
+	return func() error {
+		if err := xfs.RemoveFstab(image, point); err != nil {
+			return err
+		}
+		if err := os.Remove(image); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", image, err)
+		}
+
+		return nil
+	}
 }
 
 // match answers the roots an earlier run of this package left, which is the whole of what it owns.

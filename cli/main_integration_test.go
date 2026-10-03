@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -196,6 +197,9 @@ type testDaemon struct {
 	log  string
 }
 
+// itestProvider names the substrate the suite's daemon runs, so a /dev/kvm host does not auto-pick firecracker and leak a vmm; SHARD_ITEST_PROVIDER picks another for a box run.
+var itestProvider = cmp.Or(os.Getenv("SHARD_ITEST_PROVIDER"), "gvisor")
+
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
 // env is added to the daemon's own environment, which is how a test gives it a different wiring.
 func spawnDaemon(env ...string) (*testDaemon, error) {
@@ -209,7 +213,7 @@ func spawnDaemon(env ...string) (*testDaemon, error) {
 		return nil, fmt.Errorf("make a daemon log: %w", err)
 	}
 
-	cmd := exec.Command(shard, "--root", root, "daemon")
+	cmd := exec.Command(shard, "--root", root, "--provider", itestProvider, "daemon")
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Env = append(os.Environ(), env...)
 	if err := cmd.Start(); err != nil {
