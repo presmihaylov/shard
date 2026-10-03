@@ -65,6 +65,46 @@ func TestStatusCallsAZombieSandboxStopped(t *testing.T) {
 	}
 }
 
+// A daemon kill mid-pause leaves runsc answering paused for a sentry that then goes, which Status must read stopped (SHARD-411).
+func TestStatusCallsACutPauseWhoseProcessIsGoneStopped(t *testing.T) {
+	// 2147483646 is above every pid_max, so /proc never holds it, on Linux or on a /proc-less macOS.
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"paused","pid":2147483646}'`)
+	p.SetCgroupRoot(t.TempDir())
+
+	status, err := p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Alive() || status.State != models.StateStopped {
+		t.Errorf("a cut pause whose process is gone reads as %+v, want it stopped", status)
+	}
+	if !status.Exists {
+		t.Errorf("runsc still holds the state, so Exists must stay true: %+v", status)
+	}
+}
+
+// A cut pause can outlive the sentry whose pid Linux then reuses for an unrelated live process, which Status must still read stopped (SHARD-411).
+func TestStatusCallsACutPauseWhosePidIsReusedStopped(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc is a Linux thing")
+	}
+
+	// the test process is alive and not a zombie, and no sandbox cgroup holds it, so it stands in for the pid Linux reused.
+	p := newProviderOver(t, fmt.Sprintf(`echo '{"id":"amber-otter-1a2b","status":"paused","pid":%d}'`, os.Getpid()))
+	p.SetCgroupRoot(t.TempDir())
+
+	status, err := p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Alive() || status.State != models.StateStopped {
+		t.Errorf("a cut pause whose pid was reused reads as %+v, want it stopped", status)
+	}
+	if !status.Exists {
+		t.Errorf("runsc still holds the state, so Exists must stay true: %+v", status)
+	}
+}
+
 func awaitZombie(t *testing.T, pid int) {
 	t.Helper()
 

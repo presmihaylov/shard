@@ -12,13 +12,14 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vsock"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // The guest ports over a real AF_VSOCK, dialed back through the kernel's loopback; a host without vsock_loopback skips.
 func TestTransportServesOverLiveVsock(t *testing.T) {
-	probe, err := vsock.Listen(supervisor.FilesPort + 100)
+	probe, err := vsock.Listen(supervisor.LogsPort + 100)
 	if err != nil {
 		t.Skipf("no vsock device to listen on: %v", err)
 	}
@@ -59,13 +60,27 @@ func TestTransportServesOverLiveVsock(t *testing.T) {
 	}
 	defer c.Close()
 
+	if err := c.Run(ctx, supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
 	path := filepath.Join(t.TempDir(), "hello")
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stat, err := supervisor.Stat(ctx, dial, path)
+	run := func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
+		return supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: spec.Argv, WorkDir: spec.WorkDir}, spec)
+	}
+	conn, err := supervisor.OpenFiles(ctx, run, "")
+	if err != nil {
+		t.Fatalf("open a files exec over vsock: %v", err)
+	}
+	stat, err := supervisor.Stat(conn, path)
 	if err != nil {
 		t.Fatalf("stat over vsock: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close the files exec: %v", err)
 	}
 	if stat.Size != 5 {
 		t.Fatalf("stat = %+v, want 5 bytes", stat)

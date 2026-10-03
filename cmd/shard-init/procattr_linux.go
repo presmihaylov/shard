@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,6 +28,27 @@ func sysProcAttr(credential *syscall.Credential, ambient []uintptr, tty bool, bo
 func setUndumpable() error {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		return fmt.Errorf("clear the dumpable flag: %w", err)
+	}
+
+	return nil
+}
+
+// dropCapabilities empties every set on every thread, since capset binds one thread and a file op may run on any.
+func dropCapabilities() error {
+	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&header, &data[0]); err != nil {
+		return fmt.Errorf("read the capabilities of a files op as a non-root user: %w", err)
+	}
+	// An empty permitted set holds nothing to leak, and a cgo build, as the test binary is, refuses AllThreadsSyscall.
+	if data[0].Permitted == 0 && data[1].Permitted == 0 {
+		return nil
+	}
+
+	data = [2]unix.CapUserData{}
+	_, _, errno := syscall.AllThreadsSyscall(unix.SYS_CAPSET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0) //nolint:gosec // capset takes two struct pointers
+	if errno != 0 {
+		return fmt.Errorf("drop the capabilities of a files op as a non-root user: %w", errno)
 	}
 
 	return nil

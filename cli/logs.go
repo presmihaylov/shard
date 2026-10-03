@@ -26,7 +26,7 @@ func (a App) logs(ctx context.Context, args []string) error {
 	}
 
 	if opts.egress {
-		return a.client().EgressLog(ctx, opts.id, a.Out)
+		return a.client().EgressLog(ctx, opts.id, a.Out, a.Err)
 	}
 
 	return a.client().Logs(ctx, opts.id, opts.follow, a.Out)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // OOMHealthyRun is how long a sandbox must run under its memory throttle before the next OOM resets its count (Docker's number).
@@ -29,10 +30,14 @@ const SupervisorFailedReason = "shard-init failed"
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
-		if sb.State != models.StateRunning {
-			continue
+		var err error
+		switch {
+		case sb.State == models.StateRunning:
+			err = s.reconcileLive(ctx, sb, now, report)
+		case sb.State == models.StateStopped && !sb.OOMRestartDue.IsZero():
+			err = s.startAgainWhenDue(ctx, sb, now, report)
 		}
-		if err := s.reconcileLive(ctx, sb, now, report); err != nil {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -82,6 +87,14 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
 	if status.OOMKilled {
+		// The kill ended every exec with the sandbox; drop them before a backoff wait can hold their buffers for a minute.
+		s.dropExecs(sb.ID)
+		// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
+		restarts, restart := oomRestarts(current, status.Throttles, now)
+		if due := current.OOMRestartedAt.Add(oomBackoff(restarts)); restart && now.Before(due) {
+			return s.waitOOMBackoff(sb.ID, due, report)
+		}
+
 		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
 	}
 	if status.SupervisorFailed != "" {
@@ -136,8 +149,19 @@ func healthyRun(sb models.Sandbox, throttles int64, now time.Time) bool {
 // clean exit and the sandbox stays up for another exec. It is idempotent: a recorded exit is left alone.
 func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models.Sandbox, report func(string)) error {
 	exit, err := s.cfg.Provider.ExitStatus(ctx, id)
+	// Log and continue, as Pres decided on 2026-10-03: a failed task backs off liveness for every sandbox, and only this guest loses its own exit.
+	if errors.Is(err, models.ErrExitFileTooLarge) {
+		report(fmt.Sprintf("sandbox %s: %v; its entrypoint exit is unknown until the next one", id, err))
+		return nil
+	}
+	if errors.Is(err, models.ErrExitChannelReplaced) {
+		return s.recordExitChannel(id, sb, err.Error(), report)
+	}
 	if err != nil {
 		return fmt.Errorf("read the exit of sandbox %s: %w", id, err)
+	}
+	if err := s.recordExitChannel(id, sb, "", report); err != nil {
+		return err
 	}
 	if exit == nil {
 		return nil
@@ -155,6 +179,29 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 		return fmt.Errorf("sandbox %s entrypoint exited but its record was not updated: %w", id, err)
 	}
 	report(fmt.Sprintf("sandbox %s entrypoint exited (code %d, signal %d): recorded, the sandbox stays running", id, exit.Code, exit.Signal))
+
+	return nil
+}
+
+// recordExitChannel keeps on the record why the exit cannot be read, so inspect names it, and reports each change once.
+func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, report func(string)) error {
+	if sb.ExitChannel == why {
+		return nil
+	}
+
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.ExitChannel = why
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s: record its exit channel: %w", id, err)
+	}
+	if why == "" {
+		report(fmt.Sprintf("sandbox %s: its exit channel reads again", id))
+		return nil
+	}
+	report(fmt.Sprintf("sandbox %s: %s; its entrypoint exit is unknown until the channel reads again", id, why))
 
 	return nil
 }
@@ -204,22 +251,10 @@ func supervisorFailed(rec *models.Sandbox, why string) {
 // handleOOMKilled runs the memory decision: start the sandbox again when its record asks and the limit allows,
 // else stop it with the reason. The record counts the start before the run, so one that fails leaves no loop.
 func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sandbox, throttles int64, now time.Time, report func(string)) error {
-	// A healthy run begins the count over, so a rare OOM never spends the limit and a throttled loop always does.
-	restarts := sb.OOMRestarts
-	if healthyRun(sb, throttles, now) {
-		restarts = 0
-	}
-
-	restart := sb.RestartOnOOM && (sb.MaxOOMRestarts == 0 || restarts < sb.MaxOOMRestarts)
+	restarts, restart := oomRestarts(sb, throttles, now)
 	reason := OOMKilledReason
 	if sb.RestartOnOOM && !restart {
 		reason = fmt.Sprintf("%s; the %d starts again the limit allows are spent", OOMKilledReason, sb.MaxOOMRestarts)
-	}
-	// The kill ended every exec with the sandbox; drop them before a backoff wait can hold their buffers for a minute.
-	s.dropExecs(id)
-	// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
-	if restart && now.Before(sb.OOMRestartedAt.Add(oomBackoff(restarts))) {
-		return nil
 	}
 
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
@@ -242,6 +277,69 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 		return nil
 	}
 
+	return s.startAgain(ctx, id, restarts+1, sb.MaxOOMRestarts, report)
+}
+
+// waitOOMBackoff takes the record out of running at the kill, so no verb reads the dead pid while the start again waits (SHARD-425).
+func (s *Service) waitOOMBackoff(id string, due time.Time, report func(string)) error {
+	reason := fmt.Sprintf("%s; it starts again at %s", OOMKilledReason, due.Format(time.RFC3339))
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateStopped
+		rec.PID = 0
+		rec.StoppedReason = reason
+		rec.OOMRestartDue = due
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s %s but its record was not updated: %w", id, OOMKilledReason, err)
+	}
+	report(fmt.Sprintf("sandbox %s %s: the record now says stopped", id, reason))
+
+	return nil
+}
+
+// startAgainWhenDue starts a sandbox that waited out its backoff stopped, once the wait has passed.
+func (s *Service) startAgainWhenDue(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
+	if now.Before(sb.OOMRestartDue) {
+		return nil
+	}
+
+	unlock, ok := s.tryLock(sb.ID)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+
+	// The list may be a tick old: a stop, a start or an rm that landed since took the wait away.
+	current, err := s.cfg.Repo.Get(sb.ID)
+	if errors.Is(err, sandboxstate.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.State != models.StateStopped || !current.OOMRestartDue.Equal(sb.OOMRestartDue) {
+		return nil
+	}
+
+	err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+		rec.StoppedReason = OOMKilledReason
+		rec.OOMRestarts = current.OOMRestarts + 1
+		rec.OOMRestartedAt = now
+		rec.OOMRestartDue = time.Time{}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s %s but its start again was not counted: %w", sb.ID, OOMKilledReason, err)
+	}
+
+	return s.startAgain(ctx, sb.ID, current.OOMRestarts+1, current.MaxOOMRestarts, report)
+}
+
+// startAgain runs a start again the record already counted, so one that fails leaves no loop.
+func (s *Service) startAgain(ctx context.Context, id string, count, limit int, report func(string)) error {
 	if err := s.start(ctx, id); err != nil {
 		var timeout *SubstrateTimeoutError
 		if errors.As(err, &timeout) {
@@ -253,9 +351,29 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 
 		return fmt.Errorf("start sandbox %s again after it %s: %w", id, OOMKilledReason, err)
 	}
-	report(oomRestartReport(id, restarts+1, sb.MaxOOMRestarts))
+	report(oomRestartReport(id, count, limit))
 
 	return nil
+}
+
+// callOffOOMWait drops the start again a stopped record waits on, because an operator stop outranks it.
+func callOffOOMWait(rec *models.Sandbox) {
+	if rec.OOMRestartDue.IsZero() {
+		return
+	}
+	rec.OOMRestartDue = time.Time{}
+	rec.StoppedReason = OOMKilledReason
+}
+
+// oomRestarts is the count an OOM now goes on from, and whether the record and its limit allow one more start again.
+func oomRestarts(sb models.Sandbox, throttles int64, now time.Time) (int, bool) {
+	// A healthy run begins the count over, so a rare OOM never spends the limit and a throttled loop always does.
+	restarts := sb.OOMRestarts
+	if healthyRun(sb, throttles, now) {
+		restarts = 0
+	}
+
+	return restarts, sb.RestartOnOOM && (sb.MaxOOMRestarts == 0 || restarts < sb.MaxOOMRestarts)
 }
 
 // oomRestartReport names the limit when the sandbox has one and leaves it off when the starts again are unlimited.

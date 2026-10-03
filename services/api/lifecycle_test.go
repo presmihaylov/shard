@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -79,7 +80,135 @@ type fakeLifecycle struct {
 	ended chan struct{}
 	// pulled is what a create reports to the progress on its context.
 	pulled []image.Event
+
+	// file is what a put named and landed, and stat and content what a stat or a get answers.
+	file      sandbox.FileWrite
+	landed    string
+	fileOp    string
+	filePath  string
+	stat      models.FileStat
+	content   string
+	bodyErr   error
+	closedErr error
+	// entries is what an ls answers, listErr how it fails after them; dir is the mkdir's body, recursive the delete's flag.
+	entries   []models.FileEntry
+	listErr   error
+	dir       sandbox.MkdirRequest
+	recursive bool
+	// archive is what a put of an archive named.
+	archive sandbox.ArchiveWrite
 }
+
+func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
+	f.ref, f.fileOp, f.filePath = ref, "stat", path
+
+	return f.stat, f.err
+}
+
+// ReadFile answers content as the body; bodyErr cuts it after the content, the way a guest that died midway does.
+func (f *fakeLifecycle) ReadFile(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	f.ref, f.fileOp, f.filePath = ref, "read", path
+	if f.err != nil {
+		return models.FileStat{}, nil, f.err
+	}
+
+	body := io.Reader(strings.NewReader(f.content))
+	if f.bodyErr != nil {
+		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+
+	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) WriteFile(_ context.Context, ref string, req sandbox.FileWrite, src io.Reader) error {
+	f.ref, f.fileOp, f.file = ref, "write", req
+	if f.err != nil {
+		return f.err
+	}
+
+	landed, err := io.ReadAll(src)
+	f.landed = string(landed)
+
+	return err
+}
+
+// ListDir answers entries, then listErr in place of the end when it is set; closedErr is what the close says.
+func (f *fakeLifecycle) ListDir(_ context.Context, ref, path string) (sandbox.Listing, error) {
+	f.ref, f.fileOp, f.filePath = ref, "ls", path
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return &fakeListing{entries: f.entries, err: f.listErr, closeErr: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) MakeDir(_ context.Context, ref string, req sandbox.MkdirRequest) error {
+	f.ref, f.fileOp, f.dir = ref, "mkdir", req
+
+	return f.err
+}
+
+func (f *fakeLifecycle) DeleteFile(_ context.Context, ref, path string, recursive bool) error {
+	f.ref, f.fileOp, f.filePath, f.recursive = ref, "delete", path, recursive
+
+	return f.err
+}
+
+// ReadArchive answers content as the tar, cut by bodyErr the way ReadFile's is.
+func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	f.ref, f.fileOp, f.filePath = ref, "pack", path
+	if f.err != nil {
+		return models.FileStat{}, nil, f.err
+	}
+
+	body := io.Reader(strings.NewReader(f.content))
+	if f.bodyErr != nil {
+		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+
+	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
+}
+
+func (f *fakeLifecycle) WriteArchive(_ context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error {
+	f.ref, f.fileOp, f.archive = ref, "unpack", req
+	if f.err != nil {
+		return f.err
+	}
+
+	landed, err := io.ReadAll(src)
+	f.landed = string(landed)
+
+	return err
+}
+
+type fakeListing struct {
+	entries  []models.FileEntry
+	err      error
+	closeErr error
+}
+
+func (l *fakeListing) Next() (models.FileEntry, error) {
+	if len(l.entries) > 0 {
+		entry := l.entries[0]
+		l.entries = l.entries[1:]
+
+		return entry, nil
+	}
+	if l.err != nil {
+		return models.FileEntry{}, l.err
+	}
+
+	return models.FileEntry{}, io.EOF
+}
+
+func (l *fakeListing) Close() error { return l.closeErr }
+
+type fakeBody struct {
+	io.Reader
+	err error
+}
+
+func (b fakeBody) Close() error { return b.err }
 
 func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
@@ -342,6 +471,22 @@ func (f *fakeLifecycle) write(w io.Writer) error {
 	}
 
 	return nil
+}
+
+func head(t *testing.T, server *httptest.Server, path string) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, server.URL+path, nil)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", path, err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("HEAD %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode
 }
 
 // send answers with the status and the decoded body, or a nil body on a 204.
