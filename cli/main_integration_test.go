@@ -94,7 +94,11 @@ func run(m *testing.M) (int, error) {
 // stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
 // so a run refuses to start on it.
 func stateRoots() []string {
-	return append(underTemp("shard-build", "shard-daemon"), filepath.Join(shortTemp, itestPrefix))
+	roots := append(underTemp(itestPrefix, "shard-build", "shard-daemon"), filepath.Join(shortTemp, itestPrefix))
+	// Where $TMPDIR is /tmp the two itest prefixes are one, and a root matched twice is swept twice.
+	slices.Sort(roots)
+
+	return slices.Compact(roots)
 }
 
 // tempPrefixes adds the scratch directory of an exec, which a killed daemon leaves and nothing pins.
@@ -225,7 +229,7 @@ func createArgs(args ...string) []string {
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
 // env is added to the daemon's own environment, which is how a test gives it a different wiring.
 func spawnDaemon(env ...string) (*testDaemon, error) {
-	root, err := os.MkdirTemp("", "shard-itest")
+	root, err := os.MkdirTemp("", itestPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("make a state root: %w", err)
 	}
