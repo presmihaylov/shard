@@ -22,9 +22,8 @@ func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 		t.Fatalf("the logs follow is %q, want text/plain; charset=utf-8", contentType)
 	}
 
-	line, err := body.ReadString('\n')
-	if err != nil || line != "marker\n" {
-		t.Fatalf("the first line is %q, %v, want marker", line, err)
+	if line := awaitLine(t, body); line != "marker\n" {
+		t.Fatalf("the first line is %q, want marker", line)
 	}
 
 	if err := app.Run(t.Context(), []string{"stop", "--time", "1s", id}); err != nil {
@@ -51,18 +50,40 @@ func TestEgressLogFollowOverPlainHTTPEndsOnTheRemove(t *testing.T) {
 		t.Fatalf("exec: %v", err)
 	}
 
-	line, err := body.ReadString('\n')
-	if err != nil || !strings.HasPrefix(line, "{") || !strings.Contains(line, `"source":"host"`) {
-		t.Fatalf("the first line is %q, %v, want one JSON record of the host drop", line, err)
-	}
+	awaitDrop(t, body, `"address":"169.254.169.254"`)
 
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
 		t.Fatalf("rm --force: %v", err)
 	}
 
-	if rest := awaitEnd(t, body); rest != "" {
-		t.Errorf("the body carried %q after the rm, want nothing", rest)
+	// The guest's own IPv6 drops can still be unread at the rm, so the body ends on whole records, not on nothing.
+	for _, line := range strings.SplitAfter(awaitEnd(t, body), "\n") {
+		if line != "" && !isHostDrop(line) {
+			t.Errorf("the body carried %q after the rm, want whole records of host drops", line)
+		}
 	}
+}
+
+// awaitDrop reads host drops until one carries want, since the guest's own IPv6 traffic drops before the ping does.
+func awaitDrop(t *testing.T, body *bufio.Reader, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		line := awaitLine(t, body)
+		if !isHostDrop(line) {
+			t.Fatalf("the follow carried %q, want one JSON record of a host drop", line)
+		}
+		if strings.Contains(line, want) {
+			return
+		}
+	}
+
+	t.Fatalf("the follow carried no record with %s in 15s", want)
+}
+
+func isHostDrop(line string) bool {
+	return strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}\n") && strings.Contains(line, `"source":"host"`)
 }
 
 // follow opens a plain GET of a follow, which must answer 200 before the first byte, and leaves the body open.
@@ -80,6 +101,34 @@ func (c rawClient) follow(path string) (string, *bufio.Reader) {
 	}
 
 	return resp.Header.Get("Content-Type"), bufio.NewReader(resp.Body)
+}
+
+// awaitLine reads the first line of a follow, and fails rather than hangs when none comes.
+func awaitLine(t *testing.T, body *bufio.Reader) string {
+	t.Helper()
+
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := body.ReadString('\n')
+		done <- result{line, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("the body ended with %v before its first line, after %q", r.err, r.line)
+		}
+
+		return r.line
+	case <-time.After(15 * time.Second):
+		t.Fatal("the follow carried no line in 15s")
+	}
+
+	return ""
 }
 
 // awaitEnd reads the body to its end, which the daemon must reach on its own, and answers what was left.

@@ -540,3 +540,53 @@ func TestClaimKeepsTheRootFSUntilTheRecordIsWritten(t *testing.T) {
 		t.Fatalf("the rootfs outlived the removal: %v", err)
 	}
 }
+
+// SHARD-359: a pull while a removal is past its check must not hand out the rootfs the removal then deletes.
+func TestPullWaitsForARemovalPastItsCheck(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	if _, err := svc.Pull(t.Context(), ref); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	checked := make(chan struct{})
+	release := make(chan struct{})
+	removed := make(chan error, 1)
+	go func() {
+		removed <- svc.Remove(context.Background(), ref, func() error {
+			close(checked)
+			<-release
+
+			return nil
+		})
+	}()
+	<-checked
+
+	var img image.Image
+	var pullErr error
+	pulled := make(chan struct{})
+	go func() {
+		defer close(pulled)
+		img, pullErr = svc.Pull(context.Background(), ref)
+	}()
+
+	// A pull that waits for the removal never returns here, so the removal goes on after a beat either way.
+	select {
+	case <-pulled:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+
+	if err := <-removed; err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	<-pulled
+	if pullErr != nil {
+		t.Fatalf("Pull during the removal: %v", pullErr)
+	}
+
+	if _, err := os.Stat(img.RootFS); err != nil {
+		t.Errorf("the pull handed out a rootfs the removal then took: %v", err)
+	}
+}

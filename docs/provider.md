@@ -49,6 +49,16 @@ that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes 
 `--provider` that names another substrate is refused, by both names, before the daemon touches the
 root; the records or the data image name the one to give.
 
+**A root leaves room for the sockets under it.** A unix socket path holds at most 107 bytes on Linux
+and 103 on macOS, and a microVM's sockets sit under `<root>/sandboxes/<id>/`. So the daemon refuses at
+start a root longer than 55 bytes for Firecracker, 58 for vz, or 96 for the container substrates (92
+on macOS), and the refusal names the longest root that fits (SHARD-358).
+
+**A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
+before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
+every byte as it comes, with no resume. A newer guest under an older daemon is unsupported: that
+daemon lands the guest's opening offsets as output and never answers them, so no output follows.
+
 **An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
 beside it, and every record lives inside that image, so a root whose image is not mounted looks empty
 from outside it. The image itself is what says the root is Firecracker's; the daemon then mounts it
@@ -102,6 +112,13 @@ sandbox's netns (`services/provider/sysbox.Userns`), which is why the guest hold
 its own interface and nothing else. The upstream fix is an exclusive-range allocator in
 `sysbox-mgr`, and until it lands this limit stands.
 
+**A Sysbox guest gets no kernel keyring.** The keyring quota is per host uid, and every Sysbox guest
+root is host uid 165536, so one guest that filled it would fail every later create (SHARD-367). Each
+bundle carries a seccomp filter that answers `add_key`, `keyctl` and `request_key` with `ENOSYS`, and
+`sysbox-runc create` runs with `--no-new-keyring`. It is a deny-list, because `sysbox-runc` rewrites
+an allow-list to admit those three again. `ENOSYS` and not `EPERM`, because `runc` inside the guest
+skips its session keyring on `ENOSYS`, so nested Docker still starts.
+
 **Sysbox does not verify the entrypoint's exit code.** `shard-init` reports the exit record on its
 fd 0, which the host holds, and clears its dumpable flag so `/proc/1/fd` is out of the guest's reach.
 On gVisor that holds: the sentry enforces the capability set the bundle grants, which has no
@@ -126,6 +143,9 @@ is never picked by default; `--provider runc` is the only way onto it. It has no
 no fork, because shard drives no checkpoint on it, and each verb refuses by name: `provider runc does
 not support pause on this host`. It runs where the `runc` package is installed, root, and there is no
 fallback to gVisor.
+
+**runc carries Docker's default seccomp profile.** It answers the keyring calls with `EPERM`, and
+`runc create` runs with `--no-new-keyring`, so a guest spends none of the host's keyring quota.
 
 ## Required verbs against optional verbs
 
@@ -170,10 +190,8 @@ dropped in the stack and written to the sandbox's egress log, which `docs/provid
 `pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
 Every restore of one save wakes with the same guest crng key, so each `resume` and `fork` sends the
 guest 32 bytes of host entropy and `shard-init` rekeys from them before the verb returns (SHARD-293).
-One window stays open: the vCPUs resume 5 to 9 ms before the seed lands, so a process already running
-at the pause can read the same `/dev/urandom` bytes in every copy inside it. A process that starts
-after `resume` or `fork` returns, and every exec, reads fresh bytes. SHARD-310 closes the window by
-freezing the guest across the restore.
+The guest's processes are still frozen from the pause when the seed lands, and thaw only after it,
+so no copy reads a `/dev/urandom` byte of the saved key (SHARD-310).
 The three resource bounds below hold on the Linux substrates; `vz` and `firecracker` have no host
 cgroup, and each section says what the VM does instead.
 
@@ -213,7 +231,13 @@ and the source and the snapshot are untouched. A fork restores holding the sourc
 hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
 else: the interface goes down for the MAC, which is why a fork's frames reach the bridge under its
 own and not the source's. Firecracker has no pause of the wall clock, so the guest's clock is
-corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
+corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of one
+snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
+`resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
+before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
+in between reseeds the guest it adopts. The vCPUs run from the load until the seed lands, so a
+process the snapshot held can still draw from the saved key in those few milliseconds; freezing the
+guest before the save, as `vz` does, is SHARD-409.
 
 Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
 provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
@@ -268,15 +292,21 @@ needed a context and an error would be a fourth thing to get wrong.
 ## What a memory bound means
 
 `--memory` bounds a sandbox the same way on every substrate: past the bound the whole sandbox dies,
-not one process inside it, and the daemon restarts it when the record set `restart_on_oom`. gVisor
-sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
+not one process inside it, and the daemon restarts it when the record set `restart_on_oom`.
+`create` refuses a bound above the host's total memory by name (`MemTotal` on Linux, `hw.memsize`
+on a Mac), because such a bound never binds: the host OOM killer acts first. The host's whole
+memory is still taken, so leaving room for the host is the operator's call.
+
+gVisor sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
 pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
 the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
 guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
-itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` moves into that cgroup and
-unshares a cgroup namespace rooted there, so everything a guest starts, a Docker daemon and its
-containers included, lands under the bound; `shard-init` alone is exempt, through
+itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares a cgroup namespace
+rooted at that cgroup, then moves itself to a sibling, `init`, so a pause can freeze every guest
+process and leave the supervisor to answer. Each process it starts is born into the bounded cgroup
+by `CLONE_INTO_CGROUP`, so everything a guest starts, a Docker daemon and its containers included,
+lands under the bound. `shard-init` alone is exempt from the killer, through
 `oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
 exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
 `memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
@@ -304,8 +334,9 @@ killer runs first on every workload and the daemon hears an OOM instead of a dea
 the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
 `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
 `shard create` refuses a negative value with an error, because a bound below zero is not a spelling
-of unbounded, and a fraction such as `0.5` with an error that names it, because a VM gets whole CPUs
-and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
+of unbounded, and a value above the CPUs the daemon may run on by name, because such a quota never
+binds and a large enough one overflows to no bound at all. It refuses a fraction such as `0.5` with an
+error that names it, because a VM gets whole CPUs and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
 `--cpus 0` gives it one per host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`,
 refused outside the host's range.
 
@@ -335,7 +366,11 @@ Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox: `sy
 upper layer back when the container is deleted, at the next start or at `rm`, and it must find it. Fork
 and clone copy the layers into a disk of their own, bounded the way the source was; config.json carries
 the bound for that. The record carries the resolved bound, so `inspect` shows the value the image
-enforces, not a bare `0`. `shard create` refuses a negative value. The host needs `mkfs.ext4`, which
+enforces, not a bare `0`. `shard create` refuses a negative value. On the VM providers it also
+refuses, before the record, a bound `ext4.Grow` cannot reach, and names the nearest sizes it can: under
+7 MiB on Firecracker, the empty overlay's own size, and `N*128+1` or `N*128+2` MiB on both, where the last
+128 MiB block group is too small for its own metadata. On `vz` a bound under the image's own disk fails
+after the pull, which is when its size is known (SHARD-280). The host needs `mkfs.ext4`, which
 `e2fsprogs` ships. On Sysbox the directories `sysbox-runc` backs from the host, `/var/lib/docker` among
 them, sit outside the image and so outside the bound.
 

@@ -64,6 +64,8 @@ type Config struct {
 	// Tap gives each sandbox a tap on the host instead of a veth into a namespace, for a vmm to open.
 	// The spec then names no netns, and the provider addresses the guest itself.
 	Tap bool
+	// Report takes the held sandboxes of a ReapplyAll, which then succeeds; nil fails it instead.
+	Report func(format string, v ...any)
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -166,7 +168,7 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	chains, err := s.chains(ctx)
+	chains, held, err := s.chains(ctx)
 	if err != nil {
 		return err
 	}
@@ -176,26 +178,33 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	return s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases))
-}
-
-func (s *Service) chains(ctx context.Context) ([]Chain, error) {
-	if s.cfg.Egress == nil {
-		return nil, nil
+	if err := s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases)); err != nil {
+		return err
+	}
+	if held != nil {
+		return held
 	}
 
-	chains, err := s.cfg.Egress.Chains(ctx)
+	return nil
+}
+
+func (s *Service) chains(ctx context.Context) ([]Chain, *HeldChains, error) {
+	if s.cfg.Egress == nil {
+		return nil, nil, nil
+	}
+
+	chains, held, err := splitHeld(s.cfg.Egress.Chains(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("compile the egress policies: %w", err)
+		return nil, nil, fmt.Errorf("compile the egress policies: %w", err)
 	}
 
 	for _, chain := range chains {
 		if !s.cfg.Subnet.Contains(chain.Address) {
-			return nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
+			return nil, nil, fmt.Errorf("the egress chain for %s names an address outside the sandbox subnet %s", chain.Address, s.cfg.Subnet)
 		}
 	}
 
-	return chains, nil
+	return chains, held, nil
 }
 
 // conflict reports the first host route the subnet overlaps. Claiming a range the host already routes
@@ -222,14 +231,14 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 		return models.NetworkSpec{}, err
 	}
 
-	address, _, err := s.pool.allocate(id)
+	address, held, err := s.pool.allocate(id)
 	if err != nil {
 		return models.NetworkSpec{}, err
 	}
 
 	// The lease goes first, so the ruleset Ensure renders pins the port before the guest sends a frame.
-	if err := s.Ensure(ctx); err != nil {
-		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
+	if err := heldFor(s.Ensure(ctx), id); err != nil {
+		return models.NetworkSpec{}, errors.Join(err, s.undo(ctx, id, held))
 	}
 
 	built, err := netns.NamespaceExists(id)
@@ -251,10 +260,19 @@ func (s *Service) Allocate(ctx context.Context, id string) (models.NetworkSpec, 
 	}
 
 	if err := s.attach(ctx, id, address, owner); err != nil {
-		return models.NetworkSpec{}, errors.Join(err, s.Release(ctx, id))
+		return models.NetworkSpec{}, errors.Join(err, s.undo(ctx, id, held))
 	}
 
 	return s.spec(id, address, owner), nil
+}
+
+// undo keeps a lease from an earlier call: the record of a stopped or paused sandbox still names that address.
+func (s *Service) undo(ctx context.Context, id string, held bool) error {
+	if held {
+		return s.unlink(ctx, id)
+	}
+
+	return s.Release(ctx, id)
 }
 
 // owner is the mapping the namespaces belong to, asked once per Allocate so the spec and the netns agree.
@@ -376,11 +394,13 @@ func (s *Service) Reapply(ctx context.Context, id string) error {
 		return err
 	}
 
-	return s.Ensure(ctx)
+	return heldFor(s.Ensure(ctx), id)
 }
 
 // ReapplyAll is Reapply for a change that names no sandbox, which is what a policy edit is.
-func (s *Service) ReapplyAll(ctx context.Context) error { return s.Ensure(ctx) }
+func (s *Service) ReapplyAll(ctx context.Context) error {
+	return heldReported(s.Ensure(ctx), s.cfg.Report)
+}
 
 // Release drops the namespace, the link and the lease. It is idempotent, and delete is what calls it:
 // the lease must outlive a stop, because a stopped sandbox that starts again keeps its address.
@@ -389,6 +409,15 @@ func (s *Service) Release(ctx context.Context, id string) error {
 		return err
 	}
 
+	if err := s.unlink(ctx, id); err != nil {
+		return err
+	}
+
+	return s.pool.release(id)
+}
+
+// unlink drops the namespace and the host link, and leaves the lease.
+func (s *Service) unlink(ctx context.Context, id string) error {
 	address, found, err := s.pool.find(id)
 	if err != nil {
 		return err
@@ -402,11 +431,7 @@ func (s *Service) Release(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := s.manager.DeleteNamespace(ctx, id); err != nil {
-		return err
-	}
-
-	return s.pool.release(id)
+	return s.manager.DeleteNamespace(ctx, id)
 }
 
 // hostInterface names the host end after the address's offset into the subnet, which is unique and

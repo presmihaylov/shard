@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -30,10 +31,12 @@ type transport struct {
 	logs     *logSink
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
-	// frozen is the root held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
+	// frozen is the guest held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
 	frozen atomic.Bool
 	// freezing puts one freeze and its answer before the next, so a freeze undone for want of a host never undoes a later one.
 	freezing sync.Mutex
+	// bound is the sandbox cgroup a freeze stops before it holds the root; nil off a VM.
+	bound *os.File
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -52,8 +55,10 @@ func serveTransport(name string, boot guestBoot) error {
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
+	var bound *os.File
 	if os.Getpid() == 1 {
-		if err := confine(); err != nil {
+		bound, err = confine()
+		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
 		}
 	}
@@ -73,8 +78,9 @@ func serveTransport(name string, boot guestBoot) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
-	t := &transport{logs: logs, attached: make(chan struct{}, 1)}
+	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound}
 	t.g = newGuest(t, restartPolicy{})
+	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
 	if boot.set() {
 		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
@@ -174,7 +180,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load()}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load(), Logs: supervisor.LogsVersion}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -290,7 +296,7 @@ func (t *transport) freeze(conn net.Conn, id int) {
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 
-	err := freezeRoot()
+	err := freezeGuest(t.bound)
 	if err == nil {
 		t.frozen.Store(true)
 	}
@@ -344,8 +350,21 @@ func (t *transport) handle(m supervisor.Message) error {
 	}
 }
 
+// freezeGuest stops the guest's processes, then holds the root: a writer the root held first would sleep where no cgroup freeze reaches it.
+func freezeGuest(bound *os.File) error {
+	if err := freezeBound(bound); err != nil {
+		return err
+	}
+	if err := freezeRoot(); err != nil {
+		return errors.Join(err, thawBound(bound))
+	}
+
+	return nil
+}
+
+// thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.
 func (t *transport) thaw() error {
-	if err := thawRoot(); err != nil {
+	if err := errors.Join(thawRoot(), thawBound(t.bound)); err != nil {
 		return err
 	}
 	t.frozen.Store(false)
@@ -424,11 +443,17 @@ func signalOf(name string) (syscall.Signal, error) {
 	}
 }
 
-// logSink copies the entrypoint's pipe to the live logs connection, and waits with no host attached so no byte is lost.
+// logHold is the most output the guest keeps for a host that has not acked it; a full hold blocks the entrypoint on its pipe.
+const logHold = 1 << 20
+
+// logSink keeps the entrypoint's output until a host acks it, so a host that comes back resumes where its log file ends.
 type logSink struct {
 	pipe *os.File
 	mu   sync.Mutex
 	cond *sync.Cond
+	// held is the output no host has acked yet, and its first byte is output byte from.
+	held []byte
+	from uint64
 	conn net.Conn
 }
 
@@ -438,7 +463,7 @@ func newLogSink() (*logSink, error) {
 		return nil, fmt.Errorf("open the log pipe: %w", err)
 	}
 
-	s := &logSink{pipe: w}
+	s := &logSink{pipe: w, held: make([]byte, 0, logHold)}
 	s.cond = sync.NewCond(&s.mu)
 	go s.copy(r)
 
@@ -454,17 +479,20 @@ func (s *logSink) accept(l net.Listener) {
 			return
 		}
 
+		// An ack still in flight on the old connection is dropped with it, so what the new host is offered holds until it answers.
 		s.mu.Lock()
 		if s.conn != nil {
 			_ = s.conn.Close()
 		}
 		s.conn = conn
+		from, to := s.from, s.from+uint64(len(s.held))
 		s.cond.Broadcast()
 		s.mu.Unlock()
+		go s.serve(conn, from, to)
 	}
 }
 
-// copy moves each chunk to the live connection, and what is left of it to the next one when a write fails midway.
+// copy holds each chunk of the pipe for the host, and waits for its acks while the hold is full.
 func (s *logSink) copy(r io.Reader) {
 	buf := make([]byte, 32<<10)
 	for {
@@ -472,24 +500,111 @@ func (s *logSink) copy(r io.Reader) {
 		if err != nil {
 			return
 		}
-		s.write(buf[:n])
+		s.hold(buf[:n])
 	}
 }
 
-func (s *logSink) write(chunk []byte) {
+func (s *logSink) hold(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for len(chunk) > 0 {
-		for s.conn == nil {
-			s.cond.Wait()
-		}
-		n, err := s.conn.Write(chunk)
-		chunk = chunk[n:]
-		if err == nil {
-			continue
-		}
-		_ = s.conn.Close()
-		s.conn = nil
+	for len(s.held)+len(chunk) > cap(s.held) {
+		s.cond.Wait()
 	}
+	s.held = append(s.held, chunk...)
+	s.cond.Broadcast()
+}
+
+// serve offers the host the output bytes [from, to), sends on from the one it answers, and lets go of what it acks.
+func (s *logSink) serve(conn net.Conn, from, to uint64) {
+	defer s.drop(conn)
+
+	if _, err := conn.Write(supervisor.LogsHeader(from, to)); err != nil {
+		return
+	}
+	var at uint64
+	if err := binary.Read(conn, binary.BigEndian, &at); err != nil {
+		return
+	}
+	if at < from || at > to {
+		fmt.Fprintf(os.Stderr, "shard-init: the host resumes the logs at %d, outside the held %d..%d\n", at, from, to)
+
+		return
+	}
+	go s.acks(conn)
+
+	buf := make([]byte, 32<<10)
+	for {
+		chunk, ok := s.next(conn, at, buf)
+		if !ok {
+			return
+		}
+		if _, err := conn.Write(chunk); err != nil {
+			return
+		}
+		at += uint64(len(chunk))
+	}
+}
+
+// next copies the held output from byte at into buf once there is some, and says false once conn is no longer the live one.
+func (s *logSink) next(conn net.Conn, at uint64, buf []byte) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for s.conn == conn && at == s.from+uint64(len(s.held)) {
+		s.cond.Wait()
+	}
+	// A host that acked past what it was sent has nothing left here to send from.
+	if s.conn != conn || at < s.from {
+		return nil, false
+	}
+
+	return buf[:copy(buf, s.held[at-s.from:])], true
+}
+
+func (s *logSink) acks(conn net.Conn) {
+	defer s.drop(conn)
+
+	for {
+		var ack uint64
+		if err := binary.Read(conn, binary.BigEndian, &ack); err != nil {
+			return
+		}
+		if err := s.release(conn, ack); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
+
+			return
+		}
+	}
+}
+
+// release lets go of the output before byte ack, which the host's log file now holds.
+func (s *logSink) release(conn net.Conn, ack uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return nil
+	}
+	if ack < s.from || ack > s.from+uint64(len(s.held)) {
+		return fmt.Errorf("the host acked the logs at %d, outside the held %d..%d", ack, s.from, s.from+uint64(len(s.held)))
+	}
+	s.held = s.held[:copy(s.held, s.held[ack-s.from:])]
+	s.from = ack
+	s.cond.Broadcast()
+
+	return nil
+}
+
+// drop ends conn, unless a newer host already took its place.
+func (s *logSink) drop(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return
+	}
+	_ = conn.Close()
+	s.conn = nil
+	s.cond.Broadcast()
 }

@@ -70,7 +70,7 @@ func TestTransportServesOverLiveVsock(t *testing.T) {
 	if stat.Size != 5 {
 		t.Fatalf("stat = %+v, want 5 bytes", stat)
 	}
-	if err := c.Stop(); err != nil {
+	if err := c.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if err := cmd.Wait(); err != nil {

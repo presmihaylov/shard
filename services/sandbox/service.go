@@ -100,6 +100,10 @@ type Config struct {
 	ProxyCA func() ([]byte, error)
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
+	// HostMemoryMiB is the most memory a create may ask for, the host's total; zero is no bound, which only a test sets.
+	HostMemoryMiB int64
+	// HostCPUs is the most CPUs a create may ask for, the ones the daemon may run on; zero is no bound, which only a test sets.
+	HostCPUs int
 	// StopSettle overrides DefaultStopSettle, which only a test has a reason to do.
 	StopSettle time.Duration
 	// ProbeBudget overrides DefaultProbeBudget, which only a test has a reason to do.
@@ -115,7 +119,9 @@ type Service struct {
 	cfg Config
 
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*sandboxLock
+	// pulls ends the pull of each create still in Complete, so rm and stop need not wait for the download.
+	pulls map[string]context.CancelCauseFunc
 
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
@@ -123,7 +129,7 @@ type Service struct {
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sync.Mutex{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
@@ -194,19 +200,109 @@ func (e *SubstrateTimeoutError) Error() string {
 	return fmt.Sprintf("the substrate did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
 
-// lock serializes the verbs on one sandbox; a mutex outlives its id, which is small and never contended.
-func (s *Service) lock(id string) func() {
-	s.mu.Lock()
-	m, ok := s.locks[id]
-	if !ok {
-		m = &sync.Mutex{}
-		s.locks[id] = m
+// sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
+type sandboxLock struct {
+	slot chan struct{}
+	refs int
+}
+
+// lock serializes the verbs on one sandbox, and gives up when ctx ends, so a verb keeps its own deadline.
+func (s *Service) lock(ctx context.Context, id string) (func(), error) {
+	l := s.ref(id)
+
+	// A free lock is taken even on a dead ctx: a select with both ready picks at random.
+	select {
+	case l.slot <- struct{}{}:
+		return func() { s.release(id, l) }, nil
+	default:
 	}
+
+	select {
+	case l.slot <- struct{}{}:
+		return func() { s.release(id, l) }, nil
+	case <-ctx.Done():
+		s.unref(id)
+
+		return nil, fmt.Errorf("sandbox %s is busy with another verb: %w", id, context.Cause(ctx))
+	}
+}
+
+// tryLock is the lock for a background loop, which skips a sandbox a verb holds rather than stall every other sandbox behind it (SHARD-339).
+func (s *Service) tryLock(id string) (func(), bool) {
+	l := s.ref(id)
+
+	select {
+	case l.slot <- struct{}{}:
+		return func() { s.release(id, l) }, true
+	default:
+		s.unref(id)
+
+		return nil, false
+	}
+}
+
+func (s *Service) ref(id string) *sandboxLock {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l, ok := s.locks[id]
+	if !ok {
+		l = &sandboxLock{slot: make(chan struct{}, 1)}
+		s.locks[id] = l
+	}
+	l.refs++
+
+	return l
+}
+
+// release empties the slot before the count drops, so a lock freed at zero is never one a holder still fills.
+func (s *Service) release(id string, l *sandboxLock) {
+	<-l.slot
+	s.unref(id)
+}
+
+func (s *Service) unref(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l := s.locks[id]
+	l.refs--
+	if l.refs == 0 {
+		delete(s.locks, id)
+	}
+}
+
+// errCreateCancelled is the reason a create fails when rm or stop ends its pull.
+var errCreateCancelled = errors.New("the create was cancelled")
+
+// cancellable gives the pull of a create a context that cancelPull ends; done forgets it.
+func (s *Service) cancellable(ctx context.Context, id string) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+
+	s.mu.Lock()
+	s.pulls[id] = cancel
 	s.mu.Unlock()
 
-	m.Lock()
+	return ctx, func() {
+		s.mu.Lock()
+		delete(s.pulls, id)
+		s.mu.Unlock()
+		cancel(nil)
+	}
+}
 
-	return m.Unlock
+// cancelPull ends the pull of a create, which then fails with the verb that ended it as the reason.
+func (s *Service) cancelPull(id, verb string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cancel, ok := s.pulls[id]; ok {
+		cancel(cancelled(verb))
+	}
+}
+
+func cancelled(verb string) error {
+	return fmt.Errorf("%w by %s", errCreateCancelled, verb)
 }
 
 // probeBudget is how long one daemon- or verb-initiated Provider.Status gets before we treat it as wedged.
@@ -264,6 +360,14 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := s.cfg.Provider.CheckResources(req.Resources); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
 	}
+	// A bound past the host's memory never binds: the host runs out of memory first.
+	if s.cfg.HostMemoryMiB > 0 && req.Resources.MemoryMiB > s.cfg.HostMemoryMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %d MiB is more than the %d MiB of memory this host has", req.Resources.MemoryMiB, s.cfg.HostMemoryMiB)}
+	}
+	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
+	if s.cfg.HostCPUs > 0 && req.Resources.VCPUs > s.cfg.HostCPUs {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--cpus %d is more than the %d CPUs this host has", req.Resources.VCPUs, s.cfg.HostCPUs)}
+	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	req.Resources.DiskMiB = bundle.DiskBound(req.Resources)
 
@@ -316,8 +420,27 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 // running. A failure that is not a shutdown leaves the record failed with the reason, so a get reads why
 // and rm still frees it. It pushes every claim before the commit point onto the teardown stack.
 func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (err error) {
-	unlock := s.lock(id)
+	// Registered before the lock, so an rm that lands while this waits still ends the pull.
+	pullCtx, forget := s.cancellable(ctx, id)
+	defer forget()
+
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return err
+	}
 	defer unlock()
+
+	// An rm that took the lock first has freed the record, and a stop has failed it, so nothing is left to create.
+	sb, err := s.cfg.Repo.Get(id)
+	if errors.Is(err, sandboxstate.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sb.State != models.StatePending {
+		return nil
+	}
 
 	// Past the commit point the sandbox is live, so a later error names it and never marks it failed.
 	committed := false
@@ -350,7 +473,8 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		}
 	}()
 
-	img, dir, err := s.claim(ctx, id, req)
+	// Only the pull can be cancelled: the teardown and the fail below run under ctx, which rm never ends.
+	img, dir, err := s.claim(pullCtx, id, req)
 	if err != nil {
 		return err
 	}
@@ -454,18 +578,22 @@ func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
 // fail records why a create never reached running. It keeps the record so a get reads the reason and rm
 // frees it, and it returns the cause so the synchronous caller still sees the failure.
 func (s *Service) fail(ctx context.Context, id string, cause error) error {
-	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	if err := s.cfg.Repo.Update(id, failed(cause)); err != nil {
+		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
+	}
+
+	return cause
+}
+
+// failed is the record of a create that ended in cause.
+func failed(cause error) func(*models.Sandbox) error {
+	return func(sb *models.Sandbox) error {
 		sb.State = models.StateFailed
 		sb.FailedReason = cause.Error()
 		sb.PID = 0
 
 		return nil
-	})
-	if err != nil {
-		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
 	}
-
-	return cause
 }
 
 // ValidName, ValidSecretName and ValidPolicyName let a client refuse a spelling before it asks the daemon.
@@ -593,6 +721,10 @@ func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (imag
 	}
 
 	img, err := s.cfg.Images.Pull(ctx, req.Image)
+	// A cached image answers even on an ended context, so a cancel that landed before the pull still fails the create.
+	if cause := context.Cause(ctx); errors.Is(cause, errCreateCancelled) {
+		return image.Image{}, "", cause
+	}
 	if err != nil {
 		return image.Image{}, "", err
 	}
@@ -632,7 +764,10 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	// Two starts of one sandbox would each build the netns; the second waits and then sees it running.
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
@@ -690,12 +825,28 @@ func (s *Service) Stop(ctx context.Context, ref string, grace time.Duration) (mo
 		return models.Sandbox{}, err
 	}
 
-	unlock := s.lock(id)
+	// A create still pulling holds the lock; ended, it leaves a failed record that only rm takes.
+	s.cancelPull(id, "shard stop")
+
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
 		return models.Sandbox{}, err
+	}
+
+	// A create that has not taken the lock yet builds nothing once its record is failed, not stopped.
+	if sb.State == models.StatePending {
+		if err := s.cfg.Repo.Update(id, failed(cancelled("shard stop"))); err != nil {
+			return models.Sandbox{}, err
+		}
+		if sb, err = s.cfg.Repo.Get(id); err != nil {
+			return models.Sandbox{}, err
+		}
 	}
 
 	if err := FailedGuard(id, sb); err != nil {
@@ -715,7 +866,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	// force arrives from rm, after its probe answered live or its kill freed the runtime, so it skips the probe.
+	// force arrives from rm, after its probe answered live, its kill freed the runtime or the record said paused, so it skips the probe.
 	if !force {
 		// The opening probe is bounded like rm's, so a plain stop of a wedged sandbox fails fast and typed, not at the client timeout.
 		status, err := s.status(ctx, id, "stop")
@@ -827,25 +978,35 @@ func (s *Service) lastExit(ctx context.Context, id string) (*models.ExitStatus, 
 	return &status, nil
 }
 
-// Remove frees everything a stopped sandbox holds. A sandbox that is still up is refused unless
-// force says to stop it first, with grace as the stop's.
+// Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused
+// unless force says to stop it first, with grace as the stop's.
 func (s *Service) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return err
 	}
 
-	unlock := s.lock(id)
+	// A pending sandbox runs nothing yet, so rm ends its pull rather than wait for it to come up.
+	s.cancelPull(id, "shard rm")
+
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	// The record dies last below, so an id with no record has nothing else left on the host either.
-	if _, err := s.cfg.Repo.Get(id); err != nil {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
 		return err
 	}
 
-	if err := s.endIfAlive(ctx, id, force, grace); err != nil {
+	if err := s.endIfAlive(ctx, id, sb.State, force, grace); err != nil {
 		return err
 	}
+
+	// A paused, dead or OOM-killed sandbox reaches here with no stop behind it, and no route finds its execs once the record goes.
+	s.dropExecs(id)
 
 	if err := s.free(ctx, id); err != nil {
 		return err
@@ -863,8 +1024,13 @@ type reclaimer interface {
 	Reclaim(ctx context.Context, id string) error
 }
 
-// endIfAlive refuses a sandbox that is still up, because rm frees the writable layer a stop keeps; --force stops it first, and on a wedge kills it first.
-func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace time.Duration) error {
+// endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
+func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
+	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot, and no probe can wedge that answer.
+	if state == models.StatePaused {
+		return s.refuseOrStop(ctx, id, state, force, grace)
+	}
+
 	status, err := s.status(ctx, id, "rm")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
@@ -881,8 +1047,13 @@ func (s *Service) endIfAlive(ctx context.Context, id string, force bool, grace t
 		return nil
 	}
 
+	return s.refuseOrStop(ctx, id, status.State, force, grace)
+}
+
+// refuseOrStop ends a live or paused sandbox for rm when force says so, and refuses it otherwise.
+func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool, grace time.Duration) error {
 	if !force {
-		return &StateError{ID: id, State: status.State, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
+		return &StateError{ID: id, State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
 	}
 
 	return s.stop(ctx, id, grace, force)

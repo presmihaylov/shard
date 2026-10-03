@@ -45,6 +45,8 @@ type Tailer struct {
 	// that has just started is the ordinary miss, and a drop names one of those and never an id.
 	holders   map[string]models.Sandbox
 	refreshed time.Time
+	// live is set once the backlog is spent, and a line read after it can name a create the last list missed.
+	live bool
 
 	// unattributed counts the drops of one Run that name no sandbox of this root, for the one line it prints.
 	unattributed int
@@ -54,8 +56,7 @@ func NewTailer(root string, decisions *Log, repo Sandboxes, out *log.Logger) *Ta
 	return &Tailer{root: root, log: decisions, repo: repo, out: out}
 }
 
-// refreshEvery bounds how often a miss rebuilds the address map, so a line for a sandbox that is gone
-// does not list the records once per drop.
+// refreshEvery bounds how often a backlog miss rebuilds the address map, so its strays do not list the records once per drop.
 const refreshEvery = time.Second
 
 // Run writes every host drop the ring holds into the sandbox it belongs to, then follows the ring.
@@ -71,6 +72,7 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 	var read bool
 
 	t.unattributed = 0
+	t.live = false
 	err := ring.Follow(ctx, func(line kmsg.Record) error {
 		if seen && line.Sequence <= cursor {
 			return nil
@@ -95,6 +97,7 @@ func (t *Tailer) Run(ctx context.Context, ring Ring) error {
 
 		return t.writeCursor(line.Sequence)
 	}, func() {
+		t.live = true
 		if !read {
 			return
 		}
@@ -138,17 +141,19 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	if sb, ok := t.holder(keys); ok {
 		return sb, true
 	}
-	if time.Since(t.refreshed) < refreshEvery {
+	// A create writes the address after its port is up, so a live miss always lists; each log statement's limit bounds the rate.
+	if !t.live && time.Since(t.refreshed) < refreshEvery {
 		return models.Sandbox{}, false
 	}
 
+	listed := time.Now()
 	sandboxes, err := t.repo.List()
 	if err != nil {
 		// A record shard cannot read names no address, so the drop is counted with the rest and not lost twice.
 		t.out.Printf("egress log: the sandbox records cannot be listed: %v", err)
 	}
 
-	t.refreshed = time.Now()
+	t.refreshed = listed
 	t.holders = map[string]models.Sandbox{}
 	for _, each := range sandboxes {
 		if each.Address.IsValid() {

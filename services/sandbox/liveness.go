@@ -55,7 +55,10 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, err)
 	}
 
-	unlock := s.lock(sb.ID)
+	unlock, ok := s.tryLock(sb.ID)
+	if !ok {
+		return nil
+	}
 	defer unlock()
 
 	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: StartedAt catches it.
@@ -163,6 +166,7 @@ func (s *Service) recordDied(id string, report func(string)) error {
 	if err != nil {
 		return fmt.Errorf("sandbox %s is gone but its record was not updated: %w", id, err)
 	}
+	s.dropExecs(id)
 	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, DiedReason))
 
 	return nil
@@ -182,6 +186,8 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 	if sb.RestartOnOOM && !restart {
 		reason = fmt.Sprintf("%s; the %d starts again the limit allows are spent", OOMKilledReason, sb.MaxOOMRestarts)
 	}
+	// The kill ended every exec with the sandbox; drop them before a backoff wait can hold their buffers for a minute.
+	s.dropExecs(id)
 	// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
 	if restart && now.Before(sb.OOMRestartedAt.Add(oomBackoff(restarts))) {
 		return nil

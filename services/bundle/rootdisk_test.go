@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -146,8 +147,12 @@ func TestCloneRootDiskRefusesABoundUnderTheImage(t *testing.T) {
 	base := baseDisk(t)
 	dst := filepath.Join(t.TempDir(), "rootfs.ext4")
 
-	if _, err := bundle.CloneRootDisk(base, dst, models.Resources{DiskMiB: 1}); err == nil {
+	_, err := bundle.CloneRootDisk(base, dst, models.Resources{DiskMiB: 1})
+	if err == nil {
 		t.Fatal("a 1 MiB bound took a bigger image")
+	}
+	if !strings.Contains(err.Error(), "set --disk") || strings.Contains(err.Error(), "blocks") {
+		t.Errorf("CloneRootDisk = %v, want the bound to set and no ext4 internals", err)
 	}
 	if _, err := os.Stat(dst); err == nil {
 		t.Error("the refused clone stayed behind")

@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -132,6 +133,71 @@ func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	}
 }
 
+// A bound past the host's memory never binds, so it is refused by name before anything is pulled or recorded.
+func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
+	req := alpine()
+	req.Resources.MemoryMiB = 4097
+
+	_, err := svc.Create(t.Context(), req)
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097 MiB is more than the 4096 MiB") {
+		t.Fatalf("create = %v, want a request error that names the bound and the host", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+	if l.repo.sb.ID != "" {
+		t.Errorf("a refused create left the record %+v", l.repo.sb)
+	}
+}
+
+func TestCreateTakesTheWholeHostMemory(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
+	req := alpine()
+	req.Resources.MemoryMiB = 4096
+
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("create with the host's whole memory: %v", err)
+	}
+}
+
+// A quota past the host's CPUs never binds, and a large one wraps to no bound, so both are refused by name.
+func TestCreateRefusesMoreCPUsThanTheHostHas(t *testing.T) {
+	for _, cpus := range []int{9, 92233720368548} {
+		r := &recorder{}
+		svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostCPUs = 8 })
+		req := alpine()
+		req.Resources.VCPUs = cpus
+
+		_, err := svc.Create(t.Context(), req)
+
+		var refused *sandbox.RequestError
+		if want := fmt.Sprintf("--cpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("create with %d cpus = %v, want a request error that says %q", cpus, err, want)
+		}
+		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+			t.Errorf("a refused create reached the store: %v", r.calls)
+		}
+		if l.repo.sb.ID != "" {
+			t.Errorf("a refused create left the record %+v", l.repo.sb)
+		}
+	}
+}
+
+func TestCreateTakesEveryHostCPU(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{}, func(c *sandbox.Config) { c.HostCPUs = 8 })
+	req := alpine()
+	req.Resources.VCPUs = 8
+
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("create with every host cpu: %v", err)
+	}
+}
+
 // A cancelled context would fail every give-back at once, so the unwind builds its own.
 func TestCreateTearsDownAfterAnInterrupt(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Create"}}
@@ -241,6 +307,18 @@ func TestCreateFillsTheProbeSettingsItWasNotGiven(t *testing.T) {
 	}
 }
 
+// A probe as long as an hour held the health of every sandbox, so the refusal names the bound (SHARD-363).
+func TestCreateNamesTheBoundOfAProbeTimeout(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{})
+	req := alpine()
+	req.Health = &models.HealthCheck{Command: []string{"true"}, Timeout: 3600}
+
+	_, err := svc.Create(t.Context(), req)
+	if err == nil || err.Error() != "health.timeout is at most 600 seconds, got 3600" {
+		t.Errorf("create with a 1 h probe timeout = %v, want a refusal that names the 600 s bound", err)
+	}
+}
+
 // The pool is the one thing nothing frees on a timer, so its refusal names the verbs that do.
 func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
@@ -254,23 +332,25 @@ func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 
 func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 	cases := map[string]sandbox.CreateRequest{
-		"no image":                {},
-		"a name no verb takes":    {Image: "alpine", Name: "a/b"},
-		"a negative memory":       {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
-		"a memory that overflows": {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
-		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
-		"a negative disk bound":   {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
-		"a disk that overflows":   {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
-		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
-		"a negative oom limit":    {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
-		"a probe with no command": {Image: "alpine", Health: &models.HealthCheck{}},
-		"a negative probe count":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
-		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
-		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
-		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},
-		"a bad secret name":       {Image: "alpine", Secrets: []string{"api_key"}},
-		"a doubled secret":        {Image: "alpine", Secrets: []string{"KEY", "KEY"}},
-		"a secret an env shadows": {Image: "alpine", Secrets: []string{"KEY"}, Env: []string{"KEY=1"}},
+		"no image":                        {},
+		"a name no verb takes":            {Image: "alpine", Name: "a/b"},
+		"a negative memory":               {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
+		"a memory that overflows":         {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
+		"a negative cpu bound":            {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
+		"a negative disk bound":           {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
+		"a disk that overflows":           {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
+		"a restart with no bound":         {Image: "alpine", RestartOnOOM: true},
+		"a negative oom limit":            {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
+		"a probe with no command":         {Image: "alpine", Health: &models.HealthCheck{}},
+		"a negative probe count":          {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Retries: -1}},
+		"a probe interval past its bound": {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Interval: sandbox.MaxHealthInterval + 1}},
+		"a probe timeout past its bound":  {Image: "alpine", Health: &models.HealthCheck{Command: []string{"true"}, Timeout: sandbox.MaxHealthTimeout + 1}},
+		"a bad policy name":               {Image: "alpine", Policy: "Bad Name"},
+		"an env with no value":            {Image: "alpine", Env: []string{"DEBUG"}},
+		"an env with no name":             {Image: "alpine", Env: []string{"=1"}},
+		"a bad secret name":               {Image: "alpine", Secrets: []string{"api_key"}},
+		"a doubled secret":                {Image: "alpine", Secrets: []string{"KEY", "KEY"}},
+		"a secret an env shadows":         {Image: "alpine", Secrets: []string{"KEY"}, Env: []string{"KEY=1"}},
 	}
 
 	for name, req := range cases {
@@ -668,6 +748,214 @@ func TestTheVerbsOnOneSandboxAreSerialized(t *testing.T) {
 	}
 }
 
+// A verb that waits on a sandbox another verb holds gives up when its own deadline ends (SHARD-370).
+func TestAVerbStopsWaitingForTheSandboxWhenItsContextEnds(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, stopped())
+
+	gate := make(chan struct{})
+	l.provider.gate = gate
+	l.provider.entered = make(chan struct{})
+	entered := l.provider.entered
+
+	started := make(chan error, 1)
+	go func() {
+		_, err := svc.Start(t.Context(), "sandbox1")
+		started <- err
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "busy with another verb") {
+		t.Errorf("stop = %v, want the busy sandbox and the deadline", err)
+	}
+
+	close(gate)
+	if err := <-started; err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the start and the stop that gave up", n)
+	}
+}
+
+// pullingCreate starts a create whose pull never ends on its own, and returns once the pull is reached.
+func pullingCreate(t *testing.T) (*sandbox.Service, layers, *recorder, <-chan error) {
+	t.Helper()
+
+	r := &recorder{}
+	entered := make(chan struct{})
+	svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.Images = stalledImages{r: r, entered: entered} })
+	// The create never reached the substrate, so the substrate holds nothing for it.
+	l.provider.status = models.Status{}
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := svc.Create(t.Context(), alpine())
+		created <- err
+	}()
+	<-entered
+
+	return svc, l, r, created
+}
+
+// An rm of a sandbox still pulling its image ends the pull, rather than wait for the registry (SHARD-370).
+func TestRemoveEndsTheCreateStillPulling(t *testing.T) {
+	svc, l, r, created := pullingCreate(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := svc.Remove(ctx, "sandbox1", false, time.Second); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+
+	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard rm") {
+		t.Errorf("create = %v, want it cancelled by shard rm", err)
+	}
+	if !l.repo.deleted {
+		t.Error("rm left the record of the create it ended")
+	}
+	for _, step := range []string{"provider.Create", "provider.Start"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran after rm ended the create: %v", step, r.calls)
+		}
+	}
+	if n := svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the create and the rm", n)
+	}
+}
+
+// A stop of a sandbox still pulling ends the create, and the failed record it leaves is one only rm takes.
+func TestStopEndsTheCreateStillPulling(t *testing.T) {
+	svc, l, _, created := pullingCreate(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+
+	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("create = %v, want it cancelled by shard stop", err)
+	}
+	if l.repo.sb.State != models.StateFailed {
+		t.Errorf("the record says %q, want failed", l.repo.sb.State)
+	}
+}
+
+// A create whose record an rm freed before it took the sandbox builds nothing for the id.
+func TestCompleteOfARemovedSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	l.repo.missing = true
+
+	if err := svc.Complete(t.Context(), sb.ID, alpine()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, step := range []string{"images.Pull", "provider.Create", "repo.Update"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a sandbox rm had freed: %v", step, r.calls)
+		}
+	}
+}
+
+// A stop that lands before the create takes the sandbox fails the record, and the create then builds nothing.
+func TestStopBeforeTheCreateTakesTheSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	_, err = svc.Stop(t.Context(), sb.ID, time.Second)
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+
+	if err := svc.Complete(t.Context(), sb.ID, alpine()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, step := range []string{"images.Pull", "provider.Create", "provider.Start", "provider.Stop"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a create the stop had ended: %v", step, r.calls)
+		}
+	}
+	if l.repo.sb.State != models.StateFailed || !strings.Contains(l.repo.sb.FailedReason, "cancelled by shard stop") {
+		t.Errorf("the record says %q (%q), want failed by the stop", l.repo.sb.State, l.repo.sb.FailedReason)
+	}
+}
+
+// A stop that lands while the create waits for the sandbox fails it, even when the image is already cached.
+func TestStopWhileTheCreateWaitsForTheSandboxBuildsNothing(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.status = models.Status{}
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	unlock, err := svc.Hold(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	created := make(chan error, 1)
+	go func() { created <- svc.Complete(t.Context(), sb.ID, alpine()) }()
+	waitForWaiters(t, svc, sb.ID, 2)
+
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := svc.Stop(t.Context(), sb.ID, time.Second)
+		stopped <- err
+	}()
+	waitForWaiters(t, svc, sb.ID, 3)
+	unlock()
+
+	err = <-stopped
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
+	}
+	if err := <-created; err != nil && !strings.Contains(err.Error(), "cancelled by shard stop") {
+		t.Errorf("create = %v, want nothing built or it cancelled by shard stop", err)
+	}
+	for _, step := range []string{"provider.Create", "provider.Start"} {
+		if slices.Contains(r.calls, step) {
+			t.Errorf("%s ran for a create the stop had ended: %v", step, r.calls)
+		}
+	}
+	if l.repo.sb.State != models.StateFailed {
+		t.Errorf("the record says %q, want failed", l.repo.sb.State)
+	}
+}
+
+// waitForWaiters polls until want verbs hold or wait on the sandbox's lock, and fails the test past the deadline.
+func waitForWaiters(t *testing.T, svc *sandbox.Service, id string, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.Waiters(id) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d verbs on the lock of %s, want %d", svc.Waiters(id), id, want)
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // A stop ends the processes and keeps the record, the lease, the address and the writable layer.
 func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 	r := &recorder{}
@@ -954,6 +1242,80 @@ func TestRemoveForceStopsThenRemoves(t *testing.T) {
 	removed := slices.Index(r.calls, "provider.Remove")
 	if stopped < 0 || removed < stopped {
 		t.Errorf("rm --force ran %v, want the stop before the remove", r.calls)
+	}
+}
+
+// A pause ends the process, so the substrate answers gone (gVisor) or stopped (Firecracker, vz); only the record says paused (SHARD-281).
+func TestRemoveRefusesAPausedSandbox(t *testing.T) {
+	for name, status := range map[string]models.Status{
+		"the container is gone": {},
+		"the vmm is stopped":    {Exists: true, State: models.StateStopped},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &recorder{}
+			svc, l := newService(t, r, pausedSandbox())
+			l.provider.status = status
+
+			err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+
+			var refused *sandbox.StateError
+			if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || err.Error() != "sandbox sandbox1 is paused: stop it first with shard stop sandbox1, or pass --force" {
+				t.Fatalf("rm failed with %v, want a sandbox_not_stopped error that names the pause and the stop", err)
+			}
+
+			for _, step := range []string{"provider.Stop", "provider.Remove", "net.Release", "repo.Delete"} {
+				if slices.Contains(r.calls, step) {
+					t.Errorf("the refused rm still ran %s: %v", step, r.calls)
+				}
+			}
+		})
+	}
+}
+
+// The record alone decides a paused rm, so a probe that fails or wedges never turns the 409 into a 500 or a 504.
+func TestRemoveOfAPausedSandboxNeverProbesTheSubstrate(t *testing.T) {
+	r := &recorder{fail: []string{"provider.Status"}}
+	svc, _ := newService(t, r, pausedSandbox())
+
+	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+
+	var refused *sandbox.StateError
+	if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped {
+		t.Fatalf("rm with a failing status probe returned %v, want the sandbox_not_stopped refusal", err)
+	}
+
+	if slices.Contains(r.calls, "provider.Status") {
+		t.Errorf("the refused rm of a paused sandbox probed the substrate: %v", r.calls)
+	}
+
+	wedged := &recorder{}
+	svc, l := newService(t, wedged, pausedSandbox())
+	l.provider.statusGate = make(chan struct{})
+	l.provider.stopUnwedges = true
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm --force with a wedged status probe: %v", err)
+	}
+	stopped := slices.Index(wedged.calls, "provider.Stop")
+	probed := slices.Index(wedged.calls, "provider.Status")
+	if l.provider.reclaimed || stopped < 0 || probed < stopped {
+		t.Errorf("rm --force of a paused sandbox ran %v and reclaimed %t, want the stop before any probe and no kill", wedged.calls, l.provider.reclaimed)
+	}
+}
+
+func TestRemoveForceStopsAPausedSandboxThenRemoves(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, pausedSandbox())
+	l.provider.status = models.Status{}
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("rm --force: %v", err)
+	}
+
+	stopped := slices.Index(r.calls, "provider.Stop")
+	removed := slices.Index(r.calls, "provider.Remove")
+	if stopped < 0 || removed < stopped {
+		t.Errorf("rm --force of a paused sandbox ran %v, want the stop before the remove", r.calls)
 	}
 }
 

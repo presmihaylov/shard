@@ -33,7 +33,10 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	// A stop or a second pause would end or delete the sandbox this one is about to snapshot.
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
@@ -138,7 +141,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	// Two resumes of one sandbox would each restore it; the second waits and then sees it running.
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
 	defer unlock()
 
 	sb, err := s.cfg.Repo.Get(id)
@@ -204,15 +210,16 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	// The memory image holds the source's run, so an entrypoint that had exited before the pause has too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
-		Image:        src.Image,
-		Resources:    src.Resources,
-		Secrets:      slices.Clone(src.Secrets),
-		Policy:       src.Policy,
-		RestartOnOOM: src.RestartOnOOM,
-		HealthCheck:  src.HealthCheck,
-		Health:       src.Health,
-		Restart:      src.Restart,
-		ExitStatus:   src.ExitStatus,
+		Image:          src.Image,
+		Resources:      src.Resources,
+		Secrets:        slices.Clone(src.Secrets),
+		Policy:         src.Policy,
+		RestartOnOOM:   src.RestartOnOOM,
+		MaxOOMRestarts: src.MaxOOMRestarts,
+		HealthCheck:    src.HealthCheck,
+		Health:         src.Health,
+		Restart:        src.Restart,
+		ExitStatus:     src.ExitStatus,
 	})
 	defer claim.unlock()
 
@@ -276,13 +283,14 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 
 	// The entrypoint runs from the beginning, so the source's exit is not the clone's.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
-		Image:        src.Image,
-		Resources:    src.Resources,
-		Secrets:      slices.Clone(src.Secrets),
-		Policy:       src.Policy,
-		RestartOnOOM: src.RestartOnOOM,
-		HealthCheck:  src.HealthCheck,
-		Restart:      freshRestart(src.Restart),
+		Image:          src.Image,
+		Resources:      src.Resources,
+		Secrets:        slices.Clone(src.Secrets),
+		Policy:         src.Policy,
+		RestartOnOOM:   src.RestartOnOOM,
+		MaxOOMRestarts: src.MaxOOMRestarts,
+		HealthCheck:    src.HealthCheck,
+		Restart:        freshRestart(src.Restart),
 	})
 	defer claim.unlock()
 
@@ -335,7 +343,10 @@ func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (
 		return "", models.Sandbox{}, nil, err
 	}
 
-	unlock := s.lock(id)
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return "", models.Sandbox{}, nil, err
+	}
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
@@ -380,7 +391,11 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	td.Push(func(context.Context) error { return s.cfg.Repo.Delete(claim.id) })
 
 	// The id exists now, so a stop or an rm can name it: they wait here until the copy is done.
-	claim.unlock = s.lock(claim.id)
+	unlock, err := s.lock(ctx, claim.id)
+	if err != nil {
+		return claim, err
+	}
+	claim.unlock = unlock
 
 	claim.dir, err = s.cfg.Repo.Dir(claim.id)
 	if err != nil {

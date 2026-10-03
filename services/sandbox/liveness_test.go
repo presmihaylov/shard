@@ -64,6 +64,45 @@ func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T)
 	}
 }
 
+// A stop on a guest that never answers holds its sandbox, and the pass must go on to the rest (SHARD-339).
+func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+	gate := make(chan struct{})
+	lab.l.provider.stopGate = gate
+	lab.l.provider.stopEntered = make(chan struct{})
+	entered := lab.l.provider.stopEntered
+
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second)
+		stopped <- err
+	}()
+	<-entered
+
+	ticked := make(chan error, 1)
+	go func() { ticked <- lab.tick(t, running(), time.Now()) }()
+	select {
+	case err := <-ticked:
+		if err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the liveness pass waited on the sandbox the stop holds")
+	}
+	if lab.l.repo.sb.ExitStatus != nil {
+		t.Errorf("the pass wrote exit %+v to the record the stop holds", lab.l.repo.sb.ExitStatus)
+	}
+
+	close(gate)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if n := lab.svc.Locks(); n != 0 {
+		t.Errorf("%d sandbox locks outlived the stop and the pass that skipped it", n)
+	}
+}
+
 func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
 	lab := newLivenessLab(t, running(), alive(42))
 
@@ -302,11 +341,16 @@ func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
 	sb := optedIn()
 	sb.OOMRestarts = 2
 	sb.OOMRestartedAt = now.Add(-time.Second)
-	lab := newLivenessLab(t, sb, oomKilled())
+	lab := newLivenessLab(t, sb, alive(42))
+	runExecToItsEnd(t, lab.svc)
+	lab.l.provider.status = oomKilled()
 
 	// Two starts again put the wait at 2 s, and only one has passed.
 	if err := lab.tick(t, sb, now); err != nil {
 		t.Fatalf("Liveness: %v", err)
+	}
+	if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon holds %d execs of the killed sandbox through the wait, want none (SHARD-362)", held)
 	}
 	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 2 || lab.l.provider.started {
 		t.Errorf("the record says %s with %d starts again inside the wait, want it untouched", got.State, got.OOMRestarts)

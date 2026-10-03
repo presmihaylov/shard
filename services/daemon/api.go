@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"net"
 	"net/netip"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -20,9 +24,11 @@ import (
 	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/egress"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // Config is the wiring one resident daemon needs.
@@ -39,26 +45,49 @@ type Config struct {
 	InitPath string
 	// Provider names the substrate: gvisor.Name, sysbox.Name, runc.Name, vzvm.Name, firecracker.Name, or empty for the platform's default.
 	Provider string
+	// LogPath is the file a Mac daemon writes its output to and reopens on SIGHUP, so newsyslog can rotate it.
+	LogPath string
 }
 
 // Run supervises the daemon's tasks over one root until ctx ends.
 func Run(ctx context.Context, cfg Config) error {
+	var extra []Task
+	if cfg.LogPath != "" {
+		// Before the log opens, so a rotation that lands in between still reaches the reopen.
+		hangups := make(chan os.Signal, 1)
+		signal.Notify(hangups, syscall.SIGHUP)
+		defer signal.Stop(hangups)
+
+		if err := openLog(cfg.LogPath); err != nil {
+			return err
+		}
+		extra = append(extra, logReopen{path: cfg.LogPath, hangups: hangups, out: cfg.Out, reopen: openLog})
+	}
+
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
 	selected, err := SelectProvider(cfg.Provider, cfg.Root)
 	if err != nil {
 		return err
 	}
 	cfg.Provider = selected.Provider
+	// Before the datadir, so a root that is too long gets no image and no mount.
+	if err := checkSocketPaths(cfg.Root, cfg.Provider); err != nil {
+		return err
+	}
 
 	d := &deps{cfg: cfg}
-	// Before the lock: the lock file would be the first entry the xfs mount hides.
-	if err := datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out}); err != nil {
+	// Before the lock: the lock file would be the first entry the xfs mount hides. The reflink probe writes a file under the root.
+	err = d.reserve().retry("the data dir check", func() error {
+		return datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out})
+	})
+	if err != nil {
 		return err
 	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	err = New(cfg.Root, cfg.Out, apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -78,9 +107,18 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	if err := sweepExecs(filepath.Join(r.deps.cfg.Root, execDir), report); err != nil {
 		return err
 	}
+	// Under the lock, so a daemon refused on it never writes the reserve, and after the sweep gave back what it could.
+	if err := r.deps.reserve().ensure(); err != nil {
+		return err
+	}
 
 	repo, err := r.deps.repo()
 	if err != nil {
+		return err
+	}
+
+	// A pause the last daemon did not finish left a snapshot .tmp that no record reaches anymore.
+	if err := repo.SweepSnapshotTmp(report); err != nil {
 		return err
 	}
 
@@ -93,12 +131,22 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 		return nil
 	}
 
+	provider, err := r.deps.provider()
+	if err != nil {
+		return err
+	}
+	// No probe has attached a VM yet, so no FileLog writes the output logs this bounds.
+	if err := boundOutputLogs(provider, sandboxes, supervisor.MaxLog); err != nil {
+		// A log it cannot bound is no reason to refuse the daemon, which would then serve no sandbox (SHARD-341).
+		report(fmt.Sprintf("some output logs stay past their bound: %v", err))
+	}
+
 	svc, err := r.lifecycle.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.ReconcileAll(ctx, sandboxes, report)
+	return svc.ReconcileAll(ctx, sandboxes, report, r.deps.reserve().retry)
 }
 
 // sweepExecs removes the exec scratch a daemon that is gone left under dir, and reports how much there was.
@@ -159,7 +207,16 @@ func (t apiTask) Run(ctx context.Context) error {
 		return err
 	}
 
-	listener, mode, group, err := api.Listen(cfg.Root)
+	// The bind makes a new entry under the root, which a full one refuses.
+	var listener net.Listener
+	var mode fs.FileMode
+	var group string
+	err = t.deps.reserve().retry("the socket bind", func() error {
+		var err error
+		listener, mode, group, err = api.Listen(cfg.Root)
+
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -264,9 +321,10 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 	l.pending[sb.ID] = done
 	l.mu.Unlock()
 
-	// The pull outlives the request, so it runs under base, not the caller's context, and ends with the daemon.
+	// The pull outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
+	background := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	l.wg.Go(func() {
-		completeErr := svc.Complete(l.base, sb.ID, req)
+		completeErr := svc.Complete(background, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
@@ -419,10 +477,10 @@ func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.Exec
 	return svc.CreateExec(ctx, ref, req)
 }
 
-func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (models.ExitStatus, error) {
+func (l *lifecycle) Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error) {
 	svc, err := l.service()
 	if err != nil {
-		return models.ExitStatus{}, err
+		return sandbox.Attached{}, err
 	}
 
 	return svc.Attach(ctx, ref, execID, streams)

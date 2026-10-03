@@ -14,12 +14,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostclean"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -49,6 +52,75 @@ const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1
 const dindImage = "docker:28-dind"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
+
+// reaperEnv makes the test binary the reaper, which outlives a run a timeout or a signal ended and gives the host back.
+const reaperEnv = "VZVM_REAPER"
+
+// rootName starts the name of every root this suite makes, so a sweep or a refusal touches no other run's.
+const rootName = "shard-vzit-"
+
+func rootPrefix() string { return filepath.Join(os.TempDir(), rootName) }
+
+func init() {
+	if os.Getenv(reaperEnv) == "1" {
+		os.Exit(reap())
+	}
+	guardHost = holdHost
+}
+
+// holdHost refuses a host an earlier run left, then starts the reaper; the release ends the hold and waits for its sweep.
+func holdHost() (func() error, error) {
+	if err := hostclean.Refuse(rootPrefix()); err != nil {
+		return nil, err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the test binary: %w", err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("open the reaper pipe: %w", err)
+	}
+
+	reaper := exec.Command(self)
+	reaper.Env = append(os.Environ(), reaperEnv+"=1")
+	reaper.Stdin = r
+	reaper.Stderr = os.Stderr
+	if err := reaper.Start(); err != nil {
+		return nil, errors.Join(fmt.Errorf("start the reaper: %w", err), r.Close(), w.Close())
+	}
+	if err := r.Close(); err != nil {
+		return nil, errors.Join(fmt.Errorf("close the reaper end of the pipe: %w", err), w.Close())
+	}
+
+	return func() error {
+		if err := w.Close(); err != nil {
+			return fmt.Errorf("end the hold on the reaper: %w", err)
+		}
+		if err := reaper.Wait(); err != nil {
+			return fmt.Errorf("the reaper: %w", err)
+		}
+
+		return nil
+	}, nil
+}
+
+// reap sweeps once the pipe the run holds reads EOF, which is how the run ends however it ends; a signal to the group must not end it first.
+func reap() int {
+	signal.Ignore(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGPIPE)
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		fmt.Fprintln(os.Stderr, "vzvm reaper: wait for the run to end:", err)
+
+		return 1
+	}
+	if err := hostclean.Sweep(rootPrefix()); err != nil {
+		fmt.Fprintln(os.Stderr, "vzvm reaper:", err)
+
+		return 1
+	}
+
+	return 0
+}
 
 const (
 	redirectPort = 30080
@@ -83,7 +155,7 @@ func newVMHarnessFor(t *testing.T, ref string) *vmHarness {
 		t.Skipf("no guest kernel at %s: build one with make kernel, or set SHARD_KERNEL", kernel)
 	}
 
-	root, err := os.MkdirTemp("", "vz") //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp("", rootName) //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,6 +708,69 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 			t.Fatalf("%s and %s read the same /dev/urandom bytes %s after a restore of one save", other, id, drawn)
 		}
 		seen[drawn] = id
+	}
+}
+
+// A process that runs across the save draws its next bytes after the restore, so two forks share no draw past the first line they differ on (SHARD-310).
+func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
+	h := newVMHarness(t)
+	if !h.provider.Capabilities().Fork {
+		t.Skip("this Mac does not save a VM")
+	}
+	spec := h.newSpec(t, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
+	// One vcpu means one per-cpu crng, so no fork reads other bytes only because a draw ran on another cpu.
+	spec.Resources.VCPUs = 1
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	var forks []models.SandboxSpec
+	for range 2 {
+		fork := h.newSpec(t)
+		if err := h.provider.Fork(t.Context(), snap, fork); err != nil {
+			t.Fatal(err)
+		}
+		forks = append(forks, fork)
+	}
+	time.Sleep(time.Second)
+	var draws [2][]string
+	for i, fork := range forks {
+		data, err := os.ReadFile(filepath.Join(fork.StateDir, "output.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		draws[i] = strings.Fields(string(data))
+	}
+
+	// Both forks print the lines the save held in one order, so the first line they differ on, and every line after it, came after the restore.
+	past := 0
+	for past < min(len(draws[0]), len(draws[1])) && draws[0][past] == draws[1][past] {
+		past++
+	}
+	if len(draws[0])-past < 10 || len(draws[1])-past < 10 {
+		t.Fatalf("the forks drew %d and %d lines past line %d, the first they differ on, want 10 or more each", len(draws[0])-past, len(draws[1])-past, past)
+	}
+	drawn := map[string]int{}
+	for i, d := range draws[0][past:] {
+		drawn[d] = past + i
+	}
+	shared := 0
+	for i, d := range draws[1][past:] {
+		if at, ok := drawn[d]; ok {
+			shared++
+			t.Logf("fork 0 line %d and fork 1 line %d are both %s", at, past+i, d)
+		}
+	}
+	if shared > 0 {
+		t.Fatalf("the two forks share %d draws past line %d, the first they differ on, want none", shared, past)
 	}
 }
 

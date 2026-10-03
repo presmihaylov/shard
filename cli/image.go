@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/presmihaylov/shard/services/client"
 )
 
 func (a App) pull(ctx context.Context, args []string) error {
@@ -16,12 +18,56 @@ func (a App) pull(ctx context.Context, args []string) error {
 		return fmt.Errorf("pull takes one image reference, got %d", len(args))
 	}
 
-	img, err := a.client().PullImage(ctx, args[0])
+	img, err := a.client().PullImage(ctx, args[0], a.pullProgress())
 	if err != nil {
 		return err
 	}
 
 	return a.print(fmt.Sprintf("%s\n%s", img.Reference, img.Digest))
+}
+
+// pullProgress prints each step of a pull on stderr, so stdout keeps only what a script captures.
+func (a App) pullProgress() func(client.PullEvent) {
+	if a.Err == nil {
+		return nil
+	}
+
+	return func(e client.PullEvent) {
+		fmt.Fprintln(a.Err, pullLine(e))
+	}
+}
+
+func pullLine(e client.PullEvent) string {
+	switch e.Status {
+	case client.PullCached:
+		return fmt.Sprintf("%s %s is already on disk at %s", e.Reference, e.Digest, e.Path)
+	case client.PullPulling:
+		return fmt.Sprintf("pulling %s %s, %s, %s", e.Reference, e.Digest, layerCount(e.Layers), humanSize(e.Bytes))
+	case client.PullLayer:
+		if e.Present {
+			return fmt.Sprintf("  %s  %s, already on disk", shortDigest(e.Digest), humanSize(e.Bytes))
+		}
+
+		return fmt.Sprintf("  %s  %s", shortDigest(e.Digest), humanSize(e.Bytes))
+	case client.PullUnpacking:
+		return fmt.Sprintf("unpacking %s, %s", e.Reference, layerCount(e.Layers))
+	case client.PullUnpacked:
+		return fmt.Sprintf("  %s  unpacked, %d of %d", shortDigest(e.Digest), e.Layer, e.Layers)
+	case client.PullBuilding:
+		return "  building " + e.Path
+	case client.PullPulled:
+		return fmt.Sprintf("pulled %s into %s", e.Reference, e.Path)
+	}
+
+	return "pull: " + e.Status
+}
+
+func layerCount(n int) string {
+	if n == 1 {
+		return "1 layer"
+	}
+
+	return fmt.Sprintf("%d layers", n)
 }
 
 func (a App) image(ctx context.Context, args []string) error {

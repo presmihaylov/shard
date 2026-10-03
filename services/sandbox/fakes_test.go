@@ -78,6 +78,22 @@ func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
 }
 
+// stalledImages holds every pull until its context ends, the way a registry that never answers does.
+type stalledImages struct {
+	r       *recorder
+	entered chan struct{}
+}
+
+func (f stalledImages) Pull(ctx context.Context, _ string) (image.Image, error) {
+	if err := f.r.record("images.Pull"); err != nil {
+		return image.Image{}, err
+	}
+	close(f.entered)
+	<-ctx.Done()
+
+	return image.Image{}, ctx.Err()
+}
+
 // fakeRepo holds one record, so a test says what it held before the verb ran and reads what it holds after.
 type fakeRepo struct {
 	r  *recorder
@@ -256,6 +272,9 @@ type fakeProvider struct {
 	gate <-chan struct{}
 	// entered is closed the first time Start is reached.
 	entered chan struct{}
+	// stopGate holds Stop the way gate holds Start, and stopEntered is closed when Stop is reached.
+	stopGate    <-chan struct{}
+	stopEntered chan struct{}
 	// wedgeStartOf is the id whose Start hangs until the caller's deadline, the way a wedged runtime does.
 	wedgeStartOf string
 	// statusGate, when set, holds Status until it is closed or the context ends, so a test wedges the substrate.
@@ -327,6 +346,10 @@ func (f *fakeProvider) LogPath(string) (string, error) {
 	}
 
 	return f.logPath, nil
+}
+
+func (f *fakeProvider) HeldLogs(string) ([]string, error) {
+	return nil, nil
 }
 
 func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -491,7 +514,17 @@ func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeProvider) Stop(_ context.Context, _ string, grace time.Duration) error {
+func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) error {
+	if f.stopEntered != nil {
+		close(f.stopEntered)
+	}
+	if f.stopGate != nil {
+		select {
+		case <-f.stopGate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if err := f.r.record("provider.Stop"); err != nil {
 		return err
 	}

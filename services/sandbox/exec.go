@@ -25,6 +25,9 @@ const drainBudget = 2 * time.Second
 // execBufferCap is how much of one exec's output the daemon keeps for a replay: the oldest bytes go first.
 const execBufferCap = 8 << 20
 
+// ExecStallBound is how long a write waits on an attached client that takes no output before the daemon detaches it.
+const ExecStallBound = 30 * time.Second
+
 // execIDLen is how many hex characters name an exec, so a list cursor that is not one is refused.
 const execIDLen = 16
 
@@ -40,6 +43,8 @@ type ExecRequest struct {
 	TTY bool `json:"tty,omitempty"`
 	// Size is the terminal the command starts on, and a resize replaces it.
 	Size TerminalSize `json:"size,omitzero"`
+	// Attach says a client attaches right after the create, so the output waits for it rather than being evicted.
+	Attach bool `json:"attach,omitempty"`
 }
 
 // TerminalSize is a terminal window in character cells. It is the body of the resize route too.
@@ -57,6 +62,14 @@ type Streams struct {
 	Started func(execID string) error
 	// Warn reports what the keyboard copier cannot return, because nothing waits for that goroutine.
 	Warn func(message string)
+	// Detach ends the attach from the daemon's side, so a write blocked on a client that stopped reading returns.
+	Detach func()
+}
+
+// Attached is how one attach ended: the command's exit, and the output the buffer evicted before any client took it.
+type Attached struct {
+	Exit      models.ExitStatus
+	LostBytes int64
 }
 
 // UnavailableError is a sandbox no command can run in, because the substrate no longer holds it.
@@ -79,6 +92,18 @@ type AttachedError struct {
 func (e *AttachedError) Error() string {
 	return fmt.Sprintf("exec %s is already attached: wait for that client to leave", e.ID)
 }
+
+// StalledError is an attach the daemon detached because its client took no output for ExecStallBound.
+type StalledError struct {
+	ID string
+}
+
+func (e *StalledError) Error() string {
+	return fmt.Sprintf("exec %s: the client took no output for %s, so the daemon detached it and the command runs on", e.ID, ExecStallBound)
+}
+
+// errStalled is the stream's word for a follower the buffer detached, which Attach names with the exec id.
+var errStalled = errors.New("the client stalled")
 
 // ExecExitedError is a kill of an exec that already ended, which has no process left to signal.
 type ExecExitedError struct {
@@ -116,16 +141,45 @@ type execBuffer struct {
 	// released opens the buffer to a stream; discarded drops a not-started command's output before then.
 	released  bool
 	discarded bool
+
+	// follower is the client a write waits for rather than evict what it has not taken.
+	follower *follower
+	stall    time.Duration
+	// evicted is the offset of the oldest byte held, taken the furthest any client read to, lost what none read.
+	evicted int64
+	taken   int64
+	lost    int64
+	// waits counts the writes that had to wait for the follower, so a drain tells a slow client from a dead copier.
+	waits   uint64
+	waiting int
 }
 
-func newExecBuffer() *execBuffer {
-	return &execBuffer{changed: make(chan struct{})}
+// follower is one client a write waits for: an attach, or the hold that keeps the output for the first one.
+type follower struct {
+	// detach ends the attach from the daemon's side; the hold has no attach to end.
+	detach  func()
+	stalled bool
+	// at is the offset the client accepted the output up to, and progress when it last accepted a chunk.
+	at       int64
+	progress time.Time
 }
 
-// append copies one write in and evicts the oldest chunks until the buffer is back under its cap.
+// newExecBuffer answers an empty buffer; hold keeps the output for a client that attaches right after the create.
+func newExecBuffer(hold bool) *execBuffer {
+	b := &execBuffer{changed: make(chan struct{}), stall: ExecStallBound}
+	if hold {
+		b.follower = &follower{}
+	}
+
+	return b
+}
+
+// append copies one write in and evicts the oldest chunks over the cap, once a follower with no room took what it owes.
 func (b *execBuffer) append(data []byte, stderr bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	b.await(len(data))
 
 	kept := make([]byte, len(data))
 	copy(kept, data)
@@ -133,7 +187,12 @@ func (b *execBuffer) append(data []byte, stderr bool) {
 	b.size += len(kept)
 
 	for b.size > execBufferCap && len(b.chunks) > 1 {
-		b.size -= len(b.chunks[0].data)
+		n := len(b.chunks[0].data)
+		if b.evicted >= b.taken {
+			b.lost += int64(n)
+		}
+		b.evicted += int64(n)
+		b.size -= n
 		b.chunks[0] = chunk{}
 		b.chunks = b.chunks[1:]
 		b.dropped++
@@ -141,6 +200,106 @@ func (b *execBuffer) append(data []byte, stderr bool) {
 	}
 
 	b.wake()
+}
+
+// full says a write of n bytes would evict what the follower has not taken; before the release no stream can take any.
+func (b *execBuffer) full(n int) bool {
+	if !b.released || b.follower == nil {
+		return false
+	}
+	owed := b.owed()
+
+	return owed > 0 && owed+int64(n) > execBufferCap
+}
+
+// owed is what the buffer holds past the follower's offset; what it evicted before the follower took it is lost, not owed.
+func (b *execBuffer) owed() int64 {
+	return b.evicted + int64(b.size) - max(b.follower.at, b.evicted)
+}
+
+// await holds a write until the follower takes what it owes, and detaches one that accepted nothing for the stall bound.
+func (b *execBuffer) await(n int) {
+	if !b.full(n) {
+		return
+	}
+
+	b.waits++
+	b.waiting++
+	defer func() { b.waiting-- }()
+
+	start := time.Now()
+	timer := time.NewTimer(b.stall)
+	defer timer.Stop()
+
+	for b.full(n) {
+		// The bound runs from the wait or the follower's last accepted chunk, whichever is later.
+		since := start
+		if b.follower.progress.After(since) {
+			since = b.follower.progress
+		}
+		left := b.stall - time.Since(since)
+		if left <= 0 {
+			b.detach()
+
+			continue
+		}
+		timer.Reset(left)
+
+		changed := b.changed
+		b.mu.Unlock()
+		select {
+		case <-changed:
+		case <-timer.C:
+		}
+		b.mu.Lock()
+	}
+}
+
+// detach stops waiting for a follower that accepted nothing for the stall bound, and ends its attach.
+func (b *execBuffer) detach() {
+	f := b.follower
+	f.stalled = true
+	b.follower = nil
+	if f.detach != nil {
+		f.detach()
+	}
+
+	b.wake()
+}
+
+// follow makes a stream's client the one writes wait for, in place of the hold, owing all the buffer holds.
+func (b *execBuffer) follow(detach func()) *follower {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	f := &follower{detach: detach, progress: time.Now()}
+	b.follower = f
+
+	return f
+}
+
+// unfollow lets the writes run free again once the client is gone, evicting what nobody takes.
+func (b *execBuffer) unfollow(f *follower) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.follower != f {
+		return
+	}
+	b.follower = nil
+	b.wake()
+}
+
+// take records that f's client accepted the output up to at, so a write waiting on it has room again and a fresh bound.
+func (b *execBuffer) take(f *follower, at int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.taken = max(b.taken, at)
+	f.at, f.progress = at, time.Now()
+	if b.follower == f && b.waiting > 0 {
+		b.wake()
+	}
 }
 
 // close says the command ended and no more output will come, so a stream drains and returns.
@@ -157,6 +316,21 @@ func (b *execBuffer) isTruncated() bool {
 	defer b.mu.Unlock()
 
 	return b.truncated
+}
+
+func (b *execBuffer) lostBytes() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.lost
+}
+
+// waited answers how many writes have waited for a client and whether one waits now.
+func (b *execBuffer) waited() (uint64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.waits, b.waiting > 0
 }
 
 // release opens the buffer to a stream, so the output a running command made becomes visible.
@@ -193,14 +367,23 @@ func (b *execBuffer) wake() {
 
 // stream replays what the buffer holds from the oldest byte, then follows live until the command ends
 // or the context is cancelled. A cancelled context is a client that left, not the command ending.
-func (b *execBuffer) stream(ctx context.Context, emit func(chunk) error) error {
+func (b *execBuffer) stream(ctx context.Context, detach func(), emit func(chunk) error) error {
+	f := b.follow(detach)
+	defer b.unfollow(f)
+
 	next := 0
+	var at int64
 	for {
 		b.mu.Lock()
+		if f.stalled {
+			b.mu.Unlock()
+			return errStalled
+		}
+
 		var batch []chunk
 		if b.released {
 			if next < b.dropped {
-				next = b.dropped
+				next, at = b.dropped, b.evicted
 			}
 			pending := b.chunks[next-b.dropped:]
 			batch = make([]chunk, len(pending))
@@ -213,8 +396,11 @@ func (b *execBuffer) stream(ctx context.Context, emit func(chunk) error) error {
 
 		for _, c := range batch {
 			if err := emit(c); err != nil {
-				return err
+				return b.cause(f, err)
 			}
+			// Only a chunk the client accepted is taken, so one cut midway leaves the rest owed and counted lost.
+			at += int64(len(c.data))
+			b.take(f, at)
 		}
 
 		if closed {
@@ -223,10 +409,22 @@ func (b *execBuffer) stream(ctx context.Context, emit func(chunk) error) error {
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return b.cause(f, ctx.Err())
 		case <-changed:
 		}
 	}
+}
+
+// cause names a follower the buffer detached for its stall, rather than the write or context that broke with it.
+func (b *execBuffer) cause(f *follower, err error) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if f.stalled {
+		return errStalled
+	}
+
+	return err
 }
 
 // bufWriter appends what the guest writes to one stream into the exec buffer, tagged with that stream.
@@ -293,6 +491,7 @@ func (e *execSession) record() models.Exec {
 		State:     e.state,
 		StartedAt: e.startedAt,
 		Truncated: e.buf.isTruncated(),
+		LostBytes: e.buf.lostBytes(),
 	}
 	if e.exit != nil {
 		exit := *e.exit
@@ -479,7 +678,7 @@ func (s *Service) startExec(id, execID string, req ExecRequest) (*execSession, e
 		startedAt: time.Now().UTC(),
 		cancel:    cancel,
 		done:      make(chan struct{}),
-		buf:       newExecBuffer(),
+		buf:       newExecBuffer(req.Attach),
 		pidSet:    make(chan struct{}),
 		state:     models.ExecRunning,
 	}
@@ -584,11 +783,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 	pair.Replica = nil
 
 	// A process the command left behind holds the replica too, and then nothing ever ends the copy.
-	var drainErr error
-	select {
-	case drainErr = <-drained:
-	case <-time.After(drainBudget):
-	}
+	drainErr := drain(drained, session.buf)
 
 	masterErr := pair.Master.Close()
 
@@ -598,26 +793,44 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 	s.capExitedExecs(id)
 }
 
-// Attach replays the buffer so far to one client, then streams live until the command ends. A client that
-// drops returns its own context error and leaves the command running, so a later attach replays it again.
-func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (models.ExitStatus, error) {
+// drain waits for the terminal's copier, longer only while a write waits on a client that still takes output.
+func drain(drained <-chan error, buf *execBuffer) error {
+	last, _ := buf.waited()
+	for {
+		select {
+		case err := <-drained:
+			return err
+		case <-time.After(drainBudget):
+		}
+
+		waits, waiting := buf.waited()
+		if !waiting && waits == last {
+			return nil
+		}
+		last = waits
+	}
+}
+
+// Attach replays the buffer so far to one client, then streams live until the command ends. A client that drops
+// returns its context error, and one that takes no output for ExecStallBound a StalledError; the command runs on.
+func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (Attached, error) {
 	id, _, err := s.resolveForExec(ref)
 	if err != nil {
-		return models.ExitStatus{}, err
+		return Attached{}, err
 	}
 
 	session, err := s.execOf(id, execID)
 	if err != nil {
-		return models.ExitStatus{}, err
+		return Attached{}, err
 	}
 
 	if err := session.tryAttach(); err != nil {
-		return models.ExitStatus{}, err
+		return Attached{}, err
 	}
 	defer session.endAttach()
 
 	if err := started(streams, execID); err != nil {
-		return models.ExitStatus{}, err
+		return Attached{}, err
 	}
 
 	s.pumpStdin(session, streams)
@@ -630,14 +843,23 @@ func (s *Service) Attach(ctx context.Context, ref, execID string, streams Stream
 		return writeChunk(streams.Stderr, c.data)
 	}
 
-	if err := session.buf.stream(ctx, sink); err != nil {
-		return models.ExitStatus{}, err
+	err = session.buf.stream(ctx, streams.Detach, sink)
+	if errors.Is(err, errStalled) {
+		return Attached{}, &StalledError{ID: execID}
+	}
+	if err != nil {
+		return Attached{}, err
 	}
 
 	// The buffer closed, so the command ended; answer the live client with how it did.
 	<-session.done
 
-	return session.result()
+	exit, err := session.result()
+	if err != nil {
+		return Attached{}, err
+	}
+
+	return Attached{Exit: exit, LostBytes: session.buf.lostBytes()}, nil
 }
 
 // pumpStdin feeds the client's keyboard to the command while the attach lasts. On a clean end it closes
@@ -804,7 +1026,7 @@ func offer(slot chan models.TerminalSize, size models.TerminalSize) {
 	}
 }
 
-// dropExecs ends and forgets every exec of one sandbox, because a stop takes its execs with it.
+// dropExecs ends and forgets every exec of one sandbox, because a sandbox that ends takes its execs with it.
 func (s *Service) dropExecs(id string) {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
