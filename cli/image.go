@@ -42,23 +42,32 @@ func pullLine(e client.PullEvent) string {
 	case client.PullCached:
 		return fmt.Sprintf("%s %s is already on disk at %s", e.Reference, e.Digest, e.Path)
 	case client.PullPulling:
-		layers := "layers"
-		if e.Layers == 1 {
-			layers = "layer"
-		}
-
-		return fmt.Sprintf("pulling %s %s, %d %s, %s", e.Reference, e.Digest, e.Layers, layers, humanSize(e.Bytes))
+		return fmt.Sprintf("pulling %s %s, %s, %s", e.Reference, e.Digest, layerCount(e.Layers), humanSize(e.Bytes))
 	case client.PullLayer:
 		if e.Present {
 			return fmt.Sprintf("  %s  %s, already on disk", shortDigest(e.Digest), humanSize(e.Bytes))
 		}
 
 		return fmt.Sprintf("  %s  %s", shortDigest(e.Digest), humanSize(e.Bytes))
+	case client.PullUnpacking:
+		return fmt.Sprintf("unpacking %s, %s", e.Reference, layerCount(e.Layers))
+	case client.PullUnpacked:
+		return fmt.Sprintf("  %s  unpacked, %d of %d", shortDigest(e.Digest), e.Layer, e.Layers)
+	case client.PullBuilding:
+		return "  building " + e.Path
 	case client.PullPulled:
 		return fmt.Sprintf("pulled %s into %s", e.Reference, e.Path)
 	}
 
 	return "pull: " + e.Status
+}
+
+func layerCount(n int) string {
+	if n == 1 {
+		return "1 layer"
+	}
+
+	return fmt.Sprintf("%d layers", n)
 }
 
 func (a App) image(ctx context.Context, args []string) error {

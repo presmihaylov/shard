@@ -1047,6 +1047,8 @@ expect_exec "shard-e2e" "the command ran and wrote a file" \
 
 step "exec again into the same filesystem state"
 expect_exec "shard-e2e" "the second exec read what the first one wrote" /bin/cat /tmp/marker
+expect_exec "pong" "a listener on 127.0.0.1 answers, so lo is up" \
+	/bin/sh -c '(echo pong | nc -l -p 7077 -s 127.0.0.1 -w 3 &); sleep 1; nc -w 3 127.0.0.1 7077 </dev/null'
 
 step "reach the daemon through the tcp front"
 SERVE_DIR=$(mktemp -d /tmp/shard-e2e-serve.XXXXXX)
@@ -2224,8 +2226,11 @@ holds "${IMAGE%%:*}" shard image ls && fail "image ls still lists the pruned ima
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
-shard rm "${ID}" >/dev/null 2>&1
-say "a second rm is idempotent"
+CODE=0
+REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "a second rm exited 0 on an id that does not exist"
+expect "${REFUSAL}" "shard: no sandbox ${ID}" "a second rm fails on the id it no longer finds"
+expect "$(shard rm --force "${ID}" 2>&1)" "shard: warning: sandbox ${ID} does not exist, so there is nothing to remove" "a second rm --force only warns, so a teardown stays idempotent"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"

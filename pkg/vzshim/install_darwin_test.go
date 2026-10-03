@@ -79,6 +79,28 @@ func TestTheShimInstallsOnceAndCarriesTheEntitlement(t *testing.T) {
 	}
 }
 
+// A cut shim fails its hash at the next install, which signs a whole copy again.
+func TestACutShimIsSignedAgain(t *testing.T) {
+	embedded(t)
+	dir := t.TempDir()
+
+	shim, err := Install(dir)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	info, err := os.Stat(shim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(shim, info.Size()/2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(dir); err != nil {
+		t.Fatalf("Install after the cut: %v", err)
+	}
+	run(t, "codesign", "--verify", "--strict", shim)
+}
+
 // Sixteen first-use callers at once is what a daemon that starts sixteen sandboxes does.
 func TestConcurrentInstallersLeaveOneSignedShimAndNoDebris(t *testing.T) {
 	embedded(t)
