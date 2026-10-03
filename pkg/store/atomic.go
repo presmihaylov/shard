@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // WriteFile lands data at path or leaves what was there. A reader never sees a partial file.
@@ -50,9 +51,10 @@ func WriteFileIfChanged(path string, data []byte, perm fs.FileMode) error {
 	return WriteFile(path, data, perm)
 }
 
+// holds neither follows a symlink nor waits on a fifo: neither holds data, so the write replaces it.
 func holds(path string, data []byte, perm fs.FileMode) (bool, error) {
-	f, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
 		return false, nil
 	}
 	if err != nil {

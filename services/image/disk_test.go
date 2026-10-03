@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -359,5 +360,60 @@ func TestDiskACancelEndsTheBodyMidCopy(t *testing.T) {
 	cancel()
 	if _, err := r.Read(buf); !errors.Is(err, context.Canceled) {
 		t.Fatalf("read after the cancel: %v", err)
+	}
+}
+
+// A whiteout reaches the files under a directory the layers never wrote an entry for.
+func TestDiskAWhiteoutTakesFilesUnderImpliedDirectories(t *testing.T) {
+	base := layerOf(t, reg("opt/tool/a", "a"), reg("opt/tool/deep/b", "b"), reg("optional", "o"))
+	top := layerOf(t, reg("opt/.wh.tool", ""))
+
+	got := stream(t, base, top)
+
+	missing(t, got, "opt/tool/a")
+	missing(t, got, "opt/tool/deep/b")
+	if body := bodyOf(t, got, "optional"); body != "o" {
+		t.Errorf("optional is %q", body)
+	}
+}
+
+func TestDiskAnOpaqueWhiteoutAtTheRootTakesEveryLowerLayer(t *testing.T) {
+	base := layerOf(t, dir("etc/"), reg("etc/motd", "hello"), reg("top", "t"))
+	top := layerOf(t, reg("fresh", "f"), reg(".wh..wh..opq", ""))
+
+	got := stream(t, base, top)
+
+	missing(t, got, "etc")
+	missing(t, got, "etc/motd")
+	missing(t, got, "top")
+	if body := bodyOf(t, got, "fresh"); body != "f" {
+		t.Errorf("fresh is %q", body)
+	}
+}
+
+// The plan walks only the subtree a whiteout or a file names, so a large directory plans in one pass (SHARD-360).
+func TestDiskPlansFortyThousandFilesInOnePass(t *testing.T) {
+	entries := []entry{dir("data/")}
+	for i := range 40000 {
+		entries = append(entries, reg(fmt.Sprintf("data/f%05d", i), "x"))
+	}
+	layers := []v1.Layer{layerOf(t, entries...), layerOf(t, reg("data/.wh.f00007", ""), reg("data/f00008", "y"))}
+
+	// The scan per entry this replaces took 28 s for these headers on an M-series Mac.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	m, err := planDisk(ctx, layers)
+	if err != nil {
+		t.Fatalf("planDisk: %v", err)
+	}
+
+	if len(m.tree) != 40000 {
+		t.Errorf("the plan holds %d paths, want 40000", len(m.tree))
+	}
+	if _, ok := m.tree["data/f00007"]; ok {
+		t.Error("data/f00007 outlived its whiteout")
+	}
+	if v := m.tree["data/f00008"]; v.layer != 1 {
+		t.Errorf("data/f00008 is from layer %d, want 1", v.layer)
 	}
 }

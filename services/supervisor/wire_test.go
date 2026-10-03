@@ -353,3 +353,73 @@ func shortDir(t *testing.T) string {
 
 	return dir
 }
+
+// fakeExecGuest takes the header, reports a start, sends the frames given, then reports each stream the host sends until it hangs up.
+func fakeExecGuest(guest net.Conn, then []byte) <-chan byte {
+	got := make(chan byte, 8)
+	go func() {
+		defer close(got)
+		var header supervisor.ExecHeader
+		if err := supervisor.ReadHeader(guest, &header); err != nil {
+			return
+		}
+		if err := supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 7}); err != nil {
+			return
+		}
+		for _, stream := range then {
+			if err := supervisor.WriteFrame(guest, stream, nil); err != nil {
+				return
+			}
+		}
+		for {
+			stream, _, err := supervisor.ReadFrame(guest)
+			if err != nil {
+				return
+			}
+			got <- stream
+		}
+	}()
+
+	return got
+}
+
+func sawCancel(got <-chan byte) bool {
+	seen := false
+	for stream := range got {
+		seen = seen || stream == supervisor.StreamCancel
+	}
+
+	return seen
+}
+
+// A cancel is a frame, because a connection that only drops is a daemon restart, and the guest keeps the command (SHARD-270).
+func TestACancelledExecTellsTheGuest(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	got := fakeExecGuest(guest, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	spec := models.ExecSpec{Report: func(int) { cancel() }}
+	if _, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, spec); !errors.Is(err, context.Canceled) {
+		t.Fatalf("exec = %v, want context.Canceled", err)
+	}
+	if !sawCancel(got) {
+		t.Fatal("the guest never got a cancel frame")
+	}
+}
+
+func TestAnExecTheHostGivesUpOnIsCancelled(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	got := fakeExecGuest(guest, []byte{99})
+
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	if _, err := supervisor.Exec(t.Context(), dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, models.ExecSpec{}); err == nil {
+		t.Fatal("exec took a frame of stream 99")
+	}
+	if !sawCancel(got) {
+		t.Fatal("the guest never got a cancel frame")
+	}
+}

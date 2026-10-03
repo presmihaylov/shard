@@ -55,6 +55,8 @@ type Provider interface {
 	Restarts(ctx context.Context, id string) (RestartCount, error)
 	// LogPath names the file the guest's output lands in. SHARD-23 turns it into shard logs.
 	LogPath(id string) (string, error)
+	// HeldLogs names the log files a process outside the daemon appends to, which the daemon bounds by copy and truncate.
+	HeldLogs(id string) ([]string, error)
 
 	// Pause writes a complete snapshot into dir, frees the memory and ends the sandbox on the substrate,
 	// so Status reports it stopped; a pause over a dir that holds one leaves it holding one. Optional,
