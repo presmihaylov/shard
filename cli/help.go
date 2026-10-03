@@ -30,7 +30,7 @@ type verbHelp struct {
 // row is one line of a two-column list: an argument, a flag or a verb, and what it is.
 type row struct{ left, text string }
 
-// flagHelp is one flag as the help spells it, as --memory <MiB>, -i or --restart-on-oom[=N].
+// flagHelp is one flag as the help spells it, as --memory <size>, -i or --restart-on-oom[=N].
 type flagHelp struct {
 	spell string
 	text  string
@@ -40,7 +40,7 @@ type flagHelp struct {
 
 // wants is what a placeholder stands for, which a refusal of a value that does not parse names.
 var wants = map[string]string{
-	"<MiB>":      "MiB as a plain number",
+	"<size>":     "a whole size such as 512MiB or 2GiB, or a bare number of MiB",
 	"<duration>": "a duration such as 10s",
 	"<n>":        "a whole number",
 }
@@ -89,9 +89,9 @@ var helps = map[string]verbHelp{
 			{"--policy <name>", "the egress policy the host enforces; without one, the sandbox reaches the internet but nothing private", ""},
 			{"--workdir <dir>", "the directory the entrypoint starts in", ""},
 			{"--user <user>", "the user the entrypoint runs as", ""},
-			{"--memory <MiB>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128 or more", ""},
+			{"--memory <size>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128MiB or more", ""},
 			{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
-			{"--disk <MiB>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11 so its journal fits", ""},
+			{"--disk <size>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11MiB so its journal fits", ""},
 			{"--restart-on-oom[=N]", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row, and it needs --memory", ""},
 			{"--restart <policy>", "when to start the command again inside the sandbox after it exits: no, on-failure or always; it needs a command", ""},
 			{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
@@ -102,8 +102,9 @@ var helps = map[string]verbHelp{
 			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
+			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal). A bare number is MiB, and a part of a MiB rounds up.",
 		},
-		example: "shard create --name web --memory 512 python:3.12 python -m http.server",
+		example: "shard create --name web --memory 512MiB python:3.12 python -m http.server",
 	},
 	"exec": {
 		usage:   []string{"exec [flags] <id|name> <argv>..."},
@@ -564,7 +565,7 @@ func wrap(lead string, indent int, text string) string {
 	return strings.Join(append(lines, line), "\n")
 }
 
-// flagName is the name a spelled flag parses as: --memory <MiB> is memory, and --restart-on-oom[=N] is restart-on-oom.
+// flagName is the name a spelled flag parses as: --memory <size> is memory, and --restart-on-oom[=N] is restart-on-oom.
 func flagName(spell string) string {
 	name := strings.TrimLeft(spell, "-")
 	if i := strings.IndexAny(name, " ["); i >= 0 {
@@ -574,7 +575,7 @@ func flagName(spell string) string {
 	return name
 }
 
-// placeholder is what a spelled flag takes after its name, as <MiB>, or nothing for a bool.
+// placeholder is what a spelled flag takes after its name, as <size>, or nothing for a bool.
 func placeholder(spell string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(spell, "-"), flagName(spell)))
 }

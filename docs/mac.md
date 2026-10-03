@@ -54,7 +54,7 @@ fails.
 In a second terminal:
 
 ```
-shard create --memory 512 python:3.12 python -c 'print(1)'
+shard create --memory 512MiB python:3.12 python -c 'print(1)'
 shard logs <id>
 shard exec <id> uname -a
 shard pause <id>

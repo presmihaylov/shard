@@ -175,15 +175,16 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 // A flag error names the flag the way the help does, and says the unit, with nothing of Go's flag package in it.
 func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 	cases := map[string][]string{
-		`invalid value "512m" for --memory: want MiB as a plain number`: {"create", "--memory", "512m", "alpine"},
-		`invalid value "1g" for --disk: want MiB as a plain number`:     {"create", "--disk", "1g", "alpine"},
-		`invalid value "5" for --time: want a duration such as 10s`:     {"stop", "--time", "5", "web"},
-		`invalid value "x" for --restart-retries: want a whole number`:  {"create", "--restart-retries", "x", "alpine"},
-		`invalid value "maybe" for --all: want true or false`:           {"ls", "--all=maybe"},
-		`--time needs a value: a duration such as 10s`:                  {"rm", "--time"},
-		`unknown flag --bogus; run shard create --help`:                 {"create", "--bogus", "alpine"},
-		`unknown flag -x; run shard pause --help`:                       {"pause", "-x"},
-		`unknown flag --bogus; run shard --help`:                        {"--bogus", "ls"},
+		`invalid value "512m" for --memory: unknown unit "m"; want KiB, MiB, GiB, KB, MB or GB`: {"create", "--memory", "512m", "alpine"},
+		`invalid value "1.5GiB" for --disk: want a whole number; a fraction is never rounded`:   {"create", "--disk", "1.5GiB", "alpine"},
+		`--memory needs a value: a whole size such as 512MiB or 2GiB, or a bare number of MiB`:  {"create", "--memory"},
+		`invalid value "5" for --time: want a duration such as 10s`:                             {"stop", "--time", "5", "web"},
+		`invalid value "x" for --restart-retries: want a whole number`:                          {"create", "--restart-retries", "x", "alpine"},
+		`invalid value "maybe" for --all: want true or false`:                                   {"ls", "--all=maybe"},
+		`--time needs a value: a duration such as 10s`:                                          {"rm", "--time"},
+		`unknown flag --bogus; run shard create --help`:                                         {"create", "--bogus", "alpine"},
+		`unknown flag -x; run shard pause --help`:                                               {"pause", "-x"},
+		`unknown flag --bogus; run shard --help`:                                                {"--bogus", "ls"},
 	}
 
 	for want, args := range cases {
@@ -204,7 +205,7 @@ func TestVerbHelpPrintsItsFlagsAndExitsZero(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.HasPrefix(got, "Usage: shard create ") || !strings.Contains(got, "--memory <MiB>") {
+	if !strings.HasPrefix(got, "Usage: shard create ") || !strings.Contains(got, "--memory <size>") {
 		t.Errorf("create --help printed %q, want the create usage and its flags", got)
 	}
 }

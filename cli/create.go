@@ -50,9 +50,9 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.StringVar(&req.Policy, "policy", "", "")
 	flags.StringVar(&req.WorkDir, "workdir", "", "")
 	flags.StringVar(&req.User, "user", "", "")
-	flags.Int64Var(&req.Resources.MemoryMiB, "memory", 0, "")
+	flags.Var(sizeMiB{&req.Resources.MemoryMiB}, "memory", "")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
-	flags.Int64Var(&req.Resources.DiskMiB, "disk", 0, "")
+	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
 	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "")
@@ -74,19 +74,12 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 		}
 	}
 
-	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
-	if req.Resources.MemoryMiB < 0 {
-		return sandbox.CreateRequest{}, fmt.Errorf("--memory is a bound in MiB and cannot be negative, got %d", req.Resources.MemoryMiB)
-	}
 	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
 	if req.Resources.MemoryMiB > sandbox.MaxMemoryMiB {
 		return sandbox.CreateRequest{}, fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)
 	}
 	if req.Resources.VCPUs < 0 {
 		return sandbox.CreateRequest{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
-	}
-	if req.Resources.DiskMiB < 0 {
-		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and cannot be negative, got %d", req.Resources.DiskMiB)
 	}
 	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
 		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
