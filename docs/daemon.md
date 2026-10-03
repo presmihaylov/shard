@@ -177,8 +177,10 @@ the last one in `oom_restarted_at`, and `shard ls` shows the policy in its `REST
 `on-oom 2` when the count is unlimited, or `on-oom 2/5` under a cap. The second start waits 1 s from
 the last, then 2, 4 and 8 s, up to 60 s. At the cap the sandbox stays `stopped` and the reason adds
 `the N starts again the limit allows are spent`. A `shard start` by hand still works, and clears the
-reason. A sandbox the record says `stopped` is never started again by the daemon, so a `stop` in the
-window is final. A `fork` or `clone` inherits the policy with a fresh count.
+reason. While a start again waits, the record says `stopped` with pid 0, the reason adds
+`it starts again at <time>`, and `oom_restart_due` holds that time, so no verb reads the dead
+process (SHARD-425); `shard ls` still lists it. A `stop` in the wait calls the start again off, and
+a `shard start` runs it at once. A `fork` or `clone` inherits the policy with a fresh count.
 
 ## Health check
 
