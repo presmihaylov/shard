@@ -27,8 +27,9 @@ func TestCreateFromACachedImageAnswersRunningAtOnce(t *testing.T) {
 	}
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
-		Image:   testImage,
-		Command: []string{"/bin/sleep", "600"},
+		Image:     testImage,
+		Command:   []string{"/bin/sleep", "600"},
+		Resources: itestResources(),
 	})
 	if err != nil {
 		t.Fatalf("create from a cached image: %v", err)
@@ -47,8 +48,9 @@ func TestCreateFromAnUncachedImageIsPendingThenRunning(t *testing.T) {
 	app, _ := ownDaemon(t)
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
-		Image:   testImage,
-		Command: []string{"/bin/sleep", "600"},
+		Image:     testImage,
+		Command:   []string{"/bin/sleep", "600"},
+		Resources: itestResources(),
 	})
 	if err != nil {
 		t.Fatalf("create from an uncached image: %v", err)
@@ -76,8 +78,9 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 	app, _ := newCreateApp(t)
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
-		Image:   unpullableImage,
-		Command: []string{"/bin/true"},
+		Image:     unpullableImage,
+		Command:   []string{"/bin/true"},
+		Resources: itestResources(),
 	})
 	if err != nil {
 		t.Fatalf("create from an unpullable image: %v", err)
