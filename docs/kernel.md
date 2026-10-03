@@ -2,7 +2,7 @@
 
 A microVM substrate boots a kernel that shard ships, and never the kernel of the host. There is one
 Linux release for each shard version. It is built once per architecture, and every build of it is
-byte-identical. The VZ provider boots the arm64 kernel, and Firecracker will boot the amd64 kernel
+byte-identical. The VZ provider boots the arm64 kernel, and Firecracker boots the amd64 kernel
 (SHARD-232, shared with M8).
 
 ## What is in it

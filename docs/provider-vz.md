@@ -161,7 +161,7 @@ gVisor (SHARD-270). The host writes the exit record and the count into the same 
 pipe fills, so `Wait`, `ExitStatus` and `inspect` work as they do on gVisor. `services/supervisor`
 holds the wire and the host client, and the Firecracker provider reuses both. In the unit tests the
 same binary runs the protocol over `-transport unix:<dir>`, on any OS. The host side of a tty
-resize, and `pkg/pty` on darwin, land with the provider (SHARD-218).
+resize, and `pkg/pty` on darwin, ship with the provider (SHARD-218).
 
 On gVisor, a supervisor that fails its own bookkeeping exits 125, and the host reads that back with
 `runsc wait`. A VM halts when PID 1 exits, and the code is lost with it. So `shard-init` first sends
@@ -355,9 +355,9 @@ results:
     both arrive. Every guest-side probe and `shard-init` therefore write the virtio console by its
     own node, `hvc0`.
 
-The spike did not prove the following, and the tickets that need them own them: a restore over a
-virtio-blk disk (SHARD-215), the vsock streams end to end (SHARD-216), the netstack (SHARD-217), and
-any of this on macOS 13.
+The spike did not prove a restore over a virtio-blk disk (SHARD-215), the vsock streams end to end
+(SHARD-216), the netstack (SHARD-217), or any of this on macOS 13. `vzvm_integration_test.go` now
+proves the first three on real VMs.
 
 ## What hypeman contributes
 

@@ -17,7 +17,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
-// LockFile is the singleton flock under the root: one daemon per root, and the only lock shard keeps.
+// LockFile is the singleton flock under the root: one daemon per root.
 const LockFile = "daemon.lock"
 
 // PIDFile names the daemon's pid for newsyslog to signal; the lock, not this file, says whether a daemon is up.
@@ -95,7 +95,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	return nil
 }
 
-// takeLock is the one lock left in shard: it keeps a second daemon off a root the first one owns.
+// takeLock keeps a second daemon off a root the first one owns.
 func takeLock(path string) (*store.Lock, error) {
 	lock, err := store.TryAcquire(path, 0o600)
 	if err != nil {

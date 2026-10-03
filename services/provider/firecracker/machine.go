@@ -30,7 +30,7 @@ type machine struct {
 	jail   string
 	client *fcapi.Client
 	pid    int
-	// pinned holds a vmm an adopt found silent, by the pin taken on the dial it never answered, so a stop kills that vmm alone.
+	// pinned holds the vmm by a pin taken on a connection it answered, or never answered, so a stop kills that vmm alone.
 	pinned *pidpin.Process
 	// control is the stream to shard-init, replaced when a dropped one is dialed again.
 	control atomic.Pointer[supervisor.Control]
@@ -52,7 +52,7 @@ type machine struct {
 	started bool
 	// gone is set by the event loop once the vmm no longer runs the VM, so a status needs no socket round trip.
 	gone bool
-	// silent is set while a vmm an adopt found silent has not answered; only stop ends it (SHARD-392).
+	// silent is set while the vmm has not answered a probe within its bound; only stop ends it (SHARD-392, SHARD-439).
 	silent bool
 	// asking closes once the one state request out to a silent vmm ends; nil when none is out.
 	asking chan struct{}
@@ -74,6 +74,13 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
+		bound := adoptBound
+		// A held vmm already silent has its one request out, so a lookup waits only the floor on it.
+		if p.waiting(m) {
+			bound = probeFloor
+		}
+		p.probe(ctx, m, bound)
+
 		return m, nil
 	}
 	// The one request to a silent vmm is already out, so a lookup waits only the floor on it, and a stop's opening probe stays short.
@@ -220,6 +227,21 @@ func (p *Provider) unanswered(id, dir, jail string, client *fcapi.Client, pin *p
 	return m, nil
 }
 
+// lookupToStop is lookup for a stop: a held vmm that already missed its probe gets one short probe more, and any other held vmm gets its grace (SHARD-439).
+func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record) (*machine, error) {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+	if !held {
+		return p.lookup(ctx, id, dir, r)
+	}
+	if m.status(p).State == models.StateUnresponsive {
+		p.probe(ctx, m, probeFloor)
+	}
+
+	return m, nil
+}
+
 // waiting says a silent vmm has still not answered; an answer, or no vmm left on the socket, lets a fresh adopt decide.
 func (p *Provider) waiting(m *machine) bool {
 	p.mu.Lock()
@@ -228,9 +250,14 @@ func (p *Provider) waiting(m *machine) bool {
 	return m.silent
 }
 
-// probe waits the bound on the one state request out to a silent vmm, and starts it when none is; nothing here kills the vmm.
+// probe waits the bound on the one state request out to the vmm, and starts it when none is: silence marks it unresponsive, and nothing here kills it.
 func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 	p.mu.Lock()
+	if m.gone || m.closed.Load() {
+		p.mu.Unlock()
+
+		return
+	}
 	// A frozen vmm accepts nothing, and every dial waits in its socket queue, so one request at a time keeps that queue from filling.
 	asking := m.asking
 	if asking == nil {
@@ -246,6 +273,11 @@ func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 	case <-asking:
 	case <-ctx.Done():
 	case <-timer.C:
+		p.mu.Lock()
+		if m.asking == asking {
+			m.silent = true
+		}
+		p.mu.Unlock()
 	}
 }
 
@@ -521,13 +553,24 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 
 // attach opens the control connection to the guest and follows its events and its logs.
 func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: info.PID, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	// The pin is taken while the vmm answers, so a stop after a later freeze kills this vmm alone (SHARD-439).
+	answered, pin, err := client.StatePinned(ctx)
+	if err != nil {
+		if pin != nil {
+			err = errors.Join(err, pin.Close())
+		}
+		return nil, fmt.Errorf("sandbox %s: pin its vmm: %w", id, err)
+	}
+	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: info.PID, pinned: pin, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	if answered.PID != info.PID {
+		return nil, errors.Join(fmt.Errorf("sandbox %s: its socket answers for pid %d, not its vmm %d", id, answered.PID, info.PID), m.close())
+	}
 
 	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
 	defer cancel()
 	control, err := supervisor.Connect(connectCtx, m.dial)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox %s: %w", id, err)
+		return nil, errors.Join(fmt.Errorf("sandbox %s: %w", id, err), m.close())
 	}
 	m.control.Store(control)
 
