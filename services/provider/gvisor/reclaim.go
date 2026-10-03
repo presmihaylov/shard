@@ -65,7 +65,7 @@ func (p *Provider) sweep(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
-// killNamed SIGKILLs the processes in the cgroup that name the sandbox and waits for the cgroup to empty.
+// killNamed SIGKILLs the processes in the cgroup that name the sandbox, and does it again on each round until the cgroup is empty, because a probe exec can join the cgroup after the last read and would otherwise race the caller's remove (SHARD-440).
 func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) error {
 	ours, err := p.named(pids, id)
 	if err != nil {
@@ -80,14 +80,39 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 		return nil
 	}
 
-	for _, pid := range ours {
-		// A pidfd pins the process, then rechecks both its cgroup membership and its id before it signals, so a pid reused between the scan and the kill, inside the cgroup or out, is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
-		if err := p.killPinned(pid, func() (bool, error) { return p.own(dir, pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
+	kctx, cancel := context.WithTimeout(ctx, killGrace)
+	defer cancel()
+
+	for {
+		for _, pid := range ours {
+			// A pidfd pins the process, then rechecks both its cgroup membership and its id before it signals, so a pid reused between the scan and the kill, inside the cgroup or out, is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
+			if err := p.killPinned(pid, func() (bool, error) { return p.own(dir, pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
+			}
+		}
+
+		left, err := cgroup.Procs(dir)
+		if errors.Is(err, cgroup.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("list the processes of sandbox %s: %w", id, err)
+		}
+		if len(left) == 0 {
+			return nil
+		}
+
+		select {
+		case <-kctx.Done():
+			return fmt.Errorf("sandbox %s still holds processes %v after SIGKILL: %w", id, left, kctx.Err())
+		case <-time.After(pollInterval):
+		}
+
+		// A probe exec may have joined the cgroup since the last read, so kill whatever names the sandbox now.
+		if ours, err = p.named(left, id); err != nil {
+			return err
 		}
 	}
-
-	return p.awaitEmpty(ctx, dir, id)
 }
 
 // own says whether the pinned pid is still the sandbox's: still in its cgroup, and still naming it; the recheck a kill makes after it pins the process, so a reused pid outside the cgroup is never signalled (SHARD-440).

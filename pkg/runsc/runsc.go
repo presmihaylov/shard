@@ -542,25 +542,34 @@ func (r *Runner) State(ctx context.Context, id string) (State, error) {
 	return state, nil
 }
 
-// Forget removes runsc's saved state files for a container and signals nothing, for a teardown that must not hand runsc a stale pid (SHARD-440).
+// Forget removes runsc's own files for a container and signals nothing, for a teardown that must not hand runsc a stale pid and must not leak what delete --force used to remove (SHARD-440).
 func (r *Runner) Forget(id string) error {
-	files, err := r.stateFiles(id)
+	files, err := r.containerFiles(id)
 	if err != nil {
-		return fmt.Errorf("find the runsc state of %s: %w", id, err)
+		return fmt.Errorf("find the runsc files of %s: %w", id, err)
 	}
 
 	for _, file := range files {
 		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("drop the runsc state %s: %w", file, err)
+			return fmt.Errorf("drop the runsc file %s: %w", file, err)
 		}
 	}
 
 	return nil
 }
 
-// stateFiles are runsc's own flat state files for a container, named <sandbox>_sandbox:<id>.state under the root.
-func (r *Runner) stateFiles(id string) ([]string, error) {
-	return filepath.Glob(filepath.Join(r.root, "*:"+id+".state"))
+// containerFiles are runsc's own per-container files under the root: the state and lock named <id>_sandbox:<id>.{state,lock}, and the control socket runsc-<id>.sock, all of which delete --force removed.
+func (r *Runner) containerFiles(id string) ([]string, error) {
+	var files []string
+	for _, pattern := range []string{"*:" + id + ".state", "*:" + id + ".lock", "runsc-" + id + ".sock"} {
+		matches, err := filepath.Glob(filepath.Join(r.root, pattern))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, matches...)
+	}
+
+	return files, nil
 }
 
 // run collects stderr so a failure can be classified, and leaves stdout to the caller.

@@ -145,3 +145,36 @@ func TestSafeDeleteSkipsAMemberReusedOutsideTheCgroupAfterThePin(t *testing.T) {
 		t.Fatal("SafeDelete did not drop the state after the cgroup emptied")
 	}
 }
+
+// TestSafeDeleteKillsAProbeExecThatJoinsAfterTheScan is SHARD-440 F1: a health-probe exec joins the cgroup after the first scan, so the sweep must kill it on the next round and leave the cgroup empty before the caller removes it.
+func TestSafeDeleteKillsAProbeExecThatJoinsAfterTheScan(t *testing.T) {
+	h := newHost(t)
+	own := bundle.CgroupsPath(sandboxID)
+	h.process(1101, own, "runsc-sandbox", "boot", "--bundle="+bundleDir, sandboxID)
+
+	p := h.provider()
+	f := &fakeRunsc{}
+	p.SetRunsc(f)
+
+	joined := false
+	p.SetKill(func(pid int) error {
+		// The first kill models the window the old sweep raced: a probe exec runsc exec'd into the cgroup after the scan.
+		if !joined {
+			joined = true
+			h.process(1103, own, "runsc", "exec", sandboxID, "/bin/false")
+		}
+
+		return h.kill(pid)
+	})
+
+	if err := p.SafeDelete(context.Background(), sandboxID); err != nil {
+		t.Fatalf("SafeDelete: %v", err)
+	}
+
+	if want := []int{1101, 1103}; !slices.Equal(h.killed, want) {
+		t.Fatalf("SafeDelete killed %v, want the sentry then the late probe exec %v", h.killed, want)
+	}
+	if !f.forgot {
+		t.Fatal("SafeDelete did not forget the state after the cgroup emptied")
+	}
+}
