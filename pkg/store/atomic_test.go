@@ -84,6 +84,35 @@ func TestWriteFileFailsOnMissingDirectory(t *testing.T) {
 	}
 }
 
+func TestMkdirAllDurableCreatesEveryMissingLevel(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a", "b", "c")
+
+	for range 2 {
+		if err := MkdirAllDurable(dir, 0o750); err != nil {
+			t.Fatalf("MkdirAllDurable: %v", err)
+		}
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("%s is not a directory", dir)
+	}
+}
+
+func TestMkdirAllDurableRefusesAFileOnThePath(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := MkdirAllDurable(filepath.Join(file, "sub"), 0o750); err == nil {
+		t.Fatal("MkdirAllDurable under a regular file returned no error")
+	}
+}
+
 // A link under the root that leads out of it is refused, and the file it leads to is left alone.
 func TestWriteFileInRefusesALinkOutOfTheRoot(t *testing.T) {
 	dir, outside := t.TempDir(), t.TempDir()

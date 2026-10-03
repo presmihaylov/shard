@@ -13,7 +13,7 @@ func (a App) serve(ctx context.Context, args []string) error {
 	listen := flags.String("listen", serve.DefaultListen, "")
 	cert := flags.String("cert", "", "")
 	key := flags.String("key", "", "")
-	secret := flags.String("secret-file", "", "")
+	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -24,12 +24,12 @@ func (a App) serve(ctx context.Context, args []string) error {
 	}
 
 	return serve.Run(ctx, serve.Config{
-		Listen:     *listen,
-		CertFile:   *cert,
-		KeyFile:    *key,
-		SecretFile: *secret,
-		TokensFile: *tokensFile,
-		Root:       a.Root,
-		Out:        a.Out,
+		Listen:         *listen,
+		CertFile:       *cert,
+		KeyFile:        *key,
+		SigningKeyFile: *signingKeyFile,
+		TokensFile:     *tokensFile,
+		Root:           a.Root,
+		Out:            a.Out,
 	})
 }

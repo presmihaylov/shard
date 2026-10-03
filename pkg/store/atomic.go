@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 )
 
@@ -122,6 +123,33 @@ func writeAndSync(f *os.File, data []byte, perm fs.FileMode) error {
 
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync %s: %w", f.Name(), err)
+	}
+
+	return nil
+}
+
+// MkdirAllDurable is os.MkdirAll that also syncs the parent of every directory missing at the start, so a crash keeps them all.
+func MkdirAllDurable(dir string, perm fs.FileMode) error {
+	var missing []string
+	for d := filepath.Clean(dir); filepath.Dir(d) != d; d = filepath.Dir(d) {
+		_, err := os.Stat(d)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("stat %s: %w", d, err)
+		}
+		missing = append(missing, d)
+	}
+
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	// Sync a level a concurrent caller made too, since that caller may not have synced it yet.
+	for _, d := range slices.Backward(missing) {
+		if err := SyncDir(filepath.Dir(d)); err != nil {
+			return err
+		}
 	}
 
 	return nil

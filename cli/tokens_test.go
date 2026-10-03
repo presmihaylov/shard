@@ -19,8 +19,8 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 
 	app, flags, secret := newFrontApp(t, &out)
 
-	// Mint over the front's own secret, so the record lands in the ledger the front reads and the front accepts it.
-	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret}); err != nil {
+	// Mint over the front's own signing key, so the record lands in the ledger the front reads and the front accepts it.
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	printed := strings.TrimSpace(out.String())
@@ -70,12 +70,12 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	}
 	app := App{Version: "test", Root: dir, Out: &out}
 
-	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret}); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "ls", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "ls", "--signing-key-file", secret}); err != nil {
 		t.Fatalf("ls: %v", err)
 	}
 	listing := out.String()
@@ -86,12 +86,12 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	// Pull the id from the listing, then revoke that one id; the flags come before the id.
 	id := tokenID(t, listing, "ci")
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--secret-file", secret, id}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--signing-key-file", secret, id}); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "ls", "--secret-file", secret}); err != nil {
+	if err := app.Run(t.Context(), []string{"tokens", "ls", "--signing-key-file", secret}); err != nil {
 		t.Fatalf("ls after revoke: %v", err)
 	}
 	if !strings.Contains(out.String(), "revoked") {
@@ -99,8 +99,8 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	}
 }
 
-// tokens revoke refuses with no ledger flag, and reports an id the ledger does not hold rather than a silent success.
-func TestTokensRevokeRefusesNoLedgerAndAnUnknownID(t *testing.T) {
+// tokens revoke reports an id the ledger does not hold rather than a silent success.
+func TestTokensRevokeRefusesAnUnknownID(t *testing.T) {
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "secret")
 	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
@@ -108,11 +108,95 @@ func TestTokensRevokeRefusesNoLedgerAndAnUnknownID(t *testing.T) {
 	}
 	app := App{Version: "test", Root: dir, Out: io.Discard}
 
-	if err := app.Run(t.Context(), []string{"tokens", "revoke", "some-id"}); err == nil {
-		t.Error("revoke ran with no --secret-file or --tokens-file")
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret}); err != nil {
+		t.Fatalf("mint: %v", err)
 	}
-	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--secret-file", secret, "no-such-id"}); err == nil {
-		t.Error("revoke reported success for an id the ledger does not hold")
+	err := app.Run(t.Context(), []string{"tokens", "revoke", "--signing-key-file", secret, "no-such-id"})
+	if err == nil || !strings.Contains(err.Error(), "no token with id no-such-id") {
+		t.Errorf("revoke of an id the ledger does not hold returned %v, want a refusal that names it", err)
+	}
+}
+
+// mint with no key flag creates the default key, and a front started with no key flag checks tokens over the same one.
+func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
+	var out bytes.Buffer
+	app := newLsApp(t, &out, listed(), nil)
+
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "build-agent", "--duration", "24h"}); err != nil {
+		t.Fatalf("mint with no key flag: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(app.Root, "auth", "signing-key")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mint left no 0600 key at the default path: %v", err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, out.Bytes(), 0o600); err != nil {
+		t.Fatalf("write the token file: %v", err)
+	}
+
+	cert, key := selfSigned(t, t.TempDir())
+	address := startFront(t, serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, Root: app.Root, Out: io.Discard})
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "ls"}); err != nil {
+		t.Fatalf("ls through the front with the minted token: %v", err)
+	}
+	if !strings.Contains(out.String(), "up-1") {
+		t.Errorf("ls through the front printed %q, want the sandbox the daemon holds", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"tokens", "ls"}); err != nil {
+		t.Fatalf("tokens ls with no flag: %v", err)
+	}
+	if !strings.Contains(out.String(), "build-agent") {
+		t.Errorf("tokens ls with no flag listed %q, want the token mint recorded", out.String())
+	}
+}
+
+// ls and revoke need only the ledger, so on a root with no key they report an empty ledger and create nothing.
+func TestTokensLsAndRevokeCreateNoSigningKey(t *testing.T) {
+	var out bytes.Buffer
+	dir := t.TempDir()
+	app := App{Version: "test", Root: dir, Out: &out}
+
+	if err := app.Run(t.Context(), []string{"tokens", "ls"}); err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "ID") {
+		t.Errorf("ls printed %q, want the header alone", out.String())
+	}
+	err := app.Run(t.Context(), []string{"tokens", "revoke", "some-id"})
+	if err == nil || !strings.Contains(err.Error(), "no token with id some-id") {
+		t.Errorf("revoke returned %v, want a refusal that names the id", err)
+	}
+	if err := app.Run(t.Context(), []string{"tokens", "revoke", "--name", "ci"}); err != nil {
+		t.Errorf("revoke --name: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "auth")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ls or revoke created %s/auth: %v", dir, err)
+	}
+}
+
+// A named key file is never generated: every verb refuses one that does not exist, names the flag and the path, and creates nothing.
+func TestTokensRefuseAMissingSigningKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "signing-key")
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+
+	for _, args := range [][]string{
+		{"tokens", "mint", "--name", "ci", "--signing-key-file", missing},
+		{"tokens", "ls", "--signing-key-file", missing},
+		{"tokens", "revoke", "--signing-key-file", missing, "some-id"},
+	} {
+		err := app.Run(t.Context(), args)
+		if err == nil || !strings.Contains(err.Error(), "--signing-key-file") || !strings.Contains(err.Error(), missing) {
+			t.Errorf("%s returned %v, want a refusal that names --signing-key-file and %s", strings.Join(args[:2], " "), err, missing)
+		}
+	}
+	for _, path := range []string{missing, filepath.Join(dir, "auth")} {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a refused verb created %s: %v", path, err)
+		}
 	}
 }
 
@@ -139,12 +223,12 @@ func TestTokensMintRefusesNoName(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	if err := app.Run(t.Context(), []string{"tokens", "mint", "--secret-file", secret}); err == nil {
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--signing-key-file", secret}); err == nil {
 		t.Error("mint signed a token with no name")
 	}
 }
 
-func TestTokensMintRefusesAShortSecret(t *testing.T) {
+func TestTokensMintRefusesAShortSigningKey(t *testing.T) {
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "secret")
 	if err := os.WriteFile(secret, []byte(strings.Repeat("a", 31)), 0o600); err != nil {
@@ -152,9 +236,9 @@ func TestTokensMintRefusesAShortSecret(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--secret-file", secret})
+	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret})
 	if err == nil {
-		t.Fatal("mint signed a token with a secret under 32 bytes")
+		t.Fatal("mint signed a token with a signing key under 32 bytes")
 	}
 	// The refusal names the verb that ran and the bound, never shard serve.
 	if msg := err.Error(); !strings.HasPrefix(msg, "tokens mint: ") || !strings.Contains(msg, "31 bytes") || strings.Contains(msg, "shard serve") {
@@ -171,7 +255,7 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 	}
 
 	app := App{Version: "test", Root: dir, Out: io.Discard}
-	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", "sandbox:read,sandbox:raed", "--secret-file", secret})
+	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", "sandbox:read,sandbox:raed", "--signing-key-file", secret})
 	if err == nil {
 		t.Fatal("mint signed a token with the scope sandbox:raed")
 	}
@@ -185,6 +269,19 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 	}
 }
 
+// A mint refused for its scope never needed the key, so it creates no default one.
+func TestTokensMintRefusedForAScopeCreatesNoSigningKey(t *testing.T) {
+	dir := t.TempDir()
+	app := App{Version: "test", Root: dir, Out: io.Discard}
+
+	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", "sandbox:raed"}); err == nil {
+		t.Fatal("mint signed a token with the scope sandbox:raed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "auth")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused mint created %s/auth: %v", dir, err)
+	}
+}
+
 func TestTokensMintTakesEveryScopeTheFrontKnows(t *testing.T) {
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "secret")
@@ -195,7 +292,7 @@ func TestTokensMintTakesEveryScopeTheFrontKnows(t *testing.T) {
 	for _, scope := range everyScope {
 		var out bytes.Buffer
 		app := App{Version: "test", Root: dir, Out: &out}
-		if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", scope, "--secret-file", secret}); err != nil {
+		if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", scope, "--signing-key-file", secret}); err != nil {
 			t.Fatalf("mint with the scope %s: %v", scope, err)
 		}
 

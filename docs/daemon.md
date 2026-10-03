@@ -440,7 +440,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   and 409 when the sandbox is not running.
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. Errors: 404, and 409 when the sandbox is
   still up, unless the query has `?force=true`. Then the route stops the sandbox first, with the
-  same 30 s grace. A `grace` in the query gets a 400 that names it.
+  same 30 s grace.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. Errors: 404,
   and 409 when the sandbox is not running or when the provider does not claim the verb. A client
   that hangs up does not cut the pause. The daemon gives a pause at most 10 minutes
@@ -663,22 +663,15 @@ no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside
 the client could know. The four snapshot verbs set none either, because a checkpoint takes as long
 as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the 30 s grace to theirs.
 
-### Compatibility breaks
-
-- SHARD-460: the stop grace is fixed at 30 s and is no longer a setting. `shard stop` and `shard rm`
-  no longer take `--time`, and the CLI refuses it as an unknown flag. `POST /v0/sandboxes/{id}/stop`
-  refuses a body with `grace`, and `DELETE /v0/sandboxes/{id}` refuses a `grace` query, both with
-  400. `StopSandbox` and `RemoveSandbox` in `services/client` no longer take a grace.
-
 ## The TCP front
 
 `shard serve` is how a client on another host reaches the daemon. It accepts TCP, terminates TLS and
-verifies the JWT in `Authorization: Bearer <jwt>` against a signing secret. It then dials
+verifies the JWT in `Authorization: Bearer <jwt>` against a signing key. It then dials
 `${root}/shard.sock` and copies bytes both ways:
 
 ```
 shard --root /var/lib/shard serve --listen :2376 \
-  --cert /etc/shard/serve.crt --key /etc/shard/serve.key --secret-file /etc/shard/serve.secret
+  --cert /etc/shard/serve.crt --key /etc/shard/serve.key
 ```
 
 It is a byte proxy and not an API. It reads the request line and the headers of a request only as
@@ -693,14 +686,37 @@ token check and before it dials anything. A bad or missing token gets a `401` wi
 daemon. A socket that does not answer gives a `502` with the code `internal`.
 
 The front verifies HS256 alone. Each of these gets the same `401`: a token signed by another
-algorithm, a token signed by another secret, a token with no subject, a token with no id, an expired
+algorithm, a token signed by another key, a token with no subject, a token with no id, an expired
 token, a token whose id the ledger does not hold, and a revoked token. A token with no `exp` never
 expires, because the front enforces `exp` only when the token carries one. Neither the front nor the
-CLI ever logs a token or the secret, and the front logs the subject of every request it lets
+CLI ever logs a token or the signing key, and the front logs the subject of every request it lets
 through. Without `--cert` and `--key` the front refuses to start, because there is no plain TCP mode
-to fall back to. The secret file must not be readable by everyone on the host, and the front refuses
-a file that is. The secret must be at least 32 bytes, the width an HS256 key needs, and the front
-refuses a shorter one. `openssl rand -hex 32` prints a secret that passes.
+to fall back to.
+
+The signing key is `<root>/auth/signing-key`, unless `--signing-key-file` names another file. The
+first `shard serve` or `shard tokens mint` that finds no key at that default path creates it: 32
+random bytes from the kernel, written as 64 hex characters, in a `0600` file inside an `auth`
+directory of mode `0700`. Every later run reads that file, so `serve` and `mint` always use the
+same key. Nothing rotates, overwrites or rewrites a key, and nothing changes the mode of an `auth`
+directory that is already there. Two runs that start together on a root with no key end with one
+key: each writes its own temporary file in `auth` and links it to the final name, a link never
+replaces a file, and the run that loses reads the key of the run that won. Both commands find the
+default key under `--root`, so a root other than `/var/lib/shard` needs the same `--root` on both.
+
+A key that is there but unusable is refused, never replaced. The error names the path and the
+fault: a file that everyone on the host can read, a file the run cannot read, something other than
+a file, an empty file, or a key under 32 bytes, the width an HS256 key needs. No error, log line or
+output holds the key. A file that `--signing-key-file` names must exist, and `serve` and every
+`tokens` verb refuse a named file that is missing rather than create one. `openssl rand -hex 32`
+prints a key that passes. `tokens ls` and `tokens revoke` never create a key or the `auth`
+directory.
+
+The daemon never reads, creates or removes `<root>/auth`, so a daemon starts the same with or
+without one, and a host that serves no TCP never has one. One exception comes from the data dir on
+Firecracker: on a root that cannot clone a disk, the first daemon start mounts an xfs image over
+the root, and it refuses a root that already holds entries, because the mount would hide them. On
+such a host, start the daemon once before the first `tokens mint` or `serve`, or name a key outside
+the root with `--signing-key-file`.
 
 The front bounds a connection before it checks the token. From one source address, it holds at most
 32 connections that have not shown a valid token yet. In total it holds at most
@@ -713,7 +729,7 @@ refused for them. A connection must send its whole request head, the TLS handsha
 10 s, or the front closes it. An accept that runs out of file descriptors or memory waits from 5 ms up
 to 1 s and tries again, so a flood of connections never ends the front.
 
-The access control is TLS on the wire, one signing secret in a file, and a coarse scope on each
+The access control is TLS on the wire, one signing key in a file, and a coarse scope on each
 token. There is no user and no role yet.
 
 A token carries a list of scopes. The front maps the route of each request to one capability, and
@@ -755,11 +771,11 @@ with no such header reached the daemon socket directly. That socket is the opera
 and it keeps every right. A `fork` and a `clone` keep the grants of the source sandbox by design, so
 they need only `sandbox:write`.
 
-A token is minted on the server, from the same secret, and never over the API:
+A token is minted on the server, from the same signing key, and never over the API:
 
 ```
-shard tokens mint --name ci --duration 24h --secret-file /etc/shard/serve.secret
-shard tokens mint --name reader --scopes sandbox:read,exec --secret-file /etc/shard/serve.secret
+shard tokens mint --name build-agent --duration 24h
+shard tokens mint --name reader --scopes sandbox:read,exec
 ```
 
 `mint` prints one JSON object to stdout and exits. The object holds the token, its `expires_at`
@@ -771,38 +787,40 @@ shard tokens mint --name reader --scopes sandbox:read,exec --secret-file /etc/sh
 ```
 
 It is a local verb, like `daemon` and `serve`. It never reaches the daemon, and the daemon never
-sees the secret. `--name` is the subject the front logs. `--duration` defaults to 0, which mints a
-token with no `exp` that never expires. `--scopes` is a comma-separated list of the scopes the token
-carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scopes` for any token
-except an operator's. The verb refuses a scope that is neither `*` nor one of the eight capabilities
-above. The error lists the capabilities, and nothing is recorded. The client's `--token-file` takes
-this object whole or the bare token, so `shard tokens mint ... >
-ci.token` needs no extra step. `SHARD_API_KEY` takes the bare token, the `token` field, as
-`jq -r .token ci.token` prints it. When the secret is rotated, every token it signed stops verifying
-at once.
+sees the signing key. `--name` is the subject the front logs. `--duration` defaults to 0, which
+mints a token with no `exp` that never expires. `--scopes` is a comma-separated list of the scopes
+the token carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scopes` for
+any token except an operator's. The verb refuses a scope that is neither `*` nor one of the eight
+capabilities above. The error lists the capabilities, and nothing is recorded. The client's
+`--token-file` takes this object whole or the bare token, so `shard tokens mint ... > ci.token`
+needs no extra step. `SHARD_API_KEY` takes the bare token, the `token` field, as `jq -r .token
+ci.token` prints it. When an operator replaces the signing key, every token it signed stops
+verifying at once.
 
-The front reads the secret file once, at start, so a rotation needs a `shard serve` restart. That
+The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
 restart ends no connection that is already spliced.
 
 ### Tokens
 
-Every minted token carries a random 128-bit `jti`, and `mint` appends one record for it to a
-ledger. The record holds the id, the subject, when the token was issued, when it expires, its
-scopes, and whether it is revoked. The ledger sits beside the secret file, at `serve.tokens` in the
-same directory. `--tokens-file` overrides that path on `tokens mint`, `tokens ls`, `tokens revoke`
-and `serve`. `mint` creates the ledger `0640` when it is absent, and refuses a ledger that everyone
-can read. It prints no token when it cannot write the record.
+Every minted token carries a random 128-bit `jti`, and `mint` appends one record for it to a ledger.
+The record holds the id, the subject, when the token was issued, when it expires, its scopes, and
+whether it is revoked. The ledger sits beside the signing key file, at `serve.tokens` in the same
+directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `--tokens-file` overrides
+that path on `tokens mint`, `tokens ls`, `tokens revoke` and `serve`. `mint` creates the ledger
+`0640` when it is absent, and refuses a ledger that everyone can read. It prints no token when it
+cannot write the record.
 
 ```
-shard tokens ls --secret-file /etc/shard/serve.secret
-shard tokens revoke --secret-file /etc/shard/serve.secret <id>
-shard tokens revoke --name ci --secret-file /etc/shard/serve.secret
+shard tokens ls
+shard tokens revoke <id>
+shard tokens revoke --name ci
 ```
 
 `tokens ls` lists every record with the status a request would see now: `active`, `revoked` or
-`expired`. `revoke` marks one token by its id, or every token of a subject with `--name`. The next
-request that carries a revoked token gets a `401`. Both are local verbs, like `mint`, and they never
-reach the daemon.
+`expired`. With no ledger yet, it prints the header alone, and `revoke` of an id reports that the
+ledger holds no such token. `revoke` marks one token by its id, or every token of a subject with
+`--name`. The next request that carries a revoked token gets a `401`. Both are local verbs, like
+`mint`, and they never reach the daemon.
 
 The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
 effect on the next request without a restart. If the front cannot read the ledger at start, it does
@@ -819,16 +837,20 @@ process is a separate, unprivileged one. It runs from its own unit,
 
 ```
 useradd --system --no-create-home --gid shard shard
-install -d -m0750 /etc/shard
+install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
 cp packaging/systemd/shard-serve.service /etc/systemd/system/
 systemctl enable --now shard-serve
 ```
 
-The unit runs as `shard:shard`, which is the group the socket is given. It reads the secret from a
-root-owned `0640` file that the group can read. The account has no other privilege. It cannot read
-a state file, and the daemon still applies every rule of every verb.
+The unit runs as `shard:shard`, which is the group the socket is given. It reads the signing key
+from a root-owned `0640` file that the group can read, named with `--signing-key-file`. Give every
+`tokens` verb for that front the same flag, so the token lands in the ledger the front reads:
+`shard tokens mint --name ci --signing-key-file /etc/shard/serve.secret`. The setgid bit on
+`/etc/shard` gives the ledger that a root `tokens mint` creates the group `shard`, so the front can
+read it at `0640`. The account has no other privilege. It cannot read a state file, and the daemon
+still applies every rule of every verb.
 
 A script or a CI job reaches a front instead of the socket with two variables:
 

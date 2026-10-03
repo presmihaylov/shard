@@ -55,20 +55,20 @@ type Config struct {
 	// CertFile and KeyFile are the TLS pair. Without both the front refuses to start; it never serves plain tcp.
 	CertFile string
 	KeyFile  string
-	// SecretFile holds the HS256 secret that signs and checks every token. Its value is never logged.
-	SecretFile string
-	// TokensFile overrides the ledger path; empty means the ledger beside the secret file.
+	// SigningKeyFile holds the HS256 key that signs and checks every token; empty means <Root>/auth/signing-key, created on first use. Its value is never logged.
+	SigningKeyFile string
+	// TokensFile overrides the ledger path; empty means the ledger beside the signing key file.
 	TokensFile string
 	// Root is the daemon's state root, which is where the socket the front fronts sits.
 	Root string
 	Out  io.Writer
 }
 
-// Server is one front, over one secret and one daemon socket.
+// Server is one front, over one signing key and one daemon socket.
 type Server struct {
 	listen      string
 	socket      string
-	secret      []byte
+	signingKey  []byte
 	tokens      *ledger
 	caps        *capMux
 	tls         *tls.Config
@@ -79,7 +79,7 @@ type Server struct {
 	refusals *lograte.Log
 }
 
-// New reads the secret and the TLS pair, so every reason to refuse is known before anything binds.
+// New loads the signing key and the TLS pair, so every reason to refuse is known before anything binds.
 func New(cfg Config) (*Server, error) {
 	if cfg.CertFile == "" || cfg.KeyFile == "" {
 		return nil, errors.New("shard serve needs --cert and --key: it terminates tls and never accepts plain tcp")
@@ -88,12 +88,12 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("shard serve needs a root: the daemon socket it fronts sits under it")
 	}
 
-	secret, err := ReadSecret(cfg.SecretFile)
+	signingKey, keyPath, err := SigningKey(cfg.Root, cfg.SigningKeyFile)
 	if err != nil {
 		return nil, err
 	}
 
-	tokens, err := newLedger(TokensPath(cfg.SecretFile, cfg.TokensFile))
+	tokens, err := newLedger(TokensPath(keyPath, cfg.TokensFile))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		listen:      listen,
 		socket:      filepath.Join(cfg.Root, api.SocketFile),
-		secret:      secret,
+		signingKey:  signingKey,
 		tokens:      tokens,
 		caps:        caps,
 		tls:         &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12},
@@ -366,7 +366,7 @@ func (s *Server) authorize(head []byte, method string, target *url.URL) (string,
 		return "", nil, false, false, "no valid token"
 	}
 
-	sub, scopes, jti, err := verify(s.secret, strings.TrimSpace(token))
+	sub, scopes, jti, err := verify(s.signingKey, strings.TrimSpace(token))
 	if err != nil {
 		return "", nil, false, false, "no valid token"
 	}

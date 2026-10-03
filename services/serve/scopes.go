@@ -27,8 +27,8 @@ const (
 // capabilities are the eight a scope can name besides "*", in the order docs/daemon.md lists them.
 var capabilities = []capability{capDaemonRead, capSandboxRead, capSandboxWrite, capSandboxDelete, capExec, capImage, capSecret, capPolicy}
 
-// checkScopes refuses a scope that is neither "*" nor a capability, because the front would answer 403 to every request the token makes.
-func checkScopes(scopes []string) error {
+// CheckScopes refuses a scope that is neither "*" nor a capability, because the front would answer 403 to every request the token makes.
+func CheckScopes(scopes []string) error {
 	for _, s := range scopes {
 		if s != "*" && !slices.Contains(capabilities, capability(s)) {
 			return fmt.Errorf("unknown scope %q: a scope is * or one of %s", s, strings.Join(capabilityNames(), ", "))

@@ -49,6 +49,9 @@ var wants = map[string]string{
 // sandboxArg is the argument every verb that acts on one sandbox takes.
 var sandboxArg = row{"<id|name>", "the sandbox, by its id or by its --name"}
 
+// signingKeyDefault is the key serve and every tokens verb use without --signing-key-file.
+const signingKeyDefault = "<root>/" + serve.AuthDir + "/" + serve.SigningKeyFileName
+
 // verbGroups is the top level: every verb once, under its heading, in the order it prints.
 var verbGroups = []struct {
 	title string
@@ -370,41 +373,45 @@ var helps = map[string]verbHelp{
 			{"--listen <addr>", "the address to listen on", serve.DefaultListen},
 			{"--cert <pem>", "the TLS certificate to serve", ""},
 			{"--key <pem>", "the key of that certificate", ""},
-			{"--secret-file <path>", "the file that holds the secret that signs and checks every token", ""},
-			{"--tokens-file <path>", "the ledger of minted tokens, in place of the one beside the secret file", ""},
+			{"--signing-key-file <path>", "the key that signs and checks every token; a named file must exist", signingKeyDefault},
+			{"--tokens-file <path>", "the ledger of minted tokens, in place of the one beside the signing key file", ""},
 		},
 		notes: []string{
-			"serve refuses to start without --cert, --key and --secret-file. It checks the token on each request and passes the bytes to the daemon socket.",
+			"serve refuses to start without --cert and --key. It checks the token on each request and passes the bytes to the daemon socket.",
+			"serve and tokens mint create the default signing key on first use, at 0600 in a 0700 directory, and both use it after that.",
 			"It runs as its own unprivileged process, and its own unit starts it. shard tokens mint makes the tokens it checks.",
 		},
-		example: "shard serve --cert cert.pem --key key.pem --secret-file secret",
+		example: "shard serve --cert server.pem --key server-key.pem",
 	},
 	"tokens": {
 		usage:   []string{"tokens <subcommand> [flags] [args]"},
 		summary: "the tokens shard serve checks",
 	},
 	"tokens mint": {
-		usage:   []string{"tokens mint --name <sub> --secret-file <path> [flags]"},
+		usage:   []string{"tokens mint --name <sub> [flags]"},
 		summary: "sign a token for a subject, record it in the ledger and print it",
 		flags: []flagHelp{
 			{"--name <sub>", "the subject the token names; mint needs one", ""},
-			{"--secret-file <path>", "the file that holds the secret that signs the token; mint needs one", ""},
+			{"--signing-key-file <path>", "the key that signs the token; a named file must exist", signingKeyDefault},
 			{"--duration <duration>", "how long the token stays valid; without it, the token never expires", ""},
 			{"--scopes <list>", "a comma-separated list of scopes, such as sandbox:read,exec; without it, the token carries every scope", ""},
-			{"--tokens-file <path>", "the ledger to record the token in, in place of the one beside the secret file", ""},
+			{"--tokens-file <path>", "the ledger to record the token in, in place of the one beside the signing key file", ""},
 		},
-		notes:   []string{"mint runs locally, so the daemon never sees the secret. It prints the record as one line of JSON."},
-		example: "shard tokens mint --name ci --duration 720h --secret-file secret",
+		notes: []string{
+			"mint and serve create the default signing key on first use, at 0600 in a 0700 directory, and both use it after that.",
+			"mint runs locally, so the daemon never sees the signing key. It prints the record as one line of JSON.",
+		},
+		example: "shard tokens mint --name build-agent --duration 24h",
 	},
 	"tokens ls": {
 		usage:   []string{"tokens ls [flags]"},
 		summary: "list every token the ledger records, with its status",
 		flags: []flagHelp{
-			{"--secret-file <path>", "the secret file, whose directory holds the ledger", ""},
-			{"--tokens-file <path>", "the ledger itself, in place of the one beside the secret file", ""},
+			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},
+			{"--tokens-file <path>", "the ledger itself, in place of the one beside the signing key file", ""},
 		},
-		notes:   []string{"ls needs --secret-file or --tokens-file to find the ledger. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
-		example: "shard tokens ls --secret-file secret",
+		notes:   []string{"ls reads the ledger and never creates a key or a file. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
+		example: "shard tokens ls",
 	},
 	"tokens revoke": {
 		usage:   []string{"tokens revoke [flags] <id>", "tokens revoke [flags] --name <sub>"},
@@ -412,11 +419,11 @@ var helps = map[string]verbHelp{
 		args:    []row{{"<id>", "the token, as tokens ls prints it"}},
 		flags: []flagHelp{
 			{"--name <sub>", "revoke every token of this subject instead of one id", ""},
-			{"--secret-file <path>", "the secret file, whose directory holds the ledger", ""},
-			{"--tokens-file <path>", "the ledger itself, in place of the one beside the secret file", ""},
+			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},
+			{"--tokens-file <path>", "the ledger itself, in place of the one beside the signing key file", ""},
 		},
-		notes:   []string{"revoke needs --secret-file or --tokens-file to find the ledger. The flags go before the id. It runs locally."},
-		example: "shard tokens revoke --secret-file secret 0123456789abcdef",
+		notes:   []string{"revoke never creates a key. The flags go before the id. It runs locally."},
+		example: "shard tokens revoke 0123456789abcdef",
 	},
 	"info": {
 		usage:   []string{"info"},

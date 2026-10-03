@@ -218,18 +218,18 @@ install -d -m0750 /etc/shard && cd /etc/shard
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
   -subj /CN=shard -addext subjectAltName=DNS:localhost -keyout serve.key -out serve.crt
 umask 077
-openssl rand -hex 32 > serve.secret
-shard tokens mint --name mac --secret-file serve.secret > mac.token
+shard tokens mint --name mac > mac.token
 shard daemon --provider gvisor
 ```
 
-The front refuses a secret file that everyone can read. A token is a secret too, so the `umask` comes
-before both. `--provider runc` or `--provider sysbox` picks one of the other two. The daemon stays in
+`tokens mint` creates the signing key at `/var/lib/shard/auth/signing-key` on first use, and the
+front started with no key flag uses the same one. A token is a secret, so the `umask` comes before
+the mint. `--provider runc` or `--provider sysbox` picks one of the other two. The daemon stays in
 the foreground, so the front needs a second shell:
 
 ```
 limactl shell shard sudo shard serve --listen :2376 \
-  --cert /etc/shard/serve.crt --key /etc/shard/serve.key --secret-file /etc/shard/serve.secret
+  --cert /etc/shard/serve.crt --key /etc/shard/serve.key
 ```
 
 On a Linux host the two processes run from the systemd units in `packaging/systemd`, and the front

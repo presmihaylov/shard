@@ -16,7 +16,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
-// TokensFileName is the ledger the front reads and mint appends to, beside the secret file.
+// TokensFileName is the ledger the front reads and mint appends to, beside the signing key file.
 const TokensFileName = "serve.tokens"
 
 // ledgerLockWait bounds how long mint or revoke waits for the ledger lock before it gives up with an error.
@@ -51,13 +51,13 @@ type TokenInfo struct {
 	Status    TokenStatus
 }
 
-// TokensPath is the ledger beside the secret file, or override when it is not empty.
-func TokensPath(secretFile, override string) string {
+// TokensPath is the ledger beside the signing key file, or override when it is not empty.
+func TokensPath(signingKeyFile, override string) string {
 	if override != "" {
 		return override
 	}
 
-	return filepath.Join(filepath.Dir(secretFile), TokensFileName)
+	return filepath.Join(filepath.Dir(signingKeyFile), TokensFileName)
 }
 
 // IssueToken signs a token for sub, appends its record to the ledger at path, and answers the printable record.
@@ -123,8 +123,17 @@ func RevokeSubject(path, sub string) (int, error) {
 // revoke flips every record match reports and not yet revoked, then rewrites the ledger, and answers the match count.
 // The ledger lock serializes the read-modify-write against a concurrent mint or revoke, so no record is lost.
 func revoke(path string, match func(ledgerEntry) bool) (int, error) {
+	// No ledger holds no record, and taking the lock would create the auth dir that only mint and serve create.
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the ledger %s: %w", path, err)
+	}
+
 	found := 0
-	err := underLedgerLock(path, func() error {
+	err = underLedgerLock(path, func() error {
 		entries, err := readEntries(path)
 		if err != nil {
 			return err

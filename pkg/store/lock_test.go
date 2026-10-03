@@ -143,3 +143,34 @@ func TestTwoPathsDoNotBlockEachOther(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 }
+
+func TestAcquireDirWaitsForTheHolderAndAddsNoFile(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := AcquireDir(dir, time.Second)
+	if err != nil {
+		t.Fatalf("AcquireDir: %v", err)
+	}
+	if _, err := AcquireDir(dir, 20*time.Millisecond); err == nil {
+		t.Fatal("AcquireDir won a directory that was held for its whole timeout")
+	}
+	if err := first.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	second, err := AcquireDir(dir, time.Second)
+	if err != nil {
+		t.Fatalf("AcquireDir after the release: %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("Release the second lock: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("AcquireDir left %d entries in the directory, want none", len(entries))
+	}
+}

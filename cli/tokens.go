@@ -12,12 +12,12 @@ import (
 	"github.com/presmihaylov/shard/services/serve"
 )
 
-// tokensMint signs one token for a subject, records it in the ledger, and prints the record. The daemon never sees the secret.
+// tokensMint signs one token for a subject, records it in the ledger, and prints the record. The daemon never sees the signing key.
 func (a App) tokensMint(_ context.Context, args []string) error {
 	flags := newFlags("tokens mint")
 	name := flags.String("name", "", "")
 	duration := flags.Duration("duration", 0, "")
-	secretFile := flags.String("secret-file", "", "")
+	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 	scopes := flags.String("scopes", "", "")
 
@@ -33,16 +33,18 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if *duration < 0 {
 		return fmt.Errorf("tokens mint needs a --duration in the future, got %s", *duration)
 	}
-	if *secretFile == "" {
-		return errors.New("tokens mint needs --secret-file: it holds the secret that signs the token")
+	// A refused mint needs no key, so it never creates the default one.
+	scopeList := parseScopes(*scopes)
+	if err := serve.CheckScopes(scopeList); err != nil {
+		return fmt.Errorf("tokens mint: %w", err)
 	}
 
-	secret, err := serve.ReadSecret(*secretFile)
+	signingKey, keyPath, err := serve.SigningKey(a.Root, *signingKeyFile)
 	if err != nil {
 		return fmt.Errorf("tokens mint: %w", err)
 	}
 
-	minted, err := serve.IssueToken(secret, serve.TokensPath(*secretFile, *tokensFile), *name, parseScopes(*scopes), *duration)
+	minted, err := serve.IssueToken(signingKey, serve.TokensPath(keyPath, *tokensFile), *name, scopeList, *duration)
 	if err != nil {
 		return err
 	}
@@ -58,7 +60,7 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 // tokensList lists every token the ledger records, with the status a request would see now.
 func (a App) tokensList(_ context.Context, args []string) error {
 	flags := newFlags("tokens ls")
-	secretFile := flags.String("secret-file", "", "")
+	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -67,11 +69,13 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens ls takes no arguments, got %d", flags.NArg())
 	}
-	if *secretFile == "" && *tokensFile == "" {
-		return errors.New("tokens ls needs --secret-file or --tokens-file: it names the ledger to read")
+
+	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
+	if err != nil {
+		return fmt.Errorf("tokens ls: %w", err)
 	}
 
-	infos, err := serve.ListTokens(serve.TokensPath(*secretFile, *tokensFile))
+	infos, err := serve.ListTokens(path)
 	if err != nil {
 		return err
 	}
@@ -91,18 +95,18 @@ func (a App) tokensList(_ context.Context, args []string) error {
 // Put the flags before the id: flag parsing stops at the first argument.
 func (a App) tokensRevoke(_ context.Context, args []string) error {
 	flags := newFlags("tokens revoke")
-	secretFile := flags.String("secret-file", "", "")
+	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 	name := flags.String("name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
 	}
-	if *secretFile == "" && *tokensFile == "" {
-		return errors.New("tokens revoke needs --secret-file or --tokens-file: it names the ledger to write")
-	}
 
-	path := serve.TokensPath(*secretFile, *tokensFile)
+	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
+	if err != nil {
+		return fmt.Errorf("tokens revoke: %w", err)
+	}
 	if *name != "" {
 		if flags.NArg() != 0 {
 			return errors.New("tokens revoke takes either --name or an id, not both")
@@ -128,6 +132,16 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	}
 
 	return a.print(fmt.Sprintf("revoked token %s", id))
+}
+
+// ledgerPath is the ledger ls and revoke use: --tokens-file, else the one beside the signing key file. It creates nothing.
+func (a App) ledgerPath(signingKeyFile, tokensFile string) (string, error) {
+	keyPath, err := serve.SigningKeyPath(a.Root, signingKeyFile)
+	if err != nil {
+		return "", err
+	}
+
+	return serve.TokensPath(keyPath, tokensFile), nil
 }
 
 // expiresText is when a token expires, in RFC3339, or "never" for a token with no expiry.

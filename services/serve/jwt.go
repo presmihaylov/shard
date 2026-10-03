@@ -3,8 +3,6 @@ package serve
 import (
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -54,7 +52,7 @@ func newClaims(sub string, scopes []string, ttl time.Duration) (claims, error) {
 	if len(scopes) == 0 {
 		scopes = []string{"*"}
 	}
-	if err := checkScopes(scopes); err != nil {
+	if err := CheckScopes(scopes); err != nil {
 		return claims{}, err
 	}
 
@@ -122,35 +120,4 @@ func verify(secret []byte, token string) (string, []string, string, error) {
 	}
 
 	return c.Subject, c.Scopes, c.ID, nil
-}
-
-// ReadSecret refuses a file others can read, because the secret signs and checks every token.
-func ReadSecret(path string) ([]byte, error) {
-	if path == "" {
-		return nil, errors.New("shard serve needs --secret-file: it holds the secret that signs and checks every token")
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("read the secret file %s: %w", path, err)
-	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return nil, fmt.Errorf("the secret file %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm())
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read the secret file %s: %w", path, err)
-	}
-
-	secret := strings.TrimSpace(string(raw))
-	if secret == "" {
-		return nil, fmt.Errorf("the secret file %s holds no secret", path)
-	}
-	// RFC 7518 wants an HS256 key at least the hash width, 32 bytes, or an offline brute force breaks a short one.
-	if len(secret) < 32 {
-		return nil, fmt.Errorf("the secret in %s is %d bytes; a secret needs at least 32: openssl rand -hex 32 > %s", path, len(secret), path)
-	}
-
-	return []byte(secret), nil
 }
