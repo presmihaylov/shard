@@ -70,7 +70,7 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 
 	stopped := make(chan error, 1)
 	go func() {
-		_, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second)
+		_, err := lab.svc.Stop(t.Context(), "sandbox1")
 		stopped <- err
 	}()
 	<-entered

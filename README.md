@@ -56,9 +56,11 @@ running.
 
 The daemon never binds TCP. A client on another host reaches it through `shard serve`, an
 unprivileged process that terminates TLS, checks a bearer token and passes the bytes to the socket.
-The CLI then takes `--remote https://box:2376 --token-file <path>`. See `docs/daemon.md`. A Mac
-that shard does not support, an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a
-workaround, as `docs/mac.md` describes.
+A script or a CI job exports `SHARD_REMOTE=https://box:2376` and `SHARD_API_KEY`, the token that
+`shard tokens mint` issues, and every verb goes to the front. `--token-file <path>` and
+`SHARD_TOKEN_FILE` are the alternatives. See `docs/daemon.md`. A Mac that shard does not support,
+an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a workaround, as `docs/mac.md`
+describes.
 
 On create, shard pulls the image, claims the record, allocates the network, creates the sandbox and
 starts the command, if one was given. Then it prints the id and returns. It never attaches. That

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/serve"
@@ -66,12 +67,13 @@ var helps = map[string]verbHelp{
 		flags: []flagHelp{
 			{"--root <dir>", "where shard keeps its state", DefaultRoot},
 			{"--remote <url>", "talk to shard serve at this URL instead of the socket", ""},
-			{"--token-file <path>", "the file that holds the bearer token for --remote", ""},
+			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
 			{"--ca-file <pem>", "the CA certificate that signed the serve certificate", ""},
 			{"--version", "print the client version; it never fails", ""},
 		},
 		notes: []string{
-			fmt.Sprintf("--remote, --token-file and --ca-file can also come from %s, %s and %s.", RemoteEnv, TokenFileEnv, CAFileEnv),
+			fmt.Sprintf("Scripts and CI export %s and %s, the token field of a shard tokens mint record, and every verb goes to shard serve.", client.RemoteEnv, client.APIKeyEnv),
+			fmt.Sprintf("The token comes from --token-file, then %s, then %s; an empty variable is unset. --remote and --ca-file can also come from %s and %s.", client.APIKeyEnv, client.TokenFileEnv, client.RemoteEnv, client.CAFileEnv),
 			"Run shard <verb> --help for the flags and an example of one verb.",
 		},
 	},

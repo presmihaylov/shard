@@ -132,6 +132,9 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	if token == "" {
 		return nil, errors.New("--remote needs a token: shard serve answers 401 without one")
 	}
+	if err := checkToken(token); err != nil {
+		return nil, fmt.Errorf("the token %w", err)
+	}
 
 	address := parsed.Host
 	if parsed.Port() == "" {
@@ -154,6 +157,11 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	c.transport()
 
 	return c, nil
+}
+
+// Format prints the target alone, whatever the verb, so a client in a log line never shows its token.
+func (c Client) Format(f fmt.State, _ rune) {
+	fmt.Fprintf(f, "shard client for %s", c.target)
 }
 
 // transport sends every request that net/http builds over this client's own dialer.
