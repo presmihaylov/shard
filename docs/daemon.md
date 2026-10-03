@@ -99,6 +99,15 @@ holds entries the mount would hide, when a file at `<root>.xfs` is not an XFS im
 free space is under 10 GiB. It never falls back to a full copy. No other provider provisions or
 probes anything (SHARD-264).
 
+To undo the bootstrap by hand, first stop every sandbox with `shard stop`, then stop the daemon
+(`systemctl stop shard`) and keep it stopped. A sandbox outlives the daemon, and a live VM or daemon
+holds files under the mount, so an unmount fails busy and a lazy one detaches live state. Then unmount
+the image from the root, remove its `/etc/fstab` line, and delete `<root>.xfs`, `<root>.xfs.lock` and
+the root. The daemon writes the line as `<root>.xfs <root> xfs loop,nofail 0 0` and escapes each path
+the way `getmntent` reads it: `\134` for a backslash, `\040` for a space, `\011` for a tab and `\012`
+for a newline, so a grep for a root with a space in it must search for `\040`. Remove the fstab line
+before the next boot, or it mounts the image again.
+
 ## Reconcile at start
 
 The daemon checks every record against the substrate after it takes the lock and before it listens,
@@ -686,8 +695,9 @@ client off Linux drives sandboxes, because the daemon itself runs on Linux alone
 
 The daemon takes an exclusive flock on `daemon.lock` under the root and refuses to start while
 another holds it. It is the only lock shard keeps: the daemon is the single writer of the state, so
-nothing else is contended between processes. The lock dies with the process, so there is no stale
-pid file to clean up. Nothing probes it to decide whether a daemon is up: a client that needs one
+nothing else is contended between processes. The lock dies with the process. Beside it the daemon
+writes `daemon.pid`, for newsyslog to signal on a Mac, and removes it on a clean exit; nothing in
+shard reads it. Neither file is probed to decide whether a daemon is up: a client that needs one
 asks the socket and reads the outcome.
 
 ## Supervision

@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/erofs"
 	"github.com/presmihaylov/shard/pkg/registry"
+	"github.com/presmihaylov/shard/pkg/store"
 )
 
 // ErrNotFound is what a read of an image shard never pulled returns. Match it with errors.Is.
@@ -459,11 +460,15 @@ func (s *Service) unpackDir(ctx context.Context, img registry.Image, layers []v1
 		progress.Add(Event{Status: StatusUnpacked, Digest: digest.String(), Layer: i + 1, Layers: len(layers)})
 	}
 
+	// A host crash after the rename must not leave a torn tree that unpacked() then trusts (SHARD-355).
+	if err := store.SyncFS(tmp); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp, err)
 	}
 
-	return nil
+	return store.SyncDir(parent)
 }
 
 // unpackDisk builds the ext4 image from the layer tars, which keep the owners a directory unpack loses without root.
@@ -516,12 +521,28 @@ func stageFile(path string, build func(tmp string) error) error {
 	if err := build(tmp.Name()); err != nil {
 		return err
 	}
+	if err := syncFile(tmp.Name()); err != nil {
+		return err
+	}
 
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("rename %s: %w", tmp.Name(), err)
 	}
 
-	return nil
+	return store.SyncDir(filepath.Dir(path))
+}
+
+// syncFile flushes what an outside tool wrote to path, since only an fd of our own can fsync it.
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("sync %s: %w", path, err), f.Close())
+	}
+
+	return f.Close()
 }
 
 func applyLayer(ctx context.Context, dir string, layer v1.Layer) (err error) {

@@ -137,6 +137,19 @@ func TestBuildCreatesTheOverlayLayers(t *testing.T) {
 	}
 }
 
+// A non-root user runs /.shard/init, which sysbox looks up as that user, and cannot list or change /.shard (SHARD-415).
+func TestAnyGuestUserTraversesTheShardDirAndNoneChangesIt(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+
+	info, err := os.Stat(b.ShardDir)
+	if err != nil {
+		t.Fatalf("stat the shard directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o751 {
+		t.Errorf("got the shard directory mode %o, want 751", info.Mode().Perm())
+	}
+}
+
 func TestBuildAddsAPathWhenTheImageHasNone(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Env: []string{"TZ=UTC"}})
 

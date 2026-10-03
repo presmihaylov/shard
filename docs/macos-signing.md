@@ -15,10 +15,12 @@ removes the built shim too, so a plain `go build` after it carries none and `Ins
 `ErrNoShim`. The vz provider (SHARD-218) calls `vzshim.Install` before its first boot: it writes
 the shim into the shard root and ad-hoc signs it there, with the entitlements plist it also
 embeds, in a temporary file it removes after the signature. A stamp beside the shim,
-`shard-vz-shim.sha256`, holds the hash of the embedded build, so a later start finds the shim in
-place, and a build with a different shim replaces the file by rename, so a running shim keeps
-its inode. Concurrent callers each sign a temporary copy of their own and publish it by rename,
-so the path never holds a partial file. The install needs `codesign`, which the Command Line
+`shard-vz-shim.sha256`, holds the hash of the embedded build and the hash of the signed file. A
+later start hashes the shim and keeps it only when both match, so a shim a host crash cut is
+signed again. A build with a different shim replaces the file by rename, so a running shim keeps
+its inode. Concurrent callers each sign a temporary copy of their own and publish the signed bytes
+through `pkg/store`'s atomic write, which fsyncs the file and its directory, so the path never
+holds a partial file. The install needs `codesign`, which the Command Line
 Tools provide; Xcode is not needed.
 
 The installed shim, on a Mac with only the Command Line Tools:

@@ -253,7 +253,8 @@ func layout(b Bundle) error {
 		// Overlay takes the merged root's mode from the upper layer, not from the mount point.
 		{b.Upper, 0o755},
 		{b.Work, 0o750},
-		{b.ShardDir, 0o750},
+		// Others may only traverse it, as sysbox looks /.shard/init up as the exec user; the files in it stay 0600.
+		{b.ShardDir, 0o751},
 		{b.Tmp, 0o777 | os.ModeSticky},
 	}
 
