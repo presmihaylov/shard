@@ -54,9 +54,6 @@ type App struct {
 	TokenFile string
 	CAFile    string
 
-	// remote is the client of Remote, built once the globals are parsed and before any verb runs.
-	remote *client.Client
-
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
 	clientTimeout time.Duration
 
@@ -374,14 +371,6 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 		return nil, fmt.Errorf("--root must be an absolute path, got %q", a.Root)
 	}
 
-	if a.Remote != "" {
-		remote, err := remoteClient(a.Remote, a.TokenFile, a.CAFile)
-		if err != nil {
-			return nil, err
-		}
-		a.remote = remote
-	}
-
 	return flags.Args(), nil
 }
 
@@ -397,7 +386,7 @@ func (a *App) fromEnv() {
 	}
 }
 
-// remoteClient reads the token and the certificate, so a bad one fails before any verb dials.
+// remoteClient reads the token and the certificate, so a bad one fails before the verb dials.
 func remoteClient(host, tokenFile, caFile string) (*client.Client, error) {
 	token, err := serve.ReadToken(tokenFile)
 	if err != nil {
@@ -438,10 +427,10 @@ func (h *hostList) Set(value string) error {
 	return nil
 }
 
-// client speaks to the daemon: on the socket under the root, or through the shard serve --remote names.
-func (a App) client() *client.Client {
-	if a.remote != nil {
-		return a.remote
+// client speaks to the daemon on the socket, or through --remote; a verb asks only after its flags parsed, so --help reads no token.
+func (a App) client() (*client.Client, error) {
+	if a.Remote != "" {
+		return remoteClient(a.Remote, a.TokenFile, a.CAFile)
 	}
 
 	c := client.New(a.Root)
@@ -449,7 +438,7 @@ func (a App) client() *client.Client {
 		c.Timeout = a.clientTimeout
 	}
 
-	return c
+	return c, nil
 }
 
 // version prints this binary's line first, so it is on the screen even when no daemon answers.
@@ -466,7 +455,12 @@ func (a App) version(ctx context.Context, args []string) error {
 		return err
 	}
 
-	d, err := a.client().Version(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	d, err := c.Version(ctx)
 	if err != nil {
 		return err
 	}

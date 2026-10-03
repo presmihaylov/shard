@@ -24,7 +24,10 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	c := a.client()
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
 
 	sb, err := c.GetSandbox(ctx, opts.id)
 

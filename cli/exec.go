@@ -87,16 +87,21 @@ func (a App) exec(ctx context.Context, args []string) error {
 }
 
 func (a App) runExec(ctx context.Context, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (models.ExitStatus, error) {
-	if !opts.tty {
-		return a.client().Exec(ctx, opts.id, req, streams)
+	c, err := a.client()
+	if err != nil {
+		return models.ExitStatus{}, err
 	}
 
-	return a.execOnTerminal(ctx, opts, req, streams)
+	if !opts.tty {
+		return c.Exec(ctx, opts.id, req, streams)
+	}
+
+	return a.execOnTerminal(ctx, c, opts, req, streams)
 }
 
 // execOnTerminal puts this terminal into raw mode, so a keystroke reaches the guest untouched. The
 // guest's own terminal is the daemon's. The restore runs on every path out of here, a panic included.
-func (a App) execOnTerminal(ctx context.Context, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
+func (a App) execOnTerminal(ctx context.Context, c *client.Client, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
 	terminal := a.stdin()
 
 	size, err := pty.SizeOf(terminal)
@@ -111,17 +116,18 @@ func (a App) execOnTerminal(ctx context.Context, opts execOptions, req sandbox.E
 	}
 	defer func() { err = errors.Join(err, restore()) }()
 
-	forwarder := forwardResize(ctx, a, opts.id, terminal)
+	forwarder := forwardResize(ctx, a, c, opts.id, terminal)
 	defer forwarder.stop()
 	streams.Started = forwarder.named
 
-	return a.client().Exec(ctx, opts.id, req, streams)
+	return c.Exec(ctx, opts.id, req, streams)
 }
 
 // resizes keeps the guest's window the size of this one. A SIGWINCH reaches the exec only once the
 // daemon has named it, so one that arrives before that is applied as soon as the name does.
 type resizes struct {
 	app      App
+	client   *client.Client
 	ref      string
 	terminal *os.File
 
@@ -131,9 +137,10 @@ type resizes struct {
 	exited  chan struct{}
 }
 
-func forwardResize(ctx context.Context, app App, ref string, terminal *os.File) *resizes {
+func forwardResize(ctx context.Context, app App, c *client.Client, ref string, terminal *os.File) *resizes {
 	r := &resizes{
 		app:      app,
+		client:   c,
 		ref:      ref,
 		terminal: terminal,
 		changed:  make(chan os.Signal, 1),
@@ -186,7 +193,7 @@ func (r *resizes) resize(ctx context.Context, execID string) {
 		return
 	}
 
-	if err := r.app.client().ResizeExec(ctx, r.ref, execID, sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols}); err != nil {
+	if err := r.client.ResizeExec(ctx, r.ref, execID, sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols}); err != nil {
 		r.app.warn(fmt.Sprintf("resize the command's terminal: %v", err))
 	}
 }

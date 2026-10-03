@@ -14,7 +14,12 @@ func (a App) fork(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().ForkSandbox(ctx, source, req)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.ForkSandbox(ctx, source, req)
 	if err != nil {
 		return err
 	}

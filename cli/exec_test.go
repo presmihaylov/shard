@@ -19,6 +19,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 func TestParseExecTheGoalCommand(t *testing.T) {
@@ -318,7 +319,7 @@ func TestTheResizeForwarderEndsWithItsStop(t *testing.T) {
 	}
 	defer plain.Close()
 
-	forwarder := forwardResize(t.Context(), app, "sandbox1", plain)
+	forwarder := forwardResize(t.Context(), app, client.New(app.Root), "sandbox1", plain)
 	forwarder.named("1a2b3c4d5e6f7a8b")
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {

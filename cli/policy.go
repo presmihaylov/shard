@@ -34,7 +34,12 @@ func (a App) policyCreate(ctx context.Context, args []string) error {
 		return err
 	}
 
-	policy, err := a.client().SetPolicy(ctx, name, rules)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	policy, err := c.SetPolicy(ctx, name, rules)
 	if err != nil {
 		return err
 	}
@@ -83,7 +88,12 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 		return fmt.Errorf("policy show takes one name, got %d", len(rest))
 	}
 
-	policy, err := a.client().GetPolicy(ctx, rest[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	policy, err := c.GetPolicy(ctx, rest[0])
 	if err != nil {
 		return err
 	}
@@ -105,7 +115,12 @@ func (a App) policyList(ctx context.Context, args []string) error {
 		return fmt.Errorf("policy ls takes no arguments, got %d", len(rest))
 	}
 
-	all, err := a.client().ListPolicies(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	all, err := c.ListPolicies(ctx)
 	if err != nil {
 		return err
 	}
@@ -130,7 +145,12 @@ func (a App) policyRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if err := a.client().RemovePolicy(ctx, name); err != nil {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	if err := c.RemovePolicy(ctx, name); err != nil {
 		return err
 	}
 
@@ -156,7 +176,12 @@ func (a App) policyAttach(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().AttachPolicy(ctx, rest[0], rest[1])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.AttachPolicy(ctx, rest[0], rest[1])
 	if err != nil {
 		return err
 	}
@@ -170,7 +195,12 @@ func (a App) policyDetach(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().DetachPolicy(ctx, rest[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.DetachPolicy(ctx, rest[0])
 	if err != nil {
 		return err
 	}

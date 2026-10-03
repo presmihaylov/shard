@@ -20,7 +20,12 @@ func (a App) pull(ctx context.Context, args []string) error {
 		return fmt.Errorf("pull takes one image reference, got %d", len(rest))
 	}
 
-	img, err := a.client().PullImage(ctx, rest[0], a.pullProgress())
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	img, err := c.PullImage(ctx, rest[0], a.pullProgress())
 	if err != nil {
 		return err
 	}
@@ -81,7 +86,12 @@ func (a App) imageList(ctx context.Context, args []string) error {
 		return fmt.Errorf("image ls takes no arguments, got %d", len(rest))
 	}
 
-	images, err := a.client().ListImages(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	images, err := c.ListImages(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,7 +128,12 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	warnings, err := a.client().RemoveImage(ctx, opts.ref, opts.force)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	warnings, err := c.RemoveImage(ctx, opts.ref, opts.force)
 	if err != nil {
 		return err
 	}
@@ -139,7 +154,12 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 		return fmt.Errorf("image prune takes no arguments, got %d", len(rest))
 	}
 
-	result, err := a.client().PruneImages(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	result, err := c.PruneImages(ctx)
 	if err != nil {
 		return err
 	}

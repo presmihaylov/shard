@@ -13,7 +13,10 @@ import (
 // SHARD-287: mkdir -p at a mode past the umask, an ls with each entry's own stat, and a delete that takes a full directory only when recursive.
 func TestDirectoryVerbsOnTheGuest(t *testing.T) {
 	app, id := runningSandbox(t)
-	c := app.client()
+	c, err := app.client()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := c.MakeDir(t.Context(), id, sandbox.MkdirRequest{Path: "/tmp/t287/a/b", Mode: "700", Parents: true}); err != nil {
 		t.Fatalf("mkdir -p: %v", err)
@@ -57,7 +60,10 @@ func TestDirectoryVerbsOnTheGuest(t *testing.T) {
 // SHARD-287: a mkdir as a user runs as that user, so the guest kernel owns the directory and checks the permission.
 func TestMakeDirAsAUserOwnsTheDirectory(t *testing.T) {
 	app, id := runningSandbox(t)
-	c := app.client()
+	c, err := app.client()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := c.MakeDir(t.Context(), id, sandbox.MkdirRequest{Path: "/tmp/owned", User: "nobody"}); err != nil {
 		t.Fatalf("mkdir as nobody: %v", err)
@@ -66,7 +72,7 @@ func TestMakeDirAsAUserOwnsTheDirectory(t *testing.T) {
 		t.Fatalf("the directory reads %q, %v; want nobody 755", out, err)
 	}
 
-	err := c.MakeDir(t.Context(), id, sandbox.MkdirRequest{Path: "/etc/owned", User: "nobody"})
+	err = c.MakeDir(t.Context(), id, sandbox.MkdirRequest{Path: "/etc/owned", User: "nobody"})
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("a mkdir in /etc as nobody gave %v, want permission denied", err)
 	}

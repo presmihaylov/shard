@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -37,7 +38,17 @@ func helpPaths() []helpPath {
 func helpOf(t *testing.T, args ...string) printExit {
 	t.Helper()
 
-	app := App{Version: "test", Root: t.TempDir()}
+	return helpUnder(t, App{Version: "test", Root: t.TempDir()}, args...)
+}
+
+// badRemote points every verb at a shard serve whose token file does not exist.
+func badRemote(t *testing.T) App {
+	return App{Version: "test", Root: t.TempDir(), Remote: "https://example.invalid", TokenFile: filepath.Join(t.TempDir(), "missing")}
+}
+
+func helpUnder(t *testing.T, app App, args ...string) printExit {
+	t.Helper()
+
 	err := app.run(t.Context(), args)
 
 	var exit printExit
@@ -71,9 +82,12 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 
 		for _, words := range path.words {
 			for _, flag := range []string{"--help", "-h"} {
-				got := helpOf(t, append(slices.Clone(words), flag)...).text
-				if first, _, _ := strings.Cut(got, "\n"); first != "Usage: shard "+path.key && !strings.HasPrefix(first, "Usage: shard "+path.key+" ") {
-					t.Errorf("shard %s %s printed %q, want the help of %s", strings.Join(words, " "), flag, got, path.key)
+				args := append(slices.Clone(words), flag)
+				// The help reads no remote token, so a broken --remote setup still gets it.
+				for _, got := range []string{helpOf(t, args...).text, helpUnder(t, badRemote(t), args...).text} {
+					if first, _, _ := strings.Cut(got, "\n"); first != "Usage: shard "+path.key && !strings.HasPrefix(first, "Usage: shard "+path.key+" ") {
+						t.Errorf("shard %s printed %q, want the help of %s", strings.Join(args, " "), got, path.key)
+					}
 				}
 			}
 		}
@@ -83,6 +97,19 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 		if _, ok := lookup(key); !ok && key != "" {
 			t.Errorf("helps holds %q, which the dispatcher does not take", key)
 		}
+	}
+}
+
+// The token is read when a verb calls the daemon, so a real verb under a broken --remote setup still fails on it.
+func TestAVerbUnderABadRemoteFailsOnTheTokenFile(t *testing.T) {
+	app := badRemote(t)
+
+	err := app.Run(t.Context(), []string{"ls"})
+	if want := "read the token file " + app.TokenFile; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("ls under a missing token file returned %v, want %q", err, want)
+	}
+	if top := helpUnder(t, badRemote(t), "--help").text; !strings.HasPrefix(top, "Usage: shard ") {
+		t.Errorf("shard --help under a missing token file printed %q", top)
 	}
 }
 

@@ -36,11 +36,16 @@ func (a App) cp(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if opts.dst.ref != "" {
-		return a.cpIn(ctx, opts)
+	c, err := a.client()
+	if err != nil {
+		return err
 	}
 
-	return a.cpOut(ctx, opts)
+	if opts.dst.ref != "" {
+		return a.cpIn(ctx, c, opts)
+	}
+
+	return a.cpOut(ctx, c, opts)
 }
 
 func parseCp(args []string) (cpOptions, error) {
@@ -78,7 +83,7 @@ func cpTargetOf(arg string) cpTarget {
 }
 
 // cpIn puts a host file or directory into the sandbox, under its own name when the destination is a directory.
-func (a App) cpIn(ctx context.Context, opts cpOptions) (err error) {
+func (a App) cpIn(ctx context.Context, c *client.Client, opts cpOptions) (err error) {
 	// The PathError of open and stat already names the path, so the context added is the copy.
 	src, err := os.Open(opts.src.path)
 	if err != nil {
@@ -91,13 +96,12 @@ func (a App) cpIn(ctx context.Context, opts cpOptions) (err error) {
 		return fmt.Errorf("copy %s to %s:%s: %w", opts.src.path, opts.dst.ref, opts.dst.path, err)
 	}
 	if info.IsDir() {
-		return a.cpDirIn(ctx, opts)
+		return a.cpDirIn(ctx, c, opts)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("cp copies a regular file or a directory, and %s is neither", opts.src.path)
 	}
 
-	c := a.client()
 	target, err := guestTarget(ctx, c, opts.dst, info.Name())
 	if err != nil {
 		return err
@@ -131,7 +135,7 @@ func guestTarget(ctx context.Context, c *client.Client, dst cpTarget, name strin
 }
 
 // cpDirIn streams a host directory to the guest as a tar, which the guest unpacks as the user.
-func (a App) cpDirIn(ctx context.Context, opts cpOptions) error {
+func (a App) cpDirIn(ctx context.Context, c *client.Client, opts cpOptions) error {
 	abs, err := filepath.Abs(opts.src.path)
 	if err != nil {
 		return fmt.Errorf("resolve %s: %w", opts.src.path, err)
@@ -142,7 +146,6 @@ func (a App) cpDirIn(ctx context.Context, opts cpOptions) error {
 		return fmt.Errorf("resolve %s: %w", opts.src.path, err)
 	}
 
-	c := a.client()
 	dir, name, err := dirTarget(ctx, c, opts.dst, filepath.Base(abs))
 	if err != nil {
 		return err
@@ -200,8 +203,7 @@ func dirTarget(ctx context.Context, c *client.Client, dst cpTarget, name string)
 }
 
 // cpOut writes a guest file to the host through a temp name, so a copy cut midway never leaves a half file at dst; a directory comes as a tar.
-func (a App) cpOut(ctx context.Context, opts cpOptions) (err error) {
-	c := a.client()
+func (a App) cpOut(ctx context.Context, c *client.Client, opts cpOptions) (err error) {
 	src, err := c.StatFile(ctx, opts.src.ref, opts.src.path)
 	// A refused stat has no body to say why, so the get goes ahead and fails in the daemon's own words.
 	var refused *client.APIError

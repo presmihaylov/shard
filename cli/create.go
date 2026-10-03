@@ -21,8 +21,13 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
 	// The daemon creates in the background; the CLI blocks, so an operator sees the pull, then a ready sandbox or the reason it failed.
-	sb, err := a.client().CreateSandboxAndWait(ctx, req, a.pullProgress())
+	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
 		return err
 	}

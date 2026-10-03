@@ -24,7 +24,12 @@ func (a App) ls(ctx context.Context, args []string) error {
 		return err
 	}
 
-	result, err := a.client().ListSandboxes(ctx, opts.all)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	result, err := c.ListSandboxes(ctx, opts.all)
 	if err != nil {
 		return err
 	}

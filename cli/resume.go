@@ -15,7 +15,12 @@ func (a App) resume(ctx context.Context, args []string) error {
 		return fmt.Errorf("resume takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().ResumeSandbox(ctx, rest[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.ResumeSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

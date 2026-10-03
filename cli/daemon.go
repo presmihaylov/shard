@@ -49,7 +49,12 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 		return fmt.Errorf("daemon status takes no argument, got %d", len(rest))
 	}
 
-	d, err := a.client().Daemon(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	d, err := c.Daemon(ctx)
 	if err != nil {
 		return err
 	}

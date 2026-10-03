@@ -39,6 +39,12 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// Before the value is read, so a bad remote fails before the prompt asks for a secret.
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
 	value, err := a.secretValue(opts)
 	if err != nil {
 		return err
@@ -49,7 +55,7 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		fmt.Fprintln(a.Err, cautionOnArgv)
 	}
 
-	sec, err := a.client().SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
+	sec, err := c.SetSecret(ctx, opts.name, value, opts.destinations, opts.placeholder)
 	if err != nil {
 		return err
 	}
@@ -159,7 +165,12 @@ func (a App) secretList(ctx context.Context, args []string) error {
 		return fmt.Errorf("secret ls takes no arguments, got %d", len(rest))
 	}
 
-	result, err := a.client().ListSecrets(ctx)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	result, err := c.ListSecrets(ctx)
 	if err != nil {
 		return err
 	}
@@ -195,7 +206,12 @@ func (a App) secretRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if err := a.client().RemoveSecret(ctx, opts.name, opts.force); err != nil {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	if err := c.RemoveSecret(ctx, opts.name, opts.force); err != nil {
 		return err
 	}
 
@@ -232,7 +248,12 @@ func (a App) secretGrant(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().GrantSecret(ctx, ref, name)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.GrantSecret(ctx, ref, name)
 	if err != nil {
 		return err
 	}
@@ -246,7 +267,12 @@ func (a App) secretUngrant(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().UngrantSecret(ctx, ref, name)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.UngrantSecret(ctx, ref, name)
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,12 @@ func (a App) inspect(ctx context.Context, args []string) error {
 		return fmt.Errorf("inspect takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().GetSandbox(ctx, rest[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.GetSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

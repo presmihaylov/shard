@@ -15,7 +15,12 @@ func (a App) start(ctx context.Context, args []string) error {
 		return fmt.Errorf("start takes one sandbox id, got %d", len(rest))
 	}
 
-	sb, err := a.client().StartSandbox(ctx, rest[0])
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.StartSandbox(ctx, rest[0])
 	if err != nil {
 		return err
 	}

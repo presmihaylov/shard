@@ -21,7 +21,12 @@ func (a App) stop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.client().StopSandbox(ctx, opts.id, opts.grace)
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	sb, err := c.StopSandbox(ctx, opts.id, opts.grace)
 	if err != nil {
 		return err
 	}
