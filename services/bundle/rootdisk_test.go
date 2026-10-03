@@ -166,7 +166,7 @@ func TestCloneRootDiskRefusesAnExistingTarget(t *testing.T) {
 		t.Fatalf("plant the target: %v", err)
 	}
 
-	if _, err := bundle.CloneRootDisk(base, dst, models.Resources{}); err == nil {
+	if _, err := bundle.CloneRootDisk(base, dst, models.Resources{DiskMiB: 64}); err == nil {
 		t.Fatal("the clone took an existing target")
 	}
 }

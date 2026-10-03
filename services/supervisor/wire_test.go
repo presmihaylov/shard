@@ -430,3 +430,30 @@ func TestAnExecTheHostGivesUpOnIsCancelled(t *testing.T) {
 		t.Fatal("the guest never got a cancel frame")
 	}
 }
+
+// FC and vz report a signalled exec by its 128+n alone, the shape runsc and runc exec give (SHARD-432).
+func TestExecReportsASignalledCommandByItsCodeAlone(t *testing.T) {
+	host, guest := net.Pipe()
+	sent := make(chan error, 1)
+	go func() {
+		defer guest.Close()
+		var header supervisor.ExecHeader
+		if err := supervisor.ReadHeader(guest, &header); err != nil {
+			sent <- err
+			return
+		}
+		sent <- supervisor.WriteJSONFrame(guest, supervisor.StreamExit, supervisor.ExitFrame{Code: 143, Signal: 15})
+	}()
+
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	exit, err := supervisor.Exec(t.Context(), dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep", "30"}}, models.ExecSpec{})
+	if gerr := <-sent; gerr != nil {
+		t.Fatalf("the guest: %v", gerr)
+	}
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if exit != (models.ExitStatus{Code: 143}) {
+		t.Errorf("exec = %+v, want code 143 and signal 0, as runsc and runc exec report", exit)
+	}
+}

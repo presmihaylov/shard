@@ -176,6 +176,28 @@ func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	}
 }
 
+// shard-init's own death is the sandbox exit, and its reason is what inspect shows (SHARD-290).
+func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
+	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
+	lab := newLivenessLab(t, running(), models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why})
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != want {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], why) {
+		t.Errorf("the pass reported %v, want one line with the reason", lab.reports)
+	}
+}
+
 func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	lab := newLivenessLab(t, optedIn(), oomKilled())

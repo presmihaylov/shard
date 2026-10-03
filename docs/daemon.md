@@ -183,7 +183,7 @@ substrate call that wedges never pins that lock: a `stop` or `rm` on that sandbo
 still runs. A tick the substrate does not answer within the deadline logs one line, leaves the record
 untouched, and asks again next tick. The tick takes the lock only to write, and reads the record
 again first, so a `stop` that landed since the list wins and the tick leaves that sandbox alone.
-One tick the substrate answers has three outcomes.
+One tick the substrate answers has four outcomes.
 
 The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
 stays `running` and the tick writes the exit into `exit_status`. `shard ls` then shows `running
@@ -196,6 +196,12 @@ The sandbox process is gone. Nothing but the host or a crash ends a running sand
 daemon's back, so the tick makes the record `stopped` with `pid` 0 and `stopped_reason` `the sandbox
 process died`. A `start` brings it back. The daemon does not start it again on its own; a restart
 policy for a process that died is SHARD-188.
+
+`shard-init` itself died. On Firecracker `shard-init` tells the host why before the VM halts, with
+the exit code 125, as `docs/provider-vz.md` says. The tick makes the record `stopped` with `pid` 0,
+`exit_status` 125 and `stopped_reason` `shard-init failed: <reason>`, and logs one line. A `start`
+brings it back and clears both. A run whose last report never landed ends the same way, with the
+loss as the reason, but its `start` answers with the loss until `rm` drops the sandbox.
 
 The host ended it for its memory. A sandbox that overruns its `--memory` bound is ended by the host,
 whole: the kernel kills every process in its cgroup, `shard-init` included, and `runsc` still holds
@@ -421,6 +427,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   replays it again. A stalled client is closed with no exit, and the record says how much it lost.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, the default being
   TERM, signals the running command and answers 204. 404; 409 `exec_exited` once the command ended.
+  An exec that a signal ends reports code 128+n and signal 0 on every provider. Only the entrypoint's exit status carries the signal.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer. 404;
   409 `exec_running` while the command still runs.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. 404 when
