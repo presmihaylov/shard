@@ -185,3 +185,39 @@ func readDir(t *testing.T, dir string) []os.DirEntry {
 
 	return entries
 }
+
+// A nested container that hits its own bound counts only in the hierarchical memory.events, so a later clean exit is no OOM (SHARD-364).
+func TestOnlyTheSandboxsOwnBoundIsAnOOM(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	for name, tc := range map[string]struct {
+		local string
+		want  bool
+	}{
+		"a nested container's OOM": {local: "oom 0\noom_kill 0\n", want: false},
+		"the sandbox's own OOM":    {local: "oom 1\noom_kill 1\n", want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, bundle.CgroupsPath(id))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for file, body := range map[string]string{"memory.events": "oom 1\noom_kill 1\n", "memory.events.local": tc.local} {
+				if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`)
+			p.SetCgroupRoot(root)
+
+			status, err := p.Status(t.Context(), id)
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if status.OOMKilled != tc.want {
+				t.Errorf("OOMKilled = %v, want %v", status.OOMKilled, tc.want)
+			}
+		})
+	}
+}

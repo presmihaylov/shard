@@ -622,6 +622,39 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// Every fork of one snapshot wakes with the same memory, so only a reseed on restore keeps two of them from drawing the same bytes (SHARD-266).
+	t.Run("TheForksOfOneSnapshotDrawTheirOwnBytes", func(t *testing.T) {
+		if !caps.Fork {
+			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbFork)
+		}
+
+		source := s.running(t)
+		dir := s.SnapshotDir(t)
+		if err := s.Provider.Pause(t.Context(), source, dir); err != nil {
+			t.Fatalf("Pause: %v", err)
+		}
+
+		drawn := map[string]string{}
+		for range forkCount {
+			fork := copyOf(s.NewSpec(t))
+			if err := s.Provider.Fork(t.Context(), dir, fork); err != nil {
+				t.Fatalf("Fork: %v", err)
+			}
+			status, out := s.exec(t, fork.ID, models.ExecSpec{Argv: s.Shell("head -c 16 /dev/urandom | od -An -tx1")})
+			draw := strings.Join(strings.Fields(out), "")
+			if status.Code != 0 || len(draw) != 32 {
+				t.Fatalf("the draw in fork %s exited %d with %q, want 16 bytes in hex", fork.ID, status.Code, out)
+			}
+			if other, held := drawn[draw]; held {
+				t.Errorf("fork %s drew %s, the bytes fork %s drew first", fork.ID, draw, other)
+			}
+			drawn[draw] = fork.ID
+			if err := s.Provider.Stop(t.Context(), fork.ID, stopGrace); err != nil {
+				t.Fatalf("Stop fork %s: %v", fork.ID, err)
+			}
+		}
+	})
+
 	// A daemon restart opens a new provider over what the last one left; it runs last, since Reopen may close the first.
 	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
 		spec := s.NewSpec(t)

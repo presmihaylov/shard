@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/presmihaylov/shard/pkg/logfile"
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
@@ -96,10 +97,15 @@ func pump(r io.Reader, sink io.Writer, ack io.Writer, at uint64) error {
 	}
 }
 
+// MaxLog is the most one log file holds before it is rotated, and one rotated file is kept behind it.
+const MaxLog = 16 << 20
+
 // FileLog lands the guest's output in a file, and keeps beside it which output byte the file holds where, so a host that comes back lands none twice.
 type FileLog struct {
 	File   *os.File
 	Cursor string
+	// Max is the most the file holds: a write that would take it past Max renames it to the rotated file first.
+	Max int64
 	// Err is the first failure of the file or the cursor, which the connection's own errors would otherwise hide.
 	Err error
 }
@@ -111,9 +117,93 @@ type logCursor struct {
 }
 
 func (l *FileLog) Write(b []byte) (int, error) {
+	if err := l.rotate(int64(len(b))); err != nil {
+		return 0, l.fail(err)
+	}
 	n, err := l.File.Write(b)
 
 	return n, l.fail(err)
+}
+
+// Close closes the file the log writes now, which a rotation replaced.
+func (l *FileLog) Close() error {
+	return l.File.Close()
+}
+
+// rotate renames a file that n more bytes would take past Max, so the bound is exact; this process is the only writer.
+func (l *FileLog) rotate(n int64) error {
+	info, err := l.File.Stat()
+	if err != nil {
+		return fmt.Errorf("measure the log: %w", err)
+	}
+	if info.Size() == 0 || info.Size()+n <= l.Max {
+		return nil
+	}
+
+	// XFS keeps speculative preallocation past the end of a file closed before, which du counts; a truncate to its own size frees it.
+	if err := l.File.Truncate(info.Size()); err != nil {
+		return fmt.Errorf("free the log's space past its end: %w", err)
+	}
+	path := l.File.Name()
+	if err := os.Rename(path, logfile.Rotated(path)); err != nil {
+		return fmt.Errorf("rotate the log: %w", err)
+	}
+	next, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the log after a rotation: %w", err)
+	}
+	rotated := l.File
+	l.File = next
+	if err := rotated.Close(); err != nil {
+		return fmt.Errorf("close the rotated log: %w", err)
+	}
+
+	return l.restartCursor(uint64(info.Size())) //nolint:gosec // a file size is never negative
+}
+
+// restartCursor places the new file's first byte at the output byte the rotated file ended at.
+func (l *FileLog) restartCursor(size uint64) error {
+	c, found, err := readCursor(l.Cursor)
+	if err != nil {
+		return err
+	}
+	// A guest that never resumed keeps no cursor, and one that no longer matches is reset by the next resume.
+	if !found || size < c.Offset {
+		return nil
+	}
+
+	return l.writeCursor(logCursor{Offset: 0, Output: c.Output + size - c.Offset})
+}
+
+// BoundLog bounds a log no FileLog writes now, which a daemon before the bound left past max: its last max bytes move to the rotated file, and the cursor follows the output into the emptied log.
+func BoundLog(path, cursor string, max int64) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("measure the log: %w", err)
+	}
+	if info.Size() <= max {
+		return nil
+	}
+	if err := logfile.Truncate(path, max); err != nil {
+		return err
+	}
+
+	return (&FileLog{Cursor: cursor}).restartCursor(uint64(info.Size())) //nolint:gosec // a file size is never negative
+}
+
+func (l *FileLog) writeCursor(c logCursor) error {
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshal the log cursor: %w", err)
+	}
+	if err := store.WriteFile(l.Cursor, encoded, 0o600); err != nil {
+		return fmt.Errorf("write the log cursor: %w", err)
+	}
+
+	return nil
 }
 
 // Resume sends the guest on from the output byte the file ends at, or from the oldest it holds when the cursor cannot place it.
@@ -135,12 +225,8 @@ func (l *FileLog) Resume(from, to uint64) (uint64, error) {
 	}
 
 	// A boot the cursor has not seen, or one it no longer matches, is a guest this file holds nothing of yet.
-	encoded, err := json.Marshal(logCursor{Offset: size, Output: from})
-	if err != nil {
-		return 0, l.fail(fmt.Errorf("marshal the log cursor: %w", err))
-	}
-	if err := store.WriteFile(l.Cursor, encoded, 0o600); err != nil {
-		return 0, l.fail(fmt.Errorf("write the log cursor: %w", err))
+	if err := l.writeCursor(logCursor{Offset: size, Output: from}); err != nil {
+		return 0, l.fail(err)
 	}
 
 	return from, nil

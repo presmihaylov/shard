@@ -93,12 +93,12 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.image = img
 
-	runner, err := runccli.New(filepath.Join(t.TempDir(), "runc"), runccli.WithBinary(runc.Binary))
+	runner, err := runccli.New(filepath.Join(t.TempDir(), "runc"), runccli.WithBinary(runc.Binary), runccli.WithNoNewKeyring())
 	if err != nil {
 		t.Fatalf("open the runc runner: %v", err)
 	}
 
-	bundles, err := bundle.New(hostInitPath)
+	bundles, err := bundle.New(hostInitPath, bundle.WithSeccomp(bundle.DockerProfile))
 	if err != nil {
 		t.Fatalf("open the bundle service: %v", err)
 	}
