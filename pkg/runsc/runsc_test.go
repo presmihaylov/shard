@@ -221,6 +221,15 @@ func TestKillingADeadSandboxIsNotRunning(t *testing.T) {
 	}
 }
 
+// A cut pause leaves the sentry alive but wedged, so a kill reaches a control server that refuses it.
+func TestAKillWhoseControlServerRefusesIsUnreachable(t *testing.T) {
+	r, _ := fake(t, "", "connecting to control server at PID 4242: connection refused", 128)
+
+	if err := r.Kill(t.Context(), "amber-otter-1a2b", "TERM", false); !errors.Is(err, runsc.ErrUnreachable) {
+		t.Fatalf("got %v, want ErrUnreachable", err)
+	}
+}
+
 func TestAFailureKeepsWhatRunscSaid(t *testing.T) {
 	r, _ := fake(t, "", "some new gvisor failure", 1)
 

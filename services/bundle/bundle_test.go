@@ -61,6 +61,19 @@ func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
 	}
 }
 
+// A stop detaches the disk the count sits on, and a missing count read there as zero wrote 0 over the record (SHARD-401).
+func TestRestartCountRefusesADirectoryThatIsNotThere(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk", "shard", "restarts.json")
+
+	count, err := bundle.Bundle{RestartFile: path}.RestartCount()
+	if err == nil {
+		t.Fatalf("RestartCount() = %+v with no directory under the file, want an error", count)
+	}
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), path) {
+		t.Errorf("the refusal is %q, and it must name the file and wrap ErrNotExist", err)
+	}
+}
+
 func TestBuildRefusesAnImageWithNothingToRun(t *testing.T) {
 	_, err := newService(t).Build(newSpec(t))
 	if err == nil {

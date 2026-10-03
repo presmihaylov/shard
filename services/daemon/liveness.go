@@ -28,6 +28,7 @@ func (t liveness) Run(ctx context.Context) error {
 	}
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
+	failures := sandboxErrors{logger: logger, task: t.Name()}
 
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
@@ -43,8 +44,12 @@ func (t liveness) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// A root with nothing running needs no substrate, so a host without runsc keeps its daemon.
-		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool { return sb.State.Live() }) {
+		// A root with nothing live and no start again due needs no substrate, so a host without runsc keeps its daemon.
+		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool {
+			return sb.State.Live() || !sb.OOMRestartDue.IsZero()
+		}) {
+			failures.tick(ctx, nil)
+
 			continue
 		}
 
@@ -52,8 +57,7 @@ func (t liveness) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }); err != nil {
-			return err
-		}
+		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
+		failures.tick(ctx, svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }))
 	}
 }

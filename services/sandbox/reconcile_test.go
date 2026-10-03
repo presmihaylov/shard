@@ -170,6 +170,10 @@ func alive(pid int) models.Status {
 	return models.Status{Exists: true, State: models.StateRunning, PID: pid}
 }
 
+func pausedAlive(pid int) models.Status {
+	return models.Status{Exists: true, State: models.StatePaused, PID: pid}
+}
+
 func gone() models.Status { return models.Status{} }
 
 func TestReconcileMakesAnUnresponsiveRecordRunningAndKeepsItsRun(t *testing.T) {
@@ -262,6 +266,26 @@ func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 	}
 }
 
+// An OOM taken while the daemon was down is a memory decision, not a lost process (SHARD-311).
+func TestReconcileStopsARunningRecordTheHostEndedForMemoryWithItsReason(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.OOMKilledReason {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, sandbox.OOMKilledReason)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "sandbox1") || !strings.Contains(lab.reports[0], sandbox.OOMKilledReason) {
+		t.Errorf("the reconcile reported %v, want one line naming the sandbox and its memory", lab.reports)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none with nothing running", lab.net.applied)
+	}
+}
+
 func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
@@ -320,6 +344,24 @@ func TestReconcileKeepsAPausedSandboxThatHoldsItsSnapshot(t *testing.T) {
 	}
 	if lab.net.applied != 0 {
 		t.Errorf("the host rules were re-applied %d times, want none", lab.net.applied)
+	}
+}
+
+// A cut mid-checkpoint leaves the substrate paused but the record still running, so the record must catch up to paused.
+func TestReconcileCatchesUpARunningRecordTheSubstrateHoldsPaused(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": pausedAlive(42)}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StatePaused || got.PID != 0 {
+		t.Errorf("the record says %s with pid %d, want paused with no pid", got.State, got.PID)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: a paused sandbox has no netstack", lab.net.applied)
 	}
 }
 
