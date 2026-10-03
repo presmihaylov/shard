@@ -135,7 +135,7 @@ func (f *fakeLifecycleRepo) Update(id string, mutate func(*models.Sandbox) error
 }
 
 // Create hands out the id of the fork, and the record is kept beside the source's for the test to read.
-func (f *fakeLifecycleRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (f *fakeLifecycleRepo) Create(sb models.Sandbox, _ ...func(dir string) error) (models.Sandbox, error) {
 	if err := f.r.record("repo.Create"); err != nil {
 		return models.Sandbox{}, err
 	}
@@ -251,6 +251,8 @@ type fakeLifecycleProvider struct {
 	execSpec  models.ExecSpec
 	// execID is the sandbox the exec ran in, so a test says which id a name resolved to.
 	execID string
+	// serve stands in for the guest end of an exec, as a files exec needs.
+	serve func(spec models.ExecSpec) (models.ExitStatus, error)
 }
 
 func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -258,6 +260,10 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 		return models.ExitStatus{}, err
 	}
 	f.execID, f.execSpec = id, spec
+
+	if f.serve != nil {
+		return f.serve(spec)
+	}
 
 	if f.execErr != nil {
 		return models.ExitStatus{}, f.execErr

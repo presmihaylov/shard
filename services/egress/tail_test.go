@@ -70,9 +70,9 @@ func TestTailWritesEveryDropTheRingHolds(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 2 || records[0].Rule != "2" || records[1].Rule != "default" {
 		t.Fatalf("the log holds %+v", records)
@@ -97,9 +97,9 @@ func TestTailSkipsTheSequencesTheCursorAlreadyNames(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "4" {
 		t.Fatalf("the log holds %+v", records)
@@ -117,9 +117,9 @@ func TestTailWritesTheRingWholeWhenTheCursorCannotBeRead(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 {
 		t.Fatalf("the log holds %+v", records)
@@ -140,9 +140,9 @@ func TestTailCountsTheDropsOfASandboxThatIsGone(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read("sb")
+	records, _, err := decisions.Tail("sb")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Fatalf("the log holds %+v", records)
@@ -167,9 +167,9 @@ func TestTailStartsAFreshRootAtTheRingsEnd(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read("sb")
+	records, _, err := decisions.Tail("sb")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Fatalf("the log holds %+v", records)
@@ -197,9 +197,9 @@ func TestTailSettlesTheCursorPastTheStrays(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "2" {
 		t.Fatalf("the log holds %+v", records)
@@ -243,9 +243,9 @@ func TestTailNamesAnIPv6DropByThePortItDiedOn(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != network.RuleIPv6 {
 		t.Fatalf("the log holds %+v", records)
@@ -284,9 +284,9 @@ func TestTailCountsADropOlderThanTheSandbox(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
@@ -306,9 +306,9 @@ func TestTailLeavesTheLinesTheKernelWroteForSomethingElse(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 0 {
 		t.Errorf("the log holds %+v", records)
@@ -381,9 +381,9 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(took.ID)
+	records, _, err := decisions.Tail(took.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "default" {
 		t.Fatalf("the log of the sandbox that took the address holds %+v", records)
@@ -437,9 +437,9 @@ func TestTailListsAgainForALiveDrop(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0].Rule != "private" {
 		t.Fatalf("the log holds %+v after %d lists, want the private drop", records, repo.listed)

@@ -102,7 +102,7 @@ func ZombieStat(stat string) bool {
 	return zombieStat(stat)
 }
 
-// Vanished is the classification zombie runs on a read of /proc that failed, reachable with an error.
+// Vanished is the classification stale runs on a read of /proc that failed, reachable with an error.
 func Vanished(err error) bool {
 	return vanished(err)
 }

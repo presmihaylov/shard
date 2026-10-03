@@ -11,11 +11,15 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
+	"github.com/presmihaylov/shard/pkg/xfs"
 )
 
 // sandboxDir and recordFile are where the daemon keeps a sandbox record, under a root of its own.
@@ -26,6 +30,21 @@ const (
 
 // cgroupParent is the one cgroup the daemon puts every sandbox under, by id.
 const cgroupParent = "shard"
+
+// parentPath is where the host keeps that cgroup; a test points it at a dir of its own.
+var parentPath = filepath.Join(cgroup.Root, cgroupParent)
+
+// parentMade is whether Refuse found no cgroup parent, which makes the parent this run's to drop.
+var parentMade bool
+
+// apiSockFlag is how pkg/firecracker hands a vmm its api socket, and a socket under a root of ours makes the vmm ours.
+const apiSockFlag = "--api-sock"
+
+// killGrace bounds the wait for a killed vmm to let go of its cgroup, and pollInterval paces that wait.
+const (
+	killGrace    = 10 * time.Second
+	pollInterval = 100 * time.Millisecond
+)
 
 // runtimes maps the provider a record names to the binary whose state the daemon keeps under the root, by that name.
 var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc", "runc": "runc"}
@@ -41,22 +60,64 @@ const (
 
 var hostTableFamilies = []string{"inet", "bridge"}
 
-// leftHeld names the mounts before the sandboxes: a mount pins its root, and the record under that root is the only handle on the namespace and the link.
-func leftHeld(prefixes []string) ([]Leftover, error) {
+// leftHeld names what the roots hold in the order Sweep takes it: a vmm holds its cgroup and tap, a mount pins its root and loop, a record names the netns and link, and a line outlives its image.
+func leftHeld(prefixes, roots []string) ([]Leftover, error) {
 	mounts, err := leftMounts(prefixes)
 	if err != nil {
 		return nil, err
 	}
-	sandboxes, err := leftSandboxes(prefixes)
+	loops, err := leftLoops(prefixes)
+	if err != nil {
+		return nil, err
+	}
+	sandboxes, err := leftSandboxes(roots)
+	if err != nil {
+		return nil, err
+	}
+	lines, err := leftFstab(prefixes)
+	if err != nil {
+		return nil, err
+	}
+	// The pins come last, so no failure after them leaves one open.
+	vmms, err := leftVMMs(prefixes)
 	if err != nil {
 		return nil, err
 	}
 
-	return append(mounts, sandboxes...), nil
+	return slices.Concat(vmms, mounts, loops, sandboxes, lines), nil
 }
 
-// sweepHostNet drops the bridge and the tables the daemon never drops (SHARD-272), unless a run on another root still holds them.
-func sweepHostNet() error {
+// heldBy names what one root's vmms, sandboxes and mounts still hold, and nothing of another root.
+func heldBy(root string) ([]Leftover, error) {
+	sandboxes, err := sandboxesOf(root)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := leftMounts([]string{root})
+	if err != nil {
+		return nil, err
+	}
+	vmms, err := leftVMMs([]string{filepath.Join(root, sandboxDir) + string(filepath.Separator)})
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Concat(vmms, sandboxes, mounts), nil
+}
+
+// noteParent records whether the cgroup parent was missing before the run, which makes it this run's to drop.
+func noteParent() error {
+	_, err := os.Stat(parentPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat the cgroup parent %s: %w", parentPath, err)
+	}
+	parentMade = errors.Is(err, os.ErrNotExist)
+
+	return nil
+}
+
+// sweepShared drops the bridge, the tables and the cgroup parent the daemon never drops (SHARD-272), unless a run on another root still holds them.
+func sweepShared() error {
 	held, err := hostNetHeld()
 	if err != nil {
 		return err
@@ -80,8 +141,38 @@ func sweepHostNet() error {
 	if shown(hostBridge) {
 		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})
 	}
+	parent, err := leftParent()
+	if err != nil {
+		return err
+	}
 
-	return removeEach(left)
+	return removeEach(append(left, parent...))
+}
+
+// leftParent names the cgroup parent only when this run made it and no sandbox of any root is under it, so a parent the host had stays as it was.
+func leftParent() ([]Leftover, error) {
+	if !parentMade {
+		return nil, nil
+	}
+	idle, err := idleCgroup(parentPath)
+	if err != nil || !idle {
+		return nil, err
+	}
+
+	return []Leftover{{What: "the cgroup parent", Path: parentPath, remove: func() error { return cgroup.Remove(parentPath) }}}, nil
+}
+
+// idleCgroup is whether dir exists and holds no sandbox; every provider makes the parent again on its next create.
+func idleCgroup(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("list the cgroups under %s: %w", dir, err)
+	}
+
+	return !slices.ContainsFunc(entries, os.DirEntry.IsDir), nil
 }
 
 // hostNetHeld is whether a sandbox of any root still has a port on the bridge, or a daemon still serves the proxy.
@@ -124,25 +215,32 @@ func leftMounts(prefixes []string) ([]Leftover, error) {
 
 // leftSandboxes names the namespace and the veth of every sandbox a leftover root still records. The
 // record is what makes them ours: a namespace no root of this package names belongs to another run.
-func leftSandboxes(prefixes []string) ([]Leftover, error) {
-	roots, err := match(prefixes)
+func leftSandboxes(roots []string) ([]Leftover, error) {
+	var out []Leftover
+	for _, root := range roots {
+		held, err := sandboxesOf(root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, held...)
+	}
+
+	return out, nil
+}
+
+// sandboxesOf names what every record under one root still holds.
+func sandboxesOf(root string) ([]Leftover, error) {
+	entries, err := os.ReadDir(filepath.Join(root, sandboxDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read the sandboxes of %s: %w", root, err)
 	}
 
 	var out []Leftover
-	for _, root := range roots {
-		entries, err := os.ReadDir(filepath.Join(root, sandboxDir))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read the sandboxes of %s: %w", root, err)
-		}
-
-		for _, entry := range entries {
-			out = append(out, sandboxOf(root, entry.Name())...)
-		}
+	for _, entry := range entries {
+		out = append(out, sandboxOf(root, entry.Name())...)
 	}
 
 	return out, nil
@@ -159,8 +257,8 @@ func sandboxOf(root, id string) []Leftover {
 		out = append(out, Leftover{What: "the sandbox", Path: id, remove: run(binary, "--root", state, "delete", "--force", id)})
 	}
 	// A stop keeps the cgroup for the rm that never came.
-	if group := filepath.Join(cgroup.Root, cgroupParent, id); exists(group) {
-		out = append(out, Leftover{What: "the cgroup", Path: group, remove: func() error { return cgroup.Remove(group) }})
+	if group := filepath.Join(parentPath, id); exists(group) {
+		out = append(out, Leftover{What: "the cgroup", Path: group, remove: removeCgroup(group)})
 	}
 	if exists(netns.NamespacePath(id)) {
 		out = append(out, Leftover{What: "the namespace", Path: id, remove: run("ip", "netns", "delete", id)})
@@ -214,6 +312,146 @@ func exists(path string) bool {
 	_, err := os.Stat(path)
 
 	return err == nil
+}
+
+// leftVMMs names every vmm whose api socket sits under a root of ours, so one is found after the record that started it is gone.
+func leftVMMs(prefixes []string) ([]Leftover, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("list the processes: %w", err)
+	}
+
+	var out []Leftover
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if gone(err) {
+			continue
+		}
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("read the command line of %d: %w", pid, err), unpin(out))
+		}
+		sock := apiSocket(strings.Split(string(cmdline), "\x00"))
+		if sock == "" || !hasPrefix(sock, prefixes) {
+			continue
+		}
+		vmm, ours, err := pinVMM(pid, sock)
+		if err != nil {
+			return nil, errors.Join(err, unpin(out))
+		}
+		if ours {
+			out = append(out, vmm)
+		}
+	}
+
+	return out, nil
+}
+
+// apiSocket is the whole argument after --api-sock, or "" for a process that names none.
+func apiSocket(argv []string) string {
+	i := slices.Index(argv, apiSockFlag)
+	if i < 0 || i+1 >= len(argv) {
+		return ""
+	}
+
+	return argv[i+1]
+}
+
+// gone is whether a read under /proc failed only because the process exited.
+func gone(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// removeCgroup waits out the moment a killed vmm still holds its cgroup after it exits.
+func removeCgroup(dir string) func() error {
+	return func() error {
+		deadline := time.Now().Add(killGrace)
+		for {
+			err := cgroup.Remove(dir)
+			if !errors.Is(err, syscall.EBUSY) || !time.Now().Before(deadline) {
+				return err
+			}
+			time.Sleep(pollInterval)
+		}
+	}
+}
+
+// leftFstab names the line that mounts a data image at a root of ours on boot, which outlives the image and the root.
+func leftFstab(prefixes []string) ([]Leftover, error) {
+	loops, err := xfs.FstabLoops()
+	if err != nil {
+		return nil, err
+	}
+
+	var out []Leftover
+	for _, loop := range loops {
+		if hasPrefix(loop.Image, prefixes) && hasPrefix(loop.Point, prefixes) {
+			out = append(out, Leftover{What: "the fstab line", Path: loop.Point, remove: func() error { return xfs.RemoveFstab(loop.Image, loop.Point) }})
+		}
+	}
+
+	return out, nil
+}
+
+// loopDevices is where the kernel names the file behind each bound loop device.
+const loopDevices = "/sys/block/loop*/loop/backing_file"
+
+// leftLoops names every loop device over an image of ours, which a mount that went away without its loop leaves bound.
+func leftLoops(prefixes []string) ([]Leftover, error) {
+	bound, err := filepath.Glob(loopDevices)
+	if err != nil {
+		return nil, fmt.Errorf("list the loop devices: %w", err)
+	}
+
+	var out []Leftover
+	for _, file := range bound {
+		dev := "/dev/" + filepath.Base(filepath.Dir(filepath.Dir(file)))
+		image, err := loopImage(dev)
+		if err != nil {
+			return nil, err
+		}
+		if image != "" && hasPrefix(image, prefixes) {
+			out = append(out, Leftover{What: "the loop", Path: dev, remove: detachLoop(dev, image)})
+		}
+	}
+
+	return out, nil
+}
+
+// loopImage is the file a loop device reads, or "" for one bound to nothing.
+func loopImage(dev string) (string, error) {
+	file := filepath.Join("/sys/block", filepath.Base(dev), "loop", "backing_file")
+	blob, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, err)
+	}
+
+	return strings.TrimSuffix(strings.TrimSpace(string(blob)), " (deleted)"), nil
+}
+
+// detachLoop waits out the moment an unmount above still holds the loop, and takes one already cleared as detached.
+func detachLoop(dev, image string) func() error {
+	return func() error {
+		deadline := time.Now().Add(killGrace)
+		for {
+			bound, err := loopImage(dev)
+			if err != nil || bound != image {
+				return err
+			}
+			// A detach that loses the race to the clear is moot, so only a loop still bound at the deadline names its error.
+			detach := run("losetup", "-d", dev)()
+			if !time.Now().Before(deadline) {
+				return errors.Join(fmt.Errorf("%s still reads %s", dev, image), detach)
+			}
+			time.Sleep(pollInterval)
+		}
+	}
 }
 
 // mountPoints reads the fifth field of each line of mountinfo, which is where the mount is attached.

@@ -35,7 +35,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 	if _, err := bundle.CloneRootDisk(spec.RootDisk, filepath.Join(spec.StateDir, diskFile), spec.Resources); err != nil {
-		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	r, err := recordOf(spec)
@@ -284,8 +284,9 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	}
 	if ended {
 		p.forget(m)
+		closeDown(m)
 
-		return m.close()
+		return nil
 	}
 
 	return p.end(ctx, m)
@@ -302,21 +303,35 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	if err != nil {
 		return err
 	}
-	if !ended {
-		if err := m.client.Kill(); err != nil && !absent(err) {
-			return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err))
-		}
-		ended, err = m.awaitGone(ctx, killGrace/2)
-		if err != nil {
-			return err
-		}
+	if ended {
+		p.forget(m)
+		closeDown(m)
+
+		return nil
+	}
+	if err := p.kill(ctx, m); err != nil {
+		return errors.Join(stopErr, err)
+	}
+
+	return nil
+}
+
+// kill ends the shim by the pid the kernel attests behind its socket, never by a name.
+func (p *Provider) kill(ctx context.Context, m *machine) error {
+	if err := m.client.Kill(); err != nil && !absent(err) {
+		return fmt.Errorf("kill the shim of sandbox %s: %w", m.id, err)
+	}
+	ended, err := m.awaitGone(ctx, killGrace/2)
+	if err != nil {
+		return err
 	}
 	if !ended {
-		return errors.Join(stopErr, fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2))
+		return fmt.Errorf("the shim of sandbox %s still answers %s after a kill", m.id, killGrace/2)
 	}
 	p.forget(m)
+	closeDown(m)
 
-	return m.close()
+	return nil
 }
 
 // Remove ends the VM and drops the disk and the record; the state directory itself is the repository's.
@@ -328,6 +343,8 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// A create that failed before its disk landed still holds the reservation.
+	bundle.Release(dir)
 	for _, name := range []string{diskFile, recordFile, socketFile} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
@@ -365,8 +382,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneFile(filepath.Join(sourceDir, diskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the disk of sandbox %s: %w", sourceID, err)
+	if err := cloneDisk(filepath.Join(sourceDir, diskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
+		return fmt.Errorf("copy the disk of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
 	// The spec names the copy and its lease alone; the run is the source's, as the bundle it copies is on Linux.
@@ -374,6 +391,15 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	r.network(spec)
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
+}
+
+// cloneDisk copies the disk at src to dst once the root has room for all of it beside the disk of every other sandbox.
+func cloneDisk(src, dst string) error {
+	return bundle.AdmitCopy(src, dst, func() error {
+		_, err := bundle.CloneFile(src, dst)
+
+		return err
+	})
 }
 
 // Wait blocks until the entrypoint exits, by the file the event loop lands each exit in.

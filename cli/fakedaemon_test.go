@@ -35,7 +35,7 @@ type imageService interface {
 
 // sandboxRepo is the part of sandboxstate.Repository the daemon drives.
 type sandboxRepo interface {
-	Create(sb models.Sandbox) (models.Sandbox, error)
+	Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error)
 	Get(id string) (models.Sandbox, error)
 	Resolve(ref string) (string, error)
 	List() ([]models.Sandbox, error)
@@ -145,7 +145,7 @@ type fakeEgressLog struct {
 	records []egress.Record
 }
 
-func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, error) { return f.records, nil }
+func (f fakeEgressLog) Read(models.Sandbox) ([]egress.Record, int, error) { return f.records, 0, nil }
 
 // Follow hands over what the log holds and then ends as a removed sandbox does.
 func (f fakeEgressLog) Follow(_ context.Context, _ models.Sandbox, yield func(egress.Record) error) error {
