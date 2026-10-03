@@ -61,6 +61,8 @@ const (
 	killGrace = 10 * time.Second
 	// probeFloor is the least one shim state read gets, so a wait whose time ran out still asks once (SHARD-349).
 	probeFloor = time.Second
+	// adoptBound is how long a shim met only by its socket gets to answer before it counts as wedged (SHARD-387).
+	adoptBound = 5 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
 )

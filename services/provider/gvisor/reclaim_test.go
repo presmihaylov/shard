@@ -179,7 +179,10 @@ func TestReclaimRefusesASandboxWithNoProcessToKill(t *testing.T) {
 	}
 
 	h.process(1103, bundle.CgroupsPath(sandboxID), "bash")
-	err = h.provider().Reclaim(t.Context(), sandboxID)
+	// The stranger names nothing and stays, so the reclaim waits out the grace before it refuses by name (SHARD-411).
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	err = h.provider().Reclaim(ctx, sandboxID)
 	if err == nil || !strings.Contains(err.Error(), "so none was killed") {
 		t.Errorf("Reclaim over a stranger alone returned %v, want it named", err)
 	}
@@ -226,7 +229,10 @@ func TestSweepRefusesAStranger(t *testing.T) {
 	h := newHost(t)
 	h.process(1103, bundle.CgroupsPath(sandboxID), "bash")
 
-	err := h.provider().Sweep(t.Context(), sandboxID)
+	// The stranger names nothing and stays, so the sweep waits out the grace before it refuses by name (SHARD-411).
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	err := h.provider().Sweep(ctx, sandboxID)
 	if err == nil || !strings.Contains(err.Error(), "so none was killed") {
 		t.Errorf("Sweep over a stranger alone returned %v, want it named", err)
 	}

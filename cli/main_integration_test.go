@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/provider/firecracker"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -91,7 +93,13 @@ func run(m *testing.M) (int, error) {
 
 // stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
 // so a run refuses to start on it.
-func stateRoots() []string { return underTemp("shard-itest", "shard-build", "shard-daemon") }
+func stateRoots() []string {
+	roots := append(underTemp(itestPrefix, "shard-build", "shard-daemon"), filepath.Join(shortTemp, itestPrefix))
+	// Where $TMPDIR is /tmp the two itest prefixes are one, and a root matched twice is swept twice.
+	slices.Sort(roots)
+
+	return slices.Compact(roots)
+}
 
 // tempPrefixes adds the scratch directory of an exec, which a killed daemon leaves and nothing pins.
 func tempPrefixes() []string { return append(stateRoots(), underTemp("shard-exec-")...) }
@@ -196,10 +204,32 @@ type testDaemon struct {
 	log  string
 }
 
+// itestProvider names the substrate the suite's daemon runs, so a /dev/kvm host does not auto-pick firecracker and leak a vmm; SHARD_ITEST_PROVIDER picks another for a box run.
+var itestProvider = cmp.Or(os.Getenv("SHARD_ITEST_PROVIDER"), "gvisor")
+
+// itestResources is the bound each create of the suite carries: firecracker refuses an unbounded guest, so a run there takes the floor it boots under.
+func itestResources() models.Resources {
+	if itestProvider != firecracker.Name {
+		return models.Resources{}
+	}
+
+	return models.Resources{MemoryMiB: firecracker.MinMemoryMiB}
+}
+
+// createArgs is the create verb over args, with the suite's bound unless args name their own.
+func createArgs(args ...string) []string {
+	bound := itestResources().MemoryMiB
+	if bound == 0 || slices.Contains(args, "--memory") {
+		return append([]string{"create"}, args...)
+	}
+
+	return append([]string{"create", "--memory", strconv.FormatInt(bound, 10)}, args...)
+}
+
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
 // env is added to the daemon's own environment, which is how a test gives it a different wiring.
 func spawnDaemon(env ...string) (*testDaemon, error) {
-	root, err := os.MkdirTemp("", "shard-itest")
+	root, err := os.MkdirTemp("", itestPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("make a state root: %w", err)
 	}
@@ -209,7 +239,7 @@ func spawnDaemon(env ...string) (*testDaemon, error) {
 		return nil, fmt.Errorf("make a daemon log: %w", err)
 	}
 
-	cmd := exec.Command(shard, "--root", root, "daemon")
+	cmd := exec.Command(shard, "--root", root, "--provider", itestProvider, "daemon")
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Env = append(os.Environ(), env...)
 	if err := cmd.Start(); err != nil {
@@ -259,8 +289,8 @@ func (d *testDaemon) stop() error {
 		errs = append(errs, fmt.Errorf("the socket %s outlived the daemon: %w", socket, err))
 	}
 
-	// A create that failed leaves the rootfs and the runsc null-netns mounted, and RemoveAll trips over them.
-	errs = append(errs, hostclean.Unmount(d.root))
+	// RemoveAll takes the records, the only handle on what an rm missed, and trips over a mount a failed create left.
+	errs = append(errs, hostclean.Release(d.root))
 
 	return errors.Join(append(errs, os.RemoveAll(d.root), os.Remove(d.log))...)
 }
@@ -338,7 +368,7 @@ func createWith(t *testing.T, app App, out *bytes.Buffer, args ...string) string
 	t.Helper()
 
 	app, progress := ownStderr(app)
-	if err := app.Run(t.Context(), append([]string{"create"}, args...)); err != nil {
+	if err := app.Run(t.Context(), createArgs(args...)); err != nil {
 		t.Fatalf("create: %v\n%s", err, progress)
 	}
 

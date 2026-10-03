@@ -2,10 +2,14 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,6 +112,7 @@ func TestFollowGivesALineAppendedAfterItStarted(t *testing.T) {
 // A rotation renames the file under the open handle, and the lines on both sides of it are the log.
 func TestFollowLosesNothingToARotation(t *testing.T) {
 	log, dirs := newLog(t)
+	roomFor(t, log, 2)
 	if err := log.Append("sb", followed(t, 10, "before")); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -115,26 +120,154 @@ func TestFollowLosesNothingToARotation(t *testing.T) {
 	records, _, _ := startFollow(t, log, followSandbox())
 	waitFor(t, 1, records.rules)
 
+	// The second line goes in just before the rename, which is the one a naive reopen drops.
+	for i, rule := range []string{"racing", "after"} {
+		if err := log.Append("sb", followed(t, int64(20+10*i), rule)); err != nil {
+			t.Fatalf("Append %s: %v", rule, err)
+		}
+	}
+
 	dir, err := dirs.Dir("sb")
 	if err != nil {
 		t.Fatalf("Dir: %v", err)
 	}
-
-	// The line goes in between the append and the rename, which is the one a naive reopen drops.
-	if err := log.Append("sb", followed(t, 20, "racing")); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := os.Rename(filepath.Join(dir, LogFile), filepath.Join(dir, LogRotated)); err != nil {
-		t.Fatalf("Rename: %v", err)
-	}
-	if err := log.Append("sb", followed(t, 30, "after")); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, LogRotated)); err != nil {
+		t.Fatalf("the log did not rotate: %v", err)
 	}
 
 	rules := waitFor(t, 3, records.rules)
-	if rules[0] != "before" || rules[1] != "racing" || rules[2] != "after" {
+	if !slices.Equal(rules, []string{"before", "racing", "after"}) {
 		t.Errorf("the follow gave %v across the rotation", rules)
 	}
+}
+
+// Two renames before the next poll leave the middle file at .1, and the follow must read it before the newest.
+func TestFollowLosesNothingToTwoRotationsWhileItIsHeld(t *testing.T) {
+	log, _ := newLog(t)
+	roomFor(t, log, 2)
+	appendRules(t, log, 0, 2)
+
+	held, done := startHeldFollow(t, log)
+	appendRules(t, log, 2, 6)
+	if got := onDisk(t, log); !slices.Equal(got, []string{"r2", "r3", "r4", "r5"}) {
+		t.Fatalf("the log holds %v, want two rotations", got)
+	}
+	close(held.open)
+
+	rules := waitFor(t, 6, held.rules)
+	if want := []string{"r0", "r1", "r2", "r3", "r4", "r5"}; !slices.Equal(rules, want) {
+		t.Errorf("the follow gave %v, want %v", rules, want)
+	}
+
+	select {
+	case err := <-done:
+		t.Errorf("the follow ended with %v", err)
+	default:
+	}
+}
+
+// A third rename unlinks a file the follow never opened, so it ends rather than skip it in silence.
+func TestFollowEndsWhenAFileIsRenamedAwayUnread(t *testing.T) {
+	log, _ := newLog(t)
+	roomFor(t, log, 2)
+	appendRules(t, log, 0, 2)
+
+	held, done := startHeldFollow(t, log)
+	appendRules(t, log, 2, 7)
+	if got := onDisk(t, log); !slices.Equal(got, []string{"r4", "r5", "r6"}) {
+		t.Fatalf("the log holds %v, want three rotations", got)
+	}
+	close(held.open)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errFellBehind) || !strings.Contains(err.Error(), "1 of its files") {
+			t.Errorf("the follow ended with %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the follow went on past a file it never read")
+	}
+
+	if rules := held.rules(); !slices.Equal(rules, []string{"r0", "r1"}) {
+		t.Errorf("the follow gave %v before it ended", rules)
+	}
+	if len(log.watched) != 0 {
+		t.Errorf("the log still counts renames for %d ended follows", len(log.watched))
+	}
+}
+
+// held keeps a follow inside its first yield until the test closes open.
+type held struct {
+	collector
+	ctx       context.Context
+	entered   chan struct{}
+	open      chan struct{}
+	enterOnce sync.Once
+}
+
+func (h *held) yield(record Record) error {
+	h.enterOnce.Do(func() {
+		close(h.entered)
+		select {
+		case <-h.open:
+		case <-h.ctx.Done():
+		}
+	})
+
+	return h.collector.yield(record)
+}
+
+func startHeldFollow(t *testing.T, log *Log) (*held, chan error) {
+	t.Helper()
+
+	h := &held{ctx: t.Context(), entered: make(chan struct{}), open: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- NewLogReader(log).Follow(t.Context(), followSandbox(), h.yield) }()
+
+	select {
+	case <-h.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the follow never yielded")
+	}
+
+	return h, done
+}
+
+// roomFor caps each file of the log at n records of followed, so the next Append renames it.
+func roomFor(t *testing.T, log *Log, n int64) {
+	t.Helper()
+
+	line, err := json.Marshal(followed(t, 0, "r0"))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	log.max = int64(len(line)+1)*n + int64(len(line))/2
+}
+
+func appendRules(t *testing.T, log *Log, from, to int) {
+	t.Helper()
+
+	for i := from; i < to; i++ {
+		if err := log.Append("sb", followed(t, int64(i), fmt.Sprintf("r%d", i))); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
+		}
+	}
+}
+
+func onDisk(t *testing.T, log *Log) []string {
+	t.Helper()
+
+	records, _, err := log.Tail("sb")
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+
+	rules := make([]string, 0, len(records))
+	for _, record := range records {
+		rules = append(rules, record.Rule)
+	}
+
+	return rules
 }
 
 func TestFollowEndsWhenTheContextEnds(t *testing.T) {

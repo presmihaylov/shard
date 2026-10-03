@@ -172,6 +172,64 @@ func appendFstab(image, point string) error {
 	return f.Close()
 }
 
+// RemoveFstab drops the loop-mount line Fstab wrote for image at point; a missing file or line is not an error, and every other line stays.
+func RemoveFstab(image, point string) error {
+	blob, err := os.ReadFile(FstabPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", FstabPath, err)
+	}
+
+	lines := strings.Split(string(blob), "\n")
+	kept := slices.DeleteFunc(slices.Clone(lines), func(line string) bool {
+		loop, ok := xfsLoop(line)
+		return ok && loop == Loop{Image: image, Point: point}
+	})
+	if len(kept) == len(lines) {
+		return nil
+	}
+
+	return writeFstab(kept)
+}
+
+// Loop is one line of FstabPath that loop-mounts an xfs image at a point.
+type Loop struct {
+	Image string
+	Point string
+}
+
+// FstabLoops lists every xfs loop line in FstabPath, so a sweep can find the lines of roots that are gone; a missing file lists none.
+func FstabLoops() ([]Loop, error) {
+	blob, err := os.ReadFile(FstabPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", FstabPath, err)
+	}
+
+	var out []Loop
+	for line := range strings.SplitSeq(string(blob), "\n") {
+		if loop, ok := xfsLoop(line); ok {
+			out = append(out, loop)
+		}
+	}
+
+	return out, nil
+}
+
+// xfsLoop parses one fstab line that loop-mounts an xfs image, with its paths unescaped as Fstab escaped them.
+func xfsLoop(line string) (Loop, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 4 || strings.HasPrefix(fields[0], "#") || fields[2] != "xfs" || !slices.Contains(strings.Split(fields[3], ","), "loop") {
+		return Loop{}, false
+	}
+
+	return Loop{Image: fstabUnescape.Replace(fields[0]), Point: fstabUnescape.Replace(fields[1])}, true
+}
+
 // rewriteNofail adds nofail to the options of the managed line at idx and writes fstab back, leaving every other line as it was.
 func rewriteNofail(lines []string, idx int) error {
 	fields := strings.Fields(lines[idx])
