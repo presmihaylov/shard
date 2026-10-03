@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -237,6 +240,48 @@ func TestAFileRefusalAnswersTheAPICode(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "refused /srv/app") {
 				t.Fatalf("stat gave %v, want the guest's words", err)
+			}
+		})
+	}
+}
+
+// An unknown user on a files verb is the caller's mistake: a request error that names the user once, with none of the exec around it (SHARD-426).
+func TestAFilesVerbAsAnUnknownUserIsARequestError(t *testing.T) {
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc/passwd"), []byte("root:x:0:0:root:/root:/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	verbs := map[string]func(ctx context.Context, svc *sandbox.Service) error{
+		"mkdir": func(ctx context.Context, svc *sandbox.Service) error {
+			return svc.MakeDir(ctx, "sandbox1", sandbox.MkdirRequest{Path: "/srv/b", User: "nosuch"})
+		},
+		"put": func(ctx context.Context, svc *sandbox.Service) error {
+			return svc.WriteFile(ctx, "sandbox1", sandbox.FileWrite{Path: "/srv/f", User: "nosuch", Size: 2}, strings.NewReader("hi"))
+		},
+		"put archive": func(ctx context.Context, svc *sandbox.Service) error {
+			return svc.WriteArchive(ctx, "sandbox1", sandbox.ArchiveWrite{Path: "/srv", User: "nosuch"}, bytes.NewReader(nil))
+		},
+	}
+	for name, verb := range verbs {
+		t.Run(name, func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, running())
+			// Every provider resolves the exec's user against the sandbox's tree before anything starts in the guest.
+			l.provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+				if _, err := bundle.ResolveUser(rootfs, spec.User); err != nil {
+					return models.ExitStatus{}, fmt.Errorf("sandbox sandbox1: %w", err)
+				}
+				t.Errorf("the exec resolved the user %q", spec.User)
+
+				return models.ExitStatus{Code: 1}, nil
+			}
+
+			err := verb(t.Context(), svc)
+			if !isRequestError(err) || strings.Count(err.Error(), `"nosuch"`) != 1 || strings.Contains(err.Error(), supervisor.InitPath) {
+				t.Fatalf("%s as nosuch = %v, want a request error that names the user once and not the files exec", name, err)
 			}
 		})
 	}
