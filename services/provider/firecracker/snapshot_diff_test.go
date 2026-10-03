@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -135,6 +137,55 @@ func TestAPauseNeedsTheVMMsCgroupToSwapNothing(t *testing.T) {
 	if got, want := snapshots(t, spec.StateDir), []string{"Diff onto 0"}; !slices.Equal(got, want) {
 		t.Fatalf("the vmm took %q, want only the one pause that passed", got)
 	}
+}
+
+// A pause writes 0 to memory.swap.max and reads it back; a fifo answers that read with "max", as a kernel that ignored the write would, and the pause is refused by the cgroup's name (SHARD-450).
+func TestAPauseRefusesACgroupWhoseSwapDoesNotReadBackZero(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec := h.runSnapshotted(t)
+	root := t.TempDir()
+	cgroup, err := firecracker.BoundVMM(root, spec.ID, spec.Resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.provider.SetCgroupRoot(root)
+	t.Cleanup(func() { h.provider.SetCgroupRoot("") })
+	swap := filepath.Join(cgroup, "memory.swap.max")
+	if err := os.Remove(swap); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(swap, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan error, 1)
+	go func() { answered <- answerSwap(swap, "max") }()
+
+	err = h.provider.Pause(t.Context(), spec.ID, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), cgroup) || !strings.Contains(err.Error(), "reads -1") {
+		t.Fatalf("Pause over a cgroup whose swap reads back max = %v, want a refusal that names %s", err, cgroup)
+	}
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pause never read memory.swap.max back")
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused pause = %+v, %v, want running", status, err)
+	}
+}
+
+// answerSwap takes the pause's write of memory.swap.max from the fifo, then answers its read with value.
+func answerSwap(fifo, value string) error {
+	if _, err := os.ReadFile(fifo); err != nil {
+		return err
+	}
+
+	return os.WriteFile(fifo, []byte(value), 0o600)
 }
 
 // Only firecracker 1.13 and newer take a Diff without a dirty-page log, so a daemon refuses an older one by its version (SHARD-450).
