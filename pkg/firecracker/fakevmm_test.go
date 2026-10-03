@@ -10,7 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,16 +21,27 @@ import (
 	"testing"
 )
 
-// The test binary plays firecracker when the driver execs it with this set; a second one makes it die at once.
+// The test binary plays the jailer and firecracker when the driver execs it with this set; a die one makes either refuse at once.
 const (
-	fakeEnv    = "FIRECRACKER_FAKE"
-	fakeDieEnv = "FIRECRACKER_FAKE_DIE"
+	fakeEnv          = "FIRECRACKER_FAKE"
+	fakeDieEnv       = "FIRECRACKER_FAKE_DIE"
+	fakeJailerDieEnv = "FIRECRACKER_FAKE_JAILER_DIE"
+	// fakeJailEnv is the chroot the fake jailer hands the fake vmm, which takes every path it is told as inside it.
+	fakeJailEnv = "FIRECRACKER_FAKE_JAIL"
 )
 
 // echoPort is the one guest port the fake listens on; a connect to any other is refused the way firecracker does it.
 const echoPort = 5000
 
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeEnv) == "1" && slices.Contains(os.Args[1:], "--exec-file") {
+		if err := fakeJailer(); err != nil {
+			fmt.Fprintln(os.Stderr, "fake jailer:", err)
+			os.Exit(1)
+		}
+
+		return
+	}
 	if os.Getenv(fakeEnv) == "1" {
 		if err := fakeVMM(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake firecracker:", err)
@@ -62,13 +76,97 @@ type vmstate struct {
 	Vsock   json.RawMessage   `json:"vsock"`
 }
 
-// fakeVMM is firecracker without KVM: the API on --api-sock, the vsock proxy on the uds_path, and a console line on stdout.
-func fakeVMM() error {
-	flags := flag.NewFlagSet("fake-firecracker", flag.ContinueOnError)
-	socket := flags.String("api-sock", "", "")
+// jailerArgs is what the fake jailer was run with, written beside the chroot so a test can read it.
+type jailerArgs struct {
+	ID            string   `json:"id"`
+	UID           int      `json:"uid"`
+	GID           int      `json:"gid"`
+	CgroupVersion string   `json:"cgroupVersion"`
+	ParentCgroup  string   `json:"parentCgroup"`
+	NewPidNS      bool     `json:"newPidNS"`
+	Limits        []string `json:"limits"`
+	VMM           []string `json:"vmm"`
+}
+
+type limits []string
+
+func (l *limits) String() string { return strings.Join(*l, ",") }
+
+func (l *limits) Set(v string) error {
+	*l = append(*l, v)
+
+	return nil
+}
+
+// fakeJailer is the jailer without root: it makes the chroot, runs the exec file in a session of its own, writes its pid there and exits.
+func fakeJailer() error {
+	flags := flag.NewFlagSet("fake-jailer", flag.ContinueOnError)
+	var args jailerArgs
+	var resourceLimits limits
+	flags.StringVar(&args.ID, "id", "", "")
+	execFile := flags.String("exec-file", "", "")
+	flags.IntVar(&args.UID, "uid", -1, "")
+	flags.IntVar(&args.GID, "gid", -1, "")
+	base := flags.String("chroot-base-dir", "", "")
+	flags.StringVar(&args.CgroupVersion, "cgroup-version", "", "")
+	flags.StringVar(&args.ParentCgroup, "parent-cgroup", "", "")
+	flags.BoolVar(&args.NewPidNS, "new-pid-ns", false, "")
+	flags.Var(&resourceLimits, "resource-limit", "")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	args.Limits, args.VMM = resourceLimits, flags.Args()
+	if os.Getenv(fakeJailerDieEnv) != "" {
+		fmt.Fprintln(os.Stderr, os.Getenv(fakeJailerDieEnv))
+
+		return errors.New("told to die")
+	}
+
+	jail := filepath.Join(*base, filepath.Base(*execFile), args.ID)
+	chroot := filepath.Join(jail, "root")
+	if err := os.MkdirAll(chroot, 0o700); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(jail, "jailer.json"), encoded, 0o600); err != nil {
+		return err
+	}
+	vmm := exec.Command(*execFile, append([]string{"--id", args.ID}, args.VMM...)...)
+	vmm.Env = []string{fakeEnv + "=1", fakeJailEnv + "=" + chroot, fakeDieEnv + "=" + os.Getenv(fakeDieEnv)}
+	vmm.Stdout = os.Stdout
+	vmm.Stderr = os.Stderr
+	vmm.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := vmm.Start(); err != nil {
+		return err
+	}
+	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(pidFile, vmm.Process.Pid); err != nil {
+		return errors.Join(err, pidFile.Close())
+	}
+
+	return pidFile.Close()
+}
+
+// inJail is where a path the fake vmm is told lives on the host, the way a chroot resolves it.
+func inJail(path string) string {
+	return filepath.Join(os.Getenv(fakeJailEnv), path)
+}
+
+// fakeVMM is firecracker without KVM: the API on --api-sock, the vsock proxy on the uds_path, and a console line on stdout.
+func fakeVMM() error {
+	flags := flag.NewFlagSet("fake-firecracker", flag.ContinueOnError)
+	flags.String("id", "", "")
+	apiSock := flags.String("api-sock", "", "")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	socket := inJail(*apiSock)
 	if os.Getenv(fakeDieEnv) != "" {
 		fmt.Fprintln(os.Stderr, os.Getenv(fakeDieEnv))
 
@@ -76,11 +174,11 @@ func fakeVMM() error {
 	}
 	fmt.Println("fake firecracker console")
 
-	listener, err := net.Listen("unix", *socket)
+	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
 	}
-	f := &fake{socket: *socket, seen: seen{State: "Not started"}}
+	f := &fake{socket: socket, seen: seen{State: "Not started"}}
 	if err := f.persist(); err != nil {
 		return err
 	}
@@ -166,8 +264,6 @@ func (f *fake) apply(method, path string, body []byte) (string, error) {
 		f.seen.Boot = body
 	case method == http.MethodPut && strings.HasPrefix(path, "/drives/"):
 		f.seen.Drives = append(f.seen.Drives, body)
-	case method == http.MethodPatch && strings.HasPrefix(path, "/drives/"):
-		return f.updateDrive(body)
 	case method == http.MethodPut && strings.HasPrefix(path, "/network-interfaces/"):
 		f.seen.Network = body
 	case method == http.MethodPut && path == "/vsock":
@@ -228,10 +324,10 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(params.StatePath, state, 0o600); err != nil {
+	if err := os.WriteFile(inJail(params.StatePath), state, 0o600); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(params.MemoryPath, []byte("fake guest memory"), 0o600); err != nil {
+	if err := os.WriteFile(inJail(params.MemoryPath), []byte("fake guest memory"), 0o600); err != nil {
 		return "", err
 	}
 	f.seen.Snapshot = body
@@ -258,11 +354,11 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	if err := json.Unmarshal(body, &params); err != nil {
 		return "", err
 	}
-	blob, err := os.ReadFile(params.StatePath)
+	blob, err := os.ReadFile(inJail(params.StatePath))
 	if err != nil {
 		return "Load snapshot error: " + err.Error(), nil
 	}
-	if _, err := os.Stat(params.Memory.Path); err != nil {
+	if _, err := os.Stat(inJail(params.Memory.Path)); err != nil {
 		return "Load snapshot error: " + err.Error(), nil
 	}
 	var state vmstate
@@ -294,40 +390,6 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	return "", nil
 }
 
-// updateDrive reopens a drive the guest has at another path; one the guest does not have, or a path that is not there, is refused.
-func (f *fake) updateDrive(body []byte) (string, error) {
-	var d struct {
-		ID   string `json:"drive_id"`
-		Path string `json:"path_on_host"`
-	}
-	if err := json.Unmarshal(body, &d); err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(d.Path); err != nil {
-		return "Unable to patch the block device: " + err.Error(), nil
-	}
-	for i, have := range f.seen.Drives {
-		var got struct {
-			ID string `json:"drive_id"`
-		}
-		if err := json.Unmarshal(have, &got); err != nil {
-			return "", err
-		}
-		if got.ID != d.ID {
-			continue
-		}
-		updated, err := replace(have, "path_on_host", d.Path)
-		if err != nil {
-			return "", err
-		}
-		f.seen.Drives[i] = updated
-
-		return "", nil
-	}
-
-	return "Invalid block device ID: " + d.ID, nil
-}
-
 // replace sets one string field of a JSON object, and keeps the rest as it was.
 func replace(object json.RawMessage, field, value string) (json.RawMessage, error) {
 	var fields map[string]any
@@ -350,7 +412,7 @@ func (f *fake) listenVsock() error {
 	if err := json.Unmarshal(f.seen.Vsock, &v); err != nil {
 		return err
 	}
-	listener, err := net.Listen("unix", v.Path)
+	listener, err := net.Listen("unix", inJail(v.Path))
 	if err != nil {
 		return err
 	}
