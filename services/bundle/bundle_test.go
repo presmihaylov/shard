@@ -26,7 +26,7 @@ const supervisorPath = "/usr/local/bin/shard-init"
 func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh", "-c", "true"}}, models.ImageConfig{})
 
-	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
+	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "-restart-file", "/.shard/restarts.json", "--", "/bin/sh", "-c", "true"}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
 	}
