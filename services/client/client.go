@@ -391,6 +391,13 @@ func missing(ref string, err error) error {
 
 // call sends in as JSON and decodes out, each when set, under bound; zero is no deadline.
 func (c *Client) call(ctx context.Context, method, path string, in, out any, bound time.Duration) error {
+	_, err := c.exchange(ctx, method, path, in, out, bound)
+
+	return err
+}
+
+// exchange is call, and also gives back the headers of a successful answer.
+func (c *Client) exchange(ctx context.Context, method, path string, in, out any, bound time.Duration) (http.Header, error) {
 	call := ctx
 	if bound != 0 {
 		var cancel context.CancelFunc
@@ -402,14 +409,14 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any, bou
 	if in != nil {
 		encoded, err := json.Marshal(in)
 		if err != nil {
-			return fmt.Errorf("encode the request for %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("encode the request for %s %s: %w", method, path, err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 
 	req, err := http.NewRequestWithContext(call, method, "http://shard"+path, payload)
 	if err != nil {
-		return fmt.Errorf("build the request for %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("build the request for %s %s: %w", method, path, err)
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -420,31 +427,31 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any, bou
 
 	var connect *ConnectError
 	if errors.As(err, &connect) {
-		return connect
+		return nil, connect
 	}
 	if err != nil {
-		return c.wrap(ctx, method, path, bound, err)
+		return nil, c.wrap(ctx, method, path, bound, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return c.wrap(ctx, method, path, bound, fmt.Errorf("read the answer: %w", err))
+		return nil, c.wrap(ctx, method, path, bound, fmt.Errorf("read the answer: %w", err))
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return decodeError(resp.StatusCode, body)
+		return nil, decodeError(resp.StatusCode, body)
 	}
 
 	if out == nil {
-		return nil
+		return resp.Header, nil
 	}
 
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode the answer to %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("decode the answer to %s %s: %w", method, path, err)
 	}
 
-	return nil
+	return resp.Header, nil
 }
 
 // wrap names the route and the socket, and says so when the client's own deadline, not the caller's, cut the call.
@@ -472,11 +479,19 @@ func decodeError(status int, body []byte) error {
 	return &APIError{Status: status, Code: answer.Error.Code, Message: answer.Error.Message, Holders: answer.Error.Holders}
 }
 
-// EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's.
-func (c *Client) EgressLog(ctx context.Context, ref string, out io.Writer) error {
+// EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's, and says on errOut when the daemon left older ones out.
+func (c *Client) EgressLog(ctx context.Context, ref string, out, errOut io.Writer) error {
 	var records []egress.Record
-	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"/egress-log", nil, &records, c.Timeout); err != nil {
+	header, err := c.exchange(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"/egress-log", nil, &records, c.Timeout)
+	if err != nil {
 		return missing(ref, err)
+	}
+
+	if cut := header.Get(api.EgressCutHeader); cut != "" {
+		note := fmt.Sprintf("the egress log of sandbox %s holds %s older records; this prints the newest %d\n", ref, cut, len(records))
+		if err := write(errOut, []byte(note)); err != nil {
+			return fmt.Errorf("write the note on the egress log of sandbox %s: %w", ref, err)
+		}
 	}
 
 	// One write, so a reader that closes the pipe early (logs --egress | grep -q) never leaves the CLI a partial write to SIGPIPE on.

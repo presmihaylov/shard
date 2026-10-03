@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -13,11 +14,27 @@ import (
 // restartFileCap bounds the read: shard-init writes a few dozen bytes, and the guest can write anything there.
 const restartFileCap = 4 << 10
 
-// RestartCount reads what shard-init kept of its restart policy on this run: zero before the first start again.
+// RestartCount reads what shard-init kept of its restart policy on this run, zero before the first start again, off a disk a stop detached too (SHARD-401).
 func (b Bundle) RestartCount() (models.RestartCount, error) {
-	f, err := openRegular(b.RestartFile)
+	var count models.RestartCount
+	err := b.withDisk(func() error {
+		var err error
+		count, err = readRestartCount(b.RestartFile)
+
+		return err
+	})
+	if err != nil {
+		return models.RestartCount{}, err
+	}
+
+	return count, nil
+}
+
+// readRestartCount takes only a small regular file, because the guest can write that path too.
+func readRestartCount(path string) (models.RestartCount, error) {
+	f, err := openRegular(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.RestartCount{}, nil
+		return noRestartYet(path)
 	}
 	if err != nil {
 		return models.RestartCount{}, fmt.Errorf("open the restart count: %w", err)
@@ -29,7 +46,7 @@ func (b Bundle) RestartCount() (models.RestartCount, error) {
 		return models.RestartCount{}, fmt.Errorf("read the restart count: %w", err)
 	}
 	if len(blob) > restartFileCap {
-		return models.RestartCount{}, fmt.Errorf("the restart count %s is over %d bytes", b.RestartFile, restartFileCap)
+		return models.RestartCount{}, fmt.Errorf("the restart count %s is over %d bytes", path, restartFileCap)
 	}
 
 	var count models.RestartCount
@@ -38,6 +55,15 @@ func (b Bundle) RestartCount() (models.RestartCount, error) {
 	}
 
 	return count, nil
+}
+
+// noRestartYet reads a missing file as zero only where shard-init could have written it, so a disk not mounted is an error and never a zero.
+func noRestartYet(path string) (models.RestartCount, error) {
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		return models.RestartCount{}, fmt.Errorf("the restart count %s cannot be read: %w", path, err)
+	}
+
+	return models.RestartCount{}, nil
 }
 
 // requireRegular refuses anything but a regular file, whose read can neither block nor reach a driver.

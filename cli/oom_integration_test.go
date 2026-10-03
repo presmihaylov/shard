@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ import (
 // oomBomb doubles strings in anonymous memory in 32 tasks, because memory.high throttles each one to ~128 KiB/s past the bound.
 const oomBomb = `i=0; while [ $i -lt 32 ]; do awk 'BEGIN { s = "x"; while (1) s = s s }' & i=$((i+1)); done; wait`
 
-// oomBudget covers several kills of ~30 s each with their backoff, at one tick every 5 s, three sandboxes at once.
+// oomBudget covers several kills of ~30 s each, after a calm 30 s where a test asks for one, at one tick every 5 s, three sandboxes at once.
 const oomBudget = 6 * time.Minute
 
 // The three tests share the daemon and run side by side, because each one waits on the 5 s tick.
@@ -52,12 +53,13 @@ func TestTheDaemonLeavesAnOOMKilledSandboxThatDidNotAsk(t *testing.T) {
 	}
 }
 
-// A slow OOM loop runs well past the reset window each time, so a finite limit clears before it is spent.
+// Each run stays calm under its throttle past the healthy window before its bomb, so a finite limit clears before it is spent (SHARD-332, SHARD-401).
 func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
 	app, out := newCreateApp(t)
 	t.Parallel()
 
-	id := createBoundMax(t, app, out, 2, oomBomb)
+	// The window is 10 s from the first tick that sees the run, and a tick comes every 5 s, so 30 s latches it with room to spare.
+	id := createBoundMax(t, app, out, 2, "sleep 30; "+oomBomb)
 
 	// A limit of 2 with no reset would give up on the third kill, so a third start again proves the reset.
 	marker := "sandbox " + id + " " + sandbox.OOMKilledReason + ": started again, 1 of 2"
@@ -69,11 +71,20 @@ func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
 	}
 }
 
+// oomBound is the smallest --memory the suite's provider takes, so the bomb meets the bound soonest.
+func oomBound() string {
+	if bound := itestResources().MemoryMiB; bound != 0 {
+		return strconv.FormatInt(bound, 10)
+	}
+
+	return "64"
+}
+
 // createBound makes a sandbox with the smallest bound the daemon takes, and the restart policy when asked.
 func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script string) string {
 	t.Helper()
 
-	args := []string{"--memory", "64"}
+	args := []string{"--memory", oomBound()}
 	if restart {
 		args = append(args, "--restart-on-oom")
 	}
@@ -87,7 +98,7 @@ func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script 
 func createBoundMax(t *testing.T, app App, out *bytes.Buffer, max int, script string) string {
 	t.Helper()
 
-	id := createWith(t, app, out, "--memory", "64", fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
+	id := createWith(t, app, out, "--memory", oomBound(), fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	return id

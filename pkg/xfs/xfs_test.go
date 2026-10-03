@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -185,5 +186,106 @@ func TestFstabRefusesAForeignLineAtThePoint(t *testing.T) {
 		if err != nil || string(got) != line+"\n" {
 			t.Errorf("after the conflict fstab holds %q, %v", got, err)
 		}
+	}
+}
+
+func TestRemoveFstabDropsOnlyOurLine(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "# static\n/dev/sda1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n"
+	if err := os.WriteFile(FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# static\n/dev/sda1 / ext4 defaults 0 1\n"; string(got) != want {
+		t.Fatalf("fstab = %q, want %q", got, want)
+	}
+}
+
+func TestRemoveFstabKeepsAForeignLineAtThePoint(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	foreign := "/dev/sdb1 /var/lib/shard ext4 defaults 0 1\n"
+	if err := os.WriteFile(FstabPath, []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != foreign {
+		t.Fatalf("fstab = %q, want it kept %q", got, foreign)
+	}
+}
+
+func TestRemoveFstabMissingFileIsNoError(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	if err := RemoveFstab("/var/lib/shard.xfs", "/var/lib/shard"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFstabLoopsListsOnlyTheXfsLoopLines(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "# /tmp/old.xfs /tmp/old xfs loop 0 0\n/dev/sda1 / ext4 defaults 0 1\n/tmp/a.xfs /tmp/a xfs loop 0 0\n/tmp/b.img /tmp/b ext4 loop 0 0\n/tmp/c.xfs /tmp/c xfs defaults 0 0\n"
+	if err := os.WriteFile(FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FstabLoops()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Loop{{Image: "/tmp/a.xfs", Point: "/tmp/a"}}; !slices.Equal(got, want) {
+		t.Fatalf("FstabLoops = %v, want %v", got, want)
+	}
+}
+
+func TestFstabLoopsMissingFileListsNone(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	got, err := FstabLoops()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("FstabLoops = %v, %v, want none and no error", got, err)
+	}
+}
+
+// Fstab escapes a space in a path, so the remove and the list must read the line back the same way.
+func TestRemoveFstabAndFstabLoopsReadAnEscapedPath(t *testing.T) {
+	FstabPath = filepath.Join(t.TempDir(), "fstab")
+	start := "/dev/sda1 / ext4 defaults 0 1\n"
+	if err := os.WriteFile(FstabPath, []byte(start), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Fstab("/tmp/a b.xfs", "/tmp/a b"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FstabLoops()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Loop{{Image: "/tmp/a b.xfs", Point: "/tmp/a b"}}; !slices.Equal(got, want) {
+		t.Fatalf("FstabLoops = %v, want %v", got, want)
+	}
+	if err := RemoveFstab("/tmp/a b.xfs", "/tmp/a b"); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(FstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(blob) != start {
+		t.Fatalf("fstab = %q, want %q", blob, start)
 	}
 }
