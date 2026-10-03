@@ -99,14 +99,29 @@ drop_cgroup_parent() {
 	rmdir "${CGROUP_PARENT}" || echo "teardown: could not remove the cgroup parent ${CGROUP_PARENT}" >&2
 }
 
-# vmm_pids lists every firecracker process jailed under this root, and no other root's.
+# vmm_pids lists every firecracker process jailed under this root by the pid file and inode of its jail, since the jailer's own mount namespace makes /proc/<pid>/root read /.
 vmm_pids() {
-	local pid jails
-	jails="$(readlink -f "${SHARD_ROOT}")/jail/"
+	local jail ino pid jails=" "
+	{
+		for jail in "${SHARD_ROOT}"/jail/firecracker/*/root; do
+			[ -d "${jail}" ] || continue
+			ino="$(stat -c %d:%i "${jail}" 2>/dev/null || true)"
+			if [ -n "${ino}" ]; then jails+="${ino} "; fi
+			pid="$(cat "${jail}/firecracker.pid" 2>/dev/null || true)"
+			if [ -n "${pid}" ] && [ "$(cat "/proc/${pid}/comm" 2>/dev/null || true)" = firecracker ]; then echo "${pid}"; fi
+		done
+		for pid in $(pgrep -x firecracker || true); do
+			ino="$(stat -L -c %d:%i "/proc/${pid}/root/" 2>/dev/null || true)"
+			if [ -n "${ino}" ] && [[ "${jails}" == *" ${ino} "* ]]; then echo "${pid}"; fi
+		done
+	} | sort -u
+}
+
+# started_vmms lists every firecracker process the host did not run when this run began, which a vmm whose jail is gone still is.
+started_vmms() {
+	local pid
 	for pid in $(pgrep -x firecracker || true); do
-		case "$(readlink "/proc/${pid}/root" 2>/dev/null || true)" in
-		"${jails}"*) echo "${pid}" ;;
-		esac
+		if [[ "${FIRECRACKERS_BEFORE}" != *" ${pid} "* ]]; then echo "${pid}"; fi
 	done
 }
 
@@ -155,6 +170,7 @@ say "no shard daemon holds the host-wide bridge and tables"
 check_host_is_free
 say "no other sandbox holds a link on this host"
 [ -z "$(vmm_pids)" ] || fail "a firecracker process already drives ${SHARD_ROOT}: $(vmm_pids)"
+FIRECRACKERS_BEFORE=" $(pgrep -x firecracker | tr '\n' ' ' || true)"
 CGROUPS_BEFORE=$(shard_cgroups)
 CGROUP_PARENT_BEFORE=$([ -d "${CGROUP_PARENT}" ] && echo yes || echo no)
 
@@ -242,7 +258,9 @@ LINK=$(record_field "${ID}" host_interface)
 VMM_PID=$(record_pid "${ID}")
 say "the record holds the address ${ADDRESS} on the tap ${LINK}, driven by pid ${VMM_PID}"
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "the pid in the record is a firecracker process"
-expect "$(readlink "/proc/${VMM_PID}/root")" "$(readlink -f "${SHARD_ROOT}")/jail/firecracker/${ID}/root" "the vmm runs chrooted in its jail"
+JAIL="${SHARD_ROOT}/jail/firecracker/${ID}/root"
+expect "$(stat -L -c %d:%i "/proc/${VMM_PID}/root/")" "$(stat -c %d:%i "${JAIL}")" "the vmm runs chrooted in its jail"
+expect "$(cat "${JAIL}/firecracker.pid")" "${VMM_PID}" "the pid file in the jail names the vmm"
 VMM_UID=$(vmm_status "${VMM_PID}" Uid)
 [ "${VMM_UID}" -ge 1879048192 ] || fail "the vmm runs as uid ${VMM_UID}, want one from 0x70000000 up"
 expect "$(vmm_status "${VMM_PID}" CapEff) $(vmm_status "${VMM_PID}" Seccomp)" "0000000000000000 2" "the vmm runs as uid ${VMM_UID}, with no capability, under its seccomp filter"
@@ -524,6 +542,7 @@ say "image prune removed the image once no sandbox referenced it"
 step "prove the host holds nothing the run left"
 absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
+absent "a vmm this run started" "$(started_vmms)"
 absent "a jail of this root" "$(find "${SHARD_ROOT}/jail/firecracker" -mindepth 1 -maxdepth 1 2>/dev/null || true)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "a cgroup of this run" "$(run_cgroups)"
