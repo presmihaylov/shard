@@ -3,6 +3,7 @@ package firecracker_test
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,10 @@ const (
 	refuseReseedFile = "refuse-reseed"
 	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
 	oldGuestFile = "old-guest"
+	// snapshotsFile takes one line per snapshot the vmm writes: its type, and how many snapshots the file it merged into held.
+	snapshotsFile = "snapshots"
+	// fakeVersionEnv is the version the fake vmm names on --version, 1.17.0 when unset.
+	fakeVersionEnv = "SHARD_FAKE_FIRECRACKER_VERSION"
 )
 
 // initBinary is the shard-init the fake vmm runs in place of a VM, built once per test run unless the env names one.
@@ -79,6 +84,11 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "fake jailer:", err)
 			os.Exit(1)
 		}
+
+		return
+	}
+	if os.Getenv(fakeVMMEnv) == "1" && slices.Equal(os.Args[1:], []string{"--version"}) {
+		fmt.Printf("Firecracker v%s\n", cmp.Or(os.Getenv(fakeVersionEnv), "1.17.0"))
 
 		return
 	}
@@ -372,6 +382,7 @@ func (f *fake) patchVM(body []byte) (string, error) {
 // createSnapshot writes what a load brings back, which without guest memory is the configuration the vmm holds.
 func (f *fake) createSnapshot(body []byte) (string, error) {
 	var c struct {
+		Type       string `json:"snapshot_type"`
 		StatePath  string `json:"snapshot_path"`
 		MemoryPath string `json:"mem_file_path"`
 	}
@@ -389,8 +400,20 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if err := os.WriteFile(inJail(c.StatePath), encoded, 0o644); err != nil {
 		return "", err
 	}
-	// The fake has no guest memory, so the file is a blob: what a restore puts in its jail.
-	return "", os.WriteFile(inJail(c.MemoryPath), []byte("fake guest memory\n"), 0o644)
+	// The fake's memory is one line per snapshot, and a Diff adds its line to a file already there, as firecracker merges into one of the guest's size.
+	memory := inJail(c.MemoryPath)
+	found, err := os.ReadFile(memory)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if c.Type != "Diff" {
+		found = nil
+	}
+	if err := note(filepath.Join(f.dir, snapshotsFile), fmt.Sprintf("%s onto %d", c.Type, strings.Count(string(found), "\n"))); err != nil {
+		return "", err
+	}
+
+	return "", os.WriteFile(memory, append(found, c.Type+"\n"...), 0o644)
 }
 
 // loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices by their paths in the jail, and the overrides the tap and the vsock.

@@ -275,7 +275,7 @@ before the jail existed is still adopted at its socket in the state directory, a
 jails it. A vmm from before SHARD-431 keeps its host tap until its stop, and its next start or
 resume joins a namespace.
 
-`pause` freezes the guest and stops the vCPUs. It writes the vmm's state and the guest's whole
+`pause` freezes the guest and stops the vCPUs. It writes the vmm's state and the guest's
 memory into the snapshot directory, beside a reflinked copy of `overlay.raw`. It then marks the
 snapshot complete and ends the vmm. It stages all of that beside the snapshot that the directory
 already holds, and swaps the two in one step, so no interruption leaves the sandbox with neither.
@@ -303,6 +303,19 @@ freeze and the snapshot, and a control connection that dropped with the freeze's
 booted by an older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state
 says so, and the pause is refused before any freeze, with an error that says to restart the sandbox
 first.
+
+A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest holds in
+memory (SHARD-450, SHARD-451). After a boot, the pages that the guest never touched stay holes in a
+sparse file, and a hole reads as zero. After a restore, shard first reflinks the memory that the vmm
+loaded to the snapshot path, and firecracker merges the Diff into that copy, never into the file
+that it maps. So a pause reads nothing back from the old snapshot. Firecracker finds the pages with
+mincore(2), which over-counts: a page that the guest only read after a restore is resident too, so
+the pause writes it again, unchanged (SHARD-458). mincore also misses a page that the host swapped
+out. So a pause refuses a vmm whose cgroup it cannot hold at `memory.swap.max` 0, and names the
+cgroup; every boot sets that value. Only firecracker 1.13.0 and newer take a Diff this way, so the
+daemon refuses an older `firecracker` at its start, and names its version. Diff snapshots are a
+developer preview in Firecracker, so an upgrade of the binary must pass the memory-integrity kit of
+SHARD-450 again before it ships.
 
 Two more limits apply. The data dir must be able to clone a file by sharing its blocks, because
 `fork` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts

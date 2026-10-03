@@ -680,17 +680,21 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "will not read") }) {
 		t.Errorf("the sweep reported %q, want a note that names the unreadable record", lines)
 	}
-	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 2") && strings.Contains(l, "kept 2") }) {
-		t.Errorf("the sweep reported %q, want swept 2 and kept 2", lines)
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 2") }) {
+		t.Errorf("the sweep reported %q, want swept 2", lines)
+	}
+	// The provider reports the staging of a readable record at the reconcile, which may remove it (SHARD-428).
+	if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, held.ID) }) {
+		t.Errorf("the sweep reported %q, want no line on the staging of %s", lines, held.ID)
 	}
 
-	// A later start finds no orphan, but still names the staging it keeps, one line per daemon life.
+	// A later start finds no orphan, and names only the staging the unreadable record keeps, one line per daemon life.
 	lines = nil
 	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
 		t.Fatalf("second SweepSnapshotTmp: %v", err)
 	}
-	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "swept 0") && strings.Contains(l, "kept 2") }) {
-		t.Errorf("the second sweep reported %q, want swept 0 and kept 2", lines)
+	if len(lines) != 1 || !strings.Contains(lines[0], "will not read") {
+		t.Errorf("the second sweep reported %q, want only the note on the unreadable record", lines)
 	}
 }
 

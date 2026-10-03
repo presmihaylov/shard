@@ -72,16 +72,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
-	p, err := firecracker.New(firecracker.Config{
-		Binary:    os.Args[0],
-		Jailer:    os.Args[0],
-		JailBase:  filepath.Join(h.root, "j"),
-		Kernel:    h.kernel,
-		Init:      initBinary,
-		Dir:       h.root,
-		Dirs:      h.stateDir,
-		Snapshots: h.snapshotDir,
-	})
+	p, err := firecracker.New(h.config())
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
@@ -92,6 +83,20 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	h.provider = p
 
 	return p
+}
+
+// config is what a daemon start hands the provider: this test binary, which answers as the jailer and the vmm.
+func (h *harness) config() firecracker.Config {
+	return firecracker.Config{
+		Binary:    os.Args[0],
+		Jailer:    os.Args[0],
+		JailBase:  filepath.Join(h.root, "j"),
+		Kernel:    h.kernel,
+		Init:      initBinary,
+		Dir:       h.root,
+		Dirs:      h.stateDir,
+		Snapshots: h.snapshotDir,
+	}
 }
 
 // reopen is a daemon restart: the first provider lets go of its vmms, and a second one adopts them.
@@ -722,9 +727,7 @@ func (h *harness) frozenAfterARestart(t *testing.T) (models.SandboxSpec, int) {
 
 	spec, pid := h.runLong(t)
 	h.reopen(t)
-	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	freezeVMM(t, pid)
 
 	return spec, pid
 }
@@ -967,11 +970,23 @@ func TestStopOfAFrozenHeldVMMKillsThroughItsPinNotItsPid(t *testing.T) {
 	}
 }
 
-// freezeVMM stops a vmm with SIGSTOP, as a host under load or an operator can.
+// freezeVMM stops a vmm with SIGSTOP, as a host under load or an operator can, and waits until every thread of it has stopped, which a kill does not.
 func freezeVMM(t *testing.T, pid int) {
 	t.Helper()
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		done, err := stopped(pid)
+		if err != nil {
+			t.Fatalf("read the state of the vmm %d: %v", pid, err)
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the vmm %d did not stop within 5s", pid)
+		}
 	}
 }
 
