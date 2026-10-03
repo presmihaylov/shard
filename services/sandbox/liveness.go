@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // OOMHealthyRun is how long a sandbox must run under its memory throttle before the next OOM resets its count (Docker's number).
@@ -26,10 +27,14 @@ const DiedReason = "the sandbox process died"
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
-		if sb.State != models.StateRunning {
-			continue
+		var err error
+		switch {
+		case sb.State == models.StateRunning:
+			err = s.reconcileLive(ctx, sb, now, report)
+		case sb.State == models.StateStopped && !sb.OOMRestartDue.IsZero():
+			err = s.startAgainWhenDue(ctx, sb, now, report)
 		}
-		if err := s.reconcileLive(ctx, sb, now, report); err != nil {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -82,8 +87,9 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		// The kill ended every exec with the sandbox; drop them before a backoff wait can hold their buffers for a minute.
 		s.dropExecs(sb.ID)
 		// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
-		if restarts, restart := oomRestarts(current, status.Throttles, now); restart && now.Before(current.OOMRestartedAt.Add(oomBackoff(restarts))) {
-			return nil
+		restarts, restart := oomRestarts(current, status.Throttles, now)
+		if due := current.OOMRestartedAt.Add(oomBackoff(restarts)); restart && now.Before(due) {
+			return s.waitOOMBackoff(sb.ID, due, report)
 		}
 
 		return s.handleOOMKilled(ctx, sb.ID, current, status.Throttles, now, report)
@@ -242,6 +248,69 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 		return nil
 	}
 
+	return s.startAgain(ctx, id, restarts+1, sb.MaxOOMRestarts, report)
+}
+
+// waitOOMBackoff takes the record out of running at the kill, so no verb reads the dead pid while the start again waits (SHARD-425).
+func (s *Service) waitOOMBackoff(id string, due time.Time, report func(string)) error {
+	reason := fmt.Sprintf("%s; it starts again at %s", OOMKilledReason, due.Format(time.RFC3339))
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+		rec.State = models.StateStopped
+		rec.PID = 0
+		rec.StoppedReason = reason
+		rec.OOMRestartDue = due
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s %s but its record was not updated: %w", id, OOMKilledReason, err)
+	}
+	report(fmt.Sprintf("sandbox %s %s: the record now says stopped", id, reason))
+
+	return nil
+}
+
+// startAgainWhenDue starts a sandbox that waited out its backoff stopped, once the wait has passed.
+func (s *Service) startAgainWhenDue(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
+	if now.Before(sb.OOMRestartDue) {
+		return nil
+	}
+
+	unlock, ok := s.tryLock(sb.ID)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+
+	// The list may be a tick old: a stop, a start or an rm that landed since took the wait away.
+	current, err := s.cfg.Repo.Get(sb.ID)
+	if errors.Is(err, sandboxstate.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.State != models.StateStopped || !current.OOMRestartDue.Equal(sb.OOMRestartDue) {
+		return nil
+	}
+
+	err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+		rec.StoppedReason = OOMKilledReason
+		rec.OOMRestarts = current.OOMRestarts + 1
+		rec.OOMRestartedAt = now
+		rec.OOMRestartDue = time.Time{}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox %s %s but its start again was not counted: %w", sb.ID, OOMKilledReason, err)
+	}
+
+	return s.startAgain(ctx, sb.ID, current.OOMRestarts+1, current.MaxOOMRestarts, report)
+}
+
+// startAgain runs a start again the record already counted, so one that fails leaves no loop.
+func (s *Service) startAgain(ctx context.Context, id string, count, limit int, report func(string)) error {
 	if err := s.start(ctx, id); err != nil {
 		var timeout *SubstrateTimeoutError
 		if errors.As(err, &timeout) {
@@ -253,9 +322,18 @@ func (s *Service) handleOOMKilled(ctx context.Context, id string, sb models.Sand
 
 		return fmt.Errorf("start sandbox %s again after it %s: %w", id, OOMKilledReason, err)
 	}
-	report(oomRestartReport(id, restarts+1, sb.MaxOOMRestarts))
+	report(oomRestartReport(id, count, limit))
 
 	return nil
+}
+
+// callOffOOMWait drops the start again a stopped record waits on, because an operator stop outranks it.
+func callOffOOMWait(rec *models.Sandbox) {
+	if rec.OOMRestartDue.IsZero() {
+		return
+	}
+	rec.OOMRestartDue = time.Time{}
+	rec.StoppedReason = OOMKilledReason
 }
 
 // oomRestarts is the count an OOM now goes on from, and whether the record and its limit allow one more start again.

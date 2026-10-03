@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/tarball"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -55,6 +57,9 @@ func serveFiles(r io.Reader, w io.Writer) error {
 	if out.entries != nil {
 		return sendEntries(w, out)
 	}
+	if out.archive != "" {
+		return sendArchive(w, out)
+	}
 	if err := supervisor.WriteMessage(w, supervisor.FileReply{Stat: &out.stat}); err != nil {
 		return errors.Join(err, closeSource(out.file))
 	}
@@ -69,11 +74,28 @@ func serveFiles(r io.Reader, w io.Writer) error {
 	return out.file.Close()
 }
 
-// served is one operation's answer: the stat the reply carries, and a get's open file or an ls's entries to follow it.
+// served is one operation's answer: the stat the reply carries, and a get's open file, an ls's entries or a pack's path to follow it.
 type served struct {
 	stat    models.FileStat
 	file    *os.File
 	entries []models.FileEntry
+	archive string
+}
+
+// sendArchive writes the reply and then the tar, buffered, since a tar is many small headers; a failure midway exits 1, which the host reads as the cut.
+func sendArchive(w io.Writer, out served) error {
+	buffered := bufio.NewWriterSize(w, 64<<10)
+	if err := supervisor.WriteMessage(buffered, supervisor.FileReply{Stat: &out.stat}); err != nil {
+		return err
+	}
+	if err := tarball.Pack(buffered, out.archive, filepath.Base(out.archive)); err != nil {
+		return fmt.Errorf("pack %s: %w", out.archive, err)
+	}
+	if err := buffered.Flush(); err != nil {
+		return fmt.Errorf("send the archive of %s: %w", out.archive, err)
+	}
+
+	return nil
 }
 
 // sendEntries writes the reply and then one line per entry, buffered, since a large directory is many small lines.
@@ -117,6 +139,14 @@ func serveFile(r io.Reader, header supervisor.FileHeader) (served, error) {
 		return makeDir(header)
 	case supervisor.OpDelete:
 		return deletePath(header)
+	case supervisor.OpPack:
+		return packPath(header.Path)
+	case supervisor.OpUnpack:
+		if err := unpackInto(r, header.Path); err != nil {
+			return served{}, err
+		}
+
+		return lstat(header.Path)
 	default:
 		return served{}, invalidError(fmt.Sprintf("unknown files op %q", header.Op))
 	}
@@ -223,6 +253,42 @@ func deletePath(header supervisor.FileHeader) (served, error) {
 	return served{stat: statOf(info)}, nil
 }
 
+// packPath answers the stat of what a pack takes, which is never a final symlink's target; / has no base name to put at the top of a tar.
+func packPath(path string) (served, error) {
+	if filepath.Clean(path) == "/" {
+		return served{}, invalidError("an archive of / has no name for its top entry; name a directory under it")
+	}
+
+	out, err := lstat(path)
+	if err != nil {
+		return served{}, err
+	}
+	out.archive = path
+
+	return out, nil
+}
+
+// unpackInto lands the host's tar under dir, then drains stdin, so the host's end of the archive is what ends the op; the sync is for a clone, which reads the disk.
+func unpackInto(r io.Reader, dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return invalidError(dir + " is not a directory; an archive unpacks into one")
+	}
+
+	if err := tarball.Unpack(r, dir, tarball.Options{KeepSetid: true}); err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return fmt.Errorf("read past the end of the archive: %w", err)
+	}
+	syncDisks()
+
+	return nil
+}
+
 // invalidError is a request the guest refuses as asked, which the host answers 400 and not 500.
 type invalidError string
 
@@ -231,7 +297,10 @@ func (e invalidError) Error() string { return string(e) }
 // codeOf names a refusal the host maps to the API's own code; an empty one is the guest's fault, an internal error.
 func codeOf(err error) string {
 	var invalid invalidError
+	var refused *tarball.RefusedError
 	switch {
+	case errors.As(err, &refused), errors.Is(err, tar.ErrHeader):
+		return supervisor.FileInvalid
 	case errors.Is(err, fs.ErrNotExist):
 		return supervisor.FileNotFound
 	case errors.As(err, &invalid), errors.Is(err, fs.ErrPermission), errors.Is(err, fs.ErrExist), errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ENOTEMPTY):

@@ -48,6 +48,8 @@ type Sandbox struct {
 	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
 	OOMRestarts    int       `json:"oom_restarts,omitempty"`
 	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
+	// OOMRestartDue is when a stopped sandbox that waits out the backoff starts again, zero when none waits.
+	OOMRestartDue time.Time `json:"oom_restart_due,omitzero"`
 	// MemoryThrottles is the host's throttle count the daemon last saw this run, and CalmSince the tick it last grew, zero for none.
 	MemoryThrottles int64     `json:"memory_throttles,omitempty"`
 	CalmSince       time.Time `json:"calm_since,omitzero"`

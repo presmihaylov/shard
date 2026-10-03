@@ -44,8 +44,8 @@ start_daemon() {
 	wait_for_daemon
 }
 
-# fstab_line is what services/datadir appends, byte for byte, so the teardown removes that line and no other.
-fstab_line() { printf '%s %s xfs loop 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
+# fstab_line is what pkg/xfs appendFstab writes, byte for byte, so the teardown removes that line and no other.
+fstab_line() { printf '%s %s xfs loop,nofail 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
 
 # forget_fstab drops the run's own line through a temp file in /etc, so an interrupt never leaves a half-written fstab.
 forget_fstab() {
@@ -90,6 +90,13 @@ wipe_root() {
 	rm -f "${DATA_IMAGE}" "${DATA_IMAGE}.part" "${DATA_IMAGE}.lock"
 	forget_fstab
 	clear_host_net
+	drop_cgroup_parent
+}
+
+# drop_cgroup_parent removes the shard cgroup parent when this run made it and no sandbox of any root is under it.
+drop_cgroup_parent() {
+	[ "${CGROUP_PARENT_BEFORE:-yes}" = no ] && [ -d "${CGROUP_PARENT}" ] && [ -z "$(shard_cgroups)" ] || return 0
+	rmdir "${CGROUP_PARENT}" || echo "teardown: could not remove the cgroup parent ${CGROUP_PARENT}" >&2
 }
 
 # vmm_pids lists every firecracker process jailed under this root, and no other root's.
@@ -106,8 +113,10 @@ vmm_pids() {
 # vmm_status reads one field of the vmm's /proc status.
 vmm_status() { awk -v field="$2:" '$1 == field { print $2 }' "/proc/$1/status"; }
 
+CGROUP_PARENT=/sys/fs/cgroup/shard
+
 # shard_cgroups lists the sandbox cgroups under the shard parent, which the daemon of every root on the host shares.
-shard_cgroups() { find /sys/fs/cgroup/shard -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
+shard_cgroups() { find "${CGROUP_PARENT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
 
 # run_cgroups lists the sandbox cgroups this run added to the ones the host held before it.
 run_cgroups() { comm -13 <(printf '%s\n' "${CGROUPS_BEFORE}") <(shard_cgroups) | tr '\n' ' '; }
@@ -147,6 +156,7 @@ check_host_is_free
 say "no other sandbox holds a link on this host"
 [ -z "$(vmm_pids)" ] || fail "a firecracker process already drives ${SHARD_ROOT}: $(vmm_pids)"
 CGROUPS_BEFORE=$(shard_cgroups)
+CGROUP_PARENT_BEFORE=$([ -d "${CGROUP_PARENT}" ] && echo yes || echo no)
 
 check_root
 DATA_IMAGE="${SHARD_ROOT}.xfs"
@@ -531,9 +541,10 @@ rm -f "${ROOT_MARKER}"
 grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line for ${SHARD_ROOT}"
 check_host_net_clear
 [ -z "$(run_cgroups)" ] || fail "the host still holds a cgroup of this run: $(run_cgroups)"
+[ "${CGROUP_PARENT_BEFORE}" = yes ] || [ ! -d "${CGROUP_PARENT}" ] || fail "the cgroup parent ${CGROUP_PARENT} this run made is still on the host"
 [ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
 ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
-say "the root, the image, the fstab line, every cgroup of the run, the echo's netns and its link are gone"
+say "the root, the image, the fstab line, every cgroup of the run and the parent it made, the echo's netns and its link are gone"
 
 trap - EXIT
 echo

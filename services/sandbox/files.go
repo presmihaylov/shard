@@ -139,6 +139,48 @@ func (s *Service) putCleanupGrace() time.Duration {
 	return DefaultPutCleanupGrace
 }
 
+// ArchiveWrite is what a put of an archive names: the guest directory it unpacks into, and who that runs as.
+type ArchiveWrite struct {
+	Path string
+	// User is who the unpack runs as and who owns what it lands, resolved as an exec's user is; empty is the entrypoint's.
+	User string
+}
+
+// ReadArchive answers one guest path's stat and a tar of it as it streams; closing the body says whether the guest sent it all.
+func (s *Service) ReadArchive(ctx context.Context, ref, guestPath string) (models.FileStat, io.ReadCloser, error) {
+	if err := checkGuestPath(guestPath); err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	conn, err := s.openFiles(ctx, ref, "")
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	stat, body, err := supervisor.GetArchive(conn, guestPath)
+	if err != nil {
+		return models.FileStat{}, nil, fileError(errors.Join(err, conn.Close()))
+	}
+
+	return stat, &fileBody{Reader: body, conn: conn}, nil
+}
+
+// WriteArchive unpacks the tar src under the guest directory req.Path; the guest refuses an entry that would land outside it.
+func (s *Service) WriteArchive(ctx context.Context, ref string, req ArchiveWrite, src io.Reader) error {
+	if err := checkGuestPath(req.Path); err != nil {
+		return err
+	}
+
+	conn, err := s.openFiles(ctx, ref, req.User)
+	if err != nil {
+		return err
+	}
+
+	err = supervisor.PutArchive(conn, req.Path, src)
+
+	return fileError(errors.Join(err, conn.Close()))
+}
+
 // ListDir streams the entries of one guest directory, sorted by name and each with its own lstat.
 func (s *Service) ListDir(ctx context.Context, ref, guestPath string) (Listing, error) {
 	if err := checkGuestPath(guestPath); err != nil {
@@ -223,7 +265,7 @@ func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursi
 }
 
 // openFiles starts one files exec in a running sandbox, as user; every provider runs the same shard-init mode.
-func (s *Service) openFiles(ctx context.Context, ref, user string) (io.ReadWriteCloser, error) {
+func (s *Service) openFiles(ctx context.Context, ref, user string) (supervisor.FilesConn, error) {
 	id, err := s.readyForExec(ctx, ref)
 	if err != nil {
 		return nil, err
