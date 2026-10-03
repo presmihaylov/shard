@@ -72,7 +72,7 @@ restore that the old daemon started can still run where the runtime cannot see i
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
 means that the sandbox is up. It does not mean that a workload executes in it. When the entrypoint
 finishes, the sandbox stays `running` and you can still `exec` or `pause` it, and `fork` it once
-paused. E2B, Modal, Vercel and Daytona all work this way. There is no fifth state for an exited
+paused. E2B, Modal, Vercel and Daytona all work this way. There is no eighth state for an exited
 entrypoint. Instead, the liveness task writes the exit into `exit_status` on the record, which stays
 `running`, so `shard ls` prints `running (exited 0)`. `stop` is the only thing that ends a sandbox.
 
