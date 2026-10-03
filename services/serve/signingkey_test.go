@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -217,6 +218,34 @@ func TestConcurrentFirstUseLandsOneKey(t *testing.T) {
 		}
 	}
 	assertOnlyEntry(t, filepath.Join(root, "auth"), "signing-key")
+}
+
+// Under a umask that strips every bit, the creator's chmod is all that opens the auth directory, so a loser must wait for it.
+func TestConcurrentFirstUseUnderATightUmaskLandsOneKey(t *testing.T) {
+	const rounds, callers = 20, 32
+	roots := make([]string, rounds)
+	for i := range roots {
+		roots[i] = t.TempDir()
+	}
+
+	old := syscall.Umask(0o777)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	for _, root := range roots {
+		errs := make([]error, callers)
+		var wg sync.WaitGroup
+		for i := range callers {
+			wg.Go(func() { _, _, errs[i] = SigningKey(root, "") })
+		}
+		wg.Wait()
+
+		for i := range callers {
+			if errs[i] != nil {
+				t.Fatalf("caller %d: %v", i, errs[i])
+			}
+		}
+		assertMode(t, filepath.Join(root, "auth"), 0o700)
+	}
 }
 
 // The loser of a first-use race meets the winner's key at the link and reads it, and never replaces it.

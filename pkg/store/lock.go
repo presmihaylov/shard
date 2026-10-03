@@ -61,6 +61,30 @@ func Acquire(path string, perm fs.FileMode, timeout time.Duration) (*Lock, error
 	}
 }
 
+// AcquireDir flocks dir itself, so guarding a setup inside it adds no lock file; it waits as Acquire does.
+func AcquireDir(dir string, timeout time.Duration) (*Lock, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", dir, err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		err := flock(f, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &Lock{f: f}, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errors.Join(fmt.Errorf("lock %s: %w", dir, err), f.Close())
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.Join(fmt.Errorf("lock %s: still held after %s", dir, timeout), f.Close())
+		}
+
+		time.Sleep(lockRetry)
+	}
+}
+
 // Release drops the lock. Call it once; a second call reports the closed file.
 func (l *Lock) Release() error {
 	// Closing the file drops the flock too, so the unlock only makes the order explicit.

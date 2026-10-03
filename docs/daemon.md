@@ -436,7 +436,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   and 409 when the sandbox is not running.
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. Errors: 404, and 409 when the sandbox is
   still up, unless the query has `?force=true`. Then the route stops the sandbox first, with the
-  same 30 s grace. A `grace` in the query gets a 400 that names it.
+  same 30 s grace.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. Errors: 404,
   and 409 when the sandbox is not running or when the provider does not claim the verb. A client
   that hangs up does not cut the pause. The daemon gives a pause at most 10 minutes

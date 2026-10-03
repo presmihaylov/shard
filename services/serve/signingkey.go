@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -20,6 +21,8 @@ const (
 	SigningKeyFileName = "signing-key"
 	// signingKeyBytes is the random width of a generated key, the HS256 hash width; it is written hex.
 	signingKeyBytes = 32
+	// authDirLockWait bounds the wait for a concurrent first use to finish setting up the auth directory.
+	authDirLockWait = 10 * time.Second
 )
 
 // SigningKeyPath is the named --signing-key-file, which must exist, else <root>/auth/signing-key.
@@ -47,8 +50,12 @@ func SigningKey(root, explicit string) ([]byte, string, error) {
 	}
 
 	key, err := readSigningKey(path)
-	if explicit != "" || !errors.Is(err, fs.ErrNotExist) {
+	if explicit != "" || err == nil {
 		return key, path, err
+	}
+	// A concurrent first use holds the new auth dir at the umask's mode until its chmod, which reads as a permission error.
+	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrPermission) {
+		return nil, path, err
 	}
 
 	key, err = createSigningKey(path)
@@ -93,6 +100,18 @@ func createSigningKey(path string) ([]byte, error) {
 	if err := makeAuthDir(dir); err != nil {
 		return nil, err
 	}
+	key, err := readSigningKey(path)
+	if err == nil {
+		// The creator may not have synced its link yet, and a crash then would void every token signed with this key.
+		if err := store.SyncDir(dir); err != nil {
+			return nil, err
+		}
+
+		return key, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 
 	var raw [signingKeyBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -123,12 +142,20 @@ func createSigningKey(path string) ([]byte, error) {
 }
 
 // makeAuthDir creates dir at 0700, and the root above it as the daemon does; a dir that exists keeps the mode its owner gave it.
-func makeAuthDir(dir string) error {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(dir), err)
+func makeAuthDir(dir string) (err error) {
+	root := filepath.Dir(dir)
+	if err = store.MkdirAllDurable(root, 0o750); err != nil {
+		return err
 	}
 
-	err := os.Mkdir(dir, 0o700)
+	// A concurrent first use waits here until the creator's chmod, or the umask can lock it out of the new dir.
+	lock, err := store.AcquireDir(root, authDirLockWait)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, lock.Release()) }()
+
+	err = os.Mkdir(dir, 0o700)
 	if errors.Is(err, fs.ErrExist) {
 		return nil
 	}
@@ -136,11 +163,11 @@ func makeAuthDir(dir string) error {
 		return fmt.Errorf("create the auth directory %s: %w", dir, err)
 	}
 	// The umask can trim the mode, and the owner needs all of 0700 to write the key.
-	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302: a directory needs the execute bit, and 0700 lets only the owner in
+	if err = os.Chmod(dir, 0o700); err != nil { // #nosec G302: a directory needs the execute bit, and 0700 lets only the owner in
 		return fmt.Errorf("set the mode of the auth directory %s: %w", dir, err)
 	}
 
-	return nil
+	return store.SyncDir(root)
 }
 
 // writeKey fills the temp file at 0600 and makes it durable before anything links it into place.
