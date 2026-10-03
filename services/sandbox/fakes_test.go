@@ -141,7 +141,13 @@ func (f *fakeRepo) List() ([]models.Sandbox, error) {
 	return f.left, nil
 }
 
-func (f *fakeRepo) Create(sb models.Sandbox) (models.Sandbox, error) {
+func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (models.Sandbox, error) {
+	// The repository runs each admission on the claimed directory, before it writes the record.
+	for _, check := range admit {
+		if err := check("/sandboxes/sandbox1"); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
 	if err := f.r.record("repo.Create"); err != nil {
 		return models.Sandbox{}, err
 	}

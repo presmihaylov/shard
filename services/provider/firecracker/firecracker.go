@@ -155,6 +155,14 @@ func (p *Provider) Capabilities() models.Capabilities {
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }
 
+// AdmitDisk reserves the overlay a create writes into dir, before the sandbox has a record, so a refusal leaves none.
+func (p *Provider) AdmitDisk(dir string, res models.Resources) error {
+	return bundle.Reserve(filepath.Join(dir, bundle.OverlayDiskFile), bundle.DiskBytes(res))
+}
+
+// ReleaseDisk gives back what AdmitDisk reserved for a create that ended before its record.
+func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
+
 // Close drops what this process holds of every vmm and leaves the VMs running, which is what a daemon exit does.
 func (p *Provider) Close() error {
 	p.mu.Lock()
