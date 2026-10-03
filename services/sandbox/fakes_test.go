@@ -453,6 +453,8 @@ func (f *fakeProvider) Fork(_ context.Context, dir string, spec models.SandboxSp
 	return nil
 }
 
+func (f *fakeProvider) AdoptStaging(string) error { return nil }
+
 func (f *fakeProvider) Clone(_ context.Context, source string, spec models.SandboxSpec) error {
 	if err := f.r.record("provider.Clone"); err != nil {
 		return err

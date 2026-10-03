@@ -941,6 +941,11 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return nil
 }
 
+// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+func (p *Provider) AdoptStaging(dir string) error {
+	return os.RemoveAll(dir + ".tmp")
+}
+
 // Fork restores the snapshot in dir as a new sandbox over its own copy of the layer: two forks share nothing.
 func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
