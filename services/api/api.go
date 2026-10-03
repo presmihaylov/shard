@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -390,6 +391,12 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := checkCreateScopes(r.Header, req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
 	if wait && streamed(r) {
 		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
@@ -432,6 +439,70 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusCreated, sb)
+}
+
+// ScopesHeader carries the token's scopes from the TCP front to the daemon. The front stamps it on every request it forwards and strips any client copy; a request with no such header reached the socket directly.
+const ScopesHeader = "X-Shard-Scopes"
+
+// scopeError is a create that names a secret or a policy the token's scopes do not reach; classify maps it to 403.
+type scopeError struct {
+	scope string
+	named string
+}
+
+func (e *scopeError) Error() string {
+	return fmt.Sprintf("the token does not carry the %q scope, which a create that names a %s needs", e.scope, e.named)
+}
+
+// checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
+func checkCreateScopes(header http.Header, req sandbox.CreateRequest) error {
+	scopes, stamped := stampedScopes(header)
+	if !stamped {
+		return nil
+	}
+
+	if len(req.Secrets) > 0 && !scopesCover(scopes, "secret:*") {
+		return &scopeError{scope: "secret:*", named: "secret"}
+	}
+	if req.Policy != "" && !scopesCover(scopes, "policy:*") {
+		return &scopeError{scope: "policy:*", named: "policy"}
+	}
+
+	return nil
+}
+
+// stampedScopes reads the scopes the front stamped; stamped is false when no header is present, the local socket.
+func stampedScopes(header http.Header) ([]string, bool) {
+	values, ok := header[http.CanonicalHeaderKey(ScopesHeader)]
+	if !ok {
+		return nil, false
+	}
+
+	var scopes []string
+	for _, value := range values {
+		for s := range strings.SplitSeq(value, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				scopes = append(scopes, s)
+			}
+		}
+	}
+
+	return scopes, true
+}
+
+// scopesCover reports whether the stamped scopes reach need; no scopes, or a "*" scope, reaches every one, as the front's covers() does.
+func scopesCover(scopes []string, need string) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+
+	for _, s := range scopes {
+		if s == "*" || s == need {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
@@ -561,8 +632,11 @@ func classify(err error) (int, models.Code) {
 	var execRunning *sandbox.ExecRunningError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
 	var tooLarge *http.MaxBytesError
+	var scope *scopeError
 
 	switch {
+	case errors.As(err, &scope):
+		return http.StatusForbidden, models.CodeForbidden
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
