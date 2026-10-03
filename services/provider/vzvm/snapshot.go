@@ -55,7 +55,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
-	// A pause that crashed before its record left the VM paused, and this one carries on from there.
+	// A failed pause whose resume failed too left the VM paused, and this one carries on from there; a restart resumes it before this (SHARD-375).
 	if info.State != vz.StatePaused {
 		// A clone boots from the disk alone, so the guest's root is flushed and frozen first, and no write lands between the two.
 		if err := m.freeze(ctx); err != nil {
