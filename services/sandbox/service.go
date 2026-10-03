@@ -884,7 +884,8 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		return err
 	}
 
-	if err := s.awaitStopped(ctx, id); err != nil {
+	status, err := s.awaitStopped(ctx, id)
+	if err != nil {
 		return err
 	}
 
@@ -912,6 +913,10 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 		if exit != nil {
 			sb.ExitStatus = exit
 		}
+		// shard-init died on the way down, so its 125 outranks an entrypoint exit the record already took.
+		if status.SupervisorFailed != "" {
+			supervisorFailed(sb, status.SupervisorFailed)
+		}
 		if sb.Restart != nil {
 			sb.Restart.RestartCount = restarts
 		}
@@ -922,7 +927,7 @@ func (s *Service) stop(ctx context.Context, id string, grace time.Duration, forc
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
 // stop, and a rm that lands in that moment would refuse it. The record is written only after this.
-func (s *Service) awaitStopped(ctx context.Context, id string) error {
+func (s *Service) awaitStopped(ctx context.Context, id string) (models.Status, error) {
 	// The bound excludes the grace on purpose: Provider.Stop already spent it, and the client's own
 	// timeout is DefaultTimeout plus the grace, which counting it twice would run past.
 	bound := s.cfg.StopSettle
@@ -937,24 +942,24 @@ func (s *Service) awaitStopped(ctx context.Context, id string) error {
 	for {
 		status, err := s.cfg.Provider.Status(sctx, id)
 		if err != nil && ctx.Err() != nil {
-			return ctx.Err()
+			return models.Status{}, ctx.Err()
 		}
 		if err != nil && sctx.Err() != nil {
-			return fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate did not answer", id, bound)
 		}
 		if err != nil {
-			return err
+			return models.Status{}, err
 		}
 		if !status.Alive() {
-			return nil
+			return status, nil
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
+			return models.Status{}, fmt.Errorf("sandbox %s did not stop within %s: the substrate still reports %s", id, bound, status.State)
 		}
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return models.Status{}, ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
