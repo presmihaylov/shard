@@ -217,7 +217,7 @@ func parseExec(args []string) (execOptions, error) {
 
 	flags := flag.NewFlagSet("shard exec", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.BoolVar(&opts.interactive, "i", false, "keep stdin open on the command")
+	flags.BoolVar(&opts.interactive, "i", false, "keep stdin open for the command")
 	flags.BoolVar(&opts.tty, "t", false, "run the command on a terminal")
 	flags.Var((*envList)(&opts.env), "env", "an environment variable as KEY=VALUE, repeatable")
 	flags.StringVar(&opts.workDir, "workdir", "", "the directory the command starts in")

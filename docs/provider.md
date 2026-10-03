@@ -1,13 +1,13 @@
 # The provider contract
 
-One interface, `models.Provider`, and one implementation per substrate. `models/provider.go` is the
-code; this page says what the signatures cannot.
+There is one interface, `models.Provider`, and each substrate has one implementation of it. The
+code is in `models/provider.go`. This page says what the signatures cannot.
 
 ## The substrates
 
 `shard daemon --provider <name>` picks one substrate for the whole host, and every sandbox on that
-host runs on it. A record names the substrate that made it, and a root that holds records refuses
-another `--provider`: the other substrate has never heard of those sandboxes.
+host runs on it. Each record names the substrate that made it. A root that holds records refuses
+any other `--provider`, because the other substrate has never heard of those sandboxes.
 
 | | gVisor (`gvisor`) | Sysbox (`sysbox`) | runc (`runc`) | vz (`vz`) | Firecracker (`firecracker`) |
 |---|---|---|---|---|---|
@@ -15,12 +15,13 @@ another `--provider`: the other substrate has never heard of those sandboxes.
 | Syscall cost | high on file-heavy work (`npm install`, `git clone`) | near native | near native | near native | near native |
 | Docker inside | no | yes | no | yes | yes |
 | systemd as PID 1 | no | no | no | no | no |
-| Tenancy | many tenants on one host | **one tenant per host**, see below | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
-| Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop, see below | **guest-attested**: guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
+| Tenancy | many tenants on one host | **one tenant per host** (see the Sysbox section) | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
+| Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop (see the Sysbox section) | **guest-attested**, because guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
 | Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every verb |
 
-The capability table, in CLI names. The first row is the required verbs; the other three are what `Capabilities`
-reports and the CLI refuses on:
+The capability table uses the CLI names. The first row holds the required verbs. The other three
+rows are the optional verbs: `Capabilities` reports each one, and the CLI refuses the ones a
+substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
@@ -31,9 +32,9 @@ reports and the CLI refuses on:
 
 ### What a host picks without --provider
 
-`--provider` wins over the host, and over a root it must name what made the root. Without it the
-root decides first and the host decides second, so the same command runs unchanged on a box with
-hardware virtualization and on one without:
+`--provider` wins over the host. Over a root, it must name the substrate that made the root.
+Without the flag, the root decides first and the host decides second. So the same command runs
+unchanged on a box with hardware virtualization and on one without:
 
 | The root and the host | The substrate | The reason |
 |---|---|---|
@@ -44,39 +45,42 @@ hardware virtualization and on one without:
 | a root with none, on Linux, `/dev/kvm` will not open | gVisor | `/dev/kvm does not open: <error>` |
 | a root with none, on macOS | vz | `macOS runs virtual machines through Virtualization.framework` |
 
-**A root keeps the substrate that made its records.** No other substrate can read them, so a daemon
-that upgrades onto a host whose `/dev/kvm` appeared keeps running the sandboxes it already has. A
-`--provider` that names another substrate is refused, by both names, before the daemon touches the
-root; the records or the data image name the one to give.
+**A root keeps the substrate that made its records.** No other substrate can read them. So when a
+daemon upgrades on a host where `/dev/kvm` has since appeared, it keeps running the sandboxes it
+already has. A `--provider` that names another substrate is refused before the daemon touches the
+root, and the refusal names both substrates. The records, or the data image, name the substrate to
+pass instead.
 
 **A root leaves room for the sockets under it.** A unix socket path holds at most 107 bytes on Linux
-and 103 on macOS. A vz VM's sockets sit under `<root>/sandboxes/<id>/`, and a Firecracker vmm's in
-its jail, `<root>/jail/firecracker/<id>/root/`. So the daemon refuses at start a root longer than 51
-bytes for Firecracker, 58 for vz, or 96 for the container substrates (92 on macOS), and the refusal
-names the longest root that fits (SHARD-358, SHARD-306).
+and 103 on macOS. A vz VM's sockets sit under `<root>/sandboxes/<id>/`. A Firecracker vmm's sockets
+sit in its jail, `<root>/jail/firecracker/<id>/root/`. So at start the daemon refuses a root longer
+than 51 bytes for Firecracker, 58 for vz, or 96 for the container substrates (92 on macOS). The
+refusal names the longest root that fits (SHARD-358, SHARD-306).
 
-**A daemon upgrade keeps the output of a running microVM; a downgrade does not.** A guest booted
-before the logs protocol names no version in its state and sends raw output, and a newer daemon lands
-every byte as it comes, with no resume. A newer guest under an older daemon is unsupported: that
-daemon lands the guest's opening offsets as output and never answers them, so no output follows.
+**A daemon upgrade keeps the output of a running microVM, and a downgrade does not.** A guest booted
+before the logs protocol names no version in its state and sends raw output. A newer daemon lands
+every byte of that output as it comes, with no resume. A newer guest under an older daemon is
+unsupported. That daemon lands the guest's opening offsets as output and never answers them, so no
+output follows.
 
-**An unmounted data image still names Firecracker.** Only Firecracker gives a root the xfs image
-beside it, and every record lives inside that image, so a root whose image is not mounted looks empty
-from outside it. The image itself is what says the root is Firecracker's; the daemon then mounts it
-back and the records return. Without this a host that lost `/dev/kvm` would start fresh over the
-mountpoint and hide them.
+**An unmounted data image still names Firecracker.** Only Firecracker puts an xfs image beside a
+root, and every record lives inside that image. So a root whose image is not mounted looks empty
+from outside. The image itself is what marks the root as Firecracker's. The daemon then mounts the
+image back, and the records return. Without this rule, a host that lost `/dev/kvm` would start fresh
+over the mountpoint and hide the records.
 
-**The probe opens `/dev/kvm`, it does not stat it.** A node this daemon cannot open runs no microVM,
-so a present but unusable one leaves the pick at gVisor instead of failing every create.
+**The probe opens `/dev/kvm` instead of calling stat on it.** A node that this daemon cannot open
+runs no microVM. So when the node is present but unusable, the pick stays at gVisor instead of every
+create failing.
 
-**Sysbox and runc are never picked for a host.** One is single-tenant and the other is a plain
-container on the host kernel, so only `--provider`, or a root they already made records under, names
-either.
+**Sysbox and runc are never picked for a host.** Sysbox is single-tenant, and runc is a plain
+container on the host kernel. Only `--provider`, or a root they already made records under, can name
+either one.
 
-`shard info` prints the substrate and the reason. It asks the host and the root, not the socket, so
-it answers before a daemon exists and says what one started now would run. `shard daemon status` says
-what the daemon that is already up runs on, which differs when that daemon was started with other
-flags.
+`shard info` prints the substrate and the reason. It asks the host and the root instead of the
+socket. So it answers before a daemon exists, and it says what a daemon started now would run.
+`shard daemon status` says what the daemon that is already up runs on. The two differ when that
+daemon was started with other flags.
 
 ```
 $ shard info
@@ -88,404 +92,435 @@ reason     /dev/kvm opens
 
 **systemd cannot run as a sandbox's PID 1, on any provider.** `shard-init` is PID 1 in every
 sandbox and starts the image entrypoint as its child (`cmd/shard-init` uses `ForkExec`), so the
-entrypoint is never PID 1. systemd refuses the system-manager role below PID 1: it prints "Explicit
---user argument required to run as user manager." and exits, `systemctl is-system-running` reports
-`offline`, and the record stays `running` because a sandbox outlives its entrypoint. This is not a
-Sysbox limit. It holds on gVisor and Firecracker too, and it follows from `shard-init` being PID 1 in
-every sandbox. Docker inside a sandbox is unaffected and works end to end on Sysbox and on `vz`,
-where `dockerd` runs as the entrypoint of a VM (SHARD-247, `docs/provider-vz.md`). To run
-systemd, run it inside a Docker container the sandbox starts, not as the sandbox's own init.
+entrypoint is never PID 1. systemd refuses the system-manager role when it is not PID 1. It prints
+"Explicit --user argument required to run as user manager." and exits. `systemctl is-system-running`
+then reports `offline`, and the record stays `running` because a sandbox outlives its entrypoint.
+The limit is not specific to Sysbox. It holds on gVisor and Firecracker too, because `shard-init` is
+PID 1 in every sandbox. Docker inside a sandbox is unaffected. It works end to end on Sysbox, and on
+`vz`, where `dockerd` runs as the entrypoint of a VM (SHARD-247, `docs/provider-vz.md`). To run
+systemd, run it inside a Docker container that the sandbox starts. It cannot be the sandbox's own
+init.
 
 ### What Sysbox does not do
 
 **Sysbox has no pause, no resume and no fork.** `sysbox-runc` dropped upstream `runc`'s
 `checkpoint` and `restore` (nestybox/sysbox#715, open since 2023), so there is no memory image to
-take. The provider claims `{Pause: false, Resume: false, Fork: false}` and each verb refuses by name:
-`provider sysbox does not support pause on this host`. Nothing is emulated: a `pause` on Sysbox is a
-refusal, not a stop, and the sandbox runs on. `clone` still works, because it needs no snapshot.
+take. The provider claims `{Pause: false, Resume: false, Fork: false}`, and each verb refuses by
+name, for example `provider sysbox does not support pause on this host`. Nothing is emulated. A
+`pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running. `clone` still works,
+because it needs no snapshot.
 
 **Sysbox CE is single-tenant.** Sysbox CE maps every container to the same host uid range,
-`0 165536 65536`; exclusive ranges were a Sysbox EE feature, and EE is gone. So two Sysbox sandboxes
-are isolated from the host and **not from each other**: a process that escapes one container's
-namespaces has the uid of every other sandbox's root. Run one tenant per Sysbox host. Do not place
-two customers' sandboxes on one. shard pins that same mapping on the user namespace that owns each
-sandbox's netns (`services/provider/sysbox.Userns`), which is why the guest holds `CAP_NET_ADMIN` over
-its own interface and nothing else. The upstream fix is an exclusive-range allocator in
-`sysbox-mgr`, and until it lands this limit stands.
+`0 165536 65536`. Exclusive ranges were a Sysbox EE feature, and EE is gone. So two Sysbox
+sandboxes are isolated from the host but **not from each other**. A process that escapes one
+container's namespaces has the uid of every other sandbox's root. Run one tenant per Sysbox host,
+and do not place two customers' sandboxes on one. shard pins that same mapping on the user namespace
+that owns each sandbox's netns (`services/provider/sysbox.Userns`). That is why the guest holds
+`CAP_NET_ADMIN` over its own interface and nothing else. The upstream fix is an exclusive-range
+allocator in `sysbox-mgr`, and this limit stands until it lands.
 
 **A Sysbox guest gets no kernel keyring.** The keyring quota is per host uid, and every Sysbox guest
-root is host uid 165536, so one guest that filled it would fail every later create (SHARD-367). Each
-bundle carries a seccomp filter that answers `add_key`, `keyctl` and `request_key` with `ENOSYS`, and
-`sysbox-runc create` runs with `--no-new-keyring`. It is a deny-list, because `sysbox-runc` rewrites
-an allow-list to admit those three again. `ENOSYS` and not `EPERM`, because `runc` inside the guest
-skips its session keyring on `ENOSYS`, so nested Docker still starts.
+root is host uid 165536. So one guest that filled the quota would make every later create fail
+(SHARD-367). Each bundle carries a seccomp filter that answers `add_key`, `keyctl` and
+`request_key` with `ENOSYS`, and `sysbox-runc create` runs with `--no-new-keyring`. The filter is a
+deny-list, because `sysbox-runc` rewrites an allow-list to admit those three calls again. It
+answers `ENOSYS` and not `EPERM` because `runc` inside the guest skips its session keyring on
+`ENOSYS`, so nested Docker still starts.
 
 **Sysbox does not verify the entrypoint's exit code.** `shard-init` reports the exit record on its
-fd 0, which the host holds, and clears its dumpable flag so `/proc/1/fd` is out of the guest's reach.
-On gVisor that holds: the sentry enforces the capability set the bundle grants, which has no
-`CAP_SYS_PTRACE`, so a guest write to `/proc/1/fd/0` fails with `EACCES`. `sysbox-runc` gives guest
-root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE` included, so guest root
-controls PID 1 and the entrypoint: it can write a forged record, drive the exit value or pick the
-signal, and a background write after the real exit makes `inspect` report the forged code. No channel
-on Sysbox is host-readable and guest-unwritable, so there is no mechanism fix: the exit code of a
-Sysbox sandbox is what its root attests, which on a single-tenant host is your own code. The channel
-is a memfd of 4 KiB sealed against growing and shrinking, so no guest write can fill the host's disk
-or memory. After a restart the daemon finds it again through fd 0 of PID 1, confirmed in the sandbox
-cgroup, and takes it only while it is a regular file of 4 KiB with its seals and the inode create
-recorded; anything else `inspect` names as `exit channel replaced`. A stop copies the record before it
+fd 0, which the host holds. It also clears its dumpable flag, which puts `/proc/1/fd` out of the
+guest's reach. On gVisor that protection holds. The sentry enforces the capability set the bundle
+grants, which has no `CAP_SYS_PTRACE`, so a guest write to `/proc/1/fd/0` fails with `EACCES`.
+`sysbox-runc` gives guest root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE`
+included. So guest root controls PID 1 and the entrypoint. It can write a forged record, drive the
+exit value or pick the signal, and a background write after the real exit makes `inspect` report
+the forged code. No channel on Sysbox is readable by the host and unwritable by the guest, so no
+mechanism can fix this. The exit code of a Sysbox sandbox is what its root attests, and on a
+single-tenant host that is your own code. The channel is a memfd of 4 KiB, sealed against growing
+and shrinking, so no guest write can fill the host's disk or memory. After a restart the daemon
+finds the channel again through fd 0 of PID 1, confirmed in the sandbox cgroup. It takes the channel
+only while it is a regular file of 4 KiB with its seals and the inode that create recorded.
+`inspect` names anything else as `exit channel replaced`. A stop copies the record before it
 returns. If PID 1 dies while the daemon is down, or the daemon dies inside the stop that ended PID 1,
-its unread exit record is lost with it. Firecracker will verify the exit code behind the VM boundary
+the unread exit record is lost with it. Firecracker will verify the exit code behind the VM boundary
 the way gVisor does behind the sentry.
 
-**Sysbox runs where `sysbox-runc` runs.** It needs the Sysbox package installed on the host, root,
-and a kernel Sysbox supports. There is no fallback to gVisor: a host without `sysbox-runc` gets a
-daemon that answers the reads and refuses every sandbox verb, the same as a gVisor host without
+**Sysbox runs where `sysbox-runc` runs.** It needs root, the Sysbox package installed on the host,
+and a kernel that Sysbox supports. There is no fallback to gVisor. On a host without `sysbox-runc`,
+the daemon answers the reads and refuses every sandbox verb, as it does on a gVisor host without
 `runsc`.
 
 ### What runc does not do
 
-**runc isolates nothing.** The guest shares the host kernel with only namespaces and cgroups between
-them, and root in the guest is root on the host: use it for code you trust or a box you can lose. It
-is never picked by default; `--provider runc` is the only way onto it. It has no pause, no resume and
-no fork, because shard drives no checkpoint on it, and each verb refuses by name: `provider runc does
-not support pause on this host`. It runs where the `runc` package is installed, root, and there is no
-fallback to gVisor.
+**runc isolates nothing.** The guest shares the host kernel, with only namespaces and cgroups
+between them, and root in the guest is root on the host. Use it for code you trust, or on a box you
+can lose. It is never picked by default, and `--provider runc` is the only way onto it. It has no
+pause, no resume and no fork, because shard drives no checkpoint on it. Each verb refuses by name,
+for example `provider runc does
+not support pause on this host`. It runs where the `runc` package is installed. It needs root, and
+there is no fallback to gVisor.
 
-**runc carries Docker's default seccomp profile.** It answers the keyring calls with `EPERM`, and
-`runc create` runs with `--no-new-keyring`, so a guest spends none of the host's keyring quota.
+**runc carries Docker's default seccomp profile.** The profile answers the keyring calls with
+`EPERM`, and `runc create` runs with `--no-new-keyring`, so a guest spends none of the host's
+keyring quota.
 
 **runc carries Docker's AppArmor profile where the module is on.** `shard-default` is Docker's
-`docker-default` under a shard name, rule for rule from `moby/profiles/apparmor`, so it never
-replaces a Docker's own profile on the same host. Every runc sandbox runs under it. A host whose
-module is on and whose `apparmor_parser` is missing would run every sandbox unconfined, so the
-daemon refuses the runc provider there and names the `apparmor` package. A host with the module off
-runs no profile, as Docker does.
+`docker-default` under a shard name, copied rule for rule from `moby/profiles/apparmor`. Because
+the name differs, it never replaces the profile that Docker itself loads on the same host. Every
+runc sandbox runs under it. On a host where the module is on but `apparmor_parser` is missing,
+every sandbox would run unconfined. So the daemon refuses the runc provider there and names the
+`apparmor` package. A host with the module off runs no profile, as Docker does.
 
 ## Required verbs against optional verbs
 
 Fourteen verbs are required. Every substrate must do all of them, and none of them has a capability
-flag: `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Signal`, `Wait`,
+flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Signal`, `Wait`,
 `ExitStatus`, `Status`, `Restarts`, `LogPath`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
-a record, so a refusal leaves nothing in `ls`. Only vz refuses anything: a VM's memory is real
+a record, so a refusal leaves nothing in `ls`. Only vz refuses anything. A VM's memory is real
 memory, so `--memory 0` and a bound under 128 MiB are refused by name. The Linux substrates take
 every bound. `Create` checks its spec again, so a clone or a fork is held to the same rule.
 
-`Clone` is required because it needs nothing a substrate may lack: it copies the writable layer
-another sandbox kept and runs that sandbox's entrypoint again, from the beginning, under the new id
-and the new network. It refuses a source that is alive or still mounted, and it reads nothing of the
-source but its status and its state directory. Firecracker reflinks `overlay.raw` where gVisor copies
-an overlay layer: the clone shares the source's blocks, and a root whose filesystem cannot (ext4,
-tmpfs) refuses the clone by name rather than copy every byte. XFS and Btrfs can.
+`Clone` is required because it needs nothing a substrate may lack. It copies the writable layer
+that another sandbox kept, and runs that sandbox's entrypoint again from the beginning, under the
+new id and the new network. It refuses a source that is alive or still mounted. Of the source, it
+reads only the status and the state directory. Firecracker reflinks `overlay.raw` where gVisor
+copies an overlay layer, so the clone shares the source's blocks. A root whose filesystem cannot
+share blocks (ext4, tmpfs) refuses the clone by name instead of copying every byte. XFS and Btrfs
+can.
 
-Three verbs are optional: `Pause`, `Resume`, `Fork`. `Capabilities` reports one boolean per optional
-verb, and it is the only place a substrate is allowed to be unequal to another.
-`fork` takes a paused source on every substrate: the snapshot is what the pause wrote, a resume runs
-on past it and keeps its name, so a running or stopped source is refused even when its record still
-names one.
+Three verbs are optional: `Pause`, `Resume` and `Fork`. `Capabilities` reports one boolean per
+optional verb, and it is the only place where one substrate may differ from another.
+`fork` takes a paused source on every substrate. The snapshot is what the pause wrote. A resume runs
+on past the snapshot and keeps its name. So a running or stopped source is refused, even when its
+record still names a snapshot.
 
 ### What vz does and does not do
 
 `vz` is the substrate `shard daemon` picks on a Mac when `--provider` is empty, and it is refused by
-name anywhere else. Each sandbox is one Virtualization.framework VM booting shard's own arm64 kernel
-(`services/kernel` fetches the release once under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256`
-override it) over an APFS clone of the image's ext4 disk, held by one `shard-vz-shim` the daemon
-signs under `<root>/vz` from the copy `make build-darwin` embeds, beside the static linux `shard-init`
-that build embeds for this Mac's arch and the daemon installs under `<root>/vz` as the initrd's
-`/init`; a `go build` alone has neither and the first sandbox says so. `SHARD_INIT_PATH` names a
-guest `shard-init` of your own instead. `--memory` is required, `0` is refused by name, and it is a hard cap. There is no bridge: the daemon
-leases each guest an address from the pool, terminates its frames in a userspace stack that answers
-for the gateway alone, and serves the proxy and the resolver on that stack. The stack's own NAT
-table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
-chains do on Linux, and every other TCP or UDP flow is judged by the same compiled chains the host
-ruleset is built from, so a policy means the same on both hosts (SHARD-246); a refused flow is
-dropped in the stack and written to the sandbox's egress log, which `docs/provider-vz.md` covers.
-`pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon: on 13, and on an Intel Mac, all three refuse by name.
-Every restore of one save wakes with the same guest crng key, so each `resume` and `fork` sends the
-guest 32 bytes of host entropy and `shard-init` rekeys from them before the verb returns (SHARD-293).
-The guest's processes are still frozen from the pause when the seed lands, and thaw only after it,
-so no copy reads a `/dev/urandom` byte of the saved key (SHARD-310).
-The three resource bounds below hold on the Linux substrates; `vz` and `firecracker` have no host
-cgroup, and each section says what the VM does instead.
+name anywhere else. Each sandbox is one Virtualization.framework VM. The VM boots shard's own arm64
+kernel over an APFS clone of the image's ext4 disk. `services/kernel` fetches the kernel release
+once under the root, and `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it. One `shard-vz-shim`
+holds each VM. `make build-darwin` embeds the shim, and the daemon signs a copy of it under
+`<root>/vz`. That build also embeds the static linux `shard-init` for this Mac's arch, and the
+daemon installs it under `<root>/vz` as the initrd's `/init`. A `go build` alone has neither, and
+the first sandbox says so. `SHARD_INIT_PATH` names a guest `shard-init` of your own instead.
+`--memory` is required and is a hard cap, and `0` is refused by name. There is no bridge. The
+daemon leases each guest an address from the pool and terminates its frames in a userspace stack
+that answers for the gateway alone. It serves the proxy and the resolver on that stack. The stack's
+own NAT table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the
+host chains do on Linux. Every other TCP or UDP flow is judged by the same compiled chains that the
+host ruleset is built from, so a policy means the same on both hosts (SHARD-246). The stack drops a
+refused flow and writes it to the sandbox's egress log, which `docs/provider-vz.md` covers.
+`pause`, `resume` and `fork` are one VZ save and a restore, which macOS 14 added on Apple silicon.
+On 13, and on an Intel Mac, all three refuse by name. Every restore of one save wakes with the same
+guest crng key. So each `resume` and `fork` sends the guest 32 bytes of host entropy, and
+`shard-init` rekeys from them before the verb returns (SHARD-293). The guest's processes are still
+frozen from the pause when the seed lands, and they thaw only after it, so no copy reads a
+`/dev/urandom` byte of the saved key (SHARD-310). The three resource bounds below hold on the Linux
+substrates. `vz` and `firecracker` have no host cgroup, and each section says what the VM does
+instead.
 
 ### What Firecracker does and does not do
 
-`firecracker` is `--provider firecracker` on a Linux host with `/dev/kvm` and the `firecracker` and
-`jailer` binaries on PATH, one `firecracker` process per sandbox, driven over its API socket in its
-jail. Each one boots shard's own amd64 kernel (`services/kernel` fetches the release once
-under the root, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` override it) from what the section below
-describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of the
+`firecracker` is `--provider firecracker`. It runs on a Linux host with `/dev/kvm` and with the
+`firecracker` and `jailer` binaries on PATH. Each sandbox is one `firecracker` process, driven over
+its API socket in its jail. Each one boots shard's own amd64 kernel from the parts that the section
+below describes: the image's EROFS file read-only, the sandbox's `overlay.raw`, and an initrd of the
 static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<root>/firecracker`.
-The host needs `erofs-utils` for the pull. The host speaks to the guest over vsock alone, through
-the socket firecracker proxies it on, so `exec`, `logs` and the exit come the way they do on `vz`.
-The vmm has no stop of its own: a stop tells `shard-init` to end the entrypoint and reboot, which is
-the one guest exit firecracker ends its process on (a power off leaves it running), and the grace
-runs out into a kill of the process. A guest the host can no longer reach over vsock is still a
-running VM: `inspect` says so, and `stop` kills it without a grace it could not hear. A daemon
-restart adopts a running vmm by its socket, and resumes one a cut `pause` left paused, whose stopped
-guest would answer no handshake. `--memory` is required, `0` is refused by name, and 128 MiB is the
-least a guest boots with. The guest's network is a tap on the same bridge the veth substrates use,
-named `shardv<n>` like a veth and a port under the same host rules: the anti-spoof pair, the IPv6
-drop and the egress chain key on that name, the proxy redirect on the leased address and the private
-floor on the bridge, so a policy reads and logs the same on every substrate. The vmm opens the tap
-as the guest's `eth0` with a MAC derived from the lease, and `shard-init` takes the address, the
-gateway and the resolver over vsock once the guest is up, before the entrypoint runs. The next start
-after a stop leases the same address and builds the tap again for the new vmm; `rm` releases both.
+`services/kernel` fetches the kernel release once under the root, and `SHARD_KERNEL` and
+`SHARD_KERNEL_SHA256` override it. The host needs `erofs-utils` for the pull. The host speaks to
+the guest over vsock alone, through the socket that firecracker proxies it on, so `exec`, `logs`
+and the exit arrive the way they do on `vz`. The vmm has no stop of its own. A stop tells
+`shard-init` to end the entrypoint and reboot, because a reboot is the one guest exit that makes
+firecracker end its process (a power off leaves it running). When the grace runs out, the stop
+kills the process. A guest that the host can no longer reach over vsock is still a running VM.
+`inspect` says so, and `stop` kills it without waiting out a grace that the guest could not hear. A
+daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
+left paused, because that stopped guest would answer no handshake. `--memory` is required, `0` is
+refused by name, and 128 MiB is the least a guest boots with. The guest's network is a tap on the
+same bridge that the veth substrates use. The tap is named `shardv<n>` like a veth, and it is a port
+under the same host rules. The anti-spoof pair, the IPv6 drop and the egress chain key on that
+name. The proxy redirect keys on the leased address, and the private floor keys on the bridge. So a
+policy reads and logs the same on every substrate. The vmm opens the tap as the guest's `eth0`, with
+a MAC derived from the lease. Once the guest is up, and before the entrypoint runs, `shard-init`
+takes the address, the gateway and the resolver over vsock. The next start after a stop leases the
+same address and builds the tap again for the new vmm. `rm` releases both.
 
-The daemon spawns every vmm through Firecracker's `jailer`, never as root (SHARD-306). Each sandbox
-gets a uid of its own, and the same gid, from 0x70000000 to 0x7FFDFFFF (1879048192 to 2147352575),
-clear of Sysbox, the `/etc/subuid` defaults and the systemd ranges. A counter in
-`<root>/firecracker/next-uid` hands each uid out once. A restart and a resume keep the uid, and a
-clone and a fork get a new one. The jailer puts itself in the sandbox's cgroup, then starts the vmm
-in new pid and mount namespaces, chrooted into `<root>/jail/firecracker/<id>/root`, with no
-capability and under its seccomp filter. The jail holds the kernel, the initrd, the image and, on a
-restore, the snapshot's state and memory, each a reflinked copy that only the uid can read. The
-overlay is a hard link the uid can write, so the guest writes where `clone` and `pause` read. The tap
-goes to the uid too, which lets the vmm open it with no capability. Every spawn gets a fresh jail,
-and every end of a vmm removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from
-there, so the daemon refuses at start a root on a `nodev` or `noexec` mount. The jailer gets no
-`--resource-limit`: its default of 2048 open files outlasts the vsock muxer's cap of 1023
-connections, the one count of descriptors a sandbox grows. A vmm that a daemon before the jail
-spawned is still adopted at its socket in the state directory, and its next start jails it.
+The daemon spawns every vmm through Firecracker's `jailer`, and never as root (SHARD-306). Each
+sandbox gets a uid of its own, and a gid with the same value, from 0x70000000 to 0x7FFDFFFF
+(1879048192 to 2147352575). That range is clear of Sysbox, the `/etc/subuid` defaults and the
+systemd ranges. A counter in `<root>/firecracker/next-uid` hands out each uid once. A restart and a
+resume keep the uid, and a clone and a fork get a new one. The jailer puts itself in the sandbox's
+cgroup. It then starts the vmm in new pid and mount namespaces, chrooted into
+`<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter. The jail holds
+the kernel, the initrd and the image. On a restore it also holds the snapshot's state and memory.
+Each of these is a reflinked copy that only the uid can read. The overlay is a hard link that the
+uid can write, so the guest writes where `clone` and `pause` read. The tap goes to the uid too, so
+the vmm can open it with no capability. Every spawn gets a fresh jail, and every end of a vmm
+removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from there, so at start the
+daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no `--resource-limit`. Its
+default of 2048 open files outlasts the vsock muxer's cap of 1023 connections, and those
+connections are the one count of descriptors that a sandbox grows. A vmm that a daemon spawned
+before the jail existed is still adopted at its socket in the state directory, and its next start
+jails it.
 
-`pause` freezes the guest, stops the vCPUs, writes the vmm's state and the guest's whole memory into the snapshot
-directory beside a reflinked copy of `overlay.raw`, marks it complete and ends the vmm. It stages
-all of that beside the snapshot the directory already holds and swaps the two in one step, so no cut
-leaves the sandbox with neither. The record stays, so `inspect` reports the sandbox stopped and the
-snapshot is what brings it back. `resume` and `fork` each load that snapshot into a fresh vmm, over
-its own reflinked copy of the overlay and a reflinked copy of the memory file in its jail:
-firecracker maps the memory private, so N sandboxes share the blocks on disk and none of them writes
-them. A snapshot is not
-consumed by either verb. Fork as many sandboxes from one as you like, each on its own writable disk,
-and the source and the snapshot are untouched. A fork restores holding the source's address, MAC and
-hostname, and `shard-init` replaces all three in place over vsock before the guest does anything
-else: the interface goes down for the MAC, which is why a fork's frames reach the bridge under its
-own and not the source's. Firecracker has no pause of the wall clock, so the guest's clock is
-corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of one
-snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver, so each
-`resume` and `fork` sends the guest 32 bytes of host entropy and `shard-init` rekeys from them
-before the verb returns (SHARD-266). A restore keeps a marker until the seed lands, so a daemon cut
-in between reseeds the guest it adopts, and ends one that refuses the reseed or the thaw. No guest
-process draws from the saved key in between, because the snapshot holds the guest frozen: `pause`
-has `shard-init` freeze the sandbox cgroup and then the root's writes before it stops the vCPUs, and
-every restore reseeds the guest before it thaws it (SHARD-409). The root is an overlay, which takes
-no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that cannot freeze refuses
-the pause, and the VM runs on. The thaw paths are the ones `docs/provider-vz.md` lists for `vz`: a
-failed pause, a daemon cut between the freeze and the snapshot, and a control connection that
-dropped with the freeze's answer. A VM booted before this change runs a `shard-init` whose freeze
-cannot reach the upper disk. Its state says so, and the pause is refused before any freeze, with an
-error that says to restart the sandbox first.
+`pause` freezes the guest and stops the vCPUs. It writes the vmm's state and the guest's whole
+memory into the snapshot directory, beside a reflinked copy of `overlay.raw`. It then marks the
+snapshot complete and ends the vmm. It stages all of that beside the snapshot that the directory
+already holds, and swaps the two in one step, so no interruption leaves the sandbox with neither.
+The record stays, so `inspect` reports the sandbox stopped, and the snapshot is what brings it
+back. `resume` and `fork` each load that snapshot into a fresh vmm, over its own reflinked copy of
+the overlay and a reflinked copy of the memory file in its jail. Firecracker maps the memory
+private, so N sandboxes share the blocks on disk and none of them writes to them. Neither verb
+consumes a snapshot. You can fork as many sandboxes from one snapshot as you like, each on its own
+writable disk, and the source and the snapshot stay untouched. A fork restores with the source's
+address, MAC and hostname. `shard-init` replaces all three in place over vsock before the guest
+does anything else. The interface goes down for the MAC change, which is why a fork's frames reach
+the bridge under its own MAC and not the source's. Firecracker cannot pause the wall clock, so the
+guest's clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every
+load of one snapshot also wakes with the same guest crng key, and the kernel has no vmgenid driver.
+So each `resume` and `fork` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from
+them before the verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the
+daemon is interrupted in between, it reseeds the guest it adopts, and it ends a guest that refuses
+the reseed or the thaw. No guest process draws from the saved key in between, because the snapshot
+holds the guest frozen. `pause` has `shard-init` freeze the sandbox cgroup and then the root's
+writes before it stops the vCPUs, and every restore reseeds the guest before it thaws it
+(SHARD-409). The root is an overlay, which takes no `FIFREEZE`, so the freeze holds its ext4 upper
+disk instead. A guest that cannot freeze refuses the pause, and the VM runs on. The thaw paths are
+the ones that `docs/provider-vz.md` lists for `vz`: a failed pause, a daemon interrupted between the
+freeze and the snapshot, and a control connection that dropped with the freeze's answer. A VM
+booted by an older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state
+says so, and the pause is refused before any freeze, with an error that says to restart the sandbox
+first.
 
-Two limits ride along. The data dir must clone a file by sharing its blocks, which `fork` on this
-provider needs and `docs/daemon.md` covers: the daemon probes its root and puts a loopback XFS under
-one that cannot, so no `pause` ever fails halfway for it. And the vmm's state names each drive by its
-path in the jail, so a load opens the fork's own `overlay.raw`. A snapshot taken before the jail
-names host paths instead, and `resume` and `fork` refuse it: start the sandbox and pause it again.
+Two more limits apply. The data dir must be able to clone a file by sharing its blocks, because
+`fork` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts
+a loopback XFS under a root that cannot, so no `pause` ever fails halfway for that reason. The other
+limit is that the vmm's state names each drive by its path in the jail, so a load opens the fork's
+own `overlay.raw`. A snapshot taken before the jail existed names host paths instead, and `resume`
+and `fork` refuse it. To recover, start the sandbox and pause it again.
 
 Every writable drive runs with the cache type `Writeback`, so a guest `fsync` returns only once the
-vmm has flushed the data to the host disk; the firecracker default, `Unsafe`, drops the flush. The
+vmm has flushed the data to the host disk. The firecracker default, `Unsafe`, drops the flush. The
 read-only EROFS base keeps the default. The vmm fixes the cache type when it boots, and a snapshot
-keeps the one its vmm ran with, so a sandbox created before this release, and any snapshot taken
-before it, keep `Unsafe`: a daemon restart adopts the running vmm as it is, and a `resume` or a
-`fork` of such a snapshot loads its saved drive. A `stop` and a `start` boot a fresh vmm with
-`Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a sandbox to get
-there.
+keeps the type that its vmm ran with. So a sandbox created before the release that set this cache
+type, and any snapshot taken before it, keep `Unsafe`. A daemon restart adopts the running vmm as
+it is, and a `resume` or a `fork` of such a snapshot loads its saved drive. A `stop` and a `start`
+boot a fresh vmm with `Writeback`, which gives that sandbox a durable `fsync`. The daemon never
+stops a sandbox to make that switch.
 
-`scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on it: the daemon
-over a root it turns into an XFS image, `create` with `--memory`, the vmm's jail, uid and seccomp
-filter, its host cgroup and its bounds, `logs`, `exec`, an entrypoint that exits, a guest that outgrows its memory and comes back
-once under `--restart-on-oom`, one that fills on every boot and spends `--restart-on-oom=2`, the
-policy and the proxy on the tap, a daemon restart that adopts the vmm, a vmm lost while the daemon
-was down, `pause`, a `fork` of the paused snapshot, `resume`, `stop` with the cgroup kept empty, two
-clones by reflink, `start` back into that cgroup, `rm`, and a host with no tap, no vmm, no jail, no cgroup,
-no image and no fstab line left. It runs on demand only. It needs `/dev/kvm`, which no CI runner and
-no cloud devbox has, so CI, `make check`, `make e2e` and `make devbox-e2e` never call it: rent a
-bare-metal KVM box, run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`,
-`firecracker`, `jailer` and Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point it
-at a kernel on the box; unset, the daemon fetches the release.
+`scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
+starts the daemon over a root that it turns into an XFS image, and runs `create` with `--memory`. It
+checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
+and an entrypoint that exits. One guest outgrows its memory and comes back once under
+`--restart-on-oom`, and another fills up on every boot and spends `--restart-on-oom=2`. The run
+then checks the policy and the proxy on the tap, a daemon restart that adopts the vmm, and a vmm
+lost while the daemon was down. After that come `pause`, a `fork` of the paused snapshot, `resume`,
+`stop` with the cgroup kept empty, two clones by reflink, `start` back into that cgroup, and `rm`.
+The last check is a host with no tap, no vmm, no jail, no cgroup, no image and no fstab line left.
+It runs on demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI,
+`make check`, `make e2e` and `make devbox-e2e` never call it. To run it, rent a bare-metal KVM box,
+run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker`, `jailer` and
+Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point the run at a kernel on
+the box. When they are unset, the daemon fetches the release.
 
-The guest reaches the resolver and the proxy on the bridge address, so a host firewall that drops
-`INPUT` eats those packets after shard's own table accepted them. A rented box with `ufw` on is the
-common case. Run `iptables -I INPUT -i shard0 -j ACCEPT` there, or `ufw allow in on shard0`, before
-the suite; the host check fails by name when the policy is `DROP` and no such rule exists.
+The guest reaches the resolver and the proxy on the bridge address. So a host firewall that drops
+`INPUT` discards those packets after shard's own table has accepted them. A rented box with `ufw` on
+is the common case. Before the suite, run `iptables -I INPUT -i shard0 -j ACCEPT` there, or
+`ufw allow in on shard0`. The host check fails by name when the policy is `DROP` and no such rule
+exists.
 
-`SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default, and the daemon
-mounts the XFS image over it. The image takes half the free space of the disk under the root, at
-most 100 GiB, so that disk needs 20 GiB free. `MEMORY` is the `--memory` of every create, 256 MiB by
-default. The run deletes its root and the image beside it, so it refuses a `SHARD_ROOT` that already
-holds files unless the marker file `<root>.e2e-owned` names it as one of its own; point it at an
-empty or absent path.
+`SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default. The daemon mounts
+the XFS image over it. The image takes half the free space of the disk under the root, at most
+100 GiB, so that disk needs 20 GiB free. `MEMORY` is the `--memory` of every create, 256 MiB by
+default. The run deletes its root and the image beside it. So it refuses a `SHARD_ROOT` that already
+holds files, unless the marker file `<root>.e2e-owned` names that root as one of its own. Point it
+at an empty or absent path.
 
-The bridge `shard0` and the nft tables `inet shard` and `bridge shard` are host-wide, one set for the
-whole box rather than one per root, so the teardown drops all three and the last step proves they are
-gone. Two runs on one box therefore collide over them: run this suite and any other e2e on the same
-box one at a time. The run refuses to start while any `shard` daemon is on the box, because the
-teardown would take that daemon's bridge and policy with it.
+The bridge `shard0` and the nft tables `inet shard` and `bridge shard` are host-wide. They form one
+set for the whole box, not one per root. So the teardown drops all three, and the last step proves
+they are gone. Two runs on one box therefore collide over them. Run this suite and any other e2e on
+the same box one at a time. The run refuses to start while any `shard` daemon is on the box,
+because the teardown would take that daemon's bridge and policy with it.
 
 ## Refuse, never downgrade
 
 A provider that cannot do an optional verb returns `models.Unsupported(provider, verb)`. That error
-names both, and it unwraps to `models.ErrUnsupported`. The CLI asks `Capabilities` first and refuses
-before it holds or claims anything, so the provider's own refusal is the last line of defence. It never falls back to a weaker mechanism, and
-it never returns a nil error having done something else.
+names both the provider and the verb, and it unwraps to `models.ErrUnsupported`. The CLI asks
+`Capabilities` first and refuses before it holds or claims anything, so the provider's own refusal
+is the last line of defence. A provider never falls back to a weaker mechanism, and it never returns
+a nil error after doing something else.
 
 The sentinel is reserved for that one meaning. A missing kernel feature on a developer Mac is not a
 refused verb, so `bundle`'s overlay stub and `netns.ErrNotLinux` are plain errors.
 
-`Capabilities` is computed once, in the constructor, and the method is a cheap getter. A probe that
+`Capabilities` is computed once, in the constructor, so the method is a cheap getter. A probe that
 needed a context and an error would be a fourth thing to get wrong.
 
 ## What a memory bound means
 
-`--memory` bounds a sandbox the same way on every substrate: past the bound the whole sandbox dies,
-not one process inside it, and the daemon restarts it when the record set `restart_on_oom`.
-`create` refuses a bound above the host's total memory by name (`MemTotal` on Linux, `hw.memsize`
-on a Mac), because such a bound never binds: the host OOM killer acts first. The host's whole
-memory is still taken, so leaving room for the host is the operator's call.
+`--memory` bounds a sandbox the same way on every substrate. Past the bound the whole sandbox dies,
+and not just one process inside it. The daemon restarts the sandbox when the record set
+`restart_on_oom`. `create` refuses by name a bound above the host's total memory (`MemTotal` on
+Linux, `hw.memsize` on a Mac). Such a bound never binds, because the host OOM killer acts first. A
+bound of the host's whole memory is still accepted, so leaving room for the host is the operator's
+call.
 
-gVisor sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup; Sysbox and runc set the same
-pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither knob, so without them
-the OOM killer took one guest process, the sandbox lived, and `oom_restarts` stayed at zero.
+gVisor sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup, and Sysbox and runc set
+the same pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither of the two
+knobs. Without them the OOM killer would take one guest process, the sandbox would live on, and
+`oom_restarts` would stay at zero.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
-guest: `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
+guest. There `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
 itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares a cgroup namespace
-rooted at that cgroup, then moves itself to a sibling, `init`, so a pause can freeze every guest
-process and leave the supervisor to answer. Each process it starts is born into the bounded cgroup
-by `CLONE_INTO_CGROUP`, so everything a guest starts, a Docker daemon and its containers included,
-lands under the bound. `shard-init` alone is exempt from the killer, through
-`oom_score_adj=-1000`, and each child it forks runs `shard-init -expose` first, which gives the
+rooted at that cgroup, then moves itself to a sibling, `init`. That way a pause can freeze every
+guest process and leave the supervisor free to answer. Each process the supervisor starts is born
+into the bounded cgroup by `CLONE_INTO_CGROUP`. So everything a guest starts, a Docker daemon and
+its containers included, lands under the bound. `shard-init` alone is exempt from the killer,
+through `oom_score_adj=-1000`. Each child it forks runs `shard-init -expose` first, which gives the
 exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
 `memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
-that state and does not power off on its own: the host writes the `oom` marker first and only then
-sends the stop, so a daemon that dies between the report and the marker finds the kill again in
-the state the next connection replays, and marks it then. Once the marker is down `Status` says
+that state and does not power off on its own. The host writes the `oom` marker first, and only then
+sends the stop. So a daemon that dies between the report and the marker finds the kill again in the
+state that the next connection replays, and marks it then. Once the marker is down, `Status` says
 `OOMKilled`, no exit record lands, and the daemon restarts the sandbox on `restart_on_oom` exactly
 as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
 the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
 `--memory` below 128 MiB by name.
-On `firecracker` the guest half is the same, down to the marker and the replay, because the guest is
-the same `shard-init`; a host cgroup alone would see nothing, since the vmm holds the guest's whole
-memory from the boot and its host footprint stays flat while the guest fills up. What the host adds
-is a cgroup of its own around the vmm, at `/sys/fs/cgroup/shard/<id>`, with `memory.max` at the
-guest's memory plus 64 MiB for what firecracker holds beside it, and the same
+On `firecracker` the guest half is the same, down to the marker and the replay, because the guest
+runs the same `shard-init`. A host cgroup alone would see nothing, since the vmm holds the guest's
+whole memory from the boot and its host footprint stays flat while the guest fills up. The host
+adds a cgroup of its own around the vmm, at `/sys/fs/cgroup/shard/<id>`. Its `memory.max` is the
+guest's memory plus 64 MiB for what firecracker holds beside it, with the same
 `memory.oom.group=1` and `memory.swap.max=0`. The vmm joins it between the spawn and the API call
-that configures the machine, because cgroup v2 charges a process only for the pages it faults after
-a move, so a vmm moved in later would leave the guest's memory charged to the parent. That ceiling
-is host safety and never the trigger: it sits above the guest's whole memory, so the guest's own
-killer runs first on every workload and the daemon hears an OOM instead of a death.
+that configures the machine. cgroup v2 charges a process only for the pages it faults after a move,
+so a vmm moved in later would leave the guest's memory charged to the parent. That ceiling is for
+host safety and is never the trigger. It sits above the guest's whole memory, so the guest's own
+killer runs first on every workload, and the daemon hears an OOM instead of a death.
 
 ## What a cpu bound means
 
 `--cpus` bounds a sandbox to a share of the host CPUs, the same way on every substrate. `--cpus 0`,
-the default, sets no bound: `cpu.max` stays `max` and the sandbox runs on every host CPU. A positive
-`N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000` period.
-`shard create` refuses a negative value with an error, because a bound below zero is not a spelling
-of unbounded, and a value above the CPUs the daemon may run on by name, because such a quota never
-binds and a large enough one overflows to no bound at all. It refuses a fraction such as `0.5` with an
-error that names it, because a VM gets whole CPUs and a rounded bound is not the one asked for. On `vz` the count is the VM's virtual CPUs, not a quota:
-`--cpus 0` gives it one per host CPU, held inside the framework's ceiling, and a positive `N` gives it `N`,
-refused outside the host's range.
+the default, sets no bound. `cpu.max` stays `max`, and the sandbox runs on every host CPU. A
+positive `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000`
+period. `shard create` refuses a negative value with an error, because a bound below zero is not a
+way to write unbounded. It refuses by name a value above the CPUs the daemon may run on, because
+such a quota never binds, and a large enough one overflows to no bound at all. It refuses a fraction
+such as `0.5` with an error that names it, because a VM gets whole CPUs and a rounded bound is not
+the one that was asked for. On `vz` the count is the VM's virtual CPUs and not a quota. `--cpus 0`
+gives the VM one virtual CPU per host CPU, held inside the framework's ceiling. A positive `N` gives
+it `N`, and a value outside the host's range is refused.
 
 ## What the pids bound means
 
-Every sandbox cgroup holds at most `4096` processes. Unlike memory and cpu, the bound is never off
-and not adjustable: there is no flag and no field, and `pids.max` is written at create and again on
-every launch, so a sandbox created before the bound existed is capped when it runs again. `4096` runs
-systemd, Docker and nested containers with headroom, yet stops a fork bomb far below the host PID
-count. The bound is fixed because on Sysbox a guest process is a host process, so an unbounded fork
-bomb in one sandbox takes the host down; on gVisor the bomb stays in the sentry and hits `memory.max`
-first, but the same bound applies. On `vz` there is no bound: a guest process is a process inside
-the VM, so a fork bomb stays there and hits the VM's memory, and the host is untouched.
+Every sandbox cgroup holds at most `4096` processes. Unlike the memory and cpu bounds, this bound is
+never off and cannot be adjusted. There is no flag and no field. `pids.max` is written at create and
+again on every launch, so a sandbox created before the bound existed is capped when it runs again.
+`4096` leaves headroom for systemd, Docker and nested containers, yet stops a fork bomb far below
+the host PID count. The bound is fixed because on Sysbox a guest process is a host process, so an
+unbounded fork bomb in one sandbox takes the host down. On gVisor the bomb stays in the sentry and
+hits `memory.max` first, but the same bound applies. On `vz` there is no bound. A guest process is a
+process inside the VM, so a fork bomb stays there and hits the VM's memory, and the host is
+untouched.
 
 ## What a disk bound means
 
 `--disk` bounds everything a sandbox can write, the same way on every substrate. The writable layer
-over the image, `/tmp` and the supervisor's files under `/.shard` all sit on one ext4 image per sandbox,
-`disk.img` in its state directory, which the daemon loop-mounts at `disk/` before the overlay stacks on
-it. The bound is never off: `--disk 0`, the default, is `10240` MiB, and a positive `N` overrides
-it. The image is sparse, so an unwritten sandbox costs the host nothing, and it is truncated
-to the bound, so host usage stops there whatever the guest does. Inside the guest a write past the bound
-fails with `ENOSPC`, the sandbox lives on, and `df` shows the bound less what ext4 keeps for itself.
+over the image, `/tmp` and the supervisor's files under `/.shard` all sit on one ext4 image per
+sandbox. That image is `disk.img` in the sandbox's state directory, and the daemon loop-mounts it at
+`disk/` before the overlay stacks on it. The bound is never off. `--disk 0`, the default, means
+`10240` MiB, and a positive `N` overrides it. The image is sparse, so an unwritten sandbox costs the
+host nothing. It is truncated to the bound, so host usage stops there whatever the guest does.
+Inside the guest a write past the bound fails with `ENOSPC`, and the sandbox lives on. `df` shows
+the bound less what ext4 keeps for itself.
 
-A stop detaches the disk and a start mounts it again, so the layer survives the way it did before. On
-Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox: `sysbox-mgr` chowns the
-upper layer back when the container is deleted, at the next start or at `rm`, and it must find it. Fork
-and clone copy the layers into a disk of their own, bounded the way the source was; config.json carries
-the bound for that. The record carries the resolved bound, so `inspect` shows the value the image
-enforces, not a bare `0`. `shard create` refuses a negative value. On the VM providers it also
-refuses, before the record, a bound `ext4.Grow` cannot reach, and names the nearest sizes it can: under
-7 MiB on Firecracker, the empty overlay's own size, and `N*128+1` or `N*128+2` MiB on both, where the last
-128 MiB block group is too small for its own metadata. On `vz` a bound under the image's own disk fails
-after the pull, which is when its size is known (SHARD-280). The host needs `mkfs.ext4`, which
-`e2fsprogs` ships. On Sysbox the directories `sysbox-runc` backs from the host, `/var/lib/docker` among
+A stop detaches the disk and a start mounts it again, so the layer survives a stop and the next
+start. On Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox, because
+`sysbox-mgr` chowns the upper layer back when the container is deleted, at the next start or at
+`rm`, and it must find the layer in place. Fork and clone copy the layers into a disk of their own,
+bounded the way the source was, and config.json carries the bound for that. The record carries the
+resolved bound, so `inspect` shows the value the image enforces instead of a bare `0`.
+`shard create` refuses a negative value. On the VM providers it also refuses, before the record
+exists, a bound that `ext4.Grow` cannot reach, and it names the nearest sizes that it can reach.
+The bounds it cannot reach are anything under 7 MiB on Firecracker, which is the empty overlay's
+own size, and `N*128+1` or `N*128+2` MiB on both providers, where the last 128 MiB block group is
+too small for its own metadata. On `vz` a bound under the image's own disk fails after the pull,
+because only then is that size known (SHARD-280). The host needs `mkfs.ext4`, which `e2fsprogs`
+ships. On Sysbox the directories that `sysbox-runc` backs from the host, `/var/lib/docker` among
 them, sit outside the image and so outside the bound.
 
 ## What a microVM boots from
 
-A microVM provider, Firecracker first, boots no OCI bundle and no ext4 root disk: it boots a
+A microVM provider, Firecracker first, boots no OCI bundle and no ext4 root disk. It boots a
 read-only EROFS image of the pulled image, an `overlay.raw` of its own, and an initrd. The image
 service builds the EROFS image once per digest under `images/erofs/<digest>.erofs`, from the same
-unpacked tree the bundle path uses, with `mkfs.erofs` at 4 KiB blocks so an image built on a
-16 KiB-page host mounts in a 4 KiB-page guest; the host needs `erofs-utils`. `overlay.raw` is one
-empty ext4 image per sandbox, written in Go and grown to the disk bound, so the bound above holds
-the same way: every write of the sandbox lands on it and stops there. The initrd is `shard-init`
-alone, as `/init` of a newc archive, the same file the vz provider boots. The kernel command line
-hands it `-base` and `-overlay`, the two block devices, and `-console` for where its stderr goes:
-`shard-init` mounts the EROFS image read-only, the ext4 disk over it, lays `upper` and `work` on
-that disk, mounts the overlay as the root, moves the kernel filesystems across and pivots onto it,
-exactly as the one-disk `-root` boot does. It stays PID 1, and the host sends the entrypoint over
-vsock as before. `vz` keeps its ext4 root disk: an APFS clone is its overlay. The guest kernel must
-carry `CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`; neither shipped kernel config sets the first yet,
-which SHARD-265 adds; on a host whose kernel lacks it the boot fails at the base mount, and the console log says so.
+unpacked tree that the bundle path uses. It runs `mkfs.erofs` at 4 KiB blocks, so an image built on
+a 16 KiB-page host mounts in a 4 KiB-page guest. The host needs `erofs-utils`. `overlay.raw` is one
+empty ext4 image per sandbox, written in Go and grown to the disk bound. So the bound above holds
+the same way, because every write of the sandbox lands on that image and stops there. The initrd is
+`shard-init` alone, as `/init` of a newc archive, and it is the same file that the vz provider
+boots. The kernel command line hands it `-base` and `-overlay`, the two block devices, and
+`-console` for where its stderr goes. `shard-init` mounts the EROFS image read-only and the ext4
+disk over it, and lays `upper` and `work` on that disk. It then mounts the overlay as the root,
+moves the kernel filesystems across and pivots onto it, exactly as the one-disk `-root` boot does.
+It stays PID 1, and the host sends the entrypoint over vsock as it does for the one-disk boot. `vz`
+keeps its ext4 root disk, and an APFS clone is its overlay. The guest kernel must carry
+`CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`. Neither shipped kernel config sets the first yet, and
+SHARD-265 adds it. On a host whose kernel lacks it, the boot fails at the base mount, and the
+console log says so.
 
 ## What `Status` means
 
 `Status` asks the substrate and reports what it says now. It never reads the shard record, and the
-record never answers for it. The two disagree on purpose:
+record never answers for it. The two disagree on purpose in these cases:
 
-- a record that says `running` can outlive a `shard` restart, or a sandbox someone killed by hand;
-- a sandbox stopped before its entrypoint ran leaves nothing at the substrate, so the record says
-  `stopped` and `Status` reports `Exists: false`.
+- A record that says `running` can outlive a `shard` restart, or a sandbox that someone killed by
+  hand.
+- A sandbox stopped before its entrypoint ran leaves nothing at the substrate. The record says
+  `stopped`, and `Status` reports `Exists: false`.
 
-`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of it. A
-gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the sentry exits
-after any checkpoint, taken or not: the provider returns `models.LostError` and the record ends
-`failed` (SHARD-336). runsc never probes a paused sandbox, so `Status` reads a paused one whose sentry
-is gone as `stopped`, which `stop` and `rm --force` then end. The
-entrypoint exiting is not a transition, and `Wait` returning does not end anything. Under a restart
-policy `Wait` returns the first exit of the run, not the settled one: the supervisor rewrites the exit
-file per exit and clears nothing, so only a stopped sandbox answers with its last exit. No verb waits
-on the entrypoint; `stop` is the one caller, and it reads after the sandbox is down.
+`Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of that
+state. A gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the
+sentry exits after any checkpoint, whether the checkpoint was taken or not. The provider returns
+`models.LostError`, and the record ends `failed` (SHARD-336). runsc never probes a paused sandbox,
+so `Status` reads a paused sandbox whose sentry is gone as `stopped`. `stop` and `rm --force` then
+end it. The exit of the entrypoint is not a transition, and the return of `Wait` does not end
+anything. Under a restart policy, `Wait` returns the first exit of the run and not the settled one.
+The supervisor rewrites the exit file on each exit and clears nothing, so only a stopped sandbox
+answers with its last exit. No verb waits on the entrypoint. `stop` is the one caller, and it reads
+only after the sandbox is down.
 
 ## What `Exec` means
 
-`Exec` is a second process in a sandbox that already runs. It is never the entrypoint: the supervisor
-does not see it, its exit ends nothing, and a signal that ends it never reaches the sandbox. Only
-`Stop` ends a sandbox.
+`Exec` runs a second process in a sandbox that is already running. That process is never the
+entrypoint. The supervisor does not see it, its exit ends nothing, and a signal that ends it never
+reaches the sandbox. Only `Stop` ends a sandbox.
 
-It reports the command's own exit code, which is the opposite of `Create` and `Start`, and the reason
-the verb is useful. An error means the exec never ran; an exit code means it did.
+It reports the command's own exit code, which `Create` and `Start` do not, and that is what makes
+the verb useful. An error means the exec never ran, and an exit code means it did.
 
-`ExecSpec.User` empty is the user the entrypoint runs as, the way `docker exec` inherits it. The
-supervisor's own process user is root, so the record of it is the `-user uid:gid` in the supervisor's
-argv, which the provider reads back from the sandbox.
+An empty `ExecSpec.User` means the user the entrypoint runs as, which is how `docker exec` inherits
+it. The supervisor's own process runs as root. So the entrypoint's user is recorded as the
+`-user uid:gid` in the supervisor's argv, and the provider reads it back from the sandbox.
 
-`ExecSpec` carries `*os.File`, not `io.Reader`. A TTY is one pty replica the caller allocates on the
-host, and a pipe cannot be one.
+`ExecSpec` carries `*os.File` instead of `io.Reader`, because a TTY is one pty replica that the
+caller allocates on the host, and a pipe cannot be one.
 
 ## Who owns what
 
-- The **provider** owns the whole layout inside `StateDir`. Nothing outside it may name a file there.
-- The **repository** owns the record and the directory itself. It removes the directory only after
+- The provider owns the whole layout inside `StateDir`. Nothing outside the provider may name a file
+  there.
+- The repository owns the record and the directory itself. It removes the directory only after
   `Remove` has dropped every mount inside it.
-- The **network service** owns the namespace, the address and the host interface. `NetworkSpec` is
-  allocated before `Create`, so a provider joins a namespace it did not build and never releases one.
-  On `firecracker` the host interface is a tap and there is no namespace: the vmm opens the tap, and
-  the provider addresses the guest with the lease the spec carries.
-- **The host is the policy of record.** On Linux that is host netfilter; on `vz` it is the daemon's own
-  userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a rule that
-  lives inside the sandbox.
+- The network service owns the namespace, the address and the host interface. `NetworkSpec` is
+  allocated before `Create`, so a provider joins a namespace that it did not build, and it never
+  releases one. On `firecracker` the host interface is a tap and there is no namespace. The vmm
+  opens the tap, and the provider addresses the guest with the lease that the spec carries.
+- The host is the policy of record. On Linux that is host netfilter. On `vz` it is the daemon's own
+  userspace netstack, which every VM packet crosses. Nothing a sandbox can reach may depend on a
+  rule that lives inside the sandbox.
 
 Every verb takes an id, because `shard` runs no daemon that could remember anything from `Create`.
 
@@ -510,15 +545,17 @@ Every verb takes an id, because `shard` runs no daemon that could remember anyth
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
 Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
-every snapshot case ends at the refusal and the suite skips the rest of that verb, so the suite proves
-the refuse path there and the snapshot path on gVisor and on `vz`, whose `vzvm_integration_test.go` runs
-the suite on real VMs on an Apple silicon Mac, and Firecracker, whose `firecracker_integration_test.go` runs it on
-real microVMs on a host with `/dev/kvm`. The suite takes one fork from one snapshot; the N-fork case
-that holds every substrate to a snapshot no verb consumes is SHARD-45.
+every snapshot case ends at the refusal, and the suite skips the rest of that verb. So the suite
+proves the refuse path there. It proves the snapshot path on gVisor, on `vz` and on Firecracker.
+`vzvm_integration_test.go` runs the suite on real VMs on an Apple silicon Mac, and
+`firecracker_integration_test.go` runs it on real microVMs on a host with `/dev/kvm`. The suite
+takes one fork from one snapshot. The N-fork case, which holds every substrate to a snapshot that
+no verb consumes, is SHARD-45.
 
-It does not prove anything about the network: every substrate joins a namespace the network service
+It proves nothing about the network. Every substrate joins a namespace that the network service
 built, so there is nothing to generalize yet.
 
-It does not prove systemd runs as a sandbox's own init, because no substrate allows it: `shard-init`
-is PID 1 on every provider and systemd refuses the system-manager role below PID 1. The suite has no
-systemd case to skip; the design forbids the case, so there is nothing to test.
+It does not prove that systemd runs as a sandbox's own init, because no substrate allows it.
+`shard-init` is PID 1 on every provider, and systemd refuses the system-manager role when it is not
+PID 1. The suite has no systemd case to skip, because the design forbids the case and leaves nothing
+to test.
