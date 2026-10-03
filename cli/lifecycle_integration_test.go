@@ -275,13 +275,27 @@ func assertNothingLeft(t *testing.T, app App, before []string, sb models.Sandbox
 		t.Errorf("the rm left the host interface %s", sb.HostInterface)
 	}
 
-	// The whole root, not only the sandbox tree: the rm that empties the root also gives back the
-	// null-netns runsc bind mounts into its own root and never drops.
+	// The whole root, so the null-netns runsc binds into its own root counts too.
+	if points := mountsUnder(t, app.Root); len(points) > 0 {
+		t.Errorf("the rm left the mounts %v under %s", points, app.Root)
+	}
+}
+
+// mountsUnder skips the root's own mount: Firecracker makes a root off reflink the loop mount of <root>.xfs, and it outlives every rm.
+func mountsUnder(t *testing.T, root string) []string {
+	t.Helper()
+
 	mounts, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
 		t.Fatalf("read the mount table: %v", err)
 	}
-	if strings.Contains(string(mounts), app.Root) {
-		t.Errorf("the rm left a mount under %s", app.Root)
+
+	var points []string
+	for line := range strings.Lines(string(mounts)) {
+		if fields := strings.Fields(line); len(fields) > 1 && strings.HasPrefix(fields[1], root+"/") {
+			points = append(points, fields[1])
+		}
 	}
+
+	return points
 }

@@ -88,15 +88,16 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 type fakeEgressLog struct {
 	// holds keeps a follow open until its context ends, the way a live log does while the sandbox runs.
 	holds bool
+	cut   int
 }
 
-func (*fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, error) {
-	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, nil
+func (f *fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, int, error) {
+	return []egress.Record{{Source: egress.SourceProxy, Verdict: string(models.ActionAllow), Host: sb.Name}}, f.cut, nil
 }
 
 // Follow hands over the same line and then ends as a removed sandbox does, so a test needs no clock.
 func (f *fakeEgressLog) Follow(ctx context.Context, sb models.Sandbox, yield func(egress.Record) error) error {
-	records, err := f.Read(sb)
+	records, _, err := f.Read(sb)
 	if err != nil {
 		return err
 	}
@@ -469,6 +470,24 @@ func TestTheEgressLogAnswersForAnIDAndForAName(t *testing.T) {
 
 		if resp.StatusCode != http.StatusOK || len(records) != 1 || records[0].Host != "web" {
 			t.Errorf("GET the egress log of %s answered %d %+v", ref, resp.StatusCode, records)
+		}
+	}
+}
+
+func TestTheEgressLogNamesWhatItLeftOutOnlyWhenItCut(t *testing.T) {
+	s := seed(t)
+
+	for cut, want := range map[int]string{0: "", 12345: "12345"} {
+		s.egress.cut = cut
+
+		resp, err := s.server.Client().Get(s.server.URL + "/v0/sandboxes/web/egress-log")
+		if err != nil {
+			t.Fatalf("GET the egress log: %v", err)
+		}
+		resp.Body.Close()
+
+		if got := resp.Header.Get(api.EgressCutHeader); got != want {
+			t.Errorf("with %d left out, the %s header is %q, want %q", cut, api.EgressCutHeader, got, want)
 		}
 	}
 }

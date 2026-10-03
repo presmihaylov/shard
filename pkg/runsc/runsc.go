@@ -25,6 +25,9 @@ var ErrNotFound = errors.New("no such container")
 // ErrNotRunning is what a kill of an already dead sandbox returns, which a stop must not treat as a failure.
 var ErrNotRunning = errors.New("the sandbox is not running")
 
+// ErrUnreachable is what a verb returns when a cut-paused sentry's control server refuses the dial, so only a kill of its pids ends it.
+var ErrUnreachable = errors.New("the sandbox control server is unreachable")
+
 // runsc reports every missing container through the same load failure, so its text is the only signal.
 // waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
 const waitDelay = 2 * time.Second
@@ -47,6 +50,8 @@ const discardBudget = 10 * time.Second
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
+	// A wedged sentry's control server refuses the socket, so runsc reports the OS error for the dial.
+	controlRefusedMessage = "connection refused"
 	// The kernel gives runsc EACCES for a file it may not execute and ENOENT for everything else,
 	// a missing interpreter of a script included, which is what a shell answers 126 and 127 for.
 	notExecutableMessage = "permission denied"
@@ -602,6 +607,9 @@ func sentinel(message string, err error) error {
 	}
 	if strings.Contains(message, notRunningMessage) {
 		return ErrNotRunning
+	}
+	if strings.Contains(message, controlRefusedMessage) {
+		return ErrUnreachable
 	}
 
 	return err

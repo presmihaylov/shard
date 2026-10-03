@@ -141,12 +141,12 @@ func (s *Service) clone(configPath string, layers map[string]string, sourceExit 
 
 // copyExitFile carries shard-init's exit record between a bundle and a snapshot; a missing source is not an error.
 func copyExitFile(src, dst string) error {
-	blob, err := os.ReadFile(src)
+	blob, err := readExitFile(src)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read %s: %w", src, err)
+		return err
 	}
 
 	if err := store.WriteFile(dst, blob, 0o600); err != nil {

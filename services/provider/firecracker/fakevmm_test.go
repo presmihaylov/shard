@@ -2,6 +2,7 @@ package firecracker_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,9 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -28,13 +32,31 @@ const (
 	fakeInitEnv = "FIRECRACKER_FAKE_INIT"
 )
 
-// reseedsFile in the state directory, once a test creates it, takes one line per reseed the guest reads.
-const reseedsFile = "reseeds"
+// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads.
+const (
+	controlsFile = "controls"
+	// refuseFreezeFile, while it exists, has the guest refuse every freeze, as one that cannot hold its root does.
+	refuseFreezeFile = "refuse-freeze"
+	// loseFreezeFile has the next freeze reach the guest and a drop take its answer, once.
+	loseFreezeFile = "lose-freeze"
+	// refuseReseedFile, while it exists, has the guest refuse every reseed.
+	refuseReseedFile = "refuse-reseed"
+	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
+	oldGuestFile = "old-guest"
+)
 
 // initBinary is the shard-init the fake vmm runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
 
 func TestMain(m *testing.M) {
+	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
+	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeVMMEnv) == "1" {
 		if err := fakeVMM(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake firecracker:", err)
@@ -86,7 +108,7 @@ func fakeVMM() error {
 	if err != nil {
 		return err
 	}
-	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}}
+	f := &fake{socket: *socket, state: "Not started", streams: map[net.Conn]struct{}{}, sending: map[chan struct{}]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -125,6 +147,10 @@ type fake struct {
 	// streams is every host connection through the vsock device, so a drop can end them all; severed refuses the ones after it.
 	streams map[net.Conn]struct{}
 	severed bool
+	// frozen is what the guest was last told, freeze or thaw, which a snapshot keeps the way its memory would.
+	frozen bool
+	// sending is every guest-to-host copy still open, which a guest that powers off drains through before the vmm dies.
+	sending map[chan struct{}]struct{}
 }
 
 // bootFile is written beside the api socket at the start, with what the vmm was told to boot.
@@ -271,7 +297,7 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if f.state != "Paused" {
 		return "Cannot snapshot a running microVM.", nil
 	}
-	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock})
+	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock, Frozen: f.frozen})
 	if err != nil {
 		return "", err
 	}
@@ -331,6 +357,13 @@ func (f *fake) loadSnapshot(body []byte) (string, error) {
 	if err := f.start(); err != nil {
 		return "", err
 	}
+	// The fresh guest has no memory of the freeze, so it is frozen again before any host attaches.
+	if state.Frozen {
+		if err := refreeze(filepath.Join(filepath.Dir(f.socket), "guest")); err != nil {
+			return "", fmt.Errorf("freeze the restored guest: %w", err)
+		}
+	}
+	f.frozen = state.Frozen
 	f.state = "Running"
 	if !l.ResumeVM {
 		f.state = "Paused"
@@ -394,6 +427,7 @@ type vmstate struct {
 	Boot   json.RawMessage   `json:"boot"`
 	Drives []json.RawMessage `json:"drives"`
 	Vsock  string            `json:"vsock"`
+	Frozen bool              `json:"frozen"`
 }
 
 func (f *fake) persist() error {
@@ -426,6 +460,7 @@ func (f *fake) start() error {
 	go func() {
 		// The exit is the guest powering off, which ends firecracker; the group kill takes an entrypoint that ignored TERM along.
 		_ = cmd.Wait()
+		f.drain()
 		_ = syscall.Kill(-os.Getpid(), syscall.SIGKILL)
 	}()
 
@@ -447,6 +482,25 @@ func (f *fake) start() error {
 	}()
 
 	return nil
+}
+
+// refreeze freezes the guest under dir over a control connection of its own, which it drops before the host dials.
+func refreeze(dir string) error {
+	socket := filepath.Join(dir, fmt.Sprintf("%d.sock", supervisor.ControlPort))
+	conn, err := net.Dial("unix", socket)
+	for deadline := time.Now().Add(5 * time.Second); err != nil && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+		conn, err = net.Dial("unix", socket)
+	}
+	if err != nil {
+		return err
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		return errors.Join(err, control.Close())
+	}
+
+	return errors.Join(control.Freeze(context.Background()), control.Close())
 }
 
 // stop is what a signal does to firecracker: the VM is gone with it, which here is the guest killed; false when none was started.
@@ -515,9 +569,10 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		return
 	}
 
-	var toGuest io.Writer = guest
+	var toGuest, toHost io.Writer = guest, conn
 	if port == int(supervisor.ControlPort) {
-		toGuest = reseeds{Writer: guest, path: filepath.Join(filepath.Dir(f.socket), reseedsFile)}
+		c := &control{f: f, dir: filepath.Dir(f.socket), guest: guest, host: conn}
+		toGuest, toHost = writeFunc(c.intoGuest), writeFunc(c.intoHost)
 	}
 	done := make(chan struct{}, 2)
 	go func() {
@@ -525,32 +580,124 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		closeWrite(guest)
 		done <- struct{}{}
 	}()
+	sent := make(chan struct{})
+	f.mu.Lock()
+	f.sending[sent] = struct{}{}
+	f.mu.Unlock()
 	go func() {
-		_, _ = io.Copy(conn, guest)
+		_, _ = io.Copy(toHost, guest)
 		closeWrite(conn)
+		f.mu.Lock()
+		delete(f.sending, sent)
+		f.mu.Unlock()
+		close(sent)
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
 }
 
-// reseeds is the control stream into the guest, which notes each reseed it carries.
-type reseeds struct {
-	io.Writer
-	path string
+// drain lets what a guest wrote before it powered off reach the host, as the vsock device delivers it before firecracker exits.
+func (f *fake) drain() {
+	f.mu.Lock()
+	pending := make([]chan struct{}, 0, len(f.sending))
+	for sent := range f.sending {
+		pending = append(pending, sent)
+	}
+	f.mu.Unlock()
+	deadline := time.After(time.Second)
+	for _, sent := range pending {
+		select {
+		case <-sent:
+		case <-deadline:
+			return
+		}
+	}
 }
 
-func (r reseeds) Write(p []byte) (int, error) {
-	if strings.Contains(string(p), `"kind":"`+supervisor.KindReseed+`"`) {
-		if err := note(r.path); err != nil {
+// writeFunc lets a method stand in for one direction of a stream.
+type writeFunc func([]byte) (int, error)
+
+func (w writeFunc) Write(p []byte) (int, error) { return w(p) }
+
+// control is one control stream through the vsock device: it notes what the guest reads, and plays the freeze faults a test asks for.
+type control struct {
+	f     *fake
+	dir   string
+	guest io.Writer
+	host  io.Writer
+	// losing is a freeze passed to the guest whose answer the drop takes instead of the host.
+	losing atomic.Bool
+}
+
+func (c *control) intoGuest(p []byte) (int, error) {
+	for _, kind := range []string{supervisor.KindReseed, supervisor.KindFreeze, supervisor.KindThaw} {
+		if !carries(p, kind) {
+			continue
+		}
+		if err := note(filepath.Join(c.dir, controlsFile), kind); err != nil {
 			return 0, err
 		}
 	}
+	if carries(p, supervisor.KindThaw) || carries(p, supervisor.KindStop) {
+		c.f.freeze(false)
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, refuseReseedFile)); err == nil && carries(p, supervisor.KindReseed) {
+		return c.refuse(p, supervisor.KindReseed)
+	}
+	if !carries(p, supervisor.KindFreeze) {
+		return c.guest.Write(p)
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, refuseFreezeFile)); err == nil {
+		return c.refuse(p, supervisor.KindFreeze)
+	}
+	err := os.Remove(filepath.Join(c.dir, loseFreezeFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	c.losing.Store(err == nil)
+	c.f.freeze(true)
 
-	return r.Writer.Write(p)
+	return c.guest.Write(p)
 }
 
-func note(path string) error {
+// refuse hands the guest a kind it does not take, which draws a failure on the request's id.
+func (c *control) refuse(p []byte, kind string) (int, error) {
+	if _, err := io.WriteString(c.guest, strings.Replace(string(p), `"kind":"`+kind+`"`, `"kind":"refused-`+kind+`"`, 1)); err != nil {
+		return 0, err
+	}
+
+	return len(p), nil
+}
+
+func (c *control) intoHost(p []byte) (int, error) {
+	if c.losing.Load() && carries(p, supervisor.KindDone) {
+		c.f.drop(false)
+
+		return 0, errors.New("the drop took the answer to the freeze")
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, oldGuestFile)); err == nil && carries(p, supervisor.KindState) {
+		if _, err := io.WriteString(c.host, strings.Replace(string(p), `,"freezes_overlay":true`, "", 1)); err != nil {
+			return 0, err
+		}
+
+		return len(p), nil
+	}
+
+	return c.host.Write(p)
+}
+
+func (f *fake) freeze(frozen bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.frozen = frozen
+}
+
+func carries(p []byte, kind string) bool {
+	return strings.Contains(string(p), `"kind":"`+kind+`"`)
+}
+
+func note(path, kind string) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -558,7 +705,7 @@ func note(path string) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(supervisor.KindReseed + "\n")
+	_, err = f.WriteString(kind + "\n")
 
 	return errors.Join(err, f.Close())
 }

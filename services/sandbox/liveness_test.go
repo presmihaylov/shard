@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,6 +133,32 @@ func TestLivenessNeverRewritesARecordedExit(t *testing.T) {
 	}
 }
 
+// Guest root can put its own file on PID 1's fd 0; inspect names it once, and a later good read clears it (SHARD-419).
+func TestLivenessNamesAReplacedExitChannelOnceAndClearsIt(t *testing.T) {
+	lab := newLivenessLab(t, running(), alive(42))
+	lab.l.provider.entrypointErr = fmt.Errorf("fd 0 of PID 1 is not a regular file: %w", models.ErrExitChannelReplaced)
+
+	for range 2 {
+		if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+			t.Fatalf("Liveness: %v", err)
+		}
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !strings.Contains(got.ExitChannel, "exit channel replaced") {
+		t.Errorf("the record says %s with exit channel %q, want running and the channel named replaced", got.State, got.ExitChannel)
+	}
+	if len(lab.reports) != 1 {
+		t.Errorf("two passes reported %v, want one line", lab.reports)
+	}
+
+	lab.l.provider.entrypointErr = nil
+	if err := lab.tick(t, lab.l.repo.sb, time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb.ExitChannel; got != "" {
+		t.Errorf("a good read left exit channel %q on the record", got)
+	}
+}
+
 func TestLivenessStopsASandboxWhoseProcessDied(t *testing.T) {
 	lab := newLivenessLab(t, running(), gone())
 
@@ -239,6 +266,28 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	}
 }
 
+// shard-init's own death is the sandbox exit, and its reason is what inspect shows (SHARD-290).
+func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
+	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
+	lab := newLivenessLab(t, running(), models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why})
+
+	if err := lab.tick(t, running(), time.Now()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+
+	got := lab.l.repo.sb
+	want := sandbox.SupervisorFailedReason + ": " + why
+	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != want {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, want)
+	}
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
+		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], why) {
+		t.Errorf("the pass reported %v, want one line with the reason", lab.reports)
+	}
+}
+
 func TestLivenessStartsASandboxThatAskedForItAfterOOM(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	lab := newLivenessLab(t, optedIn(), oomKilled())
@@ -282,6 +331,97 @@ func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "the record now says stopped") {
 		t.Errorf("the pass reported %v, want one line on the stop", lab.reports)
+	}
+}
+
+// reconcile is a daemon start over an OOM it never saw, up to the first liveness tick.
+func (l *livenessLab) reconcile(t *testing.T) {
+	t.Helper()
+
+	if err := l.svc.ReconcileAll(t.Context(), []models.Sandbox{l.l.repo.sb}, func(line string) { l.reports = append(l.reports, line) }, runOnce); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+}
+
+// The start again happens at boot, and the first tick then finds a live sandbox, not a second OOM (SHARD-311).
+func TestReconcileStartsAfterAnOOMTheDaemonWasDownFor(t *testing.T) {
+	sb := optedIn()
+	sb.MaxOOMRestarts = 3
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	before := time.Now().UTC()
+	lab.reconcile(t)
+	after := time.Now().UTC()
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.PID != 7 || got.StoppedReason != "" {
+		t.Errorf("the record says %s with pid %d and the reason %q, want running with the new pid", got.State, got.PID, got.StoppedReason)
+	}
+	if got.OOMRestarts != 1 || got.OOMRestartedAt.Before(before) || got.OOMRestartedAt.After(after) {
+		t.Errorf("the record counts %d starts again at %v, want 1 within the reconcile", got.OOMRestarts, got.OOMRestartedAt)
+	}
+	if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, "started again, 1 of 3") {
+		t.Errorf("the reconcile reported %v, want a last line counting the start", lab.reports)
+	}
+
+	if err := lab.tick(t, lab.l.repo.sb, time.Now().UTC()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 1 {
+		t.Errorf("after the first tick the record says %s with %d starts again, want running with 1", got.State, got.OOMRestarts)
+	}
+}
+
+// The tick's backoff bounds a loop of ticks; at boot it would leave a running record with no process behind it.
+func TestReconcileStartsAfterAnOOMInsideTheTickBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	sb := optedIn()
+	sb.MaxOOMRestarts = 5
+	sb.OOMRestarts = 3
+	sb.OOMRestartedAt = now
+	sb.StartedAt = now
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	lab.reconcile(t)
+
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.PID != 7 || got.OOMRestarts != 4 {
+		t.Errorf("the record says %s with pid %d and %d starts again, want running with pid 7 and 4", got.State, got.PID, got.OOMRestarts)
+	}
+}
+
+// Every verb that reads a record between the boot and the first tick reads the memory decision, never the dead pid.
+func TestInspectBeforeTheFirstTickReadsTheOOMTheDaemonWasDownFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		sb     func() models.Sandbox
+		fail   []string
+		state  models.State
+		pid    int
+		reason string
+		report string
+	}{
+		{"no restart_on_oom", running, nil, models.StateStopped, 0, sandbox.OOMKilledReason, "the record now says stopped"},
+		{"restart_on_oom", optedIn, nil, models.StateRunning, 7, "", "started again, 1"},
+		{"a start again that fails", optedIn, []string{"provider.Start"}, models.StateStopped, 0, sandbox.OOMKilledReason, "the record now says stopped"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, tc.sb(), oomKilled())
+			lab.r.fail = tc.fail
+
+			lab.reconcile(t)
+
+			got, err := sandbox.Inspect(lab.l.repo, &fakeEnforcer{}, "sandbox1")
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+			if got.State != tc.state || got.PID != tc.pid || got.StoppedReason != tc.reason {
+				t.Errorf("inspect says %s with pid %d and the reason %q, want %s with pid %d and %q", got.State, got.PID, got.StoppedReason, tc.state, tc.pid, tc.reason)
+			}
+			if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, tc.report) {
+				t.Errorf("the reconcile reported %v, want a last line with %q", lab.reports, tc.report)
+			}
+		})
 	}
 }
 
@@ -426,8 +566,10 @@ func TestLivenessKeepsNoThrottleCountWithoutRestartOnOOM(t *testing.T) {
 	}
 }
 
-func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
+// The wait takes the record out of running at the kill, so inspect never names the dead pid (SHARD-425).
+func TestLivenessStopsTheRecordWhileTheOOMBackoffWaits(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	due := now.Add(time.Second)
 	sb := optedIn()
 	sb.OOMRestarts = 2
 	sb.OOMRestartedAt = now.Add(-time.Second)
@@ -442,18 +584,119 @@ func TestLivenessWaitsOutTheOOMBackoff(t *testing.T) {
 	if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
 		t.Errorf("the daemon holds %d execs of the killed sandbox through the wait, want none (SHARD-362)", held)
 	}
-	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 2 || lab.l.provider.started {
-		t.Errorf("the record says %s with %d starts again inside the wait, want it untouched", got.State, got.OOMRestarts)
+	got, err := sandbox.Inspect(lab.l.repo, &fakeEnforcer{}, "sandbox1")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
 	}
-	if len(lab.reports) != 0 {
-		t.Errorf("the pass reported %v inside the wait", lab.reports)
+	if got.State != models.StateStopped || got.PID != 0 || !strings.Contains(got.StoppedReason, "it starts again at 2026-09-16T12:00:01Z") {
+		t.Errorf("inspect in the wait reads %s with pid %d and the reason %q, want stopped with no pid and the wait named", got.State, got.PID, got.StoppedReason)
+	}
+	if !got.OOMRestartDue.Equal(due) || got.OOMRestarts != 2 || lab.l.provider.started {
+		t.Errorf("the record waits until %v with %d starts again (started %t), want %v with 2 and no start", got.OOMRestartDue, got.OOMRestarts, lab.l.provider.started, due)
 	}
 
-	if err := lab.tick(t, sb, now.Add(time.Second)); err != nil {
+	// The next tick lists the record the wait wrote, and leaves it alone before the due time.
+	if err := lab.tick(t, lab.l.repo.sb, due.Add(-500*time.Millisecond)); err != nil {
 		t.Fatalf("Liveness: %v", err)
 	}
-	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 3 || !lab.l.provider.started {
-		t.Errorf("the record says %s with %d starts again once the wait passed, want running with 3", got.State, got.OOMRestarts)
+	if lab.l.provider.started {
+		t.Error("the sandbox started again before its wait passed")
+	}
+
+	if err := lab.tick(t, lab.l.repo.sb, due); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	after := lab.l.repo.sb
+	if after.State != models.StateRunning || after.PID != 7 || after.StoppedReason != "" || !after.OOMRestartDue.IsZero() {
+		t.Errorf("once the wait passed the record says %s with pid %d, the reason %q and due %v, want running with the new pid", after.State, after.PID, after.StoppedReason, after.OOMRestartDue)
+	}
+	if after.OOMRestarts != 3 || !after.OOMRestartedAt.Equal(due) {
+		t.Errorf("the record counts %d starts again at %v, want 3 at %v", after.OOMRestarts, after.OOMRestartedAt, due)
+	}
+	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "started again, 3") {
+		t.Errorf("the passes reported %v, want the wait and then the start counted", lab.reports)
+	}
+}
+
+// waiting is a record the tick took out of running at an OOM kill, with its start again due at due.
+func waiting(due time.Time) models.Sandbox {
+	sb := optedIn()
+	sb.State = models.StateStopped
+	sb.PID = 0
+	sb.StoppedReason = sandbox.OOMKilledReason + "; it starts again at " + due.Format(time.RFC3339)
+	sb.OOMRestarts = 2
+	sb.OOMRestartedAt = due.Add(-2 * time.Second)
+	sb.OOMRestartDue = due
+
+	return sb
+}
+
+// A stop was final in the wait while the record said running, so it stays final now that it says stopped.
+func TestStopCallsOffTheStartAgainTheOOMBackoffWaits(t *testing.T) {
+	due := time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)
+	lab := newLivenessLab(t, waiting(due), oomKilled())
+
+	if _, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.StoppedReason != sandbox.OOMKilledReason || !got.OOMRestartDue.IsZero() {
+		t.Errorf("after the stop the record says %s with the reason %q and due %v, want stopped with %q and nothing due", got.State, got.StoppedReason, got.OOMRestartDue, sandbox.OOMKilledReason)
+	}
+
+	if err := lab.tick(t, waiting(due), due.Add(time.Minute)); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if lab.l.provider.started {
+		t.Error("the daemon started a sandbox the operator stopped in the wait")
+	}
+}
+
+func TestStartByHandInTheOOMBackoffTakesTheWaitAway(t *testing.T) {
+	due := time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)
+	lab := newLivenessLab(t, waiting(due), oomKilled())
+
+	if _, err := lab.svc.Start(t.Context(), "sandbox1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !got.OOMRestartDue.IsZero() || got.OOMRestarts != 2 {
+		t.Errorf("after the start the record says %s with due %v and %d starts again, want running with nothing due and 2", got.State, got.OOMRestartDue, got.OOMRestarts)
+	}
+
+	if err := lab.tick(t, waiting(due), due); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if starts := keep(lab.r.calls, "provider.Start"); len(starts) != 1 {
+		t.Errorf("the sandbox was started %d times, want only the start by hand", len(starts))
+	}
+}
+
+func TestLivenessSkipsAWaitAnRmTookAway(t *testing.T) {
+	due := time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)
+	lab := newLivenessLab(t, waiting(due), oomKilled())
+	lab.l.repo.missing = true
+
+	if err := lab.tick(t, waiting(due), due); err != nil {
+		t.Errorf("Liveness over a removed record = %v, want nil", err)
+	}
+	if lab.l.provider.started {
+		t.Error("the daemon started a sandbox rm removed")
+	}
+}
+
+// The record counts the start before it runs, so one that fails at the end of the wait stays stopped and leaves no loop.
+func TestLivenessCountsAStartAgainThatFailedAfterTheWait(t *testing.T) {
+	due := time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)
+	lab := newLivenessLab(t, waiting(due), oomKilled())
+	lab.r.fail = []string{"provider.Start"}
+
+	err := lab.tick(t, waiting(due), due)
+	if err == nil || !strings.Contains(err.Error(), "start sandbox sandbox1 again") {
+		t.Fatalf("Liveness = %v, want the start's failure", err)
+	}
+	got := lab.l.repo.sb
+	if got.State != models.StateStopped || got.OOMRestarts != 3 || got.StoppedReason != sandbox.OOMKilledReason || !got.OOMRestartDue.IsZero() {
+		t.Errorf("the record says %s with %d starts again, the reason %q and due %v, want stopped with 3, %q and nothing due", got.State, got.OOMRestarts, got.StoppedReason, got.OOMRestartDue, sandbox.OOMKilledReason)
 	}
 }
 

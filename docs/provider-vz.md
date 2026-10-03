@@ -120,11 +120,12 @@ connects to each after boot, retrying until the listener is up:
 | 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
 | 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s, the offsets of the oldest output byte it holds and of the next; the host answers with one, the byte to resume from, then reads raw bytes and acks each write to `output.log` with the offset after it. The guest holds up to 1 MiB no host acked, so a daemon restart loses and repeats nothing; `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` is a guest from before the protocol: the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
-| 5003 | files | one connection per operation: a `FileHeader` line naming `stat`, `put` or `get` and an absolute guest path, then a `FileReply` line with the file's shape or the guest's reason; a put sends its bytes after the header, a get receives them after the reply (SHARD-42) |
 
-A put lands under a temp name beside the target and renames once the bytes, the mode and the sync
-are in, so a copy that dies midway leaves the old file whole and no partial one. A get streams
-exactly the size the reply promised. Neither takes a directory.
+A files operation is no port of its own: it is an exec of `/.shard/init files` on 5001, as on every
+provider. A put lands under a temp name beside the target and renames once the bytes, the mode and
+the sync are in, then syncs the directory, so a copy that dies midway leaves the old file whole and
+no partial one. A get streams to the end of the file, whatever size its stat states. Neither takes a
+directory.
 
 Every new control connection hears `state` first (ready, the last exit, the count), written on the
 supervisor's own goroutine before any event, so a daemon that restarts, or re-attaches after a
@@ -140,8 +141,10 @@ side of a tty resize, and `pkg/pty` on darwin, land with the provider (SHARD-218
 On gVisor a supervisor that fails its own bookkeeping exits 125 and the host reads that back with
 `runsc wait`. A VM halts when PID 1 exits and the code is lost with it, so `shard-init` first sends
 `supervisor-failed` on the control connection, with the reason and the exit code 125, and waits up
-to ten seconds for a host to attach when none is, then exits (SHARD-42). The vz provider ignores
-the event today and reads the halt as the guest gone; the Firecracker provider records it (SHARD-41).
+to ten seconds for a host to attach when none is, then exits (SHARD-42). The Firecracker provider
+records the 125 as the sandbox exit and the reason as its stopped reason, which `inspect` and `ls`
+show as `shard-init failed: <reason>` until the next start (SHARD-290). The vz provider ignores the
+event today and reads the halt as the guest gone.
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection the host

@@ -141,6 +141,36 @@ func TestCreateRefusesAnUnknownState(t *testing.T) {
 	}
 }
 
+// An admission runs on a claimed directory no verb lists, and its refusal leaves no directory and no name (SHARD-393).
+func TestARefusedAdmissionLeavesNothing(t *testing.T) {
+	r, _ := repo(t)
+	sb := newSandbox()
+	sb.Name = "builder"
+	refused := errors.New("no room for the disk")
+
+	var claimed string
+	_, err := r.Create(sb, func(dir string) error {
+		claimed = dir
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			t.Errorf("the admission ran before the directory %s was claimed: %v", dir, err)
+		}
+		if list, err := r.List(); err != nil || len(list) != 0 {
+			t.Errorf("List during the admission = %v, %v, want nothing", list, err)
+		}
+
+		return refused
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("Create = %v, want the refusal", err)
+	}
+	if _, err := os.Stat(claimed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the directory %s outlived the refusal: %v", claimed, err)
+	}
+	if _, err := r.Create(sb); err != nil {
+		t.Fatalf("the refused create still holds the name builder: %v", err)
+	}
+}
+
 func TestCreateAndGetRoundTrip(t *testing.T) {
 	r, _ := repo(t)
 	want := create(t, r)
@@ -794,6 +824,25 @@ func TestARefusedReferenceIsAValidationError(t *testing.T) {
 	}
 	if _, err := r.Get(""); !errors.As(err, &invalid) {
 		t.Errorf("Get of an empty id got %T %v, want a ValidationError", err, err)
+	}
+}
+
+// SHARD-374: an upper-case ref or name folds onto another sandbox on a case-insensitive filesystem, so it is refused; an id shape is refused in any case.
+func TestAMixedCaseNameOrReferenceIsRefused(t *testing.T) {
+	r, _ := repo(t)
+
+	var invalid *sandboxstate.ValidationError
+	if _, err := r.Resolve("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("Resolve of an upper-case ref got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("Morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("ValidName of a mixed-case id shape got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidName("morning-fern-b8b0"); err == nil {
+		t.Error("ValidName of a lower-case id shape got nil, want it refused")
+	}
+	if err := sandboxstate.ValidName("my-sandbox"); err != nil {
+		t.Errorf("ValidName of a plain lower-case name got %v, want nil", err)
 	}
 }
 

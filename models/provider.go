@@ -88,6 +88,8 @@ type Status struct {
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
 	// A stop leaves the same leftovers, so a record that says stopped outranks it.
 	OOMKilled bool
+	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.
+	SupervisorFailed string
 	// Throttles counts the times the host held the sandbox at its memory throttle, 0 on a substrate with none.
 	Throttles int64
 }
@@ -212,6 +214,9 @@ type ExitReport struct {
 
 // ExitReportKind is the only Kind an exit report carries, so a reader rejects anything else.
 const ExitReportKind = "exit"
+
+// ExitChannelSize is the sealed memfd a sysbox PID 1 reports on: shard-init fills it from offset 0, the record then NULs.
+const ExitChannelSize = 4096
 
 // SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
 const SupervisorFailedExitCode = 125
