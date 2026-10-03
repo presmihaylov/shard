@@ -628,7 +628,7 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo $i > /count; sleep 0.2; done")
@@ -688,7 +688,7 @@ func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 // Every restore of one save wakes with the same crng key, so the resumed source and its forks each read their own bytes only after a reseed (SHARD-293).
 func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
@@ -747,7 +747,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 // A process that runs across the save draws its next bytes after the restore, so two forks share no draw past the first line they differ on (SHARD-310).
 func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	spec := h.newSpec(t, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
@@ -810,7 +810,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 // A clone boots from the disk alone, so a pause freezes the root under a writer in mid-loop: the clone holds every count the writer printed, and the source and a fork write again after (SHARD-296).
 func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	h := newVMHarness(t)
-	if !h.provider.Capabilities().Fork {
+	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
 	// Each count reaches the disk before the log, and a cold boot of the disk finds the file and only sleeps.
