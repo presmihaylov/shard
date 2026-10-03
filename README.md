@@ -67,6 +67,11 @@ host, and the egress proxy puts it into a header of an HTTPS request on its way 
 `--policy NAME` names the egress policy the host enforces. Without one the sandbox reaches the
 internet and nothing private; see `docs/egress.md`.
 
+`shard cp ./app.conf <id>:/srv/` and `shard cp <id>:/srv/app.conf .` copy one file into or out of a
+running sandbox, streamed and byte exact. A copy in keeps the mode and is atomic in the guest;
+`--user` names who writes and owns it. A directory goes as a tar, with its modes and symlinks, and a
+copy out refuses anything in it that would land outside the destination.
+
 ## Snapshots
 
 Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`: what
