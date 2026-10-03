@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/peercred"
 )
 
 // Client speaks to one shim over its socket. It holds no connection between verbs, so a daemon restart loses nothing.
@@ -65,7 +67,7 @@ func Start(ctx context.Context, shim string, cfg Config) (*Client, Info, error) 
 	client := &Client{socket: cfg.Socket}
 	deadline := time.After(startTimeout)
 	for {
-		info, err := client.State()
+		info, err := client.State(ctx)
 		if err == nil && info.PID != cmd.Process.Pid {
 			return nil, Info{}, errors.Join(fmt.Errorf("%w: pid %d answers on %s", ErrSocketInUse, info.PID, cfg.Socket), client.end(cmd))
 		}
@@ -85,10 +87,13 @@ func Start(ctx context.Context, shim string, cfg Config) (*Client, Info, error) 
 	}
 }
 
-// Adopt takes a shim that is already running, by its socket, and proves it answers.
-func Adopt(socket string) (*Client, Info, error) {
-	client := &Client{socket: socket}
-	info, err := client.State()
+// Open names the shim on a socket and asks it nothing, so a stop can still kill one that never answers.
+func Open(socket string) *Client { return &Client{socket: socket} }
+
+// Adopt takes a shim that is already running, by its socket, and proves it answers by ctx's deadline.
+func Adopt(ctx context.Context, socket string) (*Client, Info, error) {
+	client := Open(socket)
+	info, err := client.State(ctx)
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("adopt the shim on %s: %w", socket, err)
 	}
@@ -96,15 +101,51 @@ func Adopt(socket string) (*Client, Info, error) {
 	return client, info, nil
 }
 
-func (c *Client) State() (Info, error)           { return c.call(request{Verb: "state"}) }
-func (c *Client) Pause() (Info, error)           { return c.call(request{Verb: "pause"}) }
-func (c *Client) Resume() (Info, error)          { return c.call(request{Verb: "resume"}) }
-func (c *Client) Save(path string) (Info, error) { return c.call(request{Verb: "save", Path: path}) }
-func (c *Client) Stop() (Info, error)            { return c.call(request{Verb: "stop"}) }
+// State and Stop end by ctx's deadline when it comes before callTimeout, so a stop that must end on time is not held by the shim.
+func (c *Client) State(ctx context.Context) (Info, error) { return c.call(ctx, request{Verb: "state"}) }
+func (c *Client) Stop(ctx context.Context) (Info, error)  { return c.call(ctx, request{Verb: "stop"}) }
+
+func (c *Client) Pause() (Info, error)  { return c.call(context.Background(), request{Verb: "pause"}) }
+func (c *Client) Resume() (Info, error) { return c.call(context.Background(), request{Verb: "resume"}) }
+func (c *Client) Save(path string) (Info, error) {
+	return c.call(context.Background(), request{Verb: "save", Path: path})
+}
+
+// Kill ends the shim by the pid behind its socket, which the kernel attests at the dial: a shim too frozen to answer still owns it (SHARD-349).
+func (c *Client) Kill() error {
+	timeout := c.timeout
+	if timeout == 0 {
+		timeout = callTimeout
+	}
+	conn, err := net.DialTimeout("unix", c.socket, timeout)
+	if err != nil {
+		return fmt.Errorf("kill: dial the shim: %w", err)
+	}
+	pid, err := peercred.PID(conn)
+	if err != nil {
+		return errors.Join(fmt.Errorf("kill: read the peer of the shim socket: %w", err), conn.Close())
+	}
+	if err := conn.Close(); err != nil {
+		return fmt.Errorf("kill: close the shim socket: %w", err)
+	}
+	// A pid of 0 or 1 as a group would be this process's own group, or every process it may signal.
+	if pid <= 1 {
+		return fmt.Errorf("kill: the shim socket names pid %d", pid)
+	}
+	// Start made the shim lead its own group; one that leads none dies alone.
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
+		return nil
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill the shim %d: %w", pid, err)
+	}
+
+	return nil
+}
 
 // Connect opens one vsock connection to a guest port; the returned stream is that connection.
 func (c *Client) Connect(port uint32) (net.Conn, error) {
-	conn, _, err := c.send(request{Verb: "connect", Port: port})
+	conn, _, err := c.send(context.Background(), request{Verb: "connect", Port: port})
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +247,8 @@ func closeIfAny(file *os.File) error {
 	return file.Close()
 }
 
-func (c *Client) call(req request) (Info, error) {
-	conn, info, err := c.send(req)
+func (c *Client) call(ctx context.Context, req request) (Info, error) {
+	conn, info, err := c.send(ctx, req)
 	if err != nil {
 		return Info{}, err
 	}
@@ -218,18 +259,23 @@ func (c *Client) call(req request) (Info, error) {
 	return info, nil
 }
 
-func (c *Client) send(req request) (net.Conn, Info, error) {
+func (c *Client) send(ctx context.Context, req request) (net.Conn, Info, error) {
 	timeout := c.timeout
 	if timeout == 0 {
 		timeout = callTimeout
 	}
-	conn, err := net.DialTimeout("unix", c.socket, timeout)
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	dialer := net.Dialer{Deadline: deadline}
+	conn, err := dialer.DialContext(ctx, "unix", c.socket)
 	if err != nil {
 		return nil, Info{}, fmt.Errorf("dial the shim: %w", err)
 	}
 
 	var reply response
-	err = conn.SetDeadline(time.Now().Add(timeout))
+	err = conn.SetDeadline(deadline)
 	if err == nil {
 		err = writeFrame(conn, req)
 	}

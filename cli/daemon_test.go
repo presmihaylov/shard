@@ -68,19 +68,22 @@ func (b *syncBuffer) String() string {
 // itestPrefix names the temp roots the integration teardown sweeps, so a root a test here leaves behind goes with them.
 const itestPrefix = "shard-itest"
 
+// shortTemp is where shortRoot makes a root: t.TempDir and a Mac's $TMPDIR are both past the root a vz sandbox's socket path leaves room for.
+const shortTemp = "/tmp"
+
 // A root this helper made and a test failed to remove is still the sweep's to take back (SHARD-377).
 func TestShortRootSitsUnderThePrefixTheSweepOwns(t *testing.T) {
 	root := shortRoot(t)
-	if filepath.Dir(root) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(root), itestPrefix) {
-		t.Errorf("shortRoot = %s, want %s* under %s", root, itestPrefix, os.TempDir())
+	if filepath.Dir(root) != shortTemp || !strings.HasPrefix(filepath.Base(root), itestPrefix) {
+		t.Errorf("shortRoot = %s, want %s* under %s", root, itestPrefix, shortTemp)
 	}
 }
 
-// shortRoot skips t.TempDir, whose path carries the test name past the 104 bytes a macOS socket path allows.
+// shortRoot makes a root short enough for a socket path, under the prefix the integration sweep owns.
 func shortRoot(t *testing.T) string {
 	t.Helper()
 
-	root, err := os.MkdirTemp("", itestPrefix) //nolint:usetesting // t.TempDir is too long for a socket path
+	root, err := os.MkdirTemp(shortTemp, itestPrefix) //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}

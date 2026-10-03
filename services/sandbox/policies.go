@@ -21,7 +21,7 @@ func (s *Service) AttachPolicy(ctx context.Context, ref, name string) (models.Sa
 		return models.Sandbox{}, &RequestError{Err: errors.New("policy attach takes a policy name")}
 	}
 
-	id, sb, unlock, err := s.holdForPolicy(ref, "attach")
+	id, sb, unlock, err := s.holdForPolicy(ctx, ref, "attach")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
@@ -49,7 +49,7 @@ func (s *Service) AttachPolicy(ctx context.Context, ref, name string) (models.Sa
 // DetachPolicy takes the policy back. The proxy CA stays, as it does after an ungrant, and the sandbox
 // keeps its secrets and the fronting they ask for.
 func (s *Service) DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error) {
-	id, sb, unlock, err := s.holdForPolicy(ref, "detach")
+	id, sb, unlock, err := s.holdForPolicy(ctx, ref, "detach")
 	if err != nil {
 		return models.Sandbox{}, err
 	}
@@ -104,6 +104,6 @@ func (s *Service) trustProxy(id string) error {
 	return b.TrustProxy(proxyCA)
 }
 
-func (s *Service) holdForPolicy(ref, verb string) (string, models.Sandbox, func(), error) {
-	return s.holdCreatedOrStopped(ref, "policy "+verb+" takes a created or stopped sandbox: stop it first")
+func (s *Service) holdForPolicy(ctx context.Context, ref, verb string) (string, models.Sandbox, func(), error) {
+	return s.holdCreatedOrStopped(ctx, ref, "policy "+verb+" takes a created or stopped sandbox: stop it first")
 }

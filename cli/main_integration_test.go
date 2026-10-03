@@ -93,7 +93,9 @@ func run(m *testing.M) (int, error) {
 
 // stateRoots are the roots this package makes. One left behind means an earlier run kept host state,
 // so a run refuses to start on it.
-func stateRoots() []string { return underTemp(itestPrefix, "shard-build", "shard-daemon") }
+func stateRoots() []string {
+	return append(underTemp("shard-build", "shard-daemon"), filepath.Join(shortTemp, itestPrefix))
+}
 
 // tempPrefixes adds the scratch directory of an exec, which a killed daemon leaves and nothing pins.
 func tempPrefixes() []string { return append(stateRoots(), underTemp("shard-exec-")...) }

@@ -836,7 +836,7 @@ func runExecToItsEnd(t *testing.T, svc *sandbox.Service) {
 	}
 }
 
-// rm of a paused sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+// rm --force of a paused sandbox drops its execs, or their buffers stay in the daemon for good (SHARD-362); a plain rm refuses it (SHARD-281).
 func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
 	runExecToItsEnd(t, svc)
@@ -844,7 +844,21 @@ func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
 	if _, err := svc.Pause(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	// runsc deletes the sandbox once its checkpoint is written, so rm finds nothing to stop.
+	// runsc deletes the sandbox once its checkpoint is written.
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
+// rm of a dead sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+func TestRemoveOfADeadSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
 	l.provider.status = gone()
 
 	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {

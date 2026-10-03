@@ -15,14 +15,14 @@ const (
 	// StateStopped keeps the writable layer, so a start can follow it. A sandbox stopped before its
 	// entrypoint ran leaves nothing on the substrate, because stopping that one is a delete there.
 	StateStopped State = "stopped"
-	// StateFailed is a create that never reached running. It is terminal, so only rm frees it.
+	// StateFailed is a create, fork or clone that never reached running. It is terminal, so only rm frees it.
 	StateFailed State = "failed"
 )
 
 // The whole machine, drawn in docs/state-machine.md. stopped is not terminal here; failed is.
 var legalTransitions = map[State][]State{
 	StatePending: {StateRunning, StateFailed},
-	StateCreated: {StateRunning, StateStopped},
+	StateCreated: {StateRunning, StateStopped, StateFailed},
 	StateRunning: {StatePaused, StateStopped},
 	StatePaused:  {StateRunning, StateStopped},
 	StateStopped: {StateRunning},
