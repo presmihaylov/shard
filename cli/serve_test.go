@@ -27,7 +27,7 @@ import (
 const frontSecret = "cli-front-secret-0000000000000000"
 
 // newFrontApp puts a fake daemon and a front over it up, records a token in the front's ledger, and answers
-// the flags that reach the front and the secret file the front signs and checks with.
+// the flags that reach the front and the signing key file the front signs and checks with.
 func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string, string) {
 	t.Helper()
 
@@ -41,9 +41,9 @@ func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App
 	app := newLsApp(t, out, listed(), nil)
 
 	dir := t.TempDir()
-	secret := filepath.Join(dir, "secret")
+	secret := filepath.Join(dir, "signing-key")
 	if err := os.WriteFile(secret, []byte(frontSecret+"\n"), 0o600); err != nil {
-		t.Fatalf("write the secret file: %v", err)
+		t.Fatalf("write the signing key file: %v", err)
 	}
 
 	minted, err := serve.IssueToken([]byte(frontSecret), serve.TokensPath(secret, ""), "cli", nil, time.Hour)
@@ -56,8 +56,16 @@ func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App
 	}
 
 	cert, key := selfSigned(t, dir)
+	address := startFront(t, serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SigningKeyFile: secret, Root: app.Root, Out: frontLog})
 
-	front, err := serve.New(serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: secret, Root: app.Root, Out: frontLog})
+	return app, []string{"--remote", "https://" + address, "--token-file", token, "--ca-file", cert}, secret
+}
+
+// startFront serves one front over cfg until the test ends, and answers the address it bound.
+func startFront(t *testing.T, cfg serve.Config) string {
+	t.Helper()
+
+	front, err := serve.New(cfg)
 	if err != nil {
 		t.Fatalf("serve.New: %v", err)
 	}
@@ -77,7 +85,7 @@ func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App
 		}
 	})
 
-	return app, []string{"--remote", "https://" + listener.Addr().String(), "--token-file", token, "--ca-file", cert}, secret
+	return listener.Addr().String()
 }
 
 // The remote front comes from SHARD_REMOTE too, so a shell exports it once. (SHARD-194)

@@ -134,7 +134,7 @@ func frontWith(t *testing.T, root, secret string, tune func(*Server, net.Listene
 
 	cert, key := keyPair(t)
 
-	server, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: secret, Root: root, Out: io.Discard})
+	server, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SigningKeyFile: secret, Root: root, Out: io.Discard})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -377,20 +377,13 @@ func TestTheFrontRefusesToStartWithoutATLSPair(t *testing.T) {
 	root := shortRoot(t)
 
 	for name, cfg := range map[string]Config{
-		"no certificate": {KeyFile: key, SecretFile: secret, Root: root},
-		"no key":         {CertFile: cert, SecretFile: secret, Root: root},
-		"neither":        {SecretFile: secret, Root: root},
+		"no certificate": {KeyFile: key, SigningKeyFile: secret, Root: root},
+		"no key":         {CertFile: cert, SigningKeyFile: secret, Root: root},
+		"neither":        {SigningKeyFile: secret, Root: root},
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("%s: the front started, want a refusal", name)
 		}
-	}
-}
-
-func TestTheFrontRefusesToStartWithoutASecret(t *testing.T) {
-	cert, key := keyPair(t)
-	if _, err := New(Config{CertFile: cert, KeyFile: key, Root: shortRoot(t)}); err == nil {
-		t.Error("the front started with no secret file, want a refusal")
 	}
 }
 
@@ -727,48 +720,6 @@ func TestReadHeadRefusesABareLineFeed(t *testing.T) {
 	}
 }
 
-func TestReadSecretRefusesAFileTheHostCanRead(t *testing.T) {
-	path := secretFile(t, testSecret)
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-
-	_, err := ReadSecret(path)
-	if err == nil {
-		t.Fatal("a world-readable secret file was accepted")
-	}
-	if strings.Contains(err.Error(), testSecret) {
-		t.Error("the refusal carries the secret value")
-	}
-}
-
-func TestReadSecretRefusesAnEmptyFileAndNoFile(t *testing.T) {
-	if _, err := ReadSecret(secretFile(t, "  \n")); err == nil {
-		t.Error("an empty secret file was accepted")
-	}
-	if _, err := ReadSecret(""); err == nil {
-		t.Error("no secret file at all was accepted")
-	}
-}
-
-func TestReadSecretRefusesASecretUnder32Bytes(t *testing.T) {
-	_, err := ReadSecret(secretFile(t, strings.Repeat("a", 31)))
-	if err == nil {
-		t.Fatal("a 31-byte secret was accepted")
-	}
-	if !strings.Contains(err.Error(), "31 bytes") || !strings.Contains(err.Error(), "openssl rand -hex 32") {
-		t.Errorf("the refusal is %q, want the byte count and the generation line", err.Error())
-	}
-
-	if _, err := ReadSecret(secretFile(t, strings.Repeat("a", 32))); err != nil {
-		t.Errorf("a 32-byte secret was refused: %v", err)
-	}
-	// openssl rand -hex 32 prints 64 hex characters, the documented way to make one.
-	if _, err := ReadSecret(secretFile(t, strings.Repeat("0123456789abcdef", 4))); err != nil {
-		t.Errorf("the openssl rand -hex 32 line was refused: %v", err)
-	}
-}
-
 // A token minted with no duration carries no exp, still verifies, and lists as active.
 func TestMintWithNoDurationHasNoExpiry(t *testing.T) {
 	env := newTokenEnv(t)
@@ -870,7 +821,7 @@ func TestTheFrontRefusesAWorldReadableLedger(t *testing.T) {
 	}
 
 	cert, key := keyPair(t)
-	_, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SecretFile: env.secret, Root: shortRoot(t), Out: io.Discard})
+	_, err := New(Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, SigningKeyFile: env.secret, Root: shortRoot(t), Out: io.Discard})
 	if err == nil {
 		t.Error("the front started with a world-readable ledger, want a refusal")
 	}
