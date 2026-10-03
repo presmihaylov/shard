@@ -479,9 +479,10 @@ func (m *machine) close() error {
 	return errors.Join(err, m.closeLink())
 }
 
-// closeDown closes a machine whose VM is down: a fault is logged, never a failed stop, so the record says stopped (ruling @shard, SHARD-389).
+// closeDown closes a machine whose VM is down: a fault is logged, never a failed stop, so the record says stopped (SHARD-389).
 func closeDown(m *machine) {
 	if err := m.close(); err != nil {
+		// Log and continue, decided by Pres on 2026-10-03: the VM is already down, so failing the stop would only strand the record at running.
 		fmt.Fprintf(os.Stderr, "vz: sandbox %s stopped, and closing what the daemon held of it failed: %v\n", m.id, err)
 	}
 }
