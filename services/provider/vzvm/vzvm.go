@@ -209,11 +209,11 @@ func writeRecord(dir string, r record) error {
 	return writeJSON(filepath.Join(dir, recordFile), r)
 }
 
-// readShim is the shim the last attach recorded; zero when none did, as a shim an older daemon booted.
+// readShim is the shim the last attach recorded, or the live one started on the socket, as an older daemon recorded none; zero is neither.
 func readShim(dir string) (vz.Process, error) {
 	blob, err := os.ReadFile(filepath.Join(dir, shimFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		return vz.Process{}, nil
+		return vz.Locate(filepath.Join(dir, socketFile))
 	}
 	if err != nil {
 		return vz.Process{}, fmt.Errorf("read the shim record: %w", err)

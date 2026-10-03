@@ -1633,12 +1633,23 @@ func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
 	}
-	for _, restart := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
-			h, spec, shim := frozenShim(t, restart)
+	cases := []struct {
+		name              string
+		restart, recorded bool
+	}{
+		{"the same daemon", false, true},
+		{"a restarted daemon", true, true},
+		{"an upgrade from a daemon that recorded no shim", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, spec, shim := frozenShim(t, c.restart)
 			dir, err := h.stateDir(spec.ID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !c.recorded {
+				forgetShim(t, dir)
 			}
 			fillQueue(t, filepath.Join(dir, "shim.sock"))
 
@@ -1679,6 +1690,74 @@ func TestARetriedPauseEndsALeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
 		t.Fatalf("the retried Pause over a frozen leftover with a full queue: %v", err)
 	}
 	awaitExit(t, shim)
+}
+
+// A resume ends the shim a crashed pause of an older daemon left before it boots the save, though no pid is recorded and the queue is full (SHARD-423).
+func TestAResumeEndsAnUnrecordedLeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
+	}
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	blob, err := os.ReadFile(filepath.Join(dir, "vm.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(blob, &r); err != nil {
+		t.Fatal(err)
+	}
+	// The crash state by hand: a complete save of this machine, a record that says paused, and the shim still up.
+	snap := t.TempDir()
+	files := map[string]string{"snapshot.json": `{"pause":1,"machine_id":"` + r.MachineID + `"}`, "vm.vzvmstate": r.MachineID, "checkpoint.img": ""}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(snap, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(filepath.Join(dir, "disk.img"), filepath.Join(snap, "disk.img")); err != nil {
+		t.Fatal(err)
+	}
+	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
+	fillQueue(t, filepath.Join(dir, "shim.sock"))
+
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatalf("Resume over an unrecorded leftover with a full queue: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
+// A killed shim an older daemon booted leaves a socket that refuses every dial and no live process started on it, so it reads stopped (SHARD-423).
+func TestAKilledShimWithNoRecordReadsStopped(t *testing.T) {
+	h, spec, shim := frozenShim(t, true)
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetShim(t, dir)
+	if err := syscall.Kill(shim, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, shim)
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped || status.PID != 0 {
+		t.Errorf("Status over a killed shim with no record = %+v, %v; want stopped with no pid", status, err)
+	}
+}
+
+// forgetShim drops shim.json, which a daemon from before SHARD-423 never wrote.
+func forgetShim(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, "shim.json")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The cleanup of a failed boot kills a shim whose full socket queue refuses the stop, and does not read it gone (SHARD-423).

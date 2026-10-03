@@ -40,3 +40,36 @@ func startOf(pid int) (int64, error) {
 
 	return start, nil
 }
+
+// scan is the first live process whose arguments match; one gone before its arguments were read is no shim.
+func scan(match func([]string) bool) (Process, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return Process{}, fmt.Errorf("list the processes: %w", err)
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		// A name that is no number is not a process.
+		if err != nil || pid <= 1 {
+			continue
+		}
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return Process{}, fmt.Errorf("read the arguments of pid %d: %w", pid, err)
+		}
+		if !match(strings.Split(strings.TrimSuffix(string(cmdline), "\x00"), "\x00")) {
+			continue
+		}
+		shim, err := Identify(pid)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+
+		return shim, err
+	}
+
+	return Process{}, nil
+}

@@ -2,6 +2,7 @@ package vz
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"os/exec"
 	"strconv"
@@ -27,6 +28,35 @@ func TestTargetNeverNamesTheDaemonsOwnGroup(t *testing.T) {
 	for _, c := range cases {
 		if got := target(shim, c.pgid, c.own); got != c.want {
 			t.Errorf("%s: target = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestOnlyTheArgumentsStartGivesAShimServeItsSocket(t *testing.T) {
+	const socket = "/s/a/shim.sock"
+	config, err := json.Marshal(Config{Socket: socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := json.Marshal(Config{Socket: "/s/b/shim.sock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"the shim of the socket", []string{"shard-vz-shim", "-config", string(config)}, true},
+		{"the shim of another socket", []string{"shard-vz-shim", "-config", string(other)}, false},
+		{"another flag", []string{"shard-vz-shim", "-restore", string(config)}, false},
+		{"one argument more", []string{"shard-vz-shim", "-config", string(config), "-v"}, false},
+		{"a config that is no json", []string{"shard-vz-shim", "-config", socket}, false},
+		{"no arguments", nil, false},
+	}
+	for _, c := range cases {
+		if got := serves(c.args, socket); got != c.want {
+			t.Errorf("%s: serves = %t, want %t", c.name, got, c.want)
 		}
 	}
 }

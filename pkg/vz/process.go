@@ -1,6 +1,7 @@
 package vz
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"syscall"
@@ -23,6 +24,24 @@ func Identify(pid int) (Process, error) {
 	}
 
 	return Process{PID: pid, Start: start}, nil
+}
+
+// Locate is the live shim started on the config for socket, as one an older daemon booted has no record of its pid; zero is none (SHARD-423).
+func Locate(socket string) (Process, error) {
+	return scan(func(args []string) bool { return serves(args, socket) })
+}
+
+// serves says the arguments are the ones Start gives a shim for socket.
+func serves(args []string, socket string) bool {
+	if len(args) != 3 || args[1] != "-config" {
+		return false
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(args[2]), &cfg); err != nil {
+		return false
+	}
+
+	return cfg.Socket == socket
 }
 
 // Alive says the pid still names this process; a zero Process names none.
