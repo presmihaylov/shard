@@ -50,9 +50,27 @@ type StateDirs func(id string) (string, error)
 
 var _ models.Provider = (*Provider)(nil)
 
+// runscCtl is the runsc surface the provider drives. The field is this interface, not the concrete runner, so the teardown is unit-testable. It holds no force delete: safeDelete sweeps the cgroup and forgets the state (SHARD-440).
+type runscCtl interface {
+	Create(ctx context.Context, id string, opts runsc.CreateOptions) error
+	Exec(ctx context.Context, id string, opts runsc.ExecOptions) (int, error)
+	Signal(ctx context.Context, id string, pid int, signal string) error
+	Start(ctx context.Context, id string) error
+	Pause(ctx context.Context, id string) error
+	Resume(ctx context.Context, id string) error
+	Checkpoint(ctx context.Context, id, dir string) error
+	Restore(ctx context.Context, id string, opts runsc.RestoreOptions) error
+	RestoreArgs(id string, opts runsc.RestoreOptions) []string
+	Kill(ctx context.Context, id, signal string, all bool) error
+	State(ctx context.Context, id string) (runsc.State, error)
+	Forget(id string) error
+	Executable() string
+	DropNullNetns() error
+}
+
 // Provider implements models.Provider on gVisor.
 type Provider struct {
-	runsc   *runsc.Runner
+	runsc   runscCtl
 	bundles *bundle.Service
 	dirs    StateDirs
 	caps    models.Capabilities
@@ -60,9 +78,7 @@ type Provider struct {
 	cgroupRoot string
 	// procRoot is where the kernel publishes a process's command line and state. A test points it at a directory it wrote.
 	procRoot string
-	// killProcess is the SIGKILL a reclaim sends. A test records the pid instead, because there is no process to kill.
-	killProcess func(pid int) error
-	// killPinned is the SIGKILL a restore gets, sent only if still holds once the process is pinned. A test records it too.
+	// killPinned is the SIGKILL a teardown sends, delivered only if still holds once the process is pinned. A test records the pid instead, because there is no process to kill.
 	killPinned func(pid int, still func() (bool, error)) error
 }
 
@@ -74,10 +90,8 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
 	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
 
-	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killProcess: sigkill, killPinned: pidfdKill}, nil
+	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killPinned: pidfdKill}, nil
 }
-
-func sigkill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
 
 func (p *Provider) Name() string { return Name }
 
@@ -179,17 +193,17 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 		if ctx.Err() == nil {
 			return err
 		}
-		// A bring-up killed past its grace never saved the state runsc deletes by, so only the cgroup still holds what it forked.
-		return errors.Join(err, p.sweep(context.WithoutCancel(ctx), spec.ID))
+		// A cancelled bring-up may have forked the sandbox into the cgroup; sweep it, then drop the state only once the sweep clears it (SHARD-440).
+		return errors.Join(err, p.safeDelete(context.WithoutCancel(ctx), spec.ID))
 	}
 
 	if err := boundMemory(p.cgroupRoot, spec); err != nil {
 		// The caller drops the rootfs mount, so a sandbox left created would run on a mount that is gone.
-		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.safeDelete(ctx, spec.ID))
 	}
 
 	if err := boundPids(p.cgroupRoot, spec.ID); err != nil {
-		return errors.Join(err, p.runsc.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.safeDelete(ctx, spec.ID))
 	}
 
 	return nil
@@ -316,7 +330,7 @@ func (p *Provider) reclaim(ctx context.Context, id, dir string, b bundle.Bundle,
 	}
 
 	if held {
-		if err := p.runsc.Delete(ctx, id, true); err != nil {
+		if err := p.safeDelete(ctx, id); err != nil {
 			return models.SandboxSpec{}, err
 		}
 	}
@@ -443,7 +457,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 	// runsc refuses to signal a container whose entrypoint never started, so only a delete ends that one.
 	if status.State == models.StateCreated {
-		if err := p.runsc.Delete(ctx, id, true); err != nil {
+		if err := p.safeDelete(ctx, id); err != nil {
 			return err
 		}
 
@@ -490,12 +504,9 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	return p.unmount(id, status.Exists)
 }
 
-// endWedged ends a cut-paused wedged sentry: sweep kills any pids its own cgroup still holds and takes an empty one as already gone, then runsc delete drops the state (SHARD-411).
+// endWedged ends a cut-paused wedged sentry: safeDelete kills any pids its own cgroup still holds, takes an empty one as already gone, and drops the state (SHARD-411).
 func (p *Provider) endWedged(ctx context.Context, id string, held bool) error {
-	if err := p.sweep(ctx, id); err != nil {
-		return err
-	}
-	if err := p.runsc.Delete(ctx, id, true); err != nil {
+	if err := p.safeDelete(ctx, id); err != nil {
 		return err
 	}
 
@@ -525,18 +536,9 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 		return err
 	}
 
-	// --force, because a running sandbox holds the rootfs.
-	if err := p.runsc.Delete(ctx, id, true); err != nil {
+	// safeDelete sweeps the sandbox's own processes, removes its cgroup, then drops runsc's state.
+	if err := p.safeDelete(ctx, id); err != nil {
 		return err
-	}
-
-	if err := p.sweep(ctx, id); err != nil {
-		return err
-	}
-
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the next create of the id.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	// The cgroup is gone, so no process of the sandbox holds the rootfs, whether or not the runtime knew it.
@@ -938,13 +940,9 @@ func (p *Provider) lose(ctx context.Context, id string, b bundle.Bundle, tmp str
 
 // release frees what runsc and the host still hold of a sandbox whose sentry has exited after a checkpoint.
 func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp string) error {
-	if err := p.runsc.Delete(ctx, id, true); err != nil {
+	// safeDelete sweeps the sandbox, removes its cgroup so a stale one does not unbound the resume, then drops the state.
+	if err := p.safeDelete(ctx, id); err != nil {
 		return err
-	}
-
-	// runsc drops the cgroup of a sandbox it holds, and a stale one would unbound the resume.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
-		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
 	}
 
 	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.

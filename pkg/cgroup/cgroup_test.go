@@ -183,3 +183,36 @@ func TestTheEventsOfACgroupThatIsGone(t *testing.T) {
 		t.Fatalf("MemoryEvents of a missing cgroup = %v, want ErrNotFound", err)
 	}
 }
+
+func TestPopulatedReadsTheEventsField(t *testing.T) {
+	dir := t.TempDir()
+	events := filepath.Join(dir, "cgroup.events")
+	write := func(body string) {
+		if err := os.WriteFile(events, []byte(body), 0o600); err != nil {
+			t.Fatalf("write cgroup.events: %v", err)
+		}
+	}
+
+	write("populated 1\nfrozen 0\n")
+	if pop, err := cgroup.Populated(dir); err != nil || !pop {
+		t.Fatalf("Populated over a live cgroup = %v, %v, want true", pop, err)
+	}
+
+	write("populated 0\nfrozen 0\n")
+	if pop, err := cgroup.Populated(dir); err != nil || pop {
+		t.Fatalf("Populated over an idle cgroup = %v, %v, want false", pop, err)
+	}
+}
+
+func TestPopulatedOfAGoneCgroupIsNotFound(t *testing.T) {
+	if _, err := cgroup.Populated(filepath.Join(t.TempDir(), "gone")); !errors.Is(err, cgroup.ErrNotFound) {
+		t.Fatalf("Populated of a gone cgroup = %v, want ErrNotFound", err)
+	}
+}
+
+// A cgroup with no cgroup.events, which only a test fake is, reads as idle so a teardown can remove it.
+func TestPopulatedWithoutAnEventsFileIsIdle(t *testing.T) {
+	if pop, err := cgroup.Populated(t.TempDir()); err != nil || pop {
+		t.Fatalf("Populated with no events file = %v, %v, want false, nil", pop, err)
+	}
+}
