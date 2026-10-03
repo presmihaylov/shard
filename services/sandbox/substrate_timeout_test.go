@@ -217,7 +217,7 @@ func TestReconcileLeavesTheRecordWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 
 	var reports []string
 	start := time.Now()
-	err := svc.ReconcileAll(t.Context(), []models.Sandbox{running()}, func(line string) { reports = append(reports, line) })
+	err := svc.ReconcileAll(t.Context(), []models.Sandbox{running()}, func(line string) { reports = append(reports, line) }, runOnce)
 	if err != nil {
 		t.Fatalf("ReconcileAll returned %v, want nil so a wedged substrate does not fail boot", err)
 	}

@@ -235,7 +235,7 @@ func TestABootReachesPID1OverVsock(t *testing.T) {
 		t.Fatalf("the guest answered as pid %d", pid)
 	}
 
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
@@ -251,7 +251,7 @@ func TestAZeroCPUCountBootsOnTheDefault(t *testing.T) {
 	if pid := guestPID(t, client); pid != 1 {
 		t.Fatalf("the guest answered as pid %d", pid)
 	}
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
@@ -266,14 +266,14 @@ func TestASecondStartOnTheSameSocketIsRefusedAndTheFirstVMStays(t *testing.T) {
 	if !errors.Is(err, ErrSocketInUse) {
 		t.Fatalf("a second Start on the socket: %v", err)
 	}
-	_, again, err := Adopt(cfg.Socket)
+	_, again, err := Adopt(t.Context(), cfg.Socket)
 	if err != nil || again.PID != info.PID {
 		t.Fatalf("the first shim after the refused start: %+v, %v", again, err)
 	}
 	if pid := guestPID(t, client); pid != 1 {
 		t.Fatalf("the guest answered as pid %d", pid)
 	}
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
@@ -306,7 +306,7 @@ func TestTheDeviceFilesOutliveACollectionInTheShim(t *testing.T) {
 	}
 	awaitLine(t, cfg.Console, "pid=1", 2)
 
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
@@ -385,7 +385,7 @@ func TestASavedStateRestoresUnderTheSameIdentifier(t *testing.T) {
 	if _, err := client.Save(state); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
@@ -399,7 +399,7 @@ func TestASavedStateRestoresUnderTheSameIdentifier(t *testing.T) {
 	if pid := guestPID(t, restored); pid != 1 {
 		t.Fatalf("the restored guest answered as pid %d", pid)
 	}
-	if _, err := restored.Stop(); err != nil {
+	if _, err := restored.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, again.PID)
@@ -441,7 +441,7 @@ func TestTheVMOutlivesItsStarterAndANewClientReAdoptsIt(t *testing.T) {
 		t.Fatal("the shim died with its starter")
 	}
 
-	client, info, err := Adopt(cfg.Socket)
+	client, info, err := Adopt(t.Context(), cfg.Socket)
 	if err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestTheVMOutlivesItsStarterAndANewClientReAdoptsIt(t *testing.T) {
 	if pid := guestPID(t, client); pid != 1 {
 		t.Fatalf("the adopted guest answered as pid %d", pid)
 	}
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, shimPID)
@@ -489,7 +489,7 @@ func TestTheEmbeddedShimBootsAVM(t *testing.T) {
 	if pid := guestPID(t, client); pid != 1 {
 		t.Fatalf("the guest answered as pid %d", pid)
 	}
-	if _, err := client.Stop(); err != nil {
+	if _, err := client.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)

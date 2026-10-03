@@ -23,11 +23,12 @@ const (
 // MaxPayload bounds one message, so a longer write goes as several and no reader allocates for more.
 const MaxPayload = 1 << 20
 
-// ExitMessage is the payload of StreamExit on an exec. Error is set when the sandbox could not start the command.
+// ExitMessage is the payload of StreamExit on an exec. Error is set when the command never started, LostBytes on a gap.
 type ExitMessage struct {
-	Code   int    `json:"code"`
-	Signal int    `json:"signal"`
-	Error  string `json:"error,omitempty"`
+	Code      int    `json:"code"`
+	Signal    int    `json:"signal"`
+	Error     string `json:"error,omitempty"`
+	LostBytes int64  `json:"lost_bytes,omitempty"`
 }
 
 // EndMessage is the payload of StreamExit on a log follow: why the daemon stopped following.
