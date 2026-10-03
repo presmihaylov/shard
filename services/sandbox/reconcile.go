@@ -91,6 +91,15 @@ func (s *Service) probeAll(ctx context.Context, sandboxes []models.Sandbox) []pr
 
 // applyReconcile corrects one record from its probe result and answers the state it left it in.
 func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status models.Status, probeErr error, report func(string)) (models.State, error) {
+	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
+	if err != nil {
+		return "", fmt.Errorf("find the snapshot staging of sandbox %s: %w", sb.ID, err)
+	}
+	// A cut pause leaves a staged snapshot: the provider finishes its own here or drops a stale one, once at daemon start.
+	if err := s.cfg.Provider.AdoptStaging(dir); err != nil {
+		return "", fmt.Errorf("adopt the snapshot staging of sandbox %s: %w", sb.ID, err)
+	}
+
 	var timeout *SubstrateTimeoutError
 	if errors.As(probeErr, &timeout) {
 		// The probe budget bounds every Status, so a wedge stalls no boot; the liveness tick reconciles it later.

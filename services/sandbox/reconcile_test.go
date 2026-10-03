@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,9 +83,17 @@ type recProvider struct {
 	// removed holds every id Remove was asked to tear down, and removeErr is what Remove answers.
 	removed   []string
 	removeErr error
+	// adopted records every dir a reconcile asked the provider to adopt the staging of.
+	adopted []string
 }
 
 func (p *recProvider) Name() string { return "fake" }
+
+func (p *recProvider) AdoptStaging(dir string) error {
+	p.adopted = append(p.adopted, dir)
+
+	return nil
+}
 
 func (p *recProvider) Status(ctx context.Context, id string) (models.Status, error) {
 	if p.wedge {
@@ -237,6 +246,23 @@ func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)
+	}
+}
+
+// At daemon start the provider adopts the snapshot staging of every record, so a cut pause's stage is settled before the first verb (SHARD-404).
+func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
+	one := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	two := models.Sandbox{ID: "sandbox2", State: models.StateStopped}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42), "sandbox2": gone()}}
+	lab := newReconcileLab(t, provider, one, two)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	slices.Sort(provider.adopted)
+	if want := []string{"/snapshots/sandbox1", "/snapshots/sandbox2"}; !slices.Equal(provider.adopted, want) {
+		t.Errorf("the reconcile adopted the staging of %v, want %v", provider.adopted, want)
 	}
 }
 

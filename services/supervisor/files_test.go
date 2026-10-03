@@ -93,7 +93,7 @@ func TestMkdirAndDeleteSendTheirHeaders(t *testing.T) {
 		t.Fatalf("the mkdir sent %+v, %v", header, err)
 	}
 
-	del := canned(t, FileReply{Error: "/srv/a is a directory that is not empty", Code: FileInvalid})
+	del := canned(t, FileReply{Error: "is a directory that is not empty", Code: FileInvalid})
 	err := Delete(del, "/srv/a", false)
 	var refusal *FileError
 	if !errors.As(err, &refusal) || refusal.Code != FileInvalid || refusal.Op != OpDelete {

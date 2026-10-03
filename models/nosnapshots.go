@@ -22,3 +22,6 @@ func (n NoSnapshots) Resume(context.Context, string, string) error {
 func (n NoSnapshots) Fork(context.Context, string, SandboxSpec) error {
 	return Unsupported(n.Provider, VerbFork)
 }
+
+// AdoptStaging settles nothing: a substrate with no pause stages no snapshot, so there is never a leftover to drop.
+func (NoSnapshots) AdoptStaging(string) error { return nil }

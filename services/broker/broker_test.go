@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -24,9 +25,52 @@ import (
 type fakeRecords struct {
 	sandboxes []models.Sandbox
 	err       error
+	gen       uint64
 }
 
 func (f fakeRecords) List() ([]models.Sandbox, error) { return f.sandboxes, f.err }
+
+func (f fakeRecords) Generation() uint64 { return f.gen }
+
+// countingRecords counts List calls and lets a test move the generation, so a test proves the broker reads once per generation, not once per request (SHARD-381).
+type countingRecords struct {
+	mu        sync.Mutex
+	sandboxes []models.Sandbox
+	lists     int
+	gen       uint64
+}
+
+func (c *countingRecords) List() ([]models.Sandbox, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.lists++
+
+	return c.sandboxes, nil
+}
+
+func (c *countingRecords) Generation() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.gen
+}
+
+func (c *countingRecords) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.lists
+}
+
+// bump replaces the set and moves the generation, the way a durable write does.
+func (c *countingRecords) bump(sandboxes []models.Sandbox) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.sandboxes = sandboxes
+	c.gen++
+}
 
 type fakeSecrets map[string]secret.Secret
 
@@ -745,6 +789,33 @@ func TestResolveJudgesTheNameAloneAndLogsIt(t *testing.T) {
 	deny := log.records[1]
 	if deny.Source != egress.SourceDNS || deny.Verdict != string(models.ActionDeny) || deny.Host != "evil.example.net" || deny.Rule != network.RuleDefault {
 		t.Errorf("the deny became %+v", deny)
+	}
+}
+
+// A deny-all guest can flood DNS, so the broker reads the records once per generation, not once per question (SHARD-381).
+func TestResolveReadsTheRecordsOncePerGeneration(t *testing.T) {
+	records := &countingRecords{sandboxes: []models.Sandbox{{ID: "sb", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	b := newBroker(t, records, fakeSecrets{})
+
+	for range 100 {
+		if _, err := b.Resolve(t.Context(), dns.Question{Source: source, Name: "api.example.com"}); err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+	}
+	if got := records.calls(); got != 1 {
+		t.Fatalf("the broker listed the records %d times for 100 questions, want 1 (SHARD-381)", got)
+	}
+
+	// A new record moves the generation, so the next question rebuilds the map once and finds the new address.
+	records.bump([]models.Sandbox{
+		{ID: "sb", Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "new", Address: netip.MustParsePrefix("10.87.0.3/16")},
+	})
+	if _, err := b.Resolve(t.Context(), dns.Question{Source: netip.MustParseAddr("10.87.0.3"), Name: "api.example.com"}); err != nil {
+		t.Fatalf("Resolve after a new record: %v", err)
+	}
+	if got := records.calls(); got != 2 {
+		t.Fatalf("the broker listed the records %d times, want 2 after the generation moved", got)
 	}
 }
 
