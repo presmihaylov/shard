@@ -156,9 +156,9 @@ func TestTokensMintRefusesAShortSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("mint signed a token with a secret under 32 bytes")
 	}
-	// The refusal names the bound, not shard serve, which is not the verb that ran.
-	if msg := err.Error(); !strings.Contains(msg, "31 bytes") || strings.Contains(msg, "shard serve") {
-		t.Errorf("the refusal is %q, want the byte count and no shard serve", msg)
+	// The refusal names the verb that ran and the bound, never shard serve.
+	if msg := err.Error(); !strings.HasPrefix(msg, "tokens mint: ") || !strings.Contains(msg, "31 bytes") || strings.Contains(msg, "shard serve") {
+		t.Errorf("the refusal is %q, want tokens mint, the byte count and no shard serve", msg)
 	}
 }
 

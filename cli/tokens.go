@@ -33,14 +33,13 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if *duration < 0 {
 		return fmt.Errorf("tokens mint needs a --duration in the future, got %s", *duration)
 	}
-	// serve.ReadSecret names shard serve, which is not the verb that ran.
 	if *secretFile == "" {
 		return errors.New("tokens mint needs --secret-file: it holds the secret that signs the token")
 	}
 
 	secret, err := serve.ReadSecret(*secretFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("tokens mint: %w", err)
 	}
 
 	minted, err := serve.IssueToken(secret, serve.TokensPath(*secretFile, *tokensFile), *name, parseScopes(*scopes), *duration)
