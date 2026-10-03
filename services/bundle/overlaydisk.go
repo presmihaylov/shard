@@ -20,6 +20,10 @@ const MinOverlayDiskMiB = 11
 
 // WriteOverlayDisk lays an empty ext4 image down at dst, grown to the bound of r, so every write of the sandbox lands on it and stops there.
 func WriteOverlayDisk(dst string, r models.Resources) error {
+	return admitDisk(dst, DiskBytes(r), func() error { return writeOverlayDisk(dst, r) })
+}
+
+func writeOverlayDisk(dst string, r models.Resources) error {
 	var empty bytes.Buffer
 	if err := tar.NewWriter(&empty).Close(); err != nil {
 		return fmt.Errorf("write an empty tar: %w", err)

@@ -55,6 +55,7 @@ func TestStatusCallsAZombieSandboxStopped(t *testing.T) {
 
 	p := newProviderOver(t, fmt.Sprintf(`echo '{"id":"amber-otter-1a2b","status":"running","pid":%d}'`, pid))
 	p.SetCgroupRoot(t.TempDir())
+	p.SetProcRoot("/proc")
 
 	status, err := p.Status(t.Context(), "amber-otter-1a2b")
 	if err != nil {
@@ -62,6 +63,31 @@ func TestStatusCallsAZombieSandboxStopped(t *testing.T) {
 	}
 	if status.Alive() || status.State != models.StateStopped || !status.Exists {
 		t.Errorf("a zombie sandbox reads as %+v, want it stopped and still known to runsc", status)
+	}
+}
+
+// SHARD-437: PID 1 can reap the sentry between runsc's probe, which still saw the zombie, and the read of /proc.
+func TestStatusCallsASandboxReapedUnderTheProbeStopped(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc is a Linux thing")
+	}
+
+	// Run reaps the child, so runsc answers running for a pid /proc no longer holds.
+	child := exec.Command("true")
+	if err := child.Run(); err != nil {
+		t.Fatalf("run the child: %v", err)
+	}
+
+	p := newProviderOver(t, fmt.Sprintf(`echo '{"id":"amber-otter-1a2b","status":"running","pid":%d}'`, child.Process.Pid))
+	p.SetCgroupRoot(t.TempDir())
+	p.SetProcRoot("/proc")
+
+	status, err := p.Status(t.Context(), "amber-otter-1a2b")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Alive() || status.State != models.StateStopped || !status.Exists {
+		t.Errorf("a sandbox reaped under the probe reads as %+v, want it stopped and still known to runsc", status)
 	}
 }
 
@@ -92,6 +118,7 @@ func TestStatusCallsACutPauseWhosePidIsReusedStopped(t *testing.T) {
 	// the test process is alive and not a zombie, and no sandbox cgroup holds it, so it stands in for the pid Linux reused.
 	p := newProviderOver(t, fmt.Sprintf(`echo '{"id":"amber-otter-1a2b","status":"paused","pid":%d}'`, os.Getpid()))
 	p.SetCgroupRoot(t.TempDir())
+	p.SetProcRoot("/proc")
 
 	status, err := p.Status(t.Context(), "amber-otter-1a2b")
 	if err != nil {
