@@ -43,13 +43,13 @@ func TestTheFrontOutlivesAnAcceptThatRanOutOfFiles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+address+"/v0/sandboxes", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/v0/sandboxes", nil)
 	if err != nil {
 		t.Fatalf("build the request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+mint(t, env, "ci"))
 
-	resp, err := trusting().Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("the front answered nothing after three Accepts ran out of files: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestAnAuthorizedConnectionLeavesTheCap(t *testing.T) {
 
 	var streams []*websocket.Conn
 	for i := range 4 {
-		conn, _, err := websocket.Dial(t.Context(), "wss://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPClient: trusting(), HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
+		conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
 		if err != nil {
 			t.Fatalf("authorized stream %d of 4 through a front whose cap is 2: %v", i+1, err)
 		}
@@ -120,7 +120,7 @@ func TestAnAuthorizedConnectionLeavesTheCap(t *testing.T) {
 	}
 }
 
-// A connection that never sends its head, not even a TLS hello, is closed once the head timeout ends.
+// A connection that never sends its head is closed once the head timeout ends.
 func TestTheFrontClosesAConnectionThatSendsNoHead(t *testing.T) {
 	up := fakeDaemon(t)
 	env := newTokenEnv(t)

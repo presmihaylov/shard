@@ -8,7 +8,8 @@ BindsTo=shard.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/shard --root /var/lib/shard serve --listen :2376 --cert /etc/shard/serve.crt --key /etc/shard/serve.key --signing-key-file /etc/shard/serve.secret
+# Plain HTTP on 127.0.0.1:2376; a proxy on this host gives clients HTTPS (docs/daemon.md).
+ExecStart=/usr/local/bin/shard --root /var/lib/shard serve --signing-key-file /etc/shard/serve.secret
 # The unprivileged account of the front. Its only privilege is the group that may reach the socket.
 User=shard
 Group=shard

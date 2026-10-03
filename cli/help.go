@@ -41,7 +41,7 @@ type flagHelp struct {
 
 // wants is what a placeholder stands for, which a refusal of a value that does not parse names.
 var wants = map[string]string{
-	"<size>":     "a whole size such as 512MiB or 2GiB, or a bare number of MiB",
+	"<size>":     "a whole size with a unit, such as 512MiB or 2GiB; only 0 goes without one",
 	"<duration>": "a duration such as 10s",
 	"<n>":        "a whole number",
 }
@@ -69,9 +69,9 @@ var helps = map[string]verbHelp{
 		summary: "shard is a single-node sandbox manager (pre-alpha).",
 		flags: []flagHelp{
 			{"--root <dir>", "where shard keeps its state", DefaultRoot},
-			{"--remote <url>", "talk to shard serve at this URL instead of the socket", ""},
+			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
 			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
-			{"--ca-file <pem>", "the CA certificate that signed the serve certificate", ""},
+			{"--ca-file <pem>", "the CA certificate that signed the certificate of the proxy in front of serve", ""},
 			{"--version", "print the client version; it never fails", ""},
 		},
 		notes: []string{
@@ -106,7 +106,7 @@ var helps = map[string]verbHelp{
 			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
-			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal). A bare number is MiB, and a part of a MiB rounds up.",
+			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal), and a part of a MiB rounds up. Only 0 goes without a unit.",
 		},
 		example: "shard create --name web --memory 512MiB python:3.12 python -m http.server",
 	},
@@ -367,20 +367,19 @@ var helps = map[string]verbHelp{
 	},
 	"serve": {
 		usage:   []string{"serve [flags]"},
-		summary: "expose the daemon over HTTPS with token auth, for --remote clients",
+		summary: "expose the daemon over plain HTTP with token auth, for an HTTPS proxy in front of it",
 		flags: []flagHelp{
-			{"--listen <addr>", "the address to listen on", serve.DefaultListen},
-			{"--cert <pem>", "the TLS certificate to serve", ""},
-			{"--key <pem>", "the key of that certificate", ""},
+			{"--listen <addr>", "the address to listen on; any address other than loopback carries tokens in clear text", serve.DefaultListen},
 			{"--signing-key-file <path>", "the key that signs and checks every token; a named file must exist", signingKeyDefault},
 			{"--tokens-file <path>", "the ledger of minted tokens, in place of the one beside the signing key file", ""},
 		},
 		notes: []string{
-			"serve refuses to start without --cert and --key. It checks the token on each request and passes the bytes to the daemon socket.",
+			"serve speaks plain HTTP. Put a proxy or tunnel such as Caddy, Cloudflare Tunnel or Tailscale Serve in front of it for HTTPS; docs/daemon.md has the setups.",
+			"It checks the token on each request and passes the bytes to the daemon socket.",
 			"serve and tokens mint create the default signing key on first use, at 0600 in a 0700 directory, and both use it after that.",
 			"It runs as its own unprivileged process, and its own unit starts it. shard tokens mint makes the tokens it checks.",
 		},
-		example: "shard serve --cert server.pem --key server-key.pem",
+		example: "shard serve",
 	},
 	"tokens": {
 		usage:   []string{"tokens <subcommand> [flags] [args]"},

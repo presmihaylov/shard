@@ -220,7 +220,7 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory <MiB>", "128"} {
+	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory 128MiB"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}

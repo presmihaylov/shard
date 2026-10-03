@@ -356,7 +356,7 @@ exists.
 
 `SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default. The daemon mounts
 the XFS image over it. The image takes half the free space of the disk under the root, at most
-100 GiB, so that disk needs 20 GiB free. `MEMORY` is the `--memory` of every create, 256 MiB by
+100 GiB, so that disk needs 20 GiB free. `MEMORY` is the `--memory` of every create in MiB, 256 by
 default. The run deletes its root and the image beside it. So it refuses a `SHARD_ROOT` that already
 holds files, unless the marker file `<root>.e2e-owned` names that root as one of its own. Point it
 at an empty or absent path.

@@ -30,7 +30,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512", "--cpus", "2", "--disk", "64",
+		"--memory", "512MiB", "--cpus", "2", "--disk", "64MiB",
 		"alpine:3.20",
 	}
 
@@ -162,14 +162,16 @@ func TestParseCreateRejections(t *testing.T) {
 		"an env with a colon":     {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":     {"--env", "=1", "alpine:3.20"},
 		"a negative memory":       {"--memory", "-512", "alpine:3.20"},
+		"a memory with no unit":   {"--memory", "512", "alpine:3.20"},
+		"a disk with no unit":     {"--disk", "64", "alpine:3.20"},
 		"a fraction of a GiB":     {"--memory", "0.5GiB", "alpine:3.20"},
 		"a lower-case unit":       {"--disk", "2gib", "alpine:3.20"},
 		"a memory past the bound": {"--memory", "16385GiB", "alpine:3.20"},
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
-		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
+		"a memory that overflows":   {"--memory", "17592186044416MiB", "alpine:3.20"},
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
 		"a negative disk bound":     {"--disk", "-1", "alpine:3.20"},
-		"a disk that overflows":     {"--disk", "17592186044416", "alpine:3.20"},
+		"a disk that overflows":     {"--disk", "17592186044416MiB", "alpine:3.20"},
 		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20"},
 		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20"},
 		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20"},

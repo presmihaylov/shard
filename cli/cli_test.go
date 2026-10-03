@@ -175,16 +175,17 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 // A flag error names the flag the way the help does, and says the unit, with nothing of Go's flag package in it.
 func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 	cases := map[string][]string{
-		`invalid value "512m" for --memory: unknown unit "m"; want KiB, MiB, GiB, KB, MB or GB`: {"create", "--memory", "512m", "alpine"},
-		`invalid value "1.5GiB" for --disk: want a whole number; a fraction is never rounded`:   {"create", "--disk", "1.5GiB", "alpine"},
-		`--memory needs a value: a whole size such as 512MiB or 2GiB, or a bare number of MiB`:  {"create", "--memory"},
-		`invalid value "5" for --restart-backoff: want a duration such as 10s`:                  {"create", "--restart-backoff", "5", "alpine"},
-		`invalid value "x" for --restart-retries: want a whole number`:                          {"create", "--restart-retries", "x", "alpine"},
-		`invalid value "maybe" for --all: want true or false`:                                   {"ls", "--all=maybe"},
-		`--restart-backoff needs a value: a duration such as 10s`:                               {"create", "--restart-backoff"},
-		`unknown flag --bogus; run shard create --help`:                                         {"create", "--bogus", "alpine"},
-		`unknown flag -x; run shard pause --help`:                                               {"pause", "-x"},
-		`unknown flag --bogus; run shard --help`:                                                {"--bogus", "ls"},
+		`invalid value "512m" for --memory: unknown unit "m"; want KiB, MiB, GiB, KB, MB or GB`:             {"create", "--memory", "512m", "alpine"},
+		`invalid value "1.5GiB" for --disk: want a whole number; a fraction is never rounded`:               {"create", "--disk", "1.5GiB", "alpine"},
+		`invalid value "512" for --memory: want a unit, such as 512MiB or 2GiB`:                             {"create", "--memory", "512", "alpine"},
+		`--memory needs a value: a whole size with a unit, such as 512MiB or 2GiB; only 0 goes without one`: {"create", "--memory"},
+		`invalid value "5" for --restart-backoff: want a duration such as 10s`:                              {"create", "--restart-backoff", "5", "alpine"},
+		`invalid value "x" for --restart-retries: want a whole number`:                                      {"create", "--restart-retries", "x", "alpine"},
+		`invalid value "maybe" for --all: want true or false`:                                               {"ls", "--all=maybe"},
+		`--restart-backoff needs a value: a duration such as 10s`:                                           {"create", "--restart-backoff"},
+		`unknown flag --bogus; run shard create --help`:                                                     {"create", "--bogus", "alpine"},
+		`unknown flag -x; run shard pause --help`:                                                           {"pause", "-x"},
+		`unknown flag --bogus; run shard --help`:                                                            {"--bogus", "ls"},
 	}
 
 	for want, args := range cases {

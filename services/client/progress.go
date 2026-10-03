@@ -44,7 +44,7 @@ func progress[T any](ctx context.Context, c *Client, path string, in any, report
 		return zero, fmt.Errorf("encode the request for POST %s: %w", path, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://shard"+path, bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("http", path), bytes.NewReader(encoded))
 	if err != nil {
 		return zero, fmt.Errorf("build the request for POST %s: %w", path, err)
 	}
