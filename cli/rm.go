@@ -4,17 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/presmihaylov/shard/services/client"
-	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // rmOptions is one parsed shard rm invocation.
 type rmOptions struct {
 	id    string
 	force bool
-	grace time.Duration
 }
 
 // remove reads the record before the delete, because a delete answers no record and the id printed is the resolved one.
@@ -40,7 +37,7 @@ func (a App) remove(ctx context.Context, args []string) error {
 	}
 
 	// An rm that waited on another rm finds the same nothing.
-	err = c.RemoveSandbox(ctx, sb.ID, opts.force, opts.grace)
+	err = c.RemoveSandbox(ctx, sb.ID, opts.force)
 	if errors.As(err, &missing) {
 		return a.removeMissing(opts, err)
 	}
@@ -68,14 +65,9 @@ func parseRm(args []string) (rmOptions, error) {
 
 	flags := newFlags("rm")
 	flags.BoolVar(&opts.force, "force", false, "")
-	flags.DurationVar(&opts.grace, "time", sandbox.DefaultStopGrace, "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return rmOptions{}, err
-	}
-
-	if opts.grace < 0 {
-		return rmOptions{}, fmt.Errorf("--time is how long the entrypoint gets and cannot be negative, got %s", opts.grace)
 	}
 
 	rest := flags.Args()

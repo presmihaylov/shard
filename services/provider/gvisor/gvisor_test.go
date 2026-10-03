@@ -519,3 +519,71 @@ func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
 		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
 	}
 }
+
+// stopRunsc is a runsc whose sentry 42 runs until a KILL ends it, and until a TERM does too when honoursTerm says so.
+func stopRunsc(t *testing.T, honoursTerm bool) (*gvisor.Provider, string) {
+	t.Helper()
+
+	work := t.TempDir()
+	onTerm := ":"
+	if honoursTerm {
+		onTerm = "touch " + work + "/ended"
+	}
+	p := newProviderOver(t, `case "$*" in
+*" state "*) if [ -e `+work+`/ended ]; then echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'; else echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'; fi ;;
+*" kill "*KILL) touch `+work+`/killed `+work+`/ended ;;
+*" kill "*TERM) `+onTerm+` ;;
+esac`)
+	proc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.SetProcRoot(proc)
+	p.SetCgroupRoot(t.TempDir())
+
+	return p, work
+}
+
+// The grace bounds the stop and is never a wait: an entrypoint that exits on TERM ends it at once (SHARD-460).
+func TestStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
+	p, work := stopRunsc(t, true)
+
+	started := time.Now()
+	err := p.Stop(t.Context(), "amber-otter-1a2b", models.StopGrace)
+	// Only Linux has the overlayfs the unmount after the stop needs, so elsewhere the stop ends on that refusal.
+	if err != nil && (runtime.GOOS == "linux" || !strings.Contains(err.Error(), "overlayfs")) {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if took := time.Since(started); took > 3*time.Second {
+		t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on TERM", took, models.StopGrace)
+	}
+	if _, err := os.Stat(filepath.Join(work, "ended")); err != nil {
+		t.Errorf("Stop never sent TERM: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(work, "killed")); err == nil {
+		t.Error("Stop sent KILL to an entrypoint that exited on TERM")
+	}
+}
+
+func TestStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
+	p, work := stopRunsc(t, false)
+
+	grace := 500 * time.Millisecond
+	started := time.Now()
+	err := p.Stop(t.Context(), "amber-otter-1a2b", grace)
+	if err != nil && (runtime.GOOS == "linux" || !strings.Contains(err.Error(), "overlayfs")) {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	took := time.Since(started)
+	if took < grace || took > grace+3*time.Second {
+		t.Errorf("Stop took %s, want the %s grace and then the kill", took, grace)
+	}
+	if _, err := os.Stat(filepath.Join(work, "killed")); err != nil {
+		t.Errorf("Stop never sent KILL to an entrypoint that ignored TERM: %v", err)
+	}
+}

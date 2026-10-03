@@ -155,3 +155,60 @@ esac`, killed, killed, labID, labID, labPid))
 		t.Errorf("Stop over a replaced fd 0 returned %v, want the sandbox stopped", err)
 	}
 }
+
+// stopLab is a sandbox whose sysbox-runc runs it until a KILL ends it, and until a TERM does too when honoursTerm says so.
+func stopLab(t *testing.T, honoursTerm bool) (*channelLab, string) {
+	t.Helper()
+
+	lab := newChannelLab(t)
+	page := sealedPage(t)
+	lab.pointFd0(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd()))
+	lab.record(t, inodeOf(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd())))
+	work := t.TempDir()
+	ended := filepath.Join(work, "ended")
+	onTerm := ":"
+	if honoursTerm {
+		onTerm = "touch " + ended
+	}
+	lab.script(t, fmt.Sprintf(`case "$*" in
+*" kill "*KILL) touch %s %s ;;
+*" kill "*TERM) %s ;;
+*" state "*) if [ -e %s ]; then echo '{"id":%q,"status":"stopped","pid":0}'; else echo '{"id":%q,"status":"running","pid":%d}'; fi ;;
+esac`, filepath.Join(work, "killed"), ended, onTerm, ended, labID, labID, labPid))
+
+	return lab, work
+}
+
+// The grace bounds the stop and is never a wait: an entrypoint that exits on TERM ends it at once (SHARD-460).
+func TestAStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
+	lab, work := stopLab(t, true)
+
+	started := time.Now()
+	if err := lab.p.Stop(t.Context(), labID, models.StopGrace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if took := time.Since(started); took > 3*time.Second {
+		t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on TERM", took, models.StopGrace)
+	}
+	if _, err := os.Stat(filepath.Join(work, "killed")); err == nil {
+		t.Error("Stop sent KILL to an entrypoint that exited on TERM")
+	}
+}
+
+func TestAStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
+	lab, work := stopLab(t, false)
+
+	grace := 500 * time.Millisecond
+	started := time.Now()
+	if err := lab.p.Stop(t.Context(), labID, grace); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if took := time.Since(started); took < grace || took > grace+3*time.Second {
+		t.Errorf("Stop took %s, want the %s grace and then the kill", took, grace)
+	}
+	if _, err := os.Stat(filepath.Join(work, "killed")); err != nil {
+		t.Errorf("Stop never sent KILL to an entrypoint that ignored TERM: %v", err)
+	}
+}

@@ -422,22 +422,22 @@ func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, erro
 	return svc.Start(ctx, ref)
 }
 
-func (l *lifecycle) Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
+func (l *lifecycle) Stop(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.Sandbox{}, err
 	}
 
-	return svc.Stop(ctx, ref, grace)
+	return svc.Stop(ctx, ref)
 }
 
-func (l *lifecycle) Remove(ctx context.Context, ref string, force bool, grace time.Duration) error {
+func (l *lifecycle) Remove(ctx context.Context, ref string, force bool) error {
 	svc, err := l.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.Remove(ctx, ref, force, grace)
+	return svc.Remove(ctx, ref, force)
 }
 
 func (l *lifecycle) Pause(ctx context.Context, ref string) (models.Sandbox, error) {

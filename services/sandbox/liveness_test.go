@@ -78,7 +78,7 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 
 	stopped := make(chan error, 1)
 	go func() {
-		_, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second)
+		_, err := lab.svc.Stop(t.Context(), "sandbox1")
 		stopped <- err
 	}()
 	<-entered
@@ -888,7 +888,7 @@ func TestStopCallsOffTheStartAgainTheOOMBackoffWaits(t *testing.T) {
 	due := time.Date(2026, 9, 16, 12, 0, 1, 0, time.UTC)
 	lab := newLivenessLab(t, waiting(due), oomKilled())
 
-	if _, err := lab.svc.Stop(t.Context(), "sandbox1", time.Second); err != nil {
+	if _, err := lab.svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	got := lab.l.repo.sb

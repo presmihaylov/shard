@@ -175,15 +175,17 @@ func TestBadTimeoutIsRejected(t *testing.T) {
 // A flag error names the flag the way the help does, and says the unit, with nothing of Go's flag package in it.
 func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 	cases := map[string][]string{
-		`invalid value "512m" for --memory: want MiB as a plain number`: {"create", "--memory", "512m", "alpine"},
-		`invalid value "1g" for --disk: want MiB as a plain number`:     {"create", "--disk", "1g", "alpine"},
-		`invalid value "5" for --time: want a duration such as 10s`:     {"stop", "--time", "5", "web"},
-		`invalid value "x" for --health-retries: want a whole number`:   {"create", "--health-retries", "x", "alpine"},
-		`invalid value "maybe" for --all: want true or false`:           {"ls", "--all=maybe"},
-		`--time needs a value: a duration such as 10s`:                  {"rm", "--time"},
-		`unknown flag --bogus; run shard create --help`:                 {"create", "--bogus", "alpine"},
-		`unknown flag -x; run shard pause --help`:                       {"pause", "-x"},
-		`unknown flag --bogus; run shard --help`:                        {"--bogus", "ls"},
+		`invalid value "512m" for --memory: want MiB as a plain number`:        {"create", "--memory", "512m", "alpine"},
+		`invalid value "1g" for --disk: want MiB as a plain number`:            {"create", "--disk", "1g", "alpine"},
+		`invalid value "5" for --health-interval: want a duration such as 10s`: {"create", "--health-interval", "5", "alpine"},
+		`invalid value "x" for --health-retries: want a whole number`:          {"create", "--health-retries", "x", "alpine"},
+		`invalid value "maybe" for --all: want true or false`:                  {"ls", "--all=maybe"},
+		`--restart-backoff needs a value: a duration such as 10s`:              {"create", "--restart-backoff"},
+		`unknown flag --time; run shard stop --help`:                           {"stop", "--time", "5s", "web"},
+		`unknown flag --time; run shard rm --help`:                             {"rm", "--force", "--time", "5s", "web"},
+		`unknown flag --bogus; run shard create --help`:                        {"create", "--bogus", "alpine"},
+		`unknown flag -x; run shard pause --help`:                              {"pause", "-x"},
+		`unknown flag --bogus; run shard --help`:                               {"--bogus", "ls"},
 	}
 
 	for want, args := range cases {
