@@ -106,6 +106,11 @@ func runChild(spec string) int {
 		fmt.Println("ready")
 		<-sigs
 		return atoi(arg)
+	case "ignoreterm":
+		signal.Ignore(syscall.SIGTERM)
+		fmt.Println("ready")
+		time.Sleep(time.Minute)
+		return 0
 	case "sleep":
 		time.Sleep(time.Duration(atoi(arg)) * time.Millisecond)
 		return 0
@@ -160,7 +165,7 @@ type harness struct {
 	waited bool
 }
 
-// restart flags go before the entrypoint, and an empty child leaves none; the count file lands beside the exit file when any are given.
+// restart flags go before the entrypoint, and an empty child leaves none; the count file lands beside the exit file.
 func startSupervisor(t *testing.T, role, child string, restart ...string) *harness {
 	t.Helper()
 
@@ -173,11 +178,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *harne
 	exitFile := filepath.Join(dir, "exit.json")
 	readyFile := filepath.Join(dir, "started")
 	restartFile := filepath.Join(dir, "restarts.json")
-	args := []string{"-ready-file", readyFile}
-	if len(restart) > 0 {
-		args = append(append(args, restart...), "-restart-file", restartFile)
-	}
-	args = append(args, "--")
+	args := append(append([]string{"-ready-file", readyFile}, restart...), "-restart-file", restartFile, "--")
 	if child != "" {
 		args = append(args, exe, childPrefix+child)
 	}
@@ -502,8 +503,118 @@ func TestOnFailureLeavesACleanExitAlone(t *testing.T) {
 
 	// The first start again would land within the backoff, so a quiet wait past it proves the point.
 	time.Sleep(200 * time.Millisecond)
+	if count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Ended }); count.Count != 0 || count.GaveUp {
+		t.Errorf("the count is %+v, want the app ended with no start again", count)
+	}
+}
+
+// A run waits for the end, so every policy writes it once no start again follows the last exit.
+func TestEveryPolicyEndsTheApp(t *testing.T) {
+	cases := map[string]struct {
+		child   string
+		restart []string
+		want    models.RestartCount
+	}{
+		"no policy":           {"exit:3", nil, models.RestartCount{Ended: true}},
+		"on-failure, success": {"exit:0", []string{"-restart", "on-failure", "-backoff", "1ms"}, models.RestartCount{Ended: true}},
+		"on-failure, give-up": {"exit:4", []string{"-restart", "on-failure", "-retries", "2", "-backoff", "1ms"}, models.RestartCount{Count: 2, GaveUp: true, Ended: true}},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			super := startSupervisor(t, roleSupervisor, c.child, c.restart...)
+
+			count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Ended })
+			count.LastAt = time.Time{}
+			if count != c.want {
+				t.Errorf("the count is %+v, want %+v", count, c.want)
+			}
+			if !super.alive(t) {
+				t.Error("the supervisor exited with the app, so the sandbox did not outlive it")
+			}
+		})
+	}
+}
+
+// USR1 is a run's Ctrl+C: it terms the app, cancels every start again, and leaves the sandbox up.
+func TestUSR1TermsTheAppAndCancelsItsRestarts(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "term:7", "-restart", "always", "-backoff", "1ms")
+	if got := super.line(t); got != "ready" {
+		t.Fatalf("the app printed %q, want ready", got)
+	}
+
+	if err := super.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Ended })
+	if count.Count != 0 || count.GaveUp {
+		t.Errorf("the count is %+v, want the app ended with no start again", count)
+	}
+	if status := super.awaitExitStatus(t); status.Code != 7 {
+		t.Errorf("exit status is %+v, want the app's own 7 on its TERM", status)
+	}
+	if !super.alive(t) {
+		t.Error("the supervisor exited on USR1, want the sandbox up with only shard-init")
+	}
+}
+
+// An app that ignores TERM outlives USR1, and USR2 kills it.
+func TestUSR2KillsAnAppThatIgnoresTerm(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "ignoreterm", "-restart", "always", "-backoff", "1ms")
+	if got := super.line(t); got != "ready" {
+		t.Fatalf("the app printed %q, want ready", got)
+	}
+
+	if err := super.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
 	if _, err := os.Stat(super.restartFile); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the restart count file exists after a clean exit (stat: %v), want none", err)
+		t.Fatalf("the app ended on a TERM it ignores (stat: %v)", err)
+	}
+
+	if err := super.cmd.Process.Signal(syscall.SIGUSR2); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Ended })
+	if count.Count != 0 {
+		t.Errorf("the count is %+v, want no start again after the kill", count)
+	}
+	if status := super.awaitExitStatus(t); status.Signal != int(syscall.SIGKILL) {
+		t.Errorf("exit status is %+v, want SIGKILL", status)
+	}
+}
+
+// A stop in the backoff wait has no app to signal, so it ends the app where it is.
+func TestUSR1InTheBackoffWaitEndsTheApp(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "exit:1", "-restart", "on-failure", "-backoff", "10s")
+	super.awaitExitStatus(t)
+
+	if err := super.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+
+	count := super.awaitRestartCount(t, func(c models.RestartCount) bool { return c.Ended })
+	if count.Count != 0 || count.GaveUp {
+		t.Errorf("the count is %+v, want the app ended before its start again", count)
+	}
+}
+
+// A sandbox with no app has nothing to stop, and the supervisor stays up.
+func TestUSR1WithNoAppChangesNothing(t *testing.T) {
+	super := startSupervisor(t, roleSupervisor, "")
+	super.awaitReady(t)
+
+	if err := super.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if !super.alive(t) {
+		t.Error("the supervisor exited on USR1 with no app")
+	}
+	if _, err := os.Stat(super.restartFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a sandbox with no app wrote an end (stat: %v)", err)
 	}
 }
 
@@ -578,7 +689,7 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 		}
 	}()
 
-	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "--", exe, childPrefix+"exit:0")
+	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "-restart-file", filepath.Join(dir, "restarts.json"), "--", exe, childPrefix+"exit:0")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stdin = readOnly
 
@@ -620,7 +731,7 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "started")
-	cmd := exec.Command(exe, "-ready-file", readyFile, "--", "/no/such/entrypoint")
+	cmd := exec.Command(exe, "-ready-file", readyFile, "-restart-file", filepath.Join(dir, "restarts.json"), "--", "/no/such/entrypoint")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
 	var exit *exec.ExitError
@@ -692,6 +803,7 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		"a negative id":          {readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
 		"unknown policy":         {readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
 		"policy with no file":    {readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
+		"command with no file":   {readyFlag, readyPath, "--", "/bin/true"},
 		"relative count file":    {readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
 		"negative retries":       {readyFlag, readyPath, "-restart", "on-failure", "-restart-file", "/tmp/r.json", "-retries", "-1", "--", "/bin/true"},
 		"zero backoff":           {readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},

@@ -638,6 +638,33 @@ func (l *lifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (st
 	return svc.FollowLogs(ctx, ref, w)
 }
 
+func (l *lifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+
+	return svc.AttachApp(ctx, ref, open)
+}
+
+func (l *lifecycle) WaitApp(ctx context.Context, ref string) (models.AppExit, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+
+	return svc.WaitApp(ctx, ref)
+}
+
+func (l *lifecycle) StopApp(ctx context.Context, ref string, force bool) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.StopApp(ctx, ref, force)
+}
+
 // proxyTask runs the egress proxy every fronted sandbox's web traffic is turned to, on the bridge gateway.
 type proxyTask struct {
 	deps *deps

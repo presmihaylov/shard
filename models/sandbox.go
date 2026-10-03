@@ -45,6 +45,8 @@ type Sandbox struct {
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.
 	Resources Resources `json:"resources"`
 
+	// Command is the app shard run started under shard-init, empty for a sandbox create made.
+	Command []string `json:"command,omitempty"`
 	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
 	Restart *Restart `json:"restart,omitempty"`
 

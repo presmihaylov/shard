@@ -10,7 +10,7 @@ the granted host never sends the value back. See the caution under the grant.
 
 ```
 printf '%s' "$OPENAI_API_KEY" | shard secret set --to api.openai.com OPENAI_API_KEY
-shard create --secret OPENAI_API_KEY python:3.12 python agent.py
+shard run --secret OPENAI_API_KEY python:3.12 python agent.py
 ```
 
 **The store.** `shard secret set` writes the value to `<root>/secrets/<NAME>`, with mode 0600, in a

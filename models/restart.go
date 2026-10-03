@@ -43,3 +43,11 @@ type Restart struct {
 	RestartSpec
 	RestartCount
 }
+
+// AppExit is how a run's app ended once its restart policy was over: the last exit and the starts again before it.
+type AppExit struct {
+	Code   int `json:"code"`
+	Signal int `json:"signal"`
+	// Restarts is the count shard-init kept, which a run that lasted the reset window starts over.
+	Restarts int `json:"restarts"`
+}

@@ -43,6 +43,8 @@ type Provider interface {
 	// Signal sends one signal to a running exec by the pid ExecSpec.Report gave for it. The pid is
 	// whatever handle that provider signals by, so a caller only ever passes back what Report reported.
 	Signal(ctx context.Context, id string, pid int, signal string) error
+	// StopApp cancels the restarts and terms the entrypoint, or kills it with force; the sandbox stays running (SHARD-454).
+	StopApp(ctx context.Context, id string, force bool) error
 
 	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
 	// Under a restart policy it returns the first exit of the run; once the sandbox is stopped, the last.

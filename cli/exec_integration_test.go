@@ -279,7 +279,7 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 		flags = append(flags, "--user", user)
 	}
 
-	id := createWith(t, app, out, append(flags, testImage, "/bin/true")...)
+	id := runDetachedWith(t, app, out, append(flags, testImage, "/bin/true")...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	awaitEntrypoint(t, app, id)

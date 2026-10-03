@@ -112,7 +112,7 @@ func (s *Service) recordRestarts(ctx context.Context, id string, report func(str
 	}
 	// The record's pointer may be the one the update writes through, so what it held is copied first.
 	before, retries := sb.Restart.RestartCount, sb.Restart.Retries
-	if count.Count == before.Count && count.GaveUp == before.GaveUp && count.LastAt.Equal(before.LastAt) {
+	if count.Count == before.Count && count.GaveUp == before.GaveUp && count.Ended == before.Ended && count.LastAt.Equal(before.LastAt) {
 		return nil
 	}
 
