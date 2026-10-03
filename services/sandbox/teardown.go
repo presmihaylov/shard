@@ -90,6 +90,7 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.StoppedReason = ""
 		// A mark an unfinished pause left would vouch for its checkpoint across this new run.
 		sb.Pausing = false
+		sb.OOMRestartDue = time.Time{}
 		// The OOM reset measures a healthy run from here, so every start refreshes it.
 		sb.StartedAt = time.Now().UTC()
 		sb.MemoryThrottles, sb.CalmSince, sb.HealthyRun = 0, time.Time{}, false

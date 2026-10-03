@@ -1,6 +1,7 @@
 package bundle_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +29,28 @@ func TestResolveUserRefusesAPasswdThatIsASymbolicLink(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/passwd")) {
 		t.Errorf("the refusal is %q, and it must name the file", err)
+	}
+	if errors.As(err, new(*bundle.UnknownUserError)) {
+		t.Errorf("the refusal %q reads as an unknown user, and a file the daemon will not read is not the caller's mistake", err)
+	}
+}
+
+// A user or group the rootfs does not list is the caller's mistake, which a files verb answers 400 for (SHARD-426).
+func TestResolveUserTypesANameTheRootFSDoesNotList(t *testing.T) {
+	rootfs := rootFSWith(t, "build:x:1000:1000:build:/home/build:/bin/sh\n", "build:x:1000:\n")
+	for user, named := range map[string]string{"nosuch": `user "nosuch"`, "build:nogroup": `group "nogroup"`} {
+		_, err := bundle.ResolveUser(rootfs, user)
+		if !errors.As(err, new(*bundle.UnknownUserError)) || !strings.Contains(err.Error(), named) {
+			t.Errorf("ResolveUser(%q) = %v, want an unknown user error that names the %s", user, err, named)
+		}
+	}
+	if _, err := bundle.ResolveUser(emptyRootFS(t), "nosuch"); !errors.As(err, new(*bundle.UnknownUserError)) {
+		t.Errorf("ResolveUser on a rootfs with no passwd = %v, want an unknown user error", err)
+	}
+	for _, user := range []string{"build", "build:1000", "4242"} {
+		if _, err := bundle.ResolveUser(rootfs, user); err != nil {
+			t.Errorf("ResolveUser(%q) = %v, want it resolved", user, err)
+		}
 	}
 }
 

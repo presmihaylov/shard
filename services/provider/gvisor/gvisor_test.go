@@ -54,6 +54,16 @@ func newProviderIn(t *testing.T, dir, script string, opts ...runsc.Option) *gvis
 		t.Fatalf("New: %v", err)
 	}
 
+	// The fake runsc answers pid 42, so a stand-in /proc keeps that pid alive.
+	proc := filepath.Join(dir, "proc")
+	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o755); err != nil {
+		t.Fatalf("make the stand-in /proc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1 42 42 0 -1 4194560"), 0o600); err != nil {
+		t.Fatalf("write the stat of pid 42: %v", err)
+	}
+	p.SetProcRoot(proc)
+
 	return p
 }
 
@@ -165,8 +175,8 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 // runsc never probes a paused sandbox, so a sentry gone after a checkpoint must read as stopped, not paused.
 func TestStatusReadsAPausedSandboxWhoseSentryIsGoneAsStopped(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
-	p.SetCgroupRoot(t.TempDir())
-	proc := t.TempDir()
+	cgroupRoot, proc := t.TempDir(), t.TempDir()
+	p.SetCgroupRoot(cgroupRoot)
 	p.SetProcRoot(proc)
 
 	status, err := p.Status(t.Context(), "amber-otter-1a2b")
@@ -177,11 +187,18 @@ func TestStatusReadsAPausedSandboxWhoseSentryIsGoneAsStopped(t *testing.T) {
 		t.Errorf("Status of a paused sandbox with no sentry is %+v, want stopped and still held by runsc", status)
 	}
 
-	// A frozen sentry is still there, and only a resume brings it back.
+	// A frozen sentry is still there, in its own cgroup, and only a resume brings it back.
 	if err := os.MkdirAll(filepath.Join(proc, "42"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(proc, "42", "stat"), []byte("42 (runsc-sandbox) S 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cgroupDir := filepath.Join(cgroupRoot, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.MkdirAll(cgroupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroupDir, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -269,6 +286,33 @@ echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 	}
 	if strings.Contains(got, "resume") || strings.Contains(got, "kill") {
 		t.Errorf("release of a frozen sandbox ran %q, want neither a thaw nor a signal: the guest would run past its snapshot", got)
+	}
+}
+
+// A cut after the delete leaves runsc holding nothing, and the release must still sweep the cgroup and drop the view (SHARD-366).
+func TestReleaseFreesASandboxACutPauseLeftAfterItsDelete(t *testing.T) {
+	work := t.TempDir()
+	calls := filepath.Join(work, "calls")
+	cgroups := t.TempDir()
+	p := newProviderOver(t, `echo "$*" >> `+calls+`
+case "$*" in *state*) echo 'FetchSpec failed: loading container: file does not exist' >&2; exit 1;; esac`)
+	dir := frozenSentry(t, p, cgroups)
+	cg := filepath.Join(cgroups, bundle.CgroupsPath("amber-otter-1a2b"))
+	if err := os.Remove(filepath.Join(cg, "cgroup.procs")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := p.Release(t.Context(), "amber-otter-1a2b", dir)
+	// Only Linux has the overlayfs the unmount after it needs.
+	if err != nil && runtime.GOOS == "linux" {
+		t.Errorf("Release of a sandbox runsc no longer holds: %v", err)
+	}
+
+	if _, err := os.Stat(cg); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the cgroup %s is still there (%v), want it swept before the unmount", cg, err)
+	}
+	if got := unitFile(t, calls); strings.Contains(got, "resume") || strings.Contains(got, "kill") {
+		t.Errorf("release of a sandbox runsc no longer holds ran %q, want neither a thaw nor a signal", got)
 	}
 }
 
@@ -424,4 +468,21 @@ func readDir(t *testing.T, dir string) []os.DirEntry {
 	}
 
 	return entries
+}
+
+// A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
+func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshot")
+	tmp := dir + ".tmp"
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("stage a cut pause: %v", err)
+	}
+
+	if err := (&gvisor.Provider{}).AdoptStaging(dir); err != nil {
+		t.Fatalf("AdoptStaging: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
 }

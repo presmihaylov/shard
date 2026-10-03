@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -33,8 +34,13 @@ type harness struct {
 	provider *firecracker.Provider
 	root     string
 	erofs    string
+	kernel   string
 
 	next atomic.Int64
+
+	mu sync.Mutex
+	// owners is the uid each file was last given, by inode, which stands in for a chown a test cannot make.
+	owners map[uint64]int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -51,7 +57,11 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(erofs, []byte("erofs"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{root: root, erofs: erofs}
+	kernel := filepath.Join(root, "kernel")
+	if err := os.WriteFile(kernel, []byte("kernel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{root: root, erofs: erofs, kernel: kernel, owners: map[uint64]int{}}
 	h.open(t)
 
 	return h
@@ -63,7 +73,9 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 
 	p, err := firecracker.New(firecracker.Config{
 		Binary:    os.Args[0],
-		Kernel:    "kernel",
+		Jailer:    os.Args[0],
+		JailBase:  filepath.Join(h.root, "j"),
+		Kernel:    h.kernel,
 		Init:      initBinary,
 		Dir:       h.root,
 		Dirs:      h.stateDir,
@@ -72,6 +84,7 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
+	p.SetOwners(h.own, func(string, int, int) error { return nil })
 	// A boot bounds its vmm on the host cgroup, and a test host has no cgroup hierarchy to bound it on.
 	p.SetCgroupRoot("")
 	// The newest provider holds the live vmms, so a spec's cleanup must stop through it.
@@ -89,6 +102,67 @@ func (h *harness) reopen(t *testing.T) models.Provider {
 	}
 
 	return h.open(t)
+}
+
+// own notes the uid a path was given.
+func (h *harness) own(path string, uid, _ int) error {
+	ino, err := inode(path)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.owners[ino] = uid
+
+	return nil
+}
+
+// owner is the uid a file was last given, by inode so a rename keeps it, and -1 for one never given.
+func (h *harness) owner(path string) int {
+	ino, err := inode(path)
+	if err != nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	uid, ok := h.owners[ino]
+	if !ok {
+		return -1
+	}
+
+	return uid
+}
+
+func inode(path string) (uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("no inode for %s", path)
+	}
+
+	return st.Ino, nil
+}
+
+// jail is the chroot the jailer makes for the sandbox's vmm.
+func (h *harness) jail(id string) string {
+	return filepath.Join(h.root, "j", "firecracker", id, "root")
+}
+
+// api is the API socket of the sandbox's vmm, in its jail.
+func (h *harness) api(id string) string {
+	socket, _ := h.sockets(id)
+
+	return socket
+}
+
+// sockets are the API and vsock sockets of the sandbox's vmm, in its jail.
+func (h *harness) sockets(id string) (string, string) {
+	paths := firecracker.JailSockets(filepath.Join(h.root, "j"), id)
+
+	return paths[0], paths[1]
 }
 
 // stateDir answers for any id, as the repository does; only a spec's directory exists.
@@ -181,8 +255,8 @@ func TestCreateBootsTheImageUnderTheOverlay(t *testing.T) {
 	if err := json.Unmarshal(b.Source, &source); err != nil {
 		t.Fatal(err)
 	}
-	if source.Kernel != "kernel" || source.Initrd != filepath.Join(h.root, "initrd.cpio") {
-		t.Errorf("the boot source = %+v, want the kernel and the provider's initrd", source)
+	if source.Kernel != "/vmlinux" || source.Initrd != "/initrd" {
+		t.Errorf("the boot source = %+v, want the kernel and the initrd in the jail", source)
 	}
 	for _, want := range []string{"console=ttyS0", "-transport vsock", "-base /dev/vda", "-overlay /dev/vdb"} {
 		if !strings.Contains(source.Args, want) {
@@ -190,8 +264,8 @@ func TestCreateBootsTheImageUnderTheOverlay(t *testing.T) {
 		}
 	}
 	wantDrives := []string{
-		`{"drive_id":"base","path_on_host":"` + h.erofs + `","is_root_device":false,"is_read_only":true}`,
-		`{"drive_id":"overlay","path_on_host":"` + filepath.Join(spec.StateDir, "overlay.raw") + `","is_root_device":false,"is_read_only":false}`,
+		`{"drive_id":"base","path_on_host":"/base.erofs","is_root_device":false,"is_read_only":true}`,
+		`{"drive_id":"overlay","path_on_host":"/overlay.raw","is_root_device":false,"is_read_only":false,"cache_type":"Writeback"}`,
 	}
 	var drives []string
 	for _, d := range b.Drives {
@@ -199,6 +273,147 @@ func TestCreateBootsTheImageUnderTheOverlay(t *testing.T) {
 	}
 	if !slices.Equal(drives, wantDrives) {
 		t.Errorf("the drives = %q, want %q", drives, wantDrives)
+	}
+}
+
+// A create spawns the vmm through the jailer, as a uid of its own, over files in its jail that only that uid can open (SHARD-306).
+func TestCreatePutsTheVMMInAJailOfItsOwn(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	jail := h.jail(spec.ID)
+	args := readJailer(t, jail)
+	r := readVM(t, spec.StateDir)
+	if args.ID != spec.ID || args.UID < 0x70000000 || args.GID != args.UID || args.UID != r.UID {
+		t.Errorf("the jailer ran with %+v, want the sandbox's id and the uid %d its record keeps, as the gid too", args, r.UID)
+	}
+	if args.ParentCgroup != "shard/"+spec.ID {
+		t.Errorf("the parent cgroup = %q, want shard/%s with no leading slash", args.ParentCgroup, spec.ID)
+	}
+	if r.Jail != jail {
+		t.Errorf("the record's jail = %q, want %q", r.Jail, jail)
+	}
+	for name, perm := range map[string]os.FileMode{"vmlinux": 0o400, "initrd": 0o400, "base.erofs": 0o400, "overlay.raw": 0o600} {
+		path := filepath.Join(jail, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("%s in the jail: %v", name, err)
+		}
+		if info.Mode().Perm() != perm {
+			t.Errorf("%s mode = %o, want %o", name, info.Mode().Perm(), perm)
+		}
+		if got := h.owner(path); got != r.UID {
+			t.Errorf("%s went to uid %d, want the vmm's %d", name, got, r.UID)
+		}
+	}
+	if !sameFile(t, filepath.Join(jail, "overlay.raw"), filepath.Join(spec.StateDir, "overlay.raw")) {
+		t.Error("the jail's overlay is not the sandbox's own file")
+	}
+}
+
+// readJailer is what the fake jailer was last run with for the jail.
+func readJailer(t *testing.T, jail string) jailerArgs {
+	t.Helper()
+
+	blob, err := os.ReadFile(filepath.Join(filepath.Dir(jail), jailerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args jailerArgs
+	if err := json.Unmarshal(blob, &args); err != nil {
+		t.Fatal(err)
+	}
+
+	return args
+}
+
+// No two sandboxes share a uid, so neither can open the other's jail; a restart keeps the uid, and a clone gets a new one.
+func TestEverySandboxGetsAUIDOfItsOwn(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	first, _ := h.runLong(t)
+	second, _ := h.runLong(t)
+	uid := readVM(t, first.StateDir).UID
+	if other := readVM(t, second.StateDir).UID; other == uid {
+		t.Fatalf("two sandboxes share uid %d", uid)
+	}
+
+	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(h.jail(first.ID))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the jail after Stop: %v, want gone with the vmm", err)
+	}
+	if err := h.provider.Start(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := readJailer(t, h.jail(first.ID)).UID; got != uid {
+		t.Errorf("the vmm after a restart runs as %d, want the sandbox's %d", got, uid)
+	}
+
+	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	clone := h.newSpec(t)
+	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: clone.Resources}
+	if err := h.provider.Clone(t.Context(), first.ID, clone); err != nil {
+		t.Fatal(err)
+	}
+	if got := readVM(t, clone.StateDir).UID; got == uid || got == readVM(t, second.StateDir).UID {
+		t.Errorf("the clone got uid %d, which another sandbox has", got)
+	}
+}
+
+// A uid counter past the range refuses the create, rather than hand out a uid another subsystem owns.
+func TestCreateRefusesAUIDPastTheRange(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(filepath.Join(h.root, "next-uid"), []byte(strconv.Itoa(0x7FFE0000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+
+	err := h.provider.Create(t.Context(), spec)
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("Create past the uid range = %v, want a refusal", err)
+	}
+}
+
+// A snapshot from before the jail names host paths a jailed vmm cannot open, so a restore refuses it.
+func TestARestoreRefusesASnapshotFromBeforeTheJail(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	meta := filepath.Join(dir, "snapshot.json")
+	blob, err := os.ReadFile(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "jailed")
+	if blob, err = json.Marshal(fields); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(meta, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = h.provider.Resume(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "before the jail") {
+		t.Fatalf("Resume from a snapshot before the jail = %v, want a refusal", err)
+	}
+	err = h.provider.Fork(t.Context(), dir, h.forkSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "before the jail") {
+		t.Fatalf("Fork from a snapshot before the jail = %v, want a refusal", err)
 	}
 }
 
@@ -496,6 +711,8 @@ type vm struct {
 	BaseDisk string             `json:"base_disk"`
 	RootFS   string             `json:"rootfs"`
 	Run      supervisor.RunSpec `json:"run"`
+	UID      int                `json:"uid,omitempty"`
+	Jail     string             `json:"jail,omitempty"`
 }
 
 func readVM(t *testing.T, dir string) vm {
@@ -545,7 +762,7 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	}
 }
 
-// The vmm writes vmstate and memory under its own umask, so Pause tightens them: a snapshot the daemon reads is not world-readable.
+// The vmm writes vmstate and memory as its own uid and under its own umask, so Pause gives them to root and tightens them.
 func TestPauseTightensTheSnapshotFiles(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -564,9 +781,17 @@ func TestPauseTightensTheSnapshotFiles(t *testing.T) {
 			t.Errorf("%s mode = %o, want 600", name, info.Mode().Perm())
 		}
 	}
+	for _, name := range []string{"vmstate", "memory"} {
+		if got := h.owner(filepath.Join(dir, name)); got != 0 {
+			t.Errorf("%s went to uid %d, want root", name, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(h.jail(spec.ID))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the jail after Pause: %v, want gone with the vmm", err)
+	}
 }
 
-// A resume brings the sandbox back over its own copy of the overlay and a link to the memory the snapshot keeps.
+// A resume brings the sandbox back over its own copy of the overlay, with a copy by reference of the memory the snapshot keeps in its jail.
 func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -583,13 +808,7 @@ func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	if err != nil || !status.Alive() {
 		t.Fatalf("Status after Resume = %+v, %v, want alive", status, err)
 	}
-	memory := filepath.Join(spec.StateDir, "memory")
-	if got := links(t, memory); got != 2 {
-		t.Errorf("the memory has %d links, want 2: the sandbox maps the snapshot's own file", got)
-	}
-	if got := driveOf(t, spec.StateDir, "overlay"); got != filepath.Join(spec.StateDir, "overlay.raw") {
-		t.Errorf("the overlay drive after Resume = %q, want the sandbox's own", got)
-	}
+	requireJailed(t, h, spec, dir)
 
 	// The snapshot is not consumed: a stopped sandbox comes back from the same one.
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
@@ -601,12 +820,54 @@ func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(memory); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the memory after Remove: %v, want gone", err)
+	if _, err := os.Stat(filepath.Dir(h.jail(spec.ID))); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the jail after Remove: %v, want gone", err)
 	}
-	if got := links(t, filepath.Join(dir, "memory")); got != 1 {
-		t.Errorf("the snapshot's memory has %d links after Remove, want 1", got)
+	if _, err := os.Stat(filepath.Join(dir, "memory")); err != nil {
+		t.Errorf("the snapshot's memory after Remove: %v, want it kept", err)
 	}
+}
+
+// requireJailed proves a restored vmm opens its own overlay through its jail, and maps a copy of the snapshot's memory the snapshot does not share a name with.
+func requireJailed(t *testing.T, h *harness, spec models.SandboxSpec, snapshot string) {
+	t.Helper()
+
+	if got := driveOf(t, spec.StateDir, "overlay"); got != "/overlay.raw" {
+		t.Errorf("the overlay drive = %q, want the one in the jail", got)
+	}
+	jail := h.jail(spec.ID)
+	if !sameFile(t, filepath.Join(jail, "overlay.raw"), filepath.Join(spec.StateDir, "overlay.raw")) {
+		t.Error("the jail's overlay is not the sandbox's own file, so the guest writes where clone and pause never read")
+	}
+	memory := filepath.Join(jail, "memory")
+	if got := links(t, memory); got != 1 {
+		t.Errorf("the jail's memory has %d links, want 1: a copy by reference, not the snapshot's file", got)
+	}
+	if got := h.owner(memory); got != readVM(t, spec.StateDir).UID {
+		t.Errorf("the jail's memory went to uid %d, want the vmm's", got)
+	}
+	if got := links(t, filepath.Join(snapshot, "memory")); got != 1 {
+		t.Errorf("the snapshot's memory has %d links, want 1: no vmm maps the snapshot's own file", got)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, "memory")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the memory in the state directory: %v, want none", err)
+	}
+}
+
+// sameFile says two paths name one file, which is what a hard link into the jail is.
+func sameFile(t *testing.T, a, b string) bool {
+	t.Helper()
+
+	ai, err := os.Stat(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return os.SameFile(ai, bi)
 }
 
 // One snapshot forks as many sandboxes as are asked of it: each takes its own overlay, and the snapshot stays whole.
@@ -635,13 +896,7 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 		if got.BaseDisk != src.BaseDisk || got.RootFS != src.RootFS || !reflect.DeepEqual(got.Run, src.Run) {
 			t.Errorf("the fork's record = %+v, want the snapshot's image, rootfs and run %+v", got, src)
 		}
-		if drive := driveOf(t, fork.StateDir, "overlay"); drive != filepath.Join(fork.StateDir, "overlay.raw") {
-			t.Errorf("the fork's overlay drive = %q, want its own", drive)
-		}
-	}
-	// The one memory file carries a link for each fork, so no fork copied it.
-	if got := links(t, filepath.Join(dir, "memory")); got != 1+len(forks) {
-		t.Errorf("the snapshot's memory has %d links, want %d", got, 1+len(forks))
+		requireJailed(t, h, fork, dir)
 	}
 	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
@@ -657,9 +912,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	spec, _ := h.runLong(t)
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
 	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
-		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		watchControls(t, s)
 	}
 
 	dir := t.TempDir()
@@ -676,11 +929,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	}
 
 	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
-		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed}) {
+		if got := controls(t, s.StateDir, supervisor.KindReseed); !slices.Equal(got, []string{supervisor.KindReseed}) {
 			t.Errorf("the guest of %s read %q, want one reseed", s.ID, got)
 		}
 		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
@@ -696,9 +945,7 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	spec, _ := h.runLong(t)
 	fork := h.forkSpec(t)
 	for _, s := range []models.SandboxSpec{spec, fork} {
-		if err := os.WriteFile(filepath.Join(s.StateDir, reseedsFile), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		watchControls(t, s)
 	}
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -727,16 +974,246 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	}
 
 	for _, s := range []models.SandboxSpec{spec, fork} {
-		read, err := os.ReadFile(filepath.Join(s.StateDir, reseedsFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Fields(string(read)); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
+		if got := controls(t, s.StateDir, supervisor.KindReseed); !slices.Equal(got, []string{supervisor.KindReseed, supervisor.KindReseed}) {
 			t.Errorf("the guest of %s read %q, want the restore's reseed and the first adopter's", s.ID, got)
 		}
 		if _, err := os.Stat(filepath.Join(s.StateDir, firecracker.ReseedFile)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("the reseed marker of %s after the adopt: %v, want it gone", s.ID, err)
 		}
+	}
+}
+
+// A pause freezes the guest before the snapshot, and every restore reseeds the frozen guest before the thaw lets it run on the saved key (SHARD-409).
+func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	fork := h.forkSpec(t)
+	for _, s := range []models.SandboxSpec{spec, fork} {
+		watchControls(t, s)
+	}
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := h.provider.Fork(t.Context(), dir, fork); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	kinds := []string{supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw}
+	if got := controls(t, spec.StateDir, kinds...); !slices.Equal(got, kinds) {
+		t.Errorf("the guest of the source read %q, want %q", got, kinds)
+	}
+	if got := controls(t, fork.StateDir, kinds...); !slices.Equal(got, kinds[1:]) {
+		t.Errorf("the guest of the fork read %q, want %q", got, kinds[1:])
+	}
+}
+
+// A guest that cannot hold its root refuses the pause: the VM runs on, the guest is told to thaw, and nothing is written (SHARD-409).
+func TestAPauseTheGuestCannotFreezeForIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	refuse := filepath.Join(spec.StateDir, refuseFreezeFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "freeze the guest before the pause") {
+		t.Fatalf("Pause of a guest that refuses the freeze = %v, want the refusal", err)
+	}
+	status, statusErr := h.provider.Status(t.Context(), spec.ID)
+	if statusErr != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused Pause = %+v, %v, want running", status, statusErr)
+	}
+	for _, path := range []string{dir + ".tmp", filepath.Join(dir, "checkpoint.img")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the refused Pause: %v, want none", path, err)
+		}
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindThaw}) {
+		t.Errorf("the guest read %q, want the refused freeze and a thaw", got)
+	}
+
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause once the guest takes the freeze: %v", err)
+	}
+}
+
+// A VM booted before the guest froze its overlay root keeps that shard-init, so its pause is refused with the restart that fixes it, and no freeze reaches the guest (SHARD-409).
+func TestAPauseOfAGuestFromBeforeTheFreezeIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	old := filepath.Join(spec.StateDir, oldGuestFile)
+	if err := os.WriteFile(old, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon of an upgrade attaches to a VM the one before it booted.
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.open(t)
+	dir := t.TempDir()
+
+	err := p.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "restart the sandbox, then pause it") {
+		t.Fatalf("Pause of a guest from before the freeze = %v, want the refusal that names the restart", err)
+	}
+	status, statusErr := p.Status(t.Context(), spec.ID)
+	if statusErr != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after the refused Pause = %+v, %v, want running", status, statusErr)
+	}
+	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s.tmp after the refused Pause: %v, want none", dir, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); len(got) != 0 {
+		t.Errorf("the guest read %q, want no freeze sent to a guest that cannot take it", got)
+	}
+
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the restart: %v", err)
+	}
+}
+
+// A drop that takes the guest's answer to a freeze leaves it frozen, so the pause's undo or the stream dialed again thaws it, once, and the next pause goes through (SHARD-409).
+func TestAFreezeWhoseAnswerADropTookIsThawed(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := os.WriteFile(filepath.Join(spec.StateDir, loseFreezeFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	err := h.provider.Pause(t.Context(), spec.ID, dir)
+	if err == nil || !strings.Contains(err.Error(), "freeze the guest before the pause") {
+		t.Fatalf("Pause whose freeze lost its answer = %v, want the refusal", err)
+	}
+	// Which side thaws depends on whether the redial lands before the undo, so the thaw is waited for.
+	want := []string{supervisor.KindFreeze, supervisor.KindThaw}
+	got := controls(t, spec.StateDir, want...)
+	for deadline := time.Now().Add(10 * time.Second); !slices.Equal(got, want) && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		got = controls(t, spec.StateDir, want...)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the guest read %q, want the freeze and one thaw", got)
+	}
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the thaw: %v", err)
+	}
+}
+
+// A daemon cut between the freeze and the snapshot leaves the guest frozen, and the next daemon thaws it as it adopts the VM (SHARD-409).
+func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the pause of a daemon that froze the guest and stopped the vCPUs, then died before the snapshot.
+	client, _, err := fcapi.Adopt(h.sockets(spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	p := h.open(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status of the frozen leftover = %+v, %v, want the sandbox running again", status, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindThaw}) {
+		t.Errorf("the guest read %q, want the cut pause's freeze and the next daemon's thaw", got)
+	}
+}
+
+// A frozen guest the next daemon cannot reseed is ended, not left frozen for every later verb to fail on (SHARD-409).
+func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	watchControls(t, spec)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is a restore's vmm whose daemon died before the reseed, over a guest that will refuse it.
+	client, _, err := fcapi.Adopt(h.sockets(spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.Connect(supervisor.ControlPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := supervisor.ControlOver(conn)
+	if _, err := control.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Freeze(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{firecracker.ReseedFile, refuseReseedFile} {
+		if err := os.WriteFile(filepath.Join(spec.StateDir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := h.open(t)
+
+	if _, err := p.Status(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "reseed the restored guest") {
+		t.Fatalf("Status of a frozen guest that refuses the reseed = %v, want the refusal", err)
+	}
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after the refused reseed = %+v, %v, want the sandbox stopped", status, err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindReseed, supervisor.KindThaw); !slices.Equal(got, []string{supervisor.KindFreeze, supervisor.KindReseed}) {
+		t.Errorf("the guest read %q, want the freeze and the refused reseed, and no thaw", got)
+	}
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Errorf("Remove after the refused reseed: %v", err)
 	}
 }
 
@@ -853,7 +1330,7 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	// The vCPUs are stopped and no snapshot was written: this is the pause of a daemon that died before it ended the vmm.
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(h.sockets(spec.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +1393,7 @@ func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	// The vCPUs are stopped as a cut fork leaves them, and the marker says the load may still point the overlay at the source.
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(h.sockets(spec.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -933,7 +1410,7 @@ func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
 		t.Fatalf("Status of the half-forked leftover = %+v, %v, want stopped", status, err)
 	}
 	// The refuse ended the vmm, so nothing answers the socket as a live VM; a blind resume would have left it running on the source.
-	if _, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), ""); err == nil {
+	if _, _, err := fcapi.Adopt(h.api(spec.ID), ""); err == nil {
 		t.Fatal("the vmm a cut fork left still answers; the refuse must end it, not resume it")
 	}
 }
@@ -942,15 +1419,23 @@ func TestAPausedVMLeftByACutForkIsEndedNotResumed(t *testing.T) {
 func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
 	h := newHarness(t)
 	spec := h.forkSpec(t)
-	exited := h.leaveUnloaded(t, spec, os.Args[0])
-	requireUnloadedEnded(t, h.reopen(t), spec, exited)
+	exited := h.leaveUnloaded(t, spec, os.Args[0], h.jail(spec.ID))
+	requireUnloadedEnded(t, h.reopen(t), spec, exited, h.jail(spec.ID))
+}
+
+// A vmm a daemon before the jail spawned answers in the state directory, and the next daemon still finds it there and ends it (SHARD-306).
+func TestAVMMFromBeforeTheJailIsFoundAtItsOldSocket(t *testing.T) {
+	h := newHarness(t)
+	spec := h.forkSpec(t)
+	exited := h.leaveUnloaded(t, spec, os.Args[0], "")
+	requireUnloadedEnded(t, h.reopen(t), spec, exited, "")
 }
 
 // A read that lands mid-spawn is not a restart of the daemon, so the unloaded vmm is left to the spawn it belongs to.
 func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
 	h := newHarness(t)
 	spec := h.forkSpec(t)
-	h.leaveUnloaded(t, spec, os.Args[0])
+	h.leaveUnloaded(t, spec, os.Args[0], h.jail(spec.ID))
 	done := h.provider.Spawning(spec.ID)
 	defer done()
 
@@ -958,7 +1443,7 @@ func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status mid-spawn = %+v, %v, want stopped", status, err)
 	}
-	if !unloaded(filepath.Join(spec.StateDir, "firecracker.sock")) {
+	if !unloaded(h.api(spec.ID)) {
 		t.Fatal("a read ended the vmm a spawn in this process still brings up")
 	}
 }
@@ -967,12 +1452,12 @@ func TestAVMMThisProcessStillSpawnsIsLeftToIt(t *testing.T) {
 func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
 	h := newHarness(t)
 	spec, pid := h.runLong(t)
-	client, _, err := fcapi.Adopt(filepath.Join(spec.StateDir, "firecracker.sock"), filepath.Join(spec.StateDir, "vsock.sock"))
+	client, _, err := fcapi.Adopt(h.sockets(spec.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := h.provider.EndCut(spec.ID, client, pid); err != nil {
+	if err := h.provider.EndCut(spec.ID, client, pid, h.jail(spec.ID)); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
@@ -985,9 +1470,9 @@ func TestAReadThatSawASpawnUnloadedSparesTheVMItBecame(t *testing.T) {
 func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	h := newHarness(t)
 	spec := h.forkSpec(t)
-	exited := h.leaveUnloaded(t, spec, os.Args[0])
-	socket := filepath.Join(spec.StateDir, "firecracker.sock")
-	client, info, err := fcapi.Adopt(socket, filepath.Join(spec.StateDir, "vsock.sock"))
+	exited := h.leaveUnloaded(t, spec, os.Args[0], h.jail(spec.ID))
+	socket := h.api(spec.ID)
+	client, info, err := fcapi.Adopt(h.sockets(spec.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1002,9 +1487,9 @@ func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	if err := os.Remove(socket); err != nil {
 		t.Fatal(err)
 	}
-	h.leaveUnloaded(t, spec, os.Args[0])
+	h.leaveUnloaded(t, spec, os.Args[0], h.jail(spec.ID))
 
-	if err := h.provider.EndCut(spec.ID, client, info.PID); err != nil {
+	if err := h.provider.EndCut(spec.ID, client, info.PID, h.jail(spec.ID)); err != nil {
 		t.Fatalf("the late read: %v", err)
 	}
 	if !unloaded(socket) {
@@ -1012,19 +1497,31 @@ func TestAReadEndsOnlyTheUnloadedVMMItSaw(t *testing.T) {
 	}
 }
 
-// leaveUnloaded writes the record a fork writes and spawns a vmm that loads nothing, as a daemon cut between the two leaves them; the channel closes when the vmm exits.
-func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary string) <-chan struct{} {
+// leaveUnloaded writes the record a fork writes and spawns a vmm in jail that loads nothing, as a daemon cut between the two leaves them; the channel closes when the vmm exits.
+// An empty jail is a vmm a daemon before the jail spawned, with its socket in the state directory.
+func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary, jail string) <-chan struct{} {
 	t.Helper()
 
-	blob, err := json.Marshal(vm{BaseDisk: h.erofs})
+	r := vm{BaseDisk: h.erofs, Jail: jail}
+	socket := filepath.Join(spec.StateDir, "firecracker.sock")
+	told := socket
+	env := os.Environ()
+	if jail != "" {
+		if err := os.MkdirAll(jail, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		r.UID, socket, told = 0x70000000, h.api(spec.ID), "/api.sock"
+		env = append(env, fakeJailEnv+"="+jail, fakeStateEnv+"="+spec.StateDir)
+	}
+	blob, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(spec.StateDir, "vm.json"), blob, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(spec.StateDir, "firecracker.sock")
-	vmm := exec.Command(binary, "--api-sock", socket)
+	vmm := exec.Command(binary, "--api-sock", told)
+	vmm.Env = env
 	vmm.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := vmm.Start(); err != nil {
 		t.Fatal(err)
@@ -1049,7 +1546,7 @@ func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary st
 }
 
 // requireUnloadedEnded proves a reopened provider ends an unloaded leftover within the daemon's probe budget, and a remove then frees its files.
-func requireUnloadedEnded(t *testing.T, p models.Provider, spec models.SandboxSpec, exited <-chan struct{}) {
+func requireUnloadedEnded(t *testing.T, p models.Provider, spec models.SandboxSpec, exited <-chan struct{}, jail string) {
 	t.Helper()
 
 	// An attach waiting on a guest that never comes runs past this budget.
@@ -1067,9 +1564,13 @@ func requireUnloadedEnded(t *testing.T, p models.Provider, spec models.SandboxSp
 	if err := p.Remove(t.Context(), spec.ID); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	for _, name := range []string{"vm.json", "firecracker.sock"} {
-		if _, err := os.Stat(filepath.Join(spec.StateDir, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("%s after Remove: %v, want gone", name, err)
+	gone := []string{filepath.Join(spec.StateDir, "vm.json"), filepath.Join(spec.StateDir, "firecracker.sock")}
+	if jail != "" {
+		gone = append(gone, filepath.Dir(jail))
+	}
+	for _, path := range gone {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after Remove: %v, want gone", path, err)
 		}
 	}
 }
@@ -1088,6 +1589,33 @@ func (h *harness) forkSpec(t *testing.T) models.SandboxSpec {
 	spec := h.newSpec(t)
 
 	return models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
+}
+
+// watchControls has the fake vmm note what the guest of s reads from here on.
+func watchControls(t *testing.T, s models.SandboxSpec) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(s.StateDir, controlsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// controls is what the guest of the sandbox under dir read, in order, of the kinds named.
+func controls(t *testing.T, dir string, kinds ...string) []string {
+	t.Helper()
+
+	read, err := os.ReadFile(filepath.Join(dir, controlsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for kind := range strings.FieldsSeq(string(read)) {
+		if slices.Contains(kinds, kind) {
+			got = append(got, kind)
+		}
+	}
+
+	return got
 }
 
 // links is how many names the file has, which is what proves the memory is shared and not copied.
@@ -1135,8 +1663,8 @@ func driveOf(t *testing.T, dir, id string) string {
 	return ""
 }
 
-// A remove leaves the state directory with nothing of the VM in it; the directory itself is the repository's.
-func TestRemoveDropsTheOverlayTheRecordAndTheSockets(t *testing.T) {
+// A remove leaves the state directory with nothing of the VM in it, and no jail; the directory itself is the repository's.
+func TestRemoveDropsTheOverlayTheRecordAndTheJail(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1149,9 +1677,9 @@ func TestRemoveDropsTheOverlayTheRecordAndTheSockets(t *testing.T) {
 	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"overlay.raw", "vm.json", "firecracker.sock", "vsock.sock"} {
-		if _, err := os.Stat(filepath.Join(spec.StateDir, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("%s after Remove: %v, want gone", name, err)
+	for _, path := range []string{filepath.Join(spec.StateDir, "overlay.raw"), filepath.Join(spec.StateDir, "vm.json"), filepath.Dir(h.jail(spec.ID))} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after Remove: %v, want gone", path, err)
 		}
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
@@ -1306,5 +1834,22 @@ func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
 		if err != nil || info.Size() != want {
 			t.Errorf("%s: %v, want %d bytes", filepath.Base(name), err, want)
 		}
+	}
+}
+
+// A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
+func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshot")
+	tmp := dir + ".tmp"
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatalf("stage a cut pause: %v", err)
+	}
+
+	if err := (&firecracker.Provider{}).AdoptStaging(dir); err != nil {
+		t.Fatalf("AdoptStaging: %v", err)
+	}
+
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
 	}
 }

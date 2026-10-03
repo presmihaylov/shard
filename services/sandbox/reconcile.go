@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -90,6 +91,15 @@ func (s *Service) probeAll(ctx context.Context, sandboxes []models.Sandbox) []pr
 
 // applyReconcile corrects one record from its probe result and answers the state it left it in.
 func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status models.Status, probeErr error, report func(string)) (models.State, error) {
+	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
+	if err != nil {
+		return "", fmt.Errorf("find the snapshot staging of sandbox %s: %w", sb.ID, err)
+	}
+	// A cut pause leaves a staged snapshot: the provider finishes its own here or drops a stale one, once at daemon start.
+	if err := s.cfg.Provider.AdoptStaging(dir); err != nil {
+		return "", fmt.Errorf("adopt the snapshot staging of sandbox %s: %w", sb.ID, err)
+	}
+
 	var timeout *SubstrateTimeoutError
 	if errors.As(probeErr, &timeout) {
 		// The probe budget bounds every Status, so a wedge stalls no boot; the liveness tick reconciles it later.
@@ -100,14 +110,17 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
+	if sb.State == models.StateRunning && !status.Alive() && status.OOMKilled {
+		return s.reconcileOOMKilled(ctx, sb, status, report)
+	}
 
 	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
-	dir, err := s.cutPause(ctx, sb, status)
+	cut, err := s.cutPause(ctx, sb, status)
 	if err != nil {
 		return "", err
 	}
-	if dir != "" {
-		if err := s.recordCutPause(sb.ID, dir, report); err != nil {
+	if cut != "" {
+		if err := s.recordCutPause(sb.ID, cut, report); err != nil {
 			return "", err
 		}
 
@@ -127,6 +140,22 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 			return "", err
 		}
 		report(fmt.Sprintf("sandbox %s said %s and the substrate holds its process %d: the record now says running", sb.ID, sb.State, status.PID))
+
+		return state, nil
+	}
+
+	// A cut pause the record never recorded: the substrate holds it paused, so the record catches up.
+	if state == models.StatePaused {
+		err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
+			rec.State = models.StatePaused
+			rec.PID = 0
+
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("sandbox %s is paused but its record was not updated: %w", sb.ID, err)
+		}
+		report(fmt.Sprintf("sandbox %s said %s and the substrate holds it paused: the record now says paused", sb.ID, sb.State))
 
 		return state, nil
 	}
@@ -155,6 +184,23 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	return state, nil
 }
 
+// reconcileOOMKilled takes the tick's memory decision without the backoff that bounds a loop of ticks, so no verb reads a running record with no process (SHARD-311).
+func (s *Service) reconcileOOMKilled(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) (models.State, error) {
+	handled := s.handleOOMKilled(ctx, sb.ID, sb, status.Throttles, time.Now().UTC(), report)
+	rec, err := s.cfg.Repo.Get(sb.ID)
+	if err != nil {
+		return "", errors.Join(handled, fmt.Errorf("read the record of sandbox %s: %w", sb.ID, err))
+	}
+	// A start again that failed comes after the record took the stop, so it is not left as it is.
+	if handled != nil && rec.State != sb.State {
+		report(fmt.Sprintf("sandbox %s: %v, the record now says %s", sb.ID, handled, rec.State))
+
+		return rec.State, nil
+	}
+
+	return rec.State, handled
+}
+
 // failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
 func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) error {
 	reason := InterruptedReason
@@ -167,7 +213,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
 			return fmt.Errorf("stop sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
 		}
-		if err := s.awaitStopped(ctx, sb.ID); err != nil {
+		if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
 			return err
 		}
 	}
@@ -211,6 +257,11 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateFailed, nil
 	}
 
+	// A substrate still reporting paused held a cut pause: keep that truth, or inspect and exec lie (SHARD-411).
+	if status.State == models.StatePaused {
+		return models.StatePaused, nil
+	}
+
 	if status.Alive() {
 		return models.StateRunning, nil
 	}
@@ -243,7 +294,7 @@ type releaser interface {
 	Release(ctx context.Context, id, dir string) error
 }
 
-// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left frozen; empty for none.
+// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left behind; empty for none.
 func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
 	dir, err := s.markedSnapshot(sb)
 	if err != nil {
@@ -252,17 +303,17 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 	if dir == "" {
 		return "", nil
 	}
-	if !status.Alive() {
+	r, ok := s.cfg.Provider.(releaser)
+	if !ok && !status.Alive() {
 		return dir, nil
 	}
-
-	r, ok := s.cfg.Provider.(releaser)
 	// A substrate that cannot release keeps the record, rather than call paused what it still holds.
-	if !ok || status.State != models.StatePaused {
+	if !ok || status.Alive() && status.State != models.StatePaused {
 		return "", nil
 	}
+	// A cut after the delete still leaves the merged view mounted, and only the release frees it (SHARD-366).
 	if err := r.Release(ctx, sb.ID, dir); err != nil {
-		return "", fmt.Errorf("release sandbox %s, which a cut pause left frozen beside its snapshot: %w", sb.ID, err)
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left beside its snapshot: %w", sb.ID, err)
 	}
 
 	return dir, nil

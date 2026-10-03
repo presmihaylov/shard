@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := openLog(cfg.LogPath); err != nil {
 			return err
 		}
-		extra = append(extra, logReopen{path: cfg.LogPath, hangups: hangups, out: cfg.Out, reopen: openLog})
+		extra = append(extra, logReopen{path: cfg.LogPath, limit: logCap, interval: logCapInterval, hangups: hangups, out: cfg.Out, reopen: openLog})
 	}
 
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
@@ -83,11 +83,18 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// After the datadir, whose mount is the one every jail sits on.
+	if err := checkJailRoot(cfg.Root, cfg.Provider); err != nil {
+		return err
+	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogRotation{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
-	err = New(cfg.Root, cfg.Out, append(tasks, extra...)...).WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, healthCheck{deps: d, lifecycle: life, interval: healthInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
+	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
+	d.states = dmn.states
+	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
 
 	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
 	life.wait()
@@ -251,6 +258,7 @@ func (p process) Daemon() (api.Daemon, error) {
 		Provider:     provider.Name(),
 		Capabilities: provider.Capabilities(),
 		Proxy:        api.Proxy{PlainPort: proxy.PlainPort, TLSPort: proxy.TLSPort},
+		Tasks:        p.deps.states.snapshot(),
 	}, nil
 }
 
@@ -540,6 +548,78 @@ func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size san
 	return svc.ResizeExec(ctx, ref, execID, size)
 }
 
+func (l *lifecycle) StatFile(ctx context.Context, ref, path string) (models.FileStat, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, err
+	}
+
+	return svc.StatFile(ctx, ref, path)
+}
+
+func (l *lifecycle) ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadFile(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteFile(ctx, ref, req, src)
+}
+
+func (l *lifecycle) ListDir(ctx context.Context, ref, path string) (sandbox.Listing, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListDir(ctx, ref, path)
+}
+
+func (l *lifecycle) MakeDir(ctx context.Context, ref string, req sandbox.MkdirRequest) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.MakeDir(ctx, ref, req)
+}
+
+func (l *lifecycle) DeleteFile(ctx context.Context, ref, path string, recursive bool) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.DeleteFile(ctx, ref, path, recursive)
+}
+
+func (l *lifecycle) ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.FileStat{}, nil, err
+	}
+
+	return svc.ReadArchive(ctx, ref, path)
+}
+
+func (l *lifecycle) WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.WriteArchive(ctx, ref, req, src)
+}
+
 func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {
@@ -736,7 +816,7 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
 
-	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, logger).Run(ctx, ring); err != nil {
+	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
 		return err
 	}
 
@@ -745,52 +825,4 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// egressLogRotation keeps every sandbox's decision log bounded. It renames rather than truncates, so an
-// O_APPEND writer that holds the old file keeps writing into a file the reader still prints.
-type egressLogRotation struct {
-	deps *deps
-}
-
-const (
-	// maxEgressLog is what one log may reach before it is renamed, and one renamed file is kept behind it.
-	maxEgressLog      = 8 << 20
-	egressLogInterval = time.Minute
-)
-
-func (egressLogRotation) Name() string { return "egress-log-rotation" }
-
-func (t egressLogRotation) Run(ctx context.Context) error {
-	repo, err := t.deps.repo()
-	if err != nil {
-		return err
-	}
-
-	decisions, err := t.deps.egressLog()
-	if err != nil {
-		return err
-	}
-
-	ticker := time.NewTicker(egressLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-
-		sandboxes, err := repo.List()
-		if err != nil {
-			return err
-		}
-
-		for _, sb := range sandboxes {
-			if err := decisions.Rotate(sb.ID, maxEgressLog); err != nil {
-				return err
-			}
-		}
-	}
 }

@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/memfd"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
@@ -43,6 +45,10 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 var errNoHost = errors.New("no host attached")
 
 func main() {
+	// The daemon runs [/.shard/init files] through an exec for one file operation, as the user that exec runs as.
+	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
+		os.Exit(runFiles())
+	}
 	// The bounded child runs this first, so it gives up PID 1's OOM exemption before the workload can fork.
 	if len(os.Args) > 2 && os.Args[1] == exposeFlag {
 		fmt.Fprintln(os.Stderr, "shard-init:", expose(os.Args[2], os.Args[3:]))
@@ -476,13 +482,12 @@ func (r fileReporter) ready() error {
 	return nil
 }
 
-// exited frames the exit record onto fd 0, shard-init's host-held stdin the guest cannot reach.
-// The newlines let a reader take whole lines only; shard-init is the sole writer, so appends never interleave.
 // oomKilled never reaches a file: a Linux sandbox dies whole with its cgroup, and the host reads the cgroup's own count.
 func (fileReporter) oomKilled() error {
 	return errors.New("a file reporter has no memory bound to report a kill under")
 }
 
+// exited frames the exit record onto fd 0, the channel the host holds; the newlines let a reader take whole lines only.
 func (fileReporter) exited(exit models.ExitStatus) error {
 	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
 	encoded, err := json.Marshal(report)
@@ -490,8 +495,37 @@ func (fileReporter) exited(exit models.ExitStatus) error {
 		return fmt.Errorf("marshal the exit report: %w", err)
 	}
 
+	sealed, err := memfd.Fixed(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read the seals of fd 0: %w", err)
+	}
+	if sealed {
+		return writePage(os.Stdin, encoded)
+	}
+
+	// One record at a time keeps the file under the host's read bound; a failed clear still appends, so the host reads the code.
+	cleared := os.Stdin.Truncate(0)
 	framed := append(append([]byte{'\n'}, encoded...), '\n')
 	if _, err := os.Stdin.Write(framed); err != nil {
+		return errors.Join(fmt.Errorf("report the exit status on fd 0: %w", err), cleared)
+	}
+	if cleared != nil {
+		return fmt.Errorf("the exit status is on fd 0, but the records before it stay: %w", cleared)
+	}
+
+	return nil
+}
+
+// writePage fills the sealed page from offset 0 in one write, the record then NULs, since no write can resize it.
+func writePage(f *os.File, encoded []byte) error {
+	framed := append(append([]byte{'\n'}, encoded...), '\n')
+	if len(framed) > models.ExitChannelSize {
+		return fmt.Errorf("the exit record is %d bytes, past the %d byte channel", len(framed), models.ExitChannelSize)
+	}
+
+	page := make([]byte, models.ExitChannelSize)
+	copy(page, framed)
+	if _, err := f.WriteAt(page, 0); err != nil {
 		return fmt.Errorf("report the exit status on fd 0: %w", err)
 	}
 
@@ -668,6 +702,10 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 
 // lookPath resolves argv[0] on the entrypoint's own PATH, in the entrypoint's own directory: in a VM shard-init's environ is the kernel's, which has none.
 func lookPath(ep entrypoint) (string, error) {
+	// A VM mounts no /.shard/init, so the daemon's files exec there runs this binary.
+	if ep.argv[0] == supervisor.InitPath {
+		return selfBinary, nil
+	}
 	if strings.Contains(ep.argv[0], "/") {
 		return executable(ep.dir, ep.argv[0])
 	}

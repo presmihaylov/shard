@@ -67,9 +67,9 @@ func TestTailerWritesAStackDropIntoItsSandbox(t *testing.T) {
 		t.Fatalf("Drop of a stranger: %v", err)
 	}
 
-	records, err := decisions.Read(sb.ID)
+	records, _, err := decisions.Tail(sb.ID)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("Tail: %v", err)
 	}
 	if len(records) != 1 || records[0] != record {
 		t.Fatalf("the log holds %+v", records)

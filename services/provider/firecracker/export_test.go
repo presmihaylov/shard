@@ -25,8 +25,13 @@ func (p *Provider) Spawning(id string) (done func()) {
 }
 
 // EndCut resumes a read that saw pid in a state a cut daemon leaves, which a test cannot pause inside Status.
-func (p *Provider) EndCut(id string, client *fcapi.Client, pid int) error {
-	return p.endCut(id, client, pid)
+func (p *Provider) EndCut(id string, client *fcapi.Client, pid int, jail string) error {
+	return p.endCut(id, client, pid, jail)
+}
+
+// SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
+func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+	p.chown, p.ownTap = chown, ownTap
 }
 
 // Install is a pause cut after its install and before it ended the vmm, which a test cannot cut inside Pause.
@@ -38,6 +43,9 @@ func (p *Provider) Install(ctx context.Context, id, dir string) error {
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.
 const RestoringFile = restoringFile
+
+// SupervisorFailedFile holds shard-init's reason for its own death, which a test turns into a fifo to hold the report's write.
+const SupervisorFailedFile = supervisorFailedFile
 
 // ReseedFile is the marker a restore keeps until its guest is reseeded, which a test writes to stand in for a daemon cut before the reseed.
 const ReseedFile = reseedFile

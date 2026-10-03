@@ -44,8 +44,8 @@ start_daemon() {
 	wait_for_daemon
 }
 
-# fstab_line is what services/datadir appends, byte for byte, so the teardown removes that line and no other.
-fstab_line() { printf '%s %s xfs loop 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
+# fstab_line is what pkg/xfs appendFstab writes, byte for byte, so the teardown removes that line and no other.
+fstab_line() { printf '%s %s xfs loop,nofail 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
 
 # forget_fstab drops the run's own line through a temp file in /etc, so an interrupt never leaves a half-written fstab.
 forget_fstab() {
@@ -90,13 +90,48 @@ wipe_root() {
 	rm -f "${DATA_IMAGE}" "${DATA_IMAGE}.part" "${DATA_IMAGE}.lock"
 	forget_fstab
 	clear_host_net
+	drop_cgroup_parent
 }
 
-# vmm_pids lists every firecracker process driving a socket under this root, and no other root's.
-vmm_pids() { pgrep -f -- "^firecracker --api-sock ${SHARD_ROOT}/" || true; }
+# drop_cgroup_parent removes the shard cgroup parent when this run made it and no sandbox of any root is under it.
+drop_cgroup_parent() {
+	[ "${CGROUP_PARENT_BEFORE:-yes}" = no ] && [ -d "${CGROUP_PARENT}" ] && [ -z "$(shard_cgroups)" ] || return 0
+	rmdir "${CGROUP_PARENT}" || echo "teardown: could not remove the cgroup parent ${CGROUP_PARENT}" >&2
+}
+
+# vmm_pids lists every firecracker process jailed under this root by the pid file and inode of its jail, since the jailer's own mount namespace makes /proc/<pid>/root read /.
+vmm_pids() {
+	local jail ino pid jails=" "
+	{
+		for jail in "${SHARD_ROOT}"/jail/firecracker/*/root; do
+			[ -d "${jail}" ] || continue
+			ino="$(stat -c %d:%i "${jail}" 2>/dev/null || true)"
+			if [ -n "${ino}" ]; then jails+="${ino} "; fi
+			pid="$(cat "${jail}/firecracker.pid" 2>/dev/null || true)"
+			if [ -n "${pid}" ] && [ "$(cat "/proc/${pid}/comm" 2>/dev/null || true)" = firecracker ]; then echo "${pid}"; fi
+		done
+		for pid in $(pgrep -x firecracker || true); do
+			ino="$(stat -L -c %d:%i "/proc/${pid}/root/" 2>/dev/null || true)"
+			if [ -n "${ino}" ] && [[ "${jails}" == *" ${ino} "* ]]; then echo "${pid}"; fi
+		done
+	} | sort -u
+}
+
+# started_vmms lists every firecracker process the host did not run when this run began, which a vmm whose jail is gone still is.
+started_vmms() {
+	local pid
+	for pid in $(pgrep -x firecracker || true); do
+		if [[ "${FIRECRACKERS_BEFORE}" != *" ${pid} "* ]]; then echo "${pid}"; fi
+	done
+}
+
+# vmm_status reads one field of the vmm's /proc status.
+vmm_status() { awk -v field="$2:" '$1 == field { print $2 }' "/proc/$1/status"; }
+
+CGROUP_PARENT=/sys/fs/cgroup/shard
 
 # shard_cgroups lists the sandbox cgroups under the shard parent, which the daemon of every root on the host shares.
-shard_cgroups() { find /sys/fs/cgroup/shard -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
+shard_cgroups() { find "${CGROUP_PARENT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true; }
 
 # run_cgroups lists the sandbox cgroups this run added to the ones the host held before it.
 run_cgroups() { comm -13 <(printf '%s\n' "${CGROUPS_BEFORE}") <(shard_cgroups) | tr '\n' ' '; }
@@ -110,10 +145,10 @@ record_pid() { grep -o '"pid": *[0-9]*' "${SHARD_ROOT}/sandboxes/$1/sandbox.json
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives /dev/kvm, a tap and nft, so this needs root"
 [ -e /dev/kvm ] || fail "no /dev/kvm on this host: firecracker needs bare metal, rent one and run this there"
-for binary in firecracker mkfs.erofs mkfs.xfs ip ss nft iptables go curl openssl; do
+for binary in firecracker jailer mkfs.erofs mkfs.xfs ip ss nft iptables go curl openssl; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
-say "/dev/kvm, firecracker, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
+say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
 # The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
 if iptables -S INPUT 2>/dev/null | grep -qx -- "-P INPUT DROP" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
 	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' (ufw hosts: 'ufw allow in on shard0') and run this again"
@@ -135,7 +170,9 @@ say "no shard daemon holds the host-wide bridge and tables"
 check_host_is_free
 say "no other sandbox holds a link on this host"
 [ -z "$(vmm_pids)" ] || fail "a firecracker process already drives ${SHARD_ROOT}: $(vmm_pids)"
+FIRECRACKERS_BEFORE=" $(pgrep -x firecracker | tr '\n' ' ' || true)"
 CGROUPS_BEFORE=$(shard_cgroups)
+CGROUP_PARENT_BEFORE=$([ -d "${CGROUP_PARENT}" ] && echo yes || echo no)
 
 check_root
 DATA_IMAGE="${SHARD_ROOT}.xfs"
@@ -221,6 +258,12 @@ LINK=$(record_field "${ID}" host_interface)
 VMM_PID=$(record_pid "${ID}")
 say "the record holds the address ${ADDRESS} on the tap ${LINK}, driven by pid ${VMM_PID}"
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "the pid in the record is a firecracker process"
+JAIL="${SHARD_ROOT}/jail/firecracker/${ID}/root"
+expect "$(stat -L -c %d:%i "/proc/${VMM_PID}/root/")" "$(stat -c %d:%i "${JAIL}")" "the vmm runs chrooted in its jail"
+expect "$(cat "${JAIL}/firecracker.pid")" "${VMM_PID}" "the pid file in the jail names the vmm"
+VMM_UID=$(vmm_status "${VMM_PID}" Uid)
+[ "${VMM_UID}" -ge 1879048192 ] || fail "the vmm runs as uid ${VMM_UID}, want one from 0x70000000 up"
+expect "$(vmm_status "${VMM_PID}" CapEff) $(vmm_status "${VMM_PID}" Seccomp)" "0000000000000000 2" "the vmm runs as uid ${VMM_UID}, with no capability, under its seccomp filter"
 ip -o link show "${LINK}" | grep -q "master shard0" || fail "the tap ${LINK} is not a port of the bridge"
 absent "a namespace named ${ID}" "$(ip netns list | grep "^${ID}" || true)"
 say "the tap is a bridge port and the guest has no namespace on the host"
@@ -499,9 +542,11 @@ say "image prune removed the image once no sandbox referenced it"
 step "prove the host holds nothing the run left"
 absent "a tap of this run" "$(ip -o link show | grep -o "${HOST_LINK_PREFIX}[0-9]\+" | sort -u | tr '\n' ' ' || true)"
 absent "a vmm of this root" "$(vmm_pids)"
+absent "a vmm this run started" "$(started_vmms)"
+absent "a jail of this root" "$(find "${SHARD_ROOT}/jail/firecracker" -mindepth 1 -maxdepth 1 2>/dev/null || true)"
 absent "a sandbox mount under the root" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "a cgroup of this run" "$(run_cgroups)"
-say "the tap, the vmm, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
+say "the tap, the vmm, the jail, the cgroup and the mount are gone; the bridge and the policy tables go with the teardown below"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
@@ -515,9 +560,10 @@ rm -f "${ROOT_MARKER}"
 grep -qxF -- "$(fstab_line)" /etc/fstab && fail "/etc/fstab still holds the line for ${SHARD_ROOT}"
 check_host_net_clear
 [ -z "$(run_cgroups)" ] || fail "the host still holds a cgroup of this run: $(run_cgroups)"
+[ "${CGROUP_PARENT_BEFORE}" = yes ] || [ ! -d "${CGROUP_PARENT}" ] || fail "the cgroup parent ${CGROUP_PARENT} this run made is still on the host"
 [ ! -e "/run/netns/${ECHO_NETNS_NAME}" ] || fail "the echo's netns ${ECHO_NETNS_NAME} is still on the host"
 ip link show "${ECHO_LINK}0" >/dev/null 2>&1 && fail "the echo's link ${ECHO_LINK}0 is still on the host"
-say "the root, the image, the fstab line, every cgroup of the run, the echo's netns and its link are gone"
+say "the root, the image, the fstab line, every cgroup of the run and the parent it made, the echo's netns and its link are gone"
 
 trap - EXIT
 echo

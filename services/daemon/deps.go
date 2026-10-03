@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -57,7 +58,13 @@ type deps struct {
 	providerSvc  models.Provider
 	secretSvc    *secret.Store
 	policySvc    *egress.Store
-	runnerSvc    *runsc.Runner
+	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
+	logSvc    *egress.Log
+	runnerSvc *runsc.Runner
+
+	unreadableLogSvc *sandboxstate.UnreadableLog
+	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
+	states *taskStates
 }
 
 // hostNetwork leases every sandbox its address: the bridge on Linux, a pool alone on a VM host, and the proxy listens on its gateway.
@@ -85,6 +92,23 @@ func (d *deps) logger() *log.Logger {
 	}
 
 	return log.New(out, "", log.LstdFlags)
+}
+
+// unreadableLog is the shared dedup for the "record cannot be read" line, so one bad record logs once per daemon life across every task (SHARD-403).
+func (d *deps) unreadableLog() *sandboxstate.UnreadableLog {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.unreadableLogLocked()
+}
+
+// unreadableLogLocked is unreadableLog for a caller that already holds d.mu, so stackLocked shares the one dedup.
+func (d *deps) unreadableLogLocked() *sandboxstate.UnreadableLog {
+	if d.unreadableLogSvc == nil {
+		d.unreadableLogSvc = sandboxstate.NewUnreadableLog(d.logger().Printf)
+	}
+
+	return d.unreadableLogSvc
 }
 
 // providerName is the substrate this daemon runs. Run settles it before anything here asks.
@@ -233,7 +257,7 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 		return nil, err
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
-	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, egress.NewLog(repo), repo, logger), gateway: gateway, out: logger}
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
 	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
 		Address:    gateway,
@@ -338,8 +362,21 @@ func (d *deps) newProvider(dirs, snapshots func(string) (string, error)) (models
 	}
 }
 
-// firecrackerDir is where under the root the firecracker daemon keeps the initrd it builds from the guest init.
-const firecrackerDir = "firecracker"
+const (
+	// firecrackerDir is where under the root the firecracker daemon keeps the initrd it builds from the guest init.
+	firecrackerDir = "firecracker"
+	// jailDir is where under the root the jailer makes each vmm's chroot (SHARD-306).
+	jailDir = "jail"
+)
+
+// checkJailRoot refuses at start a firecracker root on a mount the jailer cannot use (SHARD-306).
+func checkJailRoot(root, provider string) error {
+	if provider != firecracker.Name {
+		return nil
+	}
+
+	return fcapi.CheckChrootBase(root)
+}
 
 // newFirecracker builds the microVM provider: the vmm on PATH, the guest kernel fetched once, and the static init the initrd carries.
 func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Provider, error) {
@@ -350,6 +387,10 @@ func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Pro
 	if err != nil {
 		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Binary, err)
 	}
+	jailer, err := exec.LookPath(firecracker.Jailer)
+	if err != nil {
+		return nil, fmt.Errorf("provider %s needs %s on PATH: %w", firecracker.Name, firecracker.Jailer, err)
+	}
 
 	guest, err := d.guestKernel()
 	if err != nil {
@@ -358,6 +399,8 @@ func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Pro
 
 	return firecracker.New(firecracker.Config{
 		Binary:    binary,
+		Jailer:    jailer,
+		JailBase:  filepath.Join(d.cfg.Root, jailDir),
 		Kernel:    guest.Path,
 		Init:      d.cfg.InitPath,
 		Dir:       filepath.Join(d.cfg.Root, firecrackerDir),
@@ -574,12 +617,23 @@ func (d *deps) egressLocked() (*egress.Service, error) {
 
 // egressLog is the decision log every fronted sandbox gets one file of, under its own state directory.
 func (d *deps) egressLog() (*egress.Log, error) {
-	repo, err := d.repo()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	repo, err := d.repoLocked()
 	if err != nil {
 		return nil, err
 	}
 
-	return egress.NewLog(repo), nil
+	return d.egressLogLocked(repo), nil
+}
+
+func (d *deps) egressLogLocked(repo *sandboxstate.Repository) *egress.Log {
+	if d.logSvc == nil {
+		d.logSvc = egress.NewLog(repo)
+	}
+
+	return d.logSvc
 }
 
 // egressReader is what shard logs --egress reads: the sandbox's own file, which the daemon writes

@@ -68,6 +68,8 @@ type Provider interface {
 	// nothing of the snapshot, so any number of forks of one snapshot run at once, each on its own files.
 	// Optional.
 	Fork(ctx context.Context, dir string, spec SandboxSpec) error
+	// AdoptStaging settles the snapshot staging a cut pause left beside dir at daemon start: a provider that never reads a staged snapshot drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
+	AdoptStaging(dir string) error
 }
 
 // Capabilities is one boolean per optional verb. Never pretend providers are equal.
@@ -88,6 +90,8 @@ type Status struct {
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
 	// A stop leaves the same leftovers, so a record that says stopped outranks it.
 	OOMKilled bool
+	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.
+	SupervisorFailed string
 	// Throttles counts the times the host held the sandbox at its memory throttle, 0 on a substrate with none.
 	Throttles int64
 }
@@ -212,6 +216,9 @@ type ExitReport struct {
 
 // ExitReportKind is the only Kind an exit report carries, so a reader rejects anything else.
 const ExitReportKind = "exit"
+
+// ExitChannelSize is the sealed memfd a sysbox PID 1 reports on: shard-init fills it from offset 0, the record then NULs.
+const ExitChannelSize = 4096
 
 // SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
 const SupervisorFailedExitCode = 125

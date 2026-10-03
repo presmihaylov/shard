@@ -178,10 +178,10 @@ func TestRunReportsAFailureAsNotStarted(t *testing.T) {
 	}
 }
 
-func TestAppendExitReadsBackThroughBundle(t *testing.T) {
+func TestWriteExitKeepsOnlyTheLastRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "exit.json")
-	for _, exit := range []models.ExitStatus{{Code: 1}, {Code: 0, Signal: 9}} {
-		if err := supervisor.AppendExit(path, exit); err != nil {
+	for i := range 200 {
+		if err := supervisor.WriteExit(path, models.ExitStatus{Code: i % 7, Signal: 9}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,8 +190,15 @@ func TestAppendExitReadsBackThroughBundle(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("read = %v %v", ok, err)
 	}
-	if got.Signal != 9 {
+	if got != (models.ExitStatus{Code: 199 % 7, Signal: 9}) {
 		t.Fatalf("got %+v, want the last record", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 64 {
+		t.Fatalf("the exit file is %d bytes after 200 exits, want one record", info.Size())
 	}
 }
 
@@ -421,5 +428,32 @@ func TestAnExecTheHostGivesUpOnIsCancelled(t *testing.T) {
 	}
 	if !sawCancel(got) {
 		t.Fatal("the guest never got a cancel frame")
+	}
+}
+
+// FC and vz report a signalled exec by its 128+n alone, the shape runsc and runc exec give (SHARD-432).
+func TestExecReportsASignalledCommandByItsCodeAlone(t *testing.T) {
+	host, guest := net.Pipe()
+	sent := make(chan error, 1)
+	go func() {
+		defer guest.Close()
+		var header supervisor.ExecHeader
+		if err := supervisor.ReadHeader(guest, &header); err != nil {
+			sent <- err
+			return
+		}
+		sent <- supervisor.WriteJSONFrame(guest, supervisor.StreamExit, supervisor.ExitFrame{Code: 143, Signal: 15})
+	}()
+
+	dial := func(context.Context, uint32) (net.Conn, error) { return host, nil }
+	exit, err := supervisor.Exec(t.Context(), dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep", "30"}}, models.ExecSpec{})
+	if gerr := <-sent; gerr != nil {
+		t.Fatalf("the guest: %v", gerr)
+	}
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if exit != (models.ExitStatus{Code: 143}) {
+		t.Errorf("exec = %+v, want code 143 and signal 0, as runsc and runc exec report", exit)
 	}
 }

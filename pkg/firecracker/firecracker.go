@@ -3,13 +3,37 @@ package firecracker
 
 import (
 	"errors"
+	"path/filepath"
 	"time"
 )
 
 // ErrSocketInUse says a live firecracker answers on the API socket, so a second one must not replace it.
 var ErrSocketInUse = errors.New("firecracker: a vmm already serves this socket")
 
-// Config is what one microVM boots with. Every path is on the host.
+// Jail is where the jailer puts one vmm: a chroot under Base, a uid and gid of its own, and the cgroup it joins before the vmm exists.
+type Jail struct {
+	// Jailer and Exec are host paths; the jailer copies Exec into the chroot and runs it there, as UID.
+	Jailer string
+	Exec   string
+	// ID names the chroot, which the jailer takes as at most 64 letters, digits and hyphens.
+	ID   string
+	UID  int
+	Base string
+	// Cgroup is the v2 cgroup, relative to the hierarchy's root, the jailer moves itself into before the clone, so the vmm's whole memory is charged to it.
+	Cgroup string
+}
+
+// Root is the chroot the jailer makes, the vmm's "/"; it names Exec by its base name, so Exec must be no symlink.
+func (j Jail) Root() string {
+	return filepath.Join(j.Base, filepath.Base(j.Exec), j.ID, "root")
+}
+
+// Host is where a path inside the jail is on the host.
+func (j Jail) Host(path string) string {
+	return filepath.Join(j.Root(), path)
+}
+
+// Config is what one microVM boots with. Every path is inside the jail, but Console.
 type Config struct {
 	Kernel string
 	Initrd string
@@ -26,25 +50,20 @@ type Config struct {
 	Vsock string
 	// Socket is the API socket, which firecracker creates and refuses to find already there.
 	Socket string
-	// Console is where the guest's serial console lands, which is firecracker's own stdout.
+	// Console is the host file the guest's serial console lands in, which is the jailer's and then firecracker's own stdout.
 	Console string
-	// Cgroup is the host cgroup the vmm joins before the guest is configured, so the guest's whole memory is charged to it; empty joins none.
-	Cgroup string
 }
 
-// Snapshot is what one microVM comes back from: the two files a snapshot wrote, and the host things the new process owns instead of the old one's.
+// Snapshot is what one microVM comes back from: the two files a snapshot wrote, and the things the new process owns instead of the old one's. Every path is inside the jail, but Console.
 type Snapshot struct {
 	// State and Memory are the files Client.Snapshot wrote; the vmm maps the memory private and read-only, so one file serves any number of restores.
 	State  string
 	Memory string
 	// Tap replaces the host device of eth0; empty keeps the one in the snapshot, which two microVMs cannot both open.
-	Tap string
-	// Drives swap the host path of a drive the snapshot names, by id, after the load opened the snapshot's own; a drive not named keeps it.
-	Drives  []Drive
+	Tap     string
 	Vsock   string
 	Socket  string
 	Console string
-	Cgroup  string
 }
 
 // Drive is one virtio block device.
