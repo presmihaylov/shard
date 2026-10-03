@@ -62,6 +62,9 @@ type Provider struct {
 	dirs    StateDirs
 	// cgroupRoot is the host cgroup v2 mount. A test points it at a directory it can write.
 	cgroupRoot string
+	// procRoot is where a reopen finds PID 1's fd 0. A test points it at a directory it wrote.
+	procRoot string
+	exits    exitChannels
 }
 
 func New(runner *runc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provider, error) {
@@ -69,7 +72,7 @@ func New(runner *runc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provide
 		return nil, errors.New("the sysbox provider needs a sysbox-runc runner, a bundle service and a state directory lookup")
 	}
 
-	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
+	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root, procRoot: "/proc"}, nil
 }
 
 func (p *Provider) Name() string { return Name }
@@ -143,26 +146,31 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 	// The container keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	// shard-init reports the entrypoint exit on its fd 0, the write end the host holds: create cleared
-	// the stale file above, so this append starts the record fresh.
-	exit, err := os.OpenFile(b.ExitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("open the exit channel %s: %w", b.ExitFile, err)
+	if err := p.exits.drop(spec.ID); err != nil {
+		return err
 	}
-	defer func() { err = errors.Join(err, exit.Close()) }()
+
+	// shard-init reports the entrypoint exit on its fd 0, a sealed page guest root can write but never grow (SHARD-419).
+	exit, err := newExitChannel(b)
+	if err != nil {
+		return err
+	}
 
 	if err := p.runner.Create(ctx, spec.ID, runc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
-		return err
+		return errors.Join(err, exit.Close())
 	}
 
 	if err := boundMemory(p.cgroupRoot, spec); err != nil {
 		// runc made the container, so a failed bound must delete it, or it dangles on the rootfs the caller drops.
-		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true), exit.Close())
 	}
 
 	if err := boundPids(p.cgroupRoot, spec.ID); err != nil {
-		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true))
+		return errors.Join(err, p.runner.Delete(ctx, spec.ID, true), exit.Close())
 	}
+
+	// The daemon keeps its own fd, so the last record outlives PID 1 until Remove or the next create.
+	p.exits.put(spec.ID, exit)
 
 	return nil
 }
@@ -392,6 +400,17 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
+	b, err := p.open(id)
+	if err != nil {
+		return err
+	}
+	// Hold the page before PID 1 exits: a daemon that restarted since create finds it only through a live PID 1.
+	err = p.collect(ctx, id, b)
+	// A guest that replaced fd 0 has no record left to keep, and must not keep its sandbox from stopping.
+	if err != nil && !errors.Is(err, models.ErrExitChannelReplaced) {
+		return err
+	}
+
 	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
 	if err := p.runner.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		return err
@@ -408,9 +427,13 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
+	// Copy the record before Stop returns: with PID 1 gone, this daemon holds the last fd of the page.
+	if err := p.collect(ctx, id, b); err != nil {
+		return err
+	}
+
 	// sysbox-runc still holds a sandbox it has stopped, so the status read above is what owns the mount.
-	b, err := p.openHeld(id, status.Exists)
-	if err != nil {
+	if err := orphaned(b, id, status.Exists); err != nil {
 		return err
 	}
 
@@ -444,6 +467,10 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	// runc drops the cgroup of a sandbox it holds; a killed one leaves it, and its counters, behind.
 	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, id)); err != nil {
 		return fmt.Errorf("sweep the cgroup of sandbox %s: %w", id, err)
+	}
+
+	if err := p.exits.drop(id); err != nil {
+		return err
 	}
 
 	// The cgroup is gone, so no process of the sandbox holds the rootfs, whether or not the runtime knew it.
@@ -614,7 +641,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // Wait blocks until the entrypoint exits. runc wait cannot serve it: PID 1 is the supervisor and it
-// never exits, so it would block forever. Watch the file shard-init writes instead.
+// never exits, so it would block forever. Watch the page shard-init writes instead.
 func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, error) {
 	b, err := p.open(id)
 	if err != nil {
@@ -622,6 +649,9 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 
 	for {
+		if err := p.collect(ctx, id, b); err != nil {
+			return models.ExitStatus{}, err
+		}
 		exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 		if err != nil {
 			return models.ExitStatus{}, err
@@ -635,7 +665,11 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 			return models.ExitStatus{}, err
 		}
 		if !status.Alive() {
-			// The supervisor may have written the file between the read above and this check.
+			// The supervisor may have written the page between the read above and this check.
+			if err := p.collect(ctx, id, b); err != nil {
+				return models.ExitStatus{}, err
+			}
+
 			return lastExitStatus(b.ExitFile, id)
 		}
 
@@ -647,14 +681,17 @@ func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, erro
 	}
 }
 
-// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a file read, so the
+// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a page read, so the
 // liveness task polls it every tick, where Wait would block on an entrypoint that never exited.
-func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
+func (p *Provider) ExitStatus(ctx context.Context, id string) (*models.ExitStatus, error) {
 	b, err := p.open(id)
 	if err != nil {
 		return nil, err
 	}
 
+	if err := p.collect(ctx, id, b); err != nil {
+		return nil, err
+	}
 	exit, found, err := bundle.ReadExitStatus(b.ExitFile)
 	if err != nil {
 		return nil, err

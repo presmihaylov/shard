@@ -30,9 +30,11 @@ type Inspection struct {
 func List(repo Reader, all bool) ([]models.Sandbox, error) {
 	sandboxes, unreadable := repo.List()
 
-	// A stopped sandbox holds no process, so it is shown on all only.
+	// A stopped sandbox holds no process, so it is shown on all only, unless the daemon is about to start it again.
 	if !all {
-		sandboxes = slices.DeleteFunc(sandboxes, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })
+		sandboxes = slices.DeleteFunc(sandboxes, func(sb models.Sandbox) bool {
+			return sb.State == models.StateStopped && sb.OOMRestartDue.IsZero()
+		})
 	}
 
 	return sandboxes, unreadable
