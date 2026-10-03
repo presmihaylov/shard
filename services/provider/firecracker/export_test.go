@@ -32,3 +32,6 @@ const RestoringFile = restoringFile
 
 // SupervisorFailedFile holds shard-init's reason for its own death, which a test turns into a fifo to hold the report's write.
 const SupervisorFailedFile = supervisorFailedFile
+
+// ReseedFile is the marker a restore keeps until its guest is reseeded, which a test writes to stand in for a daemon cut before the reseed.
+const ReseedFile = reseedFile

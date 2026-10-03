@@ -246,7 +246,7 @@ func TestExecRefusesASandboxTheDaemonDoesNotHold(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "gone-away-0000") {
 		t.Fatalf("exec returned %v, want the id named", err)
 	}
-	if slices.Contains(d.providerSvc.(*fakeLifecycleProvider).r.calls, "provider.Exec") {
+	if slices.Contains(d.providerSvc.(*fakeLifecycleProvider).r.seen(), "provider.Exec") {
 		t.Error("exec reached the provider for a sandbox shard does not hold")
 	}
 }

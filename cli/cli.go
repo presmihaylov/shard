@@ -123,8 +123,8 @@ Create flags, which must precede the image:
   --restart-retries <n>    the starts again before the supervisor gives up, unlimited by default; always takes none
   --restart-backoff <dur>  the wait before the first start again, in whole seconds, 1s by default; it doubles each time, up to 60s
   --health-command <cmd>   a shell command the daemon runs in the sandbox every interval, which passes on exit 0
-  --health-interval <dur>  the time between two probes, in whole seconds, 30s by default
-  --health-timeout <dur>   the time one probe gets to answer, in whole seconds, 10s by default
+  --health-interval <dur>  the time between two probes, in whole seconds, 30s by default, 1h at most
+  --health-timeout <dur>   the time one probe gets to answer, in whole seconds, 10s by default, 10m at most
   --health-retries <n>     the failed probes in a row that make the sandbox unhealthy, 3 by default
 
 Exec flags, which must precede the id or name:
