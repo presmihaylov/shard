@@ -441,7 +441,6 @@ func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 	source := forkSource()
 	source.Image = "docker.io/library/alpine:3.20"
 	source.Resources = models.Resources{MemoryMiB: 256}
-	source.RestartOnOOM = true
 	svc, l := newService(t, r, source)
 
 	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
@@ -468,8 +467,8 @@ func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 		t.Errorf("the network was driven as %v, want %v", got, want)
 	}
 
-	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
-		t.Errorf("the fork's record is %+v, want the source's image, bound and restart policy", sb)
+	if sb.Image != source.Image || sb.Resources != source.Resources {
+		t.Errorf("the fork's record is %+v, want the source's image and bound", sb)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the fork's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -662,7 +661,6 @@ func cloneSource() models.Sandbox {
 	sb := stopped()
 	sb.Image = "docker.io/library/alpine:3.20"
 	sb.Resources = models.Resources{MemoryMiB: 256}
-	sb.RestartOnOOM = true
 
 	return sb
 }
@@ -696,8 +694,8 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 		t.Errorf("the network was driven as %v, want %v", got, want)
 	}
 
-	if sb.Image != source.Image || sb.Resources != source.Resources || !sb.RestartOnOOM {
-		t.Errorf("the clone's record is %+v, want the source's image, bound and restart policy", sb)
+	if sb.Image != source.Image || sb.Resources != source.Resources {
+		t.Errorf("the clone's record is %+v, want the source's image and bound", sb)
 	}
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the clone's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
@@ -720,7 +718,7 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
 var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "UnresponsiveReason", "Snapshot", "Pausing",
-	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "OOMRestartDue", "MemoryThrottles", "CalmSince", "HealthyRun", "ExitChannel",
+	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
 	"Restart", "StartedAt", "CreatedAt"}
 
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
@@ -729,8 +727,6 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
 	sb.Secrets = []string{"api-token"}
 	sb.Policy = "locked"
-	sb.RestartOnOOM = true
-	sb.MaxOOMRestarts = 1
 	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
 
 	return sb

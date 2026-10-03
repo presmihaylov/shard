@@ -281,14 +281,12 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
-		Image:          src.Image,
-		Resources:      src.Resources,
-		Secrets:        slices.Clone(src.Secrets),
-		Policy:         src.Policy,
-		RestartOnOOM:   src.RestartOnOOM,
-		MaxOOMRestarts: src.MaxOOMRestarts,
-		Restart:        src.Restart,
-		ExitStatus:     src.ExitStatus,
+		Image:      src.Image,
+		Resources:  src.Resources,
+		Secrets:    slices.Clone(src.Secrets),
+		Policy:     src.Policy,
+		Restart:    src.Restart,
+		ExitStatus: src.ExitStatus,
 	})
 	defer claim.unlock()
 
@@ -356,13 +354,11 @@ func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb mo
 
 	// The entrypoint runs from the beginning, so the source's exit is not the clone's.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
-		Image:          src.Image,
-		Resources:      src.Resources,
-		Secrets:        slices.Clone(src.Secrets),
-		Policy:         src.Policy,
-		RestartOnOOM:   src.RestartOnOOM,
-		MaxOOMRestarts: src.MaxOOMRestarts,
-		Restart:        freshRestart(src.Restart),
+		Image:     src.Image,
+		Resources: src.Resources,
+		Secrets:   slices.Clone(src.Secrets),
+		Policy:    src.Policy,
+		Restart:   freshRestart(src.Restart),
 	})
 	defer claim.unlock()
 

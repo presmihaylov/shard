@@ -53,7 +53,6 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.Var(sizeMiB{&req.Resources.MemoryMiB}, "memory", "")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
 	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
-	flags.Var(oomRestartFlag{enabled: &req.RestartOnOOM, max: &req.MaxOOMRestarts}, "restart-on-oom", "")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "")
 	flags.IntVar(&restart.retries, "restart-retries", 0, "")
@@ -83,10 +82,6 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
 		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
-	}
-	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
-	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
-		return sandbox.CreateRequest{}, errors.New("--restart-on-oom needs a memory bound, set --memory")
 	}
 
 	if req.Policy != "" {
@@ -128,37 +123,6 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 
 	return req, nil
-}
-
-// oomRestartFlag reads --restart-on-oom as a bare bool, which is unlimited, or as =N, which caps the starts in a row.
-type oomRestartFlag struct {
-	enabled *bool
-	max     *int
-}
-
-func (o oomRestartFlag) String() string { return "" }
-
-// IsBoolFlag lets the bare flag parse with no value, which then means unlimited.
-func (o oomRestartFlag) IsBoolFlag() bool { return true }
-
-func (o oomRestartFlag) Set(value string) error {
-	*o.enabled = true
-	if value == "true" {
-		*o.max = 0
-
-		return nil
-	}
-
-	n, err := strconv.Atoi(value)
-	if err != nil {
-		return errors.New("want a count")
-	}
-	if n < 0 {
-		return errors.New("a count cannot be negative")
-	}
-	*o.max = n
-
-	return nil
 }
 
 // restartFlags is the policy as the flags spell it, before the daemon's seconds.

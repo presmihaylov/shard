@@ -15,9 +15,7 @@ import (
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 )
 
-// Guest memory is a hard cap the host never sees move: firecracker holds the whole mapping from the
-// boot, so a workload that exhausts it is killed by the guest kernel and the host footprint stays
-// flat. The kill therefore reaches the daemon only over vsock, and this is what restart_on_oom reads.
+// The guest kernel kills a workload past its memory, so the kill reaches the daemon only over vsock as the stopped reason.
 func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 	h := newVMHarness(t)
 

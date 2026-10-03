@@ -333,8 +333,8 @@ make that switch.
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
 starts the daemon over a root that it turns into an XFS image, and runs `create` with `--memory`. It
 checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
-and an entrypoint that exits. One guest outgrows its memory and comes back once under
-`--restart-on-oom`, and another fills up on every boot and spends `--restart-on-oom=2`. The run then
+and an entrypoint that exits. One guest outgrows its memory and stops with its reason, nothing
+starts it again, and `start` brings it back over its kept files. The run then
 checks the policy and the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm
 lost while the daemon was down. After that come a `fork` that is refused by name, `pause`, `resume`,
 `stop` with the cgroup kept empty, two clones by reflink, `start` back into that cgroup, and `rm`.
@@ -381,16 +381,16 @@ needed a context and an error would be a fourth thing to get wrong.
 ## What a memory bound means
 
 `--memory` bounds a sandbox the same way on every substrate. Past the bound the whole sandbox dies,
-and not just one process inside it. The daemon restarts the sandbox when the record set
-`restart_on_oom`. `create` refuses by name a bound above the host's total memory (`MemTotal` on
-Linux, `hw.memsize` on a Mac). Such a bound never binds, because the host OOM killer acts first. A
-bound of the host's whole memory is still accepted, so leaving room for the host is the operator's
+and not just one process inside it. The record then says `stopped` with its reason, and nothing
+starts the sandbox again. `create` refuses by name a bound above the host's total memory (`MemTotal`
+on Linux, `hw.memsize` on a Mac). Such a bound never binds, because the host OOM killer acts first.
+A bound of the host's whole memory is still accepted, so leaving room for the host is the operator's
 call.
 
 gVisor sets `memory.oom.group=1` and `memory.swap.max=0` on the host cgroup, and Sysbox and runc set
 the same pair. `sysbox-runc` and `runc` apply `memory.max` from the bundle but neither of the two
 knobs. Without them the OOM killer would take one guest process, the sandbox would live on, and
-`oom_restarts` would stay at zero.
+the record would never say it ran out of memory.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
 guest. There `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
 itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares a cgroup namespace
@@ -404,8 +404,8 @@ exemption up before the workload can fork. When the killer takes the group, `sha
 that state and does not power off on its own. The host writes the `oom` marker first, and only then
 sends the stop. So a daemon that dies between the report and the marker finds the kill again in the
 state that the next connection replays, and marks it then. Once the marker is down, `Status` says
-`OOMKilled`, no exit record lands, and the daemon restarts the sandbox on `restart_on_oom` exactly
-as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
+`OOMKilled`, no exit record lands, and the daemon stops the record with its reason exactly as it
+does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
 the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
 `--memory` below 128 MiB by name.
 On `firecracker` the guest half is the same, down to the marker and the replay, because the guest

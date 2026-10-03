@@ -129,9 +129,8 @@ deletes one. It handles these cases:
   process for its silence.
 - Sometimes the host ended a sandbox for its memory while the daemon was down, and its record still
   says `running`. That record gets the same decision the liveness tick makes for an OOM the daemon
-  saw. It becomes `stopped` with `ran out of memory and the host ended it`, or the daemon starts it
-  again when the record set `restart_on_oom` and the limit allows. The tick's backoff does not apply
-  here, so no verb ever reads the record as `running` with no process behind it (SHARD-311).
+  saw: it becomes `stopped` with `ran out of memory and the host ended it`, and nothing starts it
+  again. No verb therefore reads the record as `running` with no process behind it (SHARD-311).
 - A record that says `paused` keeps its state while its snapshot holds a checkpoint. A paused
   sandbox has a checkpoint instead of a process, and `resume` still brings it back from that
   checkpoint. A paused record whose snapshot is gone becomes `stopped` with the same reason. Only an
@@ -241,32 +240,11 @@ the loss as the reason. Its `start`, however, answers with the loss until `rm` d
 
 The host ended it for its memory. When a sandbox overruns its `--memory` bound, the host ends the
 whole sandbox. The kernel kills every process in its cgroup, `shard-init` included, and `runsc`
-still holds the dead container. A sandbox that the host ended for its memory becomes `stopped`, and
-its `stopped_reason` says `ran out of memory and the host ended it`. Until a tick acts on it, an
-`exec` on it answers 409 with the same words. A sandbox created with `--restart-on-oom` is started
-again instead, the same way `shard start` would start it. The daemon removes the dead cgroup so that
-the bound holds on the next run, builds the namespace again over the same address, and runs the
-entrypoint from the beginning. The sandbox's memory, processes and sockets are gone, which is why
-the policy is opt-in. The policy also needs a bound, because the host never counts an OOM against a
-sandbox that has none.
-
-`--restart-on-oom` alone starts the sandbox again without end. `--restart-on-oom=N`
-(`max_oom_restarts` in the create body, 0 for unlimited) caps the starts in a row at N. When the
-daemon has seen a run stay below its memory throttle for ten seconds in a row, it clears the count
-first. A sandbox that only overruns now and then therefore never spends a finite cap, while one held
-at the throttle until the host ends it always does. The throttle is `memory.high`, which only gVisor
-sets. On the other providers the rule is ten seconds since the start. The daemon looks every 5 s and
-keeps what it saw in the record, so that survives a daemon restart. Host page cache counts
-against the throttle too, so heavy file reads near the bound also keep a run from counting as calm.
-The record counts the starts in `oom_restarts`, with the last one in `oom_restarted_at`. `shard ls`
-shows the policy in its `RESTART` column, as `on-oom 2` when the count is unlimited or `on-oom 2/5`
-under a cap. The second start waits 1 s from the last, then 2, 4 and 8 s, up to 60 s. At the cap
-the sandbox stays `stopped`, and the reason adds `the N starts again the limit allows are spent`. A
-`shard start` by hand still works and clears the reason. While a start again waits, the record says
-`stopped` with pid 0, the reason adds `it starts again at <time>`, and `oom_restart_due` holds that
-time. No verb therefore reads the dead process (SHARD-425), and `shard ls` still lists the sandbox.
-A `stop` during the wait cancels the start again, and a `shard start` runs it at once. A `fork` or
-`clone` inherits the policy with a fresh count.
+still holds the dead container. On Firecracker and vz the guest kernel kills it, and `shard-init`
+reports the kill to the host before the VM halts. A sandbox that the host ended for its memory
+becomes `stopped` with `pid` 0, and its `stopped_reason` says `ran out of memory and the host ended
+it`. Until a tick acts on it, an `exec` on it answers 409 with the same words. Nothing starts it
+again, as the next section says.
 
 ## Health checks
 
@@ -279,9 +257,14 @@ its own schedule, and acts on the exit code:
 shard exec web sh -c 'test -e /ready'
 ```
 
-`exec` exits with the command's code, so a script can stop or restart the sandbox on a failure. A
-record that an older daemon wrote with `health_check` and `health` still loads. The daemon ignores
-both fields and drops them at the next write of the record.
+`exec` exits with the command's code, so a script can stop or restart the sandbox on a failure.
+
+## After an OOM
+
+The daemon never starts a sandbox again after the host ended it for its memory (SHARD-461). The
+sandbox keeps its files, so a `shard start` brings it back over them and clears the reason. The
+bound is fixed at create, so a sandbox that needs more memory is a new sandbox with a larger
+`--memory`.
 
 ## Restart policy
 
@@ -295,11 +278,10 @@ never gives up and takes no retries at all. `--restart-backoff` (`backoff`, in w
 default 1) is the wait before the first start again, and it doubles each time, up to 60 s. Both
 flags need a policy. A policy other than `no` needs a command after the image, because the image's
 own ENTRYPOINT and CMD never run: the CLI refuses it naming `--restart`, and the API answers 400
-naming `restart.policy`. `--restart-on-oom` needs no command, because it starts the whole sandbox. A
-run that lasts ten seconds since its last start clears the count, so a slow crash loop never spends
-a finite cap. At the cap, `on-failure` gives up and the entrypoint stays exited. A stop then puts
-its last exit in `exit_status`, as after any exit. A stop during the wait ends the sandbox at once
-and drops the start that was due.
+naming `restart.policy`. A run that lasts ten seconds since its last start clears the count, so a
+slow crash loop never spends a finite cap. At the cap, `on-failure` gives up and the entrypoint
+stays exited. A stop then puts its last exit in `exit_status`, as after any exit. A stop during the
+wait ends the sandbox at once and drops the start that was due.
 
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
 channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
@@ -310,7 +292,7 @@ that file sits under `/.shard`, where the guest can write it. The daemon therefo
 regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
 The record carries `restart`: `{"policy", "retries", "backoff",
 "count", "last_at", "gave_up"}`, absent on a sandbox without a policy, and `retries` is omitted when
-the count is unlimited. `shard ls` shows it in the `RESTART` column beside the OOM policy:
+the count is unlimited. `shard ls` shows it in the `RESTART` column:
 `on-failure 2` when unlimited, `on-failure 2/5` under a cap, then `on-failure 5/5 gave up`, and
 `always 7`. Each start again, and the give-up, is one line in the daemon log. The count is for one
 run, and `shard-init` never clears it. A `start` of a stopped sandbox begins a new run at zero, a
@@ -414,23 +396,21 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   something that is not a sandbox, or a policy that cannot be compiled.
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
-  "policy", "resources": {"memory_mib", "vcpus"}, "restart_on_oom", "max_oom_restarts", "restart":
-  {"policy", "retries", "backoff"}}` and answers 201 with the record. `command` is the start
-  command. The image's own ENTRYPOINT and CMD never run, so a body with no `command` starts only
-  `shard-init`, and the sandbox stays up. A body that still names `health` is refused with 400, as
-  any field the route does not know. A cached image needs no pull, so the create builds and starts
-  the sandbox before it answers, and the record says `running`. A claim that fails at that point
-  gives everything back, and the create answers 500. An uncached image makes the record `pending`,
-  and the create answers before the download. The daemon pulls, builds and starts behind it, and the
-  record lands on `running` or `failed` with a one-line `failed_reason`. A background pull or start
-  that fails is therefore read from the record, and does not come back as an error. With
-  `?wait=true` the create holds until the record leaves `pending`, then answers the `running` or
-  `failed` record it reached, so a caller reads the settled record without a poll. The plain create
-  answers at once. A wait that sends `Accept: application/x-ndjson` streams the pull instead: one
-  `{"event"}` line per step as it lands, then `{"sandbox"}` with the settled record. The create
-  answers 400 when the body does not decode, when a field does not validate, or when the body names
-  a secret or a policy the host does not hold. It answers 409 `name_taken` when another sandbox
-  already holds the name.
+  "policy", "resources": {"memory_mib", "vcpus"}, "restart": {"policy", "retries", "backoff"}}` and
+  answers 201 with the record. `command` is the start command. The image's own ENTRYPOINT and CMD
+  never run, so a body with no `command` starts only `shard-init`, and the sandbox stays up. A
+  cached image needs no pull, so the create builds and starts the sandbox before it answers, and the
+  record says `running`. A claim that fails at that point gives everything back, and the create
+  answers 500. An uncached image makes the record `pending`, and the create answers before the
+  download. The daemon pulls, builds and starts behind it, and the record lands on `running` or
+  `failed` with a one-line `failed_reason`. A background pull or start that fails is therefore read
+  from the record, and does not come back as an error. With `?wait=true` the create holds until the
+  record leaves `pending`, then answers the `running` or `failed` record it reached, so a caller
+  reads the settled record without a poll. The plain create answers at once. A wait that sends
+  `Accept: application/x-ndjson` streams the pull instead: one `{"event"}` line per step as it
+  lands, then `{"sandbox"}` with the settled record. The create answers 400 when the body does not
+  decode, when a field does not validate, or when the body names a secret or a policy the host does
+  not hold. It answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.

@@ -16,9 +16,7 @@ import (
 // boundMiB is the bound the sandbox gets. Sysbox has no sentry, so the whole bound is the guest's.
 const boundMiB = 64
 
-// TestABoundSandboxPinsSwapAndGroupsItsOOMKill is the SHARD-191 acceptance. sysbox-runc sets
-// memory.max from config.json but neither knob, so a bound took one guest process and the sandbox
-// lived, and restart_on_oom never fired. gvisor's provider sets the same pair.
+// TestABoundSandboxPinsSwapAndGroupsItsOOMKill is the SHARD-191 acceptance: a bound kills the whole sandbox, not one process.
 func TestABoundSandboxPinsSwapAndGroupsItsOOMKill(t *testing.T) {
 	h := newHarness(t)
 

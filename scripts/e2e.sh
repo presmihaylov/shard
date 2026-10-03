@@ -1473,7 +1473,7 @@ step "carry stdin into a command"
 GOT=$(printf 'from-stdin\n' | shard exec -i "${ID}" /bin/cat)
 expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sandbox"
 
-# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, the dropped health field, the policy and a live follow.
+# These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, the policy and a live follow.
 # Each is one function that makes its own sandboxes over the socket, asserts, and removes them.
 
 # track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
@@ -1675,16 +1675,6 @@ exec_cap_steps() {
 	drop_sandbox "${id}"
 }
 
-# health_steps proves the daemon takes no health probe: a create body that names one is refused (SHARD-455).
-health_steps() {
-	step "refuse a create body that names a health check"
-	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"health\":{\"command\":[\"/bin/true\"]}}"
-	[ "${REPLY_CODE}" = "400" ] || fail "a create body with a health check answered ${REPLY_CODE}, want 400"
-	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
-	grep -q 'unknown field' <<<"${REPLY_BODY}" || fail "the refusal does not name the unknown field: ${REPLY_BODY}"
-	say "the API refuses a create body that names a health check, 400 invalid_request"
-}
-
 # restart_policy_steps drives the supervisor policy: on-failure, always, a clean exit, a bare outlive, and refusals (SHARD-55).
 restart_policy_steps() {
 	local id rec
@@ -1822,50 +1812,36 @@ http_follow_steps() {
 	drop_sandbox "${id}"
 }
 
-# OOM_BOMB overruns a 64 MiB bound in 32 tasks, which OOMs a run past the 10 s reset window; memory.high throttles each task to ~128 KiB/s.
+# OOM_BOMB overruns a 64 MiB bound in 32 tasks; memory.high throttles each task to ~128 KiB/s.
 OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s s }'\'' & i=$((i+1)); done; wait'
-# OOM_POLLS bounds the wait for several kills at one 5 s tick each, with their backoff, like the integration test's budget.
+# OOM_POLLS bounds the wait for one kill at one 5 s tick, like the integration test's budget.
 OOM_POLLS="${OOM_POLLS:-360}"
 
-# oom_restart_steps refuses an OOM restart with no bound, brings one back, and spends the restart cap (SHARD-56). It runs on every provider (SHARD-191).
-oom_restart_steps() {
+# oom_stop_steps prove SHARD-461: an OOM stops the sandbox with its reason, nothing starts it again, and start brings it back. It runs on every provider (SHARD-191).
+oom_stop_steps() {
 	local id rec
 
-	step "refuse restart_on_oom without a memory bound"
-	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart_on_oom\":true}"
-	[ "${REPLY_CODE}" = "400" ] || fail "restart_on_oom with no bound answered ${REPLY_CODE}, want 400"
-	grep -q '"code": *"invalid_request"' <<<"${REPLY_BODY}" || fail "the refusal names no invalid_request: ${REPLY_BODY}"
-	grep -q 'restart_on_oom needs a memory bound' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing bound: ${REPLY_BODY}"
-	say "the API refuses restart_on_oom with no memory bound, 400 invalid_request"
-
-	step "an OOM-killed sandbox that asked for restart comes back"
-	# The bomb overruns the bound on the first run only, so the sandbox it comes back as sleeps and can be used.
-	id=$(shard create --memory 64MiB --restart-on-oom "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	step "an OOM stops the sandbox with its reason, and nothing starts it again"
+	# The bomb overruns the bound on the first run only, so the run a start brings back sleeps and can be used.
+	id=$(shard create --memory 64MiB "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
-		grep -q '"oom_restarts": *1' "${rec}" && grep -q '"state": *"running"' "${rec}" && break
+		grep -q '"state": *"stopped"' "${rec}" && break
 		sleep 1
 	done
-	grep -q '"oom_restarts": *1' "${rec}" || fail "the OOM sandbox never came back once: $(cat "${rec}")"
-	grep -q '"state": *"running"' "${rec}" || fail "the OOM sandbox did not settle running: $(cat "${rec}")"
-	expect_exec_in "${id}" "alive" "the sandbox that came back runs an exec" /bin/echo alive
-	say "an OOM-killed sandbox that asked for restart comes back and runs"
-	drop_sandbox "${id}"
+	grep -q '"state": *"stopped"' "${rec}" || fail "the OOM sandbox never stopped on ${PROVIDER}: $(cat "${rec}")"
+	grep -q '"stopped_reason": *"ran out of memory and the host ended it"' "${rec}" || fail "the stop names no OOM on ${PROVIDER}: $(cat "${rec}")"
+	grep -q '"pid": *0' "${rec}" || fail "the stopped OOM sandbox still names a pid: $(cat "${rec}")"
+	grep -q "sandbox ${id}: ran out of memory and the host ended it, the record now says stopped" "${DAEMON_LOG}" || fail "the daemon never reported the OOM stop of ${id}"
+	# Two liveness ticks pass, and the record still says stopped.
+	sleep 11
+	grep -q '"state": *"stopped"' "${rec}" || fail "something started the OOM sandbox again on ${PROVIDER}: $(cat "${rec}")"
+	say "on ${PROVIDER} an OOM stops the sandbox with its reason, and nothing starts it again"
 
-	step "the OOM restart cap spends on a loop that never runs calm"
-	# A gvisor death sits ~30s at memory.high, past the 10s window, but only a calm run resets the count (SHARD-332).
-	id=$(shard create --memory 64MiB --restart-on-oom=2 "${IMAGE}" /bin/sh -c "${OOM_BOMB}")
-	track_sandbox "${id}"
-	rec=$(rec_of "${id}")
-	for _ in $(seq 1 "${OOM_POLLS}"); do
-		grep -q '"state": *"stopped"' "${rec}" && grep -q 'the 2 starts again the limit allows are spent' "${rec}" && break
-		sleep 1
-	done
-	[ "$(grep -c "sandbox ${id} ran out of memory and the host ended it: started again, 2 of 2" "${DAEMON_LOG}" || true)" -ge 1 ] || fail "the capped OOM loop never reached 2 of 2 on ${PROVIDER}: $(cat "${rec}")"
-	grep -q '"state": *"stopped"' "${rec}" || fail "the capped OOM sandbox never stopped on ${PROVIDER}: $(cat "${rec}")"
-	grep -q 'the 2 starts again the limit allows are spent' "${rec}" || fail "the stop names no spent limit on ${PROVIDER}: $(cat "${rec}")"
-	say "on ${PROVIDER} the capped OOM loop climbs to 2 of 2, spends the limit, and stops with the reason"
+	step "start brings the OOM sandbox back over its kept files"
+	shard start "${id}" >/dev/null
+	expect_exec_in "${id}" "/ran" "the sandbox a start brought back kept the file of its first run" /bin/ls /ran
 	drop_sandbox "${id}"
 }
 
@@ -1964,10 +1940,9 @@ stop_grace_steps() {
 pending_and_failed_steps
 no_command_steps
 exec_cap_steps
-health_steps
 restart_policy_steps
 http_follow_steps
-oom_restart_steps
+oom_stop_steps
 disk_bound_steps
 stop_grace_steps
 

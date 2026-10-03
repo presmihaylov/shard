@@ -45,21 +45,6 @@ type Sandbox struct {
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.
 	Resources Resources `json:"resources"`
 
-	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
-	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
-	// MaxOOMRestarts caps those starts in a row, 0 for unlimited; ten seconds under the memory throttle resets the count.
-	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
-	// OOMRestarts counts those starts, and OOMRestartedAt is the last one, which the next backoff counts from.
-	OOMRestarts    int       `json:"oom_restarts,omitempty"`
-	OOMRestartedAt time.Time `json:"oom_restarted_at,omitzero"`
-	// OOMRestartDue is when a stopped sandbox that waits out the backoff starts again, zero when none waits.
-	OOMRestartDue time.Time `json:"oom_restart_due,omitzero"`
-	// MemoryThrottles is the host's throttle count the daemon last saw this run, and CalmSince the tick it last grew, zero for none.
-	MemoryThrottles int64     `json:"memory_throttles,omitempty"`
-	CalmSince       time.Time `json:"calm_since,omitzero"`
-	// HealthyRun latches once the daemon saw this run OOMHealthyRun in a row under its memory throttle.
-	HealthyRun bool `json:"healthy_run,omitempty"`
-
 	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
 	Restart *Restart `json:"restart,omitempty"`
 
@@ -71,7 +56,7 @@ type Sandbox struct {
 	// the internet and nothing private.
 	Policy string `json:"policy,omitempty"`
 
-	// StartedAt is when the daemon last started the sandbox, which the OOM reset measures a healthy run from.
+	// StartedAt is when the daemon last started the sandbox: ls reads its uptime, and liveness tells one run from the next.
 	StartedAt time.Time `json:"started_at,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 }

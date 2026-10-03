@@ -10,8 +10,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// liveness makes each running record agree with the substrate every tick: it records an entrypoint exit,
-// stops a sandbox whose process is gone, and starts an OOM-killed one again when its record asks.
+// liveness makes each running record agree with the substrate every tick.
 type liveness struct {
 	deps      *deps
 	lifecycle *lifecycle
@@ -45,9 +44,9 @@ func (t liveness) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// A root with nothing live and no start again due needs no substrate, so a host without runsc keeps its daemon.
+		// A root with nothing live needs no substrate, so a host without runsc keeps its daemon.
 		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool {
-			return sb.State.Live() || !sb.OOMRestartDue.IsZero()
+			return sb.State.Live()
 		}) {
 			failures.tick(ctx, nil)
 
@@ -59,6 +58,6 @@ func (t liveness) Run(ctx context.Context) error {
 			return err
 		}
 		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
-		failures.tick(ctx, svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }))
+		failures.tick(ctx, svc.Liveness(ctx, sandboxes, func(line string) { logger.Print(line) }))
 	}
 }

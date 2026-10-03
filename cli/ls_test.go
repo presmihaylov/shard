@@ -208,9 +208,10 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
-	sandboxes[0].RestartOnOOM = true
-	sandboxes[0].OOMRestarts = 2
-	sandboxes[0].MaxOOMRestarts = 5
+	sandboxes[0].Restart = &models.Restart{
+		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
+		RestartCount: models.RestartCount{Count: 2},
+	}
 
 	app := newLsApp(t, &out, sandboxes, nil)
 
@@ -222,21 +223,23 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	if !strings.Contains(lines[0], "RESTART") {
 		t.Errorf("the header is %q, want a RESTART column", lines[0])
 	}
-	if !strings.Contains(lines[1], "on-oom 2/5") {
+	if !strings.Contains(lines[1], "on-failure 2/5") {
 		t.Errorf("the line %q does not show the policy and the starts it spent", lines[1])
 	}
-	if strings.Contains(lines[2], "on-oom") {
+	if strings.Contains(lines[2], "on-failure") {
 		t.Errorf("the line %q shows a policy the sandbox never asked for", lines[2])
 	}
 }
 
-// An unlimited on-oom restart shows the count with no limit beside it.
-func TestLsPrintsAnUnlimitedOOMRestartWithoutALimit(t *testing.T) {
+// An unlimited policy shows the count with no limit beside it.
+func TestLsPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
-	sandboxes[0].RestartOnOOM = true
-	sandboxes[0].OOMRestarts = 3
+	sandboxes[0].Restart = &models.Restart{
+		RestartSpec:  models.RestartSpec{Policy: models.RestartAlways, Backoff: 1},
+		RestartCount: models.RestartCount{Count: 3},
+	}
 
 	app := newLsApp(t, &out, sandboxes, nil)
 
@@ -245,7 +248,7 @@ func TestLsPrintsAnUnlimitedOOMRestartWithoutALimit(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[1], "on-oom 3") || strings.Contains(lines[1], "on-oom 3/") {
+	if !strings.Contains(lines[1], "always 3") || strings.Contains(lines[1], "always 3/") {
 		t.Errorf("the line %q does not show the count with no limit", lines[1])
 	}
 }
@@ -258,7 +261,6 @@ func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
 		RestartCount: models.RestartCount{Count: 5, GaveUp: true},
 	}
-	sandboxes[0].RestartOnOOM = true
 	sandboxes[1].Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1}}
 
 	app := newLsApp(t, &out, sandboxes, nil)
@@ -268,8 +270,8 @@ func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[1], "on-failure 5/5 gave up, on-oom") {
-		t.Errorf("the line %q does not show both policies, the starts spent and the give-up", lines[1])
+	if !strings.Contains(lines[1], "on-failure 5/5 gave up") || strings.Contains(lines[1], "on-oom") {
+		t.Errorf("the line %q does not show the policy, the starts spent and the give-up alone", lines[1])
 	}
 	if !strings.Contains(lines[2], "always") || strings.Contains(lines[2], "always 0") {
 		t.Errorf("the line %q does not show a policy that has not started again yet as the policy alone", lines[2])

@@ -31,7 +31,7 @@ type verbHelp struct {
 // row is one line of a two-column list: an argument, a flag or a verb, and what it is.
 type row struct{ left, text string }
 
-// flagHelp is one flag as the help spells it, as --memory <size>, -i or --restart-on-oom[=N].
+// flagHelp is one flag as the help spells it, as --memory <size> or -i.
 type flagHelp struct {
 	spell string
 	text  string
@@ -97,7 +97,6 @@ var helps = map[string]verbHelp{
 			{"--memory <size>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128MiB or more", ""},
 			{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
 			{"--disk <size>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11MiB so its journal fits", ""},
-			{"--restart-on-oom[=N]", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row, and it needs --memory", ""},
 			{"--restart <policy>", "when to start the command again inside the sandbox after it exits: no, on-failure or always; it needs a command", ""},
 			{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
 			{"--restart-backoff <duration>", "how long to wait before the first restart, in whole seconds; the wait doubles each time, up to " + strconv.Itoa(models.RestartBackoffCap) + "s", seconds(sandbox.DefaultRestartBackoff)},
@@ -578,12 +577,9 @@ func wrap(lead string, indent int, text string) string {
 	return strings.Join(append(lines, line), "\n")
 }
 
-// flagName is the name a spelled flag parses as: --memory <size> is memory, and --restart-on-oom[=N] is restart-on-oom.
+// flagName is the name a spelled flag parses as: --memory <size> is memory.
 func flagName(spell string) string {
-	name := strings.TrimLeft(spell, "-")
-	if i := strings.IndexAny(name, " ["); i >= 0 {
-		return name[:i]
-	}
+	name, _, _ := strings.Cut(strings.TrimLeft(spell, "-"), " ")
 
 	return name
 }

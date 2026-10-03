@@ -26,8 +26,7 @@ const DefaultStopSettle = 5 * time.Second
 // cannot pin a sandbox's lock or run a verb past its own timeout.
 const DefaultProbeBudget = 10 * time.Second
 
-// DefaultStartBudget bounds one start's substrate work, so a wedged runtime cannot pin the serial liveness
-// task. It exceeds gvisor's start grace, so a slow but live start is not cut short.
+// DefaultStartBudget bounds one start's substrate work, past gvisor's start grace so a slow but live start is not cut short.
 const DefaultStartBudget = 60 * time.Second
 
 // DefaultPauseBudget bounds a pause the client no longer holds, so a wedged checkpoint cannot pin the sandbox lock.
@@ -146,10 +145,6 @@ type CreateRequest struct {
 	// Policy is what the host enforces for the sandbox.
 	Policy    string           `json:"policy,omitempty"`
 	Resources models.Resources `json:"resources"`
-	// RestartOnOOM asks the daemon to start the sandbox again when the host ends it for its memory.
-	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
-	// MaxOOMRestarts caps those starts in a row, 0 for unlimited.
-	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
@@ -426,17 +421,15 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
-		Name:           req.Name,
-		Image:          ref,
-		Provider:       s.cfg.Provider.Name(),
-		State:          models.StatePending,
-		Resources:      req.Resources,
-		Secrets:        req.Secrets,
-		Policy:         req.Policy,
-		RestartOnOOM:   req.RestartOnOOM,
-		MaxOOMRestarts: req.MaxOOMRestarts,
-		Restart:        withRestartDefaults(req.Restart),
-		CreatedAt:      time.Now().UTC(),
+		Name:      req.Name,
+		Image:     ref,
+		Provider:  s.cfg.Provider.Name(),
+		State:     models.StatePending,
+		Resources: req.Resources,
+		Secrets:   req.Secrets,
+		Policy:    req.Policy,
+		Restart:   withRestartDefaults(req.Restart),
+		CreatedAt: time.Now().UTC(),
 	}, admit...)
 	if err != nil {
 		// The record or the name failed after the admission, so nothing will ever write that disk.
@@ -673,13 +666,6 @@ func validate(req CreateRequest) error {
 	if req.Resources.DiskMiB > MaxDiskMiB {
 		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
 	}
-	// Only a bound can be run out of: the host never counts an OOM against a sandbox that has none.
-	if req.RestartOnOOM && req.Resources.MemoryMiB == 0 {
-		return &RequestError{Err: errors.New("restart_on_oom needs a memory bound, and the request sets none")}
-	}
-	if req.MaxOOMRestarts < 0 {
-		return &RequestError{Err: fmt.Errorf("max_oom_restarts is a count and cannot be negative, got %d", req.MaxOOMRestarts)}
-	}
 	if req.Restart != nil {
 		if err := validRestart(*req.Restart, req.Command); err != nil {
 			return &RequestError{Err: err}
@@ -826,7 +812,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	return s.record(id)
 }
 
-// start bounds the whole run so a wedged runtime fails fast and typed, never pinning the liveness task that walks the sandboxes one at a time.
+// start bounds the whole run so a wedged runtime fails fast and typed, never pinning the sandbox lock.
 func (s *Service) start(ctx context.Context, id string) error {
 	budget := s.startBudget()
 	bctx, cancel := context.WithTimeout(ctx, budget)
@@ -940,16 +926,9 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 			// A stopped record cannot confirm it is gone under a wedge, so it falls through to the kill.
 		case err != nil:
 			return err
-		case sb.State == models.StateStopped && !status.Alive() && sb.OOMRestartDue.IsZero():
+		case sb.State == models.StateStopped && !status.Alive():
 			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
 			return nil
-		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop still calls off the start again the record waits on.
-			return s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
-				callOffOOMWait(rec)
-
-				return nil
-			})
 		}
 	}
 
@@ -983,7 +962,6 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
-		callOffOOMWait(sb)
 		if exit != nil {
 			sb.ExitStatus = exit
 		}

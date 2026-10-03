@@ -95,8 +95,6 @@ type Status struct {
 	Reason string
 	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.
 	SupervisorFailed string
-	// Throttles counts the times the host held the sandbox at its memory throttle, 0 on a substrate with none.
-	Throttles int64
 }
 
 // Alive is the assertion the keep-alive default rests on: only Stop and Pause take a sandbox out of it.

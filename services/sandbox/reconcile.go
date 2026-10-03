@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -105,8 +104,13 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
+	// The host ended it for its memory while the daemon was down, so no verb reads a running record with no process (SHARD-311).
 	if sb.State.Live() && !status.Alive() && status.OOMKilled {
-		return s.reconcileOOMKilled(ctx, sb, status, report)
+		if err := s.recordDied(sb.ID, OOMKilledReason, report); err != nil {
+			return "", err
+		}
+
+		return models.StateStopped, nil
 	}
 
 	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
@@ -200,23 +204,6 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	report(fmt.Sprintf("sandbox %s said %s and nothing runs behind it: the record now says stopped, %s", sb.ID, sb.State, LostReason))
 
 	return state, nil
-}
-
-// reconcileOOMKilled takes the tick's memory decision without the backoff that bounds a loop of ticks, so no verb reads a running record with no process (SHARD-311).
-func (s *Service) reconcileOOMKilled(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) (models.State, error) {
-	handled := s.handleOOMKilled(ctx, sb.ID, sb, status.Throttles, time.Now().UTC(), report)
-	rec, err := s.cfg.Repo.Get(sb.ID)
-	if err != nil {
-		return "", errors.Join(handled, fmt.Errorf("read the record of sandbox %s: %w", sb.ID, err))
-	}
-	// A start again that failed comes after the record took the stop, so it is not left as it is.
-	if handled != nil && rec.State != sb.State {
-		report(fmt.Sprintf("sandbox %s: %v, the record now says %s", sb.ID, handled, rec.State))
-
-		return rec.State, nil
-	}
-
-	return rec.State, handled
 }
 
 // failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
