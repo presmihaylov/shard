@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,23 @@ func TestTruncateHeldLogsBoundsOnlyALogPastMax(t *testing.T) {
 	}
 	if _, err := os.Stat(small + ".1"); !os.IsNotExist(err) {
 		t.Errorf("small.log.1 exists: %v", err)
+	}
+}
+
+// SHARD-343: an unreadable record must not restart-loop held-log rotation, so pass skips it instead of returning its list error.
+func TestHeldLogRotationPassSkipsAnUnreadableRecord(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "abcdef012345")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sandbox.json"), []byte("{not json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &deps{cfg: Config{Root: root, Out: io.Discard}}
+	if err := (heldLogRotation{deps: d}).pass(); err != nil {
+		t.Fatalf("pass over an all-unreadable root: %v, want it to skip the record", err)
 	}
 }
 
