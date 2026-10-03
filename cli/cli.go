@@ -45,7 +45,7 @@ Usage:
   shard exec [flags] <id|name> -- <argv>...
                            run a command in a sandbox that is already running
   shard start <id|name>    run a stopped sandbox again, over everything it kept
-  shard pause <id|name>    write a snapshot of a running sandbox and free its memory
+  shard pause <id|name>    write a snapshot of a running sandbox and free its memory; the daemon gives up after 10 min
   shard resume <id|name>   run a paused sandbox again from its snapshot
   shard fork [--name <name>] <id|name>
                            start a new sandbox from the snapshot of another
