@@ -32,12 +32,14 @@ type machine struct {
 	// closed says this process let the vmm go, so a stream that ends after it is not dialed again.
 	closed atomic.Bool
 	// swap orders a replacement against close, so no stream is put in after the vmm was let go.
-	swap   sync.Mutex
-	cancel context.CancelFunc
-	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
+	swap sync.Mutex
+	// freezing, taken before swap, holds each freeze and thaw of the guest until the guest answers, so none lands inside another.
 	freezing sync.Mutex
-	// pausing, under freezing, is a pause that froze the guest's root and still means to stop the VM.
+	// pausing, under freezing, is a pause that froze the guest and still means to snapshot it.
 	pausing bool
+	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
+	freezesOverlay bool
+	cancel         context.CancelFunc
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
@@ -99,6 +101,18 @@ func (p *Provider) lookup(ctx context.Context, id, dir string) (*machine, error)
 	}
 
 	return m, nil
+}
+
+// unfreeze reseeds a guest a snapshot left frozen, then thaws it.
+func (m *machine) unfreeze(ctx context.Context) error {
+	if err := m.reseed(ctx); err != nil {
+		return err
+	}
+	if err := m.control.Load().Thaw(ctx); err != nil {
+		return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
@@ -311,6 +325,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 	if state.Kind != supervisor.KindState {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
 	}
+	m.freezesOverlay = state.FreezesOverlay
 	// The guest answered, so a fork's restore swapped off the source and resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
 	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())
@@ -322,10 +337,11 @@ func (p *Provider) attach(ctx context.Context, id, dir string, client *fcapi.Cli
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
 	}
-	// A guest restored from a pause, or left by a daemon that died mid-pause, holds its root frozen until a host thaws it.
+	// A snapshot holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
 	if state.Frozen {
-		if err := control.Thaw(ctx); err != nil {
-			return nil, errors.Join(fmt.Errorf("sandbox %s: thaw the guest's root: %w", id, err), m.close())
+		if err := m.unfreeze(ctx); err != nil {
+			// A guest left frozen never runs again, and an adopter that kept its vmm would retry this on every verb.
+			return nil, errors.Join(err, m.close(), endVMM(id, client))
 		}
 	}
 
@@ -393,7 +409,7 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 			return errors.New("an exit event carries no status")
 		}
 
-		return supervisor.AppendExit(filepath.Join(m.dir, exitFile), *event.Exit)
+		return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
 	case supervisor.KindRestarts:
 		if event.Restarts == nil {
 			return errors.New("a restarts event carries no count")
@@ -458,10 +474,10 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 	m.swap.Unlock()
 
 	var thawed error
-	// A root frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
+	// A guest frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
 	if state.Frozen && !m.pausing {
 		if err := control.Thaw(context.Background()); err != nil {
-			thawed = fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
+			thawed = fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
 		}
 	}
 	m.freezing.Unlock()
@@ -486,7 +502,7 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 			return err
 		}
 		if !found || last != *state.Exit {
-			if err := supervisor.AppendExit(path, *state.Exit); err != nil {
+			if err := supervisor.WriteExit(path, *state.Exit); err != nil {
 				return err
 			}
 		}

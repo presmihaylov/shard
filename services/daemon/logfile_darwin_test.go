@@ -79,7 +79,7 @@ func logChild(path string) {
 	fmt.Println("one")
 
 	go func() {
-		if err := (logReopen{path: path, hangups: hangups, out: os.Stdout, reopen: openLog}).Run(context.Background()); err != nil {
+		if err := (logReopen{path: path, limit: logCap, interval: logCapInterval, hangups: hangups, out: os.Stdout, reopen: openLog}).Run(context.Background()); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

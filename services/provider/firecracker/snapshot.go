@@ -41,6 +41,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if state != models.StateRunning {
 		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, state, Name)
 	}
+	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
+	if !m.freezesOverlay {
+		return fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
+	}
 
 	// The old snapshot stays until the new one is complete, so a failed pause loses nothing a fork needs.
 	tmp := dir + ".tmp"
@@ -56,9 +60,9 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
-		// The staged overlay is reflinked while paused, so the guest's root is flushed and frozen first, and no write lands between the two.
+		// A guest process the snapshot held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
 		if err := m.freeze(ctx); err != nil {
-			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err))
+			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
 		}
 		if err := m.client.Pause(); err != nil {
 			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
@@ -110,12 +114,12 @@ func secureSnapshot(dir string) error {
 	return nil
 }
 
-// abandon gives up a pause that could not complete: the VM runs on and the staging directory goes.
+// abandon gives up a pause that could not complete: the VM and its guest run on and the staging directory goes.
 func abandon(m *machine, tmp string, err error) error {
 	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
 }
 
-// freeze holds the guest's root for the pause in flight, which a stream dialed again meanwhile leaves frozen.
+// freeze holds the guest for the pause in flight, which a stream dialed again meanwhile leaves frozen.
 func (m *machine) freeze(ctx context.Context) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
@@ -124,13 +128,12 @@ func (m *machine) freeze(ctx context.Context) error {
 	return m.control.Load().Freeze(ctx)
 }
 
-// runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.
+// runAgain resumes the VM if the pause got that far, then thaws the guest, which a paused VM could never answer.
 func runAgain(m *machine) error {
 	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
 	m.pausing = false
-	control := m.control.Load()
 
 	info, err := m.client.State(context.Background())
 	if err != nil {
@@ -141,9 +144,9 @@ func runAgain(m *machine) error {
 			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
 		}
 	}
-	// The thaw outlives the pause's caller: a guest left frozen takes no write again.
-	if err := control.Thaw(context.Background()); err != nil {
-		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
+	// The thaw outlives the pause's caller: a guest left frozen runs nothing again.
+	if err := m.control.Load().Thaw(context.Background()); err != nil {
+		return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
 	}
 
 	return nil

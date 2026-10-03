@@ -195,6 +195,97 @@ func TestLivenessStopsTheRecordOfASandboxThatDidNotAskAfterOOM(t *testing.T) {
 	}
 }
 
+// reconcile is a daemon start over an OOM it never saw, up to the first liveness tick.
+func (l *livenessLab) reconcile(t *testing.T) {
+	t.Helper()
+
+	if err := l.svc.ReconcileAll(t.Context(), []models.Sandbox{l.l.repo.sb}, func(line string) { l.reports = append(l.reports, line) }, runOnce); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+}
+
+// The start again happens at boot, and the first tick then finds a live sandbox, not a second OOM (SHARD-311).
+func TestReconcileStartsAfterAnOOMTheDaemonWasDownFor(t *testing.T) {
+	sb := optedIn()
+	sb.MaxOOMRestarts = 3
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	before := time.Now().UTC()
+	lab.reconcile(t)
+	after := time.Now().UTC()
+
+	got := lab.l.repo.sb
+	if got.State != models.StateRunning || got.PID != 7 || got.StoppedReason != "" {
+		t.Errorf("the record says %s with pid %d and the reason %q, want running with the new pid", got.State, got.PID, got.StoppedReason)
+	}
+	if got.OOMRestarts != 1 || got.OOMRestartedAt.Before(before) || got.OOMRestartedAt.After(after) {
+		t.Errorf("the record counts %d starts again at %v, want 1 within the reconcile", got.OOMRestarts, got.OOMRestartedAt)
+	}
+	if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, "started again, 1 of 3") {
+		t.Errorf("the reconcile reported %v, want a last line counting the start", lab.reports)
+	}
+
+	if err := lab.tick(t, lab.l.repo.sb, time.Now().UTC()); err != nil {
+		t.Fatalf("Liveness: %v", err)
+	}
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.OOMRestarts != 1 {
+		t.Errorf("after the first tick the record says %s with %d starts again, want running with 1", got.State, got.OOMRestarts)
+	}
+}
+
+// The tick's backoff bounds a loop of ticks; at boot it would leave a running record with no process behind it.
+func TestReconcileStartsAfterAnOOMInsideTheTickBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	sb := optedIn()
+	sb.MaxOOMRestarts = 5
+	sb.OOMRestarts = 3
+	sb.OOMRestartedAt = now
+	sb.StartedAt = now
+	lab := newLivenessLab(t, sb, oomKilled())
+
+	lab.reconcile(t)
+
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.PID != 7 || got.OOMRestarts != 4 {
+		t.Errorf("the record says %s with pid %d and %d starts again, want running with pid 7 and 4", got.State, got.PID, got.OOMRestarts)
+	}
+}
+
+// Every verb that reads a record between the boot and the first tick reads the memory decision, never the dead pid.
+func TestInspectBeforeTheFirstTickReadsTheOOMTheDaemonWasDownFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		sb     func() models.Sandbox
+		fail   []string
+		state  models.State
+		pid    int
+		reason string
+		report string
+	}{
+		{"no restart_on_oom", running, nil, models.StateStopped, 0, sandbox.OOMKilledReason, "the record now says stopped"},
+		{"restart_on_oom", optedIn, nil, models.StateRunning, 7, "", "started again, 1"},
+		{"a start again that fails", optedIn, []string{"provider.Start"}, models.StateStopped, 0, sandbox.OOMKilledReason, "the record now says stopped"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, tc.sb(), oomKilled())
+			lab.r.fail = tc.fail
+
+			lab.reconcile(t)
+
+			got, err := sandbox.Inspect(lab.l.repo, &fakeEnforcer{}, "sandbox1")
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+			if got.State != tc.state || got.PID != tc.pid || got.StoppedReason != tc.reason {
+				t.Errorf("inspect says %s with pid %d and the reason %q, want %s with pid %d and %q", got.State, got.PID, got.StoppedReason, tc.state, tc.pid, tc.reason)
+			}
+			if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, tc.report) {
+				t.Errorf("the reconcile reported %v, want a last line with %q", lab.reports, tc.report)
+			}
+		})
+	}
+}
+
 func TestLivenessGivesUpAtTheOOMLimit(t *testing.T) {
 	sb := optedIn()
 	sb.MaxOOMRestarts = 5

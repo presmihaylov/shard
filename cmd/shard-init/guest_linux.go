@@ -15,9 +15,6 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// overlayFDEnv carries the overlay's ext4 fd across the confine re-exec, so rootIoctl freezes the writable layer the pivot made unreachable by path.
-const overlayFDEnv = "SHARD_INIT_OVERLAY_FD"
-
 // bootGuest moves PID 1 from the initrd onto the root disk, with the kernel filesystems carried across.
 func bootGuest(boot guestBoot) error {
 	for _, m := range []struct{ source, target, fstype string }{
@@ -118,8 +115,13 @@ func mountRoot(boot guestBoot) error {
 	if err := refuseReadOnlyMount("/overlay", boot.Overlay); err != nil {
 		return err
 	}
-	if err := holdOverlayForFreeze(); err != nil {
-		return err
+	// Opened without CLOEXEC, so the re-exec inherits it for rootDisk: the move onto the root leaves the upper no path.
+	upper, err := unix.Open("/overlay", unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open /overlay: %w", err)
+	}
+	if err := os.Setenv(upperEnv, strconv.Itoa(upper)); err != nil {
+		return fmt.Errorf("name the upper disk for the re-exec: %w", err)
 	}
 	// The guest lays the upper and work directories itself, so the host and shard-init share no name for them.
 	for _, dir := range []string{"/overlay/upper", "/overlay/work"} {
@@ -146,19 +148,6 @@ func refuseReadOnlyMount(mountPath, device string) error {
 	}
 	if st.Flags&unix.ST_RDONLY != 0 {
 		return fmt.Errorf("the overlay %s mounted read-only at %s, which a corrupt disk does; the sandbox cannot persist writes", device, mountPath)
-	}
-
-	return nil
-}
-
-// holdOverlayForFreeze opens the overlay's ext4 with no O_CLOEXEC and records its fd, so a freeze survives the confine re-exec that the pivot leaves the path behind.
-func holdOverlayForFreeze() error {
-	fd, err := unix.Open("/overlay", unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		return fmt.Errorf("open the overlay to freeze it: %w", err)
-	}
-	if err := os.Setenv(overlayFDEnv, strconv.Itoa(fd)); err != nil {
-		return fmt.Errorf("record the overlay fd: %w", err)
 	}
 
 	return nil
@@ -407,8 +396,8 @@ const (
 )
 
 // freezeRoot flushes the root disk and holds every write to it, so a clone of a paused VM reads a whole disk.
-func freezeRoot() error {
-	err := rootIoctl(fifreeze)
+func freezeRoot(root *os.File) error {
+	err := rootIoctl(root, fifreeze)
 	// EBUSY is a root already frozen, by a freeze whose answer never reached the host.
 	if err == nil || errors.Is(err, unix.EBUSY) {
 		return nil
@@ -418,8 +407,8 @@ func freezeRoot() error {
 }
 
 // thawRoot lets the root disk take writes again.
-func thawRoot() error {
-	err := rootIoctl(fithaw)
+func thawRoot(root *os.File) error {
+	err := rootIoctl(root, fithaw)
 	// EINVAL is a root that is not frozen.
 	if err == nil || errors.Is(err, unix.EINVAL) {
 		return nil
@@ -428,27 +417,37 @@ func thawRoot() error {
 	return fmt.Errorf("thaw the root: %w", err)
 }
 
-// rootIoctl is a test process's no-op, as it is not PID 1 and "/" is the host's.
-func rootIoctl(req uint) error {
-	if os.Getpid() != 1 {
+// rootIoctl is a test process's no-op, as it opened no root and "/" is the host's.
+func rootIoctl(root *os.File, req uint) error {
+	if root == nil {
 		return nil
 	}
-	// An overlay root freezes its writable ext4 by the held fd; freezing the overlayfs "/" is EOPNOTSUPP, and the pivot took its path.
-	if held := os.Getenv(overlayFDEnv); held != "" {
-		fd, err := strconv.Atoi(held)
+
+	return unix.IoctlSetInt(int(root.Fd()), req, 0)
+}
+
+// upperEnv names the fd the first image opened on the overlay's upper disk, which the move onto the root leaves no path to.
+const upperEnv = "SHARD_INIT_UPPER_FD"
+
+// rootDisk opens what a freeze holds: the overlay's upper disk, as overlayfs takes no FIFREEZE, or the root disk itself.
+func rootDisk() (*os.File, error) {
+	upper := os.Getenv(upperEnv)
+	if upper == "" {
+		root, err := os.Open("/")
 		if err != nil {
-			return fmt.Errorf("read %s %q: %w", overlayFDEnv, held, err)
+			return nil, fmt.Errorf("open the root: %w", err)
 		}
 
-		return unix.IoctlSetInt(fd, req, 0)
+		return root, nil
 	}
-	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := strconv.Atoi(upper)
 	if err != nil {
-		return fmt.Errorf("open the root: %w", err)
+		return nil, fmt.Errorf("read %s: %w", upperEnv, err)
 	}
-	defer unix.Close(fd)
+	// A guest process that inherited it would hold a path out of its root.
+	unix.CloseOnExec(fd)
 
-	return unix.IoctlSetInt(fd, req, 0)
+	return os.NewFile(uintptr(fd), "/overlay"), nil
 }
 
 // powerOff ends the VM once the stop is done, by a reboot where the vmm only exits on one; a test process is not PID 1 and just exits.

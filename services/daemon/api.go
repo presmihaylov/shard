@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := openLog(cfg.LogPath); err != nil {
 			return err
 		}
-		extra = append(extra, logReopen{path: cfg.LogPath, hangups: hangups, out: cfg.Out, reopen: openLog})
+		extra = append(extra, logReopen{path: cfg.LogPath, limit: logCap, interval: logCapInterval, hangups: hangups, out: cfg.Out, reopen: openLog})
 	}
 
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
