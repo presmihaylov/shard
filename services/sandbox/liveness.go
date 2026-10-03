@@ -79,6 +79,8 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time
 		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
 	if status.OOMKilled {
+		// The kill ended every exec with the sandbox; drop them before a backoff wait can hold their buffers for a minute.
+		s.dropExecs(sb.ID)
 		// A sandbox that dies right after every start would otherwise come back on every tick until the limit.
 		if restarts, restart := oomRestarts(current, status.Throttles, now); restart && now.Before(current.OOMRestartedAt.Add(oomBackoff(restarts))) {
 			return nil
@@ -171,6 +173,7 @@ func (s *Service) recordDied(id string, report func(string)) error {
 	if err != nil {
 		return fmt.Errorf("sandbox %s is gone but its record was not updated: %w", id, err)
 	}
+	s.dropExecs(id)
 	report(fmt.Sprintf("sandbox %s: %s, the record now says stopped", id, DiedReason))
 
 	return nil
