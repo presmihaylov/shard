@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -275,28 +276,19 @@ func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 	}
 }
 
-func TestLsPrintsWhatTheProbesFound(t *testing.T) {
+// The daemon runs no probe of its own, so the table has no column for one (SHARD-455).
+func TestLsPrintsNoHealthColumn(t *testing.T) {
 	var out bytes.Buffer
-
-	sandboxes := listed()
-	sandboxes[0].HealthCheck = &models.HealthCheck{Command: []string{"true"}, Retries: 3}
-	sandboxes[0].Health = &models.Health{Status: models.HealthUnhealthy, Failures: 3}
-
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newLsApp(t, &out, listed(), nil)
 
 	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
 		t.Fatalf("ls --all: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[0], "HEALTH") {
-		t.Errorf("the header is %q, want a HEALTH column", lines[0])
-	}
-	if !strings.Contains(lines[1], "unhealthy 3/3") {
-		t.Errorf("the line %q does not show the status and the failures out of the retries", lines[1])
-	}
-	if strings.Contains(lines[2], "healthy") {
-		t.Errorf("the line %q shows a health the sandbox has no probe for", lines[2])
+	header := strings.Fields(strings.SplitN(out.String(), "\n", 2)[0])
+	want := []string{"ID", "NAME", "IMAGE", "STATE", "UPTIME", "IP", "RESTART", "POLICY"}
+	if !slices.Equal(header, want) {
+		t.Errorf("the header is %q, want %q", header, want)
 	}
 }
 

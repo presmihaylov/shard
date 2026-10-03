@@ -77,7 +77,8 @@ func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
 		return image.Image{}, err
 	}
 
-	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
+	// The image names a command of its own, which a create must never run.
+	return image.Image{Reference: ref, RootFS: "/images/alpine", Config: models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "exit 1"}}}, nil
 }
 
 // stalledImages holds every pull until its context ends, the way a registry that never answers does.

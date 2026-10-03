@@ -126,7 +126,7 @@ type SandboxSpec struct {
 	// StateDir is the per-sandbox directory whose whole layout belongs to the provider.
 	StateDir string
 
-	// Entrypoint is the supervisor's argv: it runs it as its child, so its exit does not end the sandbox.
+	// Entrypoint is the supervisor's argv: it runs it as its child, so its exit does not end the sandbox; empty runs nothing.
 	Entrypoint []string
 	// Env is KEY=VALUE, resolved against the image by Resolve. It never carries a secret value.
 	Env     []string

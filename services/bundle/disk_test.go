@@ -29,7 +29,7 @@ func TestADiskBoundIsTheNumberTheOperatorTyped(t *testing.T) {
 
 // One bound covers the overlay, /tmp and the supervisor's files together, so all of them sit on the disk.
 func TestEverythingTheGuestWritesLivesOnTheDisk(t *testing.T) {
-	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
 	for _, dir := range []string{b.Upper, b.Work, b.Tmp, b.ShardDir} {
 		if !strings.HasPrefix(dir, b.Disk+string(filepath.Separator)) {
@@ -51,7 +51,7 @@ func TestBuildRecordsTheDiskBoundForTheNextStart(t *testing.T) {
 	}
 
 	for name, c := range cases {
-		b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: c.typed}}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+		b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: c.typed}}, models.ImageConfig{})
 
 		rt, err := b.Runtime()
 		if err != nil {
@@ -67,7 +67,7 @@ func TestBuildRecordsTheDiskBoundForTheNextStart(t *testing.T) {
 func TestCloneCarriesTheDiskBound(t *testing.T) {
 	source := newSpec(t)
 	source.Resources = models.Resources{DiskMiB: 64}
-	build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	build(t, source, models.ImageConfig{})
 
 	opened, err := bundle.Open(source.StateDir)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestCloneCarriesTheDiskBound(t *testing.T) {
 }
 
 func TestRuntimeRefusesADiskBoundThatIsNotACount(t *testing.T) {
-	b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: 64}}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: 64}}, models.ImageConfig{})
 
 	config := filepath.Join(b.Dir, "config.json")
 	broken := strings.Replace(readFile(t, config), `"dev.shard.disk-mib": "64"`, `"dev.shard.disk-mib": "lots"`, 1)

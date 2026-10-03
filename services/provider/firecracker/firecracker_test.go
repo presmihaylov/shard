@@ -551,6 +551,36 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	}
 }
 
+// With no command the host sends an empty run: the guest is ready with nothing forked, an exec works, and the stop records no exit (SHARD-453).
+func TestStartWithNoEntrypointRunsTheGuestAlone(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Start with no entrypoint: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning {
+		t.Fatalf("Status after Start = %+v, %v, want running", status, err)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec with no entrypoint = %+v, %v", exit, err)
+	}
+
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if exit, err := h.provider.ExitStatus(t.Context(), spec.ID); err != nil || exit != nil {
+		t.Fatalf("ExitStatus after the stop = %+v, %v, want none: nothing ran to exit", exit, err)
+	}
+	if exit, err := h.provider.Wait(t.Context(), spec.ID); !errors.Is(err, models.ErrNoExitStatus) {
+		t.Fatalf("Wait after the stop = %+v, %v, want ErrNoExitStatus", exit, err)
+	}
+}
+
 // runLong creates and starts a sandbox that runs until it is stopped, and returns the pid of its vmm.
 func (h *harness) runLong(t *testing.T) (models.SandboxSpec, int) {
 	t.Helper()

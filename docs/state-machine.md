@@ -6,7 +6,7 @@ this page draws the same machine.
 ```mermaid
 stateDiagram-v2
     [*] --> pending: shard create
-    pending --> running: image ready, entrypoint started
+    pending --> running: image ready, the command (if any) started
     pending --> failed: pull or start failed
     created --> running: fork or clone
     created --> stopped: stop before start
@@ -72,11 +72,13 @@ finished. A `created` record at a restart is a fork or clone the daemon dropped,
 restore that the old daemon started can still run where the runtime cannot see it.
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
-means that the sandbox is up. It does not mean that a workload executes in it. When the entrypoint
-finishes, the sandbox stays `running` and you can still `exec` or `pause` it, and `fork` it once
-paused. E2B, Modal, Vercel and Daytona all work this way. There is no eighth state for an exited
-entrypoint. Instead, the liveness task writes the exit into `exit_status` on the record, which stays
-`running`, so `shard ls` prints `running (exited 0)`. `stop` is the only thing that ends a sandbox.
+means that the sandbox is up. It does not mean that a workload executes in it. A sandbox created
+with no command runs only `shard-init`, because the image's own ENTRYPOINT and CMD never run, and
+its `exit_status` stays empty. When the entrypoint finishes, the sandbox stays `running` and
+you can still `exec` or `pause` it, and `fork` it once paused. E2B, Modal, Vercel and Daytona all
+work this way. There is no eighth state for an exited entrypoint. Instead, the liveness task writes
+the exit into `exit_status` on the record, which stays `running`, so `shard ls` prints
+`running (exited 0)`. `stop` is the only thing that ends a sandbox.
 
 **`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends
 it.** On vz the daemon probes each shim within 5 s, both a shim it holds and one that it meets only

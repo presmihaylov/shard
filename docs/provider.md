@@ -91,8 +91,9 @@ reason     /dev/kvm opens
 ### systemd is not a sandbox's init
 
 **systemd cannot run as a sandbox's PID 1, on any provider.** `shard-init` is PID 1 in every
-sandbox and starts the image entrypoint as its child (`cmd/shard-init` uses `ForkExec`), so the
-entrypoint is never PID 1. systemd refuses the system-manager role when it is not PID 1. It prints
+sandbox and starts the command given at create as its child (`cmd/shard-init` uses `ForkExec`), so
+the entrypoint is never PID 1. The image's own ENTRYPOINT and CMD never run, and with no command
+`shard-init` runs alone. systemd refuses the system-manager role when it is not PID 1. It prints
 "Explicit --user argument required to run as user manager." and exits. `systemctl is-system-running`
 then reports `offline`, and the record stays `running` because a sandbox outlives its entrypoint.
 The limit is not specific to Sysbox. It holds on gVisor and Firecracker too, because `shard-init` is
@@ -487,7 +488,8 @@ boots. The kernel command line hands it `-base` and `-overlay`, the two block de
 `-console` for where its stderr goes. `shard-init` mounts the EROFS image read-only and the ext4
 disk over it, and lays `upper` and `work` on that disk. It then mounts the overlay as the root,
 moves the kernel filesystems across and pivots onto it, exactly as the one-disk `-root` boot does.
-It stays PID 1, and the host sends the entrypoint over vsock as it does for the one-disk boot. `vz`
+It stays PID 1, and the host sends the entrypoint over vsock as it does for the one-disk boot. With
+no command the host sends an empty one, and the guest reports ready and forks nothing. `vz`
 keeps its ext4 root disk, and an APFS clone is its overlay. The guest kernel must carry
 `CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`. Both shipped kernel configs, amd64 and arm64, set both
 (SHARD-265). On a guest kernel that lacks the first, the boot fails at the base mount, and the

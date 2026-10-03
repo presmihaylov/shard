@@ -77,10 +77,10 @@ var helps = map[string]verbHelp{
 	},
 	"create": {
 		usage:   []string{"create [flags] <image> [<argv>...]"},
-		summary: "create a sandbox, start its entrypoint and print its id",
+		summary: "create a sandbox, start the command after the image and print its id",
 		args: []row{
 			{"<image>", "the image to run; create pulls it first when it is not on disk"},
-			{"<argv>", "the command to run in place of the image's entrypoint"},
+			{"<argv>", "the start command; the image's own ENTRYPOINT and CMD never run"},
 		},
 		flags: []flagHelp{
 			{"--name <name>", "a handle every verb takes in place of the id: lower-case letters, digits, - and _", ""},
@@ -93,17 +93,15 @@ var helps = map[string]verbHelp{
 			{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
 			{"--disk <MiB>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11 so its journal fits", ""},
 			{"--restart-on-oom[=N]", "start the sandbox again when the host ends it for its memory; bare is unlimited, =N caps the starts in a row, and it needs --memory", ""},
-			{"--restart <policy>", "when to start the entrypoint again inside the sandbox after it exits: no, on-failure or always", ""},
+			{"--restart <policy>", "when to start the command again inside the sandbox after it exits: no, on-failure or always; it needs a command", ""},
 			{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
 			{"--restart-backoff <duration>", "how long to wait before the first restart, in whole seconds; the wait doubles each time, up to " + strconv.Itoa(models.RestartBackoffCap) + "s", seconds(sandbox.DefaultRestartBackoff)},
-			{"--health-command <cmd>", "a shell command the daemon runs in the sandbox every interval; exit 0 is a pass", ""},
-			{"--health-interval <duration>", "the time between two probes, in whole seconds, " + seconds(sandbox.MaxHealthInterval) + " at most", seconds(sandbox.DefaultHealthInterval)},
-			{"--health-timeout <duration>", "how long one probe has to answer, in whole seconds, " + seconds(sandbox.MaxHealthTimeout) + " at most", seconds(sandbox.DefaultHealthTimeout)},
-			{"--health-retries <n>", "how many failed probes in a row mark the sandbox unhealthy", strconv.Itoa(sandbox.DefaultHealthRetries)},
 		},
 		notes: []string{
 			"The flags go before the image. The command follows the image; an optional -- may precede it. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
+			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
 			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
+			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
 		},
 		example: "shard create --name web --memory 512 python:3.12 python -m http.server",
 	},
@@ -125,7 +123,7 @@ var helps = map[string]verbHelp{
 		usage:   []string{"ls [--all]"},
 		summary: "list the sandboxes; --all adds the stopped ones",
 		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}},
-		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART, HEALTH and POLICY."},
+		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
 		example: "shard ls --all",
 	},
 	"logs": {

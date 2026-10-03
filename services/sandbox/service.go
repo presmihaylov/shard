@@ -153,8 +153,6 @@ type CreateRequest struct {
 	RestartOnOOM bool `json:"restart_on_oom,omitempty"`
 	// MaxOOMRestarts caps those starts in a row, 0 for unlimited.
 	MaxOOMRestarts int `json:"max_oom_restarts,omitempty"`
-	// Health is the probe the daemon runs while the sandbox runs, nil for none.
-	Health *models.HealthCheck `json:"health,omitempty"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
@@ -440,8 +438,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Policy:         req.Policy,
 		RestartOnOOM:   req.RestartOnOOM,
 		MaxOOMRestarts: req.MaxOOMRestarts,
-		HealthCheck:    withHealthDefaults(req.Health),
-		Health:         startingHealth(req.Health),
 		Restart:        withRestartDefaults(req.Restart),
 		CreatedAt:      time.Now().UTC(),
 	}, admit...)
@@ -687,13 +683,8 @@ func validate(req CreateRequest) error {
 	if req.MaxOOMRestarts < 0 {
 		return &RequestError{Err: fmt.Errorf("max_oom_restarts is a count and cannot be negative, got %d", req.MaxOOMRestarts)}
 	}
-	if req.Health != nil {
-		if err := validHealthCheck(*req.Health); err != nil {
-			return &RequestError{Err: err}
-		}
-	}
 	if req.Restart != nil {
-		if err := validRestart(*req.Restart); err != nil {
+		if err := validRestart(*req.Restart, req.Command); err != nil {
 			return &RequestError{Err: err}
 		}
 	}

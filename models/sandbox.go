@@ -60,10 +60,6 @@ type Sandbox struct {
 	// HealthyRun latches once the daemon saw this run OOMHealthyRun in a row under its memory throttle.
 	HealthyRun bool `json:"healthy_run,omitempty"`
 
-	// HealthCheck is the probe the daemon runs while the sandbox runs, and Health what it found, both nil without one.
-	HealthCheck *HealthCheck `json:"health_check,omitempty"`
-	Health      *Health      `json:"health,omitempty"`
-
 	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
 	Restart *Restart `json:"restart,omitempty"`
 

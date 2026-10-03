@@ -27,7 +27,7 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
-             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- <entrypoint> [args...]
+             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- [<entrypoint> [args...]]
   shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
 
 The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
@@ -121,10 +121,6 @@ func run(args []string) error {
 	if !filepath.IsAbs(*readyFile) {
 		return fmt.Errorf("-ready-file must be an absolute path, got %q", *readyFile)
 	}
-	if flags.NArg() == 0 {
-		return errors.New("no entrypoint given")
-	}
-
 	credential, err := parseCredential(*user, *groups)
 	if err != nil {
 		return err
@@ -227,6 +223,13 @@ func newGuest(report reporter, restart restartPolicy) *guest {
 
 // launch starts the entrypoint once and says so, which is the host's only proof that it ran.
 func (g *guest) launch(ep entrypoint) error {
+	// The image's own command never runs, so with none the supervisor runs alone and is ready at once.
+	if len(ep.argv) == 0 {
+		g.started = true
+
+		return g.report.ready()
+	}
+
 	// Stamp before the start so the fork and exec latency counts as run time, not lost from the healthy window.
 	g.runStartedAt = time.Now()
 	pid, err := g.start(ep, nil, false)
@@ -390,6 +393,11 @@ func (g *guest) spawn(ep entrypoint, files []*os.File, tty bool) (int, <-chan mo
 
 // signal reaches only a process the supervisor started, so a guest pid the host guessed is refused.
 func (g *guest) signal(pid int, sig syscall.Signal) error {
+	// With no command the entrypoint pid is 0, and kill(0) or a negative pid reaches a process group that holds PID 1.
+	if pid <= 0 {
+		return fmt.Errorf("pid %d names a process group, not a process shard-init started", pid)
+	}
+
 	var err error
 	g.run(func() {
 		_, isExec := g.waiters[pid]

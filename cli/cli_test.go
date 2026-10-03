@@ -178,7 +178,7 @@ func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 		`invalid value "512m" for --memory: want MiB as a plain number`: {"create", "--memory", "512m", "alpine"},
 		`invalid value "1g" for --disk: want MiB as a plain number`:     {"create", "--disk", "1g", "alpine"},
 		`invalid value "5" for --time: want a duration such as 10s`:     {"stop", "--time", "5", "web"},
-		`invalid value "x" for --health-retries: want a whole number`:   {"create", "--health-retries", "x", "alpine"},
+		`invalid value "x" for --restart-retries: want a whole number`:  {"create", "--restart-retries", "x", "alpine"},
 		`invalid value "maybe" for --all: want true or false`:           {"ls", "--all=maybe"},
 		`--time needs a value: a duration such as 10s`:                  {"rm", "--time"},
 		`unknown flag --bogus; run shard create --help`:                 {"create", "--bogus", "alpine"},
