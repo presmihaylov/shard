@@ -135,9 +135,9 @@ func (m *Manager) AddVeth(ctx context.Context, host, peer, namespace string) err
 	return m.run(ctx, "link", "add", host, "type", "veth", "peer", "name", peer, "netns", namespace)
 }
 
-// AddTap creates a tap on the host, which a vmm opens as the guest's network device; it has no peer.
-func (m *Manager) AddTap(ctx context.Context, name string) error {
-	return m.run(ctx, "tuntap", "add", "dev", name, "mode", "tap")
+// AddTapIn creates a persistent tap inside a namespace, which a vmm that joins it opens as the guest's network device.
+func (m *Manager) AddTapIn(ctx context.Context, namespace, name string) error {
+	return m.run(ctx, "-netns", namespace, "tuntap", "add", "dev", name, "mode", "tap")
 }
 
 // DeleteLink removes an interface from the host namespace. Deleting one end of a veth pair takes both.
@@ -180,6 +180,16 @@ func (m *Manager) EnsureBridge(ctx context.Context, name string, gateway netip.P
 // AttachBridge makes the interface a port of the bridge.
 func (m *Manager) AttachBridge(ctx context.Context, link, bridge string) error {
 	return m.run(ctx, "link", "set", link, "master", bridge)
+}
+
+// AddBridgeIn creates a bridge inside a namespace.
+func (m *Manager) AddBridgeIn(ctx context.Context, namespace, name string) error {
+	return m.run(ctx, "-netns", namespace, "link", "add", "name", name, "type", "bridge")
+}
+
+// AttachBridgeIn makes an interface inside a namespace a port of a bridge there.
+func (m *Manager) AttachBridgeIn(ctx context.Context, namespace, link, bridge string) error {
+	return m.run(ctx, "-netns", namespace, "link", "set", link, "master", bridge)
 }
 
 // IsolatePort stops this port reaching any other isolated port on the same bridge, while it still

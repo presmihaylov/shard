@@ -17,6 +17,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/pidpin"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -29,6 +30,8 @@ type machine struct {
 	jail   string
 	client *fcapi.Client
 	pid    int
+	// pinned holds a vmm an adopt found silent, by the pin taken on the dial it never answered, so a stop kills that vmm alone.
+	pinned *pidpin.Process
 	// control is the stream to shard-init, replaced when a dropped one is dialed again.
 	control atomic.Pointer[supervisor.Control]
 	// closed says this process let the vmm go, so a stream that ends after it is not dialed again.
@@ -86,20 +89,24 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		return nil, err
 	}
 	defer release()
-	if m, settled := p.settled(id, silent); settled {
-		return m, nil
+	m, settled, err := p.settled(id, silent)
+	if settled || err != nil {
+		return m, err
 	}
 	socket, vsock := r.sockets(dir)
 	began := time.Now()
 	probe, cancel := context.WithTimeout(ctx, adoptBound)
-	client, info, err := fcapi.Adopt(probe, socket, vsock)
+	client, info, pin, err := fcapi.AdoptPinned(probe, socket, vsock)
 	cancel()
 	if absent(err) {
 		return nil, nil
 	}
 	// A vmm silent for the whole bound may still thaw and give the same VM back, so it reads unresponsive and only stop kills it (SHARD-392).
-	if err != nil && info.PID > 0 && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
-		return p.unanswered(id, dir, r.Jail, fcapi.Open(socket, vsock), info.PID), nil
+	if pin != nil && time.Since(began) >= adoptBound && ctx.Err() == nil && !p.spared(id) {
+		return p.unanswered(id, dir, r.Jail, fcapi.Open(socket, vsock), pin)
+	}
+	if pin != nil {
+		return nil, errors.Join(err, pin.Close())
 	}
 	if err != nil {
 		return nil, err
@@ -200,17 +207,17 @@ func (p *Provider) endJudged(id string, client *fcapi.Client, pid int, jail stri
 	return removeJail(jail)
 }
 
-// unanswered keeps a vmm an adopt found silent, by the pid that took its dial, so each later lookup waits on its one request.
-func (p *Provider) unanswered(id, dir, jail string, client *fcapi.Client, pid int) *machine {
+// unanswered keeps a vmm an adopt found silent, by the pin on the peer that took its dial, so each later lookup waits on its one request.
+func (p *Provider) unanswered(id, dir, jail string, client *fcapi.Client, pin *pidpin.Process) (*machine, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if kept, found := p.unadopted[id]; found {
-		return kept
+		return kept, pin.Close()
 	}
-	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: pid, silent: true}
+	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: pin.PID(), pinned: pin, silent: true}
 	p.unadopted[id] = m
 
-	return m
+	return m, nil
 }
 
 // waiting says a silent vmm has still not answered; an answer, or no vmm left on the socket, lets a fresh adopt decide.
@@ -281,22 +288,22 @@ func (p *Provider) claim(ctx context.Context, id string) (func(), error) {
 }
 
 // settled is the vmm another lookup adopted, or found silent, while this one waited for the claim; seen is let go, as it answered.
-func (p *Provider) settled(id string, seen *machine) (*machine, bool) {
+func (p *Provider) settled(id string, seen *machine) (*machine, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if m, held := p.machines[id]; held {
-		return m, true
+		return m, true, nil
 	}
 	m, found := p.unadopted[id]
 	if !found {
-		return nil, false
+		return nil, false, nil
 	}
 	if m != seen {
-		return m, true
+		return m, true, nil
 	}
 	delete(p.unadopted, id)
 
-	return nil, false
+	return nil, false, m.close()
 }
 
 // spared is a vmm this process still spawns, or holds since, which a read leaves to its spawn.
@@ -798,11 +805,15 @@ func (m *machine) close() error {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	var errs []error
+	if m.pinned != nil {
+		errs = append(errs, m.pinned.Close())
+	}
 	if control := m.control.Load(); control != nil {
-		return control.Close()
+		errs = append(errs, control.Close())
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // endVMM kills the vmm of a boot the provider could not finish; firecracker has no stop verb, so the kill is the only end.

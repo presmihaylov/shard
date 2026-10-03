@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -339,9 +338,9 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	return p.settle(ctx, m)
 }
 
-// endSilent kills a vmm that never answered by the pid its adopt judged, never by the socket, which may answer for a vmm begun since.
+// endSilent kills a vmm that never answered through the pin its adopt took, never by a pid or the socket, either of which may name a vmm begun since.
 func (p *Provider) endSilent(ctx context.Context, m *machine) error {
-	if err := fcapi.KillPID(m.pid); err != nil {
+	if err := m.pinned.Kill(); err != nil {
 		return fmt.Errorf("sandbox %s: end its silent vmm: %w", m.id, err)
 	}
 	if err := awaitEnded(m); err != nil {

@@ -49,7 +49,7 @@ func parseCp(args []string) (cpOptions, error) {
 
 	flags := flag.NewFlagSet("shard cp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.StringVar(&opts.user, "user", "", "the user a copy into the sandbox runs as and who owns the file; empty is the entrypoint's")
+	flags.StringVar(&opts.user, "user", "", "the user that a copy into the sandbox runs as and that owns the file; empty means the entrypoint's user")
 
 	if err := parseVerb(flags, args); err != nil {
 		return cpOptions{}, fmt.Errorf("parse the cp flags: %w", err)

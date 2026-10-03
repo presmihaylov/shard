@@ -21,7 +21,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 
 	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	logPath := flags.String("log", "", "the file to write the daemon's output to and reopen on SIGHUP; a Mac only")
+	logPath := flags.String("log", "", "the file for the daemon's output, reopened on SIGHUP (Mac only)")
 
 	if err := parseVerb(flags, args); err != nil {
 		return fmt.Errorf("parse the daemon flags: %w", err)

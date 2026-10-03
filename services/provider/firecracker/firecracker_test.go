@@ -85,7 +85,7 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
 	}
-	p.SetOwners(h.own, func(string, int, int) error { return nil })
+	p.SetOwners(h.own, func(string, string, int, int) error { return nil })
 	// A boot bounds its vmm on the host cgroup, and a test host has no cgroup hierarchy to bound it on.
 	p.SetCgroupRoot("")
 	// The newest provider holds the live vmms, so a spec's cleanup must stop through it.
@@ -844,6 +844,39 @@ func TestStopAfterARestartKillsAFrozenVMMNoReadMet(t *testing.T) {
 		t.Fatalf("Stop took %s on a grace of 1s", took)
 	}
 	awaitReaped(t, pid)
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
+// A stop kills a silent vmm through the pin its adopt took, so a process that holds its pid number since is never hit (SHARD-392).
+func TestStopOfASilentVMMNeverKillsTheProcessOnItsPidSince(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+	h.unresponsive(t, spec.ID, pid)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+	h.provider.RenumberSilent(spec.ID, innocent.Process.Pid)
+
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the silent vmm's pid since was hit: %v", err)
+	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)

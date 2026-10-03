@@ -185,7 +185,7 @@ type Provider struct {
 	uids sync.Mutex
 	// chown and ownTap give a jail's files and the tap to the vmm's uid; a test without root swaps them.
 	chown  func(path string, uid, gid int) error
-	ownTap func(name string, uid, gid int) error
+	ownTap func(namespace, name string, uid, gid int) error
 	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
 	lostRuns map[string]error
 }
@@ -223,7 +223,7 @@ func New(cfg Config) (*Provider, error) {
 		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
 		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
 		unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{},
-		chown: os.Chown, ownTap: netns.ChownTap,
+		chown: os.Chown, ownTap: netns.ChownTapIn,
 	}, nil
 }
 
@@ -262,14 +262,17 @@ func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
+	unadopted := p.unadopted
 	p.machines = map[string]*machine{}
 	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
-	for _, m := range held {
-		if err := m.close(); err != nil {
-			errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+	for _, set := range []map[string]*machine{held, unadopted} {
+		for _, m := range set {
+			if err := m.close(); err != nil {
+				errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+			}
 		}
 	}
 
@@ -283,7 +286,7 @@ func (p *Provider) ReleaseRoot() error { return nil }
 type record struct {
 	// BaseDisk is the image's EROFS file, which every boot attaches read-only under the overlay.
 	BaseDisk string `json:"base_disk"`
-	// Tap is the host end the vmm opens, the bridge port the host rules name; empty boots the VM without a network.
+	// Tap is the tap the vmm opens in its namespace, named like the host port the rules key on; empty boots the VM without a network.
 	Tap string `json:"tap,omitempty"`
 	// Address is the guest's prefix and Gateway the bridge's address, which the guest is told over the control stream.
 	Address string `json:"address,omitempty"`

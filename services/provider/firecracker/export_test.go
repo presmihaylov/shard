@@ -29,8 +29,15 @@ func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int, jail stri
 	return p.endJudged(id, client, pid, jail)
 }
 
+// RenumberSilent points the pid a silent vmm reads under at another process, which is how a pid the kernel reused looks from here.
+func (p *Provider) RenumberSilent(id string, pid int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.unadopted[id].pid = pid
+}
+
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
-func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
+func (p *Provider) SetOwners(chown func(name string, uid, gid int) error, ownTap func(namespace, name string, uid, gid int) error) {
 	p.chown, p.ownTap = chown, ownTap
 }
 
