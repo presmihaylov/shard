@@ -594,10 +594,10 @@ func (f *fake) let(conn net.Conn) {
 	delete(f.streams, conn)
 }
 
-// floodEveryFile beside the api socket floods every control stream past its state line, for as long as it stays there.
+// floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
 const floodEveryFile = "flood-every-control"
 
-// dialsFile beside the api socket, once a test creates it, takes one line per control stream the host dials.
+// dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
 
 // proxy is one host connection through the vsock device: CONNECT <port> in, OK back, and then the guest's own stream.
@@ -781,11 +781,10 @@ func (f *fake) answers(port int, guest net.Conn) (io.Reader, error) {
 	if port != int(supervisor.ControlPort) {
 		return guest, nil
 	}
-	beside := filepath.Dir(f.socket)
-	if err := note(filepath.Join(beside, dialsFile), "control"); err != nil {
+	if err := note(filepath.Join(f.dir, dialsFile), "control"); err != nil {
 		return nil, err
 	}
-	_, err := os.Stat(filepath.Join(beside, floodEveryFile))
+	_, err := os.Stat(filepath.Join(f.dir, floodEveryFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return guest, nil
 	}
