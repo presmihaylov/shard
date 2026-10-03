@@ -16,15 +16,14 @@ type LogReader struct {
 
 func NewLogReader(log *Log) *LogReader { return &LogReader{log: log} }
 
-// Read returns the sandbox's records by time, oldest first. The file holds each source in time order
-// already, and the tailer appends a host drop within a second of it, so a sort is enough.
-func (r *LogReader) Read(sb models.Sandbox) ([]Record, error) {
-	records, err := r.log.Read(sb.ID)
+// Read returns the sandbox's newest records by time, oldest first, and how many older ones it left out. Each source is in time order in the file, and a host drop lands within a second, so a sort is enough.
+func (r *LogReader) Read(sb models.Sandbox) ([]Record, int, error) {
+	records, cut, err := r.log.Tail(sb.ID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return Merge(records), nil
+	return Merge(records), cut, nil
 }
 
 // drop is one parsed log line: the record it becomes, and the two things that say whose it is.

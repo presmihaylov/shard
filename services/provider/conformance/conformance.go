@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,8 @@ type Subject struct {
 	HostLayer bool
 	// Reopen returns a second provider over the same substrate and state, which is what a daemon restart makes; it may close Provider.
 	Reopen func(t *testing.T) models.Provider
+	// ReseedWindow is the guest uptime the fork source passes before its pause, so no early-boot crng reseed can split the forks; zero pauses at once.
+	ReseedWindow time.Duration
 }
 
 // environments is where the daemon rewrites a stopped sandbox's guest environment.
@@ -275,6 +278,10 @@ func Run(t *testing.T, s Subject) {
 		}
 		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
+		}
+		// The daemon records the count after the stop, so the stop must leave it readable (SHARD-401).
+		if after := s.restarts(t, id); after.Count != count.Count || after.GaveUp != count.GaveUp || !after.LastAt.Equal(count.LastAt) {
+			t.Errorf("Restarts reads %+v after Stop, want %+v as at the give-up", after, count)
 		}
 		if err := s.Provider.Remove(t.Context(), id); err != nil {
 			t.Fatalf("Remove: %v", err)
@@ -628,7 +635,11 @@ func Run(t *testing.T, s Subject) {
 			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbFork)
 		}
 
-		source := s.running(t)
+		spec := s.NewSpec(t)
+		// One vCPU, so every fork draws from the one per-cpu crng the snapshot saved.
+		spec.Resources.VCPUs = 1
+		source := s.start(t, spec)
+		s.awaitUptime(t, source, s.ReseedWindow)
 		dir := s.SnapshotDir(t)
 		if err := s.Provider.Pause(t.Context(), source, dir); err != nil {
 			t.Fatalf("Pause: %v", err)
@@ -695,6 +706,21 @@ func Run(t *testing.T, s Subject) {
 			t.Fatal("the first provider still sees the sandbox alive after the new one stopped it")
 		}
 	})
+}
+
+// awaitUptime returns once the sandbox's kernel has run for least, by its own clock.
+func (s Subject) awaitUptime(t *testing.T, id string, least time.Duration) {
+	t.Helper()
+
+	if least <= 0 {
+		return
+	}
+	status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("cut -d' ' -f1 /proc/uptime")})
+	up, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
+	if status.Code != 0 || err != nil {
+		t.Fatalf("the uptime read in sandbox %s exited %d with %q: %v", id, status.Code, out, err)
+	}
+	time.Sleep(least - time.Duration(up*float64(time.Second)))
 }
 
 // copyOf is the spec the orchestrator hands Clone and Fork: the copy's id, name, lease and bounds, and no entrypoint, which the source keeps.

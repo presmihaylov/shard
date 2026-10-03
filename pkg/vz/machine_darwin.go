@@ -320,7 +320,8 @@ func disk(vmc *vz.VirtualMachineConfiguration, path string) error {
 		return nil
 	}
 
-	attachment, err := vz.NewDiskImageStorageDeviceAttachment(path, false)
+	// Full synchronization passes a guest flush through to the host; the plain constructor leaves the mode to the framework default (SHARD-396).
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false, vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeFull)
 	if err != nil {
 		return fmt.Errorf("disk attachment for %s: %w", path, err)
 	}
