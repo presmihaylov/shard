@@ -72,16 +72,33 @@ func TestAFailedCaptureThawsTheSourceAndRestoresNoFork(t *testing.T) {
 func TestAHungLayerCopyIsCutAndThawsTheSource(t *testing.T) {
 	dir := t.TempDir()
 	p, calls := liveForkProvider(t, dir, "", "")
-	fakeCopy(t, "exec sleep 30")
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	copying := filepath.Join(dir, "copying")
+	fakeCopy(t, "touch "+copying+"; exec sleep 30")
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	// The cut lands once the copy runs, so a slow host cannot spend it on the steps before.
+	cut := make(chan time.Time, 1)
+	go func() {
+		for ; ctx.Err() == nil; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(copying); err == nil {
+				cut <- time.Now()
+				cancel()
 
-	started := time.Now()
+				return
+			}
+		}
+	}()
+
 	if err := p.Fork(ctx, liveSource, models.SandboxSpec{ID: liveFork, StateDir: filepath.Join(dir, liveFork)}); err == nil {
 		t.Fatal("Fork over a hung layer copy = nil, want the cut")
 	}
-	if took := time.Since(started); took > 10*time.Second {
-		t.Errorf("the fork returned after %s, want the hung copy cut at its deadline", took)
+	select {
+	case at := <-cut:
+		if took := time.Since(at); took > 10*time.Second {
+			t.Errorf("the fork returned %s after its cut, want the hung copy ended with it", took)
+		}
+	default:
+		t.Fatal("the fork failed before its layer copy began")
 	}
 	if index(runscCalls(t, calls), "restore") >= 0 {
 		t.Errorf("the cut fork ran %q, want no restore", runscCalls(t, calls))
