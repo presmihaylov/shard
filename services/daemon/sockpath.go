@@ -19,10 +19,9 @@ func checkSocketPaths(root, provider string) error {
 	root = filepath.Clean(root)
 	what, longest := api.SocketFile, filepath.Join(root, api.SocketFile)
 
-	dir := sandboxstate.LongestDir(root)
-	for _, name := range sandboxSockets(provider) {
-		if path := filepath.Join(dir, name); len(path) > len(longest) {
-			what, longest = "a sandbox's "+name, path
+	for _, path := range sandboxSockets(root, provider) {
+		if len(path) > len(longest) {
+			what, longest = "a sandbox's "+filepath.Base(path), path
 		}
 	}
 
@@ -34,13 +33,19 @@ func checkSocketPaths(root, provider string) error {
 	return fmt.Errorf("the root %s is too long for %s: %s under it takes %d bytes, past the %d a unix socket path holds; use a root of at most %d bytes", root, provider, what, len(longest), maxSocketPath, len(root)-over)
 }
 
-// sandboxSockets names the sockets a provider binds in a sandbox's state directory; the container substrates bind none there.
-func sandboxSockets(provider string) []string {
+// sandboxSockets names the sockets a provider binds for the sandbox with the longest id: a microVM's in its jail, a vz VM's in its state directory, and the container substrates none.
+func sandboxSockets(root, provider string) []string {
+	dir := sandboxstate.LongestDir(root)
 	switch provider {
 	case firecracker.Name:
-		return firecracker.SocketFiles()
+		return firecracker.JailSockets(filepath.Join(root, jailDir), filepath.Base(dir))
 	case vzvm.Name:
-		return vzvm.SocketFiles()
+		var paths []string
+		for _, name := range vzvm.SocketFiles() {
+			paths = append(paths, filepath.Join(dir, name))
+		}
+
+		return paths
 	}
 
 	return nil

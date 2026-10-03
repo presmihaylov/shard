@@ -22,6 +22,8 @@ type snapshot struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
+	// Jailed says the vmstate names each drive by its path in the jail, which every jailed restore has; one from before the jail names host paths (SHARD-306).
+	Jailed bool `json:"jailed"`
 }
 
 // Pause writes the paused VM into dir and ends its vmm: the memory and the overlay are on disk, and the record stays for the resume.
@@ -30,7 +32,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if err != nil {
 		return err
 	}
-	m, err := p.lookup(ctx, id, stateDir)
+	m, err := p.lookup(ctx, id, stateDir, r)
 	if err != nil {
 		return err
 	}
@@ -44,6 +46,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// Only a boot puts a newer shard-init in the guest, so a VM booted before the freeze landed keeps one that cannot hold its root (SHARD-409).
 	if !m.freezesOverlay {
 		return fmt.Errorf("sandbox %s runs a shard-init that cannot freeze the guest, which pause needs on %s: restart the sandbox, then pause it", id, Name)
+	}
+	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
+	if m.jail == "" {
+		return fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then pause it", id, Name)
 	}
 
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
@@ -68,7 +74,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
-	if err := stageSnapshot(m, r, stateDir, tmp); err != nil {
+	if err := p.stageSnapshot(m, r, stateDir, tmp); err != nil {
 		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
@@ -80,20 +86,17 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
-func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
-	if err := m.client.Snapshot(filepath.Join(tmp, snapshotState), filepath.Join(tmp, memoryFile)); err != nil {
-		return fmt.Errorf("snapshot the vm: %w", err)
-	}
-	// The vmm wrote vmstate and memory with its own umask, so tighten them here; a restore hard-links the memory and inherits this mode.
-	if err := secureSnapshot(tmp); err != nil {
-		return err
+func (p *Provider) stageSnapshot(m *machine, r record, stateDir, tmp string) error {
+	snap := filepath.Join(m.jail, jailSnap)
+	if err := p.snapshotInto(m, r, snap, tmp); err != nil {
+		return errors.Join(err, os.RemoveAll(snap))
 	}
 	// The copy shares the overlay's blocks or is refused: a fork that copied every byte is not what the verb promises.
 	if err := bundle.Reflink(filepath.Join(stateDir, bundle.OverlayDiskFile), filepath.Join(tmp, bundle.OverlayDiskFile)); err != nil {
 		return fmt.Errorf("copy the overlay: %w", err)
 	}
-	snap := snapshot{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
-	if err := writeJSON(filepath.Join(tmp, snapshotFile), snap); err != nil {
+	meta := snapshot{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run, Jailed: true}
+	if err := writeJSON(filepath.Join(tmp, snapshotFile), meta); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, snapshotFileMode); err != nil {
@@ -103,10 +106,31 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	return nil
 }
 
-// secureSnapshot tightens the files the vmm wrote to the snapshot file mode; SHARD-306's jail changes the owner or group here too.
-func secureSnapshot(dir string) error {
+// snapshotInto has the vmm write its state and memory into a directory of the jail, then moves both into tmp as root's.
+func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
+	// A pause cut after the snapshot left its files, which the vmm refuses to write over.
+	if err := os.RemoveAll(snap); err != nil {
+		return fmt.Errorf("clear %s: %w", snap, err)
+	}
+	if err := os.Mkdir(snap, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", snap, err)
+	}
+	if err := p.chown(snap, r.UID, r.UID); err != nil {
+		return fmt.Errorf("give %s to uid %d: %w", snap, r.UID, err)
+	}
+	if err := m.client.Snapshot(jailSnap+jailState, jailSnap+jailMemory); err != nil {
+		return fmt.Errorf("snapshot the vm: %w", err)
+	}
+	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other snapshot file is.
 	for _, name := range []string{snapshotState, memoryFile} {
-		if err := os.Chmod(filepath.Join(dir, name), snapshotFileMode); err != nil {
+		path := filepath.Join(tmp, name)
+		if err := os.Rename(filepath.Join(snap, name), path); err != nil {
+			return fmt.Errorf("move %s out of the jail: %w", name, err)
+		}
+		if err := p.chown(path, 0, 0); err != nil {
+			return fmt.Errorf("give %s to root: %w", name, err)
+		}
+		if err := os.Chmod(path, snapshotFileMode); err != nil {
 			return fmt.Errorf("tighten %s: %w", name, err)
 		}
 	}
@@ -164,7 +188,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := readSnapshot(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
-	m, err := p.lookup(ctx, id, stateDir)
+	m, err := p.lookup(ctx, id, stateDir, r)
 	if err != nil {
 		return err
 	}
@@ -175,8 +199,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	// The memory holds the address and the run, so the guest is told neither again.
-	// A resume loads this sandbox's own overlay and swaps to it, so a cut leaves it paused on the right disk: no marker, lookup resumes it.
+	// The memory holds the address and the run, so the guest is told neither again, and a cut that leaves it paused needs no marker: lookup resumes it.
 	_, err = p.restore(ctx, id, stateDir, r, dir, false)
 
 	return err
@@ -198,7 +221,7 @@ func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 	return p.end(ctx, m)
 }
 
-// restoreFiles puts the snapshot's overlay and memory under the sandbox in place of its own, or the restored memory would meet a filesystem it never wrote.
+// restoreFiles puts the snapshot's overlay under the sandbox in place of its own, or the restored memory would meet a filesystem it never wrote.
 func restoreFiles(dir, stateDir string) error {
 	overlay := filepath.Join(stateDir, bundle.OverlayDiskFile)
 	if err := os.Remove(overlay); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -207,23 +230,18 @@ func restoreFiles(dir, stateDir string) error {
 	if err := bundle.Reflink(filepath.Join(dir, bundle.OverlayDiskFile), overlay); err != nil {
 		return fmt.Errorf("restore the overlay: %w", err)
 	}
-	memory := filepath.Join(stateDir, memoryFile)
-	if err := os.Remove(memory); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// A state directory from before the jail links an older snapshot's memory, which no vmm maps now.
+	if err := os.Remove(filepath.Join(stateDir, memoryFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("drop the memory: %w", err)
-	}
-	// The vmm maps the memory private, so the link is the snapshot's own file, shared with every other restore of it.
-	if err := os.Link(filepath.Join(dir, memoryFile), memory); err != nil {
-		return fmt.Errorf("link the memory: %w", err)
 	}
 
 	return nil
 }
 
-// restore brings the snapshot in dir up in a fresh vmm under the sandbox's directory, over the overlay and the memory restoreFiles put there.
-// foreign marks a restore whose load opens a different sandbox's overlay than the swap points at, so a cut mid-load must not blind-resume (SHARD-321).
+// restore brings the snapshot in dir up in a fresh vmm in a jail of the sandbox's own, over the overlay restoreFiles put in its directory.
+// foreign marks a fork, whose guest wakes on the source's address, so a cut before the readdress must not resume it (SHARD-321).
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
-	group, err := p.bound(id, r.Resources)
-	if err != nil {
+	if err := p.bound(id, r.Resources); err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
 	}
 	if foreign {
@@ -234,24 +252,19 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	if err := os.WriteFile(filepath.Join(stateDir, reseedFile), nil, 0o600); err != nil {
 		return nil, fmt.Errorf("mark sandbox %s for a reseed: %w", id, err)
 	}
-	snap := fcapi.Snapshot{
-		State:  filepath.Join(dir, snapshotState),
-		Memory: filepath.Join(stateDir, memoryFile),
-		Tap:    r.Tap,
-		// The state names the overlay of the sandbox it was taken from, which the load opens; the swap points the drive at this one's before anything runs.
-		Drives:  []fcapi.Drive{{ID: overlayDrive, Path: filepath.Join(stateDir, bundle.OverlayDiskFile)}},
-		Vsock:   filepath.Join(stateDir, vsockFile),
-		Socket:  filepath.Join(stateDir, socketFile),
-		Console: filepath.Join(stateDir, consoleFile),
-		Cgroup:  group,
-	}
 	done := p.spawn(id)
 	defer done()
-	client, info, err := fcapi.Restore(ctx, p.cfg.Binary, snap)
+	jail, err := p.jail(id, stateDir, &r, dir)
 	if err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
 	}
-	m, err := p.up(ctx, id, stateDir, client, info)
+	// The state names each drive by its path in the jail, so the load opens this sandbox's own overlay, a fork's included.
+	snap := fcapi.Snapshot{State: jailState, Memory: jailMemory, Tap: r.Tap, Vsock: jailVsock, Socket: apiSocket, Console: filepath.Join(stateDir, consoleFile)}
+	client, info, err := fcapi.Restore(ctx, jail, snap)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("restore sandbox %s: %w", id, err), removeJail(r.Jail))
+	}
+	m, err := p.up(ctx, id, stateDir, r.Jail, client, info)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +312,7 @@ func (p *Provider) Fork(ctx context.Context, dir string, spec models.SandboxSpec
 	if err := writeRecord(spec.StateDir, r); err != nil {
 		return err
 	}
-	// The load opens the source's overlay, so a cut before the swap leaves the vmm on it: the marker tells the next daemon to end it, never resume it.
+	// The guest holds the source's address until the readdress, so the marker tells the next daemon to end a fork it finds paused, never resume it.
 	m, err := p.restore(ctx, spec.ID, spec.StateDir, r, dir, true)
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
@@ -324,6 +337,10 @@ func readSnapshot(dir string) (snapshot, error) {
 	var snap snapshot
 	if err := json.Unmarshal(blob, &snap); err != nil {
 		return snapshot{}, fmt.Errorf("decode the snapshot in %s: %w", dir, err)
+	}
+	// No migration: shard is pre-alpha, and a fresh pause writes one that loads.
+	if !snap.Jailed {
+		return snapshot{}, fmt.Errorf("the snapshot in %s was taken before the jail, and no restore on %s can open the host paths it names: start the sandbox from its stopped state and pause it again", dir, Name)
 	}
 
 	return snap, nil

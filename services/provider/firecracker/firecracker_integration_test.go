@@ -38,7 +38,7 @@ type vmHarness struct {
 	image  image.Image
 }
 
-// requireKVM skips unless this process can boot a microVM: root, /dev/kvm, and the two binaries the boot needs.
+// requireKVM skips unless this process can boot a microVM: root, /dev/kvm, and the three binaries the boot needs.
 func requireKVM(t *testing.T) {
 	t.Helper()
 
@@ -48,7 +48,7 @@ func requireKVM(t *testing.T) {
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skipf("no /dev/kvm: %v", err)
 	}
-	for _, binary := range []string{firecracker.Binary, erofs.Tool} {
+	for _, binary := range []string{firecracker.Binary, firecracker.Jailer, erofs.Tool} {
 		if _, err := exec.LookPath(binary); err != nil {
 			t.Skipf("%s is not on PATH: %v", binary, err)
 		}
@@ -95,11 +95,13 @@ func (h *vmHarness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary: firecracker.Binary,
-		Kernel: h.kernel,
-		Init:   guestInit(t),
-		Dir:    h.root,
-		Dirs:   h.stateDir,
+		Binary:   firecracker.Binary,
+		Jailer:   firecracker.Jailer,
+		JailBase: filepath.Join(h.root, "j"),
+		Kernel:   h.kernel,
+		Init:     guestInit(t),
+		Dir:      h.root,
+		Dirs:     h.stateDir,
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -536,11 +538,12 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 }
 
 // The real vmm a cut fork leaves answers "Not started", and the next daemon ends it, so a remove frees the host (SHARD-295).
+// It is a vmm from before the jail, which the unit harness's fake jailer covers in jail.
 func TestAnUnloadedMicroVMLeftByACutForkIsEnded(t *testing.T) {
 	h := newVMHarness(t)
 	spec := h.forkSpec(t)
-	exited := h.leaveUnloaded(t, spec, firecracker.Binary)
-	requireUnloadedEnded(t, h.reopen(t), spec, exited)
+	exited := h.leaveUnloaded(t, spec, firecracker.Binary, "")
+	requireUnloadedEnded(t, h.reopen(t), spec, exited, "")
 }
 
 func TestConformanceOnMicroVMs(t *testing.T) {
