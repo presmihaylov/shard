@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os"
@@ -481,6 +482,62 @@ func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
 	}
 	if l.repo.deleted {
 		t.Error("a clone that succeeded deleted a record")
+	}
+}
+
+// copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
+var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "Snapshot",
+	"PID", "NetnsPath", "Address", "HostInterface", "OOMRestarts", "OOMRestartedAt", "MemoryThrottles", "CalmSince", "HealthyRun",
+	"Health", "Restart", "StartedAt", "CreatedAt"}
+
+// withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
+func withEveryPolicy(sb models.Sandbox) models.Sandbox {
+	sb.Image = "docker.io/library/alpine:3.20"
+	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
+	sb.Secrets = []string{"api-token"}
+	sb.Policy = "locked"
+	sb.RestartOnOOM = true
+	sb.MaxOOMRestarts = 1
+	sb.HealthCheck = &models.HealthCheck{Command: []string{"/bin/true"}, Interval: 30, Timeout: 10, Retries: 3}
+	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
+
+	return sb
+}
+
+func TestForkAndCloneCarryEveryPolicyField(t *testing.T) {
+	verbs := map[string]struct {
+		source models.Sandbox
+		copy   func(*sandbox.Service, context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)
+	}{
+		"fork":  {withEveryPolicy(pausedSandbox()), (*sandbox.Service).Fork},
+		"clone": {withEveryPolicy(cloneSource()), (*sandbox.Service).Clone},
+	}
+	for name, verb := range verbs {
+		t.Run(name, func(t *testing.T) {
+			svc, _ := newService(t, &recorder{}, verb.source)
+			sb, err := verb.copy(svc, t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			src, copied := reflect.ValueOf(verb.source), reflect.ValueOf(sb)
+			for _, field := range reflect.VisibleFields(src.Type()) {
+				if slices.Contains(copyRunState, field.Name) {
+					continue
+				}
+				// A field the source leaves zero would pass whether or not the copy carries it.
+				if src.FieldByIndex(field.Index).IsZero() {
+					t.Errorf("the source leaves %s zero, so the test proves nothing about it: set it in withEveryPolicy", field.Name)
+					continue
+				}
+				if want, got := src.FieldByIndex(field.Index).Interface(), copied.FieldByIndex(field.Index).Interface(); !reflect.DeepEqual(got, want) {
+					t.Errorf("the %s holds %s %v, want the source's %v", name, field.Name, got, want)
+				}
+			}
+			if sb.Restart == nil || sb.Restart.RestartSpec != verb.source.Restart.RestartSpec {
+				t.Errorf("the %s holds the restart %+v, want the source's policy %+v", name, sb.Restart, verb.source.Restart.RestartSpec)
+			}
+		})
 	}
 }
 

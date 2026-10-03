@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1211,4 +1212,13 @@ func keyPair(t *testing.T) (string, string) {
 	}
 
 	return certPath, keyPath
+}
+
+// A route whose capability no scope can name would be reachable by a "*" token alone, since mint refuses the name.
+func TestEveryRouteCapabilityIsOneAScopeCanName(t *testing.T) {
+	for route, c := range routeCapabilities {
+		if !slices.Contains(capabilities, c) {
+			t.Errorf("route %s needs %s, which mint refuses as a scope", route, c)
+		}
+	}
 }

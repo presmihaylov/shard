@@ -563,8 +563,9 @@ It is a local verb like `daemon` and `serve`: it never reaches the daemon, and t
 the secret. `--name` is the subject the front logs, `--duration` defaults to 0, which mints a token
 with no `exp` that never expires, and `--scopes` is a
 comma-separated list of the scopes the token carries; an empty `--scopes` mints `["*"]`, every verb,
-so pass `--scopes` for any token but an operator's. The client's `--token-file` takes this object
-whole or the bare token, so `shard tokens mint ... >
+so pass `--scopes` for any token but an operator's. A scope that is neither `*` nor one of the eight
+capabilities above is refused, the error lists them, and nothing is recorded. The client's
+`--token-file` takes this object whole or the bare token, so `shard tokens mint ... >
 ci.token` needs no extra step. Rotate the secret and every token it signed stops verifying at once.
 
 The front reads the secret file once, at start, so a rotation needs a `shard serve` restart, and that

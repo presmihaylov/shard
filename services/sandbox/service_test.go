@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -161,6 +162,39 @@ func TestCreateTakesTheWholeHostMemory(t *testing.T) {
 
 	if _, err := svc.Create(t.Context(), req); err != nil {
 		t.Fatalf("create with the host's whole memory: %v", err)
+	}
+}
+
+// A quota past the host's CPUs never binds, and a large one wraps to no bound, so both are refused by name.
+func TestCreateRefusesMoreCPUsThanTheHostHas(t *testing.T) {
+	for _, cpus := range []int{9, 92233720368548} {
+		r := &recorder{}
+		svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostCPUs = 8 })
+		req := alpine()
+		req.Resources.VCPUs = cpus
+
+		_, err := svc.Create(t.Context(), req)
+
+		var refused *sandbox.RequestError
+		if want := fmt.Sprintf("--cpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("create with %d cpus = %v, want a request error that says %q", cpus, err, want)
+		}
+		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
+			t.Errorf("a refused create reached the store: %v", r.calls)
+		}
+		if l.repo.sb.ID != "" {
+			t.Errorf("a refused create left the record %+v", l.repo.sb)
+		}
+	}
+}
+
+func TestCreateTakesEveryHostCPU(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{}, func(c *sandbox.Config) { c.HostCPUs = 8 })
+	req := alpine()
+	req.Resources.VCPUs = 8
+
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("create with every host cpu: %v", err)
 	}
 }
 

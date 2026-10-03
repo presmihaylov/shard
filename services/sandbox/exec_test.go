@@ -823,6 +823,65 @@ func TestStopForgetsTheSandboxExecs(t *testing.T) {
 	}
 }
 
+// runExecToItsEnd creates one exec and waits for its exit, so a test changes the substrate under no running command.
+func runExecToItsEnd(t *testing.T, svc *sandbox.Service) {
+	t.Helper()
+
+	exec, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+	if err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	if _, err := svc.WaitExec(t.Context(), "sandbox1", exec.ID); err != nil {
+		t.Fatalf("WaitExec: %v", err)
+	}
+}
+
+// rm of a paused sandbox runs no stop, so it drops the execs itself or their buffers stay in the daemon for good (SHARD-362).
+func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	runExecToItsEnd(t, svc)
+
+	if _, err := svc.Pause(t.Context(), "sandbox1"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// runsc deletes the sandbox once its checkpoint is written, so rm finds nothing to stop.
+	l.provider.status = gone()
+
+	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the daemon still holds %d execs of the removed sandbox, want none", held)
+	}
+}
+
+// A sandbox that died or that the host killed for its memory takes its execs with it, as a stop does (SHARD-362).
+func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
+	cases := []struct {
+		name   string
+		sb     models.Sandbox
+		status models.Status
+	}{
+		{"died", running(), gone()},
+		{"oom killed", running(), oomKilled()},
+		{"oom killed and started again", optedIn(), oomKilled()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newLivenessLab(t, tc.sb, alive(42))
+			runExecToItsEnd(t, lab.svc)
+			lab.l.provider.status = tc.status
+
+			if err := lab.tick(t, tc.sb, time.Now()); err != nil {
+				t.Fatalf("Liveness: %v", err)
+			}
+			if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {
+				t.Errorf("the daemon still holds %d execs of the sandbox that ended, want none", held)
+			}
+		})
+	}
+}
+
 // A sandbox that runs many execs does not grow without a bound, even when no later create runs. The cap
 // runs when each exec exits, so retention settles at the cap on its own and the oldest answers not-found.
 func TestManyExecsEvictTheOldestNotTheNewest(t *testing.T) {

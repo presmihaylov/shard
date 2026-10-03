@@ -60,6 +60,8 @@ const (
 	snapshotFile  = "snapshot.json"
 	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
 	checkpointFile = "checkpoint.img"
+	// snapshotFileMode is the one place the snapshot files get their mode; SHARD-306's jail changes the owner or group here too.
+	snapshotFileMode os.FileMode = 0o600
 )
 
 // The drive ids on the API, in the order the guest sees them as /dev/vda and /dev/vdb.

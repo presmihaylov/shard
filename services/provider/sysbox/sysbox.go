@@ -699,7 +699,8 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 // running any of runc's cleanup, so the cgroup and its counters outlive the sandbox and are the only
 // record. A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
 func (p *Provider) oomKilled(id string) bool {
-	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
+	// The local count alone: a nested container that hits its own bound in the guest is not the sandbox's OOM (SHARD-364).
+	events, err := cgroup.LocalMemoryEvents(cgroupDir(p.cgroupRoot, id))
 	if err != nil {
 		return false
 	}
