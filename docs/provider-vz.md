@@ -126,7 +126,7 @@ connects to each after boot, retrying until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out |
+| 5000 | control | JSON lines: `run` (the resolved entrypoint), `signal`, `stop`, `readdress`, `reseed` in, each numbered and answered with `done` or `failure`; `state`, `ready`, `exit`, `restarts`, `oom`, `supervisor-failed` out. The host refuses a line past 1 MiB and redials after 100 ms, twice as long after each refusal up to 2 s, and from 100 ms again after a quiet minute (SHARD-408) |
 | 5001 | exec | one connection per exec session: an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s, the offsets of the oldest output byte it holds and of the next; the host answers with one, the byte to resume from, then reads raw bytes and acks each write to `output.log` with the offset after it. The guest holds up to 1 MiB no host acked, so a daemon restart loses and repeats nothing; `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` is a guest from before the protocol: the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 

@@ -1270,6 +1270,67 @@ func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
 	}
 }
 
+// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{dialsFile, floodEveryFile} {
+		if err := os.WriteFile(filepath.Join(dir, marker), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
+		t.Fatalf("reset the fake shim's streams: %v", err)
+	}
+
+	const flood = 3 * time.Second
+	time.Sleep(flood)
+	dials, err := os.ReadFile(filepath.Join(dir, dialsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With no wait between them the provider dials hundreds of times in the flood; the waits double from 100 ms, so it dials about 5.
+	if n := strings.Count(string(dials), "\n"); n < 2 || n > 9 {
+		t.Fatalf("the provider dialed the flooding guest %d times in %s, want 2 to 9", n, flood)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo again"}, Stdout: out})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec during the flood = %+v, %v", exit, err)
+	}
+	written, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(written), "again") {
+		t.Fatalf("the exec during the flood wrote %q, %v", written, err)
+	}
+	// A refused stream takes no stop request, so the stop waits out its grace and forces the VM off.
+	if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
+		t.Fatalf("Stop during the flood: %v", err)
+	}
+	status, err = h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after the stop = %+v, %v; want stopped", status, err)
+	}
+}
+
 // A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches Wait through the replayed state.
 func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 	h := newHarness(t)

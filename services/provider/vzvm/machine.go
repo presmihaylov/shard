@@ -574,7 +574,8 @@ func (p *Provider) follow(m *machine) {
 	for {
 		event, err := m.control.Load().Next()
 		if err != nil {
-			m.refusals.Note(err)
+			// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
+			time.Sleep(m.refusals.Note(err))
 			again, err := p.reconnect(m)
 			p.keep(m, err)
 			if again {
@@ -650,12 +651,12 @@ func (p *Provider) reconnect(m *machine) (bool, error) {
 		control := supervisor.ControlOver(conn)
 		state, err := control.Next()
 		if err != nil || state.Kind != supervisor.KindState {
-			m.refusals.Note(err)
-			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try.
+			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try; a refusal waits longer.
+			wait := max(pollInterval, m.refusals.Note(err))
 			if err := control.Close(); err != nil {
 				return false, err
 			}
-			time.Sleep(pollInterval)
+			time.Sleep(wait)
 
 			continue
 		}

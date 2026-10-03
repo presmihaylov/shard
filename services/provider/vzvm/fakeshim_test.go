@@ -237,6 +237,12 @@ const acceptsFile = "accepts"
 // floodFile in the state directory floods the next control stream past its state line, as guest root writing to PID 1's control fd would.
 const floodFile = "flood-control"
 
+// floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
+const floodEveryFile = "flood-every-control"
+
+// dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
+const dialsFile = "control-dials"
+
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
 
@@ -519,6 +525,14 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	flood := false
 	if port == supervisor.ControlPort {
 		if flood, err = m.take(floodFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		every, err := m.has(floodEveryFile)
+		if err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
+		flood = flood || every
+		if err := m.appendTo(dialsFile, "control"); err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
 	}
