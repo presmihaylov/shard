@@ -199,7 +199,7 @@ func TestNewRemoteFromEnvSendsTheTokenTheOrderPicks(t *testing.T) {
 func TestNewRemoteFromEnvTakesTheOptionsOverTheEnvironment(t *testing.T) {
 	host, ca, seen := tlsFront(t, "key-token")
 	noRemoteEnv(t)
-	t.Setenv(client.RemoteEnv, "https://elsewhere.invalid:2376")
+	t.Setenv(client.RemoteEnv, "https://elsewhere.invalid")
 	t.Setenv(client.CAFileEnv, filepath.Join(t.TempDir(), "missing.pem"))
 	t.Setenv(client.APIKeyEnv, "key-token")
 
@@ -243,7 +243,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 		{name: "a newline in the key", host: host, key: leakKey + "\n" + leakKey, caFile: ca, mentions: client.APIKeyEnv},
 		{name: "a carriage return in the key", host: host, key: leakKey + "\r\nX-Injected: 1", caFile: ca, mentions: client.APIKeyEnv},
 		{name: "a delete byte in the key", host: host, key: leakKey + "\x7f", caFile: ca, mentions: client.APIKeyEnv},
-		{name: "a plain http remote", host: "http://box.example.com:2376", key: leakKey, caFile: ca, mentions: "https"},
+		{name: "a plain http remote", host: "http://box.example.com", key: leakKey, caFile: ca, mentions: "https"},
 		{name: "a remote that does not parse", host: "https://[::1", key: leakKey, caFile: ca, mentions: "parse"},
 		{name: "a missing ca file", host: host, key: leakKey, caFile: filepath.Join(t.TempDir(), "missing.pem"), mentions: "ca file"},
 		{name: "a ca file of no certificate", host: host, key: leakKey, caFile: noCert, mentions: "certificate"},

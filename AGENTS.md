@@ -79,7 +79,7 @@ services/datadir/          the root on a reflink filesystem: probe, provision th
 services/daemon/           shard daemon: the wiring of every layer, and the background work
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
-services/serve/            the TCP front: tls, a bearer token, and the bytes onto that socket
+services/serve/            the TCP front: a bearer token, and the bytes onto that socket
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/sysbox/       implements models.Provider on Sysbox
 services/provider/runc/         implements models.Provider on bare runc
@@ -202,8 +202,8 @@ or a sandbox.
   to change any of this. This is why `shard-init` is PID 1 in every sandbox and
   the command given at create, if any, is its child.
 - **The daemon never binds TCP.** A network address is `shard serve`, a separate
-  and unprivileged process that checks a bearer token and then passes the bytes
-  to the daemon's socket. It is a byte proxy, never a second API. It maps the
+  and unprivileged process that speaks plain HTTP behind a proxy that terminates
+  TLS, checks a bearer token and then passes the bytes to the daemon's socket. It is a byte proxy, never a second API. It maps the
   request line to one coarse capability over the daemon's own route patterns and
   checks the token's scopes cover it, and it parses nothing else.
 - **The daemon is the single writer of the state.** Every verb that changes a

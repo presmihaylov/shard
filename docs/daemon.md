@@ -11,7 +11,7 @@ shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it runnin
 On a Mac the unit is the LaunchDaemon, so the hint there is `launchctl print system/shard.daemon`.
 The unit serves `/var/lib/shard` only. Under any other `--root`, the hint names that root's own
 daemon instead (`is it running? shard --root /srv/shard-e2e daemon`). Under `--remote`, it names
-the front (`shard serve on box.example.com:2376`).
+the proxy and the front behind it (`the proxy at shard.example.com and the shard serve behind it`).
 
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
@@ -645,14 +645,18 @@ as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the 
 
 ## The TCP front
 
-`shard serve` is how a client on another host reaches the daemon. It accepts TCP, terminates TLS and
-verifies the JWT in `Authorization: Bearer <jwt>` against a signing key. It then dials
-`${root}/shard.sock` and copies bytes both ways:
+`shard serve` is how a client on another host reaches the daemon. It speaks plain HTTP behind a
+proxy or a tunnel that terminates TLS, as "A proxy in front" below shows. It verifies the JWT in
+`Authorization: Bearer <jwt>` against a signing key. It then dials `${root}/shard.sock` and copies
+bytes both ways:
 
 ```
-shard --root /var/lib/shard serve --listen :2376 \
-  --cert /etc/shard/serve.crt --key /etc/shard/serve.key
+shard --root /var/lib/shard serve
 ```
+
+The front listens on `127.0.0.1:2376` by default, so only a proxy on the same host reaches it.
+`--listen` takes any other address. A token then crosses the network in clear text between the
+proxy and the front, so the front logs a line at start when the address is not loopback.
 
 It is a byte proxy and not an API. It reads the request line and the headers of a request only as
 far as the auth header. It replays those bytes onto the socket, then splices the two connections.
@@ -670,8 +674,7 @@ algorithm, a token signed by another key, a token with no subject, a token with 
 token, a token whose id the ledger does not hold, and a revoked token. A token with no `exp` never
 expires, because the front enforces `exp` only when the token carries one. Neither the front nor the
 CLI ever logs a token or the signing key, and the front logs the subject of every request it lets
-through. Without `--cert` and `--key` the front refuses to start, because there is no plain TCP mode
-to fall back to.
+through.
 
 The signing key is `<root>/auth/signing-key`, unless `--signing-key-file` names another file. The
 first `shard serve` or `shard tokens mint` that finds no key at that default path creates it: 32
@@ -705,11 +708,11 @@ file descriptors once it dials the daemon socket, and 64 stay for the listener, 
 dials. When a bound is full, the front closes the next connection at once and logs the refusal, at
 most a few lines a second per source. A connection leaves that count
 once its token passes, so a client that holds many `logs` follows or exec sessions open is never
-refused for them. A connection must send its whole request head, the TLS handshake included, within
-10 s, or the front closes it. An accept that runs out of file descriptors or memory waits from 5 ms up
+refused for them. A connection must send its whole request head within 10 s, or the front closes
+it. An accept that runs out of file descriptors or memory waits from 5 ms up
 to 1 s and tries again, so a flood of connections never ends the front.
 
-The access control is TLS on the wire, one signing key in a file, and a coarse scope on each
+The access control is TLS at the proxy, one signing key in a file, and a coarse scope on each
 token. There is no user and no role yet.
 
 A token carries a list of scopes. The front maps the route of each request to one capability, and
@@ -835,7 +838,7 @@ still applies every rule of every verb.
 A script or a CI job reaches a front instead of the socket with two variables:
 
 ```
-export SHARD_REMOTE=https://box.example.com:2376
+export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY=<the token field of a shard tokens mint record>
 shard ls
 ```
@@ -858,8 +861,8 @@ A token file is the alternative. It holds the mint record whole or the bare toke
 refuses one that everyone on the host can read:
 
 ```
-shard --remote https://box.example.com:2376 --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
-SHARD_REMOTE=https://box.example.com:2376 SHARD_TOKEN_FILE=~/.shard/token shard ls
+shard --remote https://shard.example.com --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
+SHARD_REMOTE=https://shard.example.com SHARD_TOKEN_FILE=~/.shard/token shard ls
 ```
 
 An empty `SHARD_TOKEN_FILE` is unset too. With `--remote` and none of the three, the client refuses
@@ -868,11 +871,53 @@ before it dials, and the error names all three in that order. A Go program gets 
 `SHARD_TOKEN_FILE` and `SHARD_CA_FILE`. `client.NewRemote` still takes a host and a raw token.
 
 `--remote` and `--ca-file` can also come from `SHARD_REMOTE` and `SHARD_CA_FILE`. `--remote` must
-be an `https` url, and its port defaults to 2376. `--ca-file` names the certificate that signed the
-front's own. A private CA or a self-signed certificate needs it. Without it, the host's own trust
+be the `https` url of the proxy, and its port defaults to 443. `--ca-file` names the certificate that
+signed the proxy's own. A private CA or a self-signed certificate needs it. Without it, the host's own trust
 store decides. The switch is one transport change inside `services/client`, and nothing else
 changes. The typed calls, the messages and the errors stay the same. It is also the one way a client
 off Linux drives sandboxes, because the daemon itself runs on Linux alone.
+
+### A proxy in front
+
+The proxy must pass a WebSocket upgrade through and must not buffer a response, or an exec, a
+`logs -f` and an `egress-log` follow stall. It carries the bearer token, so it must not log the
+`Authorization` header. Each setup below gives the client an `https` url on port 443.
+
+Caddy, with a certificate from a public CA for a public name:
+
+```
+shard.example.com {
+	reverse_proxy 127.0.0.1:2376 {
+		flush_interval -1
+	}
+}
+```
+
+Caddy passes a WebSocket upgrade through by itself, and `flush_interval -1` sends each chunk of a
+`?follow=true` body on at once. On a host with no public name, `tls internal` inside the site block
+gives Caddy a CA of its own. The client then names that CA's root with `--ca-file`. A Debian
+package keeps it at `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
+
+Cloudflare Tunnel, with no inbound port open on the host:
+
+```
+tunnel: <tunnel id>
+credentials-file: /etc/cloudflared/<tunnel id>.json
+ingress:
+  - hostname: shard.example.com
+    service: http://127.0.0.1:2376
+  - service: http_status:404
+```
+
+Tailscale Serve, for clients on the same tailnet, which use `https://<host>.<tailnet>.ts.net`:
+
+```
+tailscale serve --bg --https=443 http://127.0.0.1:2376
+```
+
+Behind any of these, the front sees each client as the proxy's own TCP connection, and it reads no
+forwarded header. The bound of 32 connections per source therefore applies to all clients
+together, so rate-limit a flood at the proxy.
 
 ## One daemon per root
 

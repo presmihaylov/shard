@@ -40,6 +40,8 @@ DIND_IMAGE=${DIND_IMAGE:-docker:27-dind}
 # The two loopback ports the TCP front binds in this run: one over the daemon, one over nothing.
 SERVE_PORT=${SERVE_PORT:-12376}
 LONE_PORT=${LONE_PORT:-12377}
+# The loopback port where socat terminates TLS in front of the first, as the proxy of a real setup does.
+FRONT_TLS_PORT=${FRONT_TLS_PORT:-12378}
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
@@ -73,7 +75,7 @@ FEATURE_IDS=""
 # The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
-# The TCP fronts this run started, by pid, and the directory holding their certificate, signing key and token.
+# The TCP fronts and the socat in front of one, by pid, and the directory holding the certificate, signing key and token.
 SERVE_PIDS=""
 SERVE_DIR=""
 SIGNING_KEY=""
@@ -529,8 +531,7 @@ start_serve() {
 	local root="$1" port="$2" log="$3" pid
 	shift 3
 
-	"${PREFIX}/shard" --root "${root}" serve --listen "127.0.0.1:${port}" \
-		--cert "${SERVE_DIR}/serve.crt" --key "${SERVE_DIR}/serve.key" "$@" >"${log}" 2>&1 &
+	"${PREFIX}/shard" --root "${root}" serve --listen "127.0.0.1:${port}" "$@" >"${log}" 2>&1 &
 	pid=$!
 
 	for _ in $(seq 1 50); do
@@ -547,7 +548,29 @@ start_serve() {
 	return 1
 }
 
-# stop_serve ends every front this run started, by pid. It never touches another one.
+# start_front_tls runs socat as the TLS proxy in front of the front on upstream, waits for its port, and writes its pid.
+start_front_tls() {
+	local port="$1" upstream="$2" pid
+
+	socat "OPENSSL-LISTEN:${port},bind=127.0.0.1,reuseaddr,fork,cert=${SERVE_DIR}/serve.crt,key=${SERVE_DIR}/serve.key,verify=0" \
+		"TCP:127.0.0.1:${upstream}" >/dev/null 2>&1 &
+	pid=$!
+
+	for _ in $(seq 1 50); do
+		if [ -n "$(ss -Hltn "sport = :${port}")" ]; then
+			echo "${pid}"
+
+			return 0
+		fi
+		sleep 0.1
+	done
+
+	kill "${pid}" >/dev/null 2>&1 || true
+
+	return 1
+}
+
+# stop_serve ends every front and socat this run started, by pid. It never touches another one.
 stop_serve() {
 	local pid
 	# shellcheck disable=SC2086 # the pid list is meant to split
@@ -558,7 +581,7 @@ stop_serve() {
 	SERVE_PIDS=""
 }
 
-# front_curl asks one front over TCP, with the token when one is given and none when it is empty.
+# front_curl asks one front over plain http on its own port, with the token when one is given and none when it is empty.
 front_curl() {
 	local port="$1" token="$2" path="$3"
 	shift 3
@@ -567,12 +590,12 @@ front_curl() {
 		set -- -H "Authorization: Bearer ${token}" "$@"
 	fi
 
-	curl -sS --cacert "${SERVE_DIR}/serve.crt" "$@" "https://127.0.0.1:${port}${path}"
+	curl -sS "$@" "http://127.0.0.1:${port}${path}"
 }
 
-# shard_front drives a verb over the front rather than over the socket, which is what --remote is for.
+# shard_front drives a verb through socat and the front rather than over the socket, which is what --remote is for.
 shard_front() {
-	"${PREFIX}/shard" --remote "https://127.0.0.1:${SERVE_PORT}" --token-file "${SERVE_TOKEN}" \
+	"${PREFIX}/shard" --remote "https://127.0.0.1:${FRONT_TLS_PORT}" --token-file "${SERVE_TOKEN}" \
 		--ca-file "${SERVE_DIR}/serve.crt" "$@"
 }
 
@@ -790,13 +813,13 @@ trap on_exit EXIT
 step "check the host"
 RUNTIME=$(runtime_binary "${PROVIDER}")
 [ "$(id -u)" = "0" ] || fail "shard drives netns, nft and ${RUNTIME}, so this needs root"
-for binary in "${RUNTIME}" ip ss nft go curl openssl; do
+for binary in "${RUNTIME}" ip ss nft go curl openssl socat; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
 if [ ! -e /dev/kvm ]; then
 	say "no /dev/kvm, which is the box this ticket targets"
 fi
-say "${RUNTIME}, ip, ss, nft, go, curl and openssl are on the host, and the run is on ${PROVIDER}"
+say "${RUNTIME}, ip, ss, nft, go, curl, openssl and socat are on the host, and the run is on ${PROVIDER}"
 
 check_host_is_free
 say "no other sandbox holds a link on this host"
@@ -1093,11 +1116,16 @@ chmod 0600 "${SIGNING_KEY}"
 "${PREFIX}/shard" tokens mint --name shard-e2e --signing-key-file "${SIGNING_KEY}" >"${SERVE_TOKEN}" ||
 	fail "tokens mint did not print a token"
 chmod 0600 "${SERVE_TOKEN}"
-say "the run made its own certificate and signing key, and minted a token"
+say "the run made a certificate for socat and its own signing key, and minted a token"
 
 SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SERVE_LOG}" --signing-key-file "${SIGNING_KEY}")" ||
 	fail "the front did not come up: $(cat "${SERVE_LOG}")"
 say "shard serve is listening on 127.0.0.1:${SERVE_PORT}"
+SERVE_PIDS="${SERVE_PIDS} $(start_front_tls "${FRONT_TLS_PORT}" "${SERVE_PORT}")" ||
+	fail "socat did not listen on 127.0.0.1:${FRONT_TLS_PORT}"
+say "socat terminates TLS on 127.0.0.1:${FRONT_TLS_PORT} in front of it"
+curl -sSk "https://127.0.0.1:${SERVE_PORT}/v0/sandboxes" >/dev/null 2>&1 && fail "the front answered a TLS handshake"
+say "the front itself speaks plain http, and no TLS"
 
 # The bearer header and the log check need the bare jwt, so pull it from the record with jq.
 TOKEN=$(jq -r .token "${SERVE_TOKEN}")
@@ -1187,7 +1215,7 @@ say "a revoked token is refused at once, with no restart"
 stop_serve
 rm -rf "${LONE_ROOT}"
 LONE_ROOT=""
-say "both fronts are down"
+say "both fronts and socat are down"
 
 step "mint and serve create the default signing key on first use, and share it"
 # The daemon has run over this root since the start, so an absent auth dir proves its startup never made one.

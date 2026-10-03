@@ -69,9 +69,9 @@ var helps = map[string]verbHelp{
 		summary: "shard is a single-node sandbox manager (pre-alpha).",
 		flags: []flagHelp{
 			{"--root <dir>", "where shard keeps its state", DefaultRoot},
-			{"--remote <url>", "talk to shard serve at this URL instead of the socket", ""},
+			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
 			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
-			{"--ca-file <pem>", "the CA certificate that signed the serve certificate", ""},
+			{"--ca-file <pem>", "the CA certificate that signed the certificate of the proxy in front of serve", ""},
 			{"--version", "print the client version; it never fails", ""},
 		},
 		notes: []string{
@@ -367,20 +367,19 @@ var helps = map[string]verbHelp{
 	},
 	"serve": {
 		usage:   []string{"serve [flags]"},
-		summary: "expose the daemon over HTTPS with token auth, for --remote clients",
+		summary: "expose the daemon over plain HTTP with token auth, for an HTTPS proxy in front of it",
 		flags: []flagHelp{
-			{"--listen <addr>", "the address to listen on", serve.DefaultListen},
-			{"--cert <pem>", "the TLS certificate to serve", ""},
-			{"--key <pem>", "the key of that certificate", ""},
+			{"--listen <addr>", "the address to listen on; any address other than loopback carries tokens in clear text", serve.DefaultListen},
 			{"--signing-key-file <path>", "the key that signs and checks every token; a named file must exist", signingKeyDefault},
 			{"--tokens-file <path>", "the ledger of minted tokens, in place of the one beside the signing key file", ""},
 		},
 		notes: []string{
-			"serve refuses to start without --cert and --key. It checks the token on each request and passes the bytes to the daemon socket.",
+			"serve speaks plain HTTP. Put a proxy or tunnel such as Caddy, Cloudflare Tunnel or Tailscale Serve in front of it for HTTPS; docs/daemon.md has the setups.",
+			"It checks the token on each request and passes the bytes to the daemon socket.",
 			"serve and tokens mint create the default signing key on first use, at 0600 in a 0700 directory, and both use it after that.",
 			"It runs as its own unprivileged process, and its own unit starts it. shard tokens mint makes the tokens it checks.",
 		},
-		example: "shard serve --cert server.pem --key server-key.pem",
+		example: "shard serve",
 	},
 	"tokens": {
 		usage:   []string{"tokens <subcommand> [flags] [args]"},

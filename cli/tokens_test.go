@@ -133,8 +133,7 @@ func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
 		t.Fatalf("write the token file: %v", err)
 	}
 
-	cert, key := selfSigned(t, t.TempDir())
-	address := startFront(t, serve.Config{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, Root: app.Root, Out: io.Discard})
+	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard})
 
 	out.Reset()
 	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "ls"}); err != nil {
