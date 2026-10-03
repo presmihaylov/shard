@@ -38,6 +38,15 @@ func (p *Provider) Reclaim(ctx context.Context, id string) error {
 	return p.killNamed(ctx, dir, id, pids)
 }
 
+// safeDelete ends a sandbox by SIGKILLing its own cgroup members through a pidfd, then dropping runsc's saved state, so a pid runsc stored and the kernel reused is never force-killed (SHARD-440).
+func (p *Provider) safeDelete(ctx context.Context, id string) error {
+	if err := p.sweep(ctx, id); err != nil {
+		return err
+	}
+
+	return p.runsc.Forget(id)
+}
+
 // sweep kills what a bring-up cut short left in the cgroup: runsc never saved that sandbox, so its delete reaches none of it.
 func (p *Provider) sweep(ctx context.Context, id string) error {
 	dir := cgroupDir(p.cgroupRoot, id)
@@ -72,8 +81,8 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 	}
 
 	for _, pid := range ours {
-		// ESRCH is a process that went between the list and the kill, which is the outcome wanted anyway.
-		if err := p.killProcess(pid); err != nil && !errors.Is(err, syscall.ESRCH) {
+		// A pidfd pins the process and rechecks the id before it signals, so a pid reused between the scan and the kill is never hit (SHARD-440); ESRCH is a process already gone, the outcome wanted anyway.
+		if err := p.killPinned(pid, func() (bool, error) { return p.names(pid, id) }); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return fmt.Errorf("kill process %d of sandbox %s: %w", pid, id, err)
 		}
 	}
@@ -85,16 +94,26 @@ func (p *Provider) killNamed(ctx context.Context, dir, id string, pids []int) er
 func (p *Provider) named(pids []int, id string) ([]int, error) {
 	var ours []int
 	for _, pid := range pids {
-		args, ok, err := p.argv(pid)
+		ok, err := p.names(pid, id)
 		if err != nil {
 			return nil, err
 		}
-		if ok && slices.Contains(args, id) {
+		if ok {
 			ours = append(ours, pid)
 		}
 	}
 
 	return ours, nil
+}
+
+// names says whether a process still carries the id as one whole argument, the recheck a pinned kill makes after it pins the process and before it signals.
+func (p *Provider) names(pid int, id string) (bool, error) {
+	args, ok, err := p.argv(pid)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	return slices.Contains(args, id), nil
 }
 
 // argv reads a process's command line; false is a process that went away under the read.

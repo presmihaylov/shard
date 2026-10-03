@@ -44,9 +44,6 @@ const signalBudget = 5 * time.Second
 // settleGrace is how long a create or restore runs on after its caller gives up, because a kill before runsc saves its state orphans the sandbox.
 const settleGrace = 30 * time.Second
 
-// discardBudget bounds the delete that undoes a create or restore its caller gave up on.
-const discardBudget = 10 * time.Second
-
 const (
 	notFoundMessage   = "loading container: file does not exist"
 	notRunningMessage = "sandbox is not running"
@@ -510,7 +507,7 @@ func (r *Runner) settled(ctx context.Context) (context.Context, context.CancelFu
 	return run, func() { stop(); cancel() }
 }
 
-// discard undoes a create or restore whose caller gave up, because no record will ever name what it made.
+// discard drops the state a create or restore its caller gave up on saved, signalling nothing, so a pid runsc stored is never force-killed after the kernel reused it; the provider sweeps the cgroup it forked into (SHARD-440).
 func (r *Runner) discard(ctx context.Context, verb, id string, err error) error {
 	// The caller gave up, so the cancel is the cause, whatever runsc printed on its way out.
 	cause := fmt.Errorf("runsc %s %s: %w", verb, id, ctx.Err())
@@ -518,10 +515,7 @@ func (r *Runner) discard(ctx context.Context, verb, id string, err error) error 
 		cause = fmt.Errorf("runsc %s %s: %w: %w", verb, id, err, ctx.Err())
 	}
 
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
-	defer cancel()
-
-	return errors.Join(cause, r.Delete(dctx, id, true))
+	return errors.Join(cause, r.Forget(id))
 }
 
 // Kill signals the container. all reaches every process in it; without it only PID 1 is signalled.
@@ -532,16 +526,6 @@ func (r *Runner) Kill(ctx context.Context, id, signal string, all bool) error {
 	}
 
 	return r.run(ctx, io.Discard, append(args, id, signal)...)
-}
-
-// Delete drops runsc's own state for the container. Until it runs, a stopped container still exists.
-func (r *Runner) Delete(ctx context.Context, id string, force bool) error {
-	args := []string{"delete"}
-	if force {
-		args = append(args, "--force")
-	}
-
-	return r.run(ctx, io.Discard, append(args, id)...)
 }
 
 // State asks the substrate what the container is doing. It never consults a record.
@@ -557,6 +541,27 @@ func (r *Runner) State(ctx context.Context, id string) (State, error) {
 	}
 
 	return state, nil
+}
+
+// Forget removes runsc's saved state files for a container and signals nothing, for a teardown that must not hand runsc a stale pid (SHARD-440).
+func (r *Runner) Forget(id string) error {
+	files, err := r.stateFiles(id)
+	if err != nil {
+		return fmt.Errorf("find the runsc state of %s: %w", id, err)
+	}
+
+	for _, file := range files {
+		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("drop the runsc state %s: %w", file, err)
+		}
+	}
+
+	return nil
+}
+
+// stateFiles are runsc's own flat state files for a container, named <sandbox>_sandbox:<id>.state under the root.
+func (r *Runner) stateFiles(id string) ([]string, error) {
+	return filepath.Glob(filepath.Join(r.root, "*:"+id+".state"))
 }
 
 // run collects stderr so a failure can be classified, and leaves stdout to the caller.
