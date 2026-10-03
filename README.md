@@ -69,7 +69,7 @@ starts the command, if one was given. Then it prints the id and returns. It neve
 command, the entrypoint, runs as the child of `shard-init`, and the sandbox outlives it. `--env`,
 `--workdir`, `--user`, `--memory` and `--cpus` shape the workload, and they go before the image.
 `--memory` and `--disk` take a whole size such as `512MiB` or `2GiB`: KiB, MiB and GiB are binary,
-KB, MB and GB decimal, and a bare number is MiB. The API and the record keep MiB.
+KB, MB and GB decimal. Only `0` goes without a unit. The API and the record keep MiB.
 
 `--user` sets the user of the entrypoint only. The supervisor stays privileged as PID 1, so it can
 always record how the entrypoint ended.

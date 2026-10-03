@@ -220,7 +220,7 @@ func createArgs(args ...string) []string {
 		return append([]string{"create"}, args...)
 	}
 
-	return append([]string{"create", "--memory", strconv.FormatInt(bound, 10)}, args...)
+	return append([]string{"create", "--memory", strconv.FormatInt(bound, 10) + "MiB"}, args...)
 }
 
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.

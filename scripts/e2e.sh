@@ -1821,7 +1821,7 @@ oom_restart_steps() {
 
 	step "an OOM-killed sandbox that asked for restart comes back"
 	# The bomb overruns the bound on the first run only, so the sandbox it comes back as sleeps and can be used.
-	id=$(shard create --memory 64 --restart-on-oom "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	id=$(shard create --memory 64MiB --restart-on-oom "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
@@ -1836,7 +1836,7 @@ oom_restart_steps() {
 
 	step "the OOM restart cap spends on a loop that never runs calm"
 	# A gvisor death sits ~30s at memory.high, past the 10s window, but only a calm run resets the count (SHARD-332).
-	id=$(shard create --memory 64 --restart-on-oom=2 "${IMAGE}" /bin/sh -c "${OOM_BOMB}")
+	id=$(shard create --memory 64MiB --restart-on-oom=2 "${IMAGE}" /bin/sh -c "${OOM_BOMB}")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do

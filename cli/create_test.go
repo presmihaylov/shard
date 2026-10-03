@@ -30,7 +30,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512", "--cpus", "2", "--disk", "64", "--restart-on-oom",
+		"--memory", "512MiB", "--cpus", "2", "--disk", "64MiB", "--restart-on-oom",
 		"alpine:3.20",
 	}
 
@@ -137,7 +137,7 @@ func TestParseCreateRestartFlags(t *testing.T) {
 	}
 
 	// A count on --restart-on-oom caps the starts in a row; the bare flag left it unlimited above.
-	req, err = parseCreate([]string{"--memory", "64", "--restart-on-oom=3", "alpine:3.20"})
+	req, err = parseCreate([]string{"--memory", "64MiB", "--restart-on-oom=3", "alpine:3.20"})
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestParseCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
 		}
 	}
 
-	req, err := parseCreate([]string{"--restart", "no", "--memory", "64", "--restart-on-oom", "alpine:3.20"})
+	req, err := parseCreate([]string{"--restart", "no", "--memory", "64MiB", "--restart-on-oom", "alpine:3.20"})
 	if err != nil {
 		t.Fatalf("parseCreate(--restart no --restart-on-oom) with no command: %v", err)
 	}
@@ -177,21 +177,23 @@ func TestParseCreateRejections(t *testing.T) {
 		"an env with a colon":     {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":     {"--env", "=1", "alpine:3.20"},
 		"a negative memory":       {"--memory", "-512", "alpine:3.20"},
+		"a memory with no unit":   {"--memory", "512", "alpine:3.20"},
+		"a disk with no unit":     {"--disk", "64", "alpine:3.20"},
 		"a fraction of a GiB":     {"--memory", "0.5GiB", "alpine:3.20"},
 		"a lower-case unit":       {"--disk", "2gib", "alpine:3.20"},
 		"a memory past the bound": {"--memory", "16385GiB", "alpine:3.20"},
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
-		"a memory that overflows":   {"--memory", "17592186044416", "alpine:3.20"},
+		"a memory that overflows":   {"--memory", "17592186044416MiB", "alpine:3.20"},
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
 		"a negative disk bound":     {"--disk", "-1", "alpine:3.20"},
-		"a disk that overflows":     {"--disk", "17592186044416", "alpine:3.20"},
+		"a disk that overflows":     {"--disk", "17592186044416MiB", "alpine:3.20"},
 		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
 		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20"},
 		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20"},
 		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20"},
 		"a sub-second backoff":      {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20"},
-		"a negative oom limit":      {"--memory", "64", "--restart-on-oom=-1", "alpine:3.20"},
-		"a non-number oom limit":    {"--memory", "64", "--restart-on-oom=lots", "alpine:3.20"},
+		"a negative oom limit":      {"--memory", "64MiB", "--restart-on-oom=-1", "alpine:3.20"},
+		"a non-number oom limit":    {"--memory", "64MiB", "--restart-on-oom=lots", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

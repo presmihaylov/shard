@@ -151,8 +151,8 @@ func TestCloneRootDiskRefusesABoundUnderTheImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("a 1 MiB bound took a bigger image")
 	}
-	if !strings.Contains(err.Error(), "set --disk") || strings.Contains(err.Error(), "blocks") {
-		t.Errorf("CloneRootDisk = %v, want the bound to set and no ext4 internals", err)
+	if !strings.Contains(err.Error(), "MiB or more") || strings.Contains(err.Error(), "blocks") {
+		t.Errorf("CloneRootDisk = %v, want the bound to set with its unit and no ext4 internals", err)
 	}
 	if _, err := os.Stat(dst); err == nil {
 		t.Error("the refused clone stayed behind")
