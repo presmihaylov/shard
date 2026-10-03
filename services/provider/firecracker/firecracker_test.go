@@ -850,6 +850,39 @@ func TestStopAfterARestartKillsAFrozenVMMNoReadMet(t *testing.T) {
 	}
 }
 
+// A stop kills a silent vmm through the pin its adopt took, so a process that holds its pid number since is never hit (SHARD-392).
+func TestStopOfASilentVMMNeverKillsTheProcessOnItsPidSince(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.frozenAfterARestart(t)
+	h.unresponsive(t, spec.ID, pid)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+	h.provider.RenumberSilent(spec.ID, innocent.Process.Pid)
+
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the silent vmm's pid since was hit: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status after Stop = %+v, %v, want stopped", status, err)
+	}
+}
+
 // unresponsive reads a frozen vmm the way a booting daemon does, and proves it reads unresponsive on its pid inside the serve bound.
 func (h *harness) unresponsive(t *testing.T, id string, pid int) models.Status {
 	t.Helper()

@@ -195,6 +195,42 @@ func TestAdoptFindsTheRunningVmmAndKillEndsIt(t *testing.T) {
 	}
 }
 
+// An adopt that a vmm takes and never answers hands back a pin on that peer, which ends it, and an adopt it answers holds no pin past its return (SHARD-392).
+func TestAdoptPinnedHoldsAVmmSilentToTheDeadline(t *testing.T) {
+	root := shortRoot(t)
+	j, cfg := jail(root, "a"), config(root)
+	client, info := start(t, j, cfg)
+
+	_, answered, pin, err := firecracker.AdoptPinned(t.Context(), j.Host(cfg.Socket), j.Host(cfg.Vsock))
+	if err != nil || pin != nil {
+		t.Fatalf("AdoptPinned of an answering vmm = pin %v, %v; want no pin and no error", pin, err)
+	}
+	if answered != info {
+		t.Fatalf("AdoptPinned reported %+v, want %+v", answered, info)
+	}
+	freeze(t, info.PID)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_, silent, pin, err := firecracker.AdoptPinned(ctx, j.Host(cfg.Socket), j.Host(cfg.Vsock))
+	if !errors.Is(err, os.ErrDeadlineExceeded) || pin == nil {
+		t.Fatalf("AdoptPinned of a stopped vmm = pin %v, %v; want a pin and the deadline", pin, err)
+	}
+	t.Cleanup(func() {
+		if err := pin.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if silent.PID != info.PID || pin.PID() != info.PID {
+		t.Fatalf("the silent adopt named pid %d and pinned %d, want the peer %d", silent.PID, pin.PID(), info.PID)
+	}
+
+	if err := pin.Kill(); err != nil {
+		t.Fatalf("Kill through the pin = %v", err)
+	}
+	awaitRefused(t, client)
+}
+
 func awaitRefused(t *testing.T, client *firecracker.Client) {
 	t.Helper()
 

@@ -262,14 +262,17 @@ func (p *Provider) ReleaseDisk(dir string) { bundle.Release(dir) }
 func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
+	unadopted := p.unadopted
 	p.machines = map[string]*machine{}
 	p.unadopted = map[string]*machine{}
 	p.mu.Unlock()
 
 	var errs []error
-	for _, m := range held {
-		if err := m.close(); err != nil {
-			errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+	for _, set := range []map[string]*machine{held, unadopted} {
+		for _, m := range set {
+			if err := m.close(); err != nil {
+				errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
+			}
 		}
 	}
 
