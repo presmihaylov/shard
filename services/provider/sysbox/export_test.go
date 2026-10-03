@@ -1,6 +1,6 @@
 package sysbox
 
-// SetCgroupRoot points a provider at a directory a test owns, so a reopen confirms PID 1 without a real cgroup hierarchy.
+// SetCgroupRoot points a provider at a cgroup tree a test owns, so a unit test reads why a sandbox died, and a reopen confirms PID 1, without root.
 func (p *Provider) SetCgroupRoot(root string) {
 	p.cgroupRoot = root
 }
