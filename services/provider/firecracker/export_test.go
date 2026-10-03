@@ -1,6 +1,8 @@
 package firecracker
 
 import (
+	"context"
+
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 )
@@ -30,6 +32,13 @@ func (p *Provider) EndJudged(id string, client *fcapi.Client, pid int, jail stri
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
 func (p *Provider) SetOwners(chown, ownTap func(name string, uid, gid int) error) {
 	p.chown, p.ownTap = chown, ownTap
+}
+
+// Install is a pause cut after its install and before it ended the vmm, which a test cannot cut inside Pause.
+func (p *Provider) Install(ctx context.Context, id, dir string) error {
+	_, err := p.install(ctx, id, dir)
+
+	return err
 }
 
 // RestoringFile is the marker a cut fork leaves, which a test writes to stand in for a restore the daemon died inside.

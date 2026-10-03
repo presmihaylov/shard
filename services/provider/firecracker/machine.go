@@ -118,6 +118,15 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		if restoring {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
+		frozen, err := p.installed(id)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that (SHARD-427).
+		if frozen {
+			return nil, p.endJudged(id, client, info.PID, r.Jail)
+		}
+		// A pause cut before its install leaves a paused VM with nothing to stand for it, and its stopped guest answers no handshake.
 		if err := client.Resume(); err != nil {
 			return nil, fmt.Errorf("sandbox %s: resume the vm a cut pause left paused: %w", id, err)
 		}
@@ -298,6 +307,24 @@ func (p *Provider) spared(id string) bool {
 	_, held := p.machines[id]
 
 	return held || p.spawning[id]
+}
+
+// installed says a complete snapshot is where the sandbox's pause writes; the pause verb removes the old one first, so a VM frozen beside it is a pause past its install or a restore before its vCPUs ran.
+func (p *Provider) installed(id string) (bool, error) {
+	dir, err := p.cfg.Snapshots(id)
+	if err != nil {
+		return false, fmt.Errorf("find the snapshot directory: %w", err)
+	}
+	path := filepath.Join(dir, checkpointFile)
+	_, err = os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat the checkpoint %s: %w", path, err)
+	}
+
+	return true, nil
 }
 
 // absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.

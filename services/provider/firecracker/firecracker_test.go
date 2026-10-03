@@ -73,13 +73,14 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary:   os.Args[0],
-		Jailer:   os.Args[0],
-		JailBase: filepath.Join(h.root, "j"),
-		Kernel:   h.kernel,
-		Init:     initBinary,
-		Dir:      h.root,
-		Dirs:     h.stateDir,
+		Binary:    os.Args[0],
+		Jailer:    os.Args[0],
+		JailBase:  filepath.Join(h.root, "j"),
+		Kernel:    h.kernel,
+		Init:      initBinary,
+		Dir:       h.root,
+		Dirs:      h.stateDir,
+		Snapshots: h.snapshotDir,
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -168,6 +169,11 @@ func (h *harness) sockets(id string) (string, string) {
 // stateDir answers for any id, as the repository does; only a spec's directory exists.
 func (h *harness) stateDir(id string) (string, error) {
 	return filepath.Join(h.root, "s", id), nil
+}
+
+// snapshotDir answers where a pause of id writes, as the repository does; nothing creates it before a pause.
+func (h *harness) snapshotDir(id string) (string, error) {
+	return filepath.Join(h.root, "snapshots", id), nil
 }
 
 func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
@@ -1541,6 +1547,45 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	}
 	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop after the leftover came back: %v", err)
+	}
+}
+
+// A daemon cut after a pause installed its snapshot leaves the guest frozen beside it; the next daemon ends that vmm and never runs the guest past it (SHARD-427).
+func TestAVMFrozenBesideItsSnapshotIsEndedNotResumed(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, _ := h.runLong(t)
+	dir, _ := h.snapshotDir(spec.ID)
+	record := filepath.Join(spec.StateDir, "vm.json")
+	shape, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Install(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	// A daemon from before this fix left the record as the boot wrote it, and its leftover must be judged the same.
+	if err := os.WriteFile(record, shape, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := h.reopen(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateStopped {
+		t.Fatalf("Status of the frozen leftover = %+v, %v, want stopped", status, err)
+	}
+	if _, info, err := fcapi.Adopt(t.Context(), h.api(spec.ID), ""); err == nil {
+		t.Fatalf("the frozen vmm still answers in state %s after the new daemon read it", info.State)
+	}
+	if err := p.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume from the snapshot the cut pause installed: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || !status.Alive() {
+		t.Fatalf("Status after Resume = %+v, %v, want alive", status, err)
+	}
+	if err := p.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after Resume: %v", err)
 	}
 }
 

@@ -154,6 +154,8 @@ type Config struct {
 	// JailBase is the jailer's chroot base, on the reflink filesystem of Dir and the state directories, so each jail gets its files by reference.
 	JailBase string
 	Dirs     StateDirs
+	// Snapshots answers where a sandbox's pause writes, which an adopt checks before it resumes a paused VM. sandboxstate.Repository.SnapshotDir is what shard passes.
+	Snapshots StateDirs
 	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
 	Log *log.Logger
 }
@@ -189,8 +191,8 @@ type Provider struct {
 }
 
 func New(cfg Config) (*Provider, error) {
-	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil {
-		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base and a state directory lookup")
+	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
+		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a snapshot directory lookup")
 	}
 
 	// The directory is the provider's own, so a fresh data root gets it here and not from every caller.
