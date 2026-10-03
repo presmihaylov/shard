@@ -23,7 +23,7 @@ const (
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
 const LogsVersion = 1
 
-// The kinds a control message carries. The host sends the first seven; the guest answers each with done or failure, and sends the rest on its own.
+// The kinds a control message carries. The host sends the first eight; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
@@ -32,6 +32,7 @@ const (
 	KindReseed    = "reseed"
 	KindFreeze    = "freeze"
 	KindThaw      = "thaw"
+	KindKill      = "kill"
 	KindDone      = "done"
 	KindFailure   = "failure"
 	KindState     = "state"

@@ -57,6 +57,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(models.SupervisorFailedExitCode)
 	}
+	if os.Getenv(bootFailingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := bootFailingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "boot failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeVMMEnv) == "1" {
 		if err := fakeVMM(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake firecracker:", err)

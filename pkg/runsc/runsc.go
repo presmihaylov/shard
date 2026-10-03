@@ -449,7 +449,7 @@ func (r *Runner) Resume(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "resume", id)
 }
 
-// Checkpoint writes the container's state into dir and leaves it paused, so only Delete frees its memory.
+// Checkpoint writes the container's state into dir. The sentry exits after the save, taken or not, and runsc says paused until Delete.
 func (r *Runner) Checkpoint(ctx context.Context, id, dir string) error {
 	if dir == "" {
 		return errors.New("no image path: runsc checkpoint has nowhere to write")

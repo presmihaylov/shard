@@ -21,11 +21,20 @@ const KVMDevice = "/dev/kvm"
 type Selection struct {
 	Provider string
 	Reason   string
+	// Unreadable names the records that would not read while the substrate was chosen, and is empty when all read.
+	Unreadable string
 }
 
 // String is the line shard info prints: the substrate, then the reason it is the substrate.
 func (s Selection) String() string {
 	return s.Provider + ": " + s.Reason
+}
+
+// withNote carries the unreadable-records note onto a selection a later branch returns.
+func (s Selection) withNote(note string) Selection {
+	s.Unreadable = note
+
+	return s
 }
 
 // SelectProvider names the substrate a daemon started over this root with this --provider runs sandboxes
@@ -44,51 +53,65 @@ func selectProvider(named, root, kvm string) (Selection, error) {
 		return Selection{}, fmt.Errorf("--provider %s contradicts the root, which is %s's: %s; name %s or leave --provider out", named, made.Provider, made.Reason, made.Provider)
 	}
 	if named != "" {
-		return Selection{Provider: named, Reason: "named by --provider"}, nil
+		return Selection{Provider: named, Reason: "named by --provider"}.withNote(made.Unreadable), nil
 	}
 	if made.Provider != "" {
 		return made, nil
 	}
 
+	// A root whose every record is unreadable still belongs to one substrate, so a probe must not relabel it; only --provider recovers it (SHARD-343).
+	if made.Unreadable != "" {
+		return Selection{}, fmt.Errorf("the root %s holds records that cannot be read, so its substrate is unknown; pass --provider to name it: %s", root, made.Unreadable)
+	}
+
 	// A Mac has no /dev/kvm and runs its virtual machines through the framework, so the probe below says nothing there.
 	if runtime.GOOS == "darwin" {
-		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}, nil
+		return Selection{Provider: vzvm.Name, Reason: "macOS runs virtual machines through Virtualization.framework"}.withNote(made.Unreadable), nil
 	}
 
 	// A node this process cannot open runs no microVM, so the probe opens it rather than stat it.
 	dev, err := os.OpenFile(kvm, os.O_RDWR, 0)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Selection{Provider: gvisor.Name, Reason: "no " + kvm}, nil
+		return Selection{Provider: gvisor.Name, Reason: "no " + kvm}.withNote(made.Unreadable), nil
 	}
 	if err != nil {
-		return Selection{Provider: gvisor.Name, Reason: fmt.Sprintf("%s does not open: %v", kvm, err)}, nil
+		return Selection{Provider: gvisor.Name, Reason: fmt.Sprintf("%s does not open: %v", kvm, err)}.withNote(made.Unreadable), nil
 	}
 	if err := dev.Close(); err != nil {
 		return Selection{}, fmt.Errorf("close %s: %w", kvm, err)
 	}
 
-	return Selection{Provider: firecracker.Name, Reason: kvm + " opens"}, nil
+	return Selection{Provider: firecracker.Name, Reason: kvm + " opens"}.withNote(made.Unreadable), nil
 }
 
 // madeBy names the substrate that made what is under root, or none for a fresh root. No other one can read it.
 func madeBy(root string) (Selection, error) {
 	recorded, err := sandboxstate.RecordedProvider(root)
-	if err != nil {
+
+	// An unreadable record must not stop a daemon from choosing a substrate; a fatal read still does (SHARD-343).
+	var unreadable *sandboxstate.UnreadableError
+	if err != nil && !errors.As(err, &unreadable) {
 		return Selection{}, fmt.Errorf("read what made the records under %s: %w", root, err)
 	}
+
+	var note string
+	if unreadable != nil {
+		note = fmt.Sprintf("some records cannot be read: %v", err)
+	}
+
 	if recorded != "" {
-		return Selection{Provider: recorded, Reason: "it made the records under " + root}, nil
+		return Selection{Provider: recorded, Reason: "it made the records under " + root, Unreadable: note}, nil
 	}
 
 	// A firecracker root keeps its records inside its data image, which hides them whenever it is not mounted.
 	image := datadir.ImagePath(root)
 	_, err = os.Stat(image)
 	if err == nil {
-		return Selection{Provider: firecracker.Name, Reason: "it made the data image " + image}, nil
+		return Selection{Provider: firecracker.Name, Reason: "it made the data image " + image, Unreadable: note}, nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		return Selection{}, fmt.Errorf("stat %s: %w", image, err)
 	}
 
-	return Selection{}, nil
+	return Selection{Unreadable: note}, nil
 }

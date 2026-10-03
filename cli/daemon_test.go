@@ -123,6 +123,78 @@ func socketClient(root string) *http.Client {
 	}}}
 }
 
+// serveFakeDaemon answers GET /v0/daemon on the socket under root with a fixed record, so a status test needs no provider.
+func serveFakeDaemon(t *testing.T, root string, d api.Daemon) {
+	t.Helper()
+
+	ln, err := net.Listen("unix", filepath.Join(root, api.SocketFile))
+	if err != nil {
+		t.Fatalf("listen on the socket: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v0/daemon", func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(d); err != nil {
+			t.Errorf("encode the daemon record: %v", err)
+		}
+	})
+	srv := &http.Server{Handler: mux}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("serve the fake daemon: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close the fake daemon: %v", err)
+		}
+	})
+}
+
+func TestDaemonStatusExitsNonZeroWhenATaskIsInBackoff(t *testing.T) {
+	root := shortRoot(t)
+	serveFakeDaemon(t, root, api.Daemon{
+		Version:  "v-test",
+		PID:      7,
+		Provider: "gvisor",
+		Tasks: []api.TaskState{
+			{Name: "dns", State: "running"},
+			{Name: "liveness", State: "backoff", Restarts: 3, LastError: "runsc is gone"},
+		},
+	})
+	out := &syncBuffer{}
+
+	err := App{Version: "v-test", Root: root, Out: out}.Run(t.Context(), []string{"daemon", "status"})
+	if err == nil || !strings.Contains(err.Error(), "backoff") || !strings.Contains(err.Error(), "liveness") {
+		t.Errorf("status with a task in backoff returned %v, want an error naming liveness", err)
+	}
+	if s := out.String(); !strings.Contains(s, "liveness") || !strings.Contains(s, "backoff") || !strings.Contains(s, "runsc is gone") {
+		t.Errorf("status output = %q, want the task table with the backoff task", s)
+	}
+}
+
+func TestDaemonStatusListsTheTasksAndSucceedsWhenAllRun(t *testing.T) {
+	root := shortRoot(t)
+	serveFakeDaemon(t, root, api.Daemon{
+		Version:  "v-test",
+		PID:      7,
+		Provider: "gvisor",
+		Tasks: []api.TaskState{
+			{Name: "api", State: "running"},
+			{Name: "dns", State: "running"},
+		},
+	})
+	out := &syncBuffer{}
+
+	if err := (App{Version: "v-test", Root: root, Out: out}).Run(t.Context(), []string{"daemon", "status"}); err != nil {
+		t.Fatalf("status with every task running returned %v, want nil", err)
+	}
+	for _, want := range []string{"task", "state", "restarts", "api", "dns", "running"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status output = %q, want it to contain %q", out.String(), want)
+		}
+	}
+}
+
 // The daemon needs no runsc for this: the socket and the records are plain files, and gvisor keeps a /dev/kvm host from provisioning a data image.
 func TestDaemonAnswersOnTheSocketUntilTheContextEnds(t *testing.T) {
 	root := shortRoot(t)
