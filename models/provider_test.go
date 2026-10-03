@@ -3,9 +3,17 @@ package models_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
+
+// The ticket fixes the grace at 30 seconds, and every stop path reads this one constant (SHARD-460).
+func TestStopGraceIsThirtySeconds(t *testing.T) {
+	if models.StopGrace != 30*time.Second {
+		t.Errorf("StopGrace is %s, want 30s", models.StopGrace)
+	}
+}
 
 // Only Stop takes a sandbox out of Alive, which is the whole keep-alive default.
 func TestStatusIsAliveInEveryStateButStopped(t *testing.T) {

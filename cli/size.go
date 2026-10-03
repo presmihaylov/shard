@@ -52,7 +52,7 @@ func parseMiB(value string) (int64, error) {
 	return whole, nil
 }
 
-// sizeMiB is a size flag that takes a unit suffix and keeps whole MiB, so create and run share one parser.
+// sizeMiB is a size flag that takes a unit suffix and keeps whole MiB, so --memory and --disk share one parser.
 type sizeMiB struct{ mib *int64 }
 
 func (s sizeMiB) String() string {

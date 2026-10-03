@@ -849,7 +849,7 @@ func TestStopForgetsTheSandboxExecs(t *testing.T) {
 		t.Fatalf("CreateExec: %v", err)
 	}
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
@@ -882,7 +882,7 @@ func TestRemoveOfAPausedSandboxForgetsItsExecs(t *testing.T) {
 	// runsc deletes the sandbox once its checkpoint is written.
 	l.provider.status = gone()
 
-	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if held := svc.ExecsHeld("sandbox1"); held != 0 {
@@ -896,7 +896,7 @@ func TestRemoveOfADeadSandboxForgetsItsExecs(t *testing.T) {
 	runExecToItsEnd(t, svc)
 	l.provider.status = gone()
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if held := svc.ExecsHeld("sandbox1"); held != 0 {

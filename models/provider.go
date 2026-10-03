@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// StopGrace is how long a stop or an rm --force gives the entrypoint after SIGTERM before the kill; it is fixed, never a setting (SHARD-460).
+const StopGrace = 30 * time.Second
+
 // Provider runs sandboxes on one substrate. Every verb below means the same thing on every substrate,
 // and the conformance suite is where that is enforced. It is v0 and still changes with each substrate.
 type Provider interface {
@@ -24,7 +27,7 @@ type Provider interface {
 	// After a stop it runs the entrypoint again over the writable layer the stop kept, with the
 	// address and the netns the orchestrator rebuilt first (SHARD-96).
 	Start(ctx context.Context, id string) error
-	// Stop ends the sandbox, and nothing else does. It signals, waits out grace, then kills.
+	// Stop ends the sandbox, and nothing else does. It signals, returns once the entrypoint exits, and kills it when grace runs out.
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	// Remove deletes the substrate's own state, not the shard record and not a snapshot.
 	Remove(ctx context.Context, id string) error

@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -261,14 +260,10 @@ func (c *Client) StartSandbox(ctx context.Context, ref string) (models.Sandbox, 
 	return out, nil
 }
 
-// StopSandbox waits the grace on top of the usual bound, because the daemon does before it answers.
-func (c *Client) StopSandbox(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
-	body := struct {
-		Grace float64 `json:"grace"`
-	}{Grace: grace.Seconds()}
-
+// StopSandbox waits the grace on top of the usual bound, because the daemon may spend it before it answers.
+func (c *Client) StopSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
 	var out models.Sandbox
-	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/stop", body, &out, c.plus(grace)); err != nil {
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/stop", nil, &out, c.plus(models.StopGrace)); err != nil {
 		return models.Sandbox{}, missing(ref, err)
 	}
 
@@ -317,14 +312,14 @@ func (c *Client) grant(ctx context.Context, method, ref, name string) (models.Sa
 	return out, nil
 }
 
-// RemoveSandbox frees a stopped sandbox; force stops a live one first, with grace as that stop's.
-func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool, grace time.Duration) error {
+// RemoveSandbox frees a stopped sandbox; force stops a live one first, with the grace a stop gives.
+func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool) error {
 	path := "/v0/sandboxes/" + url.PathEscape(ref)
 	if force {
-		path += "?force=true&grace=" + strconv.FormatFloat(grace.Seconds(), 'f', -1, 64)
+		path += "?force=true"
 	}
 
-	if err := c.call(ctx, http.MethodDelete, path, nil, nil, c.plus(grace)); err != nil {
+	if err := c.call(ctx, http.MethodDelete, path, nil, nil, c.plus(models.StopGrace)); err != nil {
 		return missing(ref, err)
 	}
 

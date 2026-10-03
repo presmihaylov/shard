@@ -84,20 +84,21 @@ func TestStartSandboxPostsToTheReference(t *testing.T) {
 	}
 }
 
-func TestStopSandboxSendsTheGraceInSeconds(t *testing.T) {
+// The grace is fixed, so the stop carries no body for a daemon to read one from (SHARD-460).
+func TestStopSandboxPostsNoBody(t *testing.T) {
 	var saw seen
 	c := serve(t, shortRoot(t), echo(http.StatusOK, `{"id":"sandbox1","state":"stopped"}`, &saw))
 
-	sb, err := c.StopSandbox(t.Context(), "web", 2500*time.Millisecond)
+	sb, err := c.StopSandbox(t.Context(), "web")
 	if err != nil || sb.State != models.StateStopped {
 		t.Fatalf("StopSandbox = %+v, %v; want stopped", sb, err)
 	}
-	if saw.uri != "/v0/sandboxes/web/stop" || string(saw.body) != `{"grace":2.5}` {
-		t.Errorf("the request was %s with %q, want the stop route with the grace in seconds", saw.uri, saw.body)
+	if saw.method != http.MethodPost || saw.uri != "/v0/sandboxes/web/stop" || len(saw.body) != 0 {
+		t.Errorf("the request was %s %s with %q, want POST /v0/sandboxes/web/stop with no body", saw.method, saw.uri, saw.body)
 	}
 }
 
-// The stop waits the grace out before it answers, so the deadline is the grace on top of the timeout.
+// The stop may wait the fixed grace out before it answers, so the deadline is the grace on top of the timeout.
 func TestStopSandboxWaitsTheGraceOnTopOfTheTimeout(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -105,27 +106,27 @@ func TestStopSandboxWaitsTheGraceOnTopOfTheTimeout(t *testing.T) {
 	})
 	c.Timeout = 20 * time.Millisecond
 
-	if _, err := c.StopSandbox(t.Context(), "sandbox1", time.Second); err != nil {
+	if _, err := c.StopSandbox(t.Context(), "sandbox1"); err != nil {
 		t.Errorf("StopSandbox = %v, want the record once the grace ran out", err)
 	}
 }
 
-func TestRemoveSandboxDeletesWithForceAndGraceOnlyWhenForced(t *testing.T) {
+func TestRemoveSandboxDeletesWithForceOnlyWhenForced(t *testing.T) {
 	var saw seen
 	c := serve(t, shortRoot(t), echo(http.StatusNoContent, "", &saw))
 
-	if err := c.RemoveSandbox(t.Context(), "web", false, time.Second); err != nil {
+	if err := c.RemoveSandbox(t.Context(), "web", false); err != nil {
 		t.Fatalf("RemoveSandbox = %v", err)
 	}
 	if saw.method != http.MethodDelete || saw.uri != "/v0/sandboxes/web" {
 		t.Errorf("the request was %s %s, want DELETE /v0/sandboxes/web", saw.method, saw.uri)
 	}
 
-	if err := c.RemoveSandbox(t.Context(), "web", true, 3*time.Second); err != nil {
+	if err := c.RemoveSandbox(t.Context(), "web", true); err != nil {
 		t.Fatalf("RemoveSandbox --force = %v", err)
 	}
-	if saw.uri != "/v0/sandboxes/web?force=true&grace=3" {
-		t.Errorf("the forced request was %s, want the force and the grace in the query", saw.uri)
+	if saw.uri != "/v0/sandboxes/web?force=true" {
+		t.Errorf("the forced request was %s, want the force and no grace in the query", saw.uri)
 	}
 }
 
@@ -203,8 +204,8 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 
 	calls := map[string]func() error{
 		"start":  func() error { _, err := c.StartSandbox(t.Context(), "ghost"); return err },
-		"stop":   func() error { _, err := c.StopSandbox(t.Context(), "ghost", time.Second); return err },
-		"remove": func() error { return c.RemoveSandbox(t.Context(), "ghost", false, time.Second) },
+		"stop":   func() error { _, err := c.StopSandbox(t.Context(), "ghost"); return err },
+		"remove": func() error { return c.RemoveSandbox(t.Context(), "ghost", false) },
 		"pause":  func() error { _, err := c.PauseSandbox(t.Context(), "ghost"); return err },
 		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "ghost"); return err },
 		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "ghost", sandbox.CopyRequest{}); return err },
@@ -243,7 +244,7 @@ func TestARefusalDecodesIntoAnAPIErrorWithItsCode(t *testing.T) {
 func TestAConflictCarriesTheDaemonsMessage(t *testing.T) {
 	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":{"code":"sandbox_not_stopped","message":"sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"}}`))
 
-	err := c.RemoveSandbox(t.Context(), "sandbox1", false, time.Second)
+	err := c.RemoveSandbox(t.Context(), "sandbox1", false)
 	if err == nil || err.Error() != "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force" {
 		t.Errorf("RemoveSandbox = %v, want the daemon's message as it came", err)
 	}

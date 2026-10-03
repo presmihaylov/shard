@@ -237,8 +237,8 @@ static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<r
 the guest over vsock alone, through the socket that firecracker proxies it on, so `exec`, `logs`
 and the exit arrive the way they do on `vz`. The vmm has no stop of its own. A stop tells
 `shard-init` to end the entrypoint and reboot, because a reboot is the one guest exit that makes
-firecracker end its process (a power off leaves it running). When the grace runs out, the stop
-kills the process. A guest that the host can no longer reach over vsock is still a running VM.
+firecracker end its process (a power off leaves it running). When the 30 s grace runs out, the
+stop kills the process. A guest that the host can no longer reach over vsock is still a running VM.
 `inspect` says so, and `stop` kills it without waiting out a grace that the guest could not hear. A
 daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
 left paused, because that stopped guest would answer no handshake. A vmm that does not answer that
@@ -558,6 +558,8 @@ outlives the `shard daemon` that created it, and the next daemon finds it by tha
 - a sandbox outlives its entrypoint, and only `Stop` ends one;
 - `Stop` signals first and kills only when the grace runs out, against an entrypoint that ignores
   SIGTERM and against one that does not;
+- `Stop` returns as soon as an entrypoint that exits on SIGTERM is gone, and never waits out the
+  fixed 30 s grace (SHARD-460);
 - `Stop` is idempotent, ends a sandbox that never started, and survives a `Remove`;
 - `Remove` force-ends a running sandbox;
 - `Status` after `Create`, and `Status` on an id the substrate never held;

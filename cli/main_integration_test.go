@@ -34,9 +34,6 @@ const hostInitPath = "/usr/local/bin/shard-init"
 
 const testImage = "alpine:3.20"
 
-// stopGrace is generous: the entrypoint is already gone by the time the cleanup stops the sandbox.
-const stopGrace = 10 * time.Second
-
 // waitBudget bounds a wait for something the daemon does on its own, after the call it answers.
 const waitBudget = 30 * time.Second
 
@@ -163,7 +160,7 @@ func removeEverySandbox(root string) error {
 
 	var errs []error
 	for _, left := range listed.Sandboxes {
-		if err := c.RemoveSandbox(ctx, left.ID, true, stopGrace); err != nil {
+		if err := c.RemoveSandbox(ctx, left.ID, true); err != nil {
 			errs = append(errs, fmt.Errorf("remove the sandbox %s the tests left: %w", left.ID, err))
 		}
 	}
@@ -407,7 +404,7 @@ func cleanUp(t *testing.T, app App, id string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := daemonClient(app).RemoveSandbox(ctx, id, true, stopGrace); err != nil {
+	if err := daemonClient(app).RemoveSandbox(ctx, id, true); err != nil {
 		var missing *client.NotFoundError
 		if !errors.As(err, &missing) {
 			t.Logf("remove %s: %v", id, err)

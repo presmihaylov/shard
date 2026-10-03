@@ -143,12 +143,14 @@ var helps = map[string]verbHelp{
 		example: "shard inspect web",
 	},
 	"stop": {
-		usage:   []string{"stop [--time <duration>] <id|name>"},
+		usage:   []string{"stop <id|name>"},
 		summary: "stop a sandbox; its files stay for start or clone",
 		args:    []row{sandboxArg},
-		flags:   []flagHelp{{"--time <duration>", "how long the entrypoint gets after SIGTERM before it is killed", short(sandbox.DefaultStopGrace)}},
-		notes:   []string{"stop is the only verb that ends a sandbox. Its memory goes, and its files stay."},
-		example: "shard stop --time 30s web",
+		notes: []string{
+			"stop sends SIGTERM to the entrypoint and returns as soon as it exits. An entrypoint still running after " + short(models.StopGrace) + " is killed. The grace is fixed.",
+			"stop is the only verb that ends a sandbox. Its memory goes, and its files stay.",
+		},
+		example: "shard stop web",
 	},
 	"start": {
 		usage:   []string{"start <id|name>"},
@@ -158,14 +160,16 @@ var helps = map[string]verbHelp{
 		example: "shard start web",
 	},
 	"rm": {
-		usage:   []string{"rm [--force] [--time <duration>] <id|name>"},
+		usage:   []string{"rm [--force] <id|name>"},
 		summary: "delete a stopped or failed sandbox and its files",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"--force", "stop a running or paused sandbox first, and warn rather than fail on one that does not exist", ""},
-			{"--time <duration>", "how long --force gives the entrypoint before it is killed", short(sandbox.DefaultStopGrace)},
 		},
-		notes:   []string{"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull."},
+		notes: []string{
+			"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull.",
+			"--force stops the sandbox as stop does, with the same " + short(models.StopGrace) + " grace, and then deletes it.",
+		},
 		example: "shard rm --force web",
 	},
 	"pause": {
