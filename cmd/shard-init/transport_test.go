@@ -289,6 +289,59 @@ func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 	t.Fatalf("pid %d still runs after the cancel", pid)
 }
 
+// A hang-up with no cancel frame is a daemon restart: the command runs on and its output drains, as on gVisor (SHARD-270).
+func TestTransportExecOutlivesAHangUp(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	conn, err := dial(ctx, supervisor.ExecPort)
+	if err != nil {
+		t.Fatalf("open an exec connection: %v", err)
+	}
+	marker := filepath.Join(shortDir(t), "drained")
+	if err := supervisor.WriteMessage(conn, supervisor.ExecHeader{Argv: childArgv("spew:" + marker)}); err != nil {
+		t.Fatalf("write the header: %v", err)
+	}
+	stream, payload, err := supervisor.ReadFrame(conn)
+	if err != nil || stream != supervisor.StreamStarted {
+		t.Fatalf("first frame = %d %v, want the started frame", stream, err)
+	}
+	var started supervisor.StartedFrame
+	if err := supervisor.DecodeFrame(payload, &started); err != nil {
+		t.Fatalf("decode the started frame: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(started.PID, syscall.SIGKILL); err != nil {
+			t.Errorf("kill pid %d: %v", started.PID, err)
+		}
+	})
+	if err := conn.Close(); err != nil {
+		t.Fatalf("hang up: %v", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the command never got past its output after the hang-up: %v", err)
+	}
+	if err := syscall.Kill(started.PID, 0); err != nil {
+		t.Fatalf("pid %d is gone after a hang-up: %v", started.PID, err)
+	}
+}
+
 // syncBuffer is a bytes.Buffer the logs goroutine and the test can share.
 type syncBuffer struct {
 	mu  sync.Mutex
