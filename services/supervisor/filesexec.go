@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -109,6 +110,8 @@ type filesConn struct {
 	// stdinOnce lets CloseWrite and shut both close stdin, whichever comes first.
 	stdinOnce sync.Once
 	stdinErr  error
+	// reported is set once a Read has answered how the exec failed, which every caller joins to its Close.
+	reported atomic.Bool
 }
 
 func (c *filesConn) Write(p []byte) (int, error) {
@@ -124,17 +127,22 @@ func (c *filesConn) Read(p []byte) (int, error) {
 
 	<-c.done
 	if failed := c.result(); failed != nil {
+		c.reported.Store(true)
+
 		return n, failed
 	}
 
 	return n, io.EOF
 }
 
-// Close shuts both ends, which unblocks the guest whichever way it waits, and answers once the exec has ended.
+// Close shuts both ends, which unblocks the guest whichever way it waits, and answers once the exec has ended, with its failure unless a Read gave it.
 func (c *filesConn) Close() error {
 	c.stop()
 	c.shut()
 	<-c.done
+	if c.reported.Load() {
+		return c.shutErr
+	}
 
 	return errors.Join(c.shutErr, c.result())
 }

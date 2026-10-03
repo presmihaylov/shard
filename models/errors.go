@@ -67,3 +67,15 @@ type UnresponsiveError struct {
 func (e *UnresponsiveError) Error() string {
 	return fmt.Sprintf("sandbox %s is %s on %s: %s takes a running sandbox: %s", e.Sandbox, StateUnresponsive, e.Provider, e.Verb, e.Reason)
 }
+
+// LostError is a verb that failed after the substrate had already ended the sandbox, so its record ends failed.
+type LostError struct {
+	Sandbox string
+	Err     error
+}
+
+func (e *LostError) Error() string {
+	return fmt.Sprintf("sandbox %s is lost: %v", e.Sandbox, e.Err)
+}
+
+func (e *LostError) Unwrap() error { return e.Err }

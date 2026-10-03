@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
@@ -89,6 +90,8 @@ type fakeLifecycle struct {
 	content   string
 	bodyErr   error
 	closedErr error
+	// hangUpErr holds an archive open after its content until the request ends, then reads as the exec the hang-up shut.
+	hangUpErr error
 	// entries is what an ls answers, listErr how it fails after them; dir is the mkdir's body, recursive the delete's flag.
 	entries   []models.FileEntry
 	listErr   error
@@ -154,7 +157,7 @@ func (f *fakeLifecycle) DeleteFile(_ context.Context, ref, path string, recursiv
 }
 
 // ReadArchive answers content as the tar, cut by bodyErr the way ReadFile's is.
-func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
+func (f *fakeLifecycle) ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error) {
 	f.ref, f.fileOp, f.filePath = ref, "pack", path
 	if f.err != nil {
 		return models.FileStat{}, nil, f.err
@@ -163,6 +166,9 @@ func (f *fakeLifecycle) ReadArchive(_ context.Context, ref, path string) (models
 	body := io.Reader(strings.NewReader(f.content))
 	if f.bodyErr != nil {
 		body = io.MultiReader(body, iotest.ErrReader(f.bodyErr))
+	}
+	if f.hangUpErr != nil {
+		body = io.MultiReader(body, untilDone{ctx: ctx, err: f.hangUpErr})
 	}
 
 	return f.stat, fakeBody{Reader: body, err: f.closedErr}, nil
@@ -208,6 +214,18 @@ type fakeBody struct {
 }
 
 func (b fakeBody) Close() error { return b.err }
+
+// untilDone blocks until ctx ends, then fails with err.
+type untilDone struct {
+	ctx context.Context
+	err error
+}
+
+func (u untilDone) Read([]byte) (int, error) {
+	<-u.ctx.Done()
+
+	return 0, u.err
+}
 
 func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	f.created = req
@@ -711,6 +729,35 @@ func TestStartAnswersTheRecord(t *testing.T) {
 	}
 	if s.verbs.ref != "web" {
 		t.Errorf("the orchestrator got the reference %q, want web", s.verbs.ref)
+	}
+}
+
+// A start the substrate broke is named in the daemon log, and one it refused stays the client's alone (SHARD-416).
+func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
+	cases := map[string]struct {
+		err    error
+		status int
+		logged bool
+	}{
+		"broke":   {err: errors.New("shard-init failed at boot with exit 125: mount /dev/vdb on /overlay: read-only file system"), status: http.StatusInternalServerError, logged: true},
+		"refused": {err: sandboxstate.ErrNotFound, status: http.StatusNotFound},
+	}
+
+	for name, c := range cases {
+		s := seed(t)
+		s.verbs.err = c.err
+		var out bytes.Buffer
+		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, &out)
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
+
+		if w.Code != c.status {
+			t.Errorf("%s: the start answered %d, want %d", name, w.Code, c.status)
+		}
+		if logged := strings.Contains(out.String(), "start sandbox web: "+c.err.Error()); logged != c.logged {
+			t.Errorf("%s: the daemon log holds %q, want the failure logged %t", name, out.String(), c.logged)
+		}
 	}
 }
 

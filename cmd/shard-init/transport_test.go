@@ -423,6 +423,81 @@ func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	}
 }
 
+func TestTransportKillForcesTheEntrypointDown(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// KindKill is the forced stop: it SIGKILLs the entrypoint, freezes the rest, then flushes before the host cuts the VM.
+	if err := c.Kill(t.Context()); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	exit := awaitKind(t, c, supervisor.KindExit)
+	if exit.Exit == nil || exit.Exit.Signal != int(syscall.SIGKILL) {
+		t.Fatalf("exit = %+v, want signal SIGKILL", exit.Exit)
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the kill")
+	}
+}
+
+// A kill of a guest whose entrypoint already exited ends nothing, so a host lost before the cut must read the freeze off the replay and thaw it (SHARD-344).
+func TestTransportKillReplaysFrozenOnTheNextHost(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	// The entrypoint exits, so the kill finds none to forward to and the guest stays up for the cut.
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:0")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindExit)
+	if err := c.Kill(t.Context()); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	_ = c.Close()
+
+	next, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	defer next.Close()
+	if state := awaitKind(t, next, supervisor.KindState); !state.Frozen {
+		t.Fatal("the replay after a kill says not frozen, so the next host would strand it")
+	}
+
+	// A stop still ends the guest the kill left frozen.
+	if err := next.Stop(t.Context()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not exit after the stop")
+	}
+}
+
 // A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
 func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 	cmd, dial := startTransport(t)
@@ -575,5 +650,91 @@ func TestAFreezeNoHostHeardIsUndone(t *testing.T) {
 	}
 	if !tr.frozen.Load() {
 		t.Fatal("the root is not frozen after a freeze its host heard")
+	}
+}
+
+// bootFailure runs failBoot over unix sockets, as a guest whose mounts failed before any listener was up.
+func bootFailure(t *testing.T, cause error) (<-chan error, supervisor.Dialer) {
+	t.Helper()
+	dir := shortDir(t)
+	listen, err := listenerFor("unix:" + dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := make(chan error, 1)
+	go func() { failed <- failBoot(listen, fmt.Errorf("%w: %w", errSupervisor, cause)) }()
+
+	return failed, func(ctx context.Context, port uint32) (net.Conn, error) {
+		var d net.Dialer
+
+		return d.DialContext(ctx, "unix", filepath.Join(dir, fmt.Sprintf("%d.sock", port)))
+	}
+}
+
+// A boot that fails before the listeners exist tells the host that dials, so a start answers with the reason, not a 30s timeout (SHARD-416).
+func TestABootFailureOpensTheControlConnectionWithTheDeath(t *testing.T) {
+	cause := errors.New("mount /dev/vdb on /overlay: read-only file system")
+	failed, dial := bootFailure(t, cause)
+
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.Next()
+	if err != nil {
+		t.Fatalf("read the opening message: %v", err)
+	}
+	if m.Kind != supervisor.KindSupervisorFailed || m.Exit == nil || m.Exit.Code != models.SupervisorFailedExitCode || !strings.Contains(m.Error, cause.Error()) {
+		t.Fatalf("the host read %+v, want supervisor-failed with code 125 and the cause", m)
+	}
+
+	// The halt follows the exit at once, so the guest holds on until the host hangs up.
+	select {
+	case err := <-failed:
+		t.Fatalf("failBoot returned %v while the host was still attached", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.Close()
+	err = <-failed
+	if !errors.Is(err, errSupervisor) || err.Error() != fmt.Errorf("%w: %w", errSupervisor, cause).Error() {
+		t.Fatalf("failBoot returned %v, want only the supervisor error and its cause", err)
+	}
+	if exitCodeFor(err) != models.SupervisorFailedExitCode {
+		t.Fatalf("the exit code is %d, want 125", exitCodeFor(err))
+	}
+}
+
+func TestABootFailureGivesUpWhenNoHostComes(t *testing.T) {
+	old := failureGrace
+	failureGrace = 100 * time.Millisecond
+	t.Cleanup(func() { failureGrace = old })
+
+	failed, _ := bootFailure(t, errors.New("unshare the cgroup namespace: operation not permitted"))
+	err := <-failed
+	if !errors.Is(err, errSupervisor) || !strings.Contains(err.Error(), "no host attached") {
+		t.Fatalf("failBoot returned %v, want the supervisor error and no host", err)
+	}
+	if exitCodeFor(err) != models.SupervisorFailedExitCode {
+		t.Fatalf("the exit code is %d, want 125", exitCodeFor(err))
+	}
+}
+
+func TestABootFailureGivesUpOnAHostThatNeverHangsUp(t *testing.T) {
+	old := failureGrace
+	failureGrace = 200 * time.Millisecond
+	t.Cleanup(func() { failureGrace = old })
+
+	failed, dial := bootFailure(t, errors.New("chroot onto the root disk: no such file or directory"))
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if m, err := c.Next(); err != nil || m.Kind != supervisor.KindSupervisorFailed {
+		t.Fatalf("the host read %+v, %v, want supervisor-failed", m, err)
+	}
+	err = <-failed
+	if !errors.Is(err, errSupervisor) || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("failBoot returned %v, want the supervisor error and the wait that ran out", err)
 	}
 }

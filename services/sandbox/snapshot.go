@@ -57,7 +57,12 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
-	err = s.cfg.Provider.Pause(ctx, id, dir)
+	// A client that hangs up mid-checkpoint would cut a save the guest does not survive (SHARD-336).
+	base := context.WithoutCancel(ctx)
+	pctx, cancel := context.WithTimeout(base, s.pauseBudget())
+	defer cancel()
+
+	err = s.cfg.Provider.Pause(pctx, id, dir)
 	// The silent process already spent its probe bound, so the record takes the reason without a second one.
 	if silent, ok := errors.AsType[*models.UnresponsiveError](err); ok {
 		if err := s.recordUnresponsive(id, sb, silent.Reason, s.report); err != nil {
@@ -69,7 +74,13 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, wrongState(id, sb, "pause takes a running sandbox", models.CodeSandboxNotRunning)
 	}
 	if err != nil {
-		return models.Sandbox{}, errors.Join(err, s.reconcileGone(ctx, id, dir))
+		var lost *models.LostError
+		if errors.As(err, &lost) {
+			return models.Sandbox{}, s.fail(base, id, err)
+		}
+
+		// A pause that spent its budget leaves pctx done, so the reconcile probes under a budget of its own.
+		return models.Sandbox{}, errors.Join(err, s.reconcileGone(base, id, dir))
 	}
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
@@ -89,7 +100,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 // reconcileGone is for a pause that failed: the sandbox still runs and the record is right, or the
 // snapshot is complete and only the host cleanup failed, or the substrate lost it on the way.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
-	status, err := s.cfg.Provider.Status(ctx, id)
+	status, err := s.status(ctx, id, "pause")
 	if err != nil {
 		return err
 	}
@@ -97,7 +108,7 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 		return nil
 	}
 
-	// The checkpoint is the last file the provider writes before it deletes, so its presence means paused.
+	// The checkpoint is the last file the provider writes before it deletes, and a pause that lost the guest ended failed above.
 	held, err := hasCheckpoint(dir)
 	if err != nil {
 		return err

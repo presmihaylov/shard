@@ -53,7 +53,7 @@ func serveTransport(name string, boot guestBoot) error {
 	// The re-exec in confine runs this again, over a root disk already moved onto.
 	if boot.set() && os.Getenv(capbsetEnv) == "" {
 		if err := bootGuest(boot); err != nil {
-			return fmt.Errorf("%w: %w", errSupervisor, err)
+			return failBoot(listen, fmt.Errorf("%w: %w", errSupervisor, err))
 		}
 	}
 	// The boundary is for the VM; a test runs the same mode unprivileged and is never PID 1.
@@ -61,7 +61,7 @@ func serveTransport(name string, boot guestBoot) error {
 	if os.Getpid() == 1 {
 		bound, err = confine()
 		if err != nil {
-			return fmt.Errorf("%w: %w", errSupervisor, err)
+			return failBoot(listen, fmt.Errorf("%w: %w", errSupervisor, err))
 		}
 		root, err = rootDisk()
 		if err != nil {
@@ -129,6 +129,46 @@ func (t *transport) fail(err error) error {
 			return fmt.Errorf("%w; no host attached to hear it", err)
 		}
 	}
+}
+
+// failBoot carries a death from before the listeners exist to the first host that dials, as the message its state would open with (SHARD-416).
+func failBoot(listen func(uint32) (net.Listener, error), err error) error {
+	l, listenErr := listen(supervisor.ControlPort)
+	if listenErr != nil {
+		return fmt.Errorf("%w; listen for a host to hear it: %w", err, listenErr)
+	}
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	got := make(chan accepted, 1)
+	go func() {
+		conn, err := l.Accept()
+		got <- accepted{conn: conn, err: err}
+	}()
+
+	var a accepted
+	select {
+	case a = <-got:
+	case <-time.After(failureGrace):
+		return errors.Join(fmt.Errorf("%w; no host attached to hear it", err), l.Close())
+	}
+	if a.err != nil {
+		return errors.Join(fmt.Errorf("%w; accept a host to hear it: %w", err, a.err), l.Close())
+	}
+	report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: err.Error(), Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
+	if writeErr := supervisor.WriteMessage(a.conn, report); writeErr != nil {
+		return errors.Join(fmt.Errorf("%w; tell the host: %w", err, writeErr), a.conn.Close(), l.Close())
+	}
+	// The halt follows the exit at once and can drop bytes still in flight, so the host hanging up is what says it read them.
+	if deadlineErr := a.conn.SetReadDeadline(time.Now().Add(failureGrace)); deadlineErr != nil {
+		return errors.Join(fmt.Errorf("%w; wait for the host to hang up: %w", err, deadlineErr), a.conn.Close(), l.Close())
+	}
+	if _, readErr := io.Copy(io.Discard, a.conn); readErr != nil {
+		return errors.Join(fmt.Errorf("%w; wait for the host to hang up: %w", err, readErr), a.conn.Close(), l.Close())
+	}
+
+	return errors.Join(err, a.conn.Close(), l.Close())
 }
 
 // detach forgets the control connection, all of them for nil, so a report waits for the next host instead of a dead one.
@@ -271,6 +311,11 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			continue
 		}
+		if m.Kind == supervisor.KindKill {
+			t.forceStop(conn, m.ID)
+
+			continue
+		}
 		t.answer(conn, m.ID, t.handle(m))
 	}
 }
@@ -365,6 +410,41 @@ func freezeGuest(bound, root *os.File) error {
 	}
 
 	return nil
+}
+
+// forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest and flushes, so the host's cut loses nothing.
+// A host replaced before the answer may have read the guest unfrozen off its replay, so the freeze is undone, as a pause's is.
+func (t *transport) forceStop(conn net.Conn, id int) {
+	t.freezing.Lock()
+	defer t.freezing.Unlock()
+
+	err := t.killAndFreeze()
+	if err == nil {
+		t.frozen.Store(true)
+	}
+	if t.answer(conn, id, err) || err != nil {
+		return
+	}
+	if err := t.thaw(); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: thaw a kill no host heard:", err)
+	}
+}
+
+// killAndFreeze kills the entrypoint, holds every exec and child so none dirties the disk, then flushes it before the cut.
+func (t *transport) killAndFreeze() error {
+	var stopErr error
+	t.g.run(func() {
+		// A gone entrypoint ends nothing here: the published freeze, not a power off, is what a lost cut recovers from.
+		_, stopErr = t.g.stop(syscall.SIGKILL)
+	})
+	if stopErr != nil {
+		return stopErr
+	}
+	if err := freezeBound(t.bound); err != nil {
+		return err
+	}
+
+	return syncDisk()
 }
 
 // thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.

@@ -24,6 +24,9 @@ func (a App) info(args []string) error {
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
 	fmt.Fprintf(w, "provider\t%s\n", selected.Provider)
 	fmt.Fprintf(w, "reason\t%s\n", selected.Reason)
+	if selected.Unreadable != "" {
+		fmt.Fprintf(w, "unreadable\t%s\n", selected.Unreadable)
+	}
 
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("write the output: %w", err)
