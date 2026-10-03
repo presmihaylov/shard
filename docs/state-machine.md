@@ -102,6 +102,11 @@ of 4 s and a reason that names the vmm's pid, both for a vmm that the daemon hol
 a restart meets only by its socket (SHARD-392, SHARD-439). There the pin is a pidfd that the attach
 or the adopt took on a connection that the vmm answered, or never answered.
 
+**`stop` gives the entrypoint a fixed 30 s grace.** The stop sends SIGTERM and ends as soon as the
+entrypoint exits. An entrypoint that is still running after 30 s is killed. `rm --force` stops a live
+sandbox the same way before it deletes it. Nothing sets the grace: `--time` and the API `grace` are
+removed (SHARD-460).
+
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the
 record. If the sandbox is not gone within 5 seconds of the substrate returning, the verb fails and

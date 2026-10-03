@@ -119,7 +119,7 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 	}
 
 	// rm frees it without force: a failed create holds no live process, so the record and everything under it goes.
-	if err := daemonClient(app).RemoveSandbox(t.Context(), sb.ID, false, stopGrace); err != nil {
+	if err := daemonClient(app).RemoveSandbox(t.Context(), sb.ID, false); err != nil {
 		t.Fatalf("rm of a failed sandbox: %v", err)
 	}
 

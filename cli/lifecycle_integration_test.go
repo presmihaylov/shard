@@ -15,7 +15,7 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// stubbornEntrypoint ignores SIGTERM, so only the kill after the grace ends it.
+// stubbornEntrypoint ignores SIGTERM, so only the kill after the fixed grace ends it.
 var stubbornEntrypoint = []string{"/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"}
 
 // TestStopKeepsTheAddressAndTheRecordOnTheHost is the boundary between the two verbs. The processes end and the
@@ -28,10 +28,15 @@ func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 
 	before := record(t, app, id)
 
+	started := time.Now()
 	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
+	// The entrypoint exits on SIGTERM, so the stop ends with it and never waits the grace out (SHARD-460).
+	if took := time.Since(started); took > models.StopGrace/3 {
+		t.Errorf("the stop took %s of the %s grace, so it waited past an entrypoint that exited on SIGTERM", took, models.StopGrace)
+	}
 	if alive(t, before.PID) {
 		t.Errorf("the sandbox process %d outlived the stop", before.PID)
 	}
@@ -87,7 +92,7 @@ func TestStopAndStartAgainNeverTripOverTheLinkTheOtherTook(t *testing.T) {
 }
 
 // TestStopKillsAnEntrypointThatIgnoresTheSignal is the other half of the grace: an entrypoint that
-// never answers is killed, and nothing then records how it ended.
+// never answers is killed once the fixed grace runs out, and nothing then records how it ended.
 func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
 	app, out := newCreateApp(t)
 
@@ -96,15 +101,15 @@ func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
 
 	before := record(t, app, id)
 
-	grace := 2 * time.Second
 	started := time.Now()
-	if err := app.Run(t.Context(), []string{"stop", "--time", grace.String(), id}); err != nil {
+	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	took := time.Since(started)
 
-	if took < grace {
-		t.Errorf("the stop took %s, want it to wait out the %s grace before it killed", took, grace)
+	// The slack covers the kill, the unmount and the settle after the grace (SHARD-460).
+	if took < models.StopGrace || took > models.StopGrace+15*time.Second {
+		t.Errorf("the stop took %s, want it to wait out the %s grace and then kill", took, models.StopGrace)
 	}
 	if alive(t, before.PID) {
 		t.Errorf("the sandbox process %d outlived the kill", before.PID)

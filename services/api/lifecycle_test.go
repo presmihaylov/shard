@@ -40,7 +40,6 @@ type fakeLifecycle struct {
 	granted string
 	// attached is the policy the attach named.
 	attached string
-	grace    time.Duration
 	force    bool
 
 	// exec is the request the client sent, and input what it typed at the command.
@@ -282,14 +281,14 @@ func (f *fakeLifecycle) DetachPolicy(_ context.Context, ref string) (models.Sand
 	return models.Sandbox{ID: ref}, f.err
 }
 
-func (f *fakeLifecycle) Stop(_ context.Context, ref string, grace time.Duration) (models.Sandbox, error) {
-	f.ref, f.grace = ref, grace
+func (f *fakeLifecycle) Stop(_ context.Context, ref string) (models.Sandbox, error) {
+	f.ref = ref
 
 	return models.Sandbox{ID: ref, State: models.StateStopped}, f.err
 }
 
-func (f *fakeLifecycle) Remove(_ context.Context, ref string, force bool, grace time.Duration) error {
-	f.ref, f.force, f.grace = ref, force, grace
+func (f *fakeLifecycle) Remove(_ context.Context, ref string, force bool) error {
+	f.ref, f.force = ref, force
 
 	return f.err
 }
@@ -825,60 +824,70 @@ func TestForkAndCloneAre400ForABodyTheyCannotDecode(t *testing.T) {
 	}
 }
 
-func TestStopPassesTheGraceInSeconds(t *testing.T) {
+func TestStopAnswers200WithTheRecordForAnEmptyBody(t *testing.T) {
 	s := seed(t)
 
-	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", `{"grace":2.5}`)
-	if status != http.StatusOK || got["state"] != "stopped" {
-		t.Fatalf("POST stop answered %d %v, want 200 with the record", status, got)
-	}
-	if s.verbs.grace != 2500*time.Millisecond {
-		t.Errorf("the orchestrator got the grace %s, want 2.5s", s.verbs.grace)
-	}
-
-	send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", "")
-	if s.verbs.grace != sandbox.DefaultStopGrace {
-		t.Errorf("an empty body gave the grace %s, want the default %s", s.verbs.grace, sandbox.DefaultStopGrace)
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", "")
+	if status != http.StatusOK || got["state"] != "stopped" || s.verbs.ref != "sandbox1" {
+		t.Errorf("POST stop answered %d %v for %q, want 200 with the record of sandbox1", status, got, s.verbs.ref)
 	}
 }
 
-func TestStopIs400ForANegativeGrace(t *testing.T) {
+// The grace is fixed, so an old client's grace is refused by name rather than read as honoured (SHARD-460).
+func TestStopIs400ForTheRemovedGrace(t *testing.T) {
 	s := seed(t)
 
-	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", `{"grace":-1}`)
-	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, got).message, "negative") {
-		t.Errorf("a negative grace answered %d %v, want 400", status, got)
+	for _, body := range []string{`{"grace":2.5}`, `{"grace":0}`} {
+		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", body)
+		refusal := errorOf(t, got)
+		if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, `unknown field "grace"`) {
+			t.Errorf("POST stop with %s answered %d %v, want 400 naming the grace", body, status, got)
+		}
 	}
 	if s.verbs.ref != "" {
-		t.Error("a negative grace still reached the orchestrator")
+		t.Error("a stop with the removed grace still reached the orchestrator")
 	}
 }
 
-func TestDeleteAnswers204AndPassesForceAndGrace(t *testing.T) {
+func TestDeleteAnswers204AndPassesForce(t *testing.T) {
 	s := seed(t)
 
-	status, _ := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1?force=true&grace=3", "")
+	status, _ := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1?force=true", "")
 	if status != http.StatusNoContent {
 		t.Fatalf("DELETE answered %d, want 204", status)
 	}
-	if s.verbs.ref != "sandbox1" || !s.verbs.force || s.verbs.grace != 3*time.Second {
-		t.Errorf("the orchestrator got ref=%q force=%v grace=%s, want sandbox1 true 3s", s.verbs.ref, s.verbs.force, s.verbs.grace)
+	if s.verbs.ref != "sandbox1" || !s.verbs.force {
+		t.Errorf("the orchestrator got ref=%q force=%v, want sandbox1 true", s.verbs.ref, s.verbs.force)
 	}
 
 	send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1", "")
-	if s.verbs.force || s.verbs.grace != sandbox.DefaultStopGrace {
-		t.Errorf("a bare delete gave force=%v grace=%s, want false and the default", s.verbs.force, s.verbs.grace)
+	if s.verbs.force {
+		t.Error("a bare delete gave force=true, want false")
+	}
+}
+
+// Any spelling of the removed grace is refused by name, even an empty one, so no old client reads it as honoured (SHARD-460).
+func TestDeleteIs400ForTheRemovedGrace(t *testing.T) {
+	s := seed(t)
+
+	for _, query := range []string{"?force=true&grace=3", "?grace=0", "?grace="} {
+		status, got := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1"+query, "")
+		refusal := errorOf(t, got)
+		if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, "the query grace is removed") {
+			t.Errorf("DELETE %s answered %d %v, want 400 naming the grace", query, status, got)
+		}
+	}
+	if s.verbs.ref != "" {
+		t.Error("a delete with the removed grace still reached the orchestrator")
 	}
 }
 
 func TestDeleteIs400ForAQueryItCannotRead(t *testing.T) {
 	s := seed(t)
 
-	for _, query := range []string{"?force=yes", "?grace=soon", "?grace=-1"} {
-		status, got := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1"+query, "")
-		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
-			t.Errorf("DELETE %s answered %d %v, want 400", query, status, got)
-		}
+	status, got := send(t, s.server, http.MethodDelete, "/v0/sandboxes/sandbox1?force=yes", "")
+	if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
+		t.Errorf("DELETE ?force=yes answered %d %v, want 400", status, got)
 	}
 	if s.verbs.ref != "" {
 		t.Error("a query that did not parse still reached the orchestrator")

@@ -814,7 +814,7 @@ func TestTheVerbsOnOneSandboxAreSerialized(t *testing.T) {
 
 	stopped := make(chan error, 1)
 	go func() {
-		_, err := svc.Stop(t.Context(), "sandbox1", time.Second)
+		_, err := svc.Stop(t.Context(), "sandbox1")
 		stopped <- err
 	}()
 
@@ -857,7 +857,7 @@ func TestAVerbStopsWaitingForTheSandboxWhenItsContextEnds(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	_, err := svc.Stop(ctx, "sandbox1")
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "busy with another verb") {
 		t.Errorf("stop = %v, want the busy sandbox and the deadline", err)
 	}
@@ -897,7 +897,7 @@ func TestRemoveEndsTheCreateStillPulling(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := svc.Remove(ctx, "sandbox1", false, time.Second); err != nil {
+	if err := svc.Remove(ctx, "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 
@@ -923,7 +923,7 @@ func TestStopEndsTheCreateStillPulling(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err := svc.Stop(ctx, "sandbox1", time.Second)
+	_, err := svc.Stop(ctx, "sandbox1")
 	var state *sandbox.StateError
 	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
 		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
@@ -968,7 +968,7 @@ func TestStopBeforeTheCreateTakesTheSandboxBuildsNothing(t *testing.T) {
 		t.Fatalf("prepare: %v", err)
 	}
 
-	_, err = svc.Stop(t.Context(), sb.ID, time.Second)
+	_, err = svc.Stop(t.Context(), sb.ID)
 	var state *sandbox.StateError
 	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed || !strings.Contains(err.Error(), "cancelled by shard stop") {
 		t.Errorf("stop = %v, want the failed sandbox and the stop that cancelled it", err)
@@ -1008,7 +1008,7 @@ func TestStopWhileTheCreateWaitsForTheSandboxBuildsNothing(t *testing.T) {
 
 	stopped := make(chan error, 1)
 	go func() {
-		_, err := svc.Stop(t.Context(), sb.ID, time.Second)
+		_, err := svc.Stop(t.Context(), sb.ID)
 		stopped <- err
 	}()
 	waitForWaiters(t, svc, sb.ID, 3)
@@ -1051,7 +1051,7 @@ func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
 
-	sb, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	sb, err := svc.Stop(t.Context(), "sandbox1")
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -1077,7 +1077,7 @@ func TestStopRecordsTheExitStatus(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
 	l.provider.exit = models.ExitStatus{Code: 143, Signal: 15}
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
@@ -1101,7 +1101,7 @@ func TestStopRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
 	l.provider.failsOnStop = why
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
@@ -1120,7 +1120,7 @@ func TestStopRecordsNoExitStatusWhenTheSandboxWasKilled(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
 	l.provider.waitErr = models.ErrNoExitStatus
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
@@ -1142,7 +1142,7 @@ func TestStopIsIdempotent(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, sb)
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("the second stop: %v", err)
 	}
 
@@ -1159,7 +1159,7 @@ func TestStopRefusesAnIDThatNeverExisted(t *testing.T) {
 	svc, l := newService(t, r, running())
 	l.repo.missing = true
 
-	_, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	_, err := svc.Stop(t.Context(), "sandbox1")
 	if !errors.Is(err, sandboxstate.ErrNotFound) || !strings.Contains(err.Error(), "sandbox1") {
 		t.Errorf("stop failed with %v, want not found naming the id", err)
 	}
@@ -1168,15 +1168,16 @@ func TestStopRefusesAnIDThatNeverExisted(t *testing.T) {
 	}
 }
 
-func TestStopPassesTheGraceToTheProvider(t *testing.T) {
+// The grace is fixed, so every stop hands the provider the one constant and nothing a caller chose (SHARD-460).
+func TestStopGivesTheProviderTheFixedGrace(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", 3*time.Second); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	if got := l.provider.grace; got != 3*time.Second {
-		t.Errorf("the provider got the grace %s, want 3s", got)
+	if got := l.provider.grace; got != models.StopGrace {
+		t.Errorf("the provider got the grace %s, want the fixed %s", got, models.StopGrace)
 	}
 }
 
@@ -1184,7 +1185,7 @@ func TestStopPassesTheGraceToTheProvider(t *testing.T) {
 func TestStopReportsARecordWriteThatFailed(t *testing.T) {
 	svc, _ := newService(t, &recorder{fail: []string{"repo.Update"}}, running())
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err == nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
 		t.Fatal("a forced failure returned no error")
 	}
 }
@@ -1193,7 +1194,7 @@ func TestStopReportsAWaitThatFailedForAnotherReason(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())
 	l.provider.waitErr = errors.New("the exit status was unreadable")
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err == nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
 		t.Fatal("an unreadable exit status returned no error")
 	}
 }
@@ -1204,7 +1205,7 @@ func TestStopWaitsForTheSubstrateToReportTheSandboxGone(t *testing.T) {
 	svc, l := newService(t, r, running())
 	l.provider.aliveAfterStop = 3
 
-	sb, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace)
+	sb, err := svc.Stop(t.Context(), "sandbox1")
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -1215,7 +1216,7 @@ func TestStopWaitsForTheSubstrateToReportTheSandboxGone(t *testing.T) {
 	if sb.State != models.StateStopped {
 		t.Errorf("the record says %s, want stopped", sb.State)
 	}
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("the rm right after the stop was refused: %v", err)
 	}
 }
@@ -1226,7 +1227,7 @@ func TestStopRefusesASandboxThatNeverSettles(t *testing.T) {
 	svc, l := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.StopSettle = 20 * time.Millisecond })
 	l.provider.aliveAfterStop = -1
 
-	_, err := svc.Stop(t.Context(), "sandbox1", 0)
+	_, err := svc.Stop(t.Context(), "sandbox1")
 	if err == nil {
 		t.Fatal("a sandbox that never settles returned no error")
 	}
@@ -1245,7 +1246,7 @@ func TestStopEndsTheWaitWhenTheContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if _, err := svc.Stop(ctx, "sandbox1", sandbox.DefaultStopGrace); !errors.Is(err, context.Canceled) {
+	if _, err := svc.Stop(ctx, "sandbox1"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop answered %v, want the context's own error", err)
 	}
 }
@@ -1259,7 +1260,7 @@ func TestStopEndsASandboxWhoseRecordSaysStopped(t *testing.T) {
 	svc, l := newService(t, r, sb)
 	l.provider.status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
 
-	if _, err := svc.Stop(t.Context(), "sandbox1", sandbox.DefaultStopGrace); err != nil {
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if !l.provider.stopped {
@@ -1281,7 +1282,7 @@ func TestRemoveFreesEveryHoldingInOrder(t *testing.T) {
 	r := &recorder{}
 	svc, _ := stoppedOnTheHost(t, r)
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 
@@ -1296,7 +1297,7 @@ func TestRemoveOfTheLastSandboxDropsWhatTheSubstrateKeeps(t *testing.T) {
 	r := &recorder{}
 	svc, l := stoppedOnTheHost(t, r)
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 	if !l.substrate.dropped {
@@ -1308,7 +1309,7 @@ func TestRemoveKeepsWhatTheSubstrateSharesWhileASandboxIsLeft(t *testing.T) {
 	svc, l := stoppedOnTheHost(t, &recorder{})
 	l.repo.left = []models.Sandbox{{ID: "sandbox2"}}
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 	if l.substrate.dropped {
@@ -1321,7 +1322,7 @@ func TestRemoveKeepsTheSubstrateWhileARecordIsUnreadable(t *testing.T) {
 	svc, l := stoppedOnTheHost(t, &recorder{})
 	l.repo.listErr = &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 	if l.substrate.dropped {
@@ -1333,7 +1334,7 @@ func TestRemoveRefusesARunningSandbox(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, running())
 
-	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", false)
 
 	var refused *sandbox.StateError
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "shard stop sandbox1") {
@@ -1352,15 +1353,15 @@ func TestRemoveForceStopsThenRemoves(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, running())
 
-	if err := svc.Remove(t.Context(), "sandbox1", true, 3*time.Second); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("rm --force: %v", err)
 	}
 
 	if !l.provider.stopped || !l.provider.removed {
 		t.Errorf("rm --force stopped=%v removed=%v, want both", l.provider.stopped, l.provider.removed)
 	}
-	if l.provider.grace != 3*time.Second {
-		t.Errorf("the stop under rm --force got the grace %s, want 3s", l.provider.grace)
+	if l.provider.grace != models.StopGrace {
+		t.Errorf("the stop under rm --force got the grace %s, want the fixed %s a stop gives", l.provider.grace, models.StopGrace)
 	}
 
 	stopped := slices.Index(r.calls, "provider.Stop")
@@ -1381,7 +1382,7 @@ func TestRemoveRefusesAPausedSandbox(t *testing.T) {
 			svc, l := newService(t, r, pausedSandbox())
 			l.provider.status = status
 
-			err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+			err := svc.Remove(t.Context(), "sandbox1", false)
 
 			var refused *sandbox.StateError
 			if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || err.Error() != "sandbox sandbox1 is paused: stop it first with shard stop sandbox1, or pass --force" {
@@ -1402,7 +1403,7 @@ func TestRemoveOfAPausedSandboxNeverProbesTheSubstrate(t *testing.T) {
 	r := &recorder{fail: []string{"provider.Status"}}
 	svc, _ := newService(t, r, pausedSandbox())
 
-	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", false)
 
 	var refused *sandbox.StateError
 	if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped {
@@ -1418,7 +1419,7 @@ func TestRemoveOfAPausedSandboxNeverProbesTheSubstrate(t *testing.T) {
 	l.provider.statusGate = make(chan struct{})
 	l.provider.stopUnwedges = true
 
-	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("rm --force with a wedged status probe: %v", err)
 	}
 	stopped := slices.Index(wedged.calls, "provider.Stop")
@@ -1433,7 +1434,7 @@ func TestRemoveForceStopsAPausedSandboxThenRemoves(t *testing.T) {
 	svc, l := newService(t, r, pausedSandbox())
 	l.provider.status = models.Status{}
 
-	if err := svc.Remove(t.Context(), "sandbox1", true, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", true); err != nil {
 		t.Fatalf("rm --force: %v", err)
 	}
 
@@ -1450,7 +1451,7 @@ func TestRemoveOfAMissingSandboxIsNotFound(t *testing.T) {
 	svc, l := newService(t, r, running())
 	l.repo.missing = true
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); !errors.Is(err, sandboxstate.ErrNotFound) {
+	if err := svc.Remove(t.Context(), "sandbox1", false); !errors.Is(err, sandboxstate.ErrNotFound) {
 		t.Fatalf("rm of an id that is already gone = %v, want not found", err)
 	}
 
@@ -1465,7 +1466,7 @@ func TestRemoveOfAMissingSandboxIsNotFound(t *testing.T) {
 func TestRemoveNamesWhatIsLeftOnTheHost(t *testing.T) {
 	svc, l := stoppedOnTheHost(t, &recorder{fail: []string{"net.Release"}})
 
-	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", false)
 	if err == nil {
 		t.Fatal("a forced failure returned no error")
 	}
@@ -1488,7 +1489,7 @@ func TestRemoveReappliesTheRulesAfterTheRecordIsGone(t *testing.T) {
 	r := &recorder{}
 	svc, _ := stoppedOnTheHost(t, r)
 
-	if err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace); err != nil {
+	if err := svc.Remove(t.Context(), "sandbox1", false); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
 
@@ -1505,7 +1506,7 @@ func TestRemoveReappliesTheRulesAfterTheRecordIsGone(t *testing.T) {
 func TestRemoveNamesTheRulesItLeft(t *testing.T) {
 	svc, _ := stoppedOnTheHost(t, &recorder{fail: []string{"net.ReapplyAll"}})
 
-	err := svc.Remove(t.Context(), "sandbox1", false, sandbox.DefaultStopGrace)
+	err := svc.Remove(t.Context(), "sandbox1", false)
 	if err == nil {
 		t.Fatal("a forced failure returned no error")
 	}

@@ -341,8 +341,8 @@ curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limi
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"image":"alpine:3.20","command":["sleep","600"]}' http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/start
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"grace":10}' http://localhost/v0/sandboxes/<id or name>/stop
-curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>?force=true&grace=10'
+curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/stop
+curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/sandboxes/<id or name>?force=true'
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/pause
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/<id or name>/resume
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web-2"}' http://localhost/v0/sandboxes/<id or name>/fork
@@ -430,12 +430,13 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
-- `POST /v0/sandboxes/{id}/stop` takes `{"grace": <seconds>}`, which defaults to 10. It waits the
-  grace out and answers 200 with the stopped record. Errors: 400 for a negative grace, 404, and 409
-  when the sandbox is not running.
+- `POST /v0/sandboxes/{id}/stop` takes no body. It sends SIGTERM to the entrypoint and answers 200
+  with the stopped record as soon as the entrypoint exits. An entrypoint that is still running after
+  30 s (`models.StopGrace`) is killed. Errors: 400 for a body with any field, `grace` included, 404,
+  and 409 when the sandbox is not running.
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. Errors: 404, and 409 when the sandbox is
-  still up, unless the query has `?force=true`. Then the route stops the sandbox first, with
-  `grace=<seconds>` from the query.
+  still up, unless the query has `?force=true`. Then the route stops the sandbox first, with the
+  same 30 s grace. A `grace` in the query gets a 400 that names it.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. Errors: 404,
   and 409 when the sandbox is not running or when the provider does not claim the verb. A client
   that hangs up does not cut the pause. The daemon gives a pause at most 10 minutes
@@ -655,7 +656,14 @@ that answers in full gets 30 s. The deadline is per request, not on the `http.Cl
 that accepts and never answers fails as `GET <route> on <socket>:
 no answer within 30s`. `CreateSandbox` sets no deadline, because the pull inside it has none that
 the client could know. The four snapshot verbs set none either, because a checkpoint takes as long
-as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the grace to theirs.
+as the memory and the disk it writes. `StopSandbox` and `RemoveSandbox` add the 30 s grace to theirs.
+
+### Compatibility breaks
+
+- SHARD-460: the stop grace is fixed at 30 s and is no longer a setting. `shard stop` and `shard rm`
+  no longer take `--time`, and the CLI refuses it as an unknown flag. `POST /v0/sandboxes/{id}/stop`
+  refuses a body with `grace`, and `DELETE /v0/sandboxes/{id}` refuses a `grace` query, both with
+  400. `StopSandbox` and `RemoveSandbox` in `services/client` no longer take a grace.
 
 ## The TCP front
 

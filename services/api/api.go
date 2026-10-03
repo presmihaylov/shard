@@ -27,8 +27,8 @@ type Lifecycle interface {
 	// WaitState blocks until the sandbox leaves pending, so a get with ?wait sees running or failed.
 	WaitState(ctx context.Context, ref string) error
 	Start(ctx context.Context, ref string) (models.Sandbox, error)
-	Stop(ctx context.Context, ref string, grace time.Duration) (models.Sandbox, error)
-	Remove(ctx context.Context, ref string, force bool, grace time.Duration) error
+	Stop(ctx context.Context, ref string) (models.Sandbox, error)
+	Remove(ctx context.Context, ref string, force bool) error
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
@@ -553,10 +553,8 @@ func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, sb)
 }
 
-// stopRequest is the body of a stop. Grace is in seconds; absent, the entrypoint gets the default.
-type stopRequest struct {
-	Grace *float64 `json:"grace,omitempty"`
-}
+// stopRequest is the body of a stop, which carries nothing; the grace it once took is a 400 as an unknown field (SHARD-460).
+type stopRequest struct{}
 
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	var req stopRequest
@@ -566,14 +564,7 @@ func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grace, err := graceOf(req.Grace)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"), grace)
+	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.writeError(w, err)
 
@@ -591,14 +582,14 @@ func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grace, err := graceQuery(r)
-	if err != nil {
-		h.writeError(w, err)
+	// A grace an old client still sends is refused by name, never ignored, so it cannot read as honoured (SHARD-460).
+	if r.URL.Query().Has("grace") {
+		h.writeError(w, &sandbox.RequestError{Err: fmt.Errorf("the query grace is removed: a stop gives the entrypoint a fixed %s", models.StopGrace)})
 
 		return
 	}
 
-	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force, grace); err != nil {
+	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -729,32 +720,6 @@ func decode(w http.ResponseWriter, r *http.Request, out any) error {
 	}
 
 	return &sandbox.RequestError{Err: errors.New("decode the request body: it holds more than one JSON value")}
-}
-
-// graceQuery reads ?grace= in seconds, for the stop an rm --force does; absent is the default.
-func graceQuery(r *http.Request) (time.Duration, error) {
-	raw := r.URL.Query().Get("grace")
-	if raw == "" {
-		return sandbox.DefaultStopGrace, nil
-	}
-
-	seconds, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, &sandbox.RequestError{Err: fmt.Errorf("the query grace=%q is not a number of seconds", raw)}
-	}
-
-	return graceOf(&seconds)
-}
-
-func graceOf(seconds *float64) (time.Duration, error) {
-	if seconds == nil {
-		return sandbox.DefaultStopGrace, nil
-	}
-	if *seconds < 0 {
-		return 0, &sandbox.RequestError{Err: fmt.Errorf("the grace is how long the entrypoint gets and cannot be negative, got %v", *seconds)}
-	}
-
-	return time.Duration(*seconds * float64(time.Second)), nil
 }
 
 // boolQuery reads a flag like ?all=true. An absent flag is false; a value that is not a bool is refused.
