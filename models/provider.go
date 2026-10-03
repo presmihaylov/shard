@@ -68,6 +68,8 @@ type Provider interface {
 	// nothing of the snapshot, so any number of forks of one snapshot run at once, each on its own files.
 	// Optional.
 	Fork(ctx context.Context, dir string, spec SandboxSpec) error
+	// AdoptStaging settles the snapshot staging a cut pause left beside dir at daemon start: a provider that never reads a staged snapshot drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
+	AdoptStaging(dir string) error
 }
 
 // Capabilities is one boolean per optional verb. Never pretend providers are equal.

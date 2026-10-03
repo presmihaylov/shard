@@ -405,7 +405,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. 404; 409 when the sandbox is still up,
   unless `?force=true`, which stops it first with `grace=<seconds>` from the query.
 - `POST /v0/sandboxes/{id}/pause` takes no body and answers 200 with the paused record. 404; 409
-  when the sandbox is not running, or when the provider does not claim the verb.
+  when the sandbox is not running, or when the provider does not claim the verb. A client that hangs
+  up does not cut the pause, and the daemon gives a pause 10 minutes at most (`DefaultPauseBudget`)
+  before it cuts it. A pause the substrate lost after its checkpoint began, a cut one included,
+  answers 500 and leaves the record `failed` with the reason.
 - `POST /v0/sandboxes/{id}/resume` takes no body and answers 200 with the running record. 404; 409
   when the sandbox is not paused, when its record names no snapshot, or for an unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, run from the
@@ -582,7 +585,7 @@ Whatever else a refusal carries lives inside `error`, and nothing else is ever a
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, or move the placeholder of a secret they hold; `error` adds `"holders": [ids]`. Also a second attach of an exec, with no holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token; nothing is dialed |
-| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route; nothing is dialed. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
 | `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget; retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead: it SIGKILLs the sandbox's own runsc processes, matched by its cgroup and by its id on their command line, then finishes the teardown, and answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
@@ -675,6 +678,16 @@ narrow: the front skips the `Connection: close` rewrite only when all four hands
 present, and it reads the daemon's status line first. A `101` is the connection the WebSocket needs; a
 non-101 answer ends after that one response, so a request pipelined behind a handshake the daemon does
 not upgrade never reaches the daemon.
+
+The route check is coarse: `create` maps to `sandbox:write` alone, yet a create can name secrets and
+a policy, which `secret:*` and `policy:*` otherwise guard. So the daemon checks the token's scopes a
+second time: a create that names a secret needs `secret:*`, and a create that names a policy needs
+`policy:*`, or the daemon answers `403` with the code `forbidden` and names the missing scope before
+it builds anything. The front carries the token's scopes to the daemon in an `X-Shard-Scopes` header,
+stamped on every request it forwards and stripped of any copy the client sent, so a forged header can
+only remove a right. A request with no such header reached the daemon socket directly, which is the
+operator's own channel and keeps every right. A `fork` and a `clone` keep the source sandbox's grants
+by design, so they need only `sandbox:write`.
 
 A token is minted on the server, from the same secret, and never over the API:
 

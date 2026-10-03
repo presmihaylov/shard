@@ -8,6 +8,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/logfile"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -45,7 +46,7 @@ func (t heldLogRotation) pass() error {
 	if err != nil {
 		return err
 	}
-	sandboxes, err := repo.List()
+	sandboxes, err := sandboxstate.ListReadable(repo, t.deps.unreadableLog())
 	if err != nil {
 		return err
 	}
