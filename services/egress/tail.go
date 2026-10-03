@@ -15,6 +15,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // CursorFile holds the last kernel sequence the tailer is past, so a daemon that restarts reads the
@@ -40,6 +41,8 @@ type Tailer struct {
 	log  *Log
 	repo Sandboxes
 	out  *log.Logger
+	// ulog is the daemon-wide dedup, so a record this miss path cannot read logs once, not on every drop (SHARD-403).
+	ulog *sandboxstate.UnreadableLog
 
 	// holders is the sandbox behind each address and each host interface, rebuilt on a miss: a sandbox
 	// that has just started is the ordinary miss, and a drop names one of those and never an id.
@@ -52,8 +55,8 @@ type Tailer struct {
 	unattributed int
 }
 
-func NewTailer(root string, decisions *Log, repo Sandboxes, out *log.Logger) *Tailer {
-	return &Tailer{root: root, log: decisions, repo: repo, out: out}
+func NewTailer(root string, decisions *Log, repo Sandboxes, ulog *sandboxstate.UnreadableLog, out *log.Logger) *Tailer {
+	return &Tailer{root: root, log: decisions, repo: repo, out: out, ulog: ulog}
 }
 
 // refreshEvery bounds how often a backlog miss rebuilds the address map, so its strays do not list the records once per drop.
@@ -147,9 +150,10 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	}
 
 	listed := time.Now()
-	sandboxes, err := t.repo.List()
+	// ListReadable drops the unreadable records through the shared dedup, so a corrupt one logs once, not per drop.
+	sandboxes, err := sandboxstate.ListReadable(t.repo, t.ulog)
 	if err != nil {
-		// A record shard cannot read names no address, so the drop is counted with the rest and not lost twice.
+		// A list that fails whole names no address, so every drop is counted unattributed and not lost twice.
 		t.out.Printf("egress log: the sandbox records cannot be listed: %v", err)
 	}
 

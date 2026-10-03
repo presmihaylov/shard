@@ -288,6 +288,27 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 
 		return nil
 	}
+	// The grace outran the stop, so the guest flushes its disk before the cut (SHARD-344, shard ruling f4b0942e).
+	return p.endLive(ctx, m)
+}
+
+// endLive cuts a VM whose guest may still run: it gives the guest a bounded window to flush first, so a forced stop loses nothing the entrypoint wrote (SHARD-344).
+func (p *Provider) endLive(ctx context.Context, m *machine) error {
+	// The guest's flush rides the shim, so a shim too frozen to answer is cut at once and the stop keeps its bound.
+	probe, cancelProbe := context.WithTimeout(ctx, probeFloor)
+	_, err := m.client.State(probe)
+	cancelProbe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vz: sandbox %s: no flush before the forced stop, the shim does not answer: %v\n", m.id, err)
+
+		return p.end(ctx, m)
+	}
+	// The flush is best effort and off the verb's deadline; a responsive guest syncs within flushGrace, a hung one is cut with the VM anyway.
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushGrace)
+	defer cancel()
+	if err := m.control.Load().Kill(flushCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "vz: sandbox %s: flush before the forced stop: %v\n", m.id, err)
+	}
 
 	return p.end(ctx, m)
 }

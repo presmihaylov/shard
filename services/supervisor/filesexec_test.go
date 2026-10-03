@@ -74,8 +74,30 @@ func TestAGuestThatDiesReadsAsItsReason(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exited 1: shard-init: read a files header: boom") {
 		t.Fatalf("stat gave %v, want the exit code and the guest's stderr", err)
 	}
-	if err := conn.Close(); err == nil || !strings.Contains(err.Error(), "exited 1") {
-		t.Fatalf("close gave %v, want the exit", err)
+	// Every verb joins its read to the close, and the read already said how the exec ended (SHARD-407).
+	if joined := errors.Join(err, conn.Close()); strings.Count(joined.Error(), "exited 1") != 1 {
+		t.Fatalf("the read joined with the close gave %v, want the exit once", joined)
+	}
+}
+
+// A failure no read reached, as when the caller stops before the end of a get, is the close's to report.
+func TestACloseReportsAFailureNoReadReached(t *testing.T) {
+	conn := openFake(t, t.Context(), fakeGuest(func(_ FileHeader, spec models.ExecSpec) models.ExitStatus {
+		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: 10}}); err != nil {
+			t.Errorf("reply: %v", err)
+		}
+		if _, err := spec.Stderr.WriteString("shard-init: send /srv/blob: input/output error\n"); err != nil {
+			t.Errorf("write stderr: %v", err)
+		}
+
+		return models.ExitStatus{Code: 1}
+	}))
+
+	if _, _, err := Get(conn, "/srv/blob"); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if err := conn.Close(); err == nil || !strings.Contains(err.Error(), "exited 1: shard-init: send /srv/blob: input/output error") {
+		t.Fatalf("close gave %v, want the exit and the guest's reason", err)
 	}
 }
 

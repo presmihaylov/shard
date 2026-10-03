@@ -183,6 +183,9 @@ func (c *Control) Freeze(ctx context.Context) error { return c.request(ctx, Mess
 // Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
 func (c *Control) Thaw(ctx context.Context) error { return c.request(ctx, Message{Kind: KindThaw}) }
 
+// Kill ends a stop the grace outran: the guest kills the entrypoint and flushes the disk, so the VM the host then cuts loses nothing it wrote.
+func (c *Control) Kill(ctx context.Context) error { return c.request(ctx, Message{Kind: KindKill}) }
+
 func (c *Control) Close() error { return c.conn.Close() }
 
 // request sends one message and waits for the guest's done, its failure as an error, or the end of ctx.

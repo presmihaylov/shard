@@ -2,6 +2,7 @@ package sandboxstate_test
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -693,6 +694,80 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	}
 }
 
+// SHARD-381: a write that returns an error may still have landed the rename, so the generation must move or a reader keeps the old record.
+func TestWriteMovesTheGenerationEvenWhenTheDurableWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	sb := create(t, r)
+	before := r.Generation()
+
+	// A record directory that rejects a new temp file forces store.WriteFile to return an error, as a landed rename with a failed dir sync does.
+	dir := sandboxDir(t, r, sb.ID)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
+		sb.PID = 4242
+
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("Update over a write-protected directory: want an error, got nil")
+	}
+	if r.Generation() <= before {
+		t.Errorf("the generation did not move after a failed write: before %d, now %d", before, r.Generation())
+	}
+}
+
+// SHARD-381: a Create whose write fails after it may have landed the rename must bump the generation again once it removes the record, or a broker that rebuilt mid-cleanup keeps serving the failed sandbox and its secrets.
+func TestCreateBumpsTheGenerationAfterItCleansUpAFailedWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test uses to force the write to fail")
+	}
+
+	r, _ := repo(t)
+	before := r.Generation()
+
+	// A umask that strips write makes claimID's new record directory reject the record file, so write fails as a landed rename with a failed dir sync does.
+	old := syscall.Umask(0o222)
+	defer syscall.Umask(old)
+
+	if _, err := r.Create(newSandbox()); err == nil {
+		t.Fatalf("Create over a umask that blocks the record write: want an error, got nil")
+	}
+	// write bumps once when the rename may have landed, and the cleanup must bump again once the record is gone.
+	if moved := r.Generation() - before; moved < 2 {
+		t.Errorf("the generation moved %d after a failed-write cleanup, want at least 2", moved)
+	}
+}
+
+// SHARD-381: a delete that touches the disk must move the generation even on a later error, and a delete of an absent sandbox must not, so a reader rebuilds exactly when the set changed.
+func TestDeleteMovesTheGenerationButANotFoundDeleteDoesNot(t *testing.T) {
+	r, _ := repo(t)
+	sb := create(t, r)
+
+	before := r.Generation()
+	if err := r.Delete(sb.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if r.Generation() <= before {
+		t.Errorf("Delete did not move the generation: before %d, now %d", before, r.Generation())
+	}
+
+	steady := r.Generation()
+	if err := r.Delete(sb.ID); !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("second Delete: %v, want ErrNotFound", err)
+	}
+	if r.Generation() != steady {
+		t.Errorf("a not-found delete moved the generation: was %d, now %d", steady, r.Generation())
+	}
+}
+
 func TestConcurrentUpdatesLoseNothing(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
@@ -890,5 +965,198 @@ func TestRecordedProviderOfAFreshRootCreatesNothing(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("the root holds %d entries after the ask, want it untouched", len(entries))
+	}
+}
+
+// SHARD-343: one record that will not decode must not stop a daemon reading what made the rest; a good record still names the substrate.
+func TestRecordedProviderSkipsAnUndecodableRecord(t *testing.T) {
+	r, root := repo(t)
+	a, b := create(t, r), create(t, r)
+
+	// Corrupt whichever id sorts first, so the undecodable record is read before the good one.
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	brokenID := ids[0]
+
+	path := filepath.Join(sandboxDir(t, r, brokenID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider the good record names", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != brokenID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, brokenID)
+	}
+}
+
+// SHARD-343: a root where no record decodes selects as a root with no records, not a fatal read.
+func TestRecordedProviderOfARootWhereNoRecordDecodes(t *testing.T) {
+	r, root := repo(t)
+	sb := create(t, r)
+
+	path := filepath.Join(sandboxDir(t, r, sb.ID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "" {
+		t.Errorf("RecordedProvider = %q, want nothing when no record decodes", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != sb.ID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, sb.ID)
+	}
+}
+
+// SHARD-343: a corrupt record that sorts after a good one must still be reported, so the scan does not stop at the first provider.
+func TestRecordedProviderReportsAnUndecodableRecordThatSortsLast(t *testing.T) {
+	r, root := repo(t)
+	a, b := create(t, r), create(t, r)
+
+	// Corrupt whichever id sorts last, so a return at the first good record would miss it.
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	brokenID := ids[1]
+
+	path := filepath.Join(sandboxDir(t, r, brokenID), "sandbox.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o640); err != nil {
+		t.Fatalf("corrupt the record: %v", err)
+	}
+
+	got, err := sandboxstate.RecordedProvider(root)
+	if got != "gvisor" {
+		t.Errorf("RecordedProvider = %q, want the provider the good record names", got)
+	}
+
+	var unreadable *sandboxstate.UnreadableError
+	if !errors.As(err, &unreadable) || unreadable.ID != brokenID {
+		t.Errorf("RecordedProvider error = %T %v, want an UnreadableError for %s", err, err, brokenID)
+	}
+}
+
+// listResult is a Lister with a chosen result, so a ListReadable test can hand it any error shape.
+type listResult struct {
+	sandboxes []models.Sandbox
+	err       error
+}
+
+func (l listResult) List() ([]models.Sandbox, error) { return l.sandboxes, l.err }
+
+// SHARD-343: a join that carries a real error beside an unreadable record must fail closed, not pass partial state as success.
+func TestListReadableFailsClosedOnAnErrorBesideAnUnreadableRecord(t *testing.T) {
+	fatal := errors.New("read the sandboxes directory: permission denied")
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err:       errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")}, fatal),
+	}
+
+	got, err := sandboxstate.ListReadable(l, nil)
+	if !errors.Is(err, fatal) {
+		t.Fatalf("ListReadable error = %v, want it to carry the fatal error", err)
+	}
+	if got != nil {
+		t.Errorf("ListReadable returned %d records beside the fatal error, want none", len(got))
+	}
+}
+
+// SHARD-343: a join of only unreadable records is skipped, and the readable records still come back.
+func TestListReadableSkipsWhenEveryErrorIsAnUnreadableRecord(t *testing.T) {
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err: errors.Join(
+			&sandboxstate.UnreadableError{ID: "a", Err: errors.New("decode sandbox.json")},
+			&sandboxstate.UnreadableError{ID: "b", Err: errors.New("decode sandbox.json")},
+		),
+	}
+
+	got, err := sandboxstate.ListReadable(l, nil)
+	if err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "readable" {
+		t.Errorf("ListReadable = %+v, want the one readable record", got)
+	}
+}
+
+// capture records each log line a dedup test produces, so an assertion can count them and read their text.
+type capture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *capture) logf(format string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, fmt.Sprintf(format, args...))
+}
+
+// SHARD-403: one unreadable record logs once across many lists, so a bad record does not flood the daemon log.
+func TestListReadableLogsAnUnreadableRecordOncePerDaemonLife(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	l := listResult{
+		sandboxes: []models.Sandbox{{ID: "readable"}},
+		err:       errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")}),
+	}
+
+	for range 3 {
+		if _, err := sandboxstate.ListReadable(l, ulog); err != nil {
+			t.Fatalf("ListReadable: %v", err)
+		}
+	}
+
+	if len(rec.lines) != 1 {
+		t.Fatalf("logged %d lines, want 1: %v", len(rec.lines), rec.lines)
+	}
+	if !strings.Contains(rec.lines[0], "broken") {
+		t.Errorf("log line %q does not name the record", rec.lines[0])
+	}
+}
+
+// SHARD-403: the same record logs again when its error text changes, so a new failure is not hidden.
+func TestListReadableRelogsWhenTheRecordErrorChanges(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	first := listResult{err: errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json")})}
+	second := listResult{err: errors.Join(&sandboxstate.UnreadableError{ID: "broken", Err: errors.New("permission denied")})}
+
+	if _, err := sandboxstate.ListReadable(first, ulog); err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+	if _, err := sandboxstate.ListReadable(second, ulog); err != nil {
+		t.Fatalf("ListReadable: %v", err)
+	}
+
+	if len(rec.lines) != 2 {
+		t.Fatalf("logged %d lines, want 2: %v", len(rec.lines), rec.lines)
+	}
+}
+
+// SHARD-403: two bad records each log once, so a dedup does not swallow a second record.
+func TestListReadableLogsEachDistinctRecordOnce(t *testing.T) {
+	rec := &capture{}
+	ulog := sandboxstate.NewUnreadableLog(rec.logf)
+	l := listResult{
+		err: errors.Join(
+			&sandboxstate.UnreadableError{ID: "a", Err: errors.New("decode sandbox.json")},
+			&sandboxstate.UnreadableError{ID: "b", Err: errors.New("decode sandbox.json")},
+		),
+	}
+
+	for range 2 {
+		if _, err := sandboxstate.ListReadable(l, ulog); err != nil {
+			t.Fatalf("ListReadable: %v", err)
+		}
+	}
+
+	if len(rec.lines) != 2 {
+		t.Fatalf("logged %d lines, want 2: %v", len(rec.lines), rec.lines)
 	}
 }

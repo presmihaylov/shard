@@ -52,7 +52,7 @@ func serveFiles(r io.Reader, w io.Writer) error {
 
 	out, err := serveFile(r, header)
 	if err != nil {
-		return supervisor.WriteMessage(w, supervisor.FileReply{Error: err.Error(), Code: codeOf(err)})
+		return supervisor.WriteMessage(w, supervisor.FileReply{Error: refusalOf(header.Path, err), Code: codeOf(err)})
 	}
 	if out.entries != nil {
 		return sendEntries(w, out)
@@ -224,7 +224,7 @@ func existingDir(path string) (served, error) {
 		return served{}, err
 	}
 	if !info.IsDir() {
-		return served{}, invalidError(fmt.Sprintf("%s exists and is not a directory", path))
+		return served{}, invalidError("exists and is not a directory")
 	}
 
 	return served{stat: statOf(info)}, nil
@@ -244,7 +244,7 @@ func deletePath(header supervisor.FileHeader) (served, error) {
 	err = remove(header.Path)
 	// Linux answers rmdir of a full directory with ENOTEMPTY, and POSIX allows EEXIST.
 	if info.IsDir() && (errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)) {
-		return served{}, invalidError(header.Path + " is a directory that is not empty; pass recursive=true to delete it and everything in it")
+		return served{}, invalidError("is a directory that is not empty; pass recursive=true to delete it and everything in it")
 	}
 	if err != nil {
 		return served{}, err
@@ -275,7 +275,7 @@ func unpackInto(r io.Reader, dir string) error {
 		return err
 	}
 	if !info.IsDir() {
-		return invalidError(dir + " is not a directory; an archive unpacks into one")
+		return invalidError("is not a directory; an archive unpacks into one")
 	}
 
 	if err := tarball.Unpack(r, dir, tarball.Options{KeepSetid: true}); err != nil {
@@ -287,6 +287,16 @@ func unpackInto(r io.Reader, dir string) error {
 	syncDisks()
 
 	return nil
+}
+
+// refusalOf is the guest's words for err; the host names the op and the path in front of them, so an error on the path itself drops its own.
+func refusalOf(path string, err error) string {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Path == path && err.Error() == pathErr.Error() {
+		return pathErr.Err.Error()
+	}
+
+	return err.Error()
 }
 
 // invalidError is a request the guest refuses as asked, which the host answers 400 and not 500.
@@ -321,10 +331,10 @@ func openFile(path string) (served, error) {
 		return served{}, errors.Join(err, f.Close())
 	}
 	if info.IsDir() {
-		return served{}, errors.Join(invalidError(path+" is a directory; a get takes one file"), f.Close())
+		return served{}, errors.Join(invalidError("is a directory; a get takes one file"), f.Close())
 	}
 	if !info.Mode().IsRegular() {
-		return served{}, errors.Join(invalidError(fmt.Sprintf("%s is a %s, not a regular file; a get takes one file", path, info.Mode().Type())), f.Close())
+		return served{}, errors.Join(invalidError(fmt.Sprintf("is a %s, not a regular file; a get takes one file", info.Mode().Type())), f.Close())
 	}
 
 	return served{stat: statOf(info), file: f}, nil
