@@ -30,7 +30,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512", "--cpus", "2", "--disk", "64", "--restart-on-oom",
+		"--memory", "512", "--cpus", "2", "--disk", "64",
 		"alpine:3.20",
 	}
 
@@ -49,9 +49,6 @@ func TestParseCreateFlags(t *testing.T) {
 
 	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
 		t.Errorf("resources = %+v, want 512 MiB, 2 vcpus and a 64 MiB disk", req.Resources)
-	}
-	if !req.RestartOnOOM || req.MaxOOMRestarts != 0 {
-		t.Errorf("oom restart = %v with a limit of %d, want asked-for and unlimited", req.RestartOnOOM, req.MaxOOMRestarts)
 	}
 
 	if len(req.Command) != 0 {
@@ -135,15 +132,6 @@ func TestParseCreateRestartFlags(t *testing.T) {
 	if req.Restart != nil {
 		t.Errorf("restart = %+v, want none when no flag asked for a policy", req.Restart)
 	}
-
-	// A count on --restart-on-oom caps the starts in a row; the bare flag left it unlimited above.
-	req, err = parseCreate([]string{"--memory", "64", "--restart-on-oom=3", "alpine:3.20"})
-	if err != nil {
-		t.Fatalf("parseCreate: %v", err)
-	}
-	if !req.RestartOnOOM || req.MaxOOMRestarts != 3 {
-		t.Errorf("oom restart = %v with a limit of %d, want asked-for with a limit of 3", req.RestartOnOOM, req.MaxOOMRestarts)
-	}
 }
 
 // The image's own command never runs, so a policy with no command after the image is refused by its flag.
@@ -155,12 +143,12 @@ func TestParseCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
 		}
 	}
 
-	req, err := parseCreate([]string{"--restart", "no", "--memory", "64", "--restart-on-oom", "alpine:3.20"})
+	req, err := parseCreate([]string{"--restart", "no", "alpine:3.20"})
 	if err != nil {
-		t.Fatalf("parseCreate(--restart no --restart-on-oom) with no command: %v", err)
+		t.Fatalf("parseCreate(--restart no) with no command: %v", err)
 	}
-	if req.Restart.Set() || !req.RestartOnOOM {
-		t.Errorf("restart = %+v and restart-on-oom = %v, want no policy and restart-on-oom", req.Restart, req.RestartOnOOM)
+	if req.Restart.Set() {
+		t.Errorf("restart = %+v, want no policy", req.Restart)
 	}
 }
 
@@ -170,9 +158,6 @@ func TestParseCreateRejections(t *testing.T) {
 		"only flags":              {"--user", "nobody"},
 		"an empty argv":           {"alpine:3.20", "--"},
 		"an unknown flag":         {"--forever", "alpine:3.20"},
-		"the old init flag":       {"--shard-init", "/opt/shard-init", "alpine:3.20"},
-		"the dropped http probe":  {"--health-http", "8080/healthz", "alpine:3.20"},
-		"the dropped probe":       {"--health-command", "true", "alpine:3.20"},
 		"an env with no value":    {"--env", "DEBUG", "alpine:3.20"},
 		"an env with a colon":     {"--env", "DEBUG:1", "alpine:3.20"},
 		"an env with no name":     {"--env", "=1", "alpine:3.20"},
@@ -185,13 +170,10 @@ func TestParseCreateRejections(t *testing.T) {
 		"a negative cpu bound":      {"--cpus", "-2", "alpine:3.20"},
 		"a negative disk bound":     {"--disk", "-1", "alpine:3.20"},
 		"a disk that overflows":     {"--disk", "17592186044416", "alpine:3.20"},
-		"a restart with no bound":   {"--restart-on-oom", "alpine:3.20"},
 		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20"},
 		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20"},
 		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20"},
 		"a sub-second backoff":      {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20"},
-		"a negative oom limit":      {"--memory", "64", "--restart-on-oom=-1", "alpine:3.20"},
-		"a non-number oom limit":    {"--memory", "64", "--restart-on-oom=lots", "alpine:3.20"},
 	}
 
 	for name, args := range cases {

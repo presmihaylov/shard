@@ -98,20 +98,20 @@ func TestCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
 	}
 }
 
-// A sandbox with no command runs shard-init alone; restart-on-oom starts the whole sandbox again, so it needs none.
-func TestCreateWithNoCommandTakesNoPolicyAndRestartOnOOM(t *testing.T) {
+// A sandbox with no command runs shard-init alone, so a restart policy has nothing to restart.
+func TestCreateWithNoCommandTakesNoPolicy(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
 	req := sandbox.CreateRequest{
 		Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: models.RestartNo},
-		Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true,
+		Resources: models.Resources{MemoryMiB: 64},
 	}
 
 	sb, err := svc.Create(t.Context(), req)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if !sb.RestartOnOOM || sb.Restart != nil {
-		t.Errorf("the record holds restart-on-oom %v and the policy %+v, want restart-on-oom and no policy", sb.RestartOnOOM, sb.Restart)
+	if sb.Restart != nil {
+		t.Errorf("the record holds the policy %+v, want none", sb.Restart)
 	}
 	if len(l.provider.spec.Entrypoint) != 0 {
 		t.Errorf("the provider was handed the command %v, want none: the image's own never runs", l.provider.spec.Entrypoint)

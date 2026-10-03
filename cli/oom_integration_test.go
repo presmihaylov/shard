@@ -3,8 +3,6 @@
 package cli
 
 import (
-	"bytes"
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,57 +15,37 @@ import (
 // oomBomb doubles strings in anonymous memory in 32 tasks, because memory.high throttles each one to ~128 KiB/s past the bound.
 const oomBomb = `i=0; while [ $i -lt 32 ]; do awk 'BEGIN { s = "x"; while (1) s = s s }' & i=$((i+1)); done; wait`
 
-// oomBudget covers several kills of ~30 s each, after a calm 30 s where a test asks for one, at one tick every 5 s, three sandboxes at once.
-const oomBudget = 6 * time.Minute
+// oomBudget covers one kill of ~30 s, at one tick every 5 s, with room for a slow host.
+const oomBudget = 3 * time.Minute
 
-// The three tests share the daemon and run side by side, because each one waits on the 5 s tick.
-func TestTheDaemonBringsBackAnOOMKilledSandboxThatAskedForIt(t *testing.T) {
+// The host ends the sandbox for its memory, and only a start brings it back, over the files it kept (SHARD-461).
+func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
 	app, out := newCreateApp(t)
-	t.Parallel()
 
-	// The guest overruns its bound on the first run only, so the sandbox it comes back as can be used.
+	// The guest overruns its bound on the first run only, so the run a start brings back can be used.
 	script := "if [ ! -e /ran ]; then touch /ran; " + oomBomb + "; fi; while true; do sleep 1; done"
-	id := createBound(t, app, out, true, script)
-
-	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.OOMRestarts == 1 && sb.State == models.StateRunning })
-	if sb.StoppedReason != "" {
-		t.Errorf("the record keeps the reason %q after the start again", sb.StoppedReason)
-	}
-	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
-		t.Errorf("exec in the sandbox that came back = %q, %v", got, err)
-	}
-	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+" "+sandbox.OOMKilledReason+": started again, 1") {
-		t.Error("the daemon logged no line for the start again")
-	}
-}
-
-func TestTheDaemonLeavesAnOOMKilledSandboxThatDidNotAsk(t *testing.T) {
-	app, out := newCreateApp(t)
-	t.Parallel()
-
-	id := createBound(t, app, out, false, oomBomb)
+	id := createWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", script)
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })
-	if sb.StoppedReason != sandbox.OOMKilledReason || sb.OOMRestarts != 0 {
-		t.Errorf("the record says %q with %d starts again, want the kill named and none", sb.StoppedReason, sb.OOMRestarts)
+	if sb.StoppedReason != sandbox.OOMKilledReason || sb.PID != 0 {
+		t.Errorf("the record says %q with pid %d, want the kill named and no pid", sb.StoppedReason, sb.PID)
 	}
-}
+	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+": "+sandbox.OOMKilledReason+", the record now says stopped") {
+		t.Error("the daemon logged no line for the stop")
+	}
 
-// Each run stays calm under its throttle past the healthy window before its bomb, so a finite limit clears before it is spent (SHARD-332, SHARD-401).
-func TestTheDaemonKeepsALimitedOOMLoopAliveAcrossHealthyRuns(t *testing.T) {
-	app, out := newCreateApp(t)
-	t.Parallel()
+	// Two ticks pass, and nothing starts it again.
+	time.Sleep(11 * time.Second)
+	if got := record(t, app, id); got.State != models.StateStopped {
+		t.Fatalf("the record says %s two ticks after the kill, want it still stopped", got.State)
+	}
 
-	// The window is 10 s from the first tick that sees the run, and a tick comes every 5 s, so 30 s latches it with room to spare.
-	id := createBoundMax(t, app, out, 2, "sleep 30; "+oomBomb)
-
-	// A limit of 2 with no reset would give up on the third kill, so a third start again proves the reset.
-	marker := "sandbox " + id + " " + sandbox.OOMKilledReason + ": started again, 1 of 2"
-	awaitLog(t, func() bool { return strings.Count(daemonUnderTest.logged(), marker) >= 3 })
-
-	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateRunning })
-	if strings.Contains(sb.StoppedReason, "are spent") {
-		t.Errorf("the record gave up with %q, want the reset to keep the limit unspent", sb.StoppedReason)
+	if err := app.Run(t.Context(), []string{"start", id}); err != nil {
+		t.Fatalf("start after the kill: %v", err)
+	}
+	if got, err := runExec(t, app, "exec", id, "--", "/bin/ls", "/ran"); err != nil || !strings.Contains(got, "/ran") {
+		t.Errorf("the run a start brought back lost the file its first run wrote: %q, %v", got, err)
 	}
 }
 
@@ -78,47 +56,6 @@ func oomBound() string {
 	}
 
 	return "64"
-}
-
-// createBound makes a sandbox with the smallest bound the daemon takes, and the restart policy when asked.
-func createBound(t *testing.T, app App, out *bytes.Buffer, restart bool, script string) string {
-	t.Helper()
-
-	args := []string{"--memory", oomBound()}
-	if restart {
-		args = append(args, "--restart-on-oom")
-	}
-	id := createWith(t, app, out, append(args, testImage, "--", "/bin/sh", "-c", script)...)
-	t.Cleanup(func() { cleanUp(t, app, id) })
-
-	return id
-}
-
-// createBoundMax makes a bounded sandbox whose OOM restart is capped at max starts in a row.
-func createBoundMax(t *testing.T, app App, out *bytes.Buffer, max int, script string) string {
-	t.Helper()
-
-	id := createWith(t, app, out, "--memory", oomBound(), fmt.Sprintf("--restart-on-oom=%d", max), testImage, "--", "/bin/sh", "-c", script)
-	t.Cleanup(func() { cleanUp(t, app, id) })
-
-	return id
-}
-
-// awaitLog polls the daemon log until the condition holds, within the same budget as awaitRecord.
-func awaitLog(t *testing.T, ready func() bool) {
-	t.Helper()
-
-	deadline := time.Now().Add(oomBudget)
-	for {
-		if ready() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon log never read as wanted in %s; last log:\n%s", oomBudget, daemonUnderTest.logged())
-		}
-
-		time.Sleep(time.Second)
-	}
 }
 
 // awaitRecord polls the daemon until the record reads as wanted, and names the record it last saw if never.
@@ -132,7 +69,7 @@ func awaitRecord(t *testing.T, app App, id string, ready func(models.Sandbox) bo
 			return sb
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the record of %s never read as wanted in %s, last %s (%q) with %d starts again", id, oomBudget, sb.State, sb.StoppedReason, sb.OOMRestarts)
+			t.Fatalf("the record of %s never read as wanted in %s, last %s (%q)", id, oomBudget, sb.State, sb.StoppedReason)
 		}
 
 		time.Sleep(time.Second)

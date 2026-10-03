@@ -384,8 +384,6 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
 		"a negative disk bound":   {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
 		"a disk that overflows":   {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
-		"a restart with no bound": {Image: "alpine", RestartOnOOM: true},
-		"a negative oom limit":    {Image: "alpine", Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true, MaxOOMRestarts: -1},
 		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
 		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
 		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},

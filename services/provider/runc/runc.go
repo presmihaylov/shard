@@ -170,7 +170,7 @@ func boundPids(root, id string) error {
 
 // boundMemory makes a memory bound kill the whole sandbox, not one process. runc sets memory.max from
 // config.json but neither knob, so without them the OOM killer takes one guest process, the sandbox
-// lives, and restart_on_oom never fires. gvisor's provider sets the same pair.
+// lives, and the record never says it ran out of memory. gvisor's provider sets the same pair.
 func boundMemory(root string, spec models.SandboxSpec) error {
 	if bundle.MemoryBound(spec.Resources) == 0 {
 		return nil

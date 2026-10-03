@@ -348,8 +348,9 @@ func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ran out of memory") {
 		t.Fatalf("Exec returned %v, want the memory named", err)
 	}
-	if !strings.Contains(err.Error(), "--memory") {
-		t.Errorf("the refusal is %q, and it must say what to do about it", err)
+	// The sandbox keeps its files after an OOM, so the way back is a start, never an rm (SHARD-461).
+	if !strings.Contains(err.Error(), "shard start sandbox1") || strings.Contains(err.Error(), "shard rm") {
+		t.Errorf("the refusal is %q, want the start hint and no rm", err)
 	}
 }
 
@@ -912,7 +913,6 @@ func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
 	}{
 		{"died", running(), gone()},
 		{"oom killed", running(), oomKilled()},
-		{"oom killed and started again", optedIn(), oomKilled()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -920,7 +920,7 @@ func TestLivenessForgetsTheExecsOfASandboxThatEnded(t *testing.T) {
 			runExecToItsEnd(t, lab.svc)
 			lab.l.provider.status = tc.status
 
-			if err := lab.tick(t, tc.sb, time.Now()); err != nil {
+			if err := lab.tick(t, tc.sb); err != nil {
 				t.Fatalf("Liveness: %v", err)
 			}
 			if held := lab.svc.ExecsHeld("sandbox1"); held != 0 {

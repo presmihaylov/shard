@@ -78,20 +78,13 @@ func state(sb models.Sandbox) string {
 	return string(sb.State)
 }
 
-// restart is each policy the sandbox asked for, and how much of its cap has been spent on it.
+// restart is the entrypoint policy the sandbox asked for, and how much of its cap has been spent on it.
 func restart(sb models.Sandbox) string {
-	var policies []string
-	if sb.Restart != nil {
-		policies = append(policies, spent(string(sb.Restart.Policy), sb.Restart.Count, sb.Restart.Retries, sb.Restart.GaveUp))
-	}
-	if sb.RestartOnOOM {
-		policies = append(policies, spent("on-oom", sb.OOMRestarts, sb.MaxOOMRestarts, false))
-	}
-	if len(policies) == 0 {
+	if sb.Restart == nil {
 		return "-"
 	}
 
-	return strings.Join(policies, ", ")
+	return spent(string(sb.Restart.Policy), sb.Restart.Count, sb.Restart.Retries, sb.Restart.GaveUp)
 }
 
 // spent is a policy with its count beside it once a start again happened, its limit when it has one, and the give-up.

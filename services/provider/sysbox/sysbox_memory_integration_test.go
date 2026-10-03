@@ -18,7 +18,7 @@ const boundMiB = 64
 
 // TestABoundSandboxPinsSwapAndGroupsItsOOMKill is the SHARD-191 acceptance. sysbox-runc sets
 // memory.max from config.json but neither knob, so a bound took one guest process and the sandbox
-// lived, and restart_on_oom never fired. gvisor's provider sets the same pair.
+// lived, and the record never said it ran out of memory. gvisor's provider sets the same pair.
 func TestABoundSandboxPinsSwapAndGroupsItsOOMKill(t *testing.T) {
 	h := newHarness(t)
 

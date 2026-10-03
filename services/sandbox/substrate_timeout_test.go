@@ -32,7 +32,7 @@ func TestLivenessLeavesTheRecordWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 
 	var reports []string
 	start := time.Now()
-	err := svc.Liveness(t.Context(), []models.Sandbox{running()}, time.Now(), func(line string) { reports = append(reports, line) })
+	err := svc.Liveness(t.Context(), []models.Sandbox{running()}, func(line string) { reports = append(reports, line) })
 	if err != nil {
 		t.Fatalf("Liveness returned %v, want nil so the daemon task lives", err)
 	}
@@ -153,38 +153,22 @@ func TestRemoveForceReportsAKillThatDidNotLand(t *testing.T) {
 	}
 }
 
-// A restart that meets a wedged runtime must not pin the serial liveness task: it fails fast and typed for
-// that sandbox and leaves its record stopped, while every other sandbox on the same tick still reconciles.
-func TestLivenessKeepsReconcilingWhenARestartWedges(t *testing.T) {
-	r := &recorder{}
-	wedged := optedIn()
-	svc, l := newService(t, r, wedged, fastStart)
-	l.provider.status = oomKilled()
-	l.provider.wedgeStartOf = wedged.ID
+// A start that meets a wedged runtime fails fast and typed, and the record stays stopped for the next try.
+func TestStartFailsFastAndTypedWhenTheRuntimeWedges(t *testing.T) {
+	sb := stopped()
+	svc, l := newService(t, &recorder{}, sb, fastStart)
+	l.provider.wedgeStartOf = sb.ID
 
-	// A second OOM-killed sandbox that also asked for a restart; the wedge on the first must not starve it.
-	other := optedIn()
-	other.ID = "sandbox2"
-	l.repo.made = &other
-
-	var reports []string
 	start := time.Now()
-	err := svc.Liveness(t.Context(), []models.Sandbox{wedged, other}, time.Now(), func(line string) { reports = append(reports, line) })
-	if err != nil {
-		t.Fatalf("Liveness returned %v, want nil so the daemon task lives", err)
-	}
-	bounded(t, start, "the tick")
+	_, err := svc.Start(t.Context(), sb.ID)
+	bounded(t, start, "the start")
 
-	// The wedged sandbox spent its restart and stays stopped; a raw start or rm is the operator's move now.
-	if got := l.repo.sb; got.State != models.StateStopped || got.OOMRestarts != 1 {
-		t.Errorf("the wedged sandbox is %s with %d starts again, want stopped with 1 counted", got.State, got.OOMRestarts)
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) || timeout.Op != "start" {
+		t.Fatalf("Start returned %v, want a SubstrateTimeoutError on start", err)
 	}
-	// The other sandbox reconciled straight through the wedge: it started again and its record proves it.
-	if got := *l.repo.made; got.State != models.StateRunning || got.PID != 7 || got.OOMRestarts != 1 {
-		t.Errorf("the other sandbox is %s with pid %d and %d starts again, want running pid 7 with 1", got.State, got.PID, got.OOMRestarts)
-	}
-	if len(reports) != 2 {
-		t.Fatalf("the tick reported %v, want one line per sandbox", reports)
+	if got := l.repo.sb; got.State != models.StateStopped {
+		t.Errorf("the record is now %s, want it left stopped", got.State)
 	}
 }
 
@@ -198,7 +182,7 @@ func TestLivenessBailsWhenAReusedPidHidesANewRun(t *testing.T) {
 	// The record now holds a fresh run behind the same PID 42: a later StartedAt.
 	l.repo.sb.StartedAt = time.Now()
 
-	if err := svc.Liveness(t.Context(), []models.Sandbox{old}, time.Now(), func(string) {}); err != nil {
+	if err := svc.Liveness(t.Context(), []models.Sandbox{old}, func(string) {}); err != nil {
 		t.Fatalf("Liveness returned %v, want nil", err)
 	}
 	if slices.Contains(r.calls, "provider.Status") {
