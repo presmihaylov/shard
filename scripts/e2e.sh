@@ -1526,6 +1526,67 @@ pending_and_failed_steps() {
 	say "rm removes a failed sandbox and its record is gone"
 }
 
+# alone_in proves the guest runs shard-init as PID 1 with nothing after its --, and no other process but the exec that looks.
+alone_in() {
+	local id="$1" when="$2"
+	# Every user process but this exec, by pid and argv0; a kernel thread has no cmdline, so it never counts.
+	expect_exec_in "${id}" "1 /.shard/init" "${when}, the guest holds shard-init as PID 1 and nothing else" /bin/sh -c '
+		for p in /proc/[0-9]*; do
+			p=${p#/proc/}
+			if [ "$p" = "$$" ]; then continue; fi
+			a=$(tr "\000" "\n" < "/proc/$p/cmdline" 2>/dev/null | head -n 1)
+			if [ -n "$a" ]; then echo "$p $a"; fi
+		done'
+	expect_exec_in "${id}" "--" "${when}, nothing follows the -- of PID 1" /bin/sh -c 'tr "\000" "\n" < /proc/1/cmdline | tail -n 1'
+	holds '"exit_status"' shard inspect "${id}" && fail "${when}, sandbox ${id} recorded an exit: $(shard inspect "${id}")"
+	say "${when}, inspect holds no exit status, because nothing ran to exit"
+}
+
+# no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
+no_command_steps() {
+	local id clone code refusal policy
+
+	step "create with no command runs only shard-init and stays up"
+	id=$(shard create "${IMAGE}")
+	track_sandbox "${id}"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running: $(shard ls --all)"
+	say "a create with no command reaches running"
+	expect_exec_in "${id}" "alive" "an exec answers in a sandbox with no command" /bin/echo alive
+	alone_in "${id}" "after the create"
+
+	step "stop a sandbox with no command and find no exit"
+	shard stop --time "${GRACE}" "${id}" >/dev/null
+	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard ls --all does not list the sandbox with no command stopped"
+	# The image's CMD would have exited by now and its status would land at the stop, so none proves it never ran.
+	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
+	say "the stop ends shard-init alone and records no exit status"
+
+	step "start and clone a sandbox with no command, and still run nothing"
+	shard start "${id}" >/dev/null
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running after the start"
+	alone_in "${id}" "after a start"
+	shard stop --time "${GRACE}" "${id}" >/dev/null
+	clone=$(shard clone "${id}")
+	track_sandbox "${clone}"
+	[ "$(listed_state "${clone}")" = "running" ] || fail "the clone of the sandbox with no command is not running"
+	alone_in "${clone}" "in the clone"
+	drop_sandbox "${clone}"
+	drop_sandbox "${id}"
+
+	step "refuse --restart with no command"
+	for policy in "always" "on-failure --restart-retries 3"; do
+		code=0
+		# shellcheck disable=SC2086 # the policy and its settings are meant to split into flags
+		refusal=$(shard create --restart ${policy} "${IMAGE}" 2>&1) || code=$?
+		[ "${code}" != "0" ] || fail "create --restart ${policy} with no command made a sandbox: ${refusal}"
+		grep -q -- '--restart needs a command' <<<"${refusal}" || fail "the refusal of --restart ${policy} does not name --restart: ${refusal}"
+	done
+	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"always\"}}"
+	[ "${REPLY_CODE}" = "400" ] || fail "a restart policy with no command answered ${REPLY_CODE}, want 400"
+	grep -q 'restart.policy needs a command' <<<"${REPLY_BODY}" || fail "the refusal does not name restart.policy: ${REPLY_BODY}"
+	say "the CLI refuses --restart and the API refuses restart.policy with no command, 400"
+}
+
 # exec_cap_steps proves the sandbox keeps at most 32 exited execs and never evicts a running one (SHARD-163).
 exec_cap_steps() {
 	local body id long first exec_id n code
@@ -1919,6 +1980,7 @@ stop_grace_steps() {
 }
 
 pending_and_failed_steps
+no_command_steps
 exec_cap_steps
 health_steps
 restart_policy_steps

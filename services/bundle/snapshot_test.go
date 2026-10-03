@@ -26,7 +26,7 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 		Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
 	}
 	source.Resources = models.Resources{MemoryMiB: 512}
-	b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, source, models.ImageConfig{})
 
 	write(t, filepath.Join(b.Upper, "marker"), "written before the pause\n")
 	write(t, filepath.Join(b.Tmp, "scratch"), "tmp\n")
@@ -124,7 +124,7 @@ func TestForkRefusesASnapshotWithNoConfig(t *testing.T) {
 // A fork of an exited sandbox must answer Wait at once, so Export carries the exit record and Fork lays it back.
 func TestForkCarriesTheExitRecord(t *testing.T) {
 	source := newSpec(t)
-	b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, source, models.ImageConfig{})
 
 	write(t, b.ExitFile, "{\"kind\":\"exit\",\"code\":7,\"signal\":0}\n")
 
@@ -155,7 +155,7 @@ func TestCloneIsTheSourceUnderANewIdentity(t *testing.T) {
 	source.Name = "web"
 	source.Network = models.NetworkSpec{NetnsPath: "/run/netns/s-test", Address: netip.MustParsePrefix("10.87.0.2/16")}
 	source.Resources = models.Resources{MemoryMiB: 512}
-	b, _ := build(t, source, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, source, models.ImageConfig{})
 
 	write(t, filepath.Join(b.Upper, "marker"), "written before the stop\n")
 	write(t, b.ReadyFile, "")

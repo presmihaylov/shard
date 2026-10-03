@@ -12,13 +12,9 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Resolve fills the spec from the image config it will run over. Every provider needs the same
-// precedence, so it lives here rather than being redone once per substrate.
+// Resolve fills the spec from the image config it will run over, but never its ENTRYPOINT or CMD: the spec's command is the
+// only one. Every provider needs the same precedence, so it lives here rather than being redone once per substrate.
 func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
-	if len(s.Entrypoint) == 0 {
-		s.Entrypoint = slices.Concat(cfg.Entrypoint, cfg.Cmd)
-	}
-
 	s.Env = MergeEnv(cfg.Env, s.Env)
 	s.WorkDir = firstNonEmpty(s.WorkDir, cfg.WorkDir)
 	s.User = firstNonEmpty(s.User, cfg.User)

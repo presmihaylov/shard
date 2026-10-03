@@ -1,7 +1,9 @@
 package sandbox_test
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,44 @@ func TestCreateRefusesARestartPolicyNoSupervisorTakes(t *testing.T) {
 		if len(r.calls) > 0 {
 			t.Errorf("create(%s) reached a layer before the refusal: %v", name, r.calls)
 		}
+	}
+}
+
+// The image's own command never runs, so a policy that starts the command again needs one from the request.
+func TestCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
+	for _, policy := range []models.RestartPolicy{models.RestartOnFailure, models.RestartAlways} {
+		r := &recorder{}
+		svc, _ := newService(t, r, models.Sandbox{})
+		req := sandbox.CreateRequest{Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: policy}}
+
+		_, err := svc.Create(t.Context(), req)
+		var refused *sandbox.RequestError
+		if !errors.As(err, &refused) || !strings.Contains(err.Error(), "restart.policy needs a command") {
+			t.Errorf("create with restart.policy %s and no command gave %v, want a request error naming restart.policy", policy, err)
+		}
+		if len(r.calls) > 0 {
+			t.Errorf("create with restart.policy %s reached a layer before the refusal: %v", policy, r.calls)
+		}
+	}
+}
+
+// A sandbox with no command runs shard-init alone; restart-on-oom starts the whole sandbox again, so it needs none.
+func TestCreateWithNoCommandTakesNoPolicyAndRestartOnOOM(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{})
+	req := sandbox.CreateRequest{
+		Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: models.RestartNo},
+		Resources: models.Resources{MemoryMiB: 64}, RestartOnOOM: true,
+	}
+
+	sb, err := svc.Create(t.Context(), req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !sb.RestartOnOOM || sb.Restart != nil {
+		t.Errorf("the record holds restart-on-oom %v and the policy %+v, want restart-on-oom and no policy", sb.RestartOnOOM, sb.Restart)
+	}
+	if len(l.provider.spec.Entrypoint) != 0 {
+		t.Errorf("the provider was handed the command %v, want none: the image's own never runs", l.provider.spec.Entrypoint)
 	}
 }
 

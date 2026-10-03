@@ -347,7 +347,7 @@ func grantApp(t *testing.T, out *bytes.Buffer, state models.State) (App, *fakeLi
 		t.Fatalf("bundle.New: %v", err)
 	}
 	b, err := builder.Build(runspec.Resolve(models.SandboxSpec{ID: "sandbox1", StateDir: repo.stateDir, RootFS: rootfs},
-		models.ImageConfig{Entrypoint: []string{"/bin/sh"}}))
+		models.ImageConfig{}))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

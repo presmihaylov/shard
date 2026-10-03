@@ -8,19 +8,26 @@ import (
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
-func TestResolveTakesTheImageEntrypointAndCmdTogether(t *testing.T) {
+// The image's own command never runs, but what it says about the process still applies to every one the sandbox starts.
+func TestResolveNeverTakesTheImageEntrypointOrCmd(t *testing.T) {
 	got := runspec.Resolve(models.SandboxSpec{}, models.ImageConfig{
 		Entrypoint: []string{"/bin/sh"},
 		Cmd:        []string{"-c", "true"},
+		Env:        []string{"TZ=UTC"},
+		WorkDir:    "/app",
+		User:       "app",
 	})
 
-	if want := []string{"/bin/sh", "-c", "true"}; !slices.Equal(got.Entrypoint, want) {
-		t.Errorf("got entrypoint %v, want %v", got.Entrypoint, want)
+	if len(got.Entrypoint) != 0 {
+		t.Errorf("got entrypoint %v, want none", got.Entrypoint)
+	}
+	if !slices.Equal(got.Env, []string{"TZ=UTC"}) || got.WorkDir != "/app" || got.User != "app" {
+		t.Errorf("got env %v workdir %q user %q, want the image's", got.Env, got.WorkDir, got.User)
 	}
 }
 
-// The spec's entrypoint replaces both halves, because argv after -- is the whole command.
-func TestResolvePrefersTheSpecEntrypointOverBoth(t *testing.T) {
+// The spec's command is the whole argv, so neither half of the image's is added to it.
+func TestResolveKeepsTheSpecCommandAlone(t *testing.T) {
 	spec := models.SandboxSpec{Entrypoint: []string{"/bin/echo", "hello"}}
 	got := runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
 

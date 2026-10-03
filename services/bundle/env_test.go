@@ -22,7 +22,7 @@ func built(t *testing.T, env ...string) bundle.Bundle {
 	write(t, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), imageRoots)
 	spec.Env = env
 
-	b, _ := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, spec, models.ImageConfig{})
 
 	return b
 }
@@ -124,7 +124,7 @@ func TestTrustProxyPlantsTheCALateAndNeverTwice(t *testing.T) {
 
 func TestTrustProxyRefusesAnImageWithNoRoots(t *testing.T) {
 	spec := newSpec(t)
-	b, _ := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, _ := build(t, spec, models.ImageConfig{})
 
 	err := b.TrustProxy([]byte(proxyCA))
 	if err == nil {

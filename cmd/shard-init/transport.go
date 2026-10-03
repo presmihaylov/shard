@@ -460,10 +460,6 @@ func (t *transport) thaw() error {
 
 // launch starts the entrypoint the host resolved, once; its output is the log pipe from the first byte.
 func (t *transport) launch(spec supervisor.RunSpec) error {
-	if len(spec.Argv) == 0 {
-		return errors.New("the run message has no entrypoint")
-	}
-
 	credential, err := credentialOf(spec.User, spec.Groups)
 	if err != nil {
 		return err

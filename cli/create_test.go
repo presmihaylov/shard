@@ -55,7 +55,7 @@ func TestParseCreateFlags(t *testing.T) {
 	}
 
 	if len(req.Command) != 0 {
-		t.Errorf("argv = %v, want the image's own entrypoint", req.Command)
+		t.Errorf("argv = %v, want none: the image's own ENTRYPOINT and CMD never run", req.Command)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestParseCreateHealthFlags(t *testing.T) {
 }
 
 func TestParseCreateRestartFlags(t *testing.T) {
-	req, err := parseCreate([]string{"--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "alpine:3.20"})
+	req, err := parseCreate([]string{"--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "alpine:3.20", "sleep", "60"})
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestParseCreateRestartFlags(t *testing.T) {
 		t.Errorf("restart = %+v, want %+v", req.Restart, want)
 	}
 
-	req, err = parseCreate([]string{"--restart", "always", "alpine:3.20"})
+	req, err = parseCreate([]string{"--restart", "always", "alpine:3.20", "sleep", "60"})
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
@@ -145,6 +145,24 @@ func TestParseCreateRestartFlags(t *testing.T) {
 	}
 	if !req.RestartOnOOM || req.MaxOOMRestarts != 3 {
 		t.Errorf("oom restart = %v with a limit of %d, want asked-for with a limit of 3", req.RestartOnOOM, req.MaxOOMRestarts)
+	}
+}
+
+// The image's own command never runs, so a policy with no command after the image is refused by its flag.
+func TestParseCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
+	for _, flags := range [][]string{{"--restart", "always"}, {"--restart", "on-failure", "--restart-retries", "3"}} {
+		_, err := parseCreate(append(flags, "alpine:3.20"))
+		if err == nil || !strings.Contains(err.Error(), "--restart needs a command") {
+			t.Errorf("parseCreate(%v) with no command = %v, want the refusal naming --restart", flags, err)
+		}
+	}
+
+	req, err := parseCreate([]string{"--restart", "no", "--memory", "64", "--restart-on-oom", "alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate(--restart no --restart-on-oom) with no command: %v", err)
+	}
+	if req.Restart.Set() || !req.RestartOnOOM {
+		t.Errorf("restart = %+v and restart-on-oom = %v, want no policy and restart-on-oom", req.Restart, req.RestartOnOOM)
 	}
 }
 

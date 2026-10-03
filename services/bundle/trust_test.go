@@ -40,7 +40,7 @@ func TestBuildPlantsTheProxyCABesideTheImageRoots(t *testing.T) {
 	write(t, filepath.Join(spec.RootFS, "etc/pki/tls/certs/ca-bundle.crt"), imageRoots)
 	spec.ProxyCA = []byte(proxyCA)
 
-	b, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Env: []string{"SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt"}})
+	b, got := build(t, spec, models.ImageConfig{Env: []string{"SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt"}})
 
 	named := envOf(t, got.Process.Env, "SSL_CERT_FILE")
 	if named != "/etc/pki/tls/certs/ca-bundle.crt" {
@@ -69,7 +69,7 @@ func TestBuildFindsTheDebianRootsWithoutAnEnv(t *testing.T) {
 	write(t, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), imageRoots)
 	spec.ProxyCA = []byte(proxyCA)
 
-	b, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, got := build(t, spec, models.ImageConfig{})
 
 	if envOf(t, got.Process.Env, "SSL_CERT_FILE") != "/etc/ssl/certs/ca-certificates.crt" {
 		t.Errorf("SSL_CERT_FILE = %v", got.Process.Env)
@@ -89,7 +89,7 @@ func TestBuildPointsCurlAtTheMergedBundle(t *testing.T) {
 	write(t, filepath.Join(spec.RootFS, "cacert.pem"), imageRoots)
 	spec.ProxyCA = []byte(proxyCA)
 
-	b, got := build(t, spec, models.ImageConfig{Entrypoint: []string{"curl"}, Env: []string{"CURL_CA_BUNDLE=/cacert.pem"}})
+	b, got := build(t, spec, models.ImageConfig{Env: []string{"CURL_CA_BUNDLE=/cacert.pem"}})
 
 	named := slices.DeleteFunc(slices.Clone(got.Process.Env), func(entry string) bool { return !strings.HasPrefix(entry, "CURL_CA_BUNDLE=") })
 	if !slices.Equal(named, []string{"CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"}) {
@@ -157,7 +157,7 @@ func TestTrustsUserRefusesTheTrustVariables(t *testing.T) {
 }
 
 func TestBuildPlantsNothingWhenNotFronted(t *testing.T) {
-	b, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	b, got := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
 	for _, entry := range got.Process.Env {
 		if strings.HasPrefix(entry, "SSL_CERT_FILE=") {

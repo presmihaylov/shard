@@ -142,6 +142,61 @@ func TestTransportRunReportsReadyThenExit(t *testing.T) {
 	}
 }
 
+// An empty run is a sandbox created with no command: the guest says ready, forks nothing, and a stop ends it with no exit.
+func TestTransportAnEmptyRunIsReadyAndForksNothing(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Env: os.Environ()}); err != nil {
+		t.Fatalf("an empty run: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindReady)
+
+	again, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect again: %v", err)
+	}
+	defer again.Close()
+	state, err := again.Next()
+	if err != nil {
+		t.Fatalf("read the state: %v", err)
+	}
+	if state.Kind != supervisor.KindState || !state.Ready || state.Exit != nil {
+		t.Fatalf("state = %+v, want ready with no exit", state)
+	}
+	if err := again.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("exit:0")}); !errors.Is(err, supervisor.ErrEntrypointNotStarted) {
+		t.Fatalf("a second run gave %v, want ErrEntrypointNotStarted", err)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal the supervisor: %v", err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("the supervisor ended with %v, want a clean exit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the supervisor did not end at once, so the empty run left a child to wait for")
+	}
+	for {
+		m, err := again.Next()
+		if err != nil {
+			break
+		}
+		if m.Kind == supervisor.KindExit {
+			t.Fatalf("the guest reported the exit %+v, but nothing ran", m.Exit)
+		}
+	}
+}
+
 func TestTransportRunFailureNamesTheBinary(t *testing.T) {
 	_, dial := startTransport(t)
 	c, err := supervisor.Connect(testContext(t), dial)
@@ -240,6 +295,27 @@ func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 	err = c.Signal(t.Context(), os.Getpid(), "KILL")
 	if err == nil || !strings.Contains(err.Error(), "not a process shard-init started") {
 		t.Fatalf("signal gave %v, want the refusal", err)
+	}
+}
+
+// With no command the entrypoint pid is 0, so pid 0 and a negative pid must never reach kill(2) as a group.
+func TestTransportSignalRefusesAProcessGroup(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{}); err != nil {
+		t.Fatalf("run with no command: %v", err)
+	}
+
+	for _, pid := range []int{0, -1} {
+		err = c.Signal(t.Context(), pid, "KILL")
+		if err == nil || !strings.Contains(err.Error(), "names a process group") {
+			t.Fatalf("signal to pid %d gave %v, want the refusal", pid, err)
+		}
 	}
 }
 

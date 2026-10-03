@@ -342,13 +342,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 	return rs, nil
 }
 
-// supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint is its child.
+// supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint, when there is one, is its child.
 func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
-	entrypoint := spec.Entrypoint
-	if len(entrypoint) == 0 {
-		return nil, errors.New("nothing to run: the spec has no entrypoint and neither does the image")
-	}
-
 	argv := []string{
 		GuestInitPath,
 		"-ready-file", path.Join(guestShardDir, readyFileName),
@@ -376,7 +371,7 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		)
 	}
 
-	return append(append(argv, "--"), entrypoint...), nil
+	return append(append(argv, "--"), spec.Entrypoint...), nil
 }
 
 // Environment adds the one default that is runtime policy rather than image data, which every substrate applies.
