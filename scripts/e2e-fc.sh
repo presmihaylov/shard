@@ -44,8 +44,8 @@ start_daemon() {
 	wait_for_daemon
 }
 
-# fstab_line is what services/datadir appends, byte for byte, so the teardown removes that line and no other.
-fstab_line() { printf '%s %s xfs loop 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
+# fstab_line is what pkg/xfs appendFstab writes, byte for byte, so the teardown removes that line and no other.
+fstab_line() { printf '%s %s xfs loop,nofail 0 0' "${DATA_IMAGE}" "${SHARD_ROOT}"; }
 
 # forget_fstab drops the run's own line through a temp file in /etc, so an interrupt never leaves a half-written fstab.
 forget_fstab() {
