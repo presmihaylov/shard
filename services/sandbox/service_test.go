@@ -1632,6 +1632,19 @@ func TestStartOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
 	}
 }
 
+// A create whose image left the host between the create and the start of its holder names the pull too (SHARD-585).
+func TestCreateWhoseStartFindsTheImageGoneNamesThePull(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, models.Sandbox{})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	imageGone(t, err, "create")
+	public, _ := sandbox.PublicText(err)
+	if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedPublic != public {
+		t.Errorf("the record is %s with public reason %q, want failed with %q", l.repo.sb.State, l.repo.sb.FailedPublic, public)
+	}
+}
+
 // A create whose image an rm deleted after the pull fails with the same public reason it answers (SHARD-585).
 func TestCreateOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Create"}, cause: goneImage()}, models.Sandbox{})

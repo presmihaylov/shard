@@ -740,7 +740,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return nameCommand(err, spec.Entrypoint)
+		return imageGone(id, sb.Image, img.Digest, "create", nameCommand(err, spec.Entrypoint))
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
