@@ -90,6 +90,7 @@ packaging/systemd/         the unit for the daemon, and the one for the TCP fron
 packaging/launchd/         the LaunchDaemon for the native Mac daemon
 packaging/kernel/          the guest kernel build: pinned image, config per arch, release tag helper
 services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
+third_party/vz/            Code-Hex/vz as upstream wrote it, bar the one patch its UPSTREAM file names
 docs/
 ```
 
