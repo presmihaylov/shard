@@ -44,7 +44,7 @@ prints the same help. The help never lists an alias.
 
 ## Verbs
 
-`shard <verb> --help` prints the flags and an example. The format column is the default `--format`;
+`shard COMMAND --help` prints the options and examples. The format column is the default `--format`;
 a dash is a verb with no `--format`.
 
 ### Sandboxes
