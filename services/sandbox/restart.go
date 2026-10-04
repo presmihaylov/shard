@@ -155,13 +155,31 @@ func entrypointRestartReport(id string, count, retries int) string {
 func (s *Service) stoppedRestarts(ctx context.Context, sb models.Sandbox) (models.RestartCount, error) {
 	count, err := s.lastRestarts(ctx, sb)
 	// Log and continue, on Pres's 2026-10-03 ErrExitFileTooLarge precedent (PR 309): the substrate has already ended, and only this guest loses its own count.
-	if errors.Is(err, models.ErrRestartFileForged) {
+	if forgedAlone(err) {
 		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
 
 		return sb.Restart.RestartCount, nil
 	}
 
 	return count, err
+}
+
+// forgedAlone is a forged count with no other failure joined to it, so an unmount error never passes for the guest's doing.
+func forgedAlone(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, part := range joined.Unwrap() {
+			if !forgedAlone(part) {
+				return false
+			}
+		}
+
+		return len(joined.Unwrap()) > 0
+	}
+	if wrapped := errors.Unwrap(err); wrapped != nil {
+		return forgedAlone(wrapped)
+	}
+
+	return errors.Is(err, models.ErrRestartFileForged)
 }
 
 // lastRestarts asks the supervisor's count for a record that has a policy, and is zero for one that has none.

@@ -63,7 +63,7 @@ func readRestartCount(path string) (models.RestartCount, error) {
 
 	var count models.RestartCount
 	if err := json.Unmarshal(blob, &count); err != nil {
-		return models.RestartCount{}, fmt.Errorf("decode the restart count: %w: %w", err, models.ErrRestartFileForged)
+		return models.RestartCount{}, fmt.Errorf("decode the restart count: %s: %w", err.Error(), models.ErrRestartFileForged)
 	}
 
 	return count, nil

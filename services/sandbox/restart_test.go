@@ -253,6 +253,18 @@ func TestStopKeepsTheRecordedCountOverOneTheGuestForged(t *testing.T) {
 	}
 }
 
+func TestStopStillFailsOnAnUnmountJoinedToAForgedCount(t *testing.T) {
+	svc, l := newService(t, &recorder{}, policied())
+	forged := fmt.Errorf("decode the restart count: %w", models.ErrRestartFileForged)
+	unmount := errors.New("unmount the disk: device or resource busy")
+	l.provider.restartsErr = errors.Join(forged, unmount)
+
+	_, err := svc.Stop(t.Context(), "sandbox1")
+	if !errors.Is(err, unmount) {
+		t.Fatalf("stop answered %v, want the unmount error the forged count came with", err)
+	}
+}
+
 func TestStopStillFailsOnACountItCannotRead(t *testing.T) {
 	svc, l := newService(t, &recorder{}, policied())
 	l.provider.restartsErr = errors.New("read the restart count: input/output error")
