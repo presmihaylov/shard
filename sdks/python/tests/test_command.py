@@ -13,6 +13,7 @@ from useshards._async._transport import AsyncTransport
 from useshards._config import Settings
 from useshards._sync import _command
 from useshards._sync._transport import Transport
+from useshards._sync._ws import WebSocket
 from useshards._wire import STDERR, STDOUT
 from useshards.errors import CommandNotStartedError, ConflictError, ProtocolError, ShardConnectionError
 
@@ -278,3 +279,24 @@ def test_exit_wins_over_unsent_input(daemon: FakeDaemon) -> None:
     assert result.exit_code == 0
     daemon.close()
     assert daemon.outcomes == [True]
+
+
+def fault(self: WebSocket, payload: bytes) -> None:
+    raise RuntimeError("a local fault")
+
+
+def test_unrelated_write_error_rejects_at_once(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(WebSocket, "send_binary", fault)
+    daemon.attaches = [lambda peer: peer.until_end()]
+    with pytest.raises(RuntimeError, match="a local fault"):
+        _command.run_command(transport(daemon), "sb", ["cat"], stdin=b"x", output_limit_bytes=LIMIT)
+    daemon.close()
+    assert daemon.outcomes == ["eof"]
+    assert kills(daemon) == []
+
+
+def test_exit_never_hides_an_unrelated_write_error(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(WebSocket, "send_binary", fault)
+    daemon.attaches = [lambda peer: peer.finish(0)]
+    with pytest.raises(RuntimeError, match="a local fault"):
+        _command.run_command(transport(daemon), "sb", ["cat"], stdin=b"x", output_limit_bytes=LIMIT)

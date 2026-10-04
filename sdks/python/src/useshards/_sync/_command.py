@@ -141,18 +141,23 @@ class Command:
         ws = self._open()
         sender = None if stdin is None else _Sender(ws, stdin)
         try:
-            result = self._exit(ws)
+            result = self._exit(ws, sender)
         except BaseException as e:
             _abandon(ws, sender, e)
             raise
-        # @shard 2026-10-04: a write fails once the command ends and its stdin closes, so the exit is the outcome.
-        if sender is not None and not sender.task.join(0):
+        if sender is None:
+            ws.close()
+            return result
+        blocked = not sender.task.join(0)
+        if blocked:
             # A daemon that stopped reading leaves the unsent input's write blocked, so only a release frees it.
             sender.task.cancel()
             ws.release()
             sender.task.join(None)
-            return result
-        ws.close()
+        if sender.failure is not None:
+            raise sender.failure
+        if not blocked:
+            ws.close()
         return result
 
     def _open(self) -> WebSocket:
@@ -199,10 +204,12 @@ class Command:
                 return None
             self._cut(e.cause)
 
-    def _exit(self, ws: WebSocket) -> CommandResult:
+    def _exit(self, ws: WebSocket, sender: _Sender | None) -> CommandResult:
         try:
             return self._read(ws)
         except _Ended as e:
+            if sender is not None and sender.failure is not None:
+                raise sender.failure from e.cause
             self._cut(e.cause)
 
     def _read(self, ws: WebSocket) -> CommandResult:
@@ -336,18 +343,28 @@ class _Ended(Exception):
 
 
 class _Sender:
-    """A foreground command's input, written beside the read, with a failed write kept for the read's outcome."""
+    """A foreground command's input, written beside the read."""
 
     def __init__(self, ws: WebSocket, data: bytes) -> None:
-        self.error: ShardConnectionError | None = None
-        self.task = _backend.Task(lambda: self._send(ws, data))
+        self.ended: ShardConnectionError | None = None
+        self.failure: Exception | None = None
+        self._ws = ws
+        self.task = _backend.Task(lambda: self._send(data))
 
-    def _send(self, ws: WebSocket, data: bytes) -> None:
+    def _send(self, data: bytes) -> None:
         try:
-            _feed(ws, data)
-            ws.send_binary(bytes([STDIN_CLOSE]))
+            _feed(self._ws, data)
+            self._ws.send_binary(bytes([STDIN_CLOSE]))
         except ShardConnectionError as e:
-            self.error = e
+            # @shard 2026-10-04: the stream's end refused the write, so the read's exit or cut is the outcome.
+            self.ended = e
+        except Exception as e:
+            # Any other fault rejects the call at once, so the release wakes the read to raise it.
+            self.failure = e
+            try:
+                self._ws.release()
+            except ShardConnectionError as release_error:
+                e.add_note(f"letting go of the stream also failed: {release_error}")
 
 
 def _feed(ws: WebSocket, data: bytes) -> None:
@@ -362,8 +379,8 @@ def _abandon(ws: WebSocket, sender: _Sender | None, cause: BaseException) -> Non
         ws.release()
     except ShardConnectionError as e:
         cause.add_note(f"letting go of the stream also failed: {e}")
-    if sender is not None and sender.error is not None:
-        cause.add_note(f"writing the command's input also failed: {sender.error}")
+    if sender is not None and sender.ended is not None:
+        cause.add_note(f"writing the command's input also failed: {sender.ended}")
 
 
 def _bytes(data: bytes | str) -> bytes:

@@ -140,18 +140,23 @@ class AsyncCommand:
         ws = await self._open()
         sender = None if stdin is None else _Sender(ws, stdin)
         try:
-            result = await self._exit(ws)
+            result = await self._exit(ws, sender)
         except BaseException as e:
             await _abandon(ws, sender, e)
             raise
-        # @shard 2026-10-04: a write fails once the command ends and its stdin closes, so the exit is the outcome.
-        if sender is not None and not await sender.task.join(0):
+        if sender is None:
+            await ws.close()
+            return result
+        blocked = not await sender.task.join(0)
+        if blocked:
             # A daemon that stopped reading leaves the unsent input's write blocked, so only a release frees it.
             await sender.task.cancel()
             await ws.release()
             await sender.task.join(None)
-            return result
-        await ws.close()
+        if sender.failure is not None:
+            raise sender.failure
+        if not blocked:
+            await ws.close()
         return result
 
     async def _open(self) -> AsyncWebSocket:
@@ -198,10 +203,12 @@ class AsyncCommand:
                 return None
             await self._cut(e.cause)
 
-    async def _exit(self, ws: AsyncWebSocket) -> CommandResult:
+    async def _exit(self, ws: AsyncWebSocket, sender: _Sender | None) -> CommandResult:
         try:
             return await self._read(ws)
         except _Ended as e:
+            if sender is not None and sender.failure is not None:
+                raise sender.failure from e.cause
             await self._cut(e.cause)
 
     async def _read(self, ws: AsyncWebSocket) -> CommandResult:
@@ -335,18 +342,28 @@ class _Ended(Exception):
 
 
 class _Sender:
-    """A foreground command's input, written beside the read, with a failed write kept for the read's outcome."""
+    """A foreground command's input, written beside the read."""
 
     def __init__(self, ws: AsyncWebSocket, data: bytes) -> None:
-        self.error: ShardConnectionError | None = None
-        self.task = _backend.Task(lambda: self._send(ws, data))
+        self.ended: ShardConnectionError | None = None
+        self.failure: Exception | None = None
+        self._ws = ws
+        self.task = _backend.Task(lambda: self._send(data))
 
-    async def _send(self, ws: AsyncWebSocket, data: bytes) -> None:
+    async def _send(self, data: bytes) -> None:
         try:
-            await _feed(ws, data)
-            await ws.send_binary(bytes([STDIN_CLOSE]))
+            await _feed(self._ws, data)
+            await self._ws.send_binary(bytes([STDIN_CLOSE]))
         except ShardConnectionError as e:
-            self.error = e
+            # @shard 2026-10-04: the stream's end refused the write, so the read's exit or cut is the outcome.
+            self.ended = e
+        except Exception as e:
+            # Any other fault rejects the call at once, so the release wakes the read to raise it.
+            self.failure = e
+            try:
+                await self._ws.release()
+            except ShardConnectionError as release_error:
+                e.add_note(f"letting go of the stream also failed: {release_error}")
 
 
 async def _feed(ws: AsyncWebSocket, data: bytes) -> None:
@@ -361,8 +378,8 @@ async def _abandon(ws: AsyncWebSocket, sender: _Sender | None, cause: BaseExcept
         await ws.release()
     except ShardConnectionError as e:
         cause.add_note(f"letting go of the stream also failed: {e}")
-    if sender is not None and sender.error is not None:
-        cause.add_note(f"writing the command's input also failed: {sender.error}")
+    if sender is not None and sender.ended is not None:
+        cause.add_note(f"writing the command's input also failed: {sender.ended}")
 
 
 def _bytes(data: bytes | str) -> bytes:
