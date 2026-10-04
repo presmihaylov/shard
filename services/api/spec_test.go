@@ -27,6 +27,26 @@ func TestTheCommittedSpecIsTheOneTheRoutesMake(t *testing.T) {
 	}
 }
 
+// The SDK release gate probes each local route through the front, so its list is the table's, in order.
+func TestTheGateProbesEveryLocalRoute(t *testing.T) {
+	listed, err := os.ReadFile("../../sdks/gate/local-routes.txt")
+	if err != nil {
+		t.Fatalf("read sdks/gate/local-routes.txt: %v", err)
+	}
+
+	var want []string
+	for _, r := range api.Routes() {
+		if r.Class == api.Local {
+			want = append(want, r.Method+" "+r.Pattern)
+		}
+	}
+
+	got := strings.Split(strings.TrimSuffix(string(listed), "\n"), "\n")
+	if !slices.Equal(got, want) {
+		t.Errorf("sdks/gate/local-routes.txt lists %q, the table's local routes are %q", got, want)
+	}
+}
+
 // The front checks a token against api.Routes, so the spec names each public route once, with the same scope, and no local one.
 func TestTheSpecNamesEveryPublicRouteWithItsScope(t *testing.T) {
 	spec, err := api.Spec()
