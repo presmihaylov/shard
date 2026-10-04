@@ -47,7 +47,7 @@ func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App
 		t.Fatalf("write the signing key file: %v", err)
 	}
 
-	minted, err := serve.IssueToken([]byte(frontSecret), serve.TokensPath(secret, ""), "cli", nil, time.Hour)
+	minted, err := serve.IssueToken([]byte(frontSecret), serve.TokensPath(secret), "cli", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestAKeyTheFrontDoesNotHonourIsRefusedByTheFront(t *testing.T) {
 	var frontLog syncBuffer
 
 	app, flags, secret := newLoggedFrontApp(t, &out, &frontLog)
-	ledger := serve.TokensPath(secret, "")
+	ledger := serve.TokensPath(secret)
 	revoked, err := serve.IssueToken([]byte(frontSecret), ledger, "revoked", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)

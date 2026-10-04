@@ -55,8 +55,6 @@ type Config struct {
 	Listen string
 	// SigningKeyFile holds the HS256 key that signs and checks every token; empty means <Root>/auth/signing-key, created on first use. Its value is never logged.
 	SigningKeyFile string
-	// TokensFile overrides the ledger path; empty means the ledger beside the signing key file.
-	TokensFile string
 	// Root is the daemon's state root, which is where the socket the front fronts sits.
 	Root string
 	Out  io.Writer
@@ -87,7 +85,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	tokens, err := newLedger(TokensPath(keyPath, cfg.TokensFile))
+	tokens, err := newLedger(TokensPath(keyPath))
 	if err != nil {
 		return nil, err
 	}

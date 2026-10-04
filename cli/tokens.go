@@ -18,7 +18,6 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	name := flags.String("name", "", "")
 	duration := flags.Duration("duration", 0, "")
 	signingKeyFile := flags.String("signing-key-file", "", "")
-	tokensFile := flags.String("tokens-file", "", "")
 	scopes := flags.String("scopes", "", "")
 	format := addFormatFlag(flags, formatJSON)
 
@@ -45,7 +44,7 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 		return fmt.Errorf("tokens mint: %w", err)
 	}
 
-	minted, err := serve.IssueToken(signingKey, serve.TokensPath(keyPath, *tokensFile), *name, scopeList, *duration)
+	minted, err := serve.IssueToken(signingKey, serve.TokensPath(keyPath), *name, scopeList, *duration)
 	if err != nil {
 		return err
 	}
@@ -65,7 +64,6 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 func (a App) tokensList(_ context.Context, args []string) error {
 	flags := newFlags("tokens list")
 	signingKeyFile := flags.String("signing-key-file", "", "")
-	tokensFile := flags.String("tokens-file", "", "")
 	format := addFormatFlag(flags, formatTable)
 
 	if err := parseVerb(flags, args); err != nil {
@@ -74,7 +72,7 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
 	}
-	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
+	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
 		return fmt.Errorf("tokens list: %w", err)
 	}
@@ -103,14 +101,13 @@ func (a App) tokensList(_ context.Context, args []string) error {
 func (a App) tokensRevoke(_ context.Context, args []string) error {
 	flags := newFlags("tokens revoke")
 	signingKeyFile := flags.String("signing-key-file", "", "")
-	tokensFile := flags.String("tokens-file", "", "")
 	name := flags.String("name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
 	}
 
-	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
+	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
 		return fmt.Errorf("tokens revoke: %w", err)
 	}
@@ -141,14 +138,14 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	return a.print(fmt.Sprintf("revoked token %s", id))
 }
 
-// ledgerPath is the ledger list and revoke use: --tokens-file, else the one beside the signing key file. It creates nothing.
-func (a App) ledgerPath(signingKeyFile, tokensFile string) (string, error) {
+// ledgerPath is the ledger beside the signing key file, for list and revoke. It creates nothing.
+func (a App) ledgerPath(signingKeyFile string) (string, error) {
 	keyPath, err := serve.SigningKeyPath(a.Root, signingKeyFile)
 	if err != nil {
 		return "", err
 	}
 
-	return serve.TokensPath(keyPath, tokensFile), nil
+	return serve.TokensPath(keyPath), nil
 }
 
 // expiresText is when a token expires, in RFC3339, or "never" for a token with no expiry.

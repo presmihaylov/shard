@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,6 +61,19 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 }
 
 // tokens list lists a minted token as active and never-expiring, and tokens revoke by id flips it to revoked.
+// The registry is always the one beside the signing key, so no verb that reads it takes a path of its own.
+func TestTokensFileIsGone(t *testing.T) {
+	for _, verb := range [][]string{{"serve"}, {"tokens", "mint", "--name", "ci"}, {"tokens", "list"}, {"tokens", "revoke", "--name", "ci"}} {
+		var out bytes.Buffer
+
+		args := append(slices.Clone(verb), "--tokens-file", filepath.Join(t.TempDir(), "serve.tokens"))
+		err := newApp(t, &out).Run(t.Context(), args)
+		if err == nil || !strings.HasPrefix(err.Error(), "unknown flag --tokens-file") {
+			t.Errorf("%v returned %v, want unknown flag --tokens-file", args, err)
+		}
+	}
+}
+
 func TestTokensListAndRevokeByID(t *testing.T) {
 	var out bytes.Buffer
 
@@ -263,7 +277,7 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 			t.Errorf("the refusal is %q, and it must name %s", err, want)
 		}
 	}
-	if _, err := os.Stat(serve.TokensPath(secret, "")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(serve.TokensPath(secret)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("mint left a ledger for a token it refused: %v", err)
 	}
 }
