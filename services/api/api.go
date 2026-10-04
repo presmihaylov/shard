@@ -63,7 +63,7 @@ type Lifecycle interface {
 	DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error)
 }
 
-// EgressLog is what shard logs --egress prints: the newest decisions made for one sandbox, oldest first.
+// EgressLog is what shard policy logs prints: the newest decisions made for one sandbox, oldest first.
 type EgressLog interface {
 	// Read returns the newest records and how many older ones it left out.
 	Read(sb models.Sandbox) ([]egress.Record, int, error)

@@ -535,7 +535,7 @@ func (c *Client) EgressLog(ctx context.Context, ref string, out, errOut io.Write
 		}
 	}
 
-	// One write, so a reader that closes the pipe early (logs --egress | grep -q) never leaves the CLI a partial write to SIGPIPE on.
+	// One write, so a reader that closes the pipe early (policy logs | grep -q) never leaves the CLI a partial write to SIGPIPE on.
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
 	for _, record := range records {

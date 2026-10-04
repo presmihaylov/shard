@@ -33,7 +33,7 @@ func (s *safeBuffer) String() string {
 
 // The floor drops the metadata address whatever the policy says, so one ping is a host drop, and a
 // follow that is live prints it without the test asking the log again.
-func TestLogsFollowsTheEgressLogLive(t *testing.T) {
+func TestPolicyLogsFollowsLive(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	id := runDetached(t, app, out, "/bin/sleep", "600")
@@ -47,7 +47,7 @@ func TestLogsFollowsTheEgressLogLive(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- follow.Run(ctx, []string{"logs", "-f", "--egress", id}) }()
+	go func() { done <- follow.Run(ctx, []string{"policy", "logs", "-f", id}) }()
 
 	if err := app.Run(t.Context(), []string{"exec", id, "--", "/bin/sh", "-c", "ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 || true"}); err != nil {
 		t.Fatalf("exec: %v", err)
