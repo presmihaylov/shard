@@ -23,6 +23,10 @@ RECORD: dict[str, Any] = {
     "lost_bytes": 0,
 }
 IN_USE = (409, {"error": {"code": "in_use", "message": "another client is attached to e1"}})
+NOT_STARTED = (
+    422,
+    {"error": {"code": "command_not_started", "message": 'sandbox sb could not run "/no/such"', "exit_code": 127}},
+)
 
 
 class Peer:
@@ -130,6 +134,7 @@ class FakeDaemon:
         self.attaches: list[Session | tuple[int, dict[str, Any]]] = []
         self.refuse_when_out: tuple[int, dict[str, Any]] | None = None
         self.bad_accept = False
+        self.create: tuple[int, dict[str, Any]] = (201, RECORD)
         self.record: tuple[int, dict[str, Any]] = (200, RECORD)
         self.requests: list[tuple[str, str, bytes]] = []
         self.outcomes: list[Any] = []
@@ -174,7 +179,7 @@ class FakeDaemon:
         if headers.get("upgrade") == "websocket":
             return self._attach(conn, headers["sec-websocket-key"])
         if method == "POST" and path == "/v0/sandboxes/sb/exec":
-            return _answer(conn, 201, RECORD)
+            return _answer(conn, *self.create)
         if method == "GET" and path == "/v0/sandboxes/sb/exec/e1":
             return _answer(conn, *self.record)
         if method == "POST" and path == "/v0/sandboxes/sb/exec/e1/kill":
@@ -204,4 +209,4 @@ def _answer(conn: Conn, status: int, body: dict[str, Any] | None) -> None:
     )
 
 
-__all__ = ["IN_USE", "OP_PING", "OP_PONG", "RECORD", "FakeDaemon", "Peer"]
+__all__ = ["IN_USE", "NOT_STARTED", "OP_PING", "OP_PONG", "RECORD", "FakeDaemon", "Peer"]

@@ -6,7 +6,7 @@ import threading
 from collections.abc import Iterator
 
 import pytest
-from fakedaemon import IN_USE, OP_PING, OP_PONG, RECORD, FakeDaemon, Peer
+from fakedaemon import IN_USE, NOT_STARTED, OP_PING, OP_PONG, RECORD, FakeDaemon, Peer
 
 from useshards._async import _command as async_command
 from useshards._async._transport import AsyncTransport
@@ -108,6 +108,14 @@ def test_exit_with_an_error_never_started(daemon: FakeDaemon) -> None:
     with pytest.raises(CommandNotStartedError, match="no such file") as caught:
         _command.run_command(transport(daemon), "sb", ["nope"], output_limit_bytes=LIMIT)
     assert caught.value.exit_code == 127
+
+
+def test_refused_start_never_attaches(daemon: FakeDaemon) -> None:
+    daemon.create = NOT_STARTED
+    with pytest.raises(CommandNotStartedError, match="could not run") as caught:
+        _command.run_command(transport(daemon), "sb", ["/no/such"], output_limit_bytes=LIMIT)
+    assert caught.value.exit_code == 127
+    assert [method for method, _, _ in daemon.requests] == ["POST"]
 
 
 def test_failure_is_the_refusal_it_names(daemon: FakeDaemon) -> None:

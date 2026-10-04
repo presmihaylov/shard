@@ -10,6 +10,7 @@ from useshards._config import resolve
 from useshards._wire import STDERR, STDOUT
 from useshards.errors import (
     APIError,
+    CommandNotStartedError,
     ConfigurationError,
     ConflictError,
     NotFoundError,
@@ -124,6 +125,14 @@ def test_refusal_that_is_not_json() -> None:
     blank = api_error(418, b"")
     assert type(blank) is APIError
     assert blank.message == "an empty body"
+
+
+def test_a_command_that_never_started_keeps_its_shell_code() -> None:
+    body = b'{"error":{"code":"command_not_started","message":"sandbox web could not run \\"/x\\"","exit_code":126}}'
+    err = api_error(422, body)
+    assert isinstance(err, CommandNotStartedError)
+    assert (err.exit_code, err.reason) == (126, 'sandbox web could not run "/x"')
+    assert type(api_error(422, b'{"error":{"code":"command_not_started","message":"m"}}')) is APIError
 
 
 def test_stream_failure_takes_the_status_of_its_code() -> None:

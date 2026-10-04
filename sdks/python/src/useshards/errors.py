@@ -132,14 +132,17 @@ _CODE_STATUS: Mapping[str, int] = {
     "exec_running": 409,
     "no_app": 409,
     "app_ended": 409,
+    "command_not_started": 422,
     "substrate_timeout": 504,
     "internal": 500,
 }
 
 
-def api_error(status: int, body: bytes) -> APIError:
+def api_error(status: int, body: bytes) -> APIError | CommandNotStartedError:
     """Classify a refusal by the daemon's code, then by its status."""
-    code, message = _parse_body(body)
+    code, message, exit_code = _parse_body(body)
+    if code == "command_not_started" and exit_code is not None:
+        return CommandNotStartedError(exit_code, message)
     return _classified(status, code, message)
 
 
@@ -155,19 +158,24 @@ def _classified(status: int, code: str, message: str) -> APIError:
     return cls(status, code, message)
 
 
-def _parse_body(body: bytes) -> tuple[str, str]:
+def _parse_body(body: bytes) -> tuple[str, str, int | None]:
     try:
         decoded = json.loads(body)
     except (ValueError, UnicodeDecodeError):
-        return "", _raw(body)
+        return "", _raw(body), None
     if not isinstance(decoded, dict):
-        return "", _raw(body)
+        return "", _raw(body), None
     err = decoded.get("error")
     if not isinstance(err, dict):
-        return "", _raw(body)
+        return "", _raw(body), None
     code = err.get("code")
     message = err.get("message")
-    return (code if isinstance(code, str) else ""), (message if isinstance(message, str) else "")
+    exit_code = err.get("exit_code")
+    return (
+        code if isinstance(code, str) else "",
+        message if isinstance(message, str) else "",
+        exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+    )
 
 
 def _raw(body: bytes) -> str:
