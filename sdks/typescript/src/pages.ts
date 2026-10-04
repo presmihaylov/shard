@@ -4,7 +4,7 @@ import { ProtocolError, isObject } from "./errors.js";
 /** listed answers every row of a paged list; page fetches one page from the cursor, undefined for the first. */
 export async function listed(route: string, key: string, page: (cursor: string | undefined) => Promise<{ data?: unknown }>): Promise<{ rows: unknown[]; warnings: string[] }> {
   const rows: unknown[] = [];
-  const warnings: string[] = [];
+  const warnings = new Set<string>();
   let cursor: string | undefined;
   do {
     const { data } = await page(cursor);
@@ -18,9 +18,11 @@ export async function listed(route: string, key: string, page: (cursor: string |
       throw new ProtocolError(`GET ${route} answered list warnings that are not strings`);
     }
     rows.push(...found);
-    warnings.push(...lines);
+    for (const line of lines) {
+      warnings.add(line);
+    }
     cursor = next || undefined;
   } while (cursor);
 
-  return { rows, warnings };
+  return { rows, warnings: [...warnings] };
 }

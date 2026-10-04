@@ -152,14 +152,14 @@ class Shard:
     def list(self, *, all: bool = False) -> SandboxList[Sandbox]:
         """The sandboxes and the warnings for entries the daemon could not read."""
         sandboxes: builtins.list[Sandbox] = []
-        warnings: builtins.list[str] = []
+        warnings: dict[str, None] = {}
         for page in self._transport.pages(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.sync_detailed(client=self._transport.api, all_=all or UNSET, cursor=cursor),
         ):
             sandboxes.extend(Sandbox(self._transport, _types.sandbox_info(record)) for record in page.sandboxes)
-            warnings.extend(_types.warning_lines(page.warnings))
-        return SandboxList(sandboxes, warnings)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SandboxList(sandboxes, builtins.list(warnings))
 
     def version(self) -> Version:
         return _types.version(
@@ -260,14 +260,14 @@ class Secrets:
 
     def list(self) -> SecretList:
         secrets: builtins.list[SecretInfo] = []
-        warnings: builtins.list[str] = []
+        warnings: dict[str, None] = {}
         for page in self._transport.pages(
             models.SecretsResponse,
             lambda cursor: list_secrets.sync_detailed(client=self._transport.api, cursor=cursor),
         ):
             secrets.extend(_types.secret_info(record) for record in page.secrets)
-            warnings.extend(_types.warning_lines(page.warnings))
-        return SecretList(secrets, warnings)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SecretList(secrets, builtins.list(warnings))
 
     def remove(self, name: str, *, force: bool = False) -> None:
         """Remove a secret no sandbox is granted; force ungrants it from each first."""

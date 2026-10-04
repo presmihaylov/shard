@@ -151,7 +151,7 @@ class AsyncShard:
     async def list(self, *, all: bool = False) -> SandboxList[AsyncSandbox]:
         """The sandboxes and the warnings for entries the daemon could not read."""
         sandboxes: builtins.list[AsyncSandbox] = []
-        warnings: builtins.list[str] = []
+        warnings: dict[str, None] = {}
         async for page in self._transport.pages(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.asyncio_detailed(
@@ -159,8 +159,8 @@ class AsyncShard:
             ),
         ):
             sandboxes.extend(AsyncSandbox(self._transport, _types.sandbox_info(record)) for record in page.sandboxes)
-            warnings.extend(_types.warning_lines(page.warnings))
-        return SandboxList(sandboxes, warnings)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SandboxList(sandboxes, builtins.list(warnings))
 
     async def version(self) -> Version:
         return _types.version(
@@ -261,14 +261,14 @@ class AsyncSecrets:
 
     async def list(self) -> SecretList:
         secrets: builtins.list[SecretInfo] = []
-        warnings: builtins.list[str] = []
+        warnings: dict[str, None] = {}
         async for page in self._transport.pages(
             models.SecretsResponse,
             lambda cursor: list_secrets.asyncio_detailed(client=self._transport.api, cursor=cursor),
         ):
             secrets.extend(_types.secret_info(record) for record in page.secrets)
-            warnings.extend(_types.warning_lines(page.warnings))
-        return SecretList(secrets, warnings)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SecretList(secrets, builtins.list(warnings))
 
     async def remove(self, name: str, *, force: bool = False) -> None:
         """Remove a secret no sandbox is granted; force ungrants it from each first."""

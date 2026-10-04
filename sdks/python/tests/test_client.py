@@ -100,16 +100,18 @@ def test_a_policy_list_leaves_out_holders_and_dns(daemon: FakeDaemon, shard: Sha
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("kind", ["sandboxes", "secrets"])
-def test_partial_lists_keep_every_warning(daemon: FakeDaemon, shard: Shard, kind: str, asynchronous: bool) -> None:
+def test_partial_lists_keep_each_warning_once_in_first_seen_order(
+    daemon: FakeDaemon, shard: Shard, kind: str, asynchronous: bool
+) -> None:
     route = f"/v0/{kind}"
     row = dict(SANDBOX)
     if kind == "secrets":
         row = {"name": "token", "destinations": [], "placeholder": "ph", "updated_at": "2026-10-04T10:00:00Z"}
     query = "all=true&" if kind == "sandboxes" else ""
-    daemon.routes[("GET", route)] = (200, {kind: [], "next": "c2", "warnings": ["first unreadable entry"]})
+    daemon.routes[("GET", route)] = (200, {kind: [], "next": "c2", "warnings": ["second", "first", "second"]})
     daemon.routes[("GET", f"{route}?{query}cursor=c2")] = (
         200,
-        {kind: [row], "next": "c3", "warnings": ["second unreadable entry"]},
+        {kind: [row], "next": "c3", "warnings": ["first", "third", "First"]},
     )
     daemon.routes[("GET", f"{route}?{query}cursor=c3")] = (200, {kind: [], "next": None})
 
@@ -127,7 +129,7 @@ def test_partial_lists_keep_every_warning(daemon: FakeDaemon, shard: Shard, kind
             result = shard.list(all=True)
         if kind == "secrets":
             result = shard.secrets.list()
-    assert result.warnings == ["first unreadable entry", "second unreadable entry"]
+    assert result.warnings == ["second", "first", "third", "First"]
     if kind == "sandboxes":
         assert isinstance(result, SandboxList)
         assert [each.id for each in result.sandboxes] == ["sb"]

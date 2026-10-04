@@ -137,6 +137,20 @@ test("secret list keeps warnings from empty and readable pages", async () => {
   assert.deepEqual(listed.warnings, ["first unreadable secret", "second unreadable secret"]);
 });
 
+test("partial lists keep each warning once in first-seen order", async () => {
+  for (const key of ["sandboxes", "secrets"] as const) {
+    routes.set(`GET /v0/${key}`, (request) => {
+      if (request.url.searchParams.has("cursor")) {
+        return { status: 200, json: { [key]: [], next: null, warnings: ["first", "third", "First"] } };
+      }
+      return { status: 200, json: { [key]: [], next: "c2", warnings: ["second", "first", "second"] } };
+    });
+    const list = key === "sandboxes" ? () => shard.list() : () => shard.secrets.list();
+    assert.deepEqual((await list()).warnings, ["second", "first", "third", "First"]);
+    assert.deepEqual((await list()).warnings, ["second", "first", "third", "First"]);
+  }
+});
+
 test("a secret removal keeps the holders on its conflict", async () => {
   routes.set("DELETE /v0/secrets/token", () => ({ status: 409, json: {
     error: { code: "in_use", message: "the secret has a grant", holders: ["sb_1", "sb_2"] },
