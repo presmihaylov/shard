@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
+
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
@@ -131,13 +134,7 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	}
 
 	mux := http.NewServeMux()
-	for _, e := range h.routeTable() {
-		mux.HandleFunc(e.Method+" "+e.Pattern, e.handler)
-	}
-	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.writeJSON(w, http.StatusNotFound, errorResponse{Error: ErrorObject{Code: models.CodeNotFound, Message: fmt.Sprintf("no route for %s %s", r.Method, r.URL.Path)}})
-	})
+	h.register(mux)
 
 	return mux
 }
@@ -150,77 +147,105 @@ const (
 	Local  Class = "local"
 )
 
-// Route is one method and pattern the daemon serves. The front maps each public one to the capability it enforces.
+// Scope is the one coarse right a token needs for a public route; the front enforces it and the spec names it.
+type Scope string
+
+const (
+	// AnyToken is a route every valid token reaches whatever its scopes, so a client can learn what it speaks to before it acts.
+	AnyToken      Scope = "any"
+	SandboxRead   Scope = "sandbox:read"
+	SandboxWrite  Scope = "sandbox:write"
+	SandboxDelete Scope = "sandbox:delete"
+	Exec          Scope = "exec"
+	Secret        Scope = "secret:*"
+	Policy        Scope = "policy:*"
+)
+
+// Scopes are the six a token can carry besides "*", in the order docs/daemon.md lists them.
+var Scopes = []Scope{SandboxRead, SandboxWrite, SandboxDelete, Exec, Secret, Policy}
+
+// Route is one method and pattern the daemon serves, and the scope a public one needs; a local one needs none.
 type Route struct {
 	Method  string
 	Pattern string
 	Class   Class
+	Scope   Scope
 }
 
-// routeEntry binds a route to its handler; routeTable is the one list NewHandler registers and Routes reports.
+// routeEntry binds a route to what serves it: a public one to the operation the spec names, a local one to a plain handler.
 type routeEntry struct {
 	Route
+	op      huma.Operation
+	serve   endpoint
 	handler http.HandlerFunc
+}
+
+func public(method, pattern string, scope Scope, op huma.Operation, serve endpoint) routeEntry {
+	return routeEntry{Route: Route{Method: method, Pattern: pattern, Class: Public, Scope: scope}, op: op, serve: serve}
+}
+
+func local(method, pattern string, handler http.HandlerFunc) routeEntry {
+	return routeEntry{Route: Route{Method: method, Pattern: pattern, Class: Local}, handler: handler}
 }
 
 // routeTable is the single source of the daemon's routes, less the catch-all that answers an unknown path.
 func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
-		{Route{"GET", "/v0/version", Public}, h.getVersion},
-		{Route{"GET", "/v0/capabilities", Public}, h.getCapabilities},
-		{Route{"GET", "/v0/daemon", Local}, h.getDaemon},
-		{Route{"GET", "/v0/sandboxes", Public}, h.listSandboxes},
-		{Route{"GET", "/v0/sandboxes/{id}", Public}, h.getSandbox},
-		{Route{"POST", "/v0/sandboxes", Public}, h.createSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/start", Public}, h.startSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/stop", Public}, h.stopSandbox},
-		{Route{"DELETE", "/v0/sandboxes/{id}", Public}, h.removeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/pause", Public}, h.pauseSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/resume", Public}, h.resumeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/fork", Public}, h.forkSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/exec", Public}, h.createExec},
-		{Route{"GET", "/v0/sandboxes/{id}/exec", Public}, h.listExecs},
-		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.getExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Public}, h.killExec},
-		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.deleteExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Public}, h.resizeExec},
-		{Route{"PUT", "/v0/sandboxes/{id}/files", Public}, h.putFile},
-		{Route{"GET", "/v0/sandboxes/{id}/files", Public}, h.getFile},
+		public("GET", "/v0/version", AnyToken, operation("meta", "get-version", "Read the daemon and API versions", 0), typed(h.getVersion)),
+		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the optional verbs the provider refuses", 0), typed(h.getCapabilities)),
+		local("GET", "/v0/daemon", h.getDaemon),
+		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List sandboxes", 0), typed(h.listSandboxes)),
+		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
+		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "Create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
+		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "Start a stopped sandbox", 0), typed(h.startSandbox)),
+		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "Stop a sandbox", 0), typed(h.stopSandbox)),
+		public("DELETE", "/v0/sandboxes/{id}", SandboxDelete, operation("sandboxes", "remove-sandbox", "Remove a sandbox", 0), typed(h.removeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "Pause a running sandbox", 0), typed(h.pauseSandbox)),
+		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "Resume a paused sandbox", 0), typed(h.resumeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "Fork a sandbox into a new one", http.StatusCreated), typed(h.forkSandbox)),
+		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Create an exec, which runs once a client attaches", http.StatusCreated), typed(h.createExec)),
+		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
+		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
+		public("POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Exec, operation("exec", "kill-exec", "Send a signal to a running exec", 0), typed(h.killExec)),
+		public("DELETE", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "delete-exec", "Forget an exec that ended", 0), typed(h.deleteExec)),
+		public("POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Exec, operation("exec", "resize-exec", "Resize the terminal of an exec", 0), typed(h.resizeExec)),
+		public("PUT", "/v0/sandboxes/{id}/files", Exec, operation("files", "write-file", "Write a file", http.StatusNoContent), raw[writeFileInput](h.putFile, describeWriteFile)),
+		public("GET", "/v0/sandboxes/{id}/files", Exec, operation("files", "read-file", "Read a file", 0), raw[filePath](h.getFile, describeReadFile)),
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
-		{Route{"HEAD", "/v0/sandboxes/{id}/files", Public}, h.statFile},
-		{Route{"DELETE", "/v0/sandboxes/{id}/files", Public}, h.deleteFile},
-		{Route{"GET", "/v0/sandboxes/{id}/ls", Public}, h.listDir},
-		{Route{"POST", "/v0/sandboxes/{id}/mkdir", Public}, h.makeDir},
-		{Route{"PUT", "/v0/sandboxes/{id}/archive", Public}, h.putArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/archive", Public}, h.getArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/logs", Public}, h.sandboxLogs},
-		{Route{"GET", "/v0/sandboxes/{id}/attach", Public}, h.attachApp},
-		{Route{"POST", "/v0/sandboxes/{id}/app/stop", Public}, h.stopApp},
-		{Route{"GET", "/v0/sandboxes/{id}/egress-log", Public}, h.sandboxEgressLog},
-		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.grantSecret},
-		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.ungrantSecret},
-		{Route{"PUT", "/v0/sandboxes/{id}/policy", Public}, h.attachPolicy},
-		{Route{"DELETE", "/v0/sandboxes/{id}/policy", Public}, h.detachPolicy},
-		{Route{"POST", "/v0/snapshots", Public}, h.createSnapshot},
-		{Route{"GET", "/v0/snapshots", Public}, h.listSnapshots},
-		{Route{"GET", "/v0/snapshots/{ref}", Public}, h.getSnapshot},
-		{Route{"DELETE", "/v0/snapshots/{ref}", Public}, h.removeSnapshot},
-		{Route{"GET", "/v0/policies", Public}, h.listPolicies},
-		{Route{"GET", "/v0/policies/{name}", Public}, h.getPolicy},
-		{Route{"PUT", "/v0/policies/{name}", Public}, h.putPolicy},
-		{Route{"DELETE", "/v0/policies/{name}", Public}, h.removePolicy},
-		{Route{"GET", "/v0/secrets", Public}, h.listSecrets},
-		{Route{"PUT", "/v0/secrets/{name}", Public}, h.putSecret},
-		{Route{"DELETE", "/v0/secrets/{name}", Public}, h.removeSecret},
-		{Route{"GET", "/v0/images", Local}, h.listImages},
-		{Route{"POST", "/v0/images/pull", Local}, h.pullImage},
-		{Route{"POST", "/v0/images/prune", Local}, h.pruneImages},
+		public("HEAD", "/v0/sandboxes/{id}/files", Exec, operation("files", "stat-file", "Stat a path", 0), raw[filePath](h.statFile, describeStatFile)),
+		public("DELETE", "/v0/sandboxes/{id}/files", Exec, operation("files", "delete-file", "Delete a path", 0), typed(h.deleteFile)),
+		public("GET", "/v0/sandboxes/{id}/ls", Exec, operation("files", "list-dir", "List a directory", 0), raw[filePath](h.listDir, describeListDir)),
+		public("POST", "/v0/sandboxes/{id}/mkdir", Exec, operation("files", "make-dir", "Make a directory", 0), typed(h.makeDir)),
+		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "Unpack a tar under a directory", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
+		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "Read a path as a tar", 0), raw[filePath](h.getArchive, describeReadArchive)),
+		public("GET", "/v0/sandboxes/{id}/logs", SandboxRead, operation("sandboxes", "get-sandbox-logs", "Read or follow the output of a sandbox", 0), raw[followInput](h.sandboxLogs, describeLogs)),
+		public("GET", "/v0/sandboxes/{id}/attach", SandboxRead, operation("app", "attach-app", "Wait for or attach to the app of a run", 0), raw[sandboxPath](h.attachApp, describeAttachApp)),
+		public("POST", "/v0/sandboxes/{id}/app/stop", SandboxWrite, operation("app", "stop-app", "Stop the app of a run", 0), typed(h.stopApp)),
+		public("GET", "/v0/sandboxes/{id}/egress-log", SandboxRead, operation("sandboxes", "get-sandbox-egress-log", "Read or follow the egress decisions of a sandbox", 0), raw[followInput](h.sandboxEgressLog, describeEgressLog)),
+		public("POST", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "grant-secret", "Grant a secret to a sandbox", 0), typed(h.grantSecret)),
+		public("DELETE", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "ungrant-secret", "Take a secret back from a sandbox", 0), typed(h.ungrantSecret)),
+		public("PUT", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "attach-policy", "Attach a policy to a sandbox", 0), typed(h.attachPolicy)),
+		public("DELETE", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "detach-policy", "Detach the policy of a sandbox", 0), typed(h.detachPolicy)),
+		public("POST", "/v0/snapshots", SandboxWrite, operation("snapshots", "create-snapshot", "Snapshot a sandbox", http.StatusCreated), typed(h.createSnapshot)),
+		public("GET", "/v0/snapshots", SandboxRead, operation("snapshots", "list-snapshots", "List snapshots", 0), typed(h.listSnapshots)),
+		public("GET", "/v0/snapshots/{ref}", SandboxRead, operation("snapshots", "get-snapshot", "Read a snapshot", 0), typed(h.getSnapshot)),
+		public("DELETE", "/v0/snapshots/{ref}", SandboxDelete, operation("snapshots", "remove-snapshot", "Remove a snapshot", 0), typed(h.removeSnapshot)),
+		public("GET", "/v0/policies", Policy, operation("policies", "list-policies", "List policies", 0), typed(h.listPolicies)),
+		public("GET", "/v0/policies/{name}", Policy, operation("policies", "get-policy", "Read a policy", 0), typed(h.getPolicy)),
+		public("PUT", "/v0/policies/{name}", Policy, operation("policies", "put-policy", "Create or replace a policy", 0), typed(h.putPolicy)),
+		public("DELETE", "/v0/policies/{name}", Policy, operation("policies", "remove-policy", "Remove a policy", 0), typed(h.removePolicy)),
+		public("GET", "/v0/secrets", Secret, operation("secrets", "list-secrets", "List secrets, never their values", 0), typed(h.listSecrets)),
+		public("PUT", "/v0/secrets/{name}", Secret, operation("secrets", "put-secret", "Create or rotate a secret", 0), typed(h.putSecret)),
+		public("DELETE", "/v0/secrets/{name}", Secret, operation("secrets", "remove-secret", "Remove a secret", 0), typed(h.removeSecret)),
+		local("GET", "/v0/images", h.listImages),
+		local("POST", "/v0/images/pull", h.pullImage),
+		local("POST", "/v0/images/prune", h.pruneImages),
 		// An image reference carries slashes, so it is the rest of the path and not one segment of it.
-		{Route{"DELETE", "/v0/images/{ref...}", Local}, h.removeImage},
+		local("DELETE", "/v0/images/{ref...}", h.removeImage),
 	}
 }
 
-// Routes lists every route the daemon serves. The front covers each public one with a capability.
+// Routes lists every route the daemon serves, which the front and the spec both read.
 func Routes() []Route {
 	// The zero Handler is enough: Routes reads only each method and pattern, never a handler.
 	var h Handler
@@ -247,17 +272,12 @@ type capabilitiesResponse struct {
 	Unsupported []string `json:"unsupported"`
 }
 
-// listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
-type listResponse struct {
+// sandboxesResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
+type sandboxesResponse struct {
 	Sandboxes []Sandbox `json:"sandboxes"`
 	Next      *string   `json:"next"`
 	// Warnings names the records the daemon could not read, one string each, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
-}
-
-// errorResponse is every refusal, one object under error and nothing else at the root.
-type errorResponse struct {
-	Error ErrorObject `json:"error"`
 }
 
 // ErrorObject is a code for a program, a line for a human, and the holders an in_use names.
@@ -267,19 +287,17 @@ type ErrorObject struct {
 	Holders []string    `json:"holders,omitempty"`
 }
 
-func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
-	h.writeJSON(w, http.StatusOK, versionResponse{Version: h.version, APIVersion: APIVersion})
+func (h *Handler) getVersion(context.Context, *struct{}) (*reply[versionResponse], error) {
+	return answer(versionResponse{Version: h.version, APIVersion: APIVersion}, nil)
 }
 
-func (h *Handler) getCapabilities(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) getCapabilities(context.Context, *struct{}) (*reply[capabilitiesResponse], error) {
 	d, err := h.process.Daemon()
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
-	h.writeJSON(w, http.StatusOK, capabilitiesResponse{Provider: d.Provider, Unsupported: unsupported(d.Capabilities)})
+	return answer(capabilitiesResponse{Provider: d.Provider, Unsupported: unsupported(d.Capabilities)}, nil)
 }
 
 // unsupported is never null, so a client reads an empty list as a provider that refuses nothing.
@@ -309,29 +327,23 @@ func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, d)
 }
 
-// listSandboxes answers a page of public records.
-func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	all, err := boolQuery(r, "all")
-	if err != nil {
-		h.writeError(w, err)
+type listSandboxesInput struct {
+	All    bool   `query:"all" doc:"List stopped sandboxes too."`
+	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
+	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+}
 
-		return
+func (h *Handler) listSandboxes(_ context.Context, in *listSandboxesInput) (*reply[sandboxesResponse], error) {
+	q, err := paged(in.Limit, in.Cursor, sandboxstate.ValidID)
+	if err != nil {
+		return nil, fail(err)
 	}
 
-	q, err := pageOf(r, sandboxstate.ValidID)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sandboxes, unreadable := sandbox.List(h.repo, all)
+	sandboxes, unreadable := sandbox.List(h.repo, in.All)
 
 	warnings, err := partial(unreadable)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
@@ -341,35 +353,28 @@ func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, PublicSandbox(sb))
 	}
 
-	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: rows, Next: next, Warnings: warnings})
+	return answer(sandboxesResponse{Sandboxes: rows, Next: next, Warnings: warnings}, nil)
 }
 
-// getSandbox answers the public record two ways: ?wait=true blocks until a pending create lands, the default reads now.
-func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
-	wait, err := boolQuery(r, "wait")
-	if err != nil {
-		h.writeError(w, err)
+type getSandboxInput struct {
+	ID   string `path:"id"`
+	Wait bool   `query:"wait" doc:"Block until a pending create lands."`
+}
 
-		return
-	}
-
-	ref := r.PathValue("id")
-	if wait {
-		if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
-			h.writeError(w, err)
-
-			return
+// getSandbox answers the public record two ways: wait blocks until a pending create lands, the default reads now.
+func (h *Handler) getSandbox(ctx context.Context, in *getSandboxInput) (*reply[Inspection], error) {
+	if in.Wait {
+		if err := h.lifecycle.WaitState(ctx, in.ID); err != nil {
+			return nil, fail(err)
 		}
 	}
 
-	insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
+	insp, err := sandbox.Inspect(h.repo, h.enforcer, in.ID)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
-	h.writeJSON(w, http.StatusOK, PublicInspection(insp))
+	return answer(PublicInspection(insp), nil)
 }
 
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
@@ -417,82 +422,72 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	if cut > 0 {
 		w.Header().Set(EgressCutHeader, strconv.Itoa(cut))
 	}
-	h.writeJSON(w, http.StatusOK, records)
+	h.writeJSON(w, http.StatusOK, listOf(records))
 }
 
-func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.GrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
+// describeEgressLog names the three answers of sandboxEgressLog: the records, a line each with follow, or a message each over a WebSocket.
+func describeEgressLog(registry huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = &huma.Response{
+		Description: "The egress decisions, oldest first; with follow one record per line until the sandbox stops.",
+		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older records the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
+		Content: map[string]*huma.MediaType{
+			"application/json":     {Schema: schemaOf[[]egress.Record](registry)},
+			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
+		},
 	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+	op.Responses["101"] = upgrade("A WebSocket follow: one egress record per text message, until the sandbox stops.")
 }
 
-func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.UngrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+type grantInput struct {
+	ID   string `path:"id"`
+	Name string `path:"name"`
 }
 
-func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.PolicyAttachRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sb, err := h.lifecycle.AttachPolicy(r.Context(), r.PathValue("id"), req.Policy)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+func (h *Handler) grantSecret(ctx context.Context, in *grantInput) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.GrantSecret(ctx, in.ID, in.Name))
 }
 
-func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.DetachPolicy(r.Context(), r.PathValue("id"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+func (h *Handler) ungrantSecret(ctx context.Context, in *grantInput) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.UngrantSecret(ctx, in.ID, in.Name))
 }
 
-// createSandbox answers the new record at once, or with ?wait=true once it leaves pending, streaming the pull when asked.
-func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
-	wait, err := boolQuery(r, "wait")
+func (h *Handler) attachPolicy(ctx context.Context, in *sandboxBody[sandbox.PolicyAttachRequest]) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.AttachPolicy(ctx, in.ID, value(in.Body).Policy))
+}
+
+func (h *Handler) detachPolicy(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.DetachPolicy(ctx, in.ID))
+}
+
+// publicReply answers the record a verb returns, less its host side.
+func publicReply(sb models.Sandbox, err error) (*reply[Sandbox], error) {
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
-	var req sandbox.CreateRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+	return &reply[Sandbox]{Body: PublicSandbox(sb)}, nil
+}
 
-		return
+type createInput struct {
+	Wait bool `query:"wait" doc:"Answer once the sandbox leaves pending; with Accept: application/x-ndjson the pull streams first."`
+	Body *sandbox.CreateRequest
+}
+
+// createSandbox checks the scopes before anything is created, then answers in one of the two shapes describeCreate names.
+func (h *Handler) createSandbox(ctx context.Context, in *createInput) (*rawReply, error) {
+	req := value(in.Body)
+	if err := checkCreateScopes(ctx, req); err != nil {
+		return nil, fail(err)
 	}
 
-	if err := checkCreateScopes(r.Header, req); err != nil {
-		h.writeError(w, err)
+	return &rawReply{Body: func(hctx huma.Context) {
+		r, w := humago.Unwrap(hctx)
+		h.create(w, r, in.Wait, req)
+	}}, nil
+}
 
-		return
-	}
-
+// create answers the new record at once, or with wait once it leaves pending, streaming the pull when asked.
+func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req sandbox.CreateRequest) {
 	if wait && streamed(r) {
 		streamProgress(h, w, r, http.StatusCreated, "create", createLines, func(ctx context.Context) (CreateLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
@@ -538,12 +533,20 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusCreated, PublicSandbox(sb))
 }
 
+// describeCreate names both shapes of the 201: the record, or the pull's events and then the record, one JSON line each.
+func describeCreate(registry huma.Registry, op *huma.Operation) {
+	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox.", Content: map[string]*huma.MediaType{
+		"application/json":     {Schema: schemaOf[Sandbox](registry)},
+		"application/x-ndjson": {Schema: schemaOf[CreateLine](registry)},
+	}}
+}
+
 // ScopesHeader carries the token's scopes from the TCP front to the daemon. The front stamps it on every request it forwards and strips any client copy; a request with no such header reached the socket directly.
 const ScopesHeader = "X-Shard-Scopes"
 
 // scopeError is a create that names a secret or a policy the token's scopes do not reach; classify maps it to 403.
 type scopeError struct {
-	scope string
+	scope Scope
 	named string
 }
 
@@ -552,17 +555,17 @@ func (e *scopeError) Error() string {
 }
 
 // checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
-func checkCreateScopes(header http.Header, req sandbox.CreateRequest) error {
-	scopes, stamped := stampedScopes(header)
+func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
+	scopes, stamped := ctx.Value(scopesKey{}).([]string)
 	if !stamped {
 		return nil
 	}
 
-	if len(req.Secrets) > 0 && !scopesCover(scopes, "secret:*") {
-		return &scopeError{scope: "secret:*", named: "secret"}
+	if len(req.Secrets) > 0 && !scopesCover(scopes, Secret) {
+		return &scopeError{scope: Secret, named: "secret"}
 	}
-	if req.Policy != "" && !scopesCover(scopes, "policy:*") {
-		return &scopeError{scope: "policy:*", named: "policy"}
+	if req.Policy != "" && !scopesCover(scopes, Policy) {
+		return &scopeError{scope: Policy, named: "policy"}
 	}
 
 	return nil
@@ -588,13 +591,13 @@ func stampedScopes(header http.Header) ([]string, bool) {
 }
 
 // scopesCover reports whether the stamped scopes reach need; no scopes, or a "*" scope, reaches every one, as the front's covers() does.
-func scopesCover(scopes []string, need string) bool {
+func scopesCover(scopes []string, need Scope) bool {
 	if len(scopes) == 0 {
 		return true
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == need {
+		if s == "*" || s == string(need) {
 			return true
 		}
 	}
@@ -602,97 +605,42 @@ func scopesCover(scopes []string, need string) bool {
 	return false
 }
 
-func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.Start(r.Context(), r.PathValue("id"))
-	if err != nil {
-		// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
-		if status, _ := classify(err); status >= http.StatusInternalServerError {
-			h.log.Printf("api: start sandbox %s: %v", r.PathValue("id"), err)
-		}
-		h.writeError(w, err)
-
-		return
+func (h *Handler) startSandbox(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
+	sb, err := h.lifecycle.Start(ctx, in.ID)
+	// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
+	if status, _ := classify(err); err != nil && status >= http.StatusInternalServerError {
+		h.log.Printf("api: start sandbox %s: %v", in.ID, err)
 	}
 
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+	return publicReply(sb, err)
 }
 
 // stopRequest is the body of a stop, which carries nothing.
 type stopRequest struct{}
 
-func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
-	var req stopRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+func (h *Handler) stopSandbox(ctx context.Context, in *sandboxBody[stopRequest]) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.Stop(ctx, in.ID))
 }
 
-func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
-	force, err := boolQuery(r, "force")
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+type removeInput struct {
+	ID    string `path:"id"`
+	Force bool   `query:"force" doc:"Stop a sandbox that is still up or paused first."`
 }
 
-func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.Pause(r.Context(), r.PathValue("id"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+func (h *Handler) removeSandbox(ctx context.Context, in *removeInput) (*struct{}, error) {
+	return done(h.lifecycle.Remove(ctx, in.ID, in.Force))
 }
 
-func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.lifecycle.Resume(r.Context(), r.PathValue("id"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
+func (h *Handler) pauseSandbox(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.Pause(ctx, in.ID))
 }
 
-func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.CopyRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.Resume(ctx, in.ID))
+}
 
-		return
-	}
-
-	sb, err := h.lifecycle.Fork(r.Context(), r.PathValue("id"), req)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusCreated, PublicSandbox(sb))
+func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.Fork(ctx, in.ID, value(in.Body)))
 }
 
 // classify maps what a typed error refused to the status and the code that say so; anything untyped broke.
@@ -810,21 +758,21 @@ func partial(err error) ([]string, error) {
 
 // writeError answers err with the status and the code its type says, and the holders when a store entry is held.
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
-	status, body := errorBody(err)
-	h.writeJSON(w, status, body)
+	body := errorBody(err)
+	h.writeJSON(w, body.status, body)
 }
 
 // errorBody is the status and the object err answers; a stream that already sent its status writes only the object.
-func errorBody(err error) (int, errorResponse) {
+func errorBody(err error) apiError {
 	status, code := classify(err)
-	body := errorResponse{Error: ErrorObject{Code: code, Message: err.Error()}}
+	body := apiError{status: status, Object: ErrorObject{Code: code, Message: err.Error()}}
 
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
-		body.Error.Holders = held.Users
+		body.Object.Holders = held.Users
 	}
 
-	return status, body
+	return body
 }
 
 // writeJSON encodes first, so a value that cannot be encoded never leaves a 200 with half a body.

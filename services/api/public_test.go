@@ -56,6 +56,27 @@ func TestThePublicEgressNamesTheImpliedRulesAsTheDNSGroup(t *testing.T) {
 	checkImpliedRules(t, path, body, egress.GroupDNS)
 }
 
+// The spec types egress.rules as an array, so a policy with no rules and one the store no longer holds both answer [], never null.
+func TestThePublicEgressOfAnEmptyOrMissingPolicyIsAnEmptyList(t *testing.T) {
+	s := seed(t)
+
+	if err := s.policies.Set(models.Policy{Name: "empty"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	for _, policy := range []string{"empty", "gone"} {
+		sb, err := s.repo.Create(models.Sandbox{Image: "docker.io/library/alpine:3.20", Provider: "gvisor", State: models.StateRunning, Policy: policy})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		status, body := get(t, s.server, "/v0/sandboxes/"+sb.ID)
+		enforced, _ := body["egress"].(map[string]any)
+		if rules, ok := enforced["rules"].([]any); status != http.StatusOK || !ok || len(rules) != 0 {
+			t.Errorf("GET the sandbox under the policy %s answered %d with the egress %v, want rules []", policy, status, body["egress"])
+		}
+	}
+}
+
 // checkImpliedRules fails unless the record's egress leads with the two implied dns rules, ids 1 and 2, each naming want.
 func checkImpliedRules(t *testing.T, path string, body map[string]any, want string) {
 	t.Helper()

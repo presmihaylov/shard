@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/presmihaylov/shard/services/client"
@@ -40,11 +41,8 @@ type App struct {
 	Err io.Writer
 	// InitPath is the host path of the guest supervisor. It defaults to the environment when empty, and stays empty on a Mac.
 	InitPath string
-	// Remote is the https proxy in front of shard serve a verb speaks to instead of the socket, as https://shard.example.com.
+	// Remote is the shard serve front, or the proxy in front of it, a verb speaks to instead of the socket, as https://shard.example.com.
 	Remote string
-	// TokenFile is --token-file alone, never SHARD_TOKEN_FILE, so it beats SHARD_API_KEY; CAFile signed the certificate of the proxy in front of serve.
-	TokenFile string
-	CAFile    string
 	// Interrupts hands out the stop signals; nil, as a test builds, gives a verb none.
 	Interrupts *Interrupts
 
@@ -53,6 +51,9 @@ type App struct {
 
 	// in is the terminal this shard process holds. A test replaces it: a pipe is not a terminal.
 	in *os.File
+
+	// plainWarned is shared by every copy of the App one run makes, so a verb that builds two clients warns once.
+	plainWarned *sync.Once
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -350,6 +351,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 		a.InitPath = initPathFromEnv()
 	}
 	a.fromEnv()
+	a.plainWarned = &sync.Once{}
 
 	flags := flag.NewFlagSet("shard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -357,8 +359,6 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	flags.BoolVar(&showVersion, "version", false, "")
 	flags.StringVar(&a.Root, "root", a.Root, "")
 	flags.StringVar(&a.Remote, "remote", a.Remote, "")
-	flags.StringVar(&a.TokenFile, "token-file", a.TokenFile, "")
-	flags.StringVar(&a.CAFile, "ca-file", a.CAFile, "")
 	var moved error
 	for _, name := range daemonFlags {
 		flags.Var(movedFlag{name: name, refusal: &moved}, name, "")
@@ -384,7 +384,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	return flags.Args(), nil
 }
 
-// fromEnv fills --remote from the environment; the client resolves the token and the ca file, so the order lives in one place.
+// fromEnv fills --remote from the environment; the client reads the key and the ca file, so they live in one place.
 func (a *App) fromEnv() {
 	if a.Remote == "" {
 		a.Remote = os.Getenv(client.RemoteEnv)
@@ -416,9 +416,17 @@ func (h *hostList) Set(value string) error {
 
 // client speaks to the daemon on the socket, or through --remote; a verb asks only after its flags parsed, so --help reads no token.
 func (a App) client() (*client.Client, error) {
-	// The token and the certificate are read here, so a bad one fails before the verb dials.
+	// The key and the certificate are read here, so a bad one fails before the verb dials.
 	if a.Remote != "" {
-		return client.NewRemoteFromEnv(client.RemoteOptions{Host: a.Remote, TokenFile: a.TokenFile, CAFile: a.CAFile})
+		c, err := client.NewRemoteFromEnv(a.Remote)
+		if err != nil {
+			return nil, err
+		}
+		if c.Plain() && a.Err != nil {
+			a.plainWarned.Do(func() { fmt.Fprintln(a.Err, plainWarning) })
+		}
+
+		return c, nil
 	}
 
 	c := client.New(a.Root)
@@ -497,6 +505,9 @@ func (a App) warn(message string) {
 
 	fmt.Fprintln(a.Err, "shard: warning:", message)
 }
+
+// plainWarning is the whole line an http remote prints, on stderr, so stdout stays the verb's own.
+const plainWarning = "Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network."
 
 func (a App) print(s string) error {
 	if _, err := fmt.Fprintln(a.Out, s); err != nil {

@@ -43,7 +43,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	}
 }
 
-// The daemon's help names every provider and what a host picks, since --provider is its flag now.
+// The daemon's help names every provider, and points at info for what a host picks.
 func TestDaemonHelpNamesEveryProviderAndTheHostDefault(t *testing.T) {
 	var out bytes.Buffer
 
@@ -52,7 +52,7 @@ func TestDaemonHelpNamesEveryProviderAndTheHostDefault(t *testing.T) {
 	}
 	// The help wraps at 80 columns, so the words are read back as one line.
 	got := strings.Join(strings.Fields(out.String()), " ")
-	if !strings.Contains(got, "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(got, "firecracker on a Linux host whose /dev/kvm opens") {
+	if !strings.Contains(got, "gvisor, sysbox, runc, vz or firecracker") || !strings.Contains(got, "Use 'shard info' to see the default provider for this host.") {
 		t.Errorf("daemon --help printed %q, want every provider and the host default", out.String())
 	}
 }
@@ -233,8 +233,8 @@ func TestUsageListsVerbHelp(t *testing.T) {
 	if err := newApp(t, &out).Run(t.Context(), nil); err != nil {
 		t.Fatalf("Run(nil): %v", err)
 	}
-	if !strings.Contains(out.String(), "shard <verb> --help") {
-		t.Errorf("the top-level usage does not mention shard <verb> --help:\n%s", out.String())
+	if !strings.Contains(out.String(), "Run 'shard COMMAND --help' for options and examples.") {
+		t.Errorf("the top-level usage does not mention shard COMMAND --help:\n%s", out.String())
 	}
 }
 
@@ -249,7 +249,7 @@ func TestTokensMintHelpStatesItsDefaultsAndFlags(t *testing.T) {
 	if strings.Contains(got, "(default 24h)") {
 		t.Errorf("the tokens mint usage still claims a 24h default:\n%s", got)
 	}
-	for _, want := range []string{"--scopes <list>", "--tokens-file <path>", "never expires"} {
+	for _, want := range []string{"--scopes <list>", "--tokens-file <path>", "default no expiry"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the tokens mint usage omits %q:\n%s", want, got)
 		}

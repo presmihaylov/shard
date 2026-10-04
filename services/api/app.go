@@ -6,6 +6,9 @@ import (
 	"net/http"
 
 	"github.com/coder/websocket"
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/presmihaylov/shard/models"
 )
 
 // attachApp answers how a run's app ended: a WebSocket upgrade streams its output first, and a plain request answers the exit alone.
@@ -85,19 +88,12 @@ type appStopRequest struct {
 }
 
 // stopApp cancels every start again of the app and ends it; the sandbox stays running.
-func (h *Handler) stopApp(w http.ResponseWriter, r *http.Request) {
-	var req appStopRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+func (h *Handler) stopApp(ctx context.Context, in *sandboxBody[appStopRequest]) (*struct{}, error) {
+	return done(h.lifecycle.StopApp(ctx, in.ID, value(in.Body).Force))
+}
 
-		return
-	}
-
-	if err := h.lifecycle.StopApp(r.Context(), r.PathValue("id"), req.Force); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+// describeAttachApp names the two answers of attachApp: the exit, or the output and then the exit over a WebSocket.
+func describeAttachApp(registry huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = response("How the app ended, once it ends.", "application/json", schemaOf[models.AppExit](registry))
+	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage.")
 }

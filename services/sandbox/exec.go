@@ -49,8 +49,8 @@ type ExecRequest struct {
 
 // TerminalSize is a terminal window in character cells. It is the body of the resize route too.
 type TerminalSize struct {
-	Rows uint16 `json:"rows"`
-	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows" required:"false"`
+	Cols uint16 `json:"cols" required:"false"`
 }
 
 // Streams is where one attach's stdio goes. The caller owns them: a nil Stdin is a client that types nothing.
