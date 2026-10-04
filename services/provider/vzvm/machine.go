@@ -41,8 +41,8 @@ type machine struct {
 	cancel context.CancelFunc
 	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
 	freezing sync.Mutex
-	// pausing, under freezing, is a pause that froze the guest's root and still means to stop the VM.
-	pausing bool
+	// pausing, set under freezing and read bare, is a verb that froze the guest's root to pause the VM, until it stops the VM or runs it again.
+	pausing atomic.Bool
 	// resetBy is the verb whose save reset every vsock stream, so its runAgain dials the control stream again; only that verb's goroutine reads it.
 	resetBy string
 	// holder is the verb that froze the guest, until its runAgain ends; silence from the shim then is that verb at work.
@@ -682,7 +682,7 @@ func (p *Provider) reconnect(m *machine, dropped *supervisor.Control) (bool, err
 
 			return true, nil
 		}
-		pausing, state := m.pausing, m.vmState()
+		pausing, state := m.pausing.Load(), m.vmState()
 		// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
 		if state == vz.StateRunning && time.Now().Before(deadline) {
 			adopted, err := p.dialAgain(m, time.Until(deadline))
@@ -750,7 +750,7 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 
 	var thawed error
 	// A root frozen with no pause in flight is a freeze whose answer the drop lost, or a save run again, and nothing else would thaw it.
-	if state.Frozen && !m.pausing {
+	if state.Frozen && !m.pausing.Load() {
 		if p.recovering != nil {
 			p.recovering()
 		}

@@ -171,7 +171,7 @@ func (p *Provider) abandon(m *machine, tmp string, err error) error {
 func (m *machine) freeze(ctx context.Context, verb string) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
-	m.pausing = true
+	m.pausing.Store(true)
 	m.holder.Store(&verb)
 
 	return m.control.Load().Freeze(ctx, verb)
@@ -183,7 +183,7 @@ func (p *Provider) runAgain(m *machine) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
 	defer m.holder.Store(nil)
-	m.pausing = false
+	m.pausing.Store(false)
 	verb := m.resetBy
 	m.resetBy = ""
 

@@ -18,13 +18,14 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, fmt.Errorf("sandbox %s: exec has no command to run", id)
 	}
 
+	// A dial would wait on the save or a redial, or meet VZ's raw refusal of a paused VM, so the verb refuses by name, as the frozen guest does (SHARD-478).
+	if verb := p.holding(id); verb != "" {
+		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", verb), Code: models.CommandNotExecutableExitCode}
+	}
+
 	m, r, err := p.running(ctx, id)
 	if err != nil {
 		return models.ExitStatus{}, err
-	}
-	// The guest gives the same answer, but the dial waits on a shim busy with the save or a stream still to be dialed again.
-	if verb := m.holder.Load(); verb != nil {
-		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", *verb), Code: models.CommandNotExecutableExitCode}
 	}
 
 	header, err := headerOf(r, spec)
@@ -97,6 +98,22 @@ func (m *machine) cutExecs(verb string) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// holding names the verb that holds the sandbox's VM, from its freeze until it stops the VM or runs it again, or "" while none does.
+func (p *Provider) holding(id string) string {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+	if !held {
+		return ""
+	}
+	verb := m.holder.Load()
+	if verb == nil {
+		return ""
+	}
+
+	return *verb
 }
 
 // running finds the sandbox's live guest, and refuses anything else by name and state, as an exec needs.

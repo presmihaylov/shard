@@ -231,6 +231,12 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
+// holdSaveFile in the state directory holds the next save, with the VM paused, and every state the shim answers, until the test removes it.
+const holdSaveFile = "hold-save"
+
+// savingFile lands in the state directory when a held save began, so a test acts inside the pause.
+const savingFile = "saving"
+
 // refuseResumeFile in the state directory fails every resume of the VM, until the test removes it.
 const refuseResumeFile = "refuse-resume"
 
@@ -260,12 +266,6 @@ const resetOnSaveFile = "reset-on-save"
 
 // refuseSaveFile in the state directory fails every save of the VM, until the test removes it.
 const refuseSaveFile = "refuse-save"
-
-// holdSaveFile in the state directory holds every save, and every state the shim answers, until the test removes it; the save writes heldSaveFile once it waits.
-const (
-	holdSaveFile = "hold-save"
-	heldSaveFile = "held-save"
-)
 
 // savesFile in the state directory, once a test creates it, takes one line per save the VM completed.
 const savesFile = "saves"
@@ -525,7 +525,7 @@ func (m *fakeMachine) Save(path string) error {
 	if refused {
 		return errors.New("the vm refuses to save")
 	}
-	if err := m.awaitSaveHold(); err != nil {
+	if err := m.holdSave(); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -552,19 +552,23 @@ func (m *fakeMachine) Save(path string) error {
 	return m.appendTo(savesFile, "save")
 }
 
-// awaitSaveHold marks a save the test holds, then waits until the test lets it go.
-func (m *fakeMachine) awaitSaveHold() error {
+// holdSave says the save began and waits while the test leaves holdSaveFile in place.
+func (m *fakeMachine) holdSave() error {
 	held, err := m.has(holdSaveFile)
 	if err != nil || !held {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), heldSaveFile), []byte("held\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), savingFile), []byte("saving\n"), 0o600); err != nil {
 		return err
 	}
 	// A shim busy with a save may leave a state request waiting, so the hold keeps the machine and no probe gets an answer.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
 	for held {
+		if time.Now().After(deadline) {
+			return errors.New("the test did not release the held save")
+		}
 		time.Sleep(10 * time.Millisecond)
 		if held, err = m.has(holdSaveFile); err != nil {
 			return err

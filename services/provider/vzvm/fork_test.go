@@ -117,7 +117,7 @@ func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
 		unmarkAtCleanup(t, spec.StateDir, holdSaveFile)
 		forked := forkInBackground(t, h, spec.ID)
 
-		awaitFile(t, filepath.Join(spec.StateDir, heldSaveFile), forked)
+		awaitFile(t, filepath.Join(spec.StateDir, savingFile), forked)
 		requireHeld(t, h, spec.ID, pid, "the save")
 		unmark(t, spec.StateDir, holdSaveFile)
 		if err := <-forked; err != nil {
