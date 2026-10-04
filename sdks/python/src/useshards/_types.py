@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable, Mapping
-from typing import Any, Literal, TypeVar, get_args
+from dataclasses import dataclass
+from typing import Any, Generic, Literal, TypeVar, get_args
 
 import attrs
 
@@ -250,6 +251,26 @@ class SecretInfo:
     destinations: tuple[str, ...]
     placeholder: str
     updated_at: datetime.datetime
+
+
+@dataclass(frozen=True)
+class SandboxList(Generic[T]):
+    sandboxes: list[T]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class SecretList:
+    secrets: list[SecretInfo]
+    warnings: list[str]
+
+
+def warning_lines(value: list[str] | Unset) -> list[str]:
+    if isinstance(value, Unset):
+        return []
+    if not isinstance(value, list) or any(not isinstance(line, str) for line in value):
+        raise ProtocolError("the daemon answered list warnings that are not strings")
+    return value
 
 
 @attrs.frozen

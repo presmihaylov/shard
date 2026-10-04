@@ -45,6 +45,8 @@ export class Session {
     readonly id: string,
     private readonly capture: OutputCapture,
     private readonly handlers: Handlers,
+    // undefined is a command another client started, whose input this one cannot know.
+    private readonly readsInput?: boolean,
   ) {
     this.what = `the command ${id} in sandbox ${sandboxId}`;
   }
@@ -60,7 +62,7 @@ export class Session {
   ): Promise<Session> {
     const { data } = await transport.api.POST("/v0/sandboxes/{id}/exec", { params: { path: { id: sandboxId } }, body: request, signal });
     const record = commandInfo(data);
-    const session = new Session(transport, sandboxId, record.id, capture, handlers);
+    const session = new Session(transport, sandboxId, record.id, capture, handlers, request.stdin || request.tty);
     await session.attach(signal);
 
     return session;
@@ -162,6 +164,9 @@ export class Session {
 
   /** writeStdin sends data in order, split into the most the daemon reads in one message. */
   writeStdin(data: string | Uint8Array): Promise<void> {
+    if (this.readsInput === false) {
+      return Promise.reject(new TypeError(`${this.what} started without stdin, so it reads no input`));
+    }
     const bytes = typeof data === "string" ? Buffer.from(data) : data;
 
     return this.send(async (ws) => {

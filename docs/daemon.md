@@ -509,7 +509,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   (`DefaultPauseBudget`) before it cuts it. A pause that the substrate lost after its checkpoint
   began, including a cut one, answers 500 and leaves the record `failed` with the reason.
 - `POST /v0/sandboxes/{id}/resume` takes no body and answers 200 with the running record. Errors:
-  404, and 409 when the sandbox is not paused, when its record names no checkpoint, or for an
+  404, and 409 when the sandbox is not paused, when it has no saved state to resume, or for an
   unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, which runs
   from a capture of the running source; the source runs on as it was (SHARD-457). Errors: 400 for a
@@ -688,8 +688,9 @@ and `image prune` leaves it.
   is paused.
 
 - `GET /v0/policies` answers `{"policies": [...], "next"}`, and `GET /v0/policies/{name}` answers one
-  policy with `holders`, the sandboxes whose record names it. The field is omitted when no sandbox
-  names the policy. That is what `shard policy
+  policy with `holders`, the sandboxes whose record names it, plus the id of every sandbox whose
+  record cannot be read, since that record may name it. The field is omitted when no sandbox names
+  the policy. That is what `shard policy
   list` and `shard policy show` print. Errors: 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   with the rules in the order they were given. It compiles them, stores the policy and re-applies it
@@ -698,8 +699,9 @@ and `image prune` leaves it.
   enforce, and 500 when the store holds the new rules but the host still enforces the old ones. The
   error message says so.
 - `DELETE /v0/policies/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  holds the policy. There is no force here, because a sandbox with no policy would have no egress
-  rules at all.
+  holds the policy, plus the id of every sandbox whose record cannot be read, since that record
+  may hold it. There is no force here, because a sandbox with no policy would have no egress rules
+  at all.
 - `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the
   placeholder and the times of each secret, and never a value. Unreadable files come back in
   `warnings` beside the readable ones. `secret list` prints them on stderr before it exits non-zero.
@@ -708,7 +710,8 @@ and `image prune` leaves it.
   an empty value the host refuses, and 409 with the name of every sandbox that holds the placeholder
   a new `placeholder` would change.
 - `DELETE /v0/secrets/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  was granted the secret, unless the query has `?force=true`.
+  was granted the secret, plus the id of every sandbox whose record cannot be read, unless the
+  query has `?force=true`.
 - `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image list` prints
   them. An entry the daemon could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls the image and answers 200 with it. Errors: 400 for
@@ -745,7 +748,7 @@ ones. The two `?follow=true` routes also serve without the handshake, as a chunk
 with the sandbox, so `curl -N` follows either of them. An exec attach does not serve that way.
 
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb that the
-provider does not claim also gets a 409: `provider <name> does not support <verb> on this host`.
+provider does not claim also gets a 409: `provider <name> does not support <verb> on this host; use a server that supports <verb>`.
 
 Every error body is `{"error": {"code": "<code>", "message": "<message>"}}`. `message` is the line
 the CLI prints, and `code` is what a program matches on. The table below lists every code. Anything
@@ -765,7 +768,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `app_ended` | 409 | app stop once the restart policy of the app ended |
 | `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the public `failed_reason`, and `remove` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
-| `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
+| `no_checkpoint` | 409 | resume on a paused sandbox that has no saved state to resume |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `exec_exited` | 409 | a kill of an exec whose command already ended |
 | `exec_running` | 409 | a delete of an exec whose command still runs |

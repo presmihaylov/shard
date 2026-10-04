@@ -69,7 +69,9 @@ func (e *UnsupportedError) Error() string {
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
 
-func (e *UnsupportedError) Public() string { return e.Error() }
+func (e *UnsupportedError) Public() string {
+	return fmt.Sprintf("%s; use a server that supports %s", e.Error(), e.Verb)
+}
 
 // NotFoundError marks a lookup miss whose text names only what the caller asked for, so a public route may answer it.
 type NotFoundError struct {
@@ -107,7 +109,9 @@ func (e *LostError) Error() string {
 
 func (e *LostError) Unwrap() error { return e.Err }
 
-func (e *LostError) Public() string { return fmt.Sprintf("sandbox %s is lost", e.Sandbox) }
+func (e *LostError) Public() string {
+	return fmt.Sprintf("sandbox %s is lost; remove it and create another sandbox", e.Sandbox)
+}
 
 // EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
 type EntrypointNotStartedError struct {

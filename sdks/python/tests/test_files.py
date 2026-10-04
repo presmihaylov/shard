@@ -6,8 +6,10 @@ import json
 import os
 import stat
 import tarfile
-from collections.abc import AsyncIterator, Callable, Iterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
+from typing import IO
 
 import httpx
 import pytest
@@ -18,7 +20,7 @@ from useshards._async._transport import AsyncTransport
 from useshards._config import Settings
 from useshards._sync._files import Files
 from useshards._sync._transport import CHUNK, Transport
-from useshards.errors import NotFoundError, ProtocolError, ShardConnectionError, UnknownLengthError
+from useshards.errors import ConflictError, NotFoundError, ProtocolError, ShardConnectionError, UnknownLengthError
 
 BASE = "http://shard.test"
 STAT = {"type": "file", "size": 5, "mode": 0o640, "uid": 0, "gid": 0, "mtime": "2026-10-04T10:00:00.123456789Z"}
@@ -28,8 +30,28 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 
 def files(handler: Handler) -> Files:
-    transport = Transport(Settings(base_url=BASE, api_key="k", verify=True), 5.0, httpx.MockTransport(handler))
-    return Files(transport, "sb")
+    return files_over(httpx.MockTransport(handler))
+
+
+def files_over(http: httpx.BaseTransport) -> Files:
+    return Files(Transport(Settings(base_url=BASE, api_key="k", verify=True), 5.0, http), "sb")
+
+
+class Unread(httpx.BaseTransport, httpx.AsyncBaseTransport):
+    """Hands the handler the request with its body unread, as a socket does; MockTransport reads it all first."""
+
+    def __init__(self, handler: Callable[[httpx.Request], Awaitable[httpx.Response] | httpx.Response]) -> None:
+        self._handler = handler
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        response = self._handler(request)
+        assert isinstance(response, httpx.Response)
+        return response
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = self._handler(request)
+        assert not isinstance(response, httpx.Response)
+        return await response
 
 
 class Daemon:
@@ -223,6 +245,7 @@ def test_mkdir_and_remove() -> None:
     sandbox.remove("/tmp/a", recursive=True)
     assert json.loads(daemon.bodies[0]) == {"path": "/tmp/a/b", "mode": "700", "parents": True}
     assert dict(daemon.requests[1].url.params) == {"path": "/tmp/a", "recursive": "true"}
+    assert [r.extensions["timeout"]["read"] for r in daemon.requests] == [5.0, None]
 
 
 def test_upload_dir(tmp_path: Path) -> None:
@@ -234,9 +257,110 @@ def test_upload_dir(tmp_path: Path) -> None:
     request = daemon.requests[0]
     assert (request.method, request.url.path) == ("PUT", "/v0/sandboxes/sb/archive")
     assert dict(request.url.params) == {"path": "/srv"}
-    assert request.headers["Content-Length"] == str(len(daemon.bodies[0]))
+    assert (request.headers["Transfer-Encoding"], "Content-Length" in request.headers) == ("chunked", False)
+    assert request.extensions["timeout"]["read"] is None
     with tarfile.open(fileobj=io.BytesIO(daemon.bodies[0])) as t:
         assert sorted(t.getnames()) == ["app", "app/nested", "app/nested/leaf.txt"]
+
+
+def test_upload_dir_streams_before_the_pack_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = threading.Event()
+    waited: list[bool] = []
+
+    def pack(source: str, name: str, out: IO[bytes]) -> None:
+        out.write(b"x" * CHUNK)
+        out.flush()
+        waited.append(first.wait(5))
+        out.write(b"y")
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert isinstance(request.stream, httpx.SyncByteStream)
+        got = b""
+        for chunk in request.stream:
+            got += chunk
+            first.set()
+        assert got == b"x" * CHUNK + b"y"
+        return httpx.Response(204)
+
+    monkeypatch.setattr(_archive, "pack", pack)
+    files_over(Unread(answer)).upload_dir(tmp_path, "/srv/app")
+    assert waited == [True]
+
+
+def test_upload_dir_pack_failure_cuts_the_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def pack(source: str, name: str, out: IO[bytes]) -> None:
+        out.write(b"x" * CHUNK)
+        raise PermissionError(f"{source}/locked")
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        request.read()
+        return httpx.Response(204)
+
+    monkeypatch.setattr(_archive, "pack", pack)
+    with pytest.raises(PermissionError, match="locked"):
+        files(answer).upload_dir(tmp_path, "/srv/app")
+
+
+def refusal_after_one_chunk(packs: list[BaseException]) -> Callable[[str, str, IO[bytes]], None]:
+    """A pack bigger than the pipe holds, and what stopped it."""
+
+    def pack(source: str, name: str, out: IO[bytes]) -> None:
+        try:
+            for _ in range(8):
+                out.write(b"x" * CHUNK)
+        except BaseException as e:
+            packs.append(e)
+            raise
+
+    return pack
+
+
+REFUSAL = {"error": {"code": "sandbox_not_running", "message": "sandbox sb is stopped"}}
+
+
+def test_upload_dir_refused_mid_tar_stops_the_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    packs: list[BaseException] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert isinstance(request.stream, httpx.SyncByteStream)
+        next(iter(request.stream))
+        return httpx.Response(409, json=REFUSAL)
+
+    monkeypatch.setattr(_archive, "pack", refusal_after_one_chunk(packs))
+    with pytest.raises(ConflictError, match="is stopped"):
+        files_over(Unread(answer)).upload_dir(tmp_path, "/srv/app")
+    assert [type(e) for e in packs] == [BrokenPipeError]
+
+
+def test_async_upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "tree" / "leaf.txt").write_bytes(b"leaf\n")
+    bodies: list[bytes] = []
+    packs: list[BaseException] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert isinstance(request.stream, httpx.AsyncByteStream)
+        assert request.extensions["timeout"]["read"] is None
+        if not bodies:
+            bodies.append(await request.aread())
+            return httpx.Response(204)
+        async for _ in request.stream:
+            return httpx.Response(409, json=REFUSAL)
+        raise AssertionError("the tar sent no bytes")
+
+    async def run() -> None:
+        transport = AsyncTransport(Settings(base_url=BASE, api_key="k", verify=True), 5.0, Unread(handler))
+        sandbox = AsyncFiles(transport, "sb")
+        await sandbox.upload_dir(tmp_path / "tree", "/srv/app")
+        monkeypatch.setattr(_archive, "pack", refusal_after_one_chunk(packs))
+        with pytest.raises(ConflictError, match="is stopped"):
+            await sandbox.upload_dir(tmp_path / "tree", "/srv/app")
+        await transport.aclose()
+
+    asyncio.run(run())
+    with tarfile.open(fileobj=io.BytesIO(bodies[0])) as t:
+        assert sorted(t.getnames()) == ["app", "app/leaf.txt"]
+    assert [type(e) for e in packs] == [BrokenPipeError]
 
 
 @pytest.mark.parametrize("remote", ["/", "relative/dir", "/.."])
