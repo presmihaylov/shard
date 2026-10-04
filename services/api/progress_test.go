@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // sendStreamed asks for the ndjson stream and answers the status, the content type and every line.
@@ -143,5 +145,34 @@ func TestCreateWaitStreamsThePullThenTheRecord(t *testing.T) {
 	sb, ok := lines[1]["sandbox"].(map[string]any)
 	if !ok || sb["id"] != s.running.ID || s.verbs.waited != s.running.ID {
 		t.Errorf("the last line is %v after a wait on %q, want the record of %s", lines[1], s.verbs.waited, s.running.ID)
+	}
+}
+
+// A user the image does not list is the request's fault on every create shape, and each names the user.
+func TestCreateRefusesAnUnknownUserOnEveryShape(t *testing.T) {
+	const body = `{"image":"alpine:3.20","user":"nobody2"}`
+	unknown := &sandbox.RequestError{Err: &bundle.UnknownUserError{Err: errors.New(`resolve the user "nobody2": no such entry in the image`)}}
+
+	for _, path := range []string{"/v0/sandboxes", "/v0/sandboxes?wait=true"} {
+		s := seed(t)
+		s.verbs.err = unknown
+
+		status, got := send(t, s.server, http.MethodPost, path, body)
+		if refused := errorOf(t, got); status != http.StatusBadRequest || refused.code != "invalid_request" || refused.message != unknown.Error() {
+			t.Errorf("POST %s answered %d %v, want 400 invalid_request naming the user", path, status, got)
+		}
+	}
+
+	// A cached image streams its event first, so the refusal is the last line after the 201.
+	s := seed(t)
+	s.verbs.pulled = []image.Event{{Status: image.StatusCached, Reference: "docker.io/library/alpine:3.20", Path: "/images/alpine"}}
+	s.verbs.err = unknown
+
+	_, _, lines := sendStreamed(t, s.server, "/v0/sandboxes?wait=true", body)
+	if len(lines) != 2 {
+		t.Fatalf("the create streamed %v, want the event and the refusal", lines)
+	}
+	if refused := errorOf(t, lines[1]); refused.code != "invalid_request" || refused.message != unknown.Error() {
+		t.Errorf("the last line is %+v, want invalid_request naming the user", refused)
 	}
 }

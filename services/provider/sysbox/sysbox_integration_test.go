@@ -54,6 +54,17 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// TestLaunch proves an exec on sysbox-runc answers only once its command's execve took (SHARD-497).
+func TestLaunch(t *testing.T) {
+	h := newHarness(t)
+
+	conformance.RunLaunch(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	}, true)
+}
+
 type harness struct {
 	provider *sysbox.Provider
 	image    image.Image
