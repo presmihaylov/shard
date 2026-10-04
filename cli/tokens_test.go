@@ -58,8 +58,7 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	}
 }
 
-// tokens list lists a minted token as active and never-expiring, and tokens revoke by id flips it to revoked.
-// The registry is always the one beside the signing key, so no verb that reads it takes a path of its own.
+// A custom registry can make mint and revoke disagree with the front.
 func TestTokensFileIsGone(t *testing.T) {
 	for _, verb := range [][]string{{"serve"}, {"tokens", "mint", "--name", "ci"}, {"tokens", "list"}, {"tokens", "revoke", "--name", "ci"}} {
 		var out bytes.Buffer
@@ -72,6 +71,7 @@ func TestTokensFileIsGone(t *testing.T) {
 	}
 }
 
+// tokens list lists a minted token as active and never-expiring, and tokens revoke by id flips it to revoked.
 func TestTokensListAndRevokeByID(t *testing.T) {
 	var out bytes.Buffer
 
