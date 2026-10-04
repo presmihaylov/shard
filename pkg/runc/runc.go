@@ -370,7 +370,7 @@ func (r *Runner) interrupt(cmd *exec.Cmd, id, pidFile string) error {
 	return nil
 }
 
-// Signal accepts only a handle this runner reported for this container's live launch.
+// Signal accepts only a handle this runner reported for this sandbox's live launch.
 func (r *Runner) Signal(_ context.Context, id string, handle int, signal string) error {
 	sig, err := signalOf(signal)
 	if err != nil {

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 
-from useshards import AuthenticationError, ConfigurationError, Sandbox, Shard
+from useshards import AuthenticationError, ConfigurationError, Sandbox, SandboxList, Shard
 
 from .._shared import env, equal, ok, raw
 from .harness import Check, Context, rejects
@@ -24,20 +24,20 @@ LOCAL_PROBES = [
 WILDCARD_KEY_ENV = "SHARD_SUITE_WILDCARD_KEY"
 
 
-def listed(remote: str | None = None, api_key: str | None = None) -> list[Sandbox]:
+def listed(remote: str | None = None, api_key: str | None = None) -> SandboxList[Sandbox]:
     with Shard(remote=remote, api_key=api_key) as shard:
         return shard.list()
 
 
 def env_defaults(ctx: Context) -> None:
-    ok(isinstance(listed(), list), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes")
+    ok(isinstance(listed(), SandboxList), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes")
 
 
 def explicit_overrides(ctx: Context) -> None:
     remote = os.environ.get("SHARD_REMOTE")
     api_key = os.environ.get("SHARD_API_KEY")
     with env(SHARD_REMOTE="https://shard.invalid", SHARD_API_KEY="shard_not_a_key"):
-        ok(isinstance(listed(remote, api_key), list), "explicit settings win over bad env")
+        ok(isinstance(listed(remote, api_key), SandboxList), "explicit settings win over bad env")
     rejects(AuthenticationError, lambda: listed(api_key="shard_not_a_key"))
 
 

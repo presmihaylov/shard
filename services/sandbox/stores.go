@@ -11,6 +11,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -185,6 +186,10 @@ func (s *Stores) Policy(name string) (PolicyView, error) {
 	}
 
 	holders, err := PolicyHolders(s.cfg.Repo, name)
+	// The same list rm refuses over, so show never answers 500 over a record that does not read back (SHARD-597).
+	if ids := unreadableHolders(err); ids != nil {
+		return PolicyView{Policy: policy, Holders: append(holders, ids...), DNS: dnsState(policy)}, nil
+	}
 	if err != nil {
 		return PolicyView{}, err
 	}
@@ -207,6 +212,9 @@ func (s *Stores) RemovePolicy(name string) error {
 	}
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
+	if ids := unreadableHolders(err); ids != nil {
+		return &HeldError{Subject: "policy " + name, Verb: "possibly held by", Noun: "sandbox", Users: append(users, ids...), Fix: unreadableFix(ids)}
+	}
 	if err != nil {
 		return err
 	}
@@ -217,20 +225,36 @@ func (s *Stores) RemovePolicy(name string) error {
 	return s.cfg.Policies.Remove(name)
 }
 
+// unreadableFix is the way past records that do not read back, since rm cannot free a sandbox it cannot read.
+func unreadableFix(ids []string) string {
+	return fmt.Sprintf("fix or delete the unreadable record of %s under the daemon root first", strings.Join(ids, ", "))
+}
+
+// unreadableHolders names the records a holder scan could not read, and nil when the scan failed for any other reason (SHARD-584).
+func unreadableHolders(err error) []string {
+	cause, ok := errors.AsType[*CauseError](err)
+	if !ok {
+		return nil
+	}
+
+	return sandboxstate.UnreadableIDs(cause.Err)
+}
+
 // PolicyHolders names the sandboxes whose record holds the policy. Every ask goes through this one, so
 // what show prints and what rm refuses can never disagree.
 func PolicyHolders(repo Reader, name string) ([]string, error) {
 	sandboxes, unreadable := repo.List()
-	// A record that does not read back may name the policy, so nothing can say it is free.
-	if unreadable != nil {
-		return nil, &CauseError{Text: "cannot tell which sandboxes hold the policy", Err: unreadable}
-	}
 
 	var holders []string
 	for _, sb := range sandboxes {
 		if sb.Policy == name {
 			holders = append(holders, sb.ID)
 		}
+	}
+
+	// A record that does not read back may name the policy, so nothing can say it is free; the readable holders still go back for a refusal to name (SHARD-584).
+	if unreadable != nil {
+		return holders, &CauseError{Text: "cannot tell which sandboxes hold the policy", Err: unreadable}
 	}
 
 	return holders, nil
@@ -287,6 +311,9 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 // ungranted refuses when a record names the secret. A stopped sandbox counts: start hands it the placeholder again.
 func (s *Stores) ungranted(name string) error {
 	users, err := SecretHolders(s.cfg.Repo, name)
+	if ids := unreadableHolders(err); ids != nil {
+		return &HeldError{Subject: "secret " + name, Verb: "possibly granted to", Noun: "sandbox", Users: append(users, ids...), Fix: unreadableFix(ids) + ", or pass --force"}
+	}
 	if err != nil {
 		return err
 	}
