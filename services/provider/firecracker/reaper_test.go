@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,10 +24,15 @@ const (
 	runReaper     = "run"
 	// fakeHarnessesEnv names harnessesFile to the reaper.
 	fakeHarnessesEnv = "FIRECRACKER_FAKE_HARNESSES"
+	// fakeRunEnv names the pid of the test binary to the fake jailer, which that binary's death reparents.
+	fakeRunEnv = "FIRECRACKER_FAKE_RUN"
 )
 
-// heldVMMEnv names the file TestHeldVMMOfAKilledRun writes its vmm session to.
-const heldVMMEnv = "FIRECRACKER_FAKE_HELD_VMM"
+// heldVMMEnv names the file TestHeldVMMOfAKilledRun writes its vmm session to, and heldJailerEnv the one the jailer of TestHeldJailerOfAKilledRun does.
+const (
+	heldVMMEnv    = "FIRECRACKER_FAKE_HELD_VMM"
+	heldJailerEnv = "FIRECRACKER_FAKE_HELD_JAILER"
+)
 
 // harnessesFile takes the sessions file of every harness this run opens.
 var harnessesFile string
@@ -135,6 +141,18 @@ func liveSessions(harnesses string) (map[int]bool, error) {
 // A test binary killed mid-run leaves no vmm session behind, even one whose vmm is stopped: the reaper ends it (SHARD-651).
 func TestAKilledTestBinaryLeavesNoVMMSession(t *testing.T) {
 	requireProcessTable(t)
+	killMidRun(t, "TestHeldVMMOfAKilledRun", heldVMMEnv)
+}
+
+// A test binary killed between the jailer's start of a vmm and its note of the session leaves no vmm session behind: the jailer ends it.
+func TestAKilledTestBinaryLeavesNoUnnotedVMMSession(t *testing.T) {
+	requireProcessTable(t)
+	killMidRun(t, "TestHeldJailerOfAKilledRun", heldJailerEnv)
+}
+
+// killMidRun runs one test in a child test binary, SIGKILLs the child once the file that env names holds its vmm session, and waits for that session to end.
+func killMidRun(t *testing.T, test, env string) {
+	t.Helper()
 
 	dir := t.TempDir()
 	named := filepath.Join(dir, "sessions")
@@ -147,8 +165,8 @@ func TestAKilledTestBinaryLeavesNoVMMSession(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	child := exec.Command(os.Args[0], "-test.run=^TestHeldVMMOfAKilledRun$", "-test.count=1", "-test.v")
-	child.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, fakeVMMEnv+"=") }), heldVMMEnv+"="+named)
+	child := exec.Command(os.Args[0], "-test.run=^"+test+"$", "-test.count=1", "-test.v")
+	child.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, fakeVMMEnv+"=") }), env+"="+named)
 	// A file, not a buffer: a guest that inherits it must not hold Wait open.
 	child.Stdout = logged
 	child.Stderr = logged
@@ -173,14 +191,7 @@ func TestAKilledTestBinaryLeavesNoVMMSession(t *testing.T) {
 		}
 		select {
 		case err := <-done:
-			blob, rerr := os.ReadFile(logged.Name())
-			if rerr != nil {
-				t.Fatalf("the child ended (%v), and its log is unreadable: %v", err, rerr)
-			}
-			if err == nil && strings.Contains(string(blob), "--- SKIP") {
-				t.Skipf("the child skipped:\n%s", blob)
-			}
-			t.Fatalf("the child ended before it named its vmm session: %v\n%s", err, blob)
+			childEnded(t, err, logged.Name())
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -228,6 +239,20 @@ func TestAKilledTestBinaryLeavesNoVMMSession(t *testing.T) {
 	}
 }
 
+// childEnded skips the test for a child that skipped, and fails it for a child that ended any other way before it named its vmm session.
+func childEnded(t *testing.T, err error, log string) {
+	t.Helper()
+
+	blob, rerr := os.ReadFile(log)
+	if rerr != nil {
+		t.Fatalf("the child ended (%v), and its log is unreadable: %v", err, rerr)
+	}
+	if err == nil && strings.Contains(string(blob), "--- SKIP") {
+		t.Skipf("the child skipped:\n%s", blob)
+	}
+	t.Fatalf("the child ended before it named its vmm session: %v\n%s", err, blob)
+}
+
 // TestHeldVMMOfAKilledRun runs only as the child of TestAKilledTestBinaryLeavesNoVMMSession, which kills it mid-run.
 func TestHeldVMMOfAKilledRun(t *testing.T) {
 	named := os.Getenv(heldVMMEnv)
@@ -240,21 +265,62 @@ func TestHeldVMMOfAKilledRun(t *testing.T) {
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
 	}
-	// A killed run removes neither its harness root nor its run directory, so the parent does.
-	if err := os.WriteFile(named+".dirs", []byte(h.root+"\n"+filepath.Dir(harnessesFile)+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	nameDirs(t, h, named)
 	blob, err := os.ReadFile(filepath.Join(h.root, sessionsFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The rename has the parent read the file only whole.
-	if err := os.WriteFile(named+".tmp", blob, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(named+".tmp", named); err != nil {
+	if err := writeWhole(named, blob); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Minute)
 	t.Error("no SIGKILL came within a minute")
+}
+
+// TestHeldJailerOfAKilledRun runs only as the child of TestAKilledTestBinaryLeavesNoUnnotedVMMSession, which kills it while the jailer holds.
+func TestHeldJailerOfAKilledRun(t *testing.T) {
+	named := os.Getenv(heldJailerEnv)
+	if named == "" {
+		t.Skip("runs only as the child of TestAKilledTestBinaryLeavesNoUnnotedVMMSession")
+	}
+	h := newHarness(t)
+	nameDirs(t, h, named)
+	// The jailer holds until this binary dies, so the start returns only once nobody killed it.
+	h.runLong(t)
+	t.Error("no SIGKILL came while the jailer held")
+}
+
+// nameDirs names the harness root and the run directory to the parent, which removes them, since a killed run removes neither.
+func nameDirs(t *testing.T, h *harness, named string) {
+	t.Helper()
+
+	if err := os.WriteFile(named+".dirs", []byte(h.root+"\n"+filepath.Dir(harnessesFile)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeWhole writes through a rename, so the parent reads the file only whole.
+func writeWhole(path string, blob []byte) error {
+	if err := os.WriteFile(path+".tmp", blob, 0o600); err != nil {
+		return err
+	}
+
+	return os.Rename(path+".tmp", path)
+}
+
+// holdUntilOrphaned names the vmm session to the killing test, then holds the jailer before its note until the test binary dies, or a minute passes.
+func holdUntilOrphaned(named string, vmm int) error {
+	if err := writeWhole(named, []byte(strconv.Itoa(vmm)+"\n")); err != nil {
+		return err
+	}
+	for deadline := time.Now().Add(time.Minute); !orphaned() && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	return nil
+}
+
+// orphaned says the test binary that started this jailer has died, which reparents the jailer.
+func orphaned() bool {
+	return strconv.Itoa(os.Getppid()) != os.Getenv(fakeRunEnv)
 }

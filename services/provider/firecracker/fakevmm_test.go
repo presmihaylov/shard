@@ -135,7 +135,7 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (exit int) {
 	initBinary = os.Getenv(fakeInitEnv)
 	if initBinary == "" {
 		dir, err := os.MkdirTemp("", "fcinit")
@@ -160,7 +160,12 @@ func runTests(m *testing.M) int {
 
 		return 1
 	}
-	defer os.RemoveAll(run)
+	defer func() {
+		if err := os.RemoveAll(run); err != nil {
+			fmt.Fprintln(os.Stderr, "remove the run directory:", err)
+			exit = 1
+		}
+	}()
 	harnessesFile = filepath.Join(run, "harnesses")
 	if err := os.WriteFile(harnessesFile, nil, 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -175,6 +180,7 @@ func runTests(m *testing.M) int {
 	}
 	// Every vmm the provider starts from here is this binary, and inherits the switch.
 	os.Setenv(fakeVMMEnv, "1")
+	os.Setenv(fakeRunEnv, strconv.Itoa(os.Getpid()))
 	os.Setenv(fakeInitEnv, initBinary)
 
 	code := m.Run()
@@ -229,8 +235,17 @@ func fakeJailer() error {
 	if err := vmm.Start(); err != nil {
 		return err
 	}
+	if held := os.Getenv(heldJailerEnv); held != "" {
+		if err := holdUntilOrphaned(held, vmm.Process.Pid); err != nil {
+			return err
+		}
+	}
 	if err := note(filepath.Join(filepath.Dir(*base), sessionsFile), strconv.Itoa(vmm.Process.Pid)); err != nil {
 		return err
+	}
+	// A test binary that died before the note may have had its reaper scan without it, so this jailer ends the session itself.
+	if orphaned() {
+		return end(func() (map[int]bool, error) { return map[int]bool{vmm.Process.Pid: true}, nil })
 	}
 	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
