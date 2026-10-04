@@ -143,15 +143,7 @@ export class TarReader {
         return this.closing();
       }
       const header = parse(block);
-      if (header.type === typePax || header.type === typeLongName || header.type === typeLongLink) {
-        const body = await this.special(header);
-        if (header.type === typePax) {
-          for (const [key, value] of paxRecords(body)) {
-            extended.set(key, value);
-          }
-          continue;
-        }
-        extended.set(header.type === typeLongName ? "path" : "linkpath", cstring(body, 0, body.length));
+      if (await this.extend(header, extended)) {
         continue;
       }
 
@@ -191,6 +183,24 @@ export class TarReader {
     this.current = name;
 
     return { ...header, name, linkname, size, uid, gid, mtime, type };
+  }
+
+  /** extend merges a PAX or GNU long name header into the fields of the entry after it, and answers false for any other header. */
+  private async extend(header: Header, extended: Map<string, string>): Promise<boolean> {
+    if (header.type !== typePax && header.type !== typeLongName && header.type !== typeLongLink) {
+      return false;
+    }
+    const body = await this.special(header);
+    if (header.type !== typePax) {
+      extended.set(header.type === typeLongName ? "path" : "linkpath", cstring(body, 0, body.length));
+
+      return true;
+    }
+    for (const [key, value] of paxRecords(body)) {
+      extended.set(key, value);
+    }
+
+    return true;
   }
 
   /** closing answers the end after the first zero block, which a second one, or the end of the stream, confirms. */
@@ -295,13 +305,17 @@ function parse(block: Buffer): Header {
   const name = cstring(block, 0, 100);
   // Only POSIX ustar has the prefix; GNU keeps other fields there.
   const prefix = magic === "ustar\u000000" ? cstring(block, 345, 155) : "";
+  const size = numeric(block, 124, 12);
+  if (size < 0) {
+    throw new ProtocolError(`the tar gives ${JSON.stringify(name)} the size ${size}`);
+  }
 
   return {
     name: prefix ? `${prefix}/${name}` : name,
     mode: numeric(block, 100, 8),
     uid: numeric(block, 108, 8),
     gid: numeric(block, 116, 8),
-    size: numeric(block, 124, 12),
+    size,
     mtime: numeric(block, 136, 12),
     type: String.fromCharCode(block[156] ?? 0),
     linkname: cstring(block, 157, 100),

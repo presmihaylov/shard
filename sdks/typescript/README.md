@@ -40,7 +40,8 @@ try {
 }
 ```
 
-`examples/quickstart.ts` has it in full, with a background command and an app.
+`examples/quickstart.ts` has it in full, with a background command and an app. Set
+`SHARD_REMOTE` and `SHARD_API_KEY`, then run it with `npx tsx examples/quickstart.ts`.
 
 ## What to know
 

@@ -1,7 +1,6 @@
 name: release typescript sdk
 
-# Packs useshards under a useshards-ts-v<version> tag on main. The upload to npm waits on the npm
-# environment's approval, and npm takes it only from this workflow, so no token lives in the repo.
+# Packs useshards for review as a workflow artifact; publication needs Pres's approval.
 on:
   push:
     tags: ['useshards-ts-v*']
@@ -57,27 +56,3 @@ jobs:
         with:
           name: useshards-ts-dist
           path: sdks/typescript/useshards-*.tgz
-
-  publish:
-    name: publish to npm
-    needs: build
-    runs-on: ubuntu-latest
-    environment: npm
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: useshards-ts-dist
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      # Trusted publishing from a workflow needs npm 11.5.1 or later, which node 22 does not bundle.
-      - name: npm
-        run: npm install -g npm@11.5.1
-
-      - name: publish
-        run: npm publish useshards-*.tgz

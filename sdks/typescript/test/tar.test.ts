@@ -106,6 +106,22 @@ test("a size in GNU base-256 is read", async () => {
   assert.equal(entry?.data, "abc");
 });
 
+// A negative size would lower the byte count an extract holds against its limit.
+test("a negative size in GNU base-256 is refused", async () => {
+  const block = tar.encodeHeader(header({ name: "neg", size: 0 }));
+  block.fill(0xff, 124, 136);
+  writeChecksum(block);
+  await assert.rejects(read(Buffer.concat([block, tar.end])), (err) => err instanceof ProtocolError && /"neg" the size -1/.test(err.message));
+});
+
+test("a negative mtime in GNU base-256 is read", async () => {
+  const block = tar.encodeHeader(header({ name: "old", size: 0 }));
+  block.fill(0xff, 136, 148);
+  writeChecksum(block);
+  const [entry] = await read(Buffer.concat([block, tar.end]));
+  assert.equal(entry?.header.mtime, -1);
+});
+
 test("a tar with no end blocks ends at its last entry", async () => {
   assert.deepEqual(
     (await read(file("only", "x"))).map((entry) => entry.header.name),
