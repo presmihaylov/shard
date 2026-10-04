@@ -68,10 +68,12 @@ checkpoint began also lands here. The sentry exits after any checkpoint, so noth
 When the daemon restarts while a create is still in flight, it moves the `pending` record to
 `failed` too, because a create the daemon dropped never finished. Only a start that took, over a
 record that holds its network, makes the record `running`. The daemon first stops a sandbox the
-start never reached, or one whose record holds no address, because no egress rule knows it. A
-`created` record at a restart is a fork the daemon dropped, so it also ends in `failed`. The
-daemon first stops a copy that still runs and tears down its substrate, because a restore that the
-old daemon started can still run where the runtime cannot see it.
+start never reached, or one whose record holds no address, because no egress rule knows it. Every
+create leases its address before its start, so a `running` record with no address is such a create
+that an older daemon called running, and it ends `failed` the same way. A `created` record at a
+restart is a fork the daemon dropped, so it also ends in `failed`. The daemon first stops a copy
+that still runs and tears down its substrate, because a restore that the old daemon started can
+still run where the runtime cannot see it.
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
 means that the sandbox is up. It does not mean that a workload executes in it. A sandbox created

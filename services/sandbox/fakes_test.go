@@ -859,9 +859,12 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 	return sandbox.New(cfg), l
 }
 
+// leased is the address every create takes before its start, so a live record always holds one.
+var leased = netip.MustParsePrefix("10.0.0.2/24")
+
 // running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
 func running() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Address: leased}
 }
 
 // forkSource is a running sandbox whose entrypoint already exited, which a fork captures as it is.

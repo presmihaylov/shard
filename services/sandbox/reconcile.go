@@ -265,7 +265,12 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 		return models.StateFailed, nil
 	}
 	// A create cut before its start may hold no address on record, and no egress rule guards a sandbox without one (SHARD-565).
-	if sb.State == models.StatePending && (status.State == models.StateCreated || !sb.Address.IsValid()) {
+	unguarded := status.Alive() && !sb.Address.IsValid()
+	if sb.State == models.StatePending && (status.State == models.StateCreated || unguarded) {
+		return models.StateFailed, nil
+	}
+	// Every create leases its address before its start, so a live record without one is a cut create an older daemon called running.
+	if sb.State.Live() && unguarded {
 		return models.StateFailed, nil
 	}
 

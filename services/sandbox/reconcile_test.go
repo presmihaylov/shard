@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -213,7 +212,7 @@ func retryTwice(_ string, run func() error) error {
 // A retried record write ran the staging adoption twice, so a provider that keeps the staging reported it twice (SHARD-428).
 func TestReconcileReportsAKeptStagingOnceAcrossARetry(t *testing.T) {
 	p := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
-	lab := newReconcileLab(t, p, models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42})
+	lab := newReconcileLab(t, p, models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42})
 	lab.repo.checkpoints = t.TempDir()
 	staging := filepath.Join(lab.repo.checkpoints, "sandbox1") + ".tmp"
 	if err := os.MkdirAll(staging, 0o700); err != nil {
@@ -301,7 +300,7 @@ func unproven(pid int) models.Status {
 }
 
 func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -325,7 +324,7 @@ func TestReconcileStopsARunningRecordWithNoProcess(t *testing.T) {
 
 // An OOM taken while the daemon was down is a memory decision, not a lost process (SHARD-311).
 func TestReconcileStopsARunningRecordTheHostEndedForMemoryWithItsReason(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -357,7 +356,7 @@ func TestReconcileStopsAnUnresponsiveRecordTheHostEndedForMemoryWithThatReasonAl
 }
 
 func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -377,7 +376,7 @@ func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 
 // At daemon start the provider adopts the checkpoint staging of every record, so a cut pause's stage is settled before the first verb (SHARD-404).
 func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
-	one := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	one := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	two := models.Sandbox{ID: "sandbox2", State: models.StateStopped}
 	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42), "sandbox2": gone()}}
 	lab := newReconcileLab(t, provider, one, two)
@@ -436,7 +435,7 @@ func TestReconcileKeepsAPausedSandboxThatHoldsItsCheckpoint(t *testing.T) {
 
 // A cut mid-checkpoint leaves the substrate paused but the record still running, so the record must catch up to paused.
 func TestReconcileCatchesUpARunningRecordTheSubstrateHoldsPaused(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": pausedAlive(42)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -484,7 +483,7 @@ func heldCheckpoint(t *testing.T, lab *reconcileLab, id string) string {
 
 // A daemon cut after a pause installed its checkpoint and before the pause wrote the record must not lose the pause (SHARD-366).
 func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 	dir := heldCheckpoint(t, lab, "sandbox1")
 
@@ -572,7 +571,7 @@ func TestReconcileDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
 
 // A daemon cut after the swap leaves the sentry frozen beside a complete checkpoint, and the reconcile finishes that pause (SHARD-366).
 func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
 	lab := newReconcileLab(t, provider, sb)
 	dir := heldCheckpoint(t, lab, "sandbox1")
@@ -629,7 +628,7 @@ func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
 
 // A substrate that cannot release keeps what it holds, so the reconcile does not take the checkpoint from under it.
 func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}, sb)
 	heldCheckpoint(t, lab, "sandbox1")
 
@@ -644,7 +643,7 @@ func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testi
 
 // Without the mark the frozen sentry is no pause this daemon finishes, so the reconcile never releases it.
 func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
 	lab := newReconcileLab(t, provider, sb)
 	heldCheckpoint(t, lab, "sandbox1")
@@ -663,7 +662,7 @@ func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
 
 // A pause cut before its checkpoint was complete finished nothing, so the reconcile leaves the frozen sentry alone.
 func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
 	lab := newReconcileLab(t, provider, sb)
 	lab.repo.checkpoints = t.TempDir()
@@ -689,7 +688,7 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 
 // A cut after the vz swap leaves a shim the next daemon runs on past the checkpoint, so a later death of that run is no pause (SHARD-429).
 func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsCheckpoint(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
 	lab := newReconcileLab(t, provider, sb)
 	heldCheckpoint(t, lab, "sandbox1")
@@ -715,7 +714,7 @@ func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsCheckpoint(t *tes
 
 // Only a substrate that says running proves the run went past the checkpoint; an unresponsive vz shim may still hold it frozen (SHARD-422).
 func TestReconcileKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42, Pausing: true}
 	provider := &recProvider{status: map[string]models.Status{"sandbox1": unproven(42)}}
 	lab := newReconcileLab(t, provider, sb)
 	dir := heldCheckpoint(t, lab, "sandbox1")
@@ -738,7 +737,7 @@ func TestReconcileKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T)
 
 // Without the mark the checkpoint is what an earlier pause and resume left, and the run after it is gone.
 func TestReconcileStopsARunningRecordOverACheckpointItNeverMarked(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 	heldCheckpoint(t, lab, "sandbox1")
 
@@ -868,7 +867,7 @@ func TestReconcileFailsAPendingRecordWithNoProcess(t *testing.T) {
 }
 
 func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: netip.MustParsePrefix("10.0.0.2/24")}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: leased}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -888,7 +887,7 @@ func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
 }
 
 // A daemon cut between the create and the start leaves a sandbox no egress rule knows of, so it must never read running (SHARD-565).
-func TestReconcileFailsAPendingCreateThatNeverStarted(t *testing.T) {
+func TestReconcileFailsACreateThatNeverStarted(t *testing.T) {
 	cases := map[string]struct {
 		sb     models.Sandbox
 		status models.Status
@@ -898,11 +897,19 @@ func TestReconcileFailsAPendingCreateThatNeverStarted(t *testing.T) {
 			status: models.Status{Exists: true, State: models.StateCreated, PID: 51},
 		},
 		"created after its record held the network": {
-			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny", Address: netip.MustParsePrefix("10.0.0.2/24")},
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny", Address: leased},
 			status: models.Status{Exists: true, State: models.StateCreated, PID: 51},
 		},
 		"running with no network on record": {
 			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny"},
+			status: alive(51),
+		},
+		"recorded running by an older daemon before its record held the network": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", PID: 51},
+			status: models.Status{Exists: true, State: models.StateCreated, PID: 51},
+		},
+		"recorded running by an older daemon with no network on record": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", PID: 51},
 			status: alive(51),
 		},
 	}
@@ -931,7 +938,7 @@ func TestReconcileFailsAPendingCreateThatNeverStarted(t *testing.T) {
 
 // A full root fails the write that says running, and the live sandbox still needs its egress policy (SHARD-341).
 func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: netip.MustParsePrefix("10.0.0.2/24")}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: leased}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
 	lab.repo.updateErr = errors.New("write the record: no space left on device")
 
@@ -951,7 +958,7 @@ func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.
 
 // A full root fails the record write once, and the start's reserve gives back the room for the second try (SHARD-351).
 func TestReconcileHandsEveryRecordWriteToTheRetry(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 	lab.repo.updateErr = errors.New("write the record: no space left on device")
 
@@ -984,9 +991,9 @@ func TestReconcileHandsEveryRecordWriteToTheRetry(t *testing.T) {
 func TestReconcileReportsEveryRecordItCorrected(t *testing.T) {
 	status := map[string]models.Status{"sandbox1": gone(), "sandbox2": gone(), "sandbox3": alive(7)}
 	lab := newReconcileLab(t, &recProvider{status: status},
-		models.Sandbox{ID: "sandbox1", State: models.StateRunning},
-		models.Sandbox{ID: "sandbox2", State: models.StateRunning},
-		models.Sandbox{ID: "sandbox3", State: models.StateRunning})
+		models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased},
+		models.Sandbox{ID: "sandbox2", State: models.StateRunning, Address: leased},
+		models.Sandbox{ID: "sandbox3", State: models.StateRunning, Address: leased})
 
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
@@ -1007,8 +1014,8 @@ func TestReconcileReportsAProbeThatFailedAndCorrectsTheRest(t *testing.T) {
 		errs:   map[string]error{"sandbox1": errors.New("write the restart count: no space left on device")},
 	}
 	lab := newReconcileLab(t, provider,
-		models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42},
-		models.Sandbox{ID: "sandbox2", State: models.StateRunning, PID: 43})
+		models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42},
+		models.Sandbox{ID: "sandbox2", State: models.StateRunning, Address: leased, PID: 43})
 
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll = %v, want nil so one sandbox's error does not stop the daemon", err)
@@ -1045,7 +1052,7 @@ func reported(lines []string, parts ...string) bool {
 
 func TestReconcileAnswersWhenTheHostRulesCannotGoBackOn(t *testing.T) {
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}},
-		models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42})
+		models.Sandbox{ID: "sandbox1", State: models.StateRunning, Address: leased, PID: 42})
 	lab.net.err = errors.New("nft is not on this host")
 
 	err := lab.run(t)
@@ -1060,7 +1067,7 @@ func TestReconcileProbesFrozenSandboxesConcurrently(t *testing.T) {
 
 	records := make([]models.Sandbox, frozen)
 	for i := range records {
-		records[i] = models.Sandbox{ID: fmt.Sprintf("sandbox%d", i), State: models.StateRunning, PID: 42}
+		records[i] = models.Sandbox{ID: fmt.Sprintf("sandbox%d", i), State: models.StateRunning, Address: leased, PID: 42}
 	}
 	lab := newTunedReconcileLab(t, &recProvider{wedge: true}, budget, records...)
 
