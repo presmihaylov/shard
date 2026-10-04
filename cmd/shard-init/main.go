@@ -65,11 +65,6 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
 		os.Exit(runFiles())
 	}
-	// The bounded child runs this first, so it gives up PID 1's OOM exemption before the workload can fork.
-	if len(os.Args) > 2 && os.Args[1] == exposeFlag {
-		fmt.Fprintln(os.Stderr, "shard-init:", expose(os.Args[2], os.Args[3:]))
-		os.Exit(models.EntrypointNotStartedExitCode)
-	}
 	err := run(os.Args[1:])
 	if err == nil {
 		return
@@ -233,8 +228,6 @@ type entrypoint struct {
 	credential *syscall.Credential
 	// out is where the entrypoint writes; nil keeps shard-init's own stdout and stderr, the log on gVisor.
 	out *os.File
-	// expose says the child inherits PID 1's OOM exemption and must drop it before the workload runs.
-	expose bool
 	// bound is the cgroup the child is born into; nil leaves it in shard-init's own.
 	bound *os.File
 }
@@ -281,8 +274,6 @@ type guest struct {
 	lastExit *models.ExitStatus
 	// oomProbe says whether the guest's own memory bound was hit; nil is a guest with no bound, where a SIGKILL is a signal.
 	oomProbe func() (bool, error)
-	// exempt says PID 1 holds the OOM exemption boundMemory wrote, which every child it forks must give up.
-	exempt bool
 	// bound is the sandbox cgroup every child is born into, fixed before anything forks; nil off a VM.
 	bound *os.File
 	// oom says the bound took every guest process; the guest holds it until the host, with the reason on disk, says stop.
@@ -803,12 +794,12 @@ func parseID(field string) (uint32, error) {
 	return uint32(id), nil
 }
 
-// start forks a guest process into the bound, which gives up the OOM exemption it inherits from an exempt PID 1.
+// start forks a guest process into the bound.
 func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	if verb := g.frozen.Load(); verb != nil {
 		return 0, fmt.Errorf("a %s %w", *verb, errFrozen)
 	}
-	ep.expose, ep.bound = g.exempt, g.bound
+	ep.bound = g.bound
 
 	return startProcess(ep, files, tty)
 }
@@ -824,13 +815,6 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	ambient, err := inheritedCapabilities(ep.credential)
 	if err != nil {
 		return 0, err
-	}
-
-	// A parent-side reset would race the child's first fork, so the child itself resets before it execs the workload.
-	argv := ep.argv
-	if ep.expose {
-		argv = append([]string{"shard-init", exposeFlag, binary}, ep.argv...)
-		binary = "/proc/self/exe"
 	}
 
 	// The entrypoint must not inherit our fd 0: that is shard-init's exit channel to the host. It gets
@@ -849,7 +833,7 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 		fds = []uintptr{files[0].Fd(), files[1].Fd(), files[2].Fd()}
 	}
 
-	pid, forkErr := syscall.ForkExec(binary, argv, &syscall.ProcAttr{
+	pid, forkErr := syscall.ForkExec(binary, ep.argv, &syscall.ProcAttr{
 		Dir:   ep.dir,
 		Env:   ep.env,
 		Files: fds,
@@ -865,7 +849,39 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 		fmt.Fprintln(os.Stderr, "shard-init: close the entrypoint stdin template:", closeErr)
 	}
 
+	// The exec's error pipe also reads EOF when the child dies before its exec, so only the kernel's flag proves the command ran (SHARD-505).
+	ran, err := execed(pid)
+	if err != nil {
+		// The owning goroutine is the only reaper and it is busy here, so the pid cannot be reused yet.
+		return 0, errors.Join(fmt.Errorf("prove %q started: %w", ep.argv[0], err), syscall.Kill(pid, syscall.SIGKILL))
+	}
+	if !ran {
+		return 0, fmt.Errorf("%q died before its exec finished, so it never ran", ep.argv[0])
+	}
+
 	return pid, nil
+}
+
+// pfForkNoExec is the kernel's PF_FORKNOEXEC: set at the fork, cleared once an exec passes its point of no return.
+const pfForkNoExec = 0x40
+
+// statExeced reads the flags of a /proc/<pid>/stat line, counted from the last ')' since the name may hold spaces and parentheses.
+func statExeced(stat string) (bool, error) {
+	end := strings.LastIndexByte(stat, ')')
+	if end < 0 {
+		return false, fmt.Errorf("stat line %q names no process", stat)
+	}
+	// state, ppid, pgrp, session, tty_nr and tpgid come before the flags.
+	fields := strings.Fields(stat[end+1:])
+	if len(fields) < 7 {
+		return false, fmt.Errorf("stat line %q has no flags field", stat)
+	}
+	flags, err := strconv.ParseUint(fields[6], 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("stat line %q: read the flags: %w", stat, err)
+	}
+
+	return flags&pfForkNoExec == 0, nil
 }
 
 // lookPath resolves argv[0] on the entrypoint's own PATH, in the entrypoint's own directory: in a VM shard-init's environ is the kernel's, which has none.

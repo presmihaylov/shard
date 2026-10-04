@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 // section is one table of a table output, and a verb such as policy show prints more than one.
@@ -109,7 +110,7 @@ func walkFields(dec *json.Decoder, path string, rows *[][]string) error {
 
 	delim, isDelim := tok.(json.Delim)
 	if !isDelim {
-		*rows = append(*rows, []string{path, leafText(tok)})
+		*rows = append(*rows, []string{path, leafText(path, tok)})
 		return nil
 	}
 
@@ -160,13 +161,21 @@ func joinField(path, name string) string {
 }
 
 // leafText spells a JSON leaf for a table, with a dash for null as the other tables print an empty value.
-func leafText(tok json.Token) string {
+func leafText(path string, tok json.Token) string {
 	if tok == nil {
 		return "-"
 	}
-	if s, ok := tok.(string); ok {
+	s, ok := tok.(string)
+	if !ok {
+		return fmt.Sprint(tok)
+	}
+	// Only an _at field is a time, so a command argument shaped like one prints as typed.
+	if !strings.HasSuffix(path, "_at") {
 		return orDash(s)
 	}
+	if at, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return at.UTC().Format(time.RFC3339)
+	}
 
-	return fmt.Sprint(tok)
+	return orDash(s)
 }

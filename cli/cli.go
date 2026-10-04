@@ -448,6 +448,15 @@ func (a App) localClient(verb string) (*client.Client, error) {
 	return a.client()
 }
 
+// gotArgs echoes what a verb refused, quoted, so the error shows what was typed rather than a count.
+func gotArgs(args []string) string {
+	if len(args) == 0 {
+		return "none"
+	}
+
+	return fmt.Sprintf("%q", args)
+}
+
 // version prints this binary's line first, so it is on the screen even when no daemon answers.
 func (a App) version(ctx context.Context, args []string) error {
 	rest, format, err := parseFormatArgs("version", args, formatTable)
@@ -455,7 +464,7 @@ func (a App) version(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("version takes no argument, got %d", len(rest))
+		return fmt.Errorf("version takes no arguments, got %s", gotArgs(rest))
 	}
 	// One JSON value needs the daemon's answer, so with no daemon it writes nothing.
 	if format == formatJSON {

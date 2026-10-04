@@ -82,7 +82,6 @@ func inspectSections(insp client.Inspection) ([]section, error) {
 		return []section{fields}, nil
 	}
 
-	fields.rows = append(fields.rows, []string{"egress.policy", orDash(insp.Egress.Policy)})
 	if insp.Egress.Missing {
 		fields.rows = append(fields.rows, []string{"egress.missing", "true"})
 	}

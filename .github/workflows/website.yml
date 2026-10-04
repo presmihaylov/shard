@@ -1,0 +1,49 @@
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/website.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: check / build / verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: check
+        run: npm run check
+
+      - name: build
+        run: npm run build
+
+      # Every route, the search index and every internal link, against the built dist.
+      - name: verify
+        run: npm run verify

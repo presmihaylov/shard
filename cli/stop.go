@@ -41,7 +41,7 @@ func parseStop(args []string) (stopOptions, error) {
 
 	rest := flags.Args()
 	if len(rest) != 1 {
-		return stopOptions{}, fmt.Errorf("stop takes one sandbox id, got %d", len(rest))
+		return stopOptions{}, fmt.Errorf("stop takes one sandbox id or name, got %s", gotArgs(rest))
 	}
 
 	opts.id = rest[0]
