@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 )
 
@@ -313,7 +314,7 @@ func listening(t *testing.T) (string, *exec.Cmd, <-chan error) {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	t.Cleanup(func() {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := pgroup.Kill(cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			t.Error(err)
 		}
 	})

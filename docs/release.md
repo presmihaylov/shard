@@ -74,10 +74,12 @@ The guest kernel has its own workflow and its own release tag, which `docs/kerne
 Each SDK has its own version and its own tag on `main`: `sdk-typescript-v<version>` for the version
 in `sdks/typescript/package.json`, and `sdk-python-v<version>` for the one in
 `sdks/python/src/useshards/_version.py`. Neither tag matches `v*`, so `release.yml` never runs for
-one. `sdk-release.yml` checks that the commit is on `main` and that the tag names the package
-version, then runs `make sdk-ts-check` or `make sdk-py-check`. It packs the tarball with `npm pack`,
-or builds the wheel and the sdist with `uv build`, and installs the result into a clean project, so
-it imports with only the dependencies it declares.
+one. `sdk-release.yml` checks that the commit is on `main`. A shared job runs `make sdk-gate`
+against a fresh runc daemon behind a TLS front, and both package jobs wait for that gate. Each
+package job checks that the tag names its version, then runs `make sdk-ts-check` or
+`make sdk-py-check`. It packs the tarball with `npm pack`, or builds the wheel and the sdist with
+`uv build`, and installs the result into a clean project, so it imports with only the dependencies
+it declares.
 
 A last job, the only one that can write, puts the assets and a `SHA256SUMS` under a draft release
 titled `useshards (TypeScript) <version>` or `useshards (Python) <version>`. Nothing goes to npm or
