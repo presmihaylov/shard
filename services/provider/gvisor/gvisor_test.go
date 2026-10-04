@@ -443,12 +443,20 @@ func TestAnUnreadableLayerFileLosesNoPause(t *testing.T) {
 	}
 }
 
-// pauseKept fails the test on a lost pause; the merged view's unmount refuses off Linux, so any other error is the platform's.
+// pauseKept wants a clean pause, bar the overlayfs refusal of the unmount off Linux.
 func pauseKept(t *testing.T, err error) {
 	t.Helper()
 
-	if _, lost := errors.AsType[*models.LostError](err); lost {
-		t.Errorf("Pause lost the sandbox after runsc wrote the memory image: %v", err)
+	if err == nil {
+		return
+	}
+	// The release joins the unmount to the other cleanup errors, so every joined line must be the refusal.
+	for line := range strings.SplitSeq(err.Error(), "\n") {
+		if runtime.GOOS == "linux" || !strings.Contains(line, "overlayfs") {
+			t.Errorf("Pause after runsc wrote the memory image returned %v, want nil", err)
+
+			return
+		}
 	}
 }
 
