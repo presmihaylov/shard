@@ -120,6 +120,10 @@ type Config struct {
 	StartBudget time.Duration
 	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
 	PauseBudget time.Duration
+	// ExecStartBudget overrides DefaultExecStartBudget, which only a test has a reason to do.
+	ExecStartBudget time.Duration
+	// ExecCleanupGrace overrides DefaultExecCleanupGrace, which only a test has a reason to do.
+	ExecCleanupGrace time.Duration
 	// Report takes a transition a verb records on its own, as the background loops report theirs; only a test leaves it nil.
 	Report func(string)
 	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
@@ -698,7 +702,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return err
+		return nameCommand(err, spec.Entrypoint)
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
@@ -728,11 +732,60 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox
 		return models.Sandbox{}, err
 	}
 
-	if err := s.Complete(ctx, sb.ID, req); err != nil {
+	if err := s.Settle(ctx, sb.ID, req); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(sb.ID)
+}
+
+// discardBudget bounds the removal of a sandbox whose app never started, on a context its caller cannot cancel.
+const discardBudget = 30 * time.Second
+
+// Settle is Complete for a caller that waits on the outcome, so an app that never started leaves no sandbox behind its refusal.
+func (s *Service) Settle(ctx context.Context, id string, req CreateRequest) error {
+	err := s.Complete(ctx, id, req)
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) {
+		return err
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
+	defer cancel()
+	removeErr := s.Remove(cleanupCtx, id, true)
+	if removeErr == nil || errors.Is(removeErr, sandboxstate.ErrNotFound) {
+		return err
+	}
+
+	return &NotRemovedError{Refusal: refused, Err: removeErr}
+}
+
+// NotRemovedError is a refused app whose sandbox stayed; it unwraps to nothing, so no cause inside picks the code of what is a plain failure.
+type NotRemovedError struct {
+	Refusal *models.CommandNotStartedError
+	Err     error
+}
+
+func (e *NotRemovedError) Error() string {
+	return fmt.Sprintf("%s, and the sandbox was not removed: %s", e.Refusal, e.Err)
+}
+
+// Public names the refusal and the sandbox it left, never the removal's cause, which only the daemon log reads.
+func (e *NotRemovedError) Public() string {
+	return e.Refusal.Public() + ", and the sandbox was not removed"
+}
+
+// nameCommand gives a refused start the program it was to run, which the provider does not know.
+func nameCommand(err error, argv []string) error {
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) || len(argv) == 0 {
+		return err
+	}
+
+	named := *refused
+	named.Command = argv[0]
+
+	return &named
 }
 
 // WaitState answers at once: this service's Create is synchronous, so a sandbox it holds never sits in pending.

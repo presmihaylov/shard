@@ -22,6 +22,16 @@ func sysProcAttr(credential *syscall.Credential, ambient []uintptr, tty bool, bo
 	return attr
 }
 
+// execed says whether pid got through its exec; gVisor prints its flags as 0, so there every child has.
+func execed(pid int) (bool, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false, err
+	}
+
+	return statExeced(string(stat))
+}
+
 // setUndumpable clears the dumpable flag, so the kernel makes /proc/1/fd root-owned and unreadable to
 // the guest. That is what keeps shard-init's exit channel on fd 0 out of the guest's reach on gVisor,
 // where the guest has no CAP_SYS_PTRACE to override it.

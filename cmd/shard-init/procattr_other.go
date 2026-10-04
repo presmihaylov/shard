@@ -13,6 +13,9 @@ func sysProcAttr(credential *syscall.Credential, _ []uintptr, tty bool, _ *os.Fi
 	return &syscall.SysProcAttr{Credential: credential, Setsid: tty, Setpgid: !tty, Setctty: tty, Ctty: 0}
 }
 
+// execed has no flag to read off Linux, where no sandbox runs.
+func execed(int) (bool, error) { return true, nil }
+
 // setUndumpable is a no-op off Linux, where no sandbox runs and the tests never fork a guest.
 func setUndumpable() error { return nil }
 

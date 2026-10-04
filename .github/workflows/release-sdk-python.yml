@@ -1,0 +1,59 @@
+name: release python sdk
+
+# Builds useshards under a useshards-v<version> tag on main into a workflow artifact; publication needs Pres's approval.
+on:
+  push:
+    tags: ['useshards-v*']
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: 0.5.9
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A tag on a feature head must build nothing.
+      - name: the tag is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: the tag names the package version
+        working-directory: sdks/python
+        run: |
+          version=$(uv run --locked python -c 'import useshards; print(useshards.__version__)')
+          if [ "useshards-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag is $GITHUB_REF_NAME, but the package says $version"
+            exit 1
+          fi
+
+      - name: check
+        run: make sdk-py-check
+
+      - name: build
+        working-directory: sdks/python
+        run: uv build
+
+      # The wheel must install and import with only its declared dependencies.
+      - name: install the wheel into a clean venv
+        working-directory: sdks/python
+        run: |
+          uv venv /tmp/clean
+          uv pip install --python /tmp/clean dist/*.whl
+          /tmp/clean/bin/python -c 'import useshards; print(useshards.__version__)'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: useshards-dist
+          path: sdks/python/dist/
+

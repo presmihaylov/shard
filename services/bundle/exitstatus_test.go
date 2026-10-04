@@ -158,3 +158,92 @@ func TestExportRefusesAnExitFileOverTheCap(t *testing.T) {
 		t.Fatalf("Export = %v, want ErrExitFileTooLarge", err)
 	}
 }
+
+func TestReadNotStarted(t *testing.T) {
+	cases := map[string]struct {
+		content  string
+		wantCode int
+	}{
+		"a missing command is 127":    {content: "\n{\"kind\":\"not-started\",\"errno\":2}\n", wantCode: models.CommandNotFoundExitCode},
+		"a command that cannot run":   {content: "\n{\"kind\":\"not-started\",\"errno\":13}\n", wantCode: models.CommandNotExecutableExitCode},
+		"an exit is no refusal":       {content: "\n{\"kind\":\"exit\",\"code\":127}\n"},
+		"a torn refusal is none yet":  {content: "\n{\"kind\":\"not-started\",\"errno\":2"},
+		"an empty channel is nothing": {content: ""},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "exit.json")
+			if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
+				t.Fatalf("write the exit channel: %v", err)
+			}
+
+			refused, err := bundle.ReadNotStarted("sb-1", path)
+			if err != nil {
+				t.Fatalf("ReadNotStarted: %v", err)
+			}
+			if c.wantCode == 0 {
+				if refused != nil {
+					t.Fatalf("ReadNotStarted = %+v, want no refusal", refused)
+				}
+				return
+			}
+			if refused == nil {
+				t.Fatal("ReadNotStarted found no refusal")
+			}
+			if refused.Code != c.wantCode || refused.Sandbox != "sb-1" {
+				t.Errorf("refusal = %+v, want code %d in sandbox sb-1", refused, c.wantCode)
+			}
+		})
+	}
+}
+
+// The guest writes only an errno, so a reason it puts in the record never reaches the message.
+func TestReadNotStartedTakesTheReasonFromTheKernel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exit.json")
+	if err := os.WriteFile(path, []byte("\n{\"kind\":\"not-started\",\"errno\":2,\"reason\":\"/srv/host/path\"}\n"), 0o600); err != nil {
+		t.Fatalf("write the exit channel: %v", err)
+	}
+
+	refused, err := bundle.ReadNotStarted("sb-1", path)
+	if err != nil {
+		t.Fatalf("ReadNotStarted: %v", err)
+	}
+	if refused == nil || refused.Reason != "no such file or directory" {
+		t.Fatalf("ReadNotStarted = %+v, want the reason of ENOENT", refused)
+	}
+}
+
+func TestReadNotStartedMissingFile(t *testing.T) {
+	refused, err := bundle.ReadNotStarted("sb-1", filepath.Join(t.TempDir(), "absent.json"))
+	if err != nil || refused != nil {
+		t.Fatalf("ReadNotStarted of a missing file = %+v, %v, want nil, nil", refused, err)
+	}
+}
+
+func TestReadNotStartedRejectsACorruptRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exit.json")
+	if err := os.WriteFile(path, []byte("\nnot json\n"), 0o600); err != nil {
+		t.Fatalf("write the exit channel: %v", err)
+	}
+
+	if _, err := bundle.ReadNotStarted("sb-1", path); err == nil {
+		t.Error("ReadNotStarted accepted a corrupt record, want an error")
+	}
+}
+
+// A sealed page is zero past the last record, as the memfd the daemon sized.
+func TestDecodeNotStartedPage(t *testing.T) {
+	page := make([]byte, models.ExitChannelSize)
+	copy(page, "\n{\"kind\":\"not-started\",\"errno\":2}\n")
+
+	refused := bundle.DecodeNotStartedPage("sb-1", page)
+	if refused == nil || refused.Code != models.CommandNotFoundExitCode {
+		t.Fatalf("DecodeNotStartedPage = %+v, want code %d", refused, models.CommandNotFoundExitCode)
+	}
+
+	copy(page, "\n{\"kind\":\"exit\",\"code\":0}\n\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	if refused := bundle.DecodeNotStartedPage("sb-1", page); refused != nil {
+		t.Fatalf("DecodeNotStartedPage of an exit = %+v, want no refusal", refused)
+	}
+}

@@ -1,0 +1,64 @@
+[project]
+name = "useshards"
+dynamic = ["version"]
+description = "The Python SDK for shard, the sandbox manager."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27,<1",
+    "attrs>=23.1",
+    "typing-extensions>=4.9",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Source = "https://github.com/presmihaylov/shard"
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "websockets==14.1",
+    "ruff==0.8.4",
+    "mypy==1.14.0",
+    "openapi-python-client==0.29.1",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/useshards/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/useshards"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/useshards", "README.md"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["src/useshards/_generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF", "SIM", "ASYNC"]
+# The async client mirrors the sync one, whose callers pass a timeout, so asyncio.timeout is no substitute.
+ignore = ["ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+# A twin is the async source with the keywords cut, so an async for that yields reads as a plain loop there.
+"**/_sync/*.py" = ["UP028"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src/useshards", "suite", "scripts", "tests", "examples"]
+exclude = ["src/useshards/_generated/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

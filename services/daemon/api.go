@@ -307,18 +307,16 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 	return l.svc, nil
 }
 
-// Create runs synchronously when the image is cached and answers running, so a create off a warm cache
-// keeps its shape. An uncached image records the sandbox pending and pulls, builds and starts it in the
-// background, where it lands running or failed. A wait blocks on the record leaving pending.
+// An uncached create runs under the daemon context so a disconnected client does not cancel it.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, _, err := l.create(ctx, req)
+	sb, _, err := l.create(ctx, req, false)
 
 	return sb, err
 }
 
 // CreateAndWait holds the create it starts, so a background one the request was at fault for answers that refusal as a cached one does.
 func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, c, err := l.create(ctx, req)
+	sb, c, err := l.create(ctx, req, true)
 	if err != nil || c == nil {
 		return sb, err
 	}
@@ -329,7 +327,11 @@ func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest
 		return models.Sandbox{}, ctx.Err()
 	}
 
-	if _, refused := errors.AsType[*sandbox.RequestError](c.err); refused {
+	// A refusal answers the caller, and so does a removal that left its sandbox; any other failure leaves the failed record to read.
+	_, invalid := errors.AsType[*sandbox.RequestError](c.err)
+	_, refused := errors.AsType[*models.CommandNotStartedError](c.err)
+	_, notRemoved := errors.AsType[*sandbox.NotRemovedError](c.err)
+	if invalid || refused || notRemoved {
 		return models.Sandbox{}, c.err
 	}
 
@@ -342,7 +344,7 @@ func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest
 }
 
 // create answers no creation when the create finished here, and the one it left running in the background otherwise.
-func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, *creation, error) {
+func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest, waited bool) (models.Sandbox, *creation, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.Sandbox{}, nil, err
@@ -389,7 +391,12 @@ func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest) (mode
 	l.mu.Unlock()
 
 	l.wg.Go(func() {
-		c.err = svc.Complete(detached, sb.ID, req)
+		complete := svc.Complete
+		// Only a waited create owns the refusal, so only it removes the sandbox; an unwaited one keeps the failed record to read.
+		if waited {
+			complete = svc.Settle
+		}
+		c.err = complete(detached, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
