@@ -928,7 +928,7 @@ in `SHARD_API_KEY`: `export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r 
 operator replaces the signing key, every token it signed stops verifying at once.
 
 The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
-restart ends no connection that is already spliced.
+restart ends its active proxy connections.
 
 ### Tokens
 
@@ -953,8 +953,15 @@ ledger holds no such token. `revoke` marks one token by its id, or every token o
 `mint`, and they never reach the daemon.
 
 The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
-effect on the next request without a restart. If the front cannot read the ledger at start, it does
-not start. If the ledger vanishes while the front runs, every request gets a `401`.
+effect on the next request without a restart. The ledger must be a regular file.
+The front also checks the ledger once per second for every active proxy connection, including
+WebSocket streams and plain HTTP follows. A revoked token,
+an absent token id, or a ledger read error closes both sides of that connection. A token with an
+`exp` ends the connection at its expiry, independently of the ledger check. A token without an
+`exp` still has the one-second ledger check. These closes detach the client; they do not stop an exec
+or a sandbox. If the front cannot read the ledger at start, it does not start. If the ledger
+vanishes while the front runs, every new request gets a `401`, and the next check ends active
+connections.
 
 `mint` and `revoke` take an advisory lock on the ledger, at `serve.tokens.lock` beside it, so
 parallel revokes and a mint that races a revoke never lose a record. The front only reads, so it
