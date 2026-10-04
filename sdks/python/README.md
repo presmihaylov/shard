@@ -85,13 +85,13 @@ Every exception derives from `ShardError`.
 |---|---|
 | `ConfigurationError` | A setting is missing or refused. The message names the setting, never its value. |
 | `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
-| `ProtocolError` | The daemon answered something the SDK cannot read. |
-| `UnknownLengthError` | A file upload has no known size, or its source changed size while it was sent. |
-| `UnsafeArchiveError` | A `download_dir` tar holds an entry it refuses to land, as one outside the destination. `entry` and `reason` name it. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
 | `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
 
-A non-zero exit code is not an exception. Read `result.exit_code`.
+`ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size or
+one whose source changed size while it was sent, and `UnsafeArchiveError` a `download_dir` tar entry
+the SDK refuses to land, as one outside the destination, named by `entry` and `reason`. A non-zero
+exit code is not an exception. Read `result.exit_code`.
 
 ## The shared suite
 
