@@ -29,20 +29,24 @@ func write(b *execBuffer, count, size int) <-chan struct{} {
 	return done
 }
 
-// A client slower than the command still gets every byte, and one 8 MiB batch that takes longer than
-// the bound to send is progress all the way, since the bound counts each chunk the client accepts.
+// A client slower than the command gets every byte, and each chunk it accepts is taken before the next is sent, so a long batch is progress all the way.
 func TestASlowFollowerGetsEveryByte(t *testing.T) {
 	const count, size = 384, 64 << 10
 
 	b := newExecBuffer(false)
-	b.stall = testStall
 	b.release()
 
 	var got bytes.Buffer
+	untaken := 0
 	streamed := make(chan error, 1)
 	go func() {
 		streamed <- b.stream(t.Context(), nil, func(c chunk) error {
 			time.Sleep(time.Millisecond)
+			b.mu.Lock()
+			if f := b.follower; f == nil || f.at != int64(got.Len()) {
+				untaken++
+			}
+			b.mu.Unlock()
 			got.Write(c.data)
 
 			return nil
@@ -65,6 +69,9 @@ func TestASlowFollowerGetsEveryByte(t *testing.T) {
 	}
 	if lost := b.lostBytes(); lost != 0 {
 		t.Errorf("the buffer lost %d bytes to a client that kept taking them", lost)
+	}
+	if untaken != 0 {
+		t.Errorf("%d chunks went out before the client's last accepted chunk was taken, want each taken as it is accepted", untaken)
 	}
 }
 

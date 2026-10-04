@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/presmihaylov/shard/models"
 )
 
 // claims is the token payload: the standard fields, plus the scopes the front checks each request against.
@@ -50,7 +52,7 @@ func newClaims(sub string, scopes []string, ttl time.Duration) (claims, error) {
 		return claims{}, fmt.Errorf("a token needs a duration in the future, got %s", ttl)
 	}
 	if len(scopes) == 0 {
-		scopes = []string{"*"}
+		scopes = []string{models.ScopeAll}
 	}
 	if err := CheckScopes(scopes); err != nil {
 		return claims{}, err

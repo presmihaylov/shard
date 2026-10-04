@@ -220,7 +220,7 @@ func TestANounNamesItsSubcommands(t *testing.T) {
 		"image":  "list, remove or prune",
 		"secret": "set, list, remove, grant or ungrant",
 		"policy": "create, show, list, remove, attach, detach or logs",
-		"tokens": "mint, list or revoke",
+		"tokens": "mint, list, revoke or scopes",
 	}
 
 	for noun, subs := range cases {

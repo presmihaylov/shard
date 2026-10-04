@@ -239,6 +239,7 @@ func commands() []command {
 			{name: "mint", run: App.tokensMint},
 			{name: "list", aliases: []string{"ls"}, run: App.tokensList},
 			{name: "revoke", run: App.tokensRevoke},
+			{name: "scopes", run: App.tokensScopes},
 		}},
 		{name: "version", run: App.version},
 	}

@@ -139,6 +139,8 @@ func TestRunStopsTheAppOnTheFirstInterruptAndExitsWithItsCode(t *testing.T) {
 	provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
 
 	signals, done := startRun(t, app, "--restart", "always", "alpine:3.20", "sleep", "60")
+	// An interrupt during the create takes cancelApp's path, which exits 130, so the press waits for the attach.
+	waitFor(t, "the attach", func() bool { return slices.Contains(r.seen(), "provider.LogPath") })
 	signals <- syscall.SIGINT
 
 	err := <-done
