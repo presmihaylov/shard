@@ -2,7 +2,7 @@
 import { Commands, type Command, type ExecOptions, type ExecResult } from "./commands.js";
 import { Files } from "./files.js";
 import { egressLogEntry, follow, logChunk } from "./follow.js";
-import { egressLogRecord, records, sandboxInfo, type EgressLogRecord, type SandboxInfo } from "./records.js";
+import { egressDecision, records, sandboxInfo, type EgressDecision, type SandboxInfo } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 
@@ -108,14 +108,14 @@ export class Sandbox {
   }
 
   /** egressLog answers the egress decisions the daemon still holds, oldest first. */
-  async egressLog(): Promise<EgressLogRecord[]> {
+  async egressLog(): Promise<EgressDecision[]> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/egress-log", { params: this.params });
 
-    return records(data, `the egress log of sandbox ${this.id}`, egressLogRecord);
+    return records(data, `the egress log of sandbox ${this.id}`, egressDecision);
   }
 
   /** followEgressLog yields each egress decision as the daemon makes it, and ends when the sandbox stops. */
-  followEgressLog(options: FollowOptions = {}): AsyncGenerator<EgressLogRecord> {
+  followEgressLog(options: FollowOptions = {}): AsyncGenerator<EgressDecision> {
     const what = `the egress log of sandbox ${this.id}`;
 
     return follow(this.transport, wire.path("sandboxes", this.id, "egress-log"), what, egressLogEntry, options.signal);

@@ -29,13 +29,13 @@ from .._types import (
     AppInfo,
     CommandInfo,
     CommandResult,
-    EgressLogRecord,
+    EgressDecision,
     OutputCallback,
     SandboxInfo,
     TerminalSize,
     app_exit,
     command_info,
-    egress_log_record,
+    egress_decision,
     sandbox_info,
 )
 from .._wire import AsyncCall, path
@@ -193,14 +193,14 @@ class AsyncSandbox:
             self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk
         )
 
-    async def egress_log(self) -> builtins.list[EgressLogRecord]:
+    async def egress_log(self) -> builtins.list[EgressDecision]:
         """Every egress decision the daemon still holds, oldest first."""
         records = await self._transport.answer(
             builtins.list, lambda: get_sandbox_egress_log.asyncio_detailed(self.id, client=self._transport.api)
         )
-        return [egress_log_record(record) for record in records]
+        return [egress_decision(record) for record in records]
 
-    def follow_egress_log(self) -> AsyncFollow[EgressLogRecord]:
+    def follow_egress_log(self) -> AsyncFollow[EgressDecision]:
         return AsyncFollow(
             self._transport,
             path("sandboxes", self.id, "egress-log"),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ProtocolError } from "../src/errors.js";
-import { appExit, egressLogRecord, policy, records, sandboxInfo } from "../src/records.js";
+import { appExit, egressDecision, policy, records, sandboxInfo } from "../src/records.js";
 import { sandboxRecord } from "./helpers/records.js";
 
 test("a sandbox create made runs no app", () => {
@@ -70,14 +70,14 @@ test("a listed policy has no holders and no dns", () => {
   assert.equal(read.dns, null);
 });
 
-test("an egress log record with no port names none", () => {
-  const read = egressLogRecord({ time: "2026-10-04T10:00:00Z", source: "dns", verdict: "deny", host: "example.com", rule: "default" });
+test("an egress decision with no port names none", () => {
+  const read = egressDecision({ time: "2026-10-04T10:00:00Z", source: "dns", verdict: "deny", host: "example.com", rule: "default" });
   assert.equal(read.port, null);
   assert.equal(read.address, null);
   assert.equal(read.time.toISOString(), "2026-10-04T10:00:00.000Z");
 });
 
 test("an empty list may come as null, and anything else but an array is refused", () => {
-  assert.deepEqual(records(null, "the log", egressLogRecord), []);
-  assert.throws(() => records({}, "the log", egressLogRecord), ProtocolError);
+  assert.deepEqual(records(null, "the log", egressDecision), []);
+  assert.throws(() => records({}, "the log", egressDecision), ProtocolError);
 });

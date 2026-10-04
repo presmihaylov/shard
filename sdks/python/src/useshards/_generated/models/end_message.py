@@ -6,28 +6,24 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.destination_kind import DestinationKind
+from ..models.end_message_reason import EndMessageReason
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="Destination")
+T = TypeVar("T", bound="EndMessage")
 
 
 @_attrs_define
-class Destination:
-    kind: DestinationKind
-    value: str
+class EndMessage:
+    reason: EndMessageReason
 
     def to_dict(self) -> dict[str, Any]:
-        kind = self.kind.value
-
-        value = self.value
+        reason = self.reason.value
 
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
             {
-                "kind": kind,
-                "value": value,
+                "reason": reason,
             }
         )
 
@@ -36,13 +32,10 @@ class Destination:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = DestinationKind(d.pop("kind"))
+        reason = EndMessageReason(d.pop("reason"))
 
-        value = d.pop("value")
-
-        destination = cls(
-            kind=kind,
-            value=value,
+        end_message = cls(
+            reason=reason,
         )
 
-        return destination
+        return end_message

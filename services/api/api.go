@@ -458,7 +458,7 @@ func describeEgressLog(registry huma.Registry, op *huma.Operation) {
 			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
 		},
 	}
-	op.Responses["101"] = upgrade("A WebSocket follow: one egress decision per text message, until the sandbox stops.")
+	op.Responses["101"] = upgrade("A WebSocket follow: one egress decision per text message, until the sandbox stops.", nil)
 }
 
 type grantInput struct {

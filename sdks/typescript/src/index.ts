@@ -7,7 +7,7 @@ export type {
   AppInfo,
   Capabilities,
   DNSMode,
-  EgressLogRecord,
+  EgressDecision,
   ExitStatus,
   Policy,
   PolicyRule,

@@ -733,6 +733,8 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
+| `exec_exited` | 409 | a kill of an exec whose command already ended |
+| `exec_running` | 409 | a delete of an exec whose command still runs |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { EgressLogRecord, Sandbox } from "useshards";
+import type { EgressDecision, Sandbox } from "useshards";
 import { consume, text, waitFor, type Check, type Context } from "../harness.js";
 
 /** denied is a running sandbox under a policy that denies everything, so any request it makes leaves a deny record. */
@@ -15,7 +15,7 @@ async function request(sandbox: Sandbox, host: string): Promise<void> {
   assert.notEqual(result.exitCode, 0, `the policy let ${host} through`);
 }
 
-function deniedHost(records: EgressLogRecord[], host: string): EgressLogRecord | undefined {
+function deniedHost(records: EgressDecision[], host: string): EgressDecision | undefined {
   return records.find((record) => record.verdict === "deny" && record.host === host);
 }
 
@@ -62,7 +62,7 @@ export const checks: Check[] = [
       const sandbox = await denied(ctx);
       const host = `${ctx.name("host")}.example`;
       await request(sandbox, host);
-      let records: EgressLogRecord[] = [];
+      let records: EgressDecision[] = [];
       await waitFor(`a deny record for ${host}`, 10_000, async () => {
         records = await sandbox.egressLog();
 
@@ -79,7 +79,7 @@ export const checks: Check[] = [
       const sandbox = await denied(ctx);
       const host = `${ctx.name("host")}.example`;
       const controller = new AbortController();
-      const seen: EgressLogRecord[] = [];
+      const seen: EgressDecision[] = [];
       const ended = consume(sandbox.followEgressLog({ signal: controller.signal }), (record) => seen.push(record));
       try {
         await request(sandbox, host);

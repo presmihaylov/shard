@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from useshards import AsyncSandbox, EgressLogRecord, PolicyRule
+from useshards import AsyncSandbox, EgressDecision, PolicyRule
 
 from .._shared import equal, matches, not_equal, ok
 from .harness import AsyncContext, Check, wait_for
@@ -19,7 +19,7 @@ async def request(sandbox: AsyncSandbox, host: str) -> None:
     not_equal(result.exit_code, 0, f"the policy let {host} through")
 
 
-def denied_host(records: list[EgressLogRecord], host: str) -> EgressLogRecord | None:
+def denied_host(records: list[EgressDecision], host: str) -> EgressDecision | None:
     return next((record for record in records if record.verdict == "deny" and record.host == host), None)
 
 
@@ -62,7 +62,7 @@ async def egress_read(ctx: AsyncContext) -> None:
     sandbox = await denied(ctx)
     host = f"{ctx.name('host')}.example"
     await request(sandbox, host)
-    records: list[EgressLogRecord] = []
+    records: list[EgressDecision] = []
 
     async def recorded() -> bool:
         nonlocal records
@@ -80,7 +80,7 @@ async def egress_read(ctx: AsyncContext) -> None:
 async def egress_follow(ctx: AsyncContext) -> None:
     sandbox = await denied(ctx)
     host = f"{ctx.name('host')}.example"
-    seen: list[EgressLogRecord] = []
+    seen: list[EgressDecision] = []
     ended = consume(sandbox.follow_egress_log(), seen.append)
     try:
         await request(sandbox, host)

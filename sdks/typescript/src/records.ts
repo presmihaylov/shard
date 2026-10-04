@@ -130,8 +130,8 @@ export interface Snapshot {
   createdAt: Date;
 }
 
-/** EgressLogRecord is one egress decision: rule is the id of the rule that decided, or why none did. */
-export interface EgressLogRecord {
+/** EgressDecision is one egress decision: rule is the id of the rule that decided, or why none did. */
+export interface EgressDecision {
   time: Date;
   source: "proxy" | "host" | "dns";
   verdict: "allow" | "deny";
@@ -143,7 +143,7 @@ export interface EgressLogRecord {
   reason: string | null;
 }
 
-const sources: readonly EgressLogRecord["source"][] = ["proxy", "host", "dns"];
+const sources: readonly EgressDecision["source"][] = ["proxy", "host", "dns"];
 
 export interface Version {
   version: string;
@@ -234,8 +234,8 @@ export function snapshot(value: unknown): Snapshot {
   };
 }
 
-export function egressLogRecord(value: unknown): EgressLogRecord {
-  const fields = Fields.of(value, "an egress log record");
+export function egressDecision(value: unknown): EgressDecision {
+  const fields = Fields.of(value, "an egress decision");
 
   return {
     time: fields.date("time"),

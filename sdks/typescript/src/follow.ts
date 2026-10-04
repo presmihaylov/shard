@@ -1,7 +1,7 @@
 // A log as it arrives, over one WebSocket that the end of the log, a fault, a break or an abort lets go of.
 import { ProtocolError, ShardConnectionError, failureError } from "./errors.js";
 import { closeNormal, opBinary, opText, type Message } from "./frames.js";
-import { egressLogRecord, type EgressLogRecord } from "./records.js";
+import { egressDecision, type EgressDecision } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 import { WebSocket } from "./ws.js";
@@ -64,7 +64,7 @@ export function logChunk(message: Message, what: string): Uint8Array | undefined
   throw new ProtocolError(`${what}: the daemon sent a message the SDK cannot read`);
 }
 
-export function egressLogEntry(message: Message, what: string): EgressLogRecord {
+export function egressLogEntry(message: Message, what: string): EgressDecision {
   if (message.opcode !== opText) {
     throw new ProtocolError(`${what}: the daemon sent a binary message where a record belongs`);
   }
@@ -75,5 +75,5 @@ export function egressLogEntry(message: Message, what: string): EgressLogRecord 
     throw new ProtocolError(`${what}: the daemon sent a record that is not JSON`);
   }
 
-  return egressLogRecord(record);
+  return egressDecision(record);
 }
