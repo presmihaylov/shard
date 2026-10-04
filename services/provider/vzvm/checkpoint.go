@@ -281,17 +281,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	}
 
 	// The disk comes back to the moment of the save, or the restored memory would meet a filesystem it never wrote.
-	disk := filepath.Join(stateDir, diskFile)
-	if err := bundle.ReplaceDisk(func() error {
-		if err := os.Remove(disk); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("drop the disk of sandbox %s: %w", id, err)
-		}
-		if _, err := bundle.CloneFile(filepath.Join(dir, checkpointDiskFile), disk); err != nil {
-			return fmt.Errorf("restore the disk of sandbox %s: %w", id, err)
-		}
-
-		return nil
-	}); err != nil {
+	if err := bundle.ReplaceDisk(func() error { return restoreDisk(id, dir, filepath.Join(stateDir, diskFile)) }); err != nil {
 		return err
 	}
 
@@ -304,6 +294,22 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	r.Paused = false
 	if err := writeRecord(stateDir, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
+	}
+
+	return nil
+}
+
+// restoreDisk puts the checkpoint's disk under the sandbox in place of its own, staged then swapped so a failed clone (ENOSPC) leaves the live disk for a later resume (SHARD-589).
+func restoreDisk(id, dir, disk string) error {
+	staged := disk + ".restore"
+	if err := os.Remove(staged); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear the staged disk of sandbox %s: %w", id, err)
+	}
+	if _, err := bundle.CloneFile(filepath.Join(dir, checkpointDiskFile), staged); err != nil {
+		return fmt.Errorf("restore the disk of sandbox %s: %w", id, err)
+	}
+	if err := os.Rename(staged, disk); err != nil {
+		return errors.Join(fmt.Errorf("swap the disk of sandbox %s: %w", id, err), os.Remove(staged))
 	}
 
 	return nil
