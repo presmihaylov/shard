@@ -360,11 +360,17 @@ func (c *Client) send(ctx context.Context, req request) (net.Conn, Info, error) 
 
 	var reply response
 	err = conn.SetDeadline(deadline)
+	// A cancel cuts the handshake short; stop disarms it before a stream goes back, so it never cuts one.
+	cancelled := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() { cancelled <- conn.SetDeadline(time.Now()) })
 	if err == nil {
 		err = writeFrame(conn, req)
 	}
 	if err == nil {
 		err = readFrame(conn, &reply)
+	}
+	if !stop() {
+		err = errors.Join(err, ctx.Err(), <-cancelled)
 	}
 	if err == nil {
 		err = reply.err()
