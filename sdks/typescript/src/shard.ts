@@ -142,7 +142,7 @@ export class Policies {
     await this.transport.api.DELETE("/v0/policies/{name}", { params: { path: { name } } });
   }
 
-  /** assign makes the sandbox enforce the policy from its next request on. */
+  /** assign makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
   assign(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.PUT("/v0/sandboxes/{id}/policy", { params: { path: { id } }, body: { policy: name } }));
   }

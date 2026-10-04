@@ -32,7 +32,7 @@ export interface ExecOptions extends OutputOptions {
 /** ExecResult is how a command ended, with the end of its output. */
 export interface ExecResult {
   exitCode: number;
-  /** The signal that ended the command, as 9 for KILL, or null for a normal exit. */
+  /** The signal the server reported, or null; every provider reports a signal as the exit code 128 plus its number, as 137 for KILL. */
   signal: number | null;
   /** The newest output, at most outputLimitBytes of stdout and stderr together, so a long run keeps only its end. */
   stdout: string;

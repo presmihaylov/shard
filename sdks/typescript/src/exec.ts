@@ -20,9 +20,9 @@ export interface CommandInfo {
   sandboxId: string;
   command: string[];
   state: CommandState;
-  /** The exit code once the command ended, or null while it runs. */
+  /** The exit code once the command ended, or null while it runs; a signal ends it with 128 plus its number, as 143 for TERM. */
   exitCode: number | null;
-  /** The signal that ended the command, as 15 for TERM, or null. */
+  /** The signal the server reported, or null; every provider reports a signal in the exit code instead. */
   signal: number | null;
   startedAt: Date;
   exitedAt: Date | null;
