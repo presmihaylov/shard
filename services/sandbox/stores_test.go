@@ -125,19 +125,20 @@ func unreadable(ids ...string) error {
 	return err
 }
 
-// A record that does not read back may hold the policy, so rm refuses and names it rather than fail as broken (SHARD-584).
+// A record that does not read back may hold the policy, so rm refuses and names it beside the readable holders (SHARD-584).
 func TestPolicyRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
 	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
-	repo := &fakeRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb-1", Policy: "db"}}, listErr: unreadable("broken-1", "broken-2")}
+	left := []models.Sandbox{{ID: "sb-1", Policy: "web"}, {ID: "sb-2", Policy: "db"}}
+	repo := &fakeRepo{r: &recorder{}, left: left, listErr: unreadable("broken-1", "broken-2")}
 	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
 
 	err := stores.RemovePolicy("web")
 	var held *sandbox.HeldError
-	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"broken-1", "broken-2"}) {
-		t.Fatalf("RemovePolicy = %v, want a refusal that names the records it could not read", err)
+	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"sb-1", "broken-1", "broken-2"}) {
+		t.Fatalf("RemovePolicy = %v, want a refusal that names the holder and the records it could not read", err)
 	}
-	if !strings.Contains(err.Error(), "cannot be read") {
-		t.Errorf("the refusal reads %q, which does not say why the holders are unknown", err.Error())
+	if !strings.Contains(err.Error(), "unreadable record of broken-1, broken-2") {
+		t.Errorf("the refusal reads %q, which does not say which records are unknown", err.Error())
 	}
 	if policies.removed != "" {
 		t.Errorf("the refusal still removed policy %q", policies.removed)
@@ -165,7 +166,7 @@ func TestSecretRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := &fakeRepo{r: &recorder{}, listErr: unreadable("broken-1")}
+	repo := &fakeRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb-1", Secrets: []string{"TOKEN"}}}, listErr: unreadable("broken-1")}
 	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Secrets: secrets})
 	if _, err := stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "synthetic-value", Destinations: []string{"a.example.com"}}); err != nil {
 		t.Fatal(err)
@@ -173,8 +174,8 @@ func TestSecretRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
 
 	err = stores.RemoveSecret("TOKEN", false)
 	var held *sandbox.HeldError
-	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"broken-1"}) {
-		t.Fatalf("RemoveSecret = %v, want a refusal that names the record it could not read", err)
+	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"sb-1", "broken-1"}) {
+		t.Fatalf("RemoveSecret = %v, want a refusal that names the grantee and the record it could not read", err)
 	}
 	if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("the refusal reads %q, which does not offer --force", err.Error())
