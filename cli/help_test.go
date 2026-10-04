@@ -116,7 +116,8 @@ func TestAVerbUnderABadRemoteFailsOnTheTokenFile(t *testing.T) {
 // topLine is the line of the top level that lists one verb.
 func topLine(top, verb string) string {
 	for line := range strings.SplitSeq(top, "\n") {
-		if strings.HasPrefix(line, "  "+verb+" ") {
+		// The name column ends at two spaces, so policy does not match the policy logs row.
+		if name, _, _ := strings.Cut(strings.TrimPrefix(line, "  "), "  "); strings.HasPrefix(line, "  ") && name == verb {
 			return line
 		}
 	}
@@ -143,7 +144,7 @@ func TestEveryVerbHasOneGroup(t *testing.T) {
 		}
 	}
 	for _, name := range grouped {
-		if _, ok := find(commands(), name); !ok {
+		if _, ok := lookup(name); !ok {
 			t.Errorf("the top level lists %s, which the dispatcher does not take", name)
 		}
 	}
@@ -192,7 +193,7 @@ func TestANounNamesItsSubcommands(t *testing.T) {
 	cases := map[string]string{
 		"image":  "list, remove or prune",
 		"secret": "set, list, remove, grant or ungrant",
-		"policy": "create, show, list, remove, attach or detach",
+		"policy": "create, show, list, remove, attach, detach or logs",
 		"tokens": "mint, list or revoke",
 	}
 

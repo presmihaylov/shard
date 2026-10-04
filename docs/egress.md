@@ -214,7 +214,7 @@ from. The table does not rely on that, because it is only a matter of configurat
 IPv6 as it arrives, and the `egress` chain drops it again for anything that reaches the forward path
 another way.
 
-Each drop is logged on rule `ipv6`, so it appears in `shard logs --egress` like any other decision.
+Each drop is logged on rule `ipv6`, so it appears in `shard policy logs` like any other decision.
 For now a sandbox is IPv4 only. It gets one IPv4 address and no IPv6 route, and every IPv6 packet it
 sends is dropped and logged. The design does not rule out IPv6, so support for it can come later.
 
@@ -250,8 +250,8 @@ connection is judged by the new rules.
 
 ## The decision log
 
-Every fronted sandbox keeps a decision log. `shard logs --egress <id|name>` prints it as one JSON
-record per line, oldest first. `shard logs -f --egress <id|name>` prints the same and then keeps
+Every fronted sandbox keeps a decision log. `shard policy logs <id|name>` prints it as one JSON
+record per line, oldest first. `shard policy logs -f <id|name>` prints the same and then keeps
 running, so a new record appears within about a second of the decision. The follow ends at Ctrl-C or
 when the sandbox is removed, and it says on stderr which of the two happened. If the log renames a
 file away before the follow has read it, the follow fails and says to follow again. A record names
@@ -286,7 +286,7 @@ The log has three limits:
   so instead of blaming a sandbox that no longer exists. Each chain rule logs at 2 lines per second,
   with a burst of 10, so a probe storm cannot fill the ring.
 - The log file is rotated at 8 MiB and one older file is kept, so a sandbox holds 16 MiB at most. The
-  write that would pass 8 MiB renames the file first. `shard logs --egress` prints at most the newest
+  write that would pass 8 MiB renames the file first. `shard policy logs` prints at most the newest
   10000 records, and says on stderr how many older ones it left out. A follow starts from the same
   newest 10000.
 - A drop by another firewall on the host is not in the log. The daemon reads only the lines that

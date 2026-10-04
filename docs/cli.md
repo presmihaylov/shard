@@ -39,8 +39,8 @@ A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the t
 `image`, `secret`, `policy`, `snapshot` and `tokens` (`list` only). An alias runs the same code and
 prints the same help. The help never lists an alias.
 
-`exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` takes `-f` and
-`--follow`. `run` takes `-d` and `--detach`.
+`exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` and
+`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`.
 
 ## Verbs
 
@@ -56,7 +56,7 @@ a dash is a verb with no `--format`.
 | `run <image> <command>...` | the `create` flags, `--restart --restart-retries --restart-backoff -d/--detach` | - | the app's output, or the id with `--detach` |
 | `exec <ref> <argv>...` | `-i/--interactive -t/--tty --env --workdir --user` | - | the command's output |
 | `list` | `--all --format` | table | the sandboxes |
-| `logs <ref>` | `-f/--follow --egress` | - | the entrypoint's output, or the egress decisions |
+| `logs <ref>` | `-f/--follow` | - | the entrypoint's output |
 | `inspect <ref>` | `--format` | json | the record |
 | `stop <ref>` | | - | the id |
 | `start <ref>` | | - | the id |
@@ -97,6 +97,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `policy remove <name>` | | - | the name |
 | `policy attach <ref> <policy>` | | - | the sandbox id |
 | `policy detach <ref>` | | - | the sandbox id |
+| `policy logs <ref>` | `-f/--follow` | - | the egress decisions, one JSON record per line |
 
 `<snap>` is a snapshot id or its `--name`.
 
