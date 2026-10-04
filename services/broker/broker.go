@@ -246,7 +246,8 @@ func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
 
 		byAddr := make(map[netip.Addr]models.Sandbox, len(sandboxes))
 		for _, sb := range sandboxes {
-			if sb.Address.IsValid() {
+			// A failed create keeps the address its teardown gave back, and the next create may hold it now (SHARD-545).
+			if sb.Address.IsValid() && sb.State != models.StateFailed {
 				byAddr[sb.Address.Addr()] = sb
 			}
 		}

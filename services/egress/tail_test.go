@@ -395,6 +395,35 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	}
 }
 
+// A failed create keeps the address its teardown gave back, so a drop from that address belongs to the sandbox that holds it now (SHARD-545).
+func TestTailWritesADropToTheLiveSandboxNotTheFailedOne(t *testing.T) {
+	var out strings.Builder
+	failed := sandbox(t)
+	failed.State = models.StateFailed
+	live := models.Sandbox{ID: "sb2", State: models.StateRunning, Address: failed.Address, CreatedAt: time.Unix(105, 0).UTC()}
+	tailer, root, decisions := newTailer(t, &out, live, failed)
+	writeCursor(t, root, "6")
+
+	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "default")}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, _, err := decisions.Tail(live.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if len(records) != 1 {
+		t.Errorf("the live sandbox's log holds %+v, want the one drop", records)
+	}
+	records, _, err = decisions.Tail(failed.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("the failed sandbox's log holds %+v", records)
+	}
+}
+
 // liveRing hands its lines once the backlog is spent, dated by a wall mark that can trail the tailer's own clock.
 type liveRing struct {
 	records []kmsg.Record

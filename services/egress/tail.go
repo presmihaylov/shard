@@ -160,6 +160,10 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	t.refreshed = listed
 	t.holders = map[string]models.Sandbox{}
 	for _, each := range sandboxes {
+		// A failed create keeps the address its teardown gave back, and the next create may hold it now (SHARD-545).
+		if each.State == models.StateFailed {
+			continue
+		}
 		if each.Address.IsValid() {
 			t.holders[each.Address.Addr().String()] = each
 		}
