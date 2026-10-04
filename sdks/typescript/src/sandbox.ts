@@ -1,12 +1,12 @@
 // One sandbox: its record as the last verb answered it, and the verbs, commands and files that act on it.
 import { Commands, type Command, type ExecOptions, type ExecResult } from "./commands.js";
 import { Files } from "./files.js";
-import { follow, logChunk, networkLogEntry } from "./follow.js";
-import { networkLogRecord, records, sandboxInfo, type NetworkLogRecord, type SandboxInfo } from "./records.js";
+import { egressLogEntry, follow, logChunk } from "./follow.js";
+import { egressDecision, records, sandboxInfo, type EgressDecision, type SandboxInfo } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 
-/** refresh hands a sandbox the record another verb answered, as a policy assign; the package does not export it. */
+/** refresh hands a sandbox the record another verb answered, as a policy attach; the package does not export it. */
 export const refresh = Symbol("refresh");
 
 export interface FollowOptions {
@@ -51,25 +51,27 @@ export class Sandbox {
     return this.verb(this.transport.api.GET("/v0/sandboxes/{id}", { params: this.params }));
   }
 
-  /** stop ends every process in the sandbox, with TERM and then KILL after 30 seconds, and keeps its root. */
+  /** stop a sandbox and preserve its files */
   async stop(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/stop", { params: this.params, fetch: this.transport.waiting }));
   }
 
-  /** start boots a stopped sandbox again on the root its stop left; no app starts with it. */
+  /** start a stopped sandbox with its saved files */
   async start(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/start", { params: this.params, fetch: this.transport.waiting }));
   }
 
+  /** save a sandbox's state and suspend it */
   async pause(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/pause", { params: this.params, fetch: this.transport.waiting }));
   }
 
+  /** resume a paused sandbox from its saved state */
   async resume(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/resume", { params: this.params, fetch: this.transport.waiting }));
   }
 
-  /** fork answers a running copy of this sandbox, memory and all; this one runs on. */
+  /** create a sandbox from a running sandbox's memory and files */
   async fork(options: { name?: string } = {}): Promise<Sandbox> {
     const body = { name: options.name };
     const { data } = await this.transport.api.POST("/v0/sandboxes/{id}/fork", { params: this.params, body, fetch: this.transport.waiting });
@@ -77,13 +79,13 @@ export class Sandbox {
     return new Sandbox(this.transport, sandboxInfo(data));
   }
 
-  /** remove deletes a stopped sandbox; force stops a running one first. */
+  /** delete a sandbox and its files */
   async remove(options: { force?: boolean } = {}): Promise<void> {
     const params = { ...this.params, query: { force: options.force || undefined } };
     await this.transport.api.DELETE("/v0/sandboxes/{id}", { params, fetch: this.transport.waiting });
   }
 
-  /** exec runs a command and answers how it ended; with background it answers a handle once the command runs. */
+  /** execute a command in a running sandbox */
   exec(command: string | string[], options: ExecOptions & { background: true }): Promise<Command>;
   exec(command: string | string[], options?: ExecOptions & { background?: false }): Promise<ExecResult>;
   exec(command: string | string[], options: ExecOptions & { background?: boolean } = {}): Promise<Command | ExecResult> {
@@ -107,18 +109,18 @@ export class Sandbox {
     return follow(this.transport, wire.path("sandboxes", this.id, "logs"), `the logs of sandbox ${this.id}`, logChunk, options.signal);
   }
 
-  /** networkLogs answers the egress decisions the daemon still holds, oldest first. */
-  async networkLogs(): Promise<NetworkLogRecord[]> {
+  /** egressLog answers the egress decisions the daemon still holds, oldest first. */
+  async egressLog(): Promise<EgressDecision[]> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/egress-log", { params: this.params });
 
-    return records(data, `the network log of sandbox ${this.id}`, networkLogRecord);
+    return records(data, `the egress log of sandbox ${this.id}`, egressDecision);
   }
 
-  /** followNetworkLogs yields each egress decision as the daemon makes it, and ends when the sandbox stops. */
-  followNetworkLogs(options: FollowOptions = {}): AsyncGenerator<NetworkLogRecord> {
-    const what = `the network log of sandbox ${this.id}`;
+  /** followEgressLog yields each egress decision as the daemon makes it, and ends when the sandbox stops. */
+  followEgressLog(options: FollowOptions = {}): AsyncGenerator<EgressDecision> {
+    const what = `the egress log of sandbox ${this.id}`;
 
-    return follow(this.transport, wire.path("sandboxes", this.id, "egress-log"), what, networkLogEntry, options.signal);
+    return follow(this.transport, wire.path("sandboxes", this.id, "egress-log"), what, egressLogEntry, options.signal);
   }
 
   private get params(): { path: { id: string } } {

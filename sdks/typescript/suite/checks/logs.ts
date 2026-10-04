@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { NetworkLogRecord, Sandbox } from "useshards";
+import type { EgressDecision, Sandbox } from "useshards";
 import { consume, text, waitFor, type Check, type Context } from "../harness.js";
 
 /** denied is a running sandbox under a policy that denies everything, so any request it makes leaves a deny record. */
@@ -15,7 +15,7 @@ async function request(sandbox: Sandbox, host: string): Promise<void> {
   assert.notEqual(result.exitCode, 0, `the policy let ${host} through`);
 }
 
-function deniedHost(records: NetworkLogRecord[], host: string): NetworkLogRecord | undefined {
+function deniedHost(records: EgressDecision[], host: string): EgressDecision | undefined {
   return records.find((record) => record.verdict === "deny" && record.host === host);
 }
 
@@ -57,14 +57,14 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "logs.network_read",
+    name: "logs.egress_read",
     run: async (ctx) => {
       const sandbox = await denied(ctx);
       const host = `${ctx.name("host")}.example`;
       await request(sandbox, host);
-      let records: NetworkLogRecord[] = [];
+      let records: EgressDecision[] = [];
       await waitFor(`a deny record for ${host}`, 10_000, async () => {
-        records = await sandbox.networkLogs();
+        records = await sandbox.egressLog();
 
         return deniedHost(records, host) !== undefined;
       });
@@ -74,13 +74,13 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "logs.network_follow",
+    name: "logs.egress_follow",
     run: async (ctx) => {
       const sandbox = await denied(ctx);
       const host = `${ctx.name("host")}.example`;
       const controller = new AbortController();
-      const seen: NetworkLogRecord[] = [];
-      const ended = consume(sandbox.followNetworkLogs({ signal: controller.signal }), (record) => seen.push(record));
+      const seen: EgressDecision[] = [];
+      const ended = consume(sandbox.followEgressLog({ signal: controller.signal }), (record) => seen.push(record));
       try {
         await request(sandbox, host);
         await waitFor(`the follow to yield a deny record for ${host}`, 10_000, async () => deniedHost(seen, host) !== undefined);

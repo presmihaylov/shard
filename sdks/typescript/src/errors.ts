@@ -14,8 +14,8 @@ export class ShardError extends Error {
 /** ConfigurationError is a setting that is missing or refused. The message names the setting, never its value. */
 export class ConfigurationError extends ShardError {}
 
-/** ConnectionError is a daemon that could not be reached, or a stream that ended before it said how the command ended. */
-export class ConnectionError extends ShardError {}
+/** ShardConnectionError is a daemon that could not be reached, or a stream that ended before it said how the command ended. */
+export class ShardConnectionError extends ShardError {}
 
 /** ProtocolError is an answer from the daemon that the SDK cannot read. */
 export class ProtocolError extends ShardError {}
@@ -107,7 +107,7 @@ const codeStatus: ReadonlyMap<string, number> = new Map([
   ["no_app", 409],
   ["app_ended", 409],
   ["command_not_started", 422],
-  ["substrate_timeout", 504],
+  ["timeout", 504],
   ["internal", 500],
 ]);
 

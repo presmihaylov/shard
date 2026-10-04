@@ -41,10 +41,25 @@ room for them.
 Push a tag of the form `v*` on `main`. `release.yml` first checks that the tagged commit is on
 `main` and stops if it is not, so a tag pushed onto a feature head publishes nothing. It then builds
 `shard-linux-amd64` and `shard-init-linux-amd64` on a Linux runner, and `shard-darwin-arm64` and
-`shard-darwin-amd64` on a macOS runner. It puts them, with a `SHA256SUMS`, under a draft GitHub
-release named after the tag. `shard --version` reports the tag. The notes of the draft hold three
-blanks: the Mac, the macOS version and the head that the VM proof passed on. Fill them in and publish
-the draft. A release that still has the blanks in it has no proof behind it.
+`shard-darwin-amd64` on a macOS runner, each with `RELEASE=1`. That builds with `-trimpath` and links
+with `-s -w`, so a release binary has no symbol table, no DWARF and no build paths. A panic still
+prints its stack. The workflow adds the service files from `packaging/`: `shard.service`,
+`shard-serve.service`, `shard.daemon.plist` and `shard.newsyslog.conf`. An install then takes the
+binaries and the units from one tag (`docs/daemon.md`, `docs/mac.md`). It puts all of them, with a
+`SHA256SUMS`, under a draft GitHub release named after the tag. `shard --version` reports the tag.
+
+The notes of the draft hold three blanks: the Mac, the macOS version and the head that the VM proof
+passed on. Fill them in. A release that still has the blanks in it has no proof behind it. Then
+publish the draft as the latest release, and check that the install URL answers:
+
+```
+gh release edit v0.1.0 --draft=false --latest
+curl -fsSIL -o /dev/null -w '%{http_code}\n' https://github.com/presmihaylov/shard/releases/latest/download/shard-darwin-arm64
+```
+
+The probe prints `200`. The install steps download from `releases/latest`, and the kernel releases
+share the repo. If a kernel release is the latest one, every install URL answers `404`. `--latest`
+makes the `v` tag the latest release when it is published.
 
 The two darwin arches build one after the other on one arm64 runner. The shim and the guest init
 land at the same embed path, so each `make build-darwin DARWIN_ARCH=<arch>` replaces that pair before

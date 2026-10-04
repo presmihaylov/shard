@@ -3,19 +3,19 @@
 The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
 
 `useshards` is not on npm. Until its GitHub release is published, build it from a checkout of this
-repository. From the repository root:
+repository:
 
-```
-cd sdks/typescript
-npm install
-npm run build
+```sh
+git clone https://github.com/presmihaylov/shard.git
+cd shard/sdks/typescript
+npm install && npm run build
 ```
 
 To use that build in another project, run `npm install /path/to/shard/sdks/typescript` there.
 
 Once the GitHub release is published, install its tarball:
 
-```
+```sh
 npm install https://github.com/presmihaylov/shard/releases/download/sdk-typescript-v0.1.0/useshards-0.1.0.tgz
 ```
 
@@ -54,7 +54,12 @@ try {
 ```
 
 `examples/quickstart.ts` has it in full, with a background command and an app. Set
-`SHARD_REMOTE` and `SHARD_API_KEY`, then run it with `npx tsx examples/quickstart.ts`.
+`SHARD_REMOTE` and `SHARD_API_KEY`, then run these commands from `sdks/typescript`:
+
+```sh
+npm install && npm run build
+npx tsx examples/quickstart.ts
+```
 
 ## What to know
 
@@ -86,7 +91,7 @@ Every error derives from `ShardError`.
 | Error | When |
 |---|---|
 | `ConfigurationError` | A setting is missing or refused. The message names the setting, never its value. |
-| `ConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
+| `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
 | `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
 

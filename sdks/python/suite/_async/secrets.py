@@ -34,7 +34,7 @@ async def set_list_remove(ctx: AsyncContext) -> None:
     await rejects(NotFoundError, lambda: ctx.shard.secrets.remove(name))
 
 
-async def grant_revoke(ctx: AsyncContext) -> None:
+async def grant_ungrant(ctx: AsyncContext) -> None:
     name = ctx.variable("grant")
     secret = value()
     await ctx.secret(name, secret, DESTINATIONS)
@@ -49,15 +49,15 @@ async def grant_revoke(ctx: AsyncContext) -> None:
     ok(secret not in printed.stdout, "the guest never holds the value")
     await rejects(ConflictError, lambda: ctx.shard.secrets.remove(name))
     await sandbox.stop()
-    await ctx.shard.secrets.revoke(sandbox, name)
+    await ctx.shard.secrets.ungrant(sandbox, name)
     equal((await sandbox.inspect()).secrets, ())
     await sandbox.start()
-    equal((await sandbox.exec(f"printenv {name}")).exit_code, 1, "a revoke takes the placeholder back")
+    equal((await sandbox.exec(f"printenv {name}")).exit_code, 1, "an ungrant takes the placeholder back")
     holder = await ctx.create(secrets=[name])
     equal((await holder.exec(f"printenv {name}")).stdout, f"mock-{name}\n", "a create grants it too")
 
 
 CHECKS = [
     Check("secrets.set_list_remove", set_list_remove),
-    Check("secrets.grant_revoke", grant_revoke),
+    Check("secrets.grant_ungrant", grant_ungrant),
 ]

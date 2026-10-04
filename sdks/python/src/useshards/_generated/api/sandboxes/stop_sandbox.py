@@ -65,7 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: StopRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Stop a sandbox"""
+    """stop a sandbox and preserve its files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -85,7 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: StopRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Stop a sandbox"""
+    """stop a sandbox and preserve its files"""
 
     return sync_detailed(
         id=id,
@@ -100,7 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: StopRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Stop a sandbox"""
+    """stop a sandbox and preserve its files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -118,7 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: StopRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Stop a sandbox"""
+    """stop a sandbox and preserve its files"""
 
     return (
         await asyncio_detailed(
