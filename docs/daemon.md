@@ -305,7 +305,9 @@ that ends a sandbox.
 The daemon listens on `${root}/shard.sock`, which is `/var/lib/shard/shard.sock` by default. It
 never listens on TCP. A network address is the job of `shard serve`, a separate process that the
 section "The TCP front" describes. The socket is `0660 root:shard` when the host has a `shard`
-group, and `0600 root` otherwise. The daemon logs which one at startup:
+group, and `0600 root` otherwise. With the group, the daemon also gives the root to it at `0710`
+on every start, so the group can reach the socket by its name and list or read nothing else. The
+daemon logs which one at startup:
 
 ```
 api listening on /var/lib/shard/shard.sock, mode 0660, group shard
@@ -819,7 +821,9 @@ process is a separate, unprivileged one. It runs from its own unit,
 `packaging/systemd/shard-serve.service`, which is off unless it is installed on purpose:
 
 ```
+groupadd --system shard
 useradd --system --no-create-home --gid shard shard
+systemctl restart shard
 install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
@@ -827,10 +831,11 @@ cp packaging/systemd/shard-serve.service /etc/systemd/system/
 systemctl enable --now shard-serve
 ```
 
-The unit runs as `shard:shard`, which is the group the socket is given. It reads the signing key
-from a root-owned `0640` file that the group can read, named with `--signing-key-file`. Give every
-`tokens` verb for that front the same flag, so the token lands in the ledger the front reads:
-`shard tokens mint --name ci --signing-key-file /etc/shard/serve.secret`. The setgid bit on
+The daemon gives the socket and the root to the group only when it starts, so it restarts once the
+group exists. The unit runs as `shard:shard`, which is the group the socket is given. It reads the
+signing key from a root-owned `0640` file that the group can read, named with `--signing-key-file`.
+Give every `tokens` verb for that front the same flag, so the token lands in the ledger the front
+reads: `shard tokens mint --name ci --signing-key-file /etc/shard/serve.secret`. The setgid bit on
 `/etc/shard` gives the ledger that a root `tokens mint` creates the group `shard`, so the front can
 read it at `0640`. The account has no other privilege. It cannot read a state file, and the daemon
 still applies every rule of every verb.

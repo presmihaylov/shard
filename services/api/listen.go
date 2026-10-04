@@ -23,6 +23,8 @@ const Group = "shard"
 const (
 	groupMode = fs.FileMode(0o660)
 	rootMode  = fs.FileMode(0o600)
+	// traverseMode lets the group reach the socket by its name, and list or read nothing else under the root.
+	traverseMode = fs.FileMode(0o710)
 	// readHeaderTimeout bounds a client that connects and sends nothing, so it cannot hold a slot forever.
 	readHeaderTimeout = 10 * time.Second
 	// readTimeout bounds a slow body, and the gap between the reads of a streamed put; net/http clears it once the body is in.
@@ -78,30 +80,41 @@ func removeStale(path string) error {
 
 // restrict gives the socket to group at 0660 when the host has it, else leaves it to root at 0600.
 func restrict(path, group string) (fs.FileMode, string, error) {
-	mode, owner := rootMode, ""
-
 	g, err := user.LookupGroup(group)
 
 	var unknown user.UnknownGroupError
-	if err != nil && !errors.As(err, &unknown) {
+	if errors.As(err, &unknown) {
+		if err := os.Chmod(path, rootMode); err != nil {
+			return 0, "", fmt.Errorf("set the mode of %s: %w", path, err)
+		}
+
+		return rootMode, "", nil
+	}
+	if err != nil {
 		return 0, "", fmt.Errorf("look up the group %s: %w", group, err)
 	}
-	if err == nil {
-		gid, err := strconv.Atoi(g.Gid)
-		if err != nil {
-			return 0, "", fmt.Errorf("parse the gid %q of the group %s: %w", g.Gid, group, err)
-		}
-		if err := os.Chown(path, -1, gid); err != nil {
-			return 0, "", fmt.Errorf("give %s to the group %s: %w", path, group, err)
-		}
-		mode, owner = groupMode, group
-	}
 
-	if err := os.Chmod(path, mode); err != nil {
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, "", fmt.Errorf("parse the gid %q of the group %s: %w", g.Gid, group, err)
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
+		return 0, "", fmt.Errorf("give %s to the group %s: %w", path, group, err)
+	}
+	if err := os.Chmod(path, groupMode); err != nil {
 		return 0, "", fmt.Errorf("set the mode of %s: %w", path, err)
 	}
 
-	return mode, owner, nil
+	// The unit's UMask=0077 leaves the root 0700, which keeps the group off the socket; it needs to traverse and nothing more (SHARD-468).
+	root := filepath.Dir(path)
+	if err := os.Chown(root, -1, gid); err != nil {
+		return 0, "", fmt.Errorf("give the root %s to the group %s: %w", root, group, err)
+	}
+	if err := os.Chmod(root, traverseMode); err != nil {
+		return 0, "", fmt.Errorf("set the mode of the root %s: %w", root, err)
+	}
+
+	return groupMode, group, nil
 }
 
 // Serve returns nil once ctx ends; any other end is the listener dying, an error so the daemon restarts it.
