@@ -36,6 +36,9 @@ const readyFileName = "started"
 // restartFileName is the count of starts again shard-init keeps under a restart policy.
 const restartFileName = "restarts.json"
 
+// changedFileName marks a config.json written since the substrate last created the container from it.
+const changedFileName = "spec-changed"
+
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
@@ -49,6 +52,8 @@ type Bundle struct {
 	ExitChannelFile string
 	ReadyFile       string
 	RestartFile     string
+	// ChangedFile sits beside ExitFile, off every bind mount, so the guest cannot clear it.
+	ChangedFile string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -237,6 +242,7 @@ func newBundle(stateDir string) (Bundle, error) {
 		ExitChannelFile: filepath.Join(stateDir, exitChannelFileName),
 		ReadyFile:       filepath.Join(shardDir, readyFileName),
 		RestartFile:     filepath.Join(shardDir, restartFileName),
+		ChangedFile:     filepath.Join(stateDir, changedFileName),
 		Upper:           filepath.Join(disk, "upper"),
 		Work:            filepath.Join(disk, "work"),
 		Tmp:             filepath.Join(disk, "tmp"),

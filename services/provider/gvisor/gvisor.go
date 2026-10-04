@@ -168,8 +168,8 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) error {
 	// A create over a state directory that already ran must not let the previous run answer a wait,
-	// a start or a restart count, so the supervisor's files go before anything else runs.
-	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
+	// a start or a restart count, and it reads config.json afresh, so those files go before anything else runs.
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile, b.ChangedFile} {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -302,7 +302,13 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 
-	if !status.Alive() {
+	changed, err := b.Changed()
+	if err != nil {
+		return err
+	}
+
+	// A created container holds the config.json of its create, so a grant since then reaches the guest only through a new one.
+	if !status.Alive() || (status.State == models.StateCreated && changed) {
 		if err := p.recreate(ctx, id, dir, b, status.Exists); err != nil {
 			return err
 		}
@@ -315,8 +321,9 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	return p.awaitStarted(ctx, id, b)
 }
 
-// recreate is how a stopped sandbox runs again: runsc never starts one, so the container goes and a
-// new one comes up over the same bundle, whose writable layer and config.json the stop kept.
+// recreate is how a stopped sandbox runs again, and how a created one reads a changed config.json: runsc
+// never starts a stopped one, so the container goes and a new one comes up over the same bundle, whose
+// writable layer and config.json stay.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
 	spec, err := p.reclaim(ctx, id, dir, b, held)
 	if err != nil {
