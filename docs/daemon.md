@@ -488,7 +488,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   for that refusal or that 500. The create is a public route, so an `{"event"}` line carries no
   `path`. The create answers 400 when the body does not decode, when a field does not validate, or
   when the body names a secret or a policy the host does not hold. It answers 400 `invalid_request`
-  naming the user when `user` names a user or group the image does not list, on the plain create,
+  naming the user when `user` names a user or group the image does not list, and naming the guest
+  path when the image's `/etc/passwd` or `/etc/group` is not a regular file, on the plain create,
   the wait and the NDJSON wait, whose last line carries the error once an event is out. An uncached
   image is read only after the pull, so there the plain create answers the `pending` record and the
   user lands in the `failed_reason`, while both waits still answer the 400. It answers 409
@@ -570,7 +571,9 @@ and `image prune` leaves it.
   the exec record once the command's `execve` took:
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
-  a request that names no command, 404, and 409 when no command can run in the sandbox. A command
+  a request that names no command, 400 naming the user for a `user` the sandbox's tree does not
+  list, or the guest path when its `/etc/passwd` or `/etc/group` is not a regular file, 404, and 409
+  when no command can run in the sandbox. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
   of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
   `timeout`, and the daemon ends the command.
