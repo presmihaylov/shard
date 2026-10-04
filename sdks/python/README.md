@@ -85,6 +85,9 @@ Every exception derives from `ShardError`.
 |---|---|
 | `ConfigurationError` | A setting is missing or refused. The message names the setting, never its value. |
 | `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
+| `ProtocolError` | The daemon answered something the SDK cannot read. |
+| `UnknownLengthError` | A file upload has no known size, or its source changed size while it was sent. |
+| `UnsafeArchiveError` | A `download_dir` tar holds an entry it refuses to land, as one outside the destination. `entry` and `reason` name it. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
 | `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
 
