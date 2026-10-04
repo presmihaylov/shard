@@ -5,7 +5,6 @@ import * as fs from "node:fs/promises";
 import type { IncomingHttpHeaders } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pipeline } from "node:stream/promises";
 import { isCode, pack, unpack } from "./archive.js";
 import { Fields } from "./decode.js";
 import { ProtocolError, UnknownLengthError } from "./errors.js";
@@ -176,7 +175,8 @@ export class Files {
     try {
       const { headers, body, cancel } = await this.transport.open("GET", this.route(route), { query: { path: remote } });
       const info = accepted(headers, remote, directory, cancel);
-      await pipeline(body, handle.createWriteStream({ autoClose: false }));
+      // A write stream would hold a ref on the handle, and close() waits for every ref to go.
+      await fs.writeFile(handle, body);
       await handle.sync();
 
       return info;
