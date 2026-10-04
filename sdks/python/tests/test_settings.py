@@ -98,8 +98,7 @@ def test_http_warns_once_per_client_with_the_cli_text() -> None:
     assert [str(w.message) for w in caught] == [PLAIN_WARNING] * 3
     assert {w.filename for w in caught} == {__file__}
     assert PLAIN_WARNING == (
-        "Warning: HTTP does not encrypt this connection. "
-        "Use it only on localhost or through a trusted encrypted network."
+        "HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network."
     )
 
 

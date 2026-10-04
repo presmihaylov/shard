@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 import attrs
 import httpx
 
+from ._generated import models
+from ._generated.types import UNSET, Response, Unset
 from ._types import Restart, TerminalSize
 from .errors import APIError, CommandNotStartedError, ProtocolError, ShardConnectionError, failure_error
+
+# A generated call bound to its arguments, which a transport runs; a fetch is one page of a list by its cursor.
+AsyncCall = Callable[[], Awaitable[Response[Any]]]
+Call = Callable[[], Response[Any]]
+AsyncFetch = Callable[[str | Unset], Awaitable[Response[Any]]]
+Fetch = Callable[[str | Unset], Response[Any]]
 
 # The stream a command message carries in its first byte: the client sends stdin and stdin closed, the daemon the rest.
 STDIN = 0
@@ -24,15 +32,6 @@ FAILURE = 5
 
 def path(*parts: str) -> str:
     return "/v0/" + "/".join(urllib.parse.quote(part, safe="") for part in parts)
-
-
-def json_of(response: httpx.Response) -> Any:
-    try:
-        return json.loads(response.content)
-    except ValueError:
-        raise ProtocolError(
-            f"{response.request.method} {response.request.url.path} answered a body that is not JSON"
-        ) from None
 
 
 def connection_error(request: httpx.Request, e: httpx.TransportError) -> ShardConnectionError:
@@ -49,13 +48,18 @@ def exec_body(
     user: str | None,
     stdin: bool,
     tty: bool | TerminalSize,
-) -> dict[str, Any]:
+) -> models.ExecRequest:
     """The body of a command start."""
-    body: dict[str, Any] = {"command": argv(command), "stdin": stdin, "tty": tty is not False, "attach": True}
-    body.update(_process(env, workdir, user))
-    if isinstance(tty, TerminalSize):
-        body["size"] = {"rows": tty.rows, "cols": tty.cols}
-    return body
+    return models.ExecRequest(
+        command=argv(command),
+        stdin=stdin,
+        tty=tty is not False,
+        attach=True,
+        env=_env(env),
+        workdir=workdir or UNSET,
+        user=user or UNSET,
+        size=models.TerminalSize(rows=tty.rows, cols=tty.cols) if isinstance(tty, TerminalSize) else UNSET,
+    )
 
 
 def create_body(
@@ -73,31 +77,25 @@ def create_body(
     vcpus: int | None,
     disk_mib: int | None,
     restart: Restart | None,
-) -> dict[str, Any]:
+) -> models.CreateRequest:
     """The body of a create. A None memory takes the snapshot's bound or none, a None vcpus or disk the default."""
     if (image is None) == (snapshot is None):
         raise ValueError("a sandbox is made from an image or a snapshot, exactly one of them")
-    resources: dict[str, Any] = {"vcpus": vcpus or 0, "disk_mib": disk_mib or 0}
-    if memory_mib is not None:
-        resources["memory_mib"] = memory_mib
-    body: dict[str, Any] = {"resources": resources, **_process(env, workdir, user)}
-    if image is not None:
-        body["image"] = image
-    if snapshot is not None:
-        body["snapshot"] = snapshot
-    if name:
-        body["name"] = name
-    if command is not None:
-        body["command"] = argv(command)
-    if secrets:
-        body["secrets"] = list(secrets)
-    if policy:
-        body["policy"] = policy
-    if restart is not None:
-        body["restart"] = {"policy": restart.policy, "backoff": restart.backoff}
-        if restart.retries:
-            body["restart"]["retries"] = restart.retries
-    return body
+    return models.CreateRequest(
+        resources=models.ResourceRequest(
+            vcpus=vcpus or 0, disk_mib=disk_mib or 0, memory_mib=UNSET if memory_mib is None else memory_mib
+        ),
+        env=_env(env),
+        workdir=workdir or UNSET,
+        user=user or UNSET,
+        image=UNSET if image is None else image,
+        snapshot=UNSET if snapshot is None else snapshot,
+        name=name or UNSET,
+        command=UNSET if command is None else argv(command),
+        secrets=list(secrets) if secrets else UNSET,
+        policy=policy or UNSET,
+        restart=UNSET if restart is None else _restart_spec(restart),
+    )
 
 
 def argv(command: str | Sequence[str]) -> list[str]:
@@ -108,15 +106,14 @@ def argv(command: str | Sequence[str]) -> list[str]:
     return args
 
 
-def _process(env: Mapping[str, str] | None, workdir: str | None, user: str | None) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    if env:
-        fields["env"] = [f"{key}={value}" for key, value in env.items()]
-    if workdir:
-        fields["workdir"] = workdir
-    if user:
-        fields["user"] = user
-    return fields
+def _env(env: Mapping[str, str] | None) -> list[str] | Unset:
+    return [f"{key}={value}" for key, value in env.items()] if env else UNSET
+
+
+def _restart_spec(restart: Restart) -> models.RestartSpec:
+    return models.RestartSpec(
+        policy=models.RestartSpecPolicy(restart.policy), backoff=restart.backoff, retries=restart.retries or UNSET
+    )
 
 
 @attrs.frozen

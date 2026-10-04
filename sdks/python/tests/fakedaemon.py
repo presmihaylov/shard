@@ -21,6 +21,7 @@ RECORD: dict[str, Any] = {
     "started_at": "2026-10-04T10:00:00Z",
     "exited_at": None,
     "lost_bytes": 0,
+    "truncated": False,
 }
 IN_USE = (409, {"error": {"code": "in_use", "message": "another client is attached to e1"}})
 NOT_STARTED = (

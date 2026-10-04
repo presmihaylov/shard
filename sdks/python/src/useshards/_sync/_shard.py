@@ -11,9 +11,24 @@ from typing import Self
 
 from .. import _types
 from .._config import PLAIN_WARNING, StrPath, resolve
+from .._generated import models
+from .._generated.api.meta import get_capabilities, get_version
+from .._generated.api.policies import get_policy, list_policies, put_policy, remove_policy
+from .._generated.api.sandboxes import (
+    attach_policy,
+    create_sandbox,
+    detach_policy,
+    get_sandbox,
+    grant_secret,
+    list_sandboxes,
+    ungrant_secret,
+)
+from .._generated.api.secrets import list_secrets, put_secret, remove_secret
+from .._generated.api.snapshots import create_snapshot, get_snapshot, list_snapshots, remove_snapshot
+from .._generated.types import UNSET
 from .._types import Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version
-from .._wire import create_body, json_of, path
-from ._sandbox import App, Sandbox, listed
+from .._wire import Call, create_body
+from ._sandbox import App, Sandbox
 from ._transport import DEFAULT_TIMEOUT, Transport
 
 SandboxRef = Sandbox | str
@@ -118,25 +133,42 @@ class Shard:
 
     def get(self, ref: str) -> Sandbox:
         """A sandbox by id, id prefix or name."""
-        response = self._transport.call("GET", path("sandboxes", ref))
-        return Sandbox(self._transport, _types.sandbox_info(json_of(response)))
+        record = self._transport.answer(
+            models.Inspection, lambda: get_sandbox.sync_detailed(ref, client=self._transport.api)
+        )
+        return Sandbox(self._transport, _types.sandbox_info(record))
 
     def list(self, *, all: bool = False) -> builtins.list[Sandbox]:
         """The running sandboxes, or with all every sandbox the daemon holds a record of."""
-        records = listed(self._transport, path("sandboxes"), "sandboxes", {"all": "true"} if all else None)
+        records = self._transport.listed(
+            models.SandboxesResponse,
+            lambda cursor: list_sandboxes.sync_detailed(client=self._transport.api, all_=all or UNSET, cursor=cursor),
+            lambda page: page.sandboxes,
+        )
         return [Sandbox(self._transport, _types.sandbox_info(record)) for record in records]
 
     def version(self) -> Version:
-        return _types.version(json_of(self._transport.call("GET", path("version"))))
+        return _types.version(
+            self._transport.answer(
+                models.VersionResponse, lambda: get_version.sync_detailed(client=self._transport.api)
+            )
+        )
 
     def capabilities(self) -> Capabilities:
-        return _types.capabilities(json_of(self._transport.call("GET", path("capabilities"))))
-
-    def _create(self, body: dict[str, object]) -> SandboxInfo:
-        response = self._transport.call(
-            "POST", path("sandboxes"), json=body, params={"wait": "true"}, timeout=self._transport.read_bound(None)
+        """Each of the eight lifecycle verbs, and whether this server runs it."""
+        return _types.capabilities(
+            self._transport.answer(
+                models.Capabilities, lambda: get_capabilities.sync_detailed(client=self._transport.api)
+            )
         )
-        return _types.sandbox_info(json_of(response))
+
+    def _create(self, body: models.CreateRequest) -> SandboxInfo:
+        record = self._transport.answer(
+            models.Sandbox,
+            lambda: create_sandbox.sync_detailed(client=self._transport.api, body=body, wait=True),
+            self._transport.read_bound(None),
+        )
+        return _types.sandbox_info(record)
 
 
 class Policies:
@@ -147,24 +179,44 @@ class Policies:
 
     def set(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
         """Make the policy, or replace every rule of it; a sandbox it is assigned to enforces the new rules."""
-        body = {"rules": [{"action": rule.action, "rule": rule.rule} for rule in rules]}
-        return _types.policy(json_of(self._transport.call("PUT", path("policies", name), json=body)))
+        body = models.PolicyRequest(
+            rules=[models.RuleText(action=models.RuleTextAction(rule.action), rule=rule.rule) for rule in rules]
+        )
+        record = self._transport.answer(
+            models.PolicyView, lambda: put_policy.sync_detailed(name, client=self._transport.api, body=body)
+        )
+        return _types.policy(record)
 
     def get(self, name: str) -> Policy:
-        return _types.policy(json_of(self._transport.call("GET", path("policies", name))))
+        record = self._transport.answer(
+            models.PolicyView, lambda: get_policy.sync_detailed(name, client=self._transport.api)
+        )
+        return _types.policy(record)
 
     def list(self) -> builtins.list[Policy]:
         """Every policy with its rules; holders and dns come only from get()."""
-        return [_types.policy(record) for record in listed(self._transport, path("policies"), "policies")]
+        records = self._transport.listed(
+            models.PoliciesResponse,
+            lambda cursor: list_policies.sync_detailed(client=self._transport.api, cursor=cursor),
+            lambda page: page.policies,
+        )
+        return [_types.policy(record) for record in records]
 
     def remove(self, name: str) -> None:
-        self._transport.call("DELETE", path("policies", name))
+        self._transport.send(lambda: remove_policy.sync_detailed(name, client=self._transport.api))
 
     def assign(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
-        return _changed(self._transport, sandbox, "PUT", path("sandboxes", _id(sandbox), "policy"), {"policy": name})
+        body = models.PolicyAttachRequest(policy=name)
+        return _changed(
+            self._transport,
+            sandbox,
+            lambda: attach_policy.sync_detailed(_id(sandbox), client=self._transport.api, body=body),
+        )
 
     def clear(self, sandbox: SandboxRef) -> SandboxInfo:
-        return _changed(self._transport, sandbox, "DELETE", path("sandboxes", _id(sandbox), "policy"))
+        return _changed(
+            self._transport, sandbox, lambda: detach_policy.sync_detailed(_id(sandbox), client=self._transport.api)
+        )
 
 
 class Secrets:
@@ -182,25 +234,43 @@ class Secrets:
         placeholder: str | None = None,
     ) -> SecretInfo:
         """Make the secret or replace it. A sandbox sees only the placeholder; the proxy swaps in the value."""
-        body: dict[str, object] = {"value": value}
-        if destinations is not None:
-            body["destinations"] = builtins.list(destinations)
-        if placeholder is not None:
-            body["placeholder"] = placeholder
-        return _types.secret_info(json_of(self._transport.call("PUT", path("secrets", name), json=body)))
+        body = models.SecretRequest(
+            value=value,
+            destinations=UNSET if destinations is None else builtins.list(destinations),
+            placeholder=UNSET if placeholder is None else placeholder,
+        )
+        record = self._transport.answer(
+            models.Secret, lambda: put_secret.sync_detailed(name, client=self._transport.api, body=body)
+        )
+        return _types.secret_info(record)
 
     def list(self) -> builtins.list[SecretInfo]:
-        return [_types.secret_info(record) for record in listed(self._transport, path("secrets"), "secrets")]
+        records = self._transport.listed(
+            models.SecretsResponse,
+            lambda cursor: list_secrets.sync_detailed(client=self._transport.api, cursor=cursor),
+            lambda page: page.secrets,
+        )
+        return [_types.secret_info(record) for record in records]
 
     def remove(self, name: str, *, force: bool = False) -> None:
         """Remove a secret no sandbox is granted; force revokes it from each first."""
-        self._transport.call("DELETE", path("secrets", name), params={"force": "true"} if force else None)
+        self._transport.send(
+            lambda: remove_secret.sync_detailed(name, client=self._transport.api, force=force or UNSET)
+        )
 
     def grant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
-        return _changed(self._transport, sandbox, "POST", path("sandboxes", _id(sandbox), "secrets", name))
+        return _changed(
+            self._transport,
+            sandbox,
+            lambda: grant_secret.sync_detailed(_id(sandbox), name, client=self._transport.api),
+        )
 
     def revoke(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
-        return _changed(self._transport, sandbox, "DELETE", path("sandboxes", _id(sandbox), "secrets", name))
+        return _changed(
+            self._transport,
+            sandbox,
+            lambda: ungrant_secret.sync_detailed(_id(sandbox), name, client=self._transport.api),
+        )
 
 
 class Snapshots:
@@ -210,30 +280,40 @@ class Snapshots:
         self._transport = transport
 
     def create(self, sandbox: SandboxRef, *, name: str | None = None) -> Snapshot:
-        body = {"sandbox": _id(sandbox)}
-        if name:
-            body["name"] = name
-        response = self._transport.call("POST", path("snapshots"), json=body, timeout=self._transport.read_bound(None))
-        return _types.snapshot(json_of(response))
+        body = models.SnapshotRequest(sandbox=_id(sandbox), name=name or UNSET)
+        record = self._transport.answer(
+            models.Snapshot,
+            lambda: create_snapshot.sync_detailed(client=self._transport.api, body=body),
+            self._transport.read_bound(None),
+        )
+        return _types.snapshot(record)
 
     def list(self) -> builtins.list[Snapshot]:
-        return [_types.snapshot(record) for record in listed(self._transport, path("snapshots"), "snapshots")]
+        records = self._transport.listed(
+            models.SnapshotsResponse,
+            lambda cursor: list_snapshots.sync_detailed(client=self._transport.api, cursor=cursor),
+            lambda page: page.snapshots,
+        )
+        return [_types.snapshot(record) for record in records]
 
     def inspect(self, ref: str) -> Snapshot:
         """A snapshot by id, id prefix or name."""
-        return _types.snapshot(json_of(self._transport.call("GET", path("snapshots", ref))))
+        record = self._transport.answer(
+            models.Snapshot, lambda: get_snapshot.sync_detailed(ref, client=self._transport.api)
+        )
+        return _types.snapshot(record)
 
     def remove(self, ref: str) -> None:
-        self._transport.call("DELETE", path("snapshots", ref))
+        self._transport.send(lambda: remove_snapshot.sync_detailed(ref, client=self._transport.api))
 
 
 def _id(sandbox: SandboxRef) -> str:
     return sandbox.id if isinstance(sandbox, Sandbox) else sandbox
 
 
-def _changed(transport: Transport, sandbox: SandboxRef, method: str, route: str, body: object = None) -> SandboxInfo:
+def _changed(transport: Transport, sandbox: SandboxRef, call: Call) -> SandboxInfo:
     """Send a change to a sandbox's record, and keep a handle's info current with the answer."""
-    info = _types.sandbox_info(json_of(transport.call(method, route, json=body)))
+    info = _types.sandbox_info(transport.answer(models.Sandbox, call))
     if isinstance(sandbox, Sandbox):
         sandbox.info = info
     return info

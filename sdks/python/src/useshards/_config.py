@@ -14,9 +14,9 @@ from .errors import ConfigurationError
 REMOTE_ENV = "SHARD_REMOTE"
 API_KEY_ENV = "SHARD_API_KEY"
 CA_FILE_ENV = "SHARD_CA_FILE"
-# The CLI's line for an http remote, word for word.
+# The CLI's line for an http remote, less the "Warning: " that Python's UserWarning label already prints.
 PLAIN_WARNING = (
-    "Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network."
+    "HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network."
 )
 _PORTS = {"http": 80, "https": 443}
 

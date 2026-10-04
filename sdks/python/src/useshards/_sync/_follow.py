@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Generic, Self, TypeVar
 
 from .._frames import CLOSE_NORMAL, OP_BINARY, OP_TEXT, Message
+from .._generated import models
 from .._types import NetworkLogRecord, network_log_record
 from .._wire import EXIT, FAILURE, STDOUT, failure_of
 from ..errors import ProtocolError, ShardConnectionError, failure_error
@@ -129,7 +130,7 @@ def network_log_entry(message: Message, what: str) -> NetworkLogRecord:
     if message.opcode != OP_TEXT:
         raise ProtocolError(f"{what}: the daemon sent a binary message where a record belongs")
     try:
-        record = json.loads(message.payload)
-    except ValueError:
-        raise ProtocolError(f"{what}: the daemon sent a record that is not JSON") from None
+        record = models.Record.from_dict(json.loads(message.payload))
+    except (KeyError, TypeError, ValueError):
+        raise ProtocolError(f"{what}: the daemon sent a record the SDK cannot read") from None
     return network_log_record(record)

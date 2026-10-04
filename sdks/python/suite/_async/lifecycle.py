@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+import attrs
+
 from useshards import AsyncSandbox, ConflictError, NotFoundError, UnsupportedError
 
 from .._shared import equal, matches, named, not_equal, ok, skip
@@ -121,6 +123,43 @@ async def unsupported_named(ctx: AsyncContext) -> None:
         equal(err.code, "unsupported")
 
 
+async def agrees(verb: str, supported: bool, run: Call) -> None:
+    """Run a verb, and prove the capabilities said whether the server would refuse it."""
+    try:
+        await run()
+    except UnsupportedError as e:
+        equal(supported, False, f"capabilities say {verb}, but the server refused it: {e.message}")
+        matches(e.message, verb, f"the refusal names {verb}")
+        return
+    equal(supported, True, f"capabilities say no {verb}, but it ran")
+
+
+async def capabilities(ctx: AsyncContext) -> None:
+    verbs = attrs.asdict(await ctx.shard.capabilities())
+    equal(sorted(verbs), ["create", "fork", "pause", "remove", "resume", "snapshot", "start", "stop"])
+    ok(all(isinstance(value, bool) for value in verbs.values()), f"every verb is a boolean: {verbs}")
+    for verb in ("create", "start", "stop", "remove"):
+        equal(verbs[verb], True, f"every provider can {verb}")
+    equal(verbs["resume"], verbs["pause"], "pause and resume come as a pair")
+    sandbox = await ctx.create()
+
+    async def pause_then_resume() -> None:
+        await sandbox.pause()
+        await sandbox.resume()
+
+    async def fork_then_remove() -> None:
+        forked = await sandbox.fork(name=ctx.name("fork"))
+        await forked.remove(force=True)
+
+    async def snapshot() -> None:
+        await ctx.snapshot(sandbox)
+
+    await agrees("pause", verbs["pause"], pause_then_resume)
+    await agrees("fork", verbs["fork"], fork_then_remove)
+    await sandbox.stop()
+    await agrees("snapshot", verbs["snapshot"], snapshot)
+
+
 CHECKS = [
     Check("lifecycle.create_no_app", create_no_app),
     Check("lifecycle.inspect_get_list", inspect_get_list),
@@ -129,4 +168,5 @@ CHECKS = [
     Check("lifecycle.fork", fork),
     Check("lifecycle.remove", remove),
     Check("lifecycle.unsupported_named", unsupported_named),
+    Check("lifecycle.capabilities", capabilities),
 ]

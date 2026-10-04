@@ -25,6 +25,8 @@ NAMES = {
     "aiter_lines": "iter_lines",
     "aread": "read",
     "asynccontextmanager": "contextmanager",
+    "asyncio_detailed": "sync_detailed",
+    "set_async_httpx_client": "set_httpx_client",
     "StopAsyncIteration": "StopIteration",
     "_async": "_sync",
 }

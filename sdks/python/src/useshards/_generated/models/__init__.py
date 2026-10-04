@@ -2,7 +2,7 @@
 
 from .app_exit import AppExit
 from .app_stop_request import AppStopRequest
-from .capabilities_response import CapabilitiesResponse
+from .capabilities import Capabilities
 from .copy_request import CopyRequest
 from .create_line import CreateLine
 from .create_request import CreateRequest
@@ -51,7 +51,7 @@ from .version_response import VersionResponse
 __all__ = (
     "AppExit",
     "AppStopRequest",
-    "CapabilitiesResponse",
+    "Capabilities",
     "CopyRequest",
     "CreateLine",
     "CreateRequest",

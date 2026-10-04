@@ -5,11 +5,26 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, overload
+from typing import Literal, overload
 
 import httpx
 
 from .._capture import DEFAULT_OUTPUT_LIMIT
+from .._generated import models
+from .._generated.api.app import attach_app, stop_app
+from .._generated.api.exec_ import get_exec, list_execs
+from .._generated.api.sandboxes import (
+    fork_sandbox,
+    get_sandbox,
+    get_sandbox_egress_log,
+    get_sandbox_logs,
+    pause_sandbox,
+    remove_sandbox,
+    resume_sandbox,
+    start_sandbox,
+    stop_sandbox,
+)
+from .._generated.types import UNSET
 from .._types import (
     AppExit,
     AppInfo,
@@ -24,7 +39,7 @@ from .._types import (
     network_log_record,
     sandbox_info,
 )
-from .._wire import json_of, path
+from .._wire import Call, path
 from ..errors import ProtocolError, ShardConnectionError
 from ._command import Command, run_command, start_command
 from ._files import Files
@@ -53,7 +68,10 @@ class Sandbox:
         return self.info.name
 
     def inspect(self) -> SandboxInfo:
-        self.info = sandbox_info(json_of(self._transport.call("GET", path("sandboxes", self.id))))
+        record = self._transport.answer(
+            models.Inspection, lambda: get_sandbox.sync_detailed(self.id, client=self._transport.api)
+        )
+        self.info = sandbox_info(record)
         return self.info
 
     @overload
@@ -140,40 +158,37 @@ class Sandbox:
         )
 
     def stop(self) -> None:
-        self._verb("stop")
+        self._verb(lambda: stop_sandbox.sync_detailed(self.id, client=self._transport.api))
 
     def start(self) -> None:
-        self._verb("start")
+        self._verb(lambda: start_sandbox.sync_detailed(self.id, client=self._transport.api))
 
     def pause(self) -> None:
-        self._verb("pause")
+        self._verb(lambda: pause_sandbox.sync_detailed(self.id, client=self._transport.api))
 
     def resume(self) -> None:
-        self._verb("resume")
+        self._verb(lambda: resume_sandbox.sync_detailed(self.id, client=self._transport.api))
 
     def fork(self, *, name: str | None = None) -> Sandbox:
         """A running copy of this sandbox, memory and all; the source runs on."""
-        response = self._transport.call(
-            "POST",
-            path("sandboxes", self.id, "fork"),
-            json={"name": name} if name else {},
-            timeout=self._transport.read_bound(None),
+        body = models.CopyRequest(name=name or UNSET)
+        record = self._transport.answer(
+            models.Sandbox,
+            lambda: fork_sandbox.sync_detailed(self.id, client=self._transport.api, body=body),
+            self._transport.read_bound(None),
         )
-        return Sandbox(self._transport, sandbox_info(json_of(response)))
+        return Sandbox(self._transport, sandbox_info(record))
 
     def remove(self, *, force: bool = False) -> None:
         """Remove a stopped sandbox; force stops a running one first."""
-        self._transport.call(
-            "DELETE",
-            path("sandboxes", self.id),
-            params={"force": "true"} if force else None,
-            timeout=self._transport.read_bound(None),
+        self._transport.send(
+            lambda: remove_sandbox.sync_detailed(self.id, client=self._transport.api, force=force or UNSET),
+            self._transport.read_bound(None),
         )
 
     def logs(self) -> str:
         """The app's output so far, both streams as the daemon wrote them."""
-        response = self._transport.call("GET", path("sandboxes", self.id, "logs"))
-        return response.content.decode("utf-8", "replace")
+        return self._transport.answer(str, lambda: get_sandbox_logs.sync_detailed(self.id, client=self._transport.api))
 
     def follow_logs(self) -> Follow[bytes]:
         """The app's output from the start of the log, then as it arrives, until the sandbox stops."""
@@ -181,9 +196,9 @@ class Sandbox:
 
     def network_logs(self) -> builtins.list[NetworkLogRecord]:
         """Every egress decision the daemon still holds, oldest first."""
-        records = json_of(self._transport.call("GET", path("sandboxes", self.id, "egress-log")))
-        if not isinstance(records, builtins.list):
-            raise ProtocolError(f"the network log of sandbox {self.id} is not a list")
+        records = self._transport.answer(
+            builtins.list, lambda: get_sandbox_egress_log.sync_detailed(self.id, client=self._transport.api)
+        )
         return [network_log_record(record) for record in records]
 
     def follow_network_logs(self) -> Follow[NetworkLogRecord]:
@@ -194,11 +209,8 @@ class Sandbox:
             network_log_entry,
         )
 
-    def _verb(self, verb: str) -> None:
-        response = self._transport.call(
-            "POST", path("sandboxes", self.id, verb), timeout=self._transport.read_bound(None)
-        )
-        self.info = sandbox_info(json_of(response))
+    def _verb(self, call: Call) -> None:
+        self.info = sandbox_info(self._transport.answer(models.Sandbox, call, self._transport.read_bound(None)))
 
 
 class Commands:
@@ -209,7 +221,11 @@ class Commands:
         self._sandbox = sandbox
 
     def list(self) -> builtins.list[CommandInfo]:
-        records = listed(self._transport, path("sandboxes", self._sandbox, "exec"), "execs")
+        records = self._transport.listed(
+            models.ExecsResponse,
+            lambda cursor: list_execs.sync_detailed(self._sandbox, client=self._transport.api, cursor=cursor),
+            lambda page: page.execs,
+        )
         return [command_info(record) for record in records]
 
     def get(
@@ -221,8 +237,11 @@ class Commands:
         on_stderr: OutputCallback | None = None,
     ) -> Command:
         """A handle on a command already started; its wait() attaches, so the callbacks see the replay."""
-        response = self._transport.call("GET", path("sandboxes", self._sandbox, "exec", id))
-        record = command_info(json_of(response))
+        record = command_info(
+            self._transport.answer(
+                models.Exec, lambda: get_exec.sync_detailed(self._sandbox, id, client=self._transport.api)
+            )
+        )
         return Command(
             self._transport,
             record.sandbox,
@@ -250,39 +269,24 @@ class App:
     def wait(self, timeout: float | None = None) -> AppExit:
         """Block until the app ends with no start again left. A timeout ends the wait, never the app."""
         try:
-            response = self._transport.call(
-                "GET", path("sandboxes", self.sandbox.id, "attach"), timeout=self._transport.read_bound(timeout)
+            record = self._transport.answer(
+                models.AppExit,
+                lambda: attach_app.sync_detailed(self.sandbox.id, client=self._transport.api),
+                self._transport.read_bound(timeout),
             )
         except ShardConnectionError as e:
             if isinstance(e.__cause__, httpx.ReadTimeout):
                 raise TimeoutError(f"the app of sandbox {self.sandbox.id} did not end within {timeout}s") from None
             raise
-        return app_exit(json_of(response))
+        return app_exit(record)
 
     def logs(self) -> str:
         return self.sandbox.logs()
 
     def stop(self, *, force: bool = False) -> None:
         """End the app with TERM, or KILL with force, and cancel its restart policy."""
-        self._transport.call(
-            "POST",
-            path("sandboxes", self.sandbox.id, "app", "stop"),
-            json={"force": True} if force else None,
-            timeout=self._transport.read_bound(None),
+        body = models.AppStopRequest(force=force or UNSET)
+        self._transport.send(
+            lambda: stop_app.sync_detailed(self.sandbox.id, client=self._transport.api, body=body),
+            self._transport.read_bound(None),
         )
-
-
-def listed(transport: Transport, route: str, key: str, params: Mapping[str, str] | None = None) -> builtins.list[Any]:
-    """Every row of a paged list, one page after another."""
-    query = dict(params or {})
-    rows: builtins.list[Any] = []
-    while True:
-        page = json_of(transport.call("GET", route, params=query))
-        try:
-            rows.extend(page[key])
-            cursor = page["next"]
-        except (KeyError, TypeError):
-            raise ProtocolError(f"GET {route} answered a page with no {key} or next") from None
-        if not cursor:
-            return rows
-        query["cursor"] = str(cursor)

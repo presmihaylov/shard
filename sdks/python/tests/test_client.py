@@ -97,13 +97,23 @@ def test_a_policy_list_leaves_out_holders_and_dns(daemon: FakeDaemon, shard: Sha
 
 def test_a_page_without_next_is_refused(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("GET", "/v0/snapshots")] = (200, {"snapshots": []})
-    with pytest.raises(ProtocolError, match="no snapshots or next"):
+    with pytest.raises(ProtocolError, match="cannot read: KeyError..next"):
         shard.snapshots.list()
 
 
 def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
-    daemon.routes[("GET", "/v0/capabilities")] = (200, {"provider": "sysbox", "unsupported": ["pause", "fork"]})
-    assert shard.capabilities() == Capabilities(provider="sysbox", unsupported=("pause", "fork"))
+    verbs = {
+        "create": True,
+        "start": True,
+        "stop": True,
+        "remove": True,
+        "pause": False,
+        "resume": False,
+        "fork": False,
+        "snapshot": True,
+    }
+    daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
+    assert shard.capabilities() == Capabilities(**verbs)
 
 
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
