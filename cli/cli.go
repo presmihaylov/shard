@@ -230,6 +230,7 @@ func commands() []command {
 			{name: "detach", run: App.policyDetach},
 			{name: "logs", run: App.policyLogs},
 		}},
+		{name: "capabilities", run: App.capabilities},
 		{name: "daemon", run: App.daemon, subs: []command{{name: "status", run: App.daemonStatus}}},
 		{name: "info", run: App.info},
 		{name: "serve", run: App.serve},

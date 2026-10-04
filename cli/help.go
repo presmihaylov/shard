@@ -61,7 +61,7 @@ var verbGroups = []struct {
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "policy logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
-	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
+	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "tokens", "version"}},
 }
 
 // sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
@@ -504,6 +504,13 @@ var helps = map[string]verbHelp{
 		},
 		notes:   []string{"revoke never creates a key. The flags go before the id. It runs locally."},
 		example: "shard tokens revoke 0123456789abcdef",
+	},
+	"capabilities": {
+		usage:   []string{"capabilities [--format <format>]"},
+		summary: "show sandbox lifecycle capabilities supported by the connected Shard server",
+		flags:   []flagHelp{formatTableHelp},
+		notes:   []string{"It lists all eight verbs, each true or false for the provider the server runs. The scopes of a token and the state of a sandbox never change the answer. Any valid token reads it over --remote."},
+		example: "shard capabilities",
 	},
 	"info": {
 		usage:   []string{"info [--format <format>]"},
