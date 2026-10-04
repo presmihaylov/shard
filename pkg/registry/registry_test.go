@@ -3,6 +3,7 @@ package registry_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -521,6 +522,83 @@ func TestListDegradesOnAnUnreadableEntry(t *testing.T) {
 	// The healthy image must still be removable, which ggcr's collector was not able to do.
 	if err := store.Remove(second); err != nil {
 		t.Fatalf("Remove the healthy image: %v", err)
+	}
+}
+
+// A cached config edited in place keeps its file name, so only the hash tells it from what the pull verified.
+func TestACachedConfigThatNoLongerHashesToItsDigestIsRefused(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	pulled := pull(t, store, ref)
+	held, err := store.Get(ref)
+	if err != nil {
+		t.Fatalf("Get before the edit: %v", err)
+	}
+
+	manifest, err := v1.ParseManifest(bytes.NewReader(readBlob(t, dir, pulled.Digest)))
+	if err != nil {
+		t.Fatalf("parse the cached manifest: %v", err)
+	}
+	cfg, err := v1.ParseConfigFile(bytes.NewReader(readBlob(t, dir, manifest.Config.Digest.String())))
+	if err != nil {
+		t.Fatalf("parse the cached config: %v", err)
+	}
+	cfg.Config.Env = append(cfg.Config.Env, "INJECTED=1")
+	edited, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("encode the edited config: %v", err)
+	}
+	writeBlob(t, dir, manifest.Config.Digest.String(), edited)
+
+	if _, err := held.Config(); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Config of an image read before the edit: got %v, want a refusal", err)
+	}
+	if _, err := store.Get(ref); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Get: got %v, want a refusal", err)
+	}
+}
+
+// The index names the manifest by digest, and the layout reads that file without hashing it.
+func TestACachedManifestThatNoLongerHashesToItsDigestIsRefused(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	pulled := pull(t, store, ref)
+	writeBlob(t, dir, pulled.Digest, append(readBlob(t, dir, pulled.Digest), '\n'))
+
+	if _, err := store.Get(ref); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Get: got %v, want a refusal", err)
+	}
+	images, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(images) != 1 || images[0].Broken == nil {
+		t.Errorf("List: got %+v, want the one entry marked broken", images)
+	}
+}
+
+func blobPath(dir, digest string) string {
+	return filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))
+}
+
+func readBlob(t *testing.T, dir, digest string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(blobPath(dir, digest))
+	if err != nil {
+		t.Fatalf("read the blob %s: %v", digest, err)
+	}
+
+	return raw
+}
+
+func writeBlob(t *testing.T, dir, digest string, raw []byte) {
+	t.Helper()
+	if err := os.WriteFile(blobPath(dir, digest), raw, 0o644); err != nil {
+		t.Fatalf("write the blob %s: %v", digest, err)
 	}
 }
 

@@ -116,7 +116,7 @@ func planDisk(ctx context.Context, layers []v1.Layer) (*merge, error) {
 		}
 		m.needed[tv] = true
 		// A target that lost its name lives on through its links alone; the earliest one holds the body.
-		if m.tree[m.names[tv]] == tv {
+		if m.holds(m.names[tv], tv) {
 			continue
 		}
 		if held, ok := m.home[tv]; !ok || v.before(m.tree[held]) {
@@ -139,8 +139,9 @@ func (m *merge) plan(v version, hdr *tar.Header) error {
 
 	dir, base := path.Split(name)
 	dir = strings.TrimSuffix(dir, "/")
+	// An opaque marker hides what the lower layers put under its directory, and keeps the directory itself.
 	if base == opaqueWhiteout {
-		m.dropBelow(dir, v.layer)
+		m.dropUnder(dir, v.layer)
 
 		return nil
 	}
@@ -199,11 +200,23 @@ func (m *merge) put(name string, v version) {
 	}
 }
 
+// holds says the tree keeps v under name; the first header of the first layer is the zero version, so a bare lookup cannot.
+func (m *merge) holds(name string, v version) bool {
+	held, ok := m.tree[name]
+
+	return ok && held == v
+}
+
 // dropBelow forgets name and everything under it that a layer before limit wrote.
 func (m *merge) dropBelow(name string, limit int) {
 	if v, ok := m.tree[name]; ok && v.layer < limit {
 		delete(m.tree, name)
 	}
+	m.dropUnder(name, limit)
+}
+
+// dropUnder forgets everything under name that a layer before limit wrote, and leaves name itself.
+func (m *merge) dropUnder(name string, limit int) {
 	for kid := range m.kids[name] {
 		m.dropBelow(kid, limit)
 		// A kid with nothing left under it leaves the index, so a later drop does not walk it again.
@@ -236,7 +249,7 @@ func (m *merge) write(tw *tar.Writer, v version, hdr *tar.Header, body io.Reader
 		out.Linkname = m.linkName(target)
 	}
 	// A version a link took but a later layer replaced or removed goes out under the link's name.
-	if m.tree[name] != v {
+	if !m.holds(name, v) {
 		out.Name = m.home[v]
 	}
 	if err := tw.WriteHeader(&out); err != nil {
