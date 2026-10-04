@@ -152,9 +152,8 @@ func New(cfg Config) *Service {
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	// Image and Snapshot are exclusive, and a create names one of them.
-	Image    string   `json:"image,omitempty"`
-	Snapshot string   `json:"snapshot,omitempty"`
+	Image    string   `json:"image,omitempty" doc:"The image to create from. A create names exactly one of image and snapshot."`
+	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot."`
 	Name     string   `json:"name,omitempty"`
 	Command  []string `json:"command,omitempty"`
 	Env      []string `json:"env,omitempty"`
@@ -171,9 +170,9 @@ type CreateRequest struct {
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
 type ResourceRequest struct {
-	MemoryMiB *int64 `json:"memory_mib,omitempty"`
-	VCPUs     int    `json:"vcpus" required:"false"`
-	DiskMiB   int64  `json:"disk_mib" required:"false"`
+	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216"`
+	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
+	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
 }
 
 // bounds is what the record keeps, where an omitted memory is no bound.

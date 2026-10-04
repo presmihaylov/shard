@@ -113,6 +113,7 @@
             "type": "array"
           },
           "image": {
+            "description": "The image to create from. A create names exactly one of image and snapshot.",
             "type": "string"
           },
           "name": {
@@ -134,6 +135,7 @@
             "type": "array"
           },
           "snapshot": {
+            "description": "The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot.",
             "type": "string"
           },
           "user": {
@@ -469,6 +471,7 @@
             "items": {
               "type": "string"
             },
+            "minItems": 1,
             "type": "array"
           },
           "env": {
@@ -757,6 +760,7 @@
             "type": "boolean"
           },
           "path": {
+            "minLength": 1,
             "type": "string"
           },
           "user": {
@@ -813,6 +817,7 @@
         "additionalProperties": false,
         "properties": {
           "policy": {
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -871,14 +876,19 @@
         "properties": {
           "disk_mib": {
             "format": "int64",
+            "maximum": 16777088,
+            "minimum": 0,
             "type": "integer"
           },
           "memory_mib": {
             "format": "int64",
+            "maximum": 16777216,
+            "minimum": 0,
             "type": "integer"
           },
           "vcpus": {
             "format": "int64",
+            "minimum": 0,
             "type": "integer"
           }
         },
@@ -911,8 +921,10 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
-            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.",
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it.",
             "format": "int64",
+            "maximum": 60,
+            "minimum": 0,
             "type": "integer"
           },
           "count": {
@@ -938,8 +950,9 @@
             "type": "string"
           },
           "retries": {
-            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.",
+            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it.",
             "format": "int64",
+            "minimum": 0,
             "type": "integer"
           }
         },
@@ -947,7 +960,8 @@
           "policy",
           "count",
           "gave_up",
-          "ended"
+          "ended",
+          "backoff"
         ],
         "type": "object"
       },
@@ -955,8 +969,10 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
-            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.",
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it.",
             "format": "int64",
+            "maximum": 60,
+            "minimum": 0,
             "type": "integer"
           },
           "policy": {
@@ -968,8 +984,9 @@
             "type": "string"
           },
           "retries": {
-            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.",
+            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it.",
             "format": "int64",
+            "minimum": 0,
             "type": "integer"
           }
         },
@@ -1209,6 +1226,7 @@
         "additionalProperties": false,
         "properties": {
           "destinations": {
+            "description": "The hosts the secret goes to. The first put of a name needs one; a rotation with none keeps the old ones.",
             "items": {
               "type": "string"
             },
@@ -1218,6 +1236,7 @@
             "type": "string"
           },
           "value": {
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -1316,6 +1335,7 @@
             "type": "string"
           },
           "sandbox": {
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -1355,11 +1375,13 @@
         "properties": {
           "cols": {
             "format": "int32",
+            "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           },
           "rows": {
             "format": "int32",
+            "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           }
@@ -1675,6 +1697,7 @@
         "x-shard-scope": "sandbox:read"
       },
       "post": {
+        "description": "A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden.",
         "operationId": "create-sandbox",
         "parameters": [
           {
@@ -1695,7 +1718,8 @@
                 "$ref": "#/components/schemas/CreateRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {
@@ -1711,7 +1735,7 @@
                 }
               }
             },
-            "description": "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox."
+            "description": "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox."
           },
           "default": {
             "content": {
@@ -2075,19 +2099,19 @@
             }
           },
           {
-            "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
+            "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
+              "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops."
+            "description": "A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops or is removed."
           },
           "200": {
             "content": {
@@ -2105,7 +2129,7 @@
                 }
               }
             },
-            "description": "The egress decisions, oldest first; with follow one decision per line until the sandbox stops.",
+            "description": "The egress decisions, oldest first; with follow one decision per line until the sandbox stops or is removed.",
             "headers": {
               "Shard-Egress-Cut": {
                 "description": "The older decisions the read left out; absent when it left out none.",
@@ -2219,7 +2243,8 @@
                 "$ref": "#/components/schemas/ExecRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {
@@ -2640,14 +2665,7 @@
             }
           },
           "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
+            "description": "Error, as the status alone: a HEAD answer has no body."
           }
         },
         "summary": "Stat a path",
@@ -2681,12 +2699,12 @@
             }
           },
           {
-            "description": "The file mode in octal; none is 0644.",
+            "description": "The file mode in octal, at most 0777; none is 0644.",
             "explode": false,
             "in": "query",
             "name": "mode",
             "schema": {
-              "description": "The file mode in octal; none is 0644.",
+              "description": "The file mode in octal, at most 0777; none is 0644.",
               "type": "string"
             }
           },
@@ -2813,12 +2831,12 @@
             }
           },
           {
-            "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
+            "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
+              "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
@@ -2843,7 +2861,7 @@
                 }
               }
             },
-            "description": "The entrypoint's output as it was written; with follow the body streams until the sandbox stops."
+            "description": "The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed."
           },
           "default": {
             "content": {
@@ -2940,7 +2958,8 @@
                 "$ref": "#/components/schemas/MkdirRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "204": {
@@ -3072,7 +3091,8 @@
                 "$ref": "#/components/schemas/PolicyAttachRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -3493,7 +3513,8 @@
                 "$ref": "#/components/schemas/SecretRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -3588,7 +3609,8 @@
                 "$ref": "#/components/schemas/SnapshotRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "201": {

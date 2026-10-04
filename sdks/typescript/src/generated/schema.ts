@@ -63,7 +63,7 @@ export interface paths {
         /** list active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** create a sandbox */
+        /** create a sandbox @description A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden. */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -561,12 +561,14 @@ export interface components {
         CreateRequest: {
             command?: string[];
             env?: string[];
+            /** @description The image to create from. A create names exactly one of image and snapshot. */
             image?: string;
             name?: string;
             policy?: string;
             resources?: components["schemas"]["ResourceRequest"];
             restart?: components["schemas"]["RestartSpec"];
             secrets?: string[];
+            /** @description The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot. */
             snapshot?: string;
             user?: string;
             workdir?: string;
@@ -778,8 +780,8 @@ export interface components {
             vcpus: number;
         };
         Restart: {
-            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
-            backoff?: number;
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
+            backoff: number;
             /** Format: int64 */
             count: number;
             ended: boolean;
@@ -788,15 +790,15 @@ export interface components {
             last_at?: string;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         RestartSpec: {
-            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
             backoff?: number;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         Rule: {
@@ -855,6 +857,7 @@ export interface components {
             updated_at: string;
         };
         SecretRequest: {
+            /** @description The hosts the secret goes to. The first put of a name needs one; a rotation with none keeps the old ones. */
             destinations?: string[];
             placeholder?: string;
             value: string;
@@ -1113,13 +1116,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateRequest"];
             };
         };
         responses: {
-            /** @description The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. */
+            /** @description The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1358,7 +1361,7 @@ export interface operations {
     "get-sandbox-egress-log": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade requires follow=true. */
+                /** @description Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1370,14 +1373,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops. */
+            /** @description A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops or is removed. */
             101: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops. */
+            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops or is removed. */
             200: {
                 headers: {
                     /** @description The older decisions the read left out; absent when it left out none. */
@@ -1447,7 +1450,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["ExecRequest"];
             };
@@ -1663,7 +1666,7 @@ export interface operations {
             query: {
                 /** @description The absolute guest path. */
                 path: string;
-                /** @description The file mode in octal; none is 0644. */
+                /** @description The file mode in octal, at most 0777; none is 0644. */
                 mode?: string;
                 /** @description Who writes and owns the file; none is the entrypoint's user. */
                 user?: string;
@@ -1760,14 +1763,12 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Error */
+            /** @description Error, as the status alone: a HEAD answer has no body. */
             default: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
+                content?: never;
             };
         };
     };
@@ -1810,7 +1811,7 @@ export interface operations {
     "get-sandbox-logs": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade requires follow=true. */
+                /** @description Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1829,7 +1830,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The entrypoint's output as it was written; with follow the body streams until the sandbox stops. */
+            /** @description The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1894,7 +1895,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["MkdirRequest"];
             };
@@ -1960,7 +1961,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["PolicyAttachRequest"];
             };
@@ -2254,7 +2255,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SecretRequest"];
             };
@@ -2353,7 +2354,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SnapshotRequest"];
             };
