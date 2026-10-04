@@ -29,6 +29,8 @@ type Machine interface {
 // A client that connects and sends nothing within this is dropped, so it cannot keep the shim from exiting.
 const handshakeTimeout = 5 * time.Second
 
+const streamWriteTimeout = 30 * time.Second
+
 // Serve answers on the shim socket until the listener closes. One request per connection.
 func Serve(listener net.Listener, machine Machine, logger *log.Logger) error {
 	var wg sync.WaitGroup
@@ -164,9 +166,13 @@ func writeFrameWithFile(conn net.Conn, reply response, file *os.File) error {
 
 // Either peer can leave while the other waits in a read or a write.
 func splice(a, b net.Conn) error {
+	return spliceWithin(a, b, streamWriteTimeout)
+}
+
+func spliceWithin(a, b net.Conn, bound time.Duration) error {
 	ended := make(chan error, 2)
-	go func() { ended <- forward(b, a) }()
-	go func() { ended <- forward(a, b) }()
+	go func() { ended <- forward(b, a, bound) }()
+	go func() { ended <- forward(a, b, bound) }()
 
 	err := <-ended
 	if closeErr := a.Close(); !quiet(closeErr) {
@@ -179,9 +185,23 @@ func splice(a, b net.Conn) error {
 	return errors.Join(err, <-ended)
 }
 
-func forward(dst, src net.Conn) error {
-	_, err := io.Copy(dst, src)
-	if quiet(err) {
+type streamWriter struct {
+	net.Conn
+	bound time.Duration
+}
+
+func (w streamWriter) Write(p []byte) (int, error) {
+	// A blocked write cannot read the peer's close, so it needs its own bound.
+	if err := w.SetWriteDeadline(time.Now().Add(w.bound)); err != nil {
+		return 0, fmt.Errorf("bound the stream write: %w", err)
+	}
+
+	return w.Conn.Write(p)
+}
+
+func forward(dst, src net.Conn, bound time.Duration) error {
+	_, err := io.Copy(streamWriter{Conn: dst, bound: bound}, struct{ io.Reader }{src})
+	if quiet(err) && !errors.Is(err, os.ErrDeadlineExceeded) {
 		return nil
 	}
 

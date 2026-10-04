@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -107,5 +108,80 @@ func TestGuestEOFEndsABlockedWrite(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the guest EOF left a write blocked")
+	}
+}
+
+func TestPeerDropEndsABlockedWrite(t *testing.T) {
+	for _, direction := range []string{"client to guest", "guest to client"} {
+		t.Run(direction, func(t *testing.T) {
+			server, client := net.Pipe()
+			host, guest := net.Pipe()
+			done := make(chan error, 1)
+			go func() { done <- spliceWithin(server, host, 50*time.Millisecond) }()
+			t.Cleanup(func() {
+				for _, conn := range []net.Conn{server, client, host, guest} {
+					if err := conn.Close(); !quiet(err) {
+						t.Error(err)
+					}
+				}
+			})
+			peer := client
+			if direction == "guest to client" {
+				peer = guest
+			}
+			if _, err := peer.Write([]byte("the other peer does not read this request")); err != nil {
+				t.Fatal(err)
+			}
+			if err := peer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatalf("the blocked write ended with %v, want its deadline", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("the peer drop left a stream write blocked")
+			}
+		})
+	}
+}
+
+func TestStreamWritesResetTheirBoundAfterIdleReads(t *testing.T) {
+	server, client := net.Pipe()
+	host, guest := net.Pipe()
+	t.Cleanup(func() {
+		for _, conn := range []net.Conn{server, client, host, guest} {
+			if err := conn.Close(); !quiet(err) {
+				t.Error(err)
+			}
+		}
+	})
+	bound := 50 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- spliceWithin(server, host, bound) }()
+	for range 3 {
+		time.Sleep(2 * bound)
+		if _, err := client.Write([]byte("data")); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, len("data"))
+		if _, err := io.ReadFull(guest, got); err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "data" {
+			t.Fatalf("the stream sent %q, want data", got)
+		}
+	}
+	if err := guest.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the guest close left the stream open")
 	}
 }
