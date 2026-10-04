@@ -54,6 +54,21 @@ def start(shard: Shard, id: str, marker: str) -> dict[str, Any]:
     return {"command": command.id}
 
 
+def hold(shard: Shard, id: str) -> dict[str, Any]:
+    """A terminal command this client lets go of once it runs, so the gate can resize and kill it over plain HTTP."""
+    held = threading.Event()
+
+    def on_stdout(chunk: bytes) -> None:
+        if b"held" in chunk:
+            held.set()
+
+    command = shard.get(id).exec("echo held; sleep 300", background=True, tty=True, on_stdout=on_stdout)
+    if not held.wait(30):
+        raise RuntimeError("the terminal command printed no held within 30 s")
+    command.disconnect()
+    return {"command": command.id}
+
+
 def attach(shard: Shard, id: str, command: str) -> dict[str, Any]:
     result = shard.get(id).commands.get(command).wait()
     return {"exit_code": result.exit_code, "stdout": result.stdout}
@@ -132,6 +147,7 @@ SYNC: dict[str, Callable[..., dict[str, Any]]] = {
     "exec": exec_,
     "find": find,
     "start": start,
+    "hold": hold,
     "attach": attach,
     "capture": capture,
     "put": put,

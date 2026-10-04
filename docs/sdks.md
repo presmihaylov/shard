@@ -94,8 +94,10 @@ It runs, in order:
   in one leaves the command running for the other to find. A command one starts, the other
   reconnects to. A file one writes, the other reads byte for byte.
 - `capture.*`: a 20 MiB writer under an 8 MiB limit keeps exactly its last 8 MiB, in each mode.
-- `leak.*`: no host path and no local-administration field in `docs/openapi.json` or in any public
-  answer, and every route of `sdks/gate/local-routes.txt` answers both tokens as an unknown route.
+- `leak.*`: no host path, no local-administration field and no field of `sdks/gate/host-fields.txt`
+  in `docs/openapi.json` or in any public answer, where every public route of the spec must answer
+  one probe with success. Every route of `sdks/gate/local-routes.txt` answers both tokens as an
+  unknown route.
 
 Each check prints `PASS` or `FAIL` with its name. Then each release claim prints `CLAIM <claim>:
 PASS` only when every check that proves it passed in every run. The gate exits 1 on any `FAIL`.

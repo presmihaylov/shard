@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -56,8 +58,17 @@ HOST_PATHS = (
     "signing-key",
     "serve.tokens",
 )
+# A host field may appear only in an object every key of which one of these schemas declares.
+PUBLIC_USES = {"address": ("Record",), "path": ("MkdirRequest",)}
+NDJSON = "application/x-ndjson"
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}
+# The routes of those verbs, each by the capability that says whether this provider serves it.
+MAY_REFUSE = {
+    "POST /v0/sandboxes/{id}/pause": "pause",
+    "POST /v0/sandboxes/{id}/resume": "resume",
+    "POST /v0/sandboxes/{id}/fork": "fork",
+}
 SUITES = ("typescript", "python_sync", "python_async")
 CAPTURE_STEP = {
     "typescript": ("ts", "capture"),
@@ -136,8 +147,13 @@ class Gate:
         self.suite_lines: dict[str, dict[str, Verdict]] = {}
         self.listed = [line for line in (tree / "sdks" / "suite" / "checks.txt").read_text().splitlines() if line]
         self.sandboxes: list[str] = []
+        self.owned: list[str] = []
         self.shared: str | None = None
         self.leaks: list[str] = []
+        self.host_fields = set(host_fields())
+        self.secret_value = f"gate-secret-{secrets.token_hex(8)}"
+        self.swept: list[tuple[str, str, int]] = []
+        self.capabilities: dict[str, Any] = {}
         self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=self.tls()))
         self.answers = 0
 
@@ -246,6 +262,10 @@ class Gate:
     @property
     def python(self) -> Path:
         return self.work / "venv" / "bin" / "python"
+
+    @functools.cached_property
+    def spec(self) -> Any:
+        return json.loads((self.tree / "docs" / "openapi.json").read_text())
 
     def example_typescript(self) -> None:
         self.needs("install.typescript")
@@ -391,8 +411,15 @@ class Gate:
 
     # Leaks: the spec, every public answer, and every local route through the front.
 
-    def request(self, method: str, path: str, key: str | None = "", body: bytes | None = None) -> Answer:
-        headers = {"Content-Type": "application/json"} if body is not None else {}
+    def request(
+        self,
+        method: str,
+        path: str,
+        key: str | None = "",
+        body: bytes | None = None,
+        sent: dict[str, str] | None = None,
+    ) -> Answer:
+        headers = dict(sent or {})
         token = self.key if key == "" else key
         if token is not None:
             headers["Authorization"] = f"Bearer {token}"
@@ -413,17 +440,36 @@ class Gate:
     def leaks_in(self, where: str, answer: Answer) -> list[str]:
         found = []
         raw = answer.body.decode("utf-8", "replace") + "\n" + "\n".join(answer.headers.values())
-        for secret_name, value in (("SHARD_API_KEY", self.key), ("SHARD_SUITE_WILDCARD_KEY", self.wildcard)):
+        values = (
+            ("SHARD_API_KEY", self.key),
+            ("SHARD_SUITE_WILDCARD_KEY", self.wildcard),
+            ("secret", self.secret_value),
+        )
+        for secret_name, value in values:
             if value in raw:
                 found.append(f"{where} holds the {secret_name} value")
         found += [f"{where} holds {path}" for path in self.host_paths if path in raw]
-        if "json" not in answer.headers.get("Content-Type", "") or not answer.body:
+        kind = answer.headers.get("Content-Type", "")
+        if "json" not in kind or not answer.body:
             return found
+        lines = answer.body.splitlines() if NDJSON in kind else [answer.body]
         try:
-            body = answer.json()
+            bodies = [json.loads(line) for line in lines if line.strip()]
         except json.JSONDecodeError:
             return [*found, f"{where} says it is JSON and is not"]
-        return found + [f"{where} has the key {key}" for key in keys(body) if DENIED_KEY.search(key)]
+        for body in bodies:
+            found += [f"{where} has the key {key}" for key in keys(body) if DENIED_KEY.search(key)]
+            found += [f"{where} has the host field {key}" for key in self.host_fields_in(body)]
+        return found
+
+    def host_fields_in(self, body: Any) -> Iterator[str]:
+        for each in objects(body):
+            for key in sorted(self.host_fields & each.keys()):
+                if not any(each.keys() <= self.declared(schema) for schema in PUBLIC_USES.get(key, ())):
+                    yield key
+
+    def declared(self, schema: str) -> set[str]:
+        return set(self.spec["components"]["schemas"][schema].get("properties", {}))
 
     def leak_spec(self) -> str:
         spec_file = self.tree / "docs" / "openapi.json"
@@ -431,6 +477,11 @@ class Gate:
         spec = json.loads(text)
         found = [f"the spec holds {path}" for path in self.host_paths if path in text]
         found += [f"the spec has the property {name}" for name in properties(spec) if DENIED_KEY.search(name)]
+        found += [
+            f"the spec has the host field {name} in {owner or 'an inline schema'}"
+            for owner, name in owned_properties(spec)
+            if name in self.host_fields and owner not in PUBLIC_USES.get(name, ())
+        ]
         for _, pattern in local_routes():
             prefix = pattern.split("{")[0].rstrip("/")
             if prefix in text:
@@ -461,76 +512,135 @@ class Gate:
             found.append(f"{method} {path} with {key_name} answered {got.status} {got.body[:120]!r}")
         return found
 
-    def sweep(self, method: str, path: str, body: Any = None, key: str | None = "", raw: bytes | None = None) -> Answer:
-        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-        got = self.request(method, path, key, data)
+    def sweep(
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        key: str | None = "",
+        raw: bytes | None = None,
+        sent: dict[str, str] | None = None,
+    ) -> Answer:
+        headers: dict[str, str] = dict(sent or {})
+        data = raw
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        got = self.request(method, path, key, data, headers)
         self.record(method, path, got)
+        self.swept.append((method, path.split("?")[0], got.status))
         self.leaks.extend(self.leaks_in(f"{method} {path} ({got.status})", got))
         return got
 
     def leak_responses(self) -> str:
         (self.out / "responses").mkdir(exist_ok=True)
         made = {"image": self.image, "name": f"gate-sweep-{self.tag}"}
-        sid = self.shared or str(self.sweep("POST", "/v0/sandboxes", made).json()["id"])
-        if sid not in self.sandboxes:
-            self.sandboxes.append(sid)
+        created = self.sweep("POST", "/v0/sandboxes?wait=true", made, sent={"Accept": NDJSON})
+        last = json.loads(created.body.splitlines()[-1]) if created.status == 201 and created.body.strip() else {}
+        expect("sandbox" in last, f"the streamed create answered {created.status} {created.body[-200:]!r}")
+        sid = str(last["sandbox"]["id"])
+        self.sandboxes.append(sid)
         box = f"/v0/sandboxes/{sid}"
         self.sweep_reads(box)
+        self.sweep_execs(box, sid)
         self.sweep_files(box)
+        self.sweep_grants(box, sid)
         self.sweep_app()
         self.sweep_errors(box)
+        if self.sweep("DELETE", f"{box}?force=true").status < 300:
+            self.sandboxes.remove(sid)
         expect(not self.leaks, "; ".join(self.leaks))
+        missing = list(self.unanswered())
+        expect(not missing, f"{len(missing)} public routes never answered with success: {'; '.join(missing)}")
         return f"{self.answers} answers recorded under {self.out / 'responses'}"
 
+    def unanswered(self) -> Iterator[str]:
+        """Each public route of the spec no probe of the sweep got a success from, unless this provider refuses it."""
+        for template, ops in self.spec["paths"].items():
+            pattern = route_pattern(template)
+            for method in (each.upper() for each in ops):
+                got = [status for m, path, status in self.swept if m == method and pattern.fullmatch(path)]
+                capability = MAY_REFUSE.get(f"{method} {template}")
+                if got and capability and self.capabilities.get(capability) is False:
+                    continue
+                if not any(200 <= status < 300 or status == 101 for status in got):
+                    yield f"{method} {template} ({', '.join(map(str, got)) or 'never probed'})"
+
     def sweep_reads(self, box: str) -> None:
-        for path in ("/v0/version", "/v0/capabilities", "/v0/scopes", "/v0/sandboxes", box):
+        self.capabilities = self.sweep("GET", "/v0/capabilities").json()
+        for path in ("/v0/version", "/v0/scopes", "/v0/sandboxes", box, f"{box}/logs"):
             self.sweep("GET", path)
+
+    def sweep_execs(self, box: str, sid: str) -> None:
         # An exec runs only once a client attaches, so this one stays created and is never waited on.
-        self.sweep("POST", f"{box}/exec", {"command": ["true"]})
-        for each in (self.sweep("GET", f"{box}/exec").json().get("execs") or [])[:3]:
-            self.sweep("GET", f"{box}/exec/{each['exec']}")
-            if each.get("state") == "exited":
-                self.sweep("GET", f"{box}/exec/{each['exec']}?wait=true")
-        for path in (f"{box}/logs", f"{box}/egress-log", f"{box}/attach", "/v0/secrets", "/v0/policies"):
-            self.sweep("GET", path)
+        made = self.sweep("POST", f"{box}/exec", {"command": ["true"]})
+        self.sweep("GET", f"{box}/exec")
+        if made.status == 201:
+            self.sweep("GET", f"{box}/exec/{made.json()['exec']}")
+        held = f"{box}/exec/{self.actor('py', 'hold', sid)['command']}"
+        self.sweep("POST", f"{held}/resize", {"rows": 40, "cols": 120})
+        self.sweep("POST", f"{held}/kill", {"signal": "KILL"})
+        self.sweep("GET", f"{held}?wait=true")
+        self.sweep("DELETE", held)
 
     def sweep_files(self, box: str) -> None:
-        self.sweep("PUT", f"{box}/files?path=/tmp/gate-sweep.txt", raw=b"sweep\n")
-        for method, path in (
-            ("GET", f"{box}/files?path=/tmp/gate-sweep.txt"),
-            ("HEAD", f"{box}/files?path=/tmp/gate-sweep.txt"),
-            ("GET", f"{box}/ls?path=/tmp"),
-        ):
+        file, archive = f"{box}/files?path=/tmp/gate-sweep.txt", f"{box}/archive?path=/tmp/gate-sweep-dir"
+        self.sweep("PUT", file, raw=b"sweep\n", sent={"Content-Type": "application/octet-stream"})
+        for method, path in (("GET", file), ("HEAD", file), ("GET", f"{box}/ls?path=/tmp")):
             self.sweep(method, path)
         self.sweep("POST", f"{box}/mkdir", {"path": "/tmp/gate-sweep-dir"})
-        self.sweep("GET", f"{box}/archive?path=/tmp/gate-sweep-dir")
-        self.sweep("DELETE", f"{box}/files?path=/tmp/gate-sweep.txt")
+        tar = tar_of("gate-sweep.txt", b"sweep\n")
+        self.sweep("PUT", archive, raw=tar, sent={"Content-Type": "application/x-tar"})
+        self.sweep("GET", archive)
+        self.sweep("DELETE", file)
+
+    def sweep_grants(self, box: str, sid: str) -> None:
+        """A policy and a secret, each set and read, held by the stopped sandbox, then taken back and removed."""
+        policy, secret = f"gate-policy-{self.tag}", f"GATE_SECRET_{self.tag.upper()}"
+        self.owned += [f"/v0/secrets/{secret}?force=true", f"/v0/policies/{policy}"]
+        self.sweep("PUT", f"/v0/policies/{policy}", {"rules": [{"action": "deny", "rule": "any"}]})
+        self.sweep("PUT", f"/v0/secrets/{secret}", {"value": self.secret_value, "destinations": ["api.example.com"]})
+        for path in (f"/v0/policies/{policy}", "/v0/policies", "/v0/secrets"):
+            self.sweep("GET", path)
+        self.sweep("POST", f"{box}/stop")
+        self.sweep("PUT", f"{box}/policy", {"policy": policy})
+        self.sweep("POST", f"{box}/secrets/{secret}")
+        self.sweep("POST", f"{box}/start")
+        self.sweep("GET", box)
+        # Under deny-all the guest's connection leaves a record, so the egress log answers the one public address field.
+        self.actor("py", "exec", sid, "wget -q -T 5 -O /dev/null http://192.0.2.1/ || true")
+        self.sweep("GET", f"{box}/egress-log")
+        self.sweep("POST", f"{box}/stop")
+        self.sweep("DELETE", f"{box}/policy")
+        self.sweep("DELETE", f"{box}/secrets/{secret}")
+        self.sweep("DELETE", f"/v0/secrets/{secret}")
+        self.sweep("DELETE", f"/v0/policies/{policy}")
+        self.sweep("POST", f"{box}/start")
 
     def sweep_app(self) -> None:
-        made = {"image": self.image, "name": f"gate-app-{self.tag}", "command": ["echo", "app"]}
-        app = self.sweep("POST", "/v0/sandboxes", made)
-        if app.status != 201:
-            return
+        made = {"image": self.image, "name": f"gate-app-{self.tag}", "command": ["sleep", "300"]}
+        app = self.sweep("POST", "/v0/sandboxes?wait=true", made)
+        expect(app.status == 201, f"the app's create answered {app.status}")
         aid = str(app.json()["id"])
         self.sandboxes.append(aid)
         ab = f"/v0/sandboxes/{aid}"
-        self.sweep("GET", f"{ab}/attach")
         self.sweep("GET", f"{ab}/logs")
         self.sweep("POST", f"{ab}/app/stop", {})
+        # The app has ended, so a plain attach answers its exit at once.
+        self.sweep("GET", f"{ab}/attach")
         self.sweep("POST", f"{ab}/stop")
         ref = f"gate-snap-{self.tag}"
-        snapped = self.sweep("POST", "/v0/snapshots", {"sandbox": aid, "name": ref}).status == 201
-        self.sweep("GET", "/v0/snapshots")
-        if snapped:
-            self.sweep("GET", f"/v0/snapshots/{ref}")
+        self.owned.append(f"/v0/snapshots/{ref}")
+        self.sweep("POST", "/v0/snapshots", {"sandbox": aid, "name": ref})
+        for path in ("/v0/snapshots", f"/v0/snapshots/{ref}"):
+            self.sweep("GET", path)
         self.sweep("POST", f"{ab}/start")
         for verb in ("pause", "resume"):
             self.sweep("POST", f"{ab}/{verb}")
         fork = self.sweep("POST", f"{ab}/fork", {"name": f"gate-fork-{self.tag}"})
         if fork.status == 201:
             self.sandboxes.append(str(fork.json()["id"]))
-        if snapped:
-            self.sweep("DELETE", f"/v0/snapshots/{ref}")
+        self.sweep("DELETE", f"/v0/snapshots/{ref}")
         if self.sweep("DELETE", f"{ab}?force=true").status < 300:
             self.sandboxes.remove(aid)
 
@@ -540,7 +650,7 @@ class Gate:
         self.sweep("GET", "/v0/sandboxes", key="gate-not-a-token")
         self.sweep("GET", "/v0/sandboxes", key=None)
         self.sweep("GET", f"/v0/gate-no-such-route-{self.tag}")
-        self.sweep("POST", "/v0/sandboxes", raw=b"{")
+        self.sweep("POST", "/v0/sandboxes", raw=b"{", sent={"Content-Type": "application/json"})
         unpullable = self.sweep("POST", "/v0/sandboxes", {"image": f"gate.invalid/none-{self.tag}:none"})
         if unpullable.status < 300:
             self.sandboxes.append(str(unpullable.json()["id"]))
@@ -560,6 +670,10 @@ class Gate:
             got = self.request("DELETE", f"/v0/sandboxes/{sid}?force=true")
             if got.status >= 300 and got.status != 404:
                 left.append(f"{sid} ({got.status})")
+        for path in self.owned:
+            got = self.request("DELETE", path)
+            if got.status >= 300 and got.status != 404:
+                left.append(f"{path} ({got.status})")
         if left:
             self.results["gate.cleanup"] = Verdict("FAIL", f"could not remove {', '.join(left)}")
             self.say(f"FAIL gate.cleanup: {self.results['gate.cleanup'].detail}")
@@ -624,6 +738,42 @@ def properties(spec: Any) -> set[str]:
         for inner in spec:
             names |= properties(inner)
     return names
+
+
+def objects(value: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for inner in value.values():
+            yield from objects(inner)
+    if isinstance(value, list):
+        for inner in value:
+            yield from objects(inner)
+
+
+def owned_properties(spec: Any) -> Iterator[tuple[str, str]]:
+    """Each property name of the spec, beside the component schema it sits in, or "" outside every one."""
+    components = spec.get("components", {})
+    for owner, schema in components.get("schemas", {}).items():
+        yield from ((owner, name) for name in sorted(properties(schema)))
+    rest = {**spec, "components": {kind: each for kind, each in components.items() if kind != "schemas"}}
+    yield from (("", name) for name in sorted(properties(rest)))
+
+
+def route_pattern(template: str) -> re.Pattern[str]:
+    return re.compile("/".join("[^/]+" if part.startswith("{") else re.escape(part) for part in template.split("/")))
+
+
+def tar_of(name: str, data: bytes) -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+def host_fields() -> list[str]:
+    return [line for line in (GATE / "host-fields.txt").read_text().splitlines() if line]
 
 
 def local_routes() -> list[tuple[str, str]]:
