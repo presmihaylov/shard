@@ -8,13 +8,13 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error import Error
 from ...models.mkdir_request import MkdirRequest
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: MkdirRequest | Unset = UNSET,
+    body: MkdirRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -25,8 +25,7 @@ def _get_kwargs(
         ),
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -61,7 +60,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: MkdirRequest | Unset = UNSET,
+    body: MkdirRequest,
 ) -> Response[Any | Error]:
     """Make a directory"""
 
@@ -81,7 +80,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: MkdirRequest | Unset = UNSET,
+    body: MkdirRequest,
 ) -> Any | Error | None:
     """Make a directory"""
 
@@ -96,7 +95,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: MkdirRequest | Unset = UNSET,
+    body: MkdirRequest,
 ) -> Response[Any | Error]:
     """Make a directory"""
 
@@ -114,7 +113,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: MkdirRequest | Unset = UNSET,
+    body: MkdirRequest,
 ) -> Any | Error | None:
     """Make a directory"""
 

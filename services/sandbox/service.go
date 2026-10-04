@@ -144,17 +144,19 @@ type Service struct {
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
+	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
+	running    map[string]int
+	runningAll int
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	// Image and Snapshot are exclusive, and a create names one of them.
-	Image    string   `json:"image,omitempty"`
-	Snapshot string   `json:"snapshot,omitempty"`
+	Image    string   `json:"image,omitempty" doc:"The image to create from. A create names exactly one of image and snapshot."`
+	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot."`
 	Name     string   `json:"name,omitempty"`
 	Command  []string `json:"command,omitempty"`
 	Env      []string `json:"env,omitempty"`
@@ -171,9 +173,9 @@ type CreateRequest struct {
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
 type ResourceRequest struct {
-	MemoryMiB *int64 `json:"memory_mib,omitempty"`
-	VCPUs     int    `json:"vcpus" required:"false"`
-	DiskMiB   int64  `json:"disk_mib" required:"false"`
+	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216"`
+	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
+	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
 }
 
 // bounds is what the record keeps, where an omitted memory is no bound.

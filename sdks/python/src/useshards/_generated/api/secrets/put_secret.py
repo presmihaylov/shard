@@ -9,13 +9,13 @@ from ...client import AuthenticatedClient, Client
 from ...models.error import Error
 from ...models.secret import Secret
 from ...models.secret_request import SecretRequest
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     name: str,
     *,
-    body: SecretRequest | Unset = UNSET,
+    body: SecretRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,8 +26,7 @@ def _get_kwargs(
         ),
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -63,7 +62,7 @@ def sync_detailed(
     name: str,
     *,
     client: AuthenticatedClient | Client,
-    body: SecretRequest | Unset = UNSET,
+    body: SecretRequest,
 ) -> Response[Error | Secret]:
     """Create or rotate a secret"""
 
@@ -83,7 +82,7 @@ def sync(
     name: str,
     *,
     client: AuthenticatedClient | Client,
-    body: SecretRequest | Unset = UNSET,
+    body: SecretRequest,
 ) -> Error | Secret | None:
     """Create or rotate a secret"""
 
@@ -98,7 +97,7 @@ async def asyncio_detailed(
     name: str,
     *,
     client: AuthenticatedClient | Client,
-    body: SecretRequest | Unset = UNSET,
+    body: SecretRequest,
 ) -> Response[Error | Secret]:
     """Create or rotate a secret"""
 
@@ -116,7 +115,7 @@ async def asyncio(
     name: str,
     *,
     client: AuthenticatedClient | Client,
-    body: SecretRequest | Unset = UNSET,
+    body: SecretRequest,
 ) -> Error | Secret | None:
     """Create or rotate a secret"""
 

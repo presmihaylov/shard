@@ -864,6 +864,12 @@ func (f *fake) let(conn net.Conn) {
 // floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
 const floodEveryFile = "flood-every-control"
 
+// floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
+const floodEventsFile = "flood-events-control"
+
+// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
+var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
 
@@ -1056,26 +1062,33 @@ func (f *fake) answers(port int, guest net.Conn) (io.Reader, error) {
 	if err := note(filepath.Join(f.dir, dialsFile), "control"); err != nil {
 		return nil, err
 	}
-	_, err := os.Stat(filepath.Join(f.dir, floodEveryFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return guest, nil
-	}
-	if err != nil {
-		return nil, err
+	for name, event := range map[string][]byte{floodEveryFile: nil, floodEventsFile: floodEvent} {
+		_, err := os.Stat(filepath.Join(f.dir, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		return &flooded{guest: guest, event: event}, nil
 	}
 
-	return &flooded{guest: guest}, nil
+	return guest, nil
 }
 
-// flooded passes the guest's state line, then reads as one line that never ends.
+// flooded passes the guest's state line, then reads as the flood.
 type flooded struct {
 	guest  io.Reader
 	passed bool
+	event  []byte
+	// at is how far into event the last read stopped.
+	at int
 }
 
 func (f *flooded) Read(p []byte) (int, error) {
 	if f.passed {
-		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+		return f.flood(p), nil
 	}
 	n, err := f.guest.Read(p)
 	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
@@ -1085,6 +1098,20 @@ func (f *flooded) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// flood fills p with one line that never ends, or with event over and over when it is set.
+func (f *flooded) flood(p []byte) int {
+	if f.event == nil {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p)))
+	}
+	for n := 0; n < len(p); {
+		copied := copy(p[n:], f.event[f.at:])
+		n += copied
+		f.at = (f.at + copied) % len(f.event)
+	}
+
+	return len(p)
 }
 
 // closeWrite passes a half-close through, so a guest that reads to EOF sees the host's, and the host the guest's.
