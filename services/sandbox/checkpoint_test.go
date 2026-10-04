@@ -323,6 +323,31 @@ func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing
 	}
 }
 
+// A stop ends the sandbox, so its checkpoint's memory and disk copy go with it rather than leak until rm (SHARD-592).
+func TestStopDropsTheCheckpointOfAPausedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := pausedSandbox()
+	paused.Checkpoint = dir
+	svc, l := newService(t, &recorder{}, paused)
+	l.repo.checkpointDir = dir
+
+	sb, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if sb.State != models.StateStopped || sb.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none", sb.State, sb.Checkpoint)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkpoint directory survived the stop: %v", err)
+	}
+}
+
 func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())
