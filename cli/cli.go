@@ -228,6 +228,7 @@ func commands() []command {
 			{name: "remove", aliases: []string{"rm"}, run: App.policyRemove},
 			{name: "attach", run: App.policyAttach},
 			{name: "detach", run: App.policyDetach},
+			{name: "logs", run: App.policyLogs},
 		}},
 		{name: "daemon", run: App.daemon, subs: []command{{name: "status", run: App.daemonStatus}}},
 		{name: "info", run: App.info},

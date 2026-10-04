@@ -380,7 +380,7 @@ expect_exec "blocked" "the floor holds under the policy: the metadata address is
 	/bin/sh -c 'ping -c 1 -W 2 169.254.169.254 >/dev/null 2>&1 && echo reachable || echo blocked'
 EGRESS=""
 for _ in $(seq 1 30); do
-	EGRESS=$(shard logs --egress "${ID}")
+	EGRESS=$(shard policy logs "${ID}")
 	has_line '"source":"host"' '"verdict":"deny"' <<<"${EGRESS}" && break
 	sleep 0.2
 done

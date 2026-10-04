@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -346,5 +348,135 @@ func TestPolicyCreateNotesAPolicyThatOpensNoDNS(t *testing.T) {
 		if got := strings.Contains(out.String(), noteNoDNS); got != tc.note {
 			t.Errorf("%v printed %q, want the note to be %v", tc.rules, out.String(), tc.note)
 		}
+	}
+}
+
+func TestParsePolicyLogsTakesBothFollowSpellings(t *testing.T) {
+	for _, args := range [][]string{{"-f", "sandbox1"}, {"--follow", "sandbox1"}} {
+		opts, err := parseLogs("policy logs", args)
+		if err != nil {
+			t.Fatalf("parseLogs(%q): %v", args, err)
+		}
+		if opts.id != "sandbox1" || !opts.follow {
+			t.Errorf("parseLogs(%q) gave %+v, want sandbox1 and a follow", args, opts)
+		}
+	}
+
+	opts, err := parseLogs("policy logs", []string{"sandbox1"})
+	if err != nil {
+		t.Fatalf("parseLogs: %v", err)
+	}
+	if opts.id != "sandbox1" || opts.follow {
+		t.Errorf("parseLogs gave %+v, want sandbox1 and no follow", opts)
+	}
+}
+
+func TestParsePolicyLogsRefusesTheWrongArguments(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"no sandbox":       {nil, "takes one sandbox id, got 0"},
+		"two sandboxes":    {[]string{"sandbox1", "sandbox2"}, "takes one sandbox id, got 2"},
+		"a flag after it":  {[]string{"sandbox1", "-f"}, "takes one sandbox id, got 2"},
+		"an unknown flag":  {[]string{"--egress", "sandbox1"}, "unknown flag --egress"},
+		"a policy's flags": {[]string{"--allow", "dns", "sandbox1"}, "unknown flag --allow"},
+	} {
+		_, err := parseLogs("policy logs", tc.args)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("parseLogs(%s) returned %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+// decisions is a proxy allow and a host drop, the two sources a reader tells apart by the source field.
+func decisions() []egress.Record {
+	return []egress.Record{
+		{Time: time.Unix(1, 0).UTC(), Source: egress.SourceProxy, Verdict: "allow", Host: "api.example.com", Port: 443, Rule: "1"},
+		{Time: time.Unix(2, 0).UTC(), Source: egress.SourceHost, Verdict: "deny", Address: "203.0.113.7", Port: 25, Rule: "default"},
+	}
+}
+
+func checkDecisionLines(t *testing.T, printed string) {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("policy logs printed %q, want two lines", printed)
+	}
+
+	var first egress.Record
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("decode the first line: %v", err)
+	}
+	if first.Host != "api.example.com" || first.Rule != "1" {
+		t.Errorf("the first line is %+v", first)
+	}
+	if !strings.Contains(lines[1], `"source":"host"`) {
+		t.Errorf("the second line is %s", lines[1])
+	}
+}
+
+func TestPolicyLogsPrintsTheDecisionsByIDAndByName(t *testing.T) {
+	for _, ref := range []string{"sandbox1", "web"} {
+		var out bytes.Buffer
+
+		sb := running()
+		sb.Name = "web"
+		app, d := newClientApp(t, &out, sb)
+		d.egressLog = decisions()
+
+		if err := app.Run(t.Context(), []string{"policy", "logs", ref}); err != nil {
+			t.Fatalf("policy logs %s: %v", ref, err)
+		}
+		checkDecisionLines(t, out.String())
+	}
+}
+
+// A follow prints what the log holds, then says on stderr why it ended when the sandbox goes.
+func TestPolicyLogsFollowPrintsTheDecisionsUntilTheSandboxGoes(t *testing.T) {
+	for _, flag := range []string{"-f", "--follow"} {
+		var out, errOut bytes.Buffer
+
+		app, d := newClientApp(t, &out, running())
+		app.Err = &errOut
+		d.egressLog = decisions()
+
+		if err := app.Run(t.Context(), []string{"policy", "logs", flag, "sandbox1"}); err != nil {
+			t.Fatalf("policy logs %s: %v", flag, err)
+		}
+		checkDecisionLines(t, out.String())
+		if !strings.Contains(errOut.String(), "the egress log of sandbox sandbox1 ended") {
+			t.Errorf("policy logs %s said %q on stderr, want why the follow ended", flag, errOut.String())
+		}
+	}
+}
+
+func TestPolicyLogsRefusesASandboxThatNeverExisted(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d := newClientApp(t, &out, running())
+	d.repoSvc.(*fakeLifecycleRepo).missing = true
+
+	err := app.Run(t.Context(), []string{"policy", "logs", "sandbox1"})
+	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
+		t.Errorf("policy logs returned %v, want the id named", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("policy logs printed %q", out.String())
+	}
+}
+
+// A sandbox with no policy has made no decision, so the answer is an empty log and no error.
+func TestPolicyLogsPrintsNothingForASandboxWithNoPolicy(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newClientApp(t, &out, running())
+
+	if err := app.Run(t.Context(), []string{"policy", "logs", "sandbox1"}); err != nil {
+		t.Fatalf("policy logs: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("policy logs printed %q, want nothing", out.String())
 	}
 }
