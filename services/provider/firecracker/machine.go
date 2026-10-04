@@ -171,7 +171,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	}
 	// A daemon cut between a restore's attach and its reseed left the guest on the checkpoint's key, and no other step gives it one.
 	if err := m.reseed(ctx); err != nil {
-		return nil, errors.Join(err, p.end(ctx, m))
+		return nil, errors.Join(err, p.endAnyway(ctx, m))
 	}
 	// The attach thawed a guest the cut capture left frozen, so the source runs again and the marker is spent.
 	if err := os.Remove(filepath.Join(dir, captureFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -618,7 +618,12 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 	}
 	if state.OOM {
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
-		return nil, p.release(ctx, m)
+		if err := p.release(ctx, m); err != nil {
+			// No map holds this machine yet, so a release that broke off before its settle is the last chance to let the pin and the stream go (SHARD-623).
+			return nil, errors.Join(err, m.close())
+		}
+
+		return nil, nil
 	}
 	// A checkpoint holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
 	if state.Frozen {

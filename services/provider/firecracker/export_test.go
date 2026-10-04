@@ -88,3 +88,12 @@ func SetRedialGrace(grace time.Duration) (restore func()) {
 
 	return func() { redialGrace = was }
 }
+
+// Holds says whether the provider keeps a machine for id, which a verb that failed must not leave behind.
+func (p *Provider) Holds(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, held := p.machines[id]
+
+	return held
+}
