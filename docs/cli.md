@@ -383,6 +383,3 @@ The snapshot record:
 `name` and `source_name` are absent when empty. `disk_mib` and `memory_mib` are the bounds the
 source ran under, and `size` is the bytes the copy holds on the host. The client methods are
 `CreateSnapshot`, `ListSnapshots`, `InspectSnapshot` and `RemoveSnapshot`.
-
-`shard clone` and `POST /v0/sandboxes/{id}/clone` are gone. A snapshot and `create --snapshot` take
-their place.
