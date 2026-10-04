@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -147,5 +148,32 @@ func TestAFailedCreateAnswersTheCausesPublicText(t *testing.T) {
 
 	if got := l.repo.sb.FailedPublic; got != timeout.Public() {
 		t.Errorf("failed_public = %q, want the timeout's public text %q", got, timeout.Public())
+	}
+}
+
+// createProvider fails every create with err, the way a substrate refuses a user the image does not list.
+type createProvider struct {
+	models.Provider
+
+	err error
+}
+
+func (p *createProvider) Create(context.Context, models.SandboxSpec) error { return p.err }
+
+func TestACreateRefusesAUserTheImageDoesNotList(t *testing.T) {
+	unknown := &bundle.UnknownUserError{Err: errors.New(`resolve the user "nobody2": no such entry in the image`)}
+	cause := fmt.Errorf("build the bundle of sandbox1 under /var/lib/shard/sandboxes/sandbox1: %w", unknown)
+	svc, l := newService(t, &recorder{}, models.Sandbox{}, func(c *sandbox.Config) {
+		c.Provider = &createProvider{Provider: c.Provider, err: cause}
+	})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	refused, ok := errors.AsType[*sandbox.RequestError](err)
+	if !ok || refused.Public() != unknown.Error() {
+		t.Fatalf("create = %v, want a request error that names only the user", err)
+	}
+	if sb := l.repo.sb; sb.State != models.StateFailed || sb.FailedPublic != unknown.Error() {
+		t.Errorf("the record is %s with public reason %q, want failed with the user named", sb.State, sb.FailedPublic)
 	}
 }

@@ -112,7 +112,7 @@ func (f *fakeDaemon) build() {
 		})
 		f.life = f.svc
 		if f.creates != nil {
-			f.creates.Service = f.svc
+			f.creates.Service, f.creates.repo = f.svc, f.repoSvc
 			f.life = f.creates
 		}
 		f.stores = sandbox.NewStores(sandbox.StoresConfig{
@@ -135,6 +135,7 @@ type backgroundCreates struct {
 	*sandbox.Service
 
 	t       *testing.T
+	repo    sandbox.Reader
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	pending map[string]chan struct{}
@@ -165,6 +166,20 @@ func (b *backgroundCreates) Create(ctx context.Context, req sandbox.CreateReques
 	})
 
 	return sb, nil
+}
+
+// CreateAndWait answers once the background start ends, as the daemon's does off an uncached image.
+func (b *backgroundCreates) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, err := b.Create(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+
+	if err := b.WaitState(ctx, sb.ID); err != nil {
+		return models.Sandbox{}, err
+	}
+
+	return sandbox.Get(b.repo, sb.ID)
 }
 
 func (b *backgroundCreates) WaitState(ctx context.Context, ref string) error {
