@@ -199,6 +199,9 @@ func newService(t *testing.T, server *httptest.Server) *image.Service {
 func newServiceAt(t *testing.T, root string, server *httptest.Server, opts ...image.Option) *image.Service {
 	t.Helper()
 
+	// An empty Docker config, so a pull never runs the host's credential helper.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	if server != nil {
 		opts = append(opts, image.WithRegistry(registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server))))
 	}

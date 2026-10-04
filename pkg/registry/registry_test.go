@@ -215,6 +215,9 @@ func openStore(t *testing.T, server *httptest.Server) *registry.Store {
 func openStoreAt(t *testing.T, dir string, server *httptest.Server) *registry.Store {
 	t.Helper()
 
+	// An empty Docker config, so a pull never runs the host's credential helper.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+
 	var opts []registry.Option
 	if server != nil {
 		opts = append(opts, registry.WithTransport(server.Client().Transport), registry.WithInsecureRegistries(hostOf(t, server)))
@@ -362,6 +365,8 @@ func tarLayer(t *testing.T, files map[string]string) v1.Layer {
 
 func TestPullRefusesPlaintextHTTP(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
 
 	// The same store, minus the opt-in: ggcr would downgrade a loopback or RFC1918 registry silently.
 	store, err := registry.Open(t.TempDir(), registry.WithTransport(server.Client().Transport))
