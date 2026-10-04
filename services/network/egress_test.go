@@ -75,20 +75,27 @@ func TestEverySandboxLogsTheFloorUnderItsOwnLimit(t *testing.T) {
 	got := newService(t, Config{}).ruleset(nil, leases)
 
 	for _, rule := range []string{RuleLocal, RulePrivate} {
-		var lines []string
-		for line := range strings.Lines(got) {
-			if strings.Contains(line, "rule="+rule+" ") {
-				lines = append(lines, line)
-			}
+		checkFloorLog(t, got, rule, leases)
+	}
+}
+
+// checkFloorLog wants one log rule for the floor rule per lease, in lease order, each naming its sandbox.
+func checkFloorLog(t *testing.T, ruleset, rule string, leases []netip.Addr) {
+	t.Helper()
+
+	var lines []string
+	for line := range strings.Lines(ruleset) {
+		if strings.Contains(line, "rule="+rule+" ") {
+			lines = append(lines, line)
 		}
-		if len(lines) != len(leases) {
-			t.Errorf("rule=%s has %d log rules, want one per sandbox:\n%s", rule, len(lines), got)
-			continue
-		}
-		for i, address := range leases {
-			if !strings.Contains(lines[i], "ip saddr "+address.String()+" ") {
-				t.Errorf("rule=%s log rule %q does not name sandbox %s", rule, lines[i], address)
-			}
+	}
+	if len(lines) != len(leases) {
+		t.Errorf("rule=%s has %d log rules, want one per sandbox:\n%s", rule, len(lines), ruleset)
+		return
+	}
+	for i, address := range leases {
+		if !strings.Contains(lines[i], "ip saddr "+address.String()+" ") {
+			t.Errorf("rule=%s log rule %q does not name sandbox %s", rule, lines[i], address)
 		}
 	}
 }

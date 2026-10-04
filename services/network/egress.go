@@ -184,16 +184,9 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	b.WriteString("\t}\n")
 
 	for _, chain := range chains {
-		if !chain.Policy {
-			continue
+		if chain.Policy {
+			s.writePolicyChain(&b, chain)
 		}
-		fmt.Fprintf(&b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
-		for _, rule := range chain.Rules {
-			for _, line := range render(rule) {
-				fmt.Fprintf(&b, "\t\t%s\n", line)
-			}
-		}
-		fmt.Fprintf(&b, "\t\t%s\n\t\tdrop\n\t}\n", logStatement(RuleDefault))
 	}
 
 	b.WriteString("}\n\n")
@@ -218,6 +211,17 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 }
 
 func chainName(host string) string { return "egress_" + host }
+
+// writePolicyChain is one sandbox's policy: its rules in order, then the logged default drop.
+func (s *Service) writePolicyChain(b *strings.Builder, chain Chain) {
+	fmt.Fprintf(b, "\n\tchain %s {\n", chainName(s.hostInterface(chain.Address)))
+	for _, rule := range chain.Rules {
+		for _, line := range render(rule) {
+			fmt.Fprintf(b, "\t\t%s\n", line)
+		}
+	}
+	fmt.Fprintf(b, "\t\t%s\n\t\tdrop\n\t}\n", logStatement(RuleDefault))
+}
 
 // render is one nft rule, and two when it drops: the verdict ends the packet, so the log goes on its own
 // rule before it. A rule that resolved to no prefix matches nothing, and nft refuses an empty set, so it
