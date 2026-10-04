@@ -30,20 +30,20 @@ from .._types import (
     AppInfo,
     CommandInfo,
     CommandResult,
-    NetworkLogRecord,
+    EgressDecision,
     OutputCallback,
     SandboxInfo,
     TerminalSize,
     app_exit,
     command_info,
-    network_log_record,
+    egress_decision,
     sandbox_info,
 )
 from .._wire import Call, path
 from ..errors import ProtocolError, ShardConnectionError
 from ._command import Command, run_command, start_command
 from ._files import Files
-from ._follow import Follow, log_chunk, network_log_entry
+from ._follow import Follow, egress_log_entry, log_chunk
 from ._transport import Transport
 
 
@@ -194,19 +194,19 @@ class Sandbox:
         """The app's output from the start of the log, then as it arrives, until the sandbox stops."""
         return Follow(self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk)
 
-    def network_logs(self) -> builtins.list[NetworkLogRecord]:
+    def egress_log(self) -> builtins.list[EgressDecision]:
         """Every egress decision the daemon still holds, oldest first."""
         records = self._transport.answer(
             builtins.list, lambda: get_sandbox_egress_log.sync_detailed(self.id, client=self._transport.api)
         )
-        return [network_log_record(record) for record in records]
+        return [egress_decision(record) for record in records]
 
-    def follow_network_logs(self) -> Follow[NetworkLogRecord]:
+    def follow_egress_log(self) -> Follow[EgressDecision]:
         return Follow(
             self._transport,
             path("sandboxes", self.id, "egress-log"),
-            f"the network log of sandbox {self.id}",
-            network_log_entry,
+            f"the egress log of sandbox {self.id}",
+            egress_log_entry,
         )
 
     def _verb(self, call: Call) -> None:

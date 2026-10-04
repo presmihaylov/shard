@@ -572,21 +572,43 @@ export interface components {
             workdir?: string;
         };
         Destination: {
-            kind: string;
+            /** @enum {string} */
+            kind: "cidr" | "domain" | "domain-suffix" | "group";
             value: string;
         };
         Effective: {
             missing?: boolean;
-            policy: string;
             rules: components["schemas"]["EffectiveRule"][];
         };
         EffectiveRule: {
-            action: string;
+            /** @enum {string} */
+            action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             id: string;
-            implied?: string;
+            /** @description Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did. @enum {string} */
+            implied?: "dns" | "dns-rule";
             ports?: number[];
-            protocol?: string;
+            /** @description Absent for a rule over every protocol. @enum {string} */
+            protocol?: "tcp" | "udp";
+        };
+        EgressDecision: {
+            address?: string;
+            host?: string;
+            /** Format: int64 */
+            port?: number;
+            reason?: string;
+            rule: string;
+            rule_text?: string;
+            /** @enum {string} */
+            source: "proxy" | "host" | "dns";
+            /** Format: date-time */
+            time: string;
+            /** @enum {string} */
+            verdict: "allow" | "deny";
+        };
+        EndMessage: {
+            /** @enum {string} */
+            reason: "stopped" | "removed";
         };
         EntriesResponse: {
             entries: components["schemas"]["FileEntry"][];
@@ -595,6 +617,7 @@ export interface components {
             error: components["schemas"]["ErrorObject"];
         };
         ErrorObject: {
+            /** @description What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know. */
             code: string;
             /** Format: int64 */
             exit_code?: number;
@@ -611,7 +634,8 @@ export interface components {
             layers?: number;
             present?: boolean;
             reference?: string;
-            status: string;
+            /** @description cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more. @enum {string} */
+            status: "cached" | "pulling" | "layer" | "unpacking" | "unpacked" | "building" | "pulled";
         };
         Exec: {
             command: string[];
@@ -624,7 +648,8 @@ export interface components {
             sandbox: string;
             /** Format: date-time */
             started_at: string;
-            state: string;
+            /** @enum {string} */
+            state: "running" | "exited";
             truncated: boolean;
         };
         ExecRequest: {
@@ -641,23 +666,42 @@ export interface components {
             execs: components["schemas"]["Exec"][];
             next: string | null;
         };
+        ExitMessage: {
+            /** @description The exit code, or the code a command that never started ends with (int64). */
+            code: number;
+            /** @description Why the command never started; absent when it started. */
+            error?: string;
+            /** @description The output bytes the buffer dropped before this client read them; absent when it dropped none (int64). */
+            lost_bytes?: number;
+            /** @description The signal that ended the command, or 0 (int64). */
+            signal: number;
+        };
         ExitStatus: {
             /** Format: int64 */
             code: number;
             /** Format: int64 */
             signal: number;
         };
+        FailureError: {
+            /** @description One of the codes of ErrorObject.code. */
+            code: string;
+            message: string;
+        };
+        FailureMessage: {
+            error: components["schemas"]["FailureError"];
+        };
         FileEntry: {
             /** Format: int32 */
             gid: number;
-            /** Format: int32 */
+            /** @description The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type (int32). */
             mode: number;
             /** Format: date-time */
             mtime: string;
             name: string;
-            /** Format: int64 */
+            /** @description The logical size in bytes (int64). */
             size: number;
-            type: string;
+            /** @enum {string} */
+            type: "file" | "dir" | "symlink" | "other";
             /** Format: int32 */
             uid: number;
         };
@@ -681,13 +725,16 @@ export interface components {
             snapshot?: string;
             /** Format: date-time */
             started_at?: string;
-            state: string;
+            /** @enum {string} */
+            state: "pending" | "created" | "running" | "paused" | "unresponsive" | "stopped" | "failed";
             stopped_reason?: string;
         };
         KillRequest: {
+            /** @description TERM or KILL, in capitals; absent or empty is TERM. */
             signal?: string;
         };
         MkdirRequest: {
+            /** @description The permission bits as an octal string, as chmod takes them; none is 0755. */
             mode?: string;
             parents?: boolean;
             path: string;
@@ -708,23 +755,11 @@ export interface components {
             rules?: components["schemas"]["RuleText"][];
         };
         PolicyView: {
-            dns: string;
+            /** @enum {string} */
+            dns: "open" | "closed";
             holders?: string[];
             name: string;
             rules: components["schemas"]["Rule"][];
-        };
-        Record: {
-            address?: string;
-            host?: string;
-            /** Format: int64 */
-            port?: number;
-            reason?: string;
-            rule: string;
-            rule_text?: string;
-            source: string;
-            /** Format: date-time */
-            time: string;
-            verdict: string;
         };
         ResourceRequest: {
             /** Format: int64 */
@@ -743,7 +778,7 @@ export interface components {
             vcpus: number;
         };
         Restart: {
-            /** Format: int64 */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
             backoff?: number;
             /** Format: int64 */
             count: number;
@@ -753,22 +788,24 @@ export interface components {
             last_at?: string;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** Format: int64 */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
             retries?: number;
         };
         RestartSpec: {
-            /** Format: int64 */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
             backoff?: number;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** Format: int64 */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
             retries?: number;
         };
         Rule: {
-            action: string;
+            /** @enum {string} */
+            action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             ports?: number[];
-            protocol?: string;
+            /** @description Absent for a rule over every protocol. @enum {string} */
+            protocol?: "tcp" | "udp";
         };
         RuleText: {
             /** @enum {string} */
@@ -794,7 +831,8 @@ export interface components {
             snapshot?: string;
             /** Format: date-time */
             started_at?: string;
-            state: string;
+            /** @enum {string} */
+            state: "pending" | "created" | "running" | "paused" | "unresponsive" | "stopped" | "failed";
             stopped_reason?: string;
         };
         SandboxesResponse: {
@@ -838,7 +876,7 @@ export interface components {
             memory_mib: number;
             name?: string;
             provider: string;
-            /** Format: int64 */
+            /** @description The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files (int64). */
             size: number;
             source: string;
             source_name?: string;
@@ -1220,7 +1258,7 @@ export interface operations {
             /** @description A tar of the path; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1332,23 +1370,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow: one egress record per text message, until the sandbox stops. */
+            /** @description A WebSocket follow: one egress decision per text message, until the sandbox stops. */
             101: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The egress decisions, oldest first; with follow one record per line until the sandbox stops. */
+            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops. */
             200: {
                 headers: {
-                    /** @description The older records the read left out; absent when it left out none. */
+                    /** @description The older decisions the read left out; absent when it left out none. */
                     "Shard-Egress-Cut"?: number;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Record"][];
-                    "application/x-ndjson": components["schemas"]["Record"];
+                    "application/json": components["schemas"]["EgressDecision"][];
+                    "application/x-ndjson": components["schemas"]["EgressDecision"];
                 };
             };
             /** @description Error */
@@ -1601,7 +1639,7 @@ export interface operations {
             /** @description The file's bytes, chunked to the end; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1716,7 +1754,7 @@ export interface operations {
             /** @description The path's stat, in a header and no body. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };

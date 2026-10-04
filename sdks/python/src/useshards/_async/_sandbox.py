@@ -29,20 +29,20 @@ from .._types import (
     AppInfo,
     CommandInfo,
     CommandResult,
-    NetworkLogRecord,
+    EgressDecision,
     OutputCallback,
     SandboxInfo,
     TerminalSize,
     app_exit,
     command_info,
-    network_log_record,
+    egress_decision,
     sandbox_info,
 )
 from .._wire import AsyncCall, path
 from ..errors import ProtocolError, ShardConnectionError
 from ._command import AsyncCommand, run_command, start_command
 from ._files import AsyncFiles
-from ._follow import AsyncFollow, log_chunk, network_log_entry
+from ._follow import AsyncFollow, egress_log_entry, log_chunk
 from ._transport import AsyncTransport
 
 
@@ -197,19 +197,19 @@ class AsyncSandbox:
             self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk
         )
 
-    async def network_logs(self) -> builtins.list[NetworkLogRecord]:
+    async def egress_log(self) -> builtins.list[EgressDecision]:
         """Every egress decision the daemon still holds, oldest first."""
         records = await self._transport.answer(
             builtins.list, lambda: get_sandbox_egress_log.asyncio_detailed(self.id, client=self._transport.api)
         )
-        return [network_log_record(record) for record in records]
+        return [egress_decision(record) for record in records]
 
-    def follow_network_logs(self) -> AsyncFollow[NetworkLogRecord]:
+    def follow_egress_log(self) -> AsyncFollow[EgressDecision]:
         return AsyncFollow(
             self._transport,
             path("sandboxes", self.id, "egress-log"),
-            f"the network log of sandbox {self.id}",
-            network_log_entry,
+            f"the egress log of sandbox {self.id}",
+            egress_log_entry,
         )
 
     async def _verb(self, call: AsyncCall) -> None:

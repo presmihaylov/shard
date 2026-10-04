@@ -96,7 +96,7 @@ type fakeEnforcer struct {
 func (f *fakeEnforcer) Effective(sb models.Sandbox) (egress.Effective, error) {
 	f.asked++
 
-	return egress.Effective{Policy: sb.Policy}, nil
+	return egress.Effective{Rules: []egress.EffectiveRule{{ID: sb.Policy}}}, nil
 }
 
 func TestInspectAsksTheEnforcerOnlyForARecordThatNamesAPolicy(t *testing.T) {
@@ -104,7 +104,7 @@ func TestInspectAsksTheEnforcerOnlyForARecordThatNamesAPolicy(t *testing.T) {
 	repo := fakeReader{rows: []models.Sandbox{{ID: "up-1", Name: "web", Policy: "deny-all"}, {ID: "up-2"}}, names: map[string]string{"web": "up-1"}}
 
 	got, err := sandbox.Inspect(repo, enforcer, "web")
-	if err != nil || got.ID != "up-1" || got.Egress == nil || got.Egress.Policy != "deny-all" {
+	if err != nil || got.ID != "up-1" || got.Egress == nil || got.Egress.Rules[0].ID != "deny-all" {
 		t.Errorf("Inspect(web) = %+v, %v; want up-1 with its egress", got, err)
 	}
 
