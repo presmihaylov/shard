@@ -57,7 +57,9 @@ ssh devbox-shard2 sudo shard-https stop
 `start` refuses while another daemon serves the proxy ports, and waits until serve answers. `stop`
 removes every sandbox of the window, stops serve and the daemon, and drops the bridge `shard0` and
 the two `shard` nft tables. It keeps them, and says why, while the bridge has a port or another
-daemon serves the proxy. `sudo shard-https status` prints the state of the three units.
+daemon serves the proxy. If it cannot list the sandboxes, it exits 1 and leaves the daemon up with
+its records, so a second `stop` can finish. `sudo shard-https status` prints the state of the three
+units.
 
 To put a new build behind the endpoint, stop the window, run step 3 of the deploy, and start it again.
 
