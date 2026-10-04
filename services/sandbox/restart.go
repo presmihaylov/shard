@@ -166,20 +166,26 @@ func (s *Service) stoppedRestarts(ctx context.Context, sb models.Sandbox) (model
 
 // forgedAlone is a forged count with no other failure joined to it, so an unmount error never passes for the guest's doing.
 func forgedAlone(err error) bool {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, part := range joined.Unwrap() {
-			if !forgedAlone(part) {
-				return false
-			}
-		}
-
-		return len(joined.Unwrap()) > 0
-	}
 	if wrapped := errors.Unwrap(err); wrapped != nil {
 		return forgedAlone(wrapped)
 	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return errors.Is(err, models.ErrRestartFileForged)
+	}
 
-	return errors.Is(err, models.ErrRestartFileForged)
+	return allForged(joined.Unwrap())
+}
+
+// allForged says every part of a joined error is a forged count alone.
+func allForged(parts []error) bool {
+	for _, part := range parts {
+		if !forgedAlone(part) {
+			return false
+		}
+	}
+
+	return len(parts) > 0
 }
 
 // lastRestarts asks the supervisor's count for a record that has a policy, and is zero for one that has none.
