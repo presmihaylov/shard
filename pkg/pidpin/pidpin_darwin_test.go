@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // holdEnv turns the test binary into a child that holds memory, so its exit lasts long enough to pin it in the middle.
@@ -88,8 +90,9 @@ func TestOpenOfAZombieSaysESRCH(t *testing.T) {
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
+	// exited reads gone already in the exit, where task_name_for_pid can still find the pid, so wait for the zombie itself.
 	deadline := time.Now().Add(5 * time.Second)
-	for !exited(pid) {
+	for !zombied(t, pid) {
 		if time.Now().After(deadline) {
 			t.Fatal("the child is no zombie 5s after its kill")
 		}
@@ -100,6 +103,16 @@ func TestOpenOfAZombieSaysESRCH(t *testing.T) {
 	if !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("Open of a zombie = %v, want ESRCH", err)
 	}
+}
+
+func zombied(t *testing.T, pid int) bool {
+	t.Helper()
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return len(procs) == 1 && procs[0].Proc.P_stat == zombie
 }
 
 // A token whose pid version is not the live process's stands for one that held the pid before, which no signal may reach.
