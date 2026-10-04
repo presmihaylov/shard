@@ -15,15 +15,31 @@ type pageQuery struct {
 	cursor string
 }
 
-// pageOf reads the page query, and refuses a cursor that could never be a key of the list, by the list's shape.
+// pageInput is the page query of a public list, whose limit Huma checks before the handler runs.
+type pageInput struct {
+	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
+	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+}
+
+// paged refuses a cursor that could never be a key of the list, by the list's shape.
+func paged(limit int, cursor string, shape func(string) error) (pageQuery, error) {
+	if cursor == "" {
+		return pageQuery{limit: limit}, nil
+	}
+
+	if err := shape(cursor); err != nil {
+		return pageQuery{}, &sandbox.RequestError{Err: fmt.Errorf("the query cursor is malformed: %w", err)}
+	}
+
+	return pageQuery{limit: limit, cursor: cursor}, nil
+}
+
+// pageOf reads the page query of a local list, which Huma never sees.
 func pageOf(r *http.Request, shape func(string) error) (pageQuery, error) {
 	query := r.URL.Query()
-	q := pageQuery{cursor: query.Get("cursor")}
-
-	if q.cursor != "" {
-		if err := shape(q.cursor); err != nil {
-			return pageQuery{}, &sandbox.RequestError{Err: fmt.Errorf("the query cursor is malformed: %w", err)}
-		}
+	q, err := paged(0, query.Get("cursor"), shape)
+	if err != nil {
+		return pageQuery{}, err
 	}
 
 	raw := query.Get("limit")
@@ -47,9 +63,18 @@ func page[T any](items []T, q pageQuery, key func(T) string) ([]T, *string) {
 	items = items[from:]
 
 	if q.limit == 0 || len(items) <= q.limit {
-		return items, nil
+		return listOf(items), nil
 	}
 	last := key(items[q.limit-1])
 
 	return items[:q.limit], &last
+}
+
+// listOf answers an empty list as [], which the spec promises, never as null.
+func listOf[T any](items []T) []T {
+	if items == nil {
+		return []T{}
+	}
+
+	return items
 }

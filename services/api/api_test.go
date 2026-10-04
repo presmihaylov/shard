@@ -308,7 +308,7 @@ func TestListRefusesAnAllThatIsNotABoolean(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/sandboxes?all=yes")
-	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "all=") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "query.all") {
 		t.Errorf("GET /v0/sandboxes?all=yes answered %d %v, want 400 naming the query", status, body)
 	}
 }

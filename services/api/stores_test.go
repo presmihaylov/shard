@@ -269,6 +269,32 @@ func TestNoSecretRouteAnswersWithTheValue(t *testing.T) {
 	}
 }
 
+// A validation message names the field and never the value, so a refused PUT cannot answer with the secret either.
+func TestARefusedSecretPutNeverAnswersWithTheValue(t *testing.T) {
+	s := seed(t)
+	value := "sk-synthetic-7f3a9c1e5b2d4e6f8a0b1c2d3e4f5a6b"
+
+	for _, body := range []string{
+		`{"value":"` + value + `","destinations":["api.example.com"],"bogus":"` + value + `"}`,
+		`{"value":"` + value + `","destinations":"` + value + `"}`,
+		`{"value":["` + value + `"],"destinations":["api.example.com"]}`,
+		`{"value":"` + value + `","destinations":[7]}`,
+		`{"destinations":["` + value + `"]}`,
+		`{"value":"` + value + `","destinations":["api.example.com"]`,
+	} {
+		status, answer := raw(t, s.server, http.MethodPut, "/v0/secrets/openai", body)
+		if status != http.StatusBadRequest {
+			t.Errorf("PUT %s answered %d %s, want 400", body, status, answer)
+		}
+		if bytes.Contains(answer, []byte(value)) {
+			t.Errorf("PUT %s answered with the value: %s", body, answer)
+		}
+	}
+	if s.stores.value != "" {
+		t.Errorf("the store got %q from a refused body", s.stores.value)
+	}
+}
+
 // The record has no field a value could ride in, so a route cannot answer with one by mistake.
 func TestTheSecretRecordHasNoValueInItsJSONForm(t *testing.T) {
 	encoded, err := json.Marshal(secret.Secret{Name: "openai", Destinations: []string{"api.example.com"}, Placeholder: "sk_test_shaped01", UpdatedAt: time.Now()})

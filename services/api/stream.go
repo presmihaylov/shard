@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
@@ -22,22 +23,8 @@ import (
 )
 
 // createExec validates the command and names the exec; nothing runs until a client attaches.
-func (h *Handler) createExec(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.ExecRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	exec, err := h.lifecycle.CreateExec(r.Context(), r.PathValue("id"), req)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusCreated, exec)
+func (h *Handler) createExec(ctx context.Context, in *sandboxBody[sandbox.ExecRequest]) (*reply[models.Exec], error) {
+	return answer(h.lifecycle.CreateExec(ctx, in.ID, value(in.Body)))
 }
 
 // execsResponse is a page of one sandbox's execs, oldest id first.
@@ -46,25 +33,39 @@ type execsResponse struct {
 	Next  *string       `json:"next"`
 }
 
-// listExecs answers a page of the sandbox's execs.
-func (h *Handler) listExecs(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r, sandbox.ValidExecID)
-	if err != nil {
-		h.writeError(w, err)
+type listExecsInput struct {
+	ID     string `path:"id" doc:"The sandbox id or name."`
+	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
+	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+}
 
-		return
+// listExecs answers a page of the sandbox's execs.
+func (h *Handler) listExecs(ctx context.Context, in *listExecsInput) (*reply[execsResponse], error) {
+	q, err := paged(in.Limit, in.Cursor, sandbox.ValidExecID)
+	if err != nil {
+		return nil, fail(err)
 	}
 
-	execs, err := h.lifecycle.ListExecs(r.Context(), r.PathValue("id"))
+	execs, err := h.lifecycle.ListExecs(ctx, in.ID)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	execs, next := page(execs, q, func(e models.Exec) string { return e.ID })
 
-	h.writeJSON(w, http.StatusOK, execsResponse{Execs: execs, Next: next})
+	return answer(execsResponse{Execs: execs, Next: next}, nil)
+}
+
+type getExecInput struct {
+	ID   string `path:"id" doc:"The sandbox id or name."`
+	Exec string `path:"exec" doc:"The exec id."`
+	Wait bool   `query:"wait" doc:"Block until the exec ends."`
+}
+
+// describeGetExec names the three answers of getExec, the attach as a 101 whose frames lead with their stream.
+func describeGetExec(registry huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = response("The exec as it stands, or with wait once it ends.", "application/json", schemaOf[models.Exec](registry))
+	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon.")
 }
 
 // getExec answers one exec three ways: a WebSocket upgrade attaches, ?wait=true blocks until it ends,
@@ -112,32 +113,13 @@ type killRequest struct {
 }
 
 // killExec sends one signal to a running exec.
-func (h *Handler) killExec(w http.ResponseWriter, r *http.Request) {
-	var req killRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	if err := h.lifecycle.KillExec(r.Context(), r.PathValue("id"), r.PathValue("exec"), req.Signal); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+func (h *Handler) killExec(ctx context.Context, in *execBody[killRequest]) (*struct{}, error) {
+	return done(h.lifecycle.KillExec(ctx, in.ID, in.Exec, value(in.Body).Signal))
 }
 
 // deleteExec forgets an exec that has ended and frees its buffer.
-func (h *Handler) deleteExec(w http.ResponseWriter, r *http.Request) {
-	if err := h.lifecycle.DeleteExec(r.Context(), r.PathValue("id"), r.PathValue("exec")); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+func (h *Handler) deleteExec(ctx context.Context, in *execPath) (*struct{}, error) {
+	return done(h.lifecycle.DeleteExec(ctx, in.ID, in.Exec))
 }
 
 // attachExec replays the exec's buffer to the client, then streams it live until the command ends. It is
@@ -339,21 +321,14 @@ type writerFunc func(p []byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
-func (h *Handler) resizeExec(w http.ResponseWriter, r *http.Request) {
-	var size sandbox.TerminalSize
-	if err := decode(w, r, &size); err != nil {
-		h.writeError(w, err)
+func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalSize]) (*struct{}, error) {
+	return done(h.lifecycle.ResizeExec(ctx, in.ID, in.Exec, value(in.Body)))
+}
 
-		return
-	}
-
-	if err := h.lifecycle.ResizeExec(r.Context(), r.PathValue("id"), r.PathValue("exec"), size); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+// describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
+func describeLogs(_ huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops.", "text/plain", text())
+	op.Responses["101"] = upgrade("A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.")
 }
 
 func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {

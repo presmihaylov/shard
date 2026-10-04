@@ -733,6 +733,13 @@ text. A body of any other shape is quoted as it came, under `internal`.
 
 The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes the contract as `/v1`.
 
+`docs/openapi.json` is the OpenAPI 3.1 spec of the public routes. The daemon builds it from the same
+route table it serves, so every operation names its token scope in `x-shard-scope`, which is the
+scope the TCP front checks. `make openapi` writes it, and `make test` fails while the committed file
+differs. The daemon validates each request against the spec before a handler runs. A refusal names
+the field, as `validation failed: expected number >= 1 (query.limit)`, and never echoes its value.
+The local routes are not in the spec, as the TCP front never forwards them.
+
 The typed side of these routes is `services/client`, hand-written over the socket. It has `Version`,
 `ListSandboxes`, `GetSandbox`, `CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`,
 `PauseSandbox`, `ResumeSandbox`, `ForkSandbox`, `CreateSnapshot`, `ListSnapshots`,

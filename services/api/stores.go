@@ -57,72 +57,49 @@ type pruneResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r, egress.ValidName)
+func (h *Handler) listPolicies(_ context.Context, in *pageInput) (*reply[policiesResponse], error) {
+	q, err := paged(in.Limit, in.Cursor, egress.ValidName)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	policies, err := h.stores.Policies()
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	policies, next := page(policies, q, func(p models.Policy) string { return p.Name })
+	for i := range policies {
+		policies[i].Rules = listOf(policies[i].Rules)
+	}
 
-	h.writeJSON(w, http.StatusOK, policiesResponse{Policies: policies, Next: next})
+	return answer(policiesResponse{Policies: policies, Next: next}, nil)
 }
 
-func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
-	policy, err := h.stores.Policy(r.PathValue("name"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, policy)
+func (h *Handler) getPolicy(_ context.Context, in *namePath) (*reply[sandbox.PolicyView], error) {
+	return policyReply(h.stores.Policy(in.Name))
 }
 
-func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.PolicyRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	policy, err := h.stores.SetPolicy(r.Context(), r.PathValue("name"), req)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, policy)
+func (h *Handler) putPolicy(ctx context.Context, in *nameBody[sandbox.PolicyRequest]) (*reply[sandbox.PolicyView], error) {
+	return policyReply(h.stores.SetPolicy(ctx, in.Name, value(in.Body)))
 }
 
-func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
-	if err := h.stores.RemovePolicy(r.PathValue("name")); err != nil {
-		h.writeError(w, err)
+// policyReply answers a policy with no rules as [], as the spec promises.
+func policyReply(view sandbox.PolicyView, err error) (*reply[sandbox.PolicyView], error) {
+	view.Rules = listOf(view.Rules)
 
-		return
-	}
+	return answer(view, err)
+}
 
-	w.WriteHeader(http.StatusNoContent)
+func (h *Handler) removePolicy(_ context.Context, in *namePath) (*struct{}, error) {
+	return done(h.stores.RemovePolicy(in.Name))
 }
 
 // listSecrets answers with names and destinations. A value never leaves the host on this route.
-func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r, secret.ValidName)
+func (h *Handler) listSecrets(_ context.Context, in *pageInput) (*reply[secretsResponse], error) {
+	q, err := paged(in.Limit, in.Cursor, secret.ValidName)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	secrets, unreadable := h.stores.Secrets()
@@ -133,43 +110,27 @@ func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secrets, next := page(secrets, q, func(s secret.Secret) string { return s.Name })
+	for i := range secrets {
+		secrets[i].Destinations = listOf(secrets[i].Destinations)
+	}
 
-	h.writeJSON(w, http.StatusOK, secretsResponse{Secrets: secrets, Next: next, Warnings: warnings})
+	return answer(secretsResponse{Secrets: secrets, Next: next, Warnings: warnings}, nil)
 }
 
-func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.SecretRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+func (h *Handler) putSecret(_ context.Context, in *nameBody[sandbox.SecretRequest]) (*reply[secret.Secret], error) {
+	sec, err := h.stores.SetSecret(in.Name, value(in.Body))
+	sec.Destinations = listOf(sec.Destinations)
 
-		return
-	}
-
-	sec, err := h.stores.SetSecret(r.PathValue("name"), req)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, sec)
+	return answer(sec, err)
 }
 
-func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
-	force, err := boolQuery(r, "force")
-	if err != nil {
-		h.writeError(w, err)
+type removeSecretInput struct {
+	Name  string `path:"name"`
+	Force bool   `query:"force" doc:"Remove the secret while a sandbox record still names it."`
+}
 
-		return
-	}
-
-	if err := h.stores.RemoveSecret(r.PathValue("name"), force); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+func (h *Handler) removeSecret(_ context.Context, in *removeSecretInput) (*struct{}, error) {
+	return done(h.stores.RemoveSecret(in.Name, in.Force))
 }
 
 // imageShape is the cursor check of the image list: anything the registry could not name is malformed.
