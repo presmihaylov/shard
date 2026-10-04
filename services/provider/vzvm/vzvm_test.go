@@ -2286,7 +2286,7 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	exited := make(chan error, 1)
 	go func() { exited <- stand.Wait() }()
 	t.Cleanup(func() {
-		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("end the stand-in shim: %v", err)
 		}
 	})
@@ -2317,7 +2317,7 @@ func TestAFailedBootWaitsForAShimPastItsSocket(t *testing.T) {
 	exited := make(chan error, 1)
 	go func() { exited <- stand.Wait() }()
 	t.Cleanup(func() {
-		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("end the stand-in shim: %v", err)
 		}
 		<-exited
