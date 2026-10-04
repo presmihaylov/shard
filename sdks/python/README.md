@@ -86,7 +86,7 @@ Every exception derives from `ShardError`.
 | `ConfigurationError` | A setting is missing or refused. The message names the setting, never its value. |
 | `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
-| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
+| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). An exec past the running-exec bound is a plain `APIError` with status 429 and code `exec_limit`. |
 
 A non-zero exit code is not an exception. Read `result.exit_code`.
 

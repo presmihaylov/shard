@@ -144,10 +144,13 @@ type Service struct {
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
+	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
+	running    map[string]int
+	runningAll int
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.

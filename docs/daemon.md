@@ -92,7 +92,9 @@ read. Once the command ends, the record holds its exit. While the command runs, 
 Only a `DELETE` of the exec or a `stop` of the sandbox frees it. The daemon keeps at most 32 exited
 execs per sandbox, so a new exec evicts the oldest exited one and the retained output stays bounded.
 A running exec never counts toward that limit. An evicted exec answers 404, the same as a deleted
-one.
+one. A running exec holds its buffer in daemon memory, outside the sandbox's memory bound, so the
+daemon runs at most 32 execs at once per sandbox and 256 across all sandboxes. A create past either
+bound answers 429 `exec_limit` before the command starts, and no running exec is evicted to make room.
 
 An exec does not outlive the daemon. The daemon holds the record and the buffer in memory, while
 `shard-init` holds the guest process. A restart therefore cuts off every client and loses the
@@ -559,7 +561,8 @@ and `image prune` leaves it.
   the exec record once the command's `execve` took:
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
-  a request that names no command, 404, and 409 when no command can run in the sandbox. A command
+  a request that names no command, 404, 409 when no command can run in the sandbox, and 429
+  `exec_limit` while the sandbox runs 32 execs or the daemon runs 256. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
   of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
   `timeout`, and the daemon ends the command.
@@ -755,6 +758,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `unsupported` | 409 | the provider does not claim the verb |
 | `exec_exited` | 409 | a kill of an exec whose command already ended |
 | `exec_running` | 409 | a delete of an exec whose command still runs |
+| `exec_limit` | 429 | an exec create while the sandbox runs 32 execs, or the daemon runs 256 across all sandboxes. No running exec is evicted, so retry once one exits |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `command_not_started` | 422 | an exec, or a create's app, whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
