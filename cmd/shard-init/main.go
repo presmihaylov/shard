@@ -224,6 +224,9 @@ var errFrozen = errors.New("holds the sandbox frozen, and nothing starts in it u
 // frozenRetry is how often a restart due while the bound is frozen looks again.
 const frozenRetry = 100 * time.Millisecond
 
+// reapEvery backs up SIGCHLD, which darwin can drop under load, so a dead child waits at most this long (SHARD-481).
+const reapEvery = time.Second
+
 // newGuest watches for child deaths before anything forks, so no exit is ever missed.
 func newGuest(report reporter, restart restartPolicy) *guest {
 	g := &guest{
@@ -264,9 +267,15 @@ func (g *guest) launch(ep entrypoint) error {
 // supervise returns only after a stop signal, because a sandbox outlives its entrypoint and nothing
 // else may end one. The host sends that signal, waits out the grace and then kills what is left.
 func (g *guest) supervise() error {
+	reap := time.NewTicker(reapEvery)
+	defer reap.Stop()
 	for {
 		select {
 		case <-g.childDeaths:
+			if done := g.collect(); done {
+				return nil
+			}
+		case <-reap.C:
 			if done := g.collect(); done {
 				return nil
 			}

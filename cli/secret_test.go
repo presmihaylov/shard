@@ -51,7 +51,7 @@ func newSecretApp(t *testing.T, out *bytes.Buffer, stdin string, repo sandboxRep
 	return App{Version: "test", Root: root, Out: out, Err: out, in: in}, root
 }
 
-func TestSecretSetLsRmRoundTrip(t *testing.T) {
+func TestSecretSetListRemoveRoundTrip(t *testing.T) {
 	var out bytes.Buffer
 
 	app, root := newSecretApp(t, &out, "sk-live-abcdef123456\n", &fakeLifecycleRepo{r: &recorder{}})
@@ -64,14 +64,14 @@ func TestSecretSetLsRmRoundTrip(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
-		t.Fatalf("secret ls: %v", err)
+	if err := app.Run(t.Context(), []string{"secret", "list"}); err != nil {
+		t.Fatalf("secret list: %v", err)
 	}
 	if !strings.Contains(out.String(), "OPENAI_API_KEY") || !strings.Contains(out.String(), "api.openai.com") || !strings.Contains(out.String(), "mock-OPENAI_API_KEY") {
-		t.Errorf("ls printed:\n%s", out.String())
+		t.Errorf("list printed:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "sk-live") {
-		t.Fatalf("ls printed the value:\n%s", out.String())
+		t.Fatalf("list printed the value:\n%s", out.String())
 	}
 
 	// The value lives in exactly one file, and a grep of everything else under the root finds nothing.
@@ -102,16 +102,16 @@ func TestSecretSetLsRmRoundTrip(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"secret", "rm", "OPENAI_API_KEY"}); err != nil {
-		t.Fatalf("secret rm: %v", err)
+	if err := app.Run(t.Context(), []string{"secret", "remove", "OPENAI_API_KEY"}); err != nil {
+		t.Fatalf("secret remove: %v", err)
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "list"}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "OPENAI_API_KEY") {
-		t.Errorf("ls still lists the removed secret:\n%s", out.String())
+		t.Errorf("list still lists the removed secret:\n%s", out.String())
 	}
 }
 
@@ -194,11 +194,11 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"secret", "ls"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "list"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "sk_test_shaped01") || strings.Contains(out.String(), "from-stdin") {
-		t.Errorf("ls printed:\n%s", out.String())
+		t.Errorf("list printed:\n%s", out.String())
 	}
 }
 
@@ -232,7 +232,7 @@ func TestSecretSetRefusesAPlaceholderTheStoreWillNotTake(t *testing.T) {
 	}
 }
 
-func TestSecretLsListsTheReadableOnesAndFails(t *testing.T) {
+func TestSecretListListsTheReadableOnesAndFails(t *testing.T) {
 	var out bytes.Buffer
 
 	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
@@ -244,20 +244,20 @@ func TestSecretLsListsTheReadableOnesAndFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Run(t.Context(), []string{"secret", "ls"})
+	err := app.Run(t.Context(), []string{"secret", "list"})
 	if err == nil || !strings.Contains(err.Error(), "BROKEN") {
-		t.Errorf("ls with a broken file = %v", err)
+		t.Errorf("list with a broken file = %v", err)
 	}
 	if !strings.Contains(out.String(), "KEY") {
-		t.Errorf("ls did not list the readable secret:\n%s", out.String())
+		t.Errorf("list did not list the readable secret:\n%s", out.String())
 	}
 
-	if err := app.Run(t.Context(), []string{"secret", "rm", "BROKEN"}); err != nil {
-		t.Errorf("rm of the broken file = %v", err)
+	if err := app.Run(t.Context(), []string{"secret", "remove", "BROKEN"}); err != nil {
+		t.Errorf("remove of the broken file = %v", err)
 	}
 }
 
-func TestSecretRmRefusesWhileASandboxHoldsIt(t *testing.T) {
+func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	var out bytes.Buffer
 
 	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{
@@ -270,23 +270,23 @@ func TestSecretRmRefusesWhileASandboxHoldsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Run(t.Context(), []string{"secret", "rm", "KEY"})
+	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") || strings.Contains(err.Error(), "sandbox2") {
-		t.Errorf("rm = %v, want a refusal naming sandbox1 only", err)
+		t.Errorf("remove = %v, want a refusal naming sandbox1 only", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "secrets", "KEY")); err != nil {
-		t.Errorf("a refused rm removed the secret: %v", err)
+		t.Errorf("a refused remove removed the secret: %v", err)
 	}
 
-	if err := app.Run(t.Context(), []string{"secret", "rm", "--force", "KEY"}); err != nil {
-		t.Errorf("rm --force = %v", err)
+	if err := app.Run(t.Context(), []string{"secret", "remove", "--force", "KEY"}); err != nil {
+		t.Errorf("remove --force = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "secrets", "KEY")); err == nil {
-		t.Error("rm --force left the secret")
+		t.Error("remove --force left the secret")
 	}
 }
 
-func TestSecretRmRefusesWhenARecordIsUnreadable(t *testing.T) {
+func TestSecretRemoveRefusesWhenARecordIsUnreadable(t *testing.T) {
 	var out bytes.Buffer
 
 	repo := &fakeLifecycleRepo{r: &recorder{}, unreadable: os.ErrPermission}
@@ -296,20 +296,20 @@ func TestSecretRmRefusesWhenARecordIsUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Run(t.Context(), []string{"secret", "rm", "KEY"})
+	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "cannot tell") {
-		t.Errorf("rm with an unreadable record = %v", err)
+		t.Errorf("remove with an unreadable record = %v", err)
 	}
 }
 
-func TestSecretRmOfAMissingSecretFails(t *testing.T) {
+func TestSecretRemoveOfAMissingSecretFails(t *testing.T) {
 	var out bytes.Buffer
 
 	app, _ := newSecretApp(t, &out, "", &fakeLifecycleRepo{r: &recorder{}})
 
-	err := app.Run(t.Context(), []string{"secret", "rm", "NOPE"})
+	err := app.Run(t.Context(), []string{"secret", "remove", "NOPE"})
 	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("rm of a missing secret = %v", err)
+		t.Errorf("remove of a missing secret = %v", err)
 	}
 }
 

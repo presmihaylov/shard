@@ -45,6 +45,7 @@ var wants = map[string]string{
 	"<size>":     "a whole size with a unit, such as 512MiB or 2GiB; only 0 goes without one",
 	"<duration>": "a duration such as 10s",
 	"<n>":        "a whole number",
+	"<format>":   "json or table",
 }
 
 // sandboxArg is the argument every verb that acts on one sandbox takes.
@@ -58,8 +59,8 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "clone", "cp"}},
-	{"Images, secrets and egress", []string{"pull", "image", "secret", "policy"}},
+	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
+	{"Images, snapshots, secrets and egress", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
 
@@ -75,6 +76,12 @@ var sandboxFlagHelps = []flagHelp{
 	{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
 	{"--disk <size>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11MiB so its journal fits", ""},
 }
+
+// formatTableHelp and formatJSONHelp are --format on a verb that writes a table, or JSON, without one.
+var (
+	formatTableHelp = flagHelp{"--format <format>", "the shape of the output: json or table", string(formatTable)}
+	formatJSONHelp  = flagHelp{"--format <format>", "the shape of the output: json or table", string(formatJSON)}
+)
 
 // sizeNote is how create and run read a size.
 const sizeNote = "A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal), and a part of a MiB rounds up. Only 0 goes without a unit."
@@ -98,13 +105,16 @@ var helps = map[string]verbHelp{
 		},
 	},
 	"create": {
-		usage:   []string{"create [flags] <image>"},
+		usage:   []string{"create [flags] <image>", "create [flags] --snapshot <id|name>"},
 		summary: "create a sandbox that runs only shard-init and print its id",
 		args:    []row{{"<image>", "the image; create pulls it first when it is not on disk"}},
-		flags:   sandboxFlagHelps,
+		flags: append(slices.Clone(sandboxFlagHelps),
+			flagHelp{"--snapshot <id|name>", "start from the files of a snapshot, over the image it names, in place of an image", ""},
+		),
 		notes: []string{
 			"The flags go before the image. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
 			"create takes no command: shard-init runs alone and the sandbox stays up until shard stop. shard run starts a sandbox with an app. To give a sandbox a policy after create, use shard policy attach.",
+			"--snapshot takes the place of the image, as the snapshot names its own. create never pulls for it: the image must still be on this host at the digest the snapshot recorded. Only the provider that made the snapshot starts it, and firecracker and vz refuse a --disk that differs from its disk. With no --memory or --disk, the sandbox takes the bounds its source ran under.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
 			sizeNote,
 		},
@@ -138,8 +148,10 @@ var helps = map[string]verbHelp{
 		summary: "run a command in a running sandbox",
 		args:    []row{sandboxArg, {"<argv>", "the command to run and its arguments"}},
 		flags: []flagHelp{
-			{"-i", "keep stdin open for the command", ""},
-			{"-t", "run the command on a terminal; it needs -i, and -it gives both", ""},
+			{"-i", "the same as --interactive", ""},
+			{"--interactive", "keep stdin open for the command", ""},
+			{"-t", "the same as --tty", ""},
+			{"--tty", "run the command on a terminal; it needs -i, and -it gives both", ""},
 			{"--env KEY=VALUE", "set an environment variable, repeatable", ""},
 			{"--workdir <dir>", "the directory the command starts in", ""},
 			{"--user <user>", "the user the command runs as", ""},
@@ -147,32 +159,34 @@ var helps = map[string]verbHelp{
 		notes:   []string{"The flags go before the id or name. The command follows it; an optional -- may precede the command. shard exits with the exit code of the command."},
 		example: "shard exec -it web /bin/sh",
 	},
-	"ls": {
-		usage:   []string{"ls [--all]"},
+	"list": {
+		usage:   []string{"list [--all] [--format <format>]"},
 		summary: "list the sandboxes; --all adds the stopped ones",
-		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}},
+		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}, formatTableHelp},
 		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
-		example: "shard ls --all",
+		example: "shard list --all",
 	},
 	"logs": {
 		usage:   []string{"logs [-f] [--egress] <id|name>"},
 		summary: "print what the entrypoint wrote, or the egress decisions",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
-			{"-f", "keep printing until the sandbox stops", ""},
+			{"-f", "the same as --follow", ""},
+			{"--follow", "keep printing until the sandbox stops", ""},
 			{"--egress", "print the egress decisions instead of the entrypoint output", ""},
 		},
 		example: "shard logs -f web",
 	},
 	"inspect": {
-		usage:   []string{"inspect <id|name>"},
+		usage:   []string{"inspect [--format <format>] <id|name>"},
 		summary: "print the record of a sandbox as JSON",
 		args:    []row{sandboxArg},
+		flags:   []flagHelp{formatJSONHelp},
 		example: "shard inspect web",
 	},
 	"stop": {
 		usage:   []string{"stop <id|name>"},
-		summary: "stop a sandbox; its files stay for start or clone",
+		summary: "stop a sandbox; its files stay for start or snapshot create",
 		args:    []row{sandboxArg},
 		notes: []string{
 			"stop sends SIGTERM to the entrypoint and returns as soon as it exits. An entrypoint still running after " + short(models.StopGrace) + " is killed. The grace is fixed.",
@@ -187,29 +201,29 @@ var helps = map[string]verbHelp{
 		notes:   []string{"The entrypoint starts from the beginning, over the files the last run wrote."},
 		example: "shard start web",
 	},
-	"rm": {
-		usage:   []string{"rm [--force] <id|name>"},
+	"remove": {
+		usage:   []string{"remove [--force] <id|name>"},
 		summary: "delete a stopped or failed sandbox and its files",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"--force", "stop a running or paused sandbox first, and warn rather than fail on one that does not exist", ""},
 		},
 		notes: []string{
-			"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull.",
+			"Without --force, remove refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: remove ends the pull.",
 			"--force stops the sandbox as stop does, with the same " + short(models.StopGrace) + " grace, and then deletes it.",
 		},
-		example: "shard rm --force web",
+		example: "shard remove --force web",
 	},
 	"pause": {
 		usage:   []string{"pause <id|name>"},
-		summary: "write a snapshot of a running sandbox and free its memory",
+		summary: "write a checkpoint of a running sandbox and free its memory",
 		args:    []row{sandboxArg},
 		notes:   []string{"The daemon gives up on a pause after " + short(sandbox.DefaultPauseBudget) + ". sysbox and runc refuse pause, as does vz on macOS 13 or on Intel."},
 		example: "shard pause web",
 	},
 	"resume": {
 		usage:   []string{"resume <id|name>"},
-		summary: "run a paused sandbox again from its snapshot",
+		summary: "run a paused sandbox again from its checkpoint",
 		args:    []row{sandboxArg},
 		example: "shard resume web",
 	},
@@ -220,14 +234,6 @@ var helps = map[string]verbHelp{
 		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
 		notes:   []string{"The source must be running. Fork freezes it for a moment, captures its memory and files, and lets the same sandbox run on, then starts the new one from that capture. It prints the new id. Only gvisor forks for now; the other providers refuse fork."},
 		example: "shard fork --name web-2 web",
-	},
-	"clone": {
-		usage:   []string{"clone [--name <name>] <id|name>"},
-		summary: "copy the files of a stopped or paused sandbox into a new one",
-		args:    []row{{"<id|name>", "the stopped or paused sandbox to copy, by its id or by its --name"}},
-		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
-		notes:   []string{"The new sandbox runs its entrypoint from the beginning and takes no memory from the source. clone refuses a running source. It prints the new id."},
-		example: "shard stop web && shard clone --name web-2 web",
 	},
 	"cp": {
 		usage:   []string{"cp [--user <user>] <src> <id|name>:<path>", "cp <id|name>:<path> <dst>"},
@@ -251,23 +257,60 @@ var helps = map[string]verbHelp{
 		usage:   []string{"image <subcommand> [flags] [args]"},
 		summary: "the pulled images",
 	},
-	"image ls": {
-		usage:   []string{"image ls"},
+	"image list": {
+		usage:   []string{"image list [--format <format>]"},
 		summary: "list the pulled images",
-		example: "shard image ls",
+		flags:   []flagHelp{formatTableHelp},
+		example: "shard image list",
 	},
-	"image rm": {
-		usage:   []string{"image rm [--force] <image>"},
+	"image remove": {
+		usage:   []string{"image remove [--force] <image>"},
 		summary: "remove a pulled image",
-		args:    []row{{"<image>", "the image reference, as image ls prints it"}},
-		flags:   []flagHelp{{"--force", "remove it even when a sandbox still references it", ""}},
-		example: "shard image rm python:3.12",
+		args:    []row{{"<image>", "the image reference, as image list prints it"}},
+		flags:   []flagHelp{{"--force", "remove it even when a sandbox or a snapshot still references it", ""}},
+		example: "shard image remove python:3.12",
 	},
 	"image prune": {
 		usage:   []string{"image prune"},
-		summary: "remove every pulled image that no sandbox references",
-		notes:   []string{"A stopped sandbox references its image too, so prune keeps that one."},
+		summary: "remove every pulled image that no sandbox or snapshot references",
+		notes:   []string{"A stopped sandbox and a snapshot reference their image too, so prune keeps that one."},
 		example: "shard image prune",
+	},
+	"snapshot": {
+		usage:   []string{"snapshot <subcommand> [flags] [args]"},
+		summary: "file copies of stopped sandboxes",
+	},
+	"snapshot create": {
+		usage:   []string{"snapshot create [--name <name>] <id|name>"},
+		summary: "copy the files of a stopped sandbox into a snapshot and print its id",
+		args:    []row{{"<id|name>", "the stopped sandbox, by its id or by its --name"}},
+		flags:   []flagHelp{{"--name <name>", "a handle the snapshot verbs and create --snapshot take in place of the id: lower-case letters, digits, - and _", ""}},
+		notes: []string{
+			"A snapshot holds the files of the sandbox and never its memory. It outlives its source: remove the sandbox and the snapshot stays.",
+			"snapshot create refuses a running or paused sandbox: stop it first. The id goes to stdout once the copy is done.",
+		},
+		example: "shard stop web && shard snapshot create --name web-base web",
+	},
+	"snapshot list": {
+		usage:   []string{"snapshot list [--format <format>]"},
+		summary: "list the snapshots",
+		flags:   []flagHelp{formatTableHelp},
+		notes:   []string{"The columns are ID, NAME, SOURCE, IMAGE, SIZE and CREATED."},
+		example: "shard snapshot list",
+	},
+	"snapshot inspect": {
+		usage:   []string{"snapshot inspect [--format <format>] <id|name>"},
+		summary: "print the record of a snapshot as JSON",
+		args:    []row{{"<id|name>", "the snapshot, by its id or by its --name"}},
+		flags:   []flagHelp{formatJSONHelp},
+		example: "shard snapshot inspect web-base",
+	},
+	"snapshot remove": {
+		usage:   []string{"snapshot remove <id|name>"},
+		summary: "delete a snapshot and its files",
+		args:    []row{{"<id|name>", "the snapshot, by its id or by its --name"}},
+		notes:   []string{"A sandbox created from the snapshot holds its own copy of the files, so remove never refuses one."},
+		example: "shard snapshot remove web-base",
 	},
 	"secret": {
 		usage:   []string{"secret <subcommand> [flags] [args]"},
@@ -291,17 +334,18 @@ var helps = map[string]verbHelp{
 		},
 		example: `printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN`,
 	},
-	"secret ls": {
-		usage:   []string{"secret ls"},
+	"secret list": {
+		usage:   []string{"secret list [--format <format>]"},
 		summary: "list the secrets by name, destination and placeholder, without their values",
-		example: "shard secret ls",
+		flags:   []flagHelp{formatTableHelp},
+		example: "shard secret list",
 	},
-	"secret rm": {
-		usage:   []string{"secret rm [--force] <NAME>"},
+	"secret remove": {
+		usage:   []string{"secret remove [--force] <NAME>"},
 		summary: "remove a secret",
 		args:    []row{{"<NAME>", "the secret"}},
 		flags:   []flagHelp{{"--force", "remove it even when a sandbox still holds it", ""}},
-		example: "shard secret rm API_TOKEN",
+		example: "shard secret remove API_TOKEN",
 	},
 	"secret grant": {
 		usage:   []string{"secret grant <id|name> <NAME>"},
@@ -338,21 +382,23 @@ var helps = map[string]verbHelp{
 		example: "shard policy create --allow dns --allow api.example.com api-only",
 	},
 	"policy show": {
-		usage:   []string{"policy show <name>"},
+		usage:   []string{"policy show [--format <format>] <name>"},
 		summary: "print a policy as JSON, with the sandboxes that hold it",
 		args:    []row{{"<name>", "the policy"}},
+		flags:   []flagHelp{formatJSONHelp},
 		example: "shard policy show api-only",
 	},
-	"policy ls": {
-		usage:   []string{"policy ls"},
+	"policy list": {
+		usage:   []string{"policy list [--format <format>]"},
 		summary: "list the policies",
-		example: "shard policy ls",
+		flags:   []flagHelp{formatTableHelp},
+		example: "shard policy list",
 	},
-	"policy rm": {
-		usage:   []string{"policy rm <name>"},
+	"policy remove": {
+		usage:   []string{"policy remove <name>"},
 		summary: "remove a policy that no sandbox holds",
 		args:    []row{{"<name>", "the policy"}},
-		example: "shard policy rm api-only",
+		example: "shard policy remove api-only",
 	},
 	"policy attach": {
 		usage:   []string{"policy attach <id|name> <policy>"},
@@ -383,8 +429,9 @@ var helps = map[string]verbHelp{
 		example: "shard daemon --provider gvisor",
 	},
 	"daemon status": {
-		usage:   []string{"daemon status"},
+		usage:   []string{"daemon status [--format <format>]"},
 		summary: "print what the running daemon reports about itself",
+		flags:   []flagHelp{formatTableHelp},
 		notes:   []string{"It prints the version, pid, start time, socket, provider, capabilities and proxy ports, one per line, then the background tasks. It exits 1 when a task is in backoff."},
 		example: "shard daemon status",
 	},
@@ -417,6 +464,7 @@ var helps = map[string]verbHelp{
 			{"--duration <duration>", "how long the token stays valid; without it, the token never expires", ""},
 			{"--scopes <list>", "a comma-separated list of scopes, such as sandbox:read,exec; without it, the token carries every scope", ""},
 			{"--tokens-file <path>", "the ledger to record the token in, in place of the one beside the signing key file", ""},
+			formatJSONHelp,
 		},
 		notes: []string{
 			"mint and serve create the default signing key on first use, at 0600 in a 0700 directory, and both use it after that.",
@@ -424,20 +472,21 @@ var helps = map[string]verbHelp{
 		},
 		example: "shard tokens mint --name build-agent --duration 24h",
 	},
-	"tokens ls": {
-		usage:   []string{"tokens ls [flags]"},
+	"tokens list": {
+		usage:   []string{"tokens list [flags]"},
 		summary: "list every token the ledger records, with its status",
 		flags: []flagHelp{
 			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},
 			{"--tokens-file <path>", "the ledger itself, in place of the one beside the signing key file", ""},
+			formatTableHelp,
 		},
-		notes:   []string{"ls reads the ledger and never creates a key or a file. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
-		example: "shard tokens ls",
+		notes:   []string{"list reads the ledger and never creates a key or a file. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
+		example: "shard tokens list",
 	},
 	"tokens revoke": {
 		usage:   []string{"tokens revoke [flags] <id>", "tokens revoke [flags] --name <sub>"},
 		summary: "mark a token revoked, so the next request that carries it fails",
-		args:    []row{{"<id>", "the token, as tokens ls prints it"}},
+		args:    []row{{"<id>", "the token, as tokens list prints it"}},
 		flags: []flagHelp{
 			{"--name <sub>", "revoke every token of this subject instead of one id", ""},
 			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},
@@ -447,14 +496,16 @@ var helps = map[string]verbHelp{
 		example: "shard tokens revoke 0123456789abcdef",
 	},
 	"info": {
-		usage:   []string{"info"},
+		usage:   []string{"info [--format <format>]"},
 		summary: "show which provider a daemon would use on this host, and why",
+		flags:   []flagHelp{formatTableHelp},
 		notes:   []string{"info reads the records under the root and probes the host, as a daemon started now with no --provider would, so it works without a daemon. shard daemon status prints what the running daemon uses."},
 		example: "shard info",
 	},
 	"version": {
-		usage:   []string{"version"},
+		usage:   []string{"version [--format <format>]"},
 		summary: "print the client and daemon versions",
+		flags:   []flagHelp{formatTableHelp},
 		notes:   []string{"shard --version prints the client version alone, and never fails."},
 		example: "shard version",
 	},

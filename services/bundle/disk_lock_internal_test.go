@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestTwoWithDiskCallsOnOneImageRunOneAtATime pins SHARD-251: two clones of one stopped source must not race its mount.
+// TestTwoWithDiskCallsOnOneImageRunOneAtATime pins SHARD-251: two snapshots of one stopped source must not race its mount.
 func TestTwoWithDiskCallsOnOneImageRunOneAtATime(t *testing.T) {
 	b := Bundle{Image: t.TempDir() + "/disk.img"}
 

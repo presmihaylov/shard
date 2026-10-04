@@ -216,7 +216,7 @@ type fakeMachine struct {
 	controls int
 }
 
-// unfrozenFile lands in the state directory when a pause stopped a guest whose root still took writes, so a clone could read a torn disk.
+// unfrozenFile lands in the state directory when a pause stopped a guest whose root still took writes, so the disk it copied could miss what the memory holds.
 const unfrozenFile = "unfrozen-pause"
 
 // frozenFile is in the state directory while the guest's root is frozen, so a test sees a guest left unable to write.

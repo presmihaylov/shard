@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 func TestParseRunTheGoalCommand(t *testing.T) {
@@ -58,6 +59,33 @@ func TestParseCreateRefusesACommand(t *testing.T) {
 	}
 }
 
+// A snapshot names its own image, so create takes one or the other, and a refusal of neither names both ways.
+func TestParseCreateTakesAnImageOrASnapshot(t *testing.T) {
+	req, err := parseCreate([]string{"--snapshot", "web-base", "--memory", "512MiB"})
+	if err != nil {
+		t.Fatalf("parseCreate --snapshot: %v", err)
+	}
+	if req.Snapshot != "web-base" || req.Image != "" {
+		t.Errorf("parseCreate --snapshot = %+v, want the snapshot and no image", req)
+	}
+
+	for args, want := range map[string]string{
+		"--snapshot web-base alpine:3.20": "create takes an image or --snapshot, never both: snapshot web-base already names its image",
+		"":                                "create takes one image reference or --snapshot <id|name>, got neither",
+	} {
+		if _, err := parseCreate(strings.Fields(args)); err == nil || err.Error() != want {
+			t.Errorf("parseCreate(%q) = %v, want %q", args, err, want)
+		}
+	}
+}
+
+// run starts an app over an image, so --snapshot is create's alone.
+func TestParseRunRefusesASnapshot(t *testing.T) {
+	if _, err := parseRun([]string{"--snapshot", "web-base", "alpine:3.20", "sleep", "600"}); err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Errorf("parseRun --snapshot = %v, want a refusal of the flag", err)
+	}
+}
+
 func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
@@ -79,7 +107,7 @@ func TestParseCreateFlags(t *testing.T) {
 		t.Errorf("workdir = %q, user = %q", req.WorkDir, req.User)
 	}
 
-	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
+	if memoryOf(req) != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
 		t.Errorf("resources = %+v, want 512 MiB, 2 vcpus and a 64 MiB disk", req.Resources)
 	}
 
@@ -93,16 +121,43 @@ func TestParseCreateTakesASizeWithAUnit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
-	if req.Resources.MemoryMiB != 512 || req.Resources.DiskMiB != 2048 {
+	if memoryOf(req) != 512 || req.Resources.DiskMiB != 2048 {
 		t.Errorf("resources = %+v, want 512 MiB of memory and a 2048 MiB disk", req.Resources)
 	}
 
 	if req, err = parseCreate([]string{"--memory", "16384GiB", "--disk", "1KB", "alpine:3.20"}); err != nil {
 		t.Fatalf("parseCreate at the memory bound: %v", err)
 	}
-	if req.Resources.MemoryMiB != 1<<24 || req.Resources.DiskMiB != 1 {
+	if memoryOf(req) != 1<<24 || req.Resources.DiskMiB != 1 {
 		t.Errorf("resources = %+v, want the 16777216 MiB bound and a 1KB disk rounded up to 1 MiB", req.Resources)
 	}
+}
+
+// An omitted --memory stays absent for a snapshot to fill, and --memory 0 is an explicit request for no bound.
+func TestParseCreateTellsAnOmittedMemoryFromZero(t *testing.T) {
+	req, err := parseCreate([]string{"--snapshot", "base"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.MemoryMiB != nil {
+		t.Errorf("memory = %d with no --memory, want it absent", *req.Resources.MemoryMiB)
+	}
+
+	if req, err = parseCreate([]string{"--snapshot", "base", "--memory", "0"}); err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.MemoryMiB == nil || *req.Resources.MemoryMiB != 0 {
+		t.Errorf("memory = %v with --memory 0, want an explicit 0", req.Resources.MemoryMiB)
+	}
+}
+
+// memoryOf reads an absent --memory as -1, which no flag parses to.
+func memoryOf(req sandbox.CreateRequest) int64 {
+	if req.Resources.MemoryMiB == nil {
+		return -1
+	}
+
+	return *req.Resources.MemoryMiB
 }
 
 func TestInitPathFromEnv(t *testing.T) {

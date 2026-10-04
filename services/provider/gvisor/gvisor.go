@@ -634,7 +634,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 	code, err := p.runsc.Exec(ctx, id, opts)
 	if err != nil {
-		return models.ExitStatus{}, notStarted(id, err)
+		return models.ExitStatus{}, execFailure(id, err)
 	}
 
 	// Signal stays 0: runsc reports an exec's exit code and nothing about the signal that ended it.
@@ -663,9 +663,12 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	return nil
 }
 
-// notStarted gives a command runsc refused to start a name the cli can answer with a shell's own
-// exit code, because runsc reports every one of them as its internal 128.
-func notStarted(id string, err error) error {
+// execFailure splits runsc's internal 128: a refused start gets a shell's own exit code, a lost wait the sentinel a pause can claim.
+func execFailure(id string, err error) error {
+	if lost, ok := errors.AsType[*runsc.ExecLostError](err); ok {
+		return fmt.Errorf("sandbox %s: %w: %s", id, models.ErrExecLost, lost.Reason)
+	}
+
 	var start *runsc.ExecStartError
 	if !errors.As(err, &start) {
 		return err
@@ -922,10 +925,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("create the checkpoint directory %s: %w", tmp, err)
 	}
 
 	if err := p.runsc.Pause(ctx, id); err != nil {
@@ -939,7 +942,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 	// A filesystem without an atomic exchange refuses the install, after a checkpoint the sentry did not survive.
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err))
 	}
 
 	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged teardown holds no lock.
@@ -968,7 +971,7 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 // Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the snapshot in dir (SHARD-366).
 func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
+		return fmt.Errorf("sandbox %s has no checkpoint in %s to release it beside: %w", id, dir, err)
 	}
 
 	// The same bound a lost pause's release has, over the probe too, so a wedged runsc stalls no boot and holds no lock.
@@ -980,7 +983,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 		return err
 	}
 	if status.Alive() && status.State != models.StatePaused {
-		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its snapshot", id, status.State, Name)
+		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its checkpoint", id, status.State, Name)
 	}
 
 	b, err := p.open(id)
@@ -994,7 +997,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 // Resume brings the sandbox back from the snapshot in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)
+		return fmt.Errorf("sandbox %s has no checkpoint in %s: %w", id, dir, err)
 	}
 
 	stateDir, err := p.dirs(id)
@@ -1211,20 +1214,20 @@ func (p *Provider) thawCutFork(ctx context.Context, id string) (bool, error) {
 	return true, p.thaw(ctx, id)
 }
 
-// Clone is a start after a stop under a new id: the source's layers are copied and its entrypoint runs again.
-func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
+// Snapshot copies the layers a stop kept into dir, and refuses a source that could still write them.
+func (p *Provider) Snapshot(ctx context.Context, sourceID, dir string) error {
 	source, err := p.open(sourceID)
 	if err != nil {
 		return err
 	}
 
 	// A live source writes its layer under the copy, and its rootfs mount hides the layer's whiteouts.
-	sourceStatus, err := p.Status(ctx, sourceID)
+	status, err := p.Status(ctx, sourceID)
 	if err != nil {
 		return err
 	}
-	if sourceStatus.Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, Name)
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s is %s on %s: stop it first, a snapshot copies what a stop kept", sourceID, status.State, Name)
 	}
 	mounted, err := source.Mounted()
 	if err != nil {
@@ -1233,62 +1236,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if mounted {
 		return fmt.Errorf("sandbox %s is still mounted at %s: a copy of its layer would miss what the mount holds", sourceID, source.RootFS)
 	}
-	if _, err := imageOf(source, sourceID); err != nil {
-		return err
-	}
 
-	status, err := p.Status(ctx, spec.ID)
-	if err != nil {
-		return err
-	}
-	if status.Alive() {
-		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
-	}
-
-	existing, err := bundle.Open(spec.StateDir)
-	if err != nil {
-		return err
-	}
-	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
-		return err
-	}
-
-	// The clone's own disk, bounded the way the source's was, takes the layer copy.
-	if err := existing.Provision(spec.Resources); err != nil {
-		return err
-	}
-
-	b, err := p.bundles.Clone(source, spec)
-	if err != nil {
-		return errors.Join(err, existing.Unmount())
-	}
-
-	rt, err := imageOf(b, spec.ID)
-	if err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	// A cgroup a removed sandbox of this id left behind would make the create refuse the bound.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return errors.Join(fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err), b.Unmount())
-	}
-
-	if err := b.Mount(rt.RootFS); err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	// config.json carries the source's bound, so the clone is bound the way the source was.
-	spec.Resources = rt.Resources
-
-	if err := p.create(ctx, spec, b); err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	if err := p.runsc.Start(ctx, spec.ID); err != nil {
-		return err
-	}
-
-	return p.awaitStarted(ctx, spec.ID, b)
+	return source.Snapshot(ctx, dir)
 }
 
 // imageOf reads back the image a bundle stacks over, and refuses one that is gone before anything runs.

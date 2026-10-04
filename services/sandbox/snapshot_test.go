@@ -16,7 +16,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-func TestPauseWritesTheSnapshotAndRecordsIt(t *testing.T) {
+func TestPauseWritesTheCheckpointAndRecordsIt(t *testing.T) {
 	r := &recorder{}
 	source := running()
 	source.Name = "web"
@@ -28,13 +28,13 @@ func TestPauseWritesTheSnapshotAndRecordsIt(t *testing.T) {
 		t.Fatalf("pause: %v", err)
 	}
 
-	if sb.ID != "sandbox1" || sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != "/snapshots/sandbox1" {
-		t.Errorf("pause answered %+v, want sandbox1 paused with pid 0 and its snapshot", sb)
+	if sb.ID != "sandbox1" || sb.State != models.StatePaused || sb.PID != 0 || sb.Checkpoint != "/checkpoints/sandbox1" {
+		t.Errorf("pause answered %+v, want sandbox1 paused with pid 0 and its checkpoint", sb)
 	}
-	if l.provider.snapshotDir != "/snapshots/sandbox1" {
+	if l.provider.snapshotDir != "/checkpoints/sandbox1" {
 		t.Errorf("the provider was told to write %q, want the repository's snapshot directory", l.provider.snapshotDir)
 	}
-	// The entrypoint's exit is part of the run the snapshot froze.
+	// The entrypoint's exit is part of the run the checkpoint froze.
 	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
 		t.Errorf("the record lost its exit: %+v", sb.ExitStatus)
 	}
@@ -111,8 +111,8 @@ func TestPauseKeepsTheRecordRunningWhenTheSandboxStillIs(t *testing.T) {
 		t.Fatal("pause returned no error")
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || sb.Pausing {
-		t.Errorf("the record is %s with snapshot %q and mark %v after a failed pause, want running with neither", sb.State, sb.Snapshot, sb.Pausing)
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Checkpoint != "" || sb.Pausing {
+		t.Errorf("the record is %s with checkpoint %q and mark %v after a failed pause, want running with neither", sb.State, sb.Checkpoint, sb.Pausing)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestAFailedPauseNeverTakesTheCheckpointAnEarlierPauseLeft(t *testing.T) {
 	}
 
 	resumed := running()
-	resumed.Snapshot = dir
+	resumed.Checkpoint = dir
 	svc, l := newService(t, &recorder{fail: []string{"provider.Pause"}}, resumed)
 	l.repo.snapshotDir = dir
 	l.provider.status = models.Status{}
@@ -228,7 +228,7 @@ func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
 }
 
 // A delete that spends the pause budget after a good checkpoint leaves the pause context done, and the record must still say paused.
-func TestPauseThatSpentItsBudgetStillRecordsTheSnapshot(t *testing.T) {
+func TestPauseThatSpentItsBudgetStillRecordsTheCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.PauseBudget = 50 * time.Millisecond })
 	l.repo.snapshotDir = dir
@@ -239,12 +239,12 @@ func TestPauseThatSpentItsBudgetStillRecordsTheSnapshot(t *testing.T) {
 		t.Fatalf("pause returned %v, want the deadline and that the sandbox is paused", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir || sb.Pausing {
-		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Snapshot, sb.Pausing, dir)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Checkpoint != dir || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, checkpoint %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Checkpoint, sb.Pausing, dir)
 	}
 }
 
-// A complete snapshot outranks a failed host cleanup: the record must say paused, or start throws it away.
+// A complete checkpoint outranks a failed host cleanup: the record must say paused, or start throws it away.
 func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 	dir := t.TempDir()
 	svc, l := newService(t, &recorder{}, running())
@@ -256,12 +256,12 @@ func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 		t.Fatalf("pause returned %v, want the failure and that the sandbox is paused", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Snapshot != dir || sb.Pausing {
-		t.Errorf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", sb.State, sb.Snapshot, sb.Pausing, dir)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Checkpoint != dir || sb.Pausing {
+		t.Errorf("the record is %s with checkpoint %q and mark %v, want paused with %s and no mark", sb.State, sb.Checkpoint, sb.Pausing, dir)
 	}
 }
 
-// A delete that fails after the swap leaves the sentry frozen beside a complete snapshot, which the pause must release (SHARD-366).
+// A delete that fails after the swap leaves the sentry frozen beside a complete checkpoint, which the pause must release (SHARD-366).
 func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
 	dir := t.TempDir()
 	r := &recorder{}
@@ -274,8 +274,8 @@ func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
 		t.Fatalf("pause returned %v, want the failure and that the sandbox is paused", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Snapshot != dir || sb.Pausing {
-		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Snapshot, sb.Pausing, dir)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.PID != 0 || sb.Checkpoint != dir || sb.Pausing {
+		t.Errorf("the record is %s with pid %d, checkpoint %q and mark %v, want paused with pid 0, %s and no mark", sb.State, sb.PID, sb.Checkpoint, sb.Pausing, dir)
 	}
 	if !slices.Contains(r.snapshot(), "provider.Release") {
 		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", r.snapshot())
@@ -294,15 +294,15 @@ func TestPauseKeepsItsMarkWhenTheReleaseFails(t *testing.T) {
 		t.Fatalf("pause returned %v, want the failed release", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
-		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Checkpoint != "" || !sb.Pausing {
+		t.Errorf("the record is %s with checkpoint %q and mark %v, want running with no checkpoint and the mark", sb.State, sb.Checkpoint, sb.Pausing)
 	}
 }
 
 // unreleasing is a substrate with no release, the way Firecracker is: its embedded interface hides the fake's Release.
 type unreleasing struct{ models.Provider }
 
-// A substrate that cannot release keeps its guest frozen beside the snapshot, so the failed pause must keep the mark that names it.
+// A substrate that cannot release keeps its guest frozen beside the checkpoint, so the failed pause must keep the mark that names it.
 func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
 	dir := t.TempDir()
 	r := &recorder{}
@@ -315,8 +315,8 @@ func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing
 		t.Fatalf("pause returned %v, want the failure and that the record keeps its mark", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Snapshot != "" || !sb.Pausing {
-		t.Errorf("the record is %s with snapshot %q and mark %v, want running with no snapshot and the mark", sb.State, sb.Snapshot, sb.Pausing)
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Checkpoint != "" || !sb.Pausing {
+		t.Errorf("the record is %s with checkpoint %q and mark %v, want running with no checkpoint and the mark", sb.State, sb.Checkpoint, sb.Pausing)
 	}
 	if slices.Contains(r.snapshot(), "provider.Release") {
 		t.Errorf("the calls were %v, want no release from a substrate that has none", r.snapshot())
@@ -336,7 +336,7 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	if sb.ID != "sandbox1" || sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("resume answered %+v, want sandbox1 running with pid 7", sb)
 	}
-	if l.provider.snapshotDir != "/snapshots/sandbox1" {
+	if l.provider.snapshotDir != "/checkpoints/sandbox1" {
 		t.Errorf("the provider was told to read %q, want the snapshot the record holds", l.provider.snapshotDir)
 	}
 
@@ -353,9 +353,9 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
 		t.Errorf("the record lost its exit: %+v", sb.ExitStatus)
 	}
-	// A resume does not consume the snapshot: the next one reads it again.
-	if sb.Snapshot != "/snapshots/sandbox1" {
-		t.Errorf("the record lost its snapshot: %q", sb.Snapshot)
+	// A resume does not consume the checkpoint: the next one reads it again.
+	if sb.Checkpoint != "/checkpoints/sandbox1" {
+		t.Errorf("the record lost its checkpoint: %q", sb.Checkpoint)
 	}
 }
 
@@ -375,14 +375,14 @@ func TestResumeRefusesASandboxThatIsNotPaused(t *testing.T) {
 	}
 }
 
-func TestResumeRefusesARecordWithNoSnapshot(t *testing.T) {
+func TestResumeRefusesARecordWithNoCheckpoint(t *testing.T) {
 	sb := pausedSandbox()
-	sb.Snapshot = ""
+	sb.Checkpoint = ""
 	svc, l := newService(t, &recorder{}, sb)
 
 	_, err := svc.Resume(t.Context(), "sandbox1")
-	if err == nil || !strings.Contains(err.Error(), "no snapshot") {
-		t.Errorf("resume returned %v, want a refusal that says there is no snapshot", err)
+	if err == nil || !strings.Contains(err.Error(), "no checkpoint") {
+		t.Errorf("resume returned %v, want a refusal that says there is no checkpoint", err)
 	}
 	if l.net.allocated {
 		t.Error("resume built the network for a sandbox it could not resume")
@@ -397,8 +397,8 @@ func TestResumeKeepsTheRecordPausedWhenTheProviderFails(t *testing.T) {
 		t.Fatal("resume returned no error")
 	}
 
-	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Snapshot == "" {
-		t.Errorf("the record is %s with snapshot %q after a failed resume, want paused with its snapshot", sb.State, sb.Snapshot)
+	if sb := l.repo.sb; sb.State != models.StatePaused || sb.Checkpoint == "" {
+		t.Errorf("the record is %s with checkpoint %q after a failed resume, want paused with its checkpoint", sb.State, sb.Checkpoint)
 	}
 }
 
@@ -416,8 +416,8 @@ func TestResumeRecordsTheSandboxWhenTheRulesFail(t *testing.T) {
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
 	}
-	if sb.ExitStatus == nil || sb.Snapshot == "" {
-		t.Errorf("the record lost its exit or its snapshot: %+v", sb)
+	if sb.ExitStatus == nil || sb.Checkpoint == "" {
+		t.Errorf("the record lost its exit or its checkpoint: %+v", sb)
 	}
 }
 
@@ -656,74 +656,15 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 	}
 }
 
-// cloneSource is a stopped sandbox with the image and the bound a clone must carry over.
-func cloneSource() models.Sandbox {
-	sb := stopped()
-	sb.Image = "docker.io/library/alpine:3.20"
-	sb.Resources = models.Resources{MemoryMiB: 256}
-
-	return sb
-}
-
-func TestCloneStartsANewSandboxOverTheSourcesFiles(t *testing.T) {
-	r := &recorder{}
-	source := cloneSource()
-	svc, l := newService(t, r, source)
-
-	sb, err := svc.Clone(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-	if err != nil {
-		t.Fatalf("clone: %v", err)
-	}
-
-	if sb.ID != "sandbox2" || sb.Name != "web-2" {
-		t.Errorf("clone answered %+v, want the new id under the new name", sb)
-	}
-	if l.provider.source != "sandbox1" {
-		t.Errorf("the provider was told to copy %q, want the source's id", l.provider.source)
-	}
-	if l.provider.spec.ID != "sandbox2" || l.provider.spec.StateDir != "/state/sandbox2" {
-		t.Errorf("the provider was handed %+v, want the clone's own id and state directory", l.provider.spec)
-	}
-	if l.provider.spec.Network.NetnsPath != "/run/netns/sandbox2" {
-		t.Errorf("the provider was handed the network %+v, want the clone's own netns", l.provider.spec.Network)
-	}
-
-	// The clone comes up in a fresh netns the allocation ruled, as a create does, so nothing is applied again.
-	want := []string{"net.Allocate", "provider.Clone"}
-	if got := keep(r.calls, "net.Allocate", "provider.Clone", "net.Reapply"); !slices.Equal(got, want) {
-		t.Errorf("the network was driven as %v, want %v", got, want)
-	}
-
-	if sb.Image != source.Image || sb.Resources != source.Resources {
-		t.Errorf("the clone's record is %+v, want the source's image and bound", sb)
-	}
-	if sb.State != models.StateRunning || sb.PID != 7 {
-		t.Errorf("the clone's record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
-	}
-	// The entrypoint runs from the beginning, so the source's exit says nothing about the clone.
-	if sb.ExitStatus != nil {
-		t.Errorf("the clone's record holds the exit %+v, want none", sb.ExitStatus)
-	}
-	if sb.Snapshot != "" {
-		t.Errorf("the clone's record names the snapshot %q, want none", sb.Snapshot)
-	}
-
-	if l.repo.sb.State != models.StateStopped || l.repo.sb.ExitStatus == nil {
-		t.Errorf("the source's record changed to %+v", l.repo.sb)
-	}
-	if l.repo.deleted {
-		t.Error("a clone that succeeded deleted a record")
-	}
-}
-
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "UnresponsiveReason", "Snapshot", "Pausing",
+var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
 	"Restart", "StartedAt", "CreatedAt"}
 
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
 func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Image = "docker.io/library/alpine:3.20"
+	sb.Digest = fakeDigest
 	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
 	sb.Secrets = []string{"api-token"}
 	sb.Policy = "locked"
@@ -733,128 +674,29 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	return sb
 }
 
-func TestForkAndCloneCarryEveryPolicyField(t *testing.T) {
-	verbs := map[string]struct {
-		source models.Sandbox
-		copy   func(*sandbox.Service, context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)
-	}{
-		"fork":  {withEveryPolicy(forkSource()), (*sandbox.Service).Fork},
-		"clone": {withEveryPolicy(cloneSource()), (*sandbox.Service).Clone},
-	}
-	for name, verb := range verbs {
-		t.Run(name, func(t *testing.T) {
-			svc, _ := newService(t, &recorder{}, verb.source)
-			sb, err := verb.copy(svc, t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-			if err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-
-			src, copied := reflect.ValueOf(verb.source), reflect.ValueOf(sb)
-			for _, field := range reflect.VisibleFields(src.Type()) {
-				if slices.Contains(copyRunState, field.Name) {
-					continue
-				}
-				// A field the source leaves zero would pass whether or not the copy carries it.
-				if src.FieldByIndex(field.Index).IsZero() {
-					t.Errorf("the source leaves %s zero, so the test proves nothing about it: set it in withEveryPolicy", field.Name)
-					continue
-				}
-				if want, got := src.FieldByIndex(field.Index).Interface(), copied.FieldByIndex(field.Index).Interface(); !reflect.DeepEqual(got, want) {
-					t.Errorf("the %s holds %s %v, want the source's %v", name, field.Name, got, want)
-				}
-			}
-			if sb.Restart == nil || sb.Restart.RestartSpec != verb.source.Restart.RestartSpec {
-				t.Errorf("the %s holds the restart %+v, want the source's policy %+v", name, sb.Restart, verb.source.Restart.RestartSpec)
-			}
-		})
-	}
-}
-
-// A paused sandbox holds its files as they were at the pause, and nothing writes them, so it clones too.
-func TestCloneTakesAPausedSource(t *testing.T) {
-	svc, l := newService(t, &recorder{}, pausedSandbox())
-
-	if _, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{}); err != nil {
-		t.Fatalf("clone of a paused sandbox: %v", err)
-	}
-	if l.repo.sb.State != models.StatePaused || l.repo.sb.Snapshot == "" {
-		t.Errorf("the source's record changed to %+v", l.repo.sb)
-	}
-}
-
-func TestCloneRefusesASourceThatIsUp(t *testing.T) {
-	for _, state := range []models.State{models.StateRunning, models.StateCreated} {
-		sb := cloneSource()
-		sb.State = state
-		r := &recorder{}
-		svc, _ := newService(t, r, sb)
-
-		_, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{})
-		if err == nil || !strings.Contains(err.Error(), "stop it first") {
-			t.Errorf("clone of a %s sandbox returned %v, want a refusal that names the stop", state, err)
-		}
-		if slices.Contains(r.calls, "repo.Create") {
-			t.Error("the refusal came after a record was created")
-		}
-	}
-}
-
-// Everything claimed before the start goes back when it fails, and the source is left alone.
-func TestCloneGivesBackWhatItClaimedWhenTheStartFails(t *testing.T) {
-	r := &recorder{fail: []string{"provider.Clone"}}
-	svc, l := newService(t, r, cloneSource())
-
-	if _, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{}); err == nil {
-		t.Fatal("clone reported success when the start failed")
-	}
-
-	want := []string{"provider.Clone", "provider.Remove", "net.Release", "repo.Delete"}
-	if got := keep(r.calls, want...); !slices.Equal(got, want) {
-		t.Errorf("the teardown ran as %v, want %v", got, want)
-	}
-	if l.repo.sb.State != models.StateStopped {
-		t.Errorf("the source's record changed to %s", l.repo.sb.State)
-	}
-}
-
-// The clone is live once the start returns, so a failure after it keeps the sandbox and its record.
-func TestCloneKeepsTheSandboxWhenTheRecordWriteFails(t *testing.T) {
-	r := &recorder{fail: []string{"provider.Status"}}
-	svc, l := newService(t, r, cloneSource())
-
-	if _, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{}); err == nil {
-		t.Fatal("clone reported success when the status read failed")
-	}
-
-	if slices.Contains(r.calls, "provider.Remove") || slices.Contains(r.calls, "repo.Delete") {
-		t.Errorf("a live clone was torn down: %v", r.calls)
-	}
-	// The record must name the netns and the interface, or a later rm cannot give them back.
-	made := l.repo.made
-	if made == nil || made.NetnsPath != "/run/netns/sandbox2" || made.Address.String() != "10.0.0.2/24" {
-		t.Errorf("the clone's record holds the network %+v, want the one it was allocated", made)
-	}
-}
-
-func TestCloneCarriesThePolicyAndTellsTheHostBeforeTheStart(t *testing.T) {
-	r := &recorder{}
-	source := cloneSource()
-	source.Policy = "locked"
-	svc, l := newService(t, r, source)
-
-	sb, err := svc.Clone(t.Context(), "sandbox1", sandbox.CopyRequest{})
+func TestForkCarriesEveryPolicyField(t *testing.T) {
+	source := withEveryPolicy(forkSource())
+	svc, _ := newService(t, &recorder{}, source)
+	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
 	if err != nil {
-		t.Fatalf("clone: %v", err)
+		t.Fatalf("fork: %v", err)
 	}
 
-	want := []string{"net.Allocate", "net.Reapply", "provider.Clone"}
-	if got := keep(r.calls, want...); !slices.Equal(got, want) {
-		t.Errorf("the network was driven as %v, want %v", got, want)
+	src, copied := reflect.ValueOf(source), reflect.ValueOf(sb)
+	for _, field := range reflect.VisibleFields(src.Type()) {
+		if slices.Contains(copyRunState, field.Name) {
+			continue
+		}
+		// A field the source leaves zero would pass whether or not the copy carries it.
+		if src.FieldByIndex(field.Index).IsZero() {
+			t.Errorf("the source leaves %s zero, so the test proves nothing about it: set it in withEveryPolicy", field.Name)
+			continue
+		}
+		if want, got := src.FieldByIndex(field.Index).Interface(), copied.FieldByIndex(field.Index).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("the fork holds %s %v, want the source's %v", field.Name, got, want)
+		}
 	}
-	if sb.Policy != "locked" {
-		t.Errorf("the clone names policy %q, want the source's", sb.Policy)
-	}
-	if got := l.provider.spec.Network.Nameservers; !slices.Equal(got, []netip.Addr{netip.MustParseAddr("10.0.0.1")}) {
-		t.Errorf("the clone resolves through %v, want the gateway", got)
+	if sb.Restart == nil || sb.Restart.RestartSpec != source.Restart.RestartSpec {
+		t.Errorf("the fork holds the restart %+v, want the source's policy %+v", sb.Restart, source.Restart.RestartSpec)
 	}
 }

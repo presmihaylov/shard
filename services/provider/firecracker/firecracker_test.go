@@ -1,6 +1,7 @@
 package firecracker_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -178,7 +179,7 @@ func (h *harness) stateDir(id string) (string, error) {
 
 // snapshotDir answers where a pause of id writes, as the repository does; nothing creates it before a pause.
 func (h *harness) snapshotDir(id string) (string, error) {
-	return filepath.Join(h.root, "snapshots", id), nil
+	return filepath.Join(h.root, "checkpoints", id), nil
 }
 
 func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
@@ -200,7 +201,7 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	return models.SandboxSpec{ID: id, StateDir: dir, BaseDisk: h.erofs, Entrypoint: entrypoint, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}
 }
 
-// requireReflink skips where the root shares no blocks: Clone is refused there, and the suite would prove only the refusal.
+// requireReflink skips where the root shares no blocks: every copy is refused there, and the suite would prove only the refusal.
 func requireReflink(t *testing.T, root string) {
 	t.Helper()
 
@@ -210,7 +211,7 @@ func requireReflink(t *testing.T, root string) {
 	}
 	err := bundle.Reflink(probe, probe+"-clone")
 	if errors.Is(err, errors.ErrUnsupported) {
-		t.Skipf("%s shares no blocks, so Clone is refused there; put TMPDIR on xfs or btrfs: %v", root, err)
+		t.Skipf("%s shares no blocks, so every copy is refused there; put TMPDIR on xfs or btrfs: %v", root, err)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +232,7 @@ func TestConformance(t *testing.T) {
 		},
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		// The fake guest is a host process, so the suite writes under the root; a clone here proves the verbs and not the disk.
+		// The fake guest is a host process, so the suite writes under the root; a snapshot here proves the verbs and not the disk.
 		Scratch:       h.root,
 		SharedScratch: true,
 		Reopen:        h.reopen,
@@ -337,7 +338,7 @@ func readJailer(t *testing.T, jail string) jailerArgs {
 	return args
 }
 
-// No two sandboxes share a uid, so neither can open the other's jail; a restart keeps the uid, and a clone gets a new one.
+// No two sandboxes share a uid, so neither can open the other's jail; a restart keeps the uid, and a sandbox from a snapshot gets a new one.
 func TestEverySandboxGetsAUIDOfItsOwn(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -364,13 +365,20 @@ func TestEverySandboxGetsAUIDOfItsOwn(t *testing.T) {
 	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
-	clone := h.newSpec(t)
-	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: clone.Resources}
-	if err := h.provider.Clone(t.Context(), first.ID, clone); err != nil {
+	files := filepath.Join(h.root, "snapshot")
+	if err := os.MkdirAll(files, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := readVM(t, clone.StateDir).UID; got == uid || got == readVM(t, second.StateDir).UID {
-		t.Errorf("the clone got uid %d, which another sandbox has", got)
+	if err := h.provider.Snapshot(t.Context(), first.ID, files); err != nil {
+		t.Fatal(err)
+	}
+	seeded := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	seeded.Seed = files
+	if err := h.provider.Create(t.Context(), seeded); err != nil {
+		t.Fatal(err)
+	}
+	if got := readVM(t, seeded.StateDir).UID; got == uid || got == readVM(t, second.StateDir).UID {
+		t.Errorf("the sandbox from a snapshot got uid %d, which another sandbox has", got)
 	}
 }
 
@@ -435,7 +443,7 @@ func TestCreateRefusesAnImageWithoutAnErofsImage(t *testing.T) {
 	}
 }
 
-// The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name, on a create and a clone.
+// The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
@@ -455,24 +463,6 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		}
 	}
 
-	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
-	if err := h.provider.Create(t.Context(), source); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
-		t.Fatal(err)
-	}
-	clone := h.newSpec(t)
-	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: models.Resources{MemoryMiB: 64}}
-	err = h.provider.Clone(t.Context(), source.ID, clone)
-	if err == nil || !strings.Contains(err.Error(), clone.ID) || !strings.Contains(err.Error(), "128 MiB") {
-		t.Fatalf("Clone = %v, want a refusal that names the sandbox and the minimum", err)
-	}
-	clone.Resources.MemoryMiB = 0
-	err = h.provider.Clone(t.Context(), source.ID, clone)
-	if err == nil || !strings.Contains(err.Error(), "--memory 0") {
-		t.Fatalf("Clone with --memory 0 = %v, want the refusal by name", err)
-	}
 }
 
 // The orchestrator asks before it writes a record, so a refused --memory or --cpus leaves no failed sandbox in ls.
@@ -1039,40 +1029,54 @@ func (h *harness) unresponsive(t *testing.T, id string, pid int) models.Status {
 	return status
 }
 
-// The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, on the source's image.
-func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
+// A snapshot copies the overlay a stop kept, and a create seeded from it starts on that overlay over the same image.
+func TestASnapshotSeedsTheOverlayOfANewSandbox(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
-	source := h.newSpec(t, "/bin/sh", "-c", "exit 3")
-	source.Env = []string{"KEPT=1"}
+	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
 	if err := h.provider.Create(t.Context(), source); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.provider.Start(t.Context(), source.ID); err != nil {
+	files := filepath.Join(h.root, "snapshot")
+	if err := os.MkdirAll(files, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if exit, err := h.provider.Wait(t.Context(), source.ID); err != nil || exit.Code != 3 {
-		t.Fatalf("Wait on the source = %+v, %v", exit, err)
+	if err := h.provider.Snapshot(t.Context(), source.ID, files); err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Fatalf("Snapshot of a live source = %v, want a refusal", err)
 	}
 	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
-	src := readVM(t, source.StateDir)
 
-	clone := h.newSpec(t)
-	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: clone.Resources}
-	if err := h.provider.Clone(t.Context(), source.ID, clone); err != nil {
-		t.Fatalf("Clone from a stopped source: %v", err)
+	// The fake guest never writes its overlay, so the test writes what a guest would have.
+	overlay, err := os.OpenFile(filepath.Join(source.StateDir, bundle.OverlayDiskFile), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if exit, err := h.provider.Wait(t.Context(), clone.ID); err != nil || exit.Code != 3 {
-		t.Fatalf("Wait on the clone = %+v, %v", exit, err)
+	if _, err := overlay.WriteString("kept by the source"); err != nil {
+		t.Fatal(err)
 	}
-	got := readVM(t, clone.StateDir)
-	if !reflect.DeepEqual(got.Run, src.Run) || got.RootFS != src.RootFS || got.BaseDisk != src.BaseDisk {
-		t.Errorf("the clone's record = %+v, want the source's run, rootfs and image %+v", got, src)
+	if err := overlay.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(clone.StateDir, "overlay.raw")); err != nil {
-		t.Errorf("the clone has no overlay of its own: %v", err)
+	if err := h.provider.Snapshot(t.Context(), source.ID, files); err != nil {
+		t.Fatalf("Snapshot of a stopped source: %v", err)
+	}
+
+	seeded := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	seeded.Seed = files
+	if err := h.provider.Create(t.Context(), seeded); err != nil {
+		t.Fatalf("Create from the snapshot: %v", err)
+	}
+	want, err := os.ReadFile(filepath.Join(source.StateDir, bundle.OverlayDiskFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(seeded.StateDir, bundle.OverlayDiskFile)); err != nil || !bytes.Equal(got, want) {
+		t.Errorf("the seeded overlay holds %d bytes (%v), want the %d the source kept", len(got), err, len(want))
+	}
+	if got, src := readVM(t, seeded.StateDir), readVM(t, source.StateDir); got.BaseDisk != src.BaseDisk {
+		t.Errorf("the seeded sandbox runs over %q, want the source's image %q", got.BaseDisk, src.BaseDisk)
 	}
 }
 
@@ -1207,7 +1211,7 @@ func requireJailed(t *testing.T, h *harness, spec models.SandboxSpec, snapshot s
 	}
 	jail := h.jail(spec.ID)
 	if !sameFile(t, filepath.Join(jail, "overlay.raw"), filepath.Join(spec.StateDir, "overlay.raw")) {
-		t.Error("the jail's overlay is not the sandbox's own file, so the guest writes where clone and pause never read")
+		t.Error("the jail's overlay is not the sandbox's own file, so the guest writes where snapshot and pause never read")
 	}
 	memory := filepath.Join(jail, "memory")
 	if got := links(t, memory); got != 1 {
@@ -1960,10 +1964,10 @@ func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	empty := t.TempDir()
-	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Errorf("Resume without a snapshot = %v, want the refusal", err)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Errorf("Fork without a snapshot = %v, want the refusal", err)
 	}
 
@@ -2050,7 +2054,7 @@ func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
 	}
 	want := []string{"checkpoint.img", "memory", "overlay.raw", "snapshot.json", "vmstate"}
 	if !slices.Equal(got, want) {
-		t.Errorf("the snapshot directory holds %v, want the second snapshot alone %v", got, want)
+		t.Errorf("the checkpoint directory holds %v, want the second checkpoint alone %v", got, want)
 	}
 	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory after the second Pause: %v, want gone", err)

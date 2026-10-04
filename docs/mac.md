@@ -8,8 +8,9 @@ install first, neither Docker nor Homebrew, and the daemon runs as your user.
 shard needs Apple silicon and macOS 14 or later, which is the one supported Mac. An Intel Mac is not
 supported. The binary builds and the framework boots there, but nothing is tested on it, `pause`,
 `resume` and `fork` refuse by name on every macOS, and a bug on Intel gets no fix. macOS 13 is not
-supported either, because the three snapshot verbs need the save API of macOS 14 and refuse by name
-on 13 (`docs/provider-vz.md`). There is no fallback provider. The appendix is the workaround for both.
+supported either, because `pause`, `resume` and `fork` need the save API of macOS 14 and refuse by
+name on 13 (`docs/provider-vz.md`). There is no fallback provider. The appendix is the workaround
+for both.
 
 ## Get the binary
 
@@ -97,7 +98,7 @@ sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/sha
 sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
 ```
 
-`launchctl print system/shard.daemon` shows it running, and `shard ls` answers in the same terminal.
+`launchctl print system/shard.daemon` shows it running, and `shard list` answers in the same terminal.
 Stop any daemon that runs in a terminal first, because two daemons on one root refuse each other over
 `daemon.lock`. To remove it:
 
@@ -260,7 +261,7 @@ export SHARD_REMOTE=https://localhost:8443
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
 shard run -d alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>
-shard ls
+shard list
 ```
 
 The client refuses a token file that everyone can read, which is why the `umask` is there. A script

@@ -375,7 +375,7 @@ func (p *Provider) spared(id string) bool {
 func (p *Provider) installed(id string) (bool, error) {
 	dir, err := p.cfg.Snapshots(id)
 	if err != nil {
-		return false, fmt.Errorf("find the snapshot directory: %w", err)
+		return false, fmt.Errorf("find the checkpoint directory: %w", err)
 	}
 	path := filepath.Join(dir, checkpointFile)
 	_, err = os.Stat(path)

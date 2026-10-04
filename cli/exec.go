@@ -223,6 +223,8 @@ func parseExec(args []string) (execOptions, error) {
 	flags := newFlags("exec")
 	flags.BoolVar(&opts.interactive, "i", false, "")
 	flags.BoolVar(&opts.tty, "t", false, "")
+	flags.BoolVar(&opts.interactive, "interactive", false, "")
+	flags.BoolVar(&opts.tty, "tty", false, "")
 	flags.Var((*envList)(&opts.env), "env", "")
 	flags.StringVar(&opts.workDir, "workdir", "", "")
 	flags.StringVar(&opts.user, "user", "", "")

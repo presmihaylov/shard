@@ -52,14 +52,14 @@ func TestEgressLogFollowOverPlainHTTPEndsOnTheRemove(t *testing.T) {
 
 	awaitDrop(t, body, `"address":"169.254.169.254"`)
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
-		t.Fatalf("rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", id}); err != nil {
+		t.Fatalf("remove --force: %v", err)
 	}
 
-	// The guest's own IPv6 drops can still be unread at the rm, so the body ends on whole records, not on nothing.
+	// The guest's own IPv6 drops can still be unread at the remove, so the body ends on whole records, not on nothing.
 	for _, line := range strings.SplitAfter(awaitEnd(t, body), "\n") {
 		if line != "" && !isHostDrop(line) {
-			t.Errorf("the body carried %q after the rm, want whole records of host drops", line)
+			t.Errorf("the body carried %q after the remove, want whole records of host drops", line)
 		}
 	}
 }

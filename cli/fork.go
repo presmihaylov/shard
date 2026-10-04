@@ -9,7 +9,7 @@ import (
 
 // fork asks the daemon for a new sandbox from a capture of a running one, and prints the new id.
 func (a App) fork(ctx context.Context, args []string) error {
-	source, req, err := parseCopy("fork", args)
+	source, req, err := parseFork(args)
 	if err != nil {
 		return err
 	}
@@ -27,11 +27,11 @@ func (a App) fork(ctx context.Context, args []string) error {
 	return a.print(sb.ID)
 }
 
-// parseCopy reads the one flag fork and clone share, and refuses a name no verb could take back.
-func parseCopy(verb string, args []string) (string, sandbox.CopyRequest, error) {
+// parseFork refuses a name no verb could take back before the daemon captures anything.
+func parseFork(args []string) (string, sandbox.CopyRequest, error) {
 	var req sandbox.CopyRequest
 
-	flags := newFlags(verb)
+	flags := newFlags("fork")
 	flags.StringVar(&req.Name, "name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -43,7 +43,7 @@ func parseCopy(verb string, args []string) (string, sandbox.CopyRequest, error) 
 		}
 	}
 	if flags.NArg() != 1 {
-		return "", sandbox.CopyRequest{}, fmt.Errorf("%s takes one sandbox id, got %d", verb, flags.NArg())
+		return "", sandbox.CopyRequest{}, fmt.Errorf("fork takes one sandbox id, got %d", flags.NArg())
 	}
 
 	return flags.Arg(0), req, nil

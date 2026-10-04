@@ -49,9 +49,10 @@ type deps struct {
 	// needs another one calls its locked form, because a Mutex taken twice by one goroutine deadlocks.
 	mu sync.Mutex
 
-	imageSvc *image.Service
-	repoSvc  *sandboxstate.Repository
-	netSvc   hostNetwork
+	imageSvc    *image.Service
+	repoSvc     *sandboxstate.Repository
+	snapshotSvc *sandboxstate.Snapshots
+	netSvc      hostNetwork
 	// addressesSvc is netSvc on a VM host, kept in its own type because the stack asks it to judge.
 	addressesSvc *network.Addresses
 	stackSvc     *netstack.Stack
@@ -150,6 +151,20 @@ func (d *deps) repoLocked() (*sandboxstate.Repository, error) {
 	d.repoSvc = repo
 
 	return d.repoSvc, nil
+}
+
+func (d *deps) snapshotsLocked() (*sandboxstate.Snapshots, error) {
+	if d.snapshotSvc != nil {
+		return d.snapshotSvc, nil
+	}
+
+	snaps, err := sandboxstate.NewSnapshots(d.cfg.Root)
+	if err != nil {
+		return nil, err
+	}
+	d.snapshotSvc = snaps
+
+	return d.snapshotSvc, nil
 }
 
 func (d *deps) netLocked() (hostNetwork, error) {
@@ -707,11 +722,17 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		return nil, err
 	}
 
+	snaps, err := d.snapshotsLocked()
+	if err != nil {
+		return nil, err
+	}
+
 	logger := d.logger()
 
 	return sandbox.New(sandbox.Config{
 		Repo:          repo,
 		Images:        images,
+		Snapshots:     snaps,
 		Network:       net,
 		Provider:      provider,
 		Secrets:       secrets,
@@ -756,12 +777,18 @@ func (d *deps) stores() (*sandbox.Stores, error) {
 		return nil, err
 	}
 
+	snaps, err := d.snapshotsLocked()
+	if err != nil {
+		return nil, err
+	}
+
 	return sandbox.NewStores(sandbox.StoresConfig{
 		Repo:        repo,
 		Policies:    policies,
 		Compiler:    compiler,
 		Secrets:     secrets,
 		Images:      images,
+		Snapshots:   snaps,
 		Network:     func() (sandbox.Reapplier, error) { return d.net() },
 		PullTimeout: d.cfg.PullTimeout,
 	}), nil
@@ -773,6 +800,13 @@ func (d *deps) repo() (*sandboxstate.Repository, error) {
 	defer d.mu.Unlock()
 
 	return d.repoLocked()
+}
+
+func (d *deps) snapshots() (*sandboxstate.Snapshots, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.snapshotsLocked()
 }
 
 func (d *deps) images() (*image.Service, error) {

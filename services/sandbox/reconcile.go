@@ -17,8 +17,8 @@ const LostReason = "daemon restarted and found no process"
 // InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
 const InterruptedReason = "the daemon restarted before the create finished"
 
-// DroppedCopyReason is what a fork or clone's record says once the daemon restarted before the copy reached running.
-const DroppedCopyReason = "the daemon restarted before the fork or clone finished"
+// DroppedCopyReason is what a fork's record says once the daemon restarted before the copy reached running.
+const DroppedCopyReason = "the daemon restarted before the fork finished"
 
 // ReconcileConcurrency bounds the startup probes in flight, so N frozen sandboxes cost about one budget, not N.
 const ReconcileConcurrency = 16
@@ -181,7 +181,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
-	// A record that never reached running is a create, fork or clone the daemon dropped: it ends failed, not stopped.
+	// A record that never reached running is a create or a fork the daemon dropped: it ends failed, not stopped.
 	if state == models.StateFailed {
 		if err := s.failDropped(ctx, sb, status, report); err != nil {
 			return "", err
@@ -216,7 +216,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 	// rm refuses a live sandbox and stop refuses a failed one, so a copy left running here could never be removed.
 	if status.Alive() {
 		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
-			return fmt.Errorf("stop sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
+			return fmt.Errorf("stop sandbox %s, a fork the daemon dropped: %w", sb.ID, err)
 		}
 		if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
 			return err
@@ -225,7 +225,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 	// A restore the daemon left behind can run on where Status cannot see it, and a failed record stays until rm.
 	if sb.State == models.StateCreated {
 		if err := s.cfg.Provider.Remove(ctx, sb.ID); err != nil {
-			return fmt.Errorf("tear down sandbox %s, a fork or clone the daemon dropped: %w", sb.ID, err)
+			return fmt.Errorf("tear down sandbox %s, a fork the daemon dropped: %w", sb.ID, err)
 		}
 	}
 
@@ -257,7 +257,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 // reconciled is the state the record should hold: what the substrate says, and for a paused one what
 // the snapshot on disk says, because a checkpoint holds no process and resume still brings it back.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
-	// No verb rests in created, so it is a fork or clone that never answered: its caller holds an error, not the id.
+	// No verb rests in created, so it is a fork that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {
 		return models.StateFailed, nil
 	}
@@ -275,7 +275,7 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	}
 
 	if sb.State == models.StatePaused {
-		held, err := hasCheckpoint(sb.Snapshot)
+		held, err := hasCheckpoint(sb.Checkpoint)
 		if err != nil {
 			return "", err
 		}

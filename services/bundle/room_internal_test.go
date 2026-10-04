@@ -126,7 +126,7 @@ func TestAdmitDiskWritesWhatFits(t *testing.T) {
 	}
 }
 
-// A clone keeps the size of what it copies, so that size is the bound admitted.
+// A copy keeps the size of its source, so that size is the bound admitted.
 func TestAdmitCopyTakesTheBoundFromTheSource(t *testing.T) {
 	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
 	src := filepath.Join(sandboxes, "source", "disk.img")

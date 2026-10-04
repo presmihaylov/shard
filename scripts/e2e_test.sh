@@ -145,7 +145,7 @@ LINK="shardv2"
 
 teardown
 
-check "the sandbox it removed" "$(cat "${SHARD_CALLS}")" "rm --force tidy-otter-0102"
+check "the sandbox it removed" "$(cat "${SHARD_CALLS}")" "remove --force tidy-otter-0102"
 check "the namespace and the link it deleted" "$(tr '\n' ',' <"${IP_CALLS}")" \
 	"netns delete tidy-otter-0102,link delete shardv2,"
 check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo gone)" "gone"
@@ -162,7 +162,7 @@ FORK_LINK="shardv3"
 teardown
 
 check "the fork first, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
-	"rm --force e2e-fork-0304,rm --force tidy-otter-0102,"
+	"remove --force e2e-fork-0304,remove --force tidy-otter-0102,"
 check "both namespaces and both links" "$(tr '\n' ',' <"${IP_CALLS}")" \
 	"netns delete e2e-fork-0304,netns delete tidy-otter-0102,link delete shardv3,link delete shardv2,"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
@@ -170,25 +170,25 @@ FORK_ID=""
 FORK_LINK=""
 
 echo
-echo "== teardown removes the clones, then the fork, then the source"
+echo "== teardown removes the seeded sandboxes, then the fork, then the source"
 SHARD_CALLS=$(mktemp)
 IP_CALLS=$(mktemp)
 SHARD_ROOT=$(mktemp -d)
 FORK_ID="e2e-fork-0304"
 FORK_LINK="shardv3"
-CLONE_IDS=" e2e-clone-0506 e2e-clone-0708"
-CLONE_LINKS=" shardv4 shardv5"
+SEEDED_IDS=" e2e-seeded-0506 e2e-seeded-0708"
+SEEDED_LINKS=" shardv4 shardv5"
 
 teardown
 
-check "the clones first, then the fork, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
-	"rm --force e2e-clone-0506,rm --force e2e-clone-0708,rm --force e2e-fork-0304,rm --force tidy-otter-0102,"
+check "the seeded sandboxes first, then the fork, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
+	"remove --force e2e-seeded-0506,remove --force e2e-seeded-0708,remove --force e2e-fork-0304,remove --force tidy-otter-0102,"
 check "every link" "$(grep -c 'link delete' "${IP_CALLS}")" "4"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 FORK_ID=""
 FORK_LINK=""
-CLONE_IDS=""
-CLONE_LINKS=""
+SEEDED_IDS=""
+SEEDED_LINKS=""
 
 echo
 echo "== teardown stops the daemon it started, after the sandboxes and before the root goes"
@@ -204,7 +204,7 @@ teardown
 check "the daemon process" "$(kill -0 "${DAEMON_PID}" 2>/dev/null && echo alive || echo gone)" "gone"
 check "the pid it kept" "${DAEMON_PID}" ""
 check "the daemon log" "$([ -e "${DAEMON_LOG}" ] && echo present || echo gone)" "gone"
-check "the sandbox it removed first" "$(cat "${SHARD_CALLS}")" "rm --force tidy-otter-0102"
+check "the sandbox it removed first" "$(cat "${SHARD_CALLS}")" "remove --force tidy-otter-0102"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 DAEMON_LOG=""
 
@@ -220,13 +220,13 @@ echo '{"id":"loose-heron-0910","host_interface":"shardv9"}' >"${SHARD_ROOT}/sand
 
 teardown
 
-check "the sandbox it removed" "$(cat "${SHARD_CALLS}")" "rm --force loose-heron-0910"
-check "nothing else, because rm freed it" "$(cat "${IP_CALLS}")" ""
+check "the sandbox it removed" "$(cat "${SHARD_CALLS}")" "remove --force loose-heron-0910"
+check "nothing else, because remove freed it" "$(cat "${IP_CALLS}")" ""
 check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo gone)" "gone"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 
 echo
-echo "== teardown asks the runtime and the host directly when rm cannot free a recorded sandbox"
+echo "== teardown asks the runtime and the host directly when remove cannot free a recorded sandbox"
 SHARD_CALLS=$(mktemp)
 IP_CALLS=$(mktemp)
 RUNTIME_CALLS=$(mktemp)
@@ -244,11 +244,11 @@ umount() { :; }
 
 teardown 2>"${ERR}"
 
-check "the rm it tried" "$(cat "${SHARD_CALLS}")" "rm --force loose-heron-0910"
+check "the remove it tried" "$(cat "${SHARD_CALLS}")" "remove --force loose-heron-0910"
 check "the runtime it asked, over the state under the root" "$(cat "${RUNTIME_CALLS}")" "--root ${SHARD_ROOT}/runsc delete --force loose-heron-0910"
 check "the cgroup it removed" "$(cat "${RMDIR_CALLS}")" "/sys/fs/cgroup/shard/loose-heron-0910"
 check "the namespace and the link off the record" "$(tr '\n' ',' <"${IP_CALLS}")" "netns delete loose-heron-0910,link delete shardv9,"
-check "what it said" "$(grep -c 'rm could not free sandbox loose-heron-0910' "${ERR}")" "1"
+check "what it said" "$(grep -c 'remove could not free sandbox loose-heron-0910' "${ERR}")" "1"
 check "the root it removed" "$([ -e "${SHARD_ROOT}" ] && echo present || echo gone)" "gone"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}" "${RUNTIME_CALLS}" "${RMDIR_CALLS}" "${ERR}"
 unset -f rmdir umount
@@ -348,7 +348,7 @@ REPORT=$(
 )
 
 check "the step the failure named" "$(printf '%s' "${REPORT}" | grep -c 'e2e FAILED at step: stop the sandbox')" "1"
-check "the sandbox the failure path removed" "$(cat "${SHARD_CALLS}")" "rm --force tidy-otter-0102"
+check "the sandbox the failure path removed" "$(cat "${SHARD_CALLS}")" "remove --force tidy-otter-0102"
 check "the root the failure path removed" "$([ -e "${PROBE_ROOT}" ] && echo present || echo gone)" "gone"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 

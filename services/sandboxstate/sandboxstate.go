@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
@@ -25,8 +24,9 @@ var ErrNotFound = errors.New("sandbox not found")
 const (
 	sandboxesDir = "sandboxes"
 	namesDir     = "names"
-	snapshotsDir = "snapshots"
-	recordFile   = "sandbox.json"
+	// checkpointsDir holds what a pause writes; snapshotsDir is the snapshot store's.
+	checkpointsDir = "checkpoints"
+	recordFile     = "sandbox.json"
 
 	dirPerm    = 0o750
 	filePerm   = 0o640
@@ -47,7 +47,7 @@ type Repository struct {
 
 // New prepares the state tree under root, which is /var/lib/shard on the box.
 func New(root string) (*Repository, error) {
-	for _, dir := range []string{sandboxesDir, namesDir, snapshotsDir} {
+	for _, dir := range []string{sandboxesDir, namesDir, checkpointsDir} {
 		path := filepath.Join(root, dir)
 		if err := os.MkdirAll(path, dirPerm); err != nil {
 			return nil, fmt.Errorf("create %s: %w", path, err)
@@ -89,7 +89,11 @@ func LongestDir(root string) string {
 }
 
 func (r *Repository) snapshotDir(id string) string {
-	return filepath.Join(r.root, snapshotsDir, id)
+	return filepath.Join(r.root, checkpointsDir, id)
+}
+
+func (r *Repository) names() names {
+	return names{dir: filepath.Join(r.root, namesDir), records: sandboxesDir, noun: "sandbox"}
 }
 
 // Create generates the id, claims it, runs each admit on its directory and writes the record. It returns the sandbox that it stored.
@@ -127,7 +131,7 @@ func (r *Repository) Create(sb models.Sandbox, admit ...func(dir string) error) 
 
 	// The name is claimed last, so a crash costs this sandbox its name and never leaks the name to
 	// a record no verb can reach.
-	if err := r.claimName(sb.Name, id); err != nil {
+	if err := r.names().claim(sb.Name, id, ValidName); err != nil {
 		cleanup := os.RemoveAll(r.dir(id))
 		// Bump again after cleanup: write's own bump already fired, and the counter must move whether or not removal cleared the record (SHARD-381).
 		r.gen.Add(1)
@@ -138,130 +142,25 @@ func (r *Repository) Create(sb models.Sandbox, admit ...func(dir string) error) 
 	return sb, nil
 }
 
-// claimName makes the kernel decide uniqueness a second time: symlink refuses the second claim of
-// the same name, so two creates racing for one name never both win.
-func (r *Repository) claimName(name, id string) error {
-	if name == "" {
-		return nil
-	}
-
-	if err := ValidName(name); err != nil {
-		return err
-	}
-
-	err := os.Symlink(filepath.Join("..", sandboxesDir, id), r.namePath(name))
-	if errors.Is(err, fs.ErrExist) {
-		return &NameTakenError{Name: name, Holder: r.nameHolder(name)}
-	}
-	if err != nil {
-		return fmt.Errorf("claim the name %q: %w", name, err)
-	}
-
-	return store.SyncDir(filepath.Join(r.root, namesDir))
-}
-
-// nameHolder is for the collision error only, so an unreadable link answers with a placeholder
-// rather than turning one clear refusal into two errors an operator has to read.
-func (r *Repository) nameHolder(name string) string {
-	id, err := os.Readlink(r.namePath(name))
-	if err != nil {
-		return "another sandbox"
-	}
-
-	return filepath.Base(id)
-}
-
-// dropName unlinks the name only while it still points at this id. A create that took the name back
-// after a half-done delete holds it now, and this sandbox has no claim on it any more.
-func (r *Repository) dropName(name, id string) error {
-	if name == "" {
-		return nil
-	}
-
-	path := r.namePath(name)
-
-	holder, err := os.Readlink(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read the name link %s: %w", path, err)
-	}
-	if filepath.Base(holder) != id {
-		return nil
-	}
-
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func (r *Repository) namePath(name string) string {
-	return filepath.Join(r.root, namesDir, name)
-}
-
-// nameExists reports whether a link spelled exactly ref is on disk. A case-insensitive filesystem lets
-// os.Readlink follow a legacy mixed-case link, so the exact directory entry is what decides (SHARD-374).
-func (r *Repository) nameExists(ref string) (bool, error) {
-	entries, err := os.ReadDir(filepath.Join(r.root, namesDir))
-	if err != nil {
-		return false, fmt.Errorf("read the names directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.Name() == ref {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
 // Resolve turns what an operator typed into the id every other method takes. A name is a symlink, so
 // this is one readlink; anything else is already an id, and Get answers for one that names nothing.
 func (r *Repository) Resolve(ref string) (string, error) {
-	if err := validReference(ref); err != nil {
-		return "", err
-	}
-
-	// ENOENT is no such name and EINVAL is an entry that is not a link; every other error is real.
-	target, err := os.Readlink(r.namePath(ref))
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.EINVAL) {
-		return ref, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the name link %s: %w", r.namePath(ref), err)
-	}
-
-	// A case-insensitive filesystem lets readlink follow a legacy mixed-case link, so only an exact entry resolves (SHARD-374).
-	exact, err := r.nameExists(ref)
-	if err != nil {
-		return "", err
-	}
-	if !exact {
-		return ref, nil
-	}
-
-	// A refused target is a broken link, never the operator's mistake, so it is no ValidationError.
-	id := filepath.Base(target)
-	if ValidID(id) != nil {
-		return "", fmt.Errorf("the name %q points at %q, which is not a sandbox id", ref, target)
-	}
-
-	return id, nil
+	return r.names().resolve(ref)
 }
 
 // claimID makes the kernel decide uniqueness: mkdir refuses the second claim of the same id.
 func (r *Repository) claimID() (string, error) {
+	return claimIn(filepath.Join(r.root, sandboxesDir), "sandbox")
+}
+
+func claimIn(parent, noun string) (string, error) {
 	for range idAttempts {
 		id, err := newID()
 		if err != nil {
 			return "", err
 		}
 
-		dir := r.dir(id)
+		dir := filepath.Join(parent, id)
 
 		err = os.Mkdir(dir, dirPerm)
 		if errors.Is(err, fs.ErrExist) {
@@ -272,14 +171,14 @@ func (r *Repository) claimID() (string, error) {
 		}
 
 		// The record's own write syncs dir; this makes dir itself survive a power loss too.
-		if err := store.SyncDir(filepath.Join(r.root, sandboxesDir)); err != nil {
+		if err := store.SyncDir(parent); err != nil {
 			return "", err
 		}
 
 		return id, nil
 	}
 
-	return "", fmt.Errorf("no free sandbox id after %d attempts", idAttempts)
+	return "", fmt.Errorf("no free %s id after %d attempts", noun, idAttempts)
 }
 
 // Update applies mutate to the record and writes the result back. The lock spans the read and the
@@ -330,7 +229,7 @@ func (r *Repository) Delete(id string) error {
 	defer r.gen.Add(1)
 
 	// The name goes first: a link that outlived its sandbox would answer for an id nothing holds.
-	if err := r.dropName(sb.Name, id); err != nil {
+	if err := r.names().drop(sb.Name, id); err != nil {
 		return err
 	}
 
@@ -342,7 +241,7 @@ func (r *Repository) Delete(id string) error {
 	}
 
 	// Without this a power loss can bring the sandbox back, and claimID syncs the create side already.
-	for _, dir := range []string{namesDir, snapshotsDir, sandboxesDir} {
+	for _, dir := range []string{namesDir, checkpointsDir, sandboxesDir} {
 		if err := store.SyncDir(filepath.Join(r.root, dir)); err != nil {
 			return err
 		}
@@ -356,13 +255,13 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	dir := filepath.Join(r.root, snapshotsDir)
+	dir := filepath.Join(r.root, checkpointsDir)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the snapshots directory %s: %w", dir, err)
+		return fmt.Errorf("read the checkpoints directory %s: %w", dir, err)
 	}
 
 	swept := 0
@@ -393,7 +292,7 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	if err := store.SyncDir(dir); err != nil {
 		return err
 	}
-	report(fmt.Sprintf("swept %d orphan snapshot staging directories the last daemon left under %s", swept, dir))
+	report(fmt.Sprintf("swept %d orphan checkpoint staging directories the last daemon left under %s", swept, dir))
 
 	return nil
 }
@@ -413,7 +312,7 @@ func (r *Repository) recordedTmp(id string) (bool, string) {
 		return false, ""
 	}
 
-	return true, fmt.Sprintf("kept the snapshot staging %s.tmp, because its record will not read: %v", id, err)
+	return true, fmt.Sprintf("kept the checkpoint staging %s.tmp, because its record will not read: %v", id, err)
 }
 
 // Get returns the record, or ErrNotFound. It takes no lock, so it never blocks and never blocks a
@@ -644,23 +543,22 @@ var generatedIDShape = regexp.MustCompile(`^[a-z]+-[a-z]+-[0-9a-f]{4}$`)
 
 // ValidName refuses a name no verb could take back. It is a link name under the root, so it carries
 // the same restrictions as an id, and it may not be spelled like one.
-func ValidName(name string) error {
-	if err := plainComponent("name", name); err != nil {
+func ValidName(name string) error { return validName("sandbox", name) }
+
+func validName(noun, name string) error {
+	if err := plainComponent(noun, "name", name); err != nil {
 		return err
 	}
 
 	if generatedIDShape.MatchString(name) {
-		return fmt.Errorf("the sandbox name %q is spelled like a generated id, which no name may be", name)
+		return fmt.Errorf("the %s name %q is spelled like a generated id, which no name may be", noun, name)
 	}
 
 	return nil
 }
 
-// validReference is ValidID for what an operator typed, which may be either an id or a name.
-func validReference(ref string) error { return plainComponent("id or name", ref) }
-
 // ValidID refuses an id that is not one plain directory component under the root.
-func ValidID(id string) error { return plainComponent("id", id) }
+func ValidID(id string) error { return plainComponent("sandbox", "id", id) }
 
 // UnreadableError is one record List could not read, so a caller can tell lost rows from a failed list.
 type UnreadableError struct {
@@ -679,34 +577,36 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return e.Reason }
 
-// NameTakenError is a create whose name another sandbox already holds: the caller's input, not a host fault.
+// NameTakenError is a create whose name another sandbox or snapshot already holds: the caller's input, not a host fault.
 type NameTakenError struct {
+	// Noun is what holds the name: sandbox or snapshot.
+	Noun   string
 	Name   string
 	Holder string
 }
 
 func (e *NameTakenError) Error() string {
-	return fmt.Sprintf("the name %q is taken by sandbox %s", e.Name, e.Holder)
+	return fmt.Sprintf("the name %q is taken by %s %s", e.Name, e.Noun, e.Holder)
 }
 
-// plainComponent carries the noun, so a refused name never reads as a refused id.
-func plainComponent(kind, s string) error {
+// plainComponent carries the noun and the kind, so a refused name never reads as a refused id.
+func plainComponent(noun, kind, s string) error {
 	if s == "" {
-		return &ValidationError{Reason: fmt.Sprintf("the sandbox %s is empty", kind)}
+		return &ValidationError{Reason: fmt.Sprintf("the %s %s is empty", noun, kind)}
 	}
 
 	if len(s) > maxChars {
-		return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q is longer than %d characters", kind, s, maxChars)}
+		return &ValidationError{Reason: fmt.Sprintf("the %s %s %q is longer than %d characters", noun, kind, s, maxChars)}
 	}
 
 	for _, c := range s {
 		// A case-insensitive filesystem folds an upper-case letter onto another record, so ids, names and refs stay lower case (SHARD-374).
 		if c >= 'A' && c <= 'Z' {
-			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another sandbox", kind, s, c)}
+			return &ValidationError{Reason: fmt.Sprintf("the %s %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another %s", noun, kind, s, c, noun)}
 		}
 		alphanumeric := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {
-			return &ValidationError{Reason: fmt.Sprintf("the sandbox %s %q holds %q, which is not a lower-case letter, a digit, - or _", kind, s, c)}
+			return &ValidationError{Reason: fmt.Sprintf("the %s %s %q holds %q, which is not a lower-case letter, a digit, - or _", noun, kind, s, c)}
 		}
 	}
 

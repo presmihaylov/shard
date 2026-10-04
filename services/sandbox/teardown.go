@@ -15,7 +15,7 @@ import (
 // teardownBudget bounds the whole give-back after a failed claim, on a context the verb's own cannot cancel.
 const teardownBudget = 30 * time.Second
 
-// Teardown is what a failed create, fork or clone gives back, in the reverse of the order it was claimed.
+// Teardown is what a failed create or fork gives back, in the reverse of the order it was claimed.
 type Teardown struct {
 	steps []func(context.Context) error
 }
@@ -54,7 +54,7 @@ func resolvedThrough(spec models.NetworkSpec, policy string) models.NetworkSpec 
 func AllocateNetwork(ctx context.Context, net Network, id string) (models.NetworkSpec, error) {
 	spec, err := net.Allocate(ctx, id)
 	if errors.Is(err, network.ErrNoFreeAddress) {
-		return models.NetworkSpec{}, fmt.Errorf("%w: every sandbox holds one until it is removed, run shard ls --all and rm the ones you no longer need", err)
+		return models.NetworkSpec{}, fmt.Errorf("%w: every sandbox holds one until it is removed, run shard list --all and remove the ones you no longer need", err)
 	}
 
 	return spec, err

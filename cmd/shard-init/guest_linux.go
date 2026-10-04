@@ -395,7 +395,7 @@ const (
 	fithaw   = 0xc0045878
 )
 
-// freezeRoot flushes the root disk and holds every write to it, so a clone of a paused VM reads a whole disk.
+// freezeRoot flushes the root disk and holds every write to it, so the disk a pause copies is whole.
 func freezeRoot(root *os.File) error {
 	err := rootIoctl(root, fifreeze)
 	// EBUSY is a root already frozen, by a freeze whose answer never reached the host.
@@ -453,7 +453,7 @@ func rootDisk() (*os.File, error) {
 	return os.NewFile(uintptr(fd), "/overlay"), nil
 }
 
-// syncDisks flushes every filesystem, since a write the guest answered for must be on the disk a clone copies.
+// syncDisks flushes every filesystem, since a write the guest answered for must be on the disk a snapshot copies.
 func syncDisks() {
 	unix.Sync()
 }
@@ -463,7 +463,7 @@ func powerOff(reboot bool) error {
 	if os.Getpid() != 1 {
 		return nil
 	}
-	// The reboot call flushes nothing, and a clone reads the disk: what the guest wrote must reach it first.
+	// The reboot call flushes nothing, and a snapshot reads the disk: what the guest wrote must reach it first.
 	unix.Sync()
 	cmd := unix.LINUX_REBOOT_CMD_POWER_OFF
 	if reboot {

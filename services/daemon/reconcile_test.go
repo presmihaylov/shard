@@ -49,12 +49,12 @@ func TestReconcileSweepsTheExecScratchTheLastDaemonLeft(t *testing.T) {
 	}
 }
 
-// SHARD-368: a pause the last daemon did not finish leaves a snapshot .tmp with no record, so the start sweeps it.
-func TestReconcileSweepsTheUnfinishedSnapshotTheLastDaemonLeft(t *testing.T) {
+// SHARD-368: a pause the last daemon did not finish leaves a checkpoint .tmp with no record, so the start sweeps it.
+func TestReconcileSweepsTheUnfinishedCheckpointTheLastDaemonLeft(t *testing.T) {
 	root := t.TempDir()
-	left := filepath.Join(root, "snapshots", "quiet-otter-0000.tmp")
+	left := filepath.Join(root, "checkpoints", "quiet-otter-0000.tmp")
 	if err := os.MkdirAll(left, 0o700); err != nil {
-		t.Fatalf("plant the unfinished snapshot: %v", err)
+		t.Fatalf("plant the unfinished checkpoint: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(left, "checkpoint.img"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("plant the checkpoint: %v", err)
@@ -71,8 +71,8 @@ func TestReconcileSweepsTheUnfinishedSnapshotTheLastDaemonLeft(t *testing.T) {
 	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("stat %s after the sweep: %v, want it gone", left, err)
 	}
-	if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "swept 1 orphan snapshot") }) {
-		t.Errorf("the reconcile reported %q, want the snapshot sweep in it", lines)
+	if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "swept 1 orphan checkpoint") }) {
+		t.Errorf("the reconcile reported %q, want the checkpoint sweep in it", lines)
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// resume asks the daemon to run a paused sandbox again from its snapshot.
+// resume asks the daemon to run a paused sandbox again from its checkpoint.
 func (a App) resume(ctx context.Context, args []string) error {
 	rest, err := parseArgs("resume", args)
 	if err != nil {

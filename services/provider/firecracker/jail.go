@@ -48,7 +48,7 @@ func (p *Provider) jail(id, dir string, r *record, snap string) (fcapi.Jail, err
 	return j, nil
 }
 
-// fill puts in the jail what the vmm opens, by reference so no disk or memory is copied; the overlay is a link, so the guest writes where clone and pause read.
+// fill puts in the jail what the vmm opens, by reference so no disk or memory is copied; the overlay is a link, so the guest writes where snapshot and pause read.
 func (p *Provider) fill(j fcapi.Jail, dir string, r record, snap string) error {
 	shared := [][2]string{{jailKernel, p.kernel}, {jailInitrd, p.initrd}, {jailBase, r.BaseDisk}}
 	if snap != "" {

@@ -287,8 +287,8 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 
 	got := lab.l.repo.sb
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
-		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, checkpoint %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Checkpoint, got.Pausing, dir)
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
 		t.Errorf("the pass reported %v, want one line on the pause", lab.reports)
@@ -310,8 +310,8 @@ func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *tes
 		t.Fatalf("Liveness: %v", err)
 	}
 	silent := lab.l.repo.sb
-	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Snapshot != "" {
-		t.Fatalf("the record is %s with mark %v and snapshot %q, want unresponsive with the mark kept and no pause: the shim may still answer", silent.State, silent.Pausing, silent.Snapshot)
+	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Checkpoint != "" {
+		t.Fatalf("the record is %s with mark %v and checkpoint %q, want unresponsive with the mark kept and no pause: the shim may still answer", silent.State, silent.Pausing, silent.Checkpoint)
 	}
 
 	lab.l.provider.status = gone()
@@ -320,8 +320,8 @@ func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *tes
 	}
 
 	got := lab.l.repo.sb
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
-		t.Errorf("the record is %s with pid %d, snapshot %q, mark %v and the reasons %q and %q; want paused with pid 0, %s, no mark and no reason", got.State, got.PID, got.Snapshot, got.Pausing, got.UnresponsiveReason, got.StoppedReason, dir)
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
+		t.Errorf("the record is %s with pid %d, checkpoint %q, mark %v and the reasons %q and %q; want paused with pid 0, %s, no mark and no reason", got.State, got.PID, got.Checkpoint, got.Pausing, got.UnresponsiveReason, got.StoppedReason, dir)
 	}
 	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
 		t.Errorf("the passes reported %v, want the silence and then the pause of an unresponsive record", lab.reports)
@@ -343,16 +343,16 @@ func TestLivenessDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
 		t.Fatalf("Liveness: %v", err)
 	}
 	answered := lab.l.repo.sb
-	if answered.State != models.StateRunning || answered.Pausing || answered.Snapshot != "" {
-		t.Fatalf("after the answer the record is %s with mark %v and snapshot %q, want running with no mark and no pause", answered.State, answered.Pausing, answered.Snapshot)
+	if answered.State != models.StateRunning || answered.Pausing || answered.Checkpoint != "" {
+		t.Fatalf("after the answer the record is %s with mark %v and checkpoint %q, want running with no mark and no pause", answered.State, answered.Pausing, answered.Checkpoint)
 	}
 
 	lab.l.provider.status = gone()
 	if err := lab.tick(t, answered); err != nil {
 		t.Fatalf("the second Liveness: %v", err)
 	}
-	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
-		t.Errorf("after the death the record is %s with snapshot %q, want stopped with none: the checkpoint is older than the run", got.State, got.Snapshot)
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Checkpoint != "" {
+		t.Errorf("after the death the record is %s with checkpoint %q, want stopped with none: the checkpoint is older than the run", got.State, got.Checkpoint)
 	}
 }
 
@@ -386,8 +386,8 @@ func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	}
 
 	got := lab.l.repo.sb
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
-		t.Errorf("the record is %s with pid %d, snapshot %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Snapshot, got.Pausing, dir)
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing {
+		t.Errorf("the record is %s with pid %d, checkpoint %q and mark %v, want paused with pid 0, %s and no mark", got.State, got.PID, got.Checkpoint, got.Pausing, dir)
 	}
 	if !slices.Contains(lab.r.snapshot(), "provider.Release") {
 		t.Errorf("the calls were %v, want the frozen sandbox released: a resume refuses a live one", lab.r.snapshot())
@@ -407,8 +407,8 @@ func TestLivenessLeavesAnUnmarkedFrozenSandboxAlone(t *testing.T) {
 		t.Fatalf("Liveness: %v", err)
 	}
 
-	if got := lab.l.repo.sb; got.Snapshot != "" {
-		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	if got := lab.l.repo.sb; got.Checkpoint != "" {
+		t.Errorf("the record took the checkpoint %q, want none: no pause marked it", got.Checkpoint)
 	}
 	if slices.Contains(lab.r.snapshot(), "provider.Release") {
 		t.Errorf("the calls were %v, want no release of a sentry no marked pause left", lab.r.snapshot())
@@ -429,8 +429,8 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	if slices.Contains(lab.r.snapshot(), "provider.Release") {
 		t.Errorf("the calls were %v, want no release: no complete checkpoint stands beside the sentry", lab.r.snapshot())
 	}
-	if got := lab.l.repo.sb; got.Snapshot != "" || !got.Pausing {
-		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	if got := lab.l.repo.sb; got.Checkpoint != "" || !got.Pausing {
+		t.Errorf("the record has checkpoint %q and mark %v, want no checkpoint and the mark", got.Checkpoint, got.Pausing)
 	}
 }
 
@@ -456,8 +456,8 @@ func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testin
 	if err := lab.tick(t, lab.l.repo.sb); err != nil {
 		t.Fatalf("Liveness after the death: %v", err)
 	}
-	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Snapshot != "" {
-		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	if got := lab.l.repo.sb; got.State != models.StateStopped || got.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none: the run past the checkpoint died", got.State, got.Checkpoint)
 	}
 }
 
@@ -482,8 +482,8 @@ func TestLivenessKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) 
 	if err := lab.tick(t, lab.l.repo.sb); err != nil {
 		t.Fatalf("Liveness after the death: %v", err)
 	}
-	if got := lab.l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir {
-		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
+	if got := lab.l.repo.sb; got.State != models.StatePaused || got.Checkpoint != dir {
+		t.Errorf("the record is %s with checkpoint %q, want paused with %s: nothing proved the run went past it", got.State, got.Checkpoint, dir)
 	}
 }
 
@@ -505,8 +505,8 @@ func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
 	}
 
 	got := lab.l.repo.sb
-	if got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
-		t.Errorf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
+	if got.State != models.StatePaused || got.Checkpoint != dir || got.Pausing {
+		t.Errorf("the record is %s with checkpoint %q and mark %v, want paused with %s and no mark", got.State, got.Checkpoint, got.Pausing, dir)
 	}
 }
 
