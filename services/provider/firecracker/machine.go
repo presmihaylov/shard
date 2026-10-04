@@ -44,6 +44,8 @@ type machine struct {
 	pausing bool
 	// resetBy is the verb whose snapshot create reset every vsock stream, so its runAgain dials the control stream again; only that verb's goroutine reads it.
 	resetBy string
+	// holder is the verb that froze the guest, until its runAgain ends; the vmm holds its API while it writes the snapshot, so silence then is that verb at work.
+	holder atomic.Pointer[string]
 	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
 	logsRound atomic.Pointer[context.CancelFunc]
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
@@ -83,6 +85,10 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
+		// A probe would queue behind the snapshot and read the verb at work as a vmm that does not answer.
+		if m.holder.Load() != nil {
+			return m, nil
+		}
 		bound := adoptBound
 		// A held vmm already silent has its one request out, so a lookup waits only the floor on it.
 		if p.waiting(m) {
@@ -995,7 +1001,7 @@ func (m *machine) status(p *Provider) models.Status {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
 	// An unadopted vmm has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
-	if m.silent || m.control.Load() == nil {
+	if (m.silent && m.holder.Load() == nil) || m.control.Load() == nil {
 		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its vmm (pid %d) did not answer within %s", m.pid, adoptBound)}
 	}
 	state := models.StateCreated

@@ -222,6 +222,7 @@ func (m *machine) freeze(ctx context.Context, verb string) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
 	m.pausing = true
+	m.holder.Store(&verb)
 
 	return m.control.Load().Freeze(ctx, verb)
 }
@@ -231,6 +232,7 @@ func (p *Provider) runAgain(m *machine) error {
 	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
+	defer m.holder.Store(nil)
 	m.pausing = false
 	verb := m.resetBy
 	m.resetBy = ""

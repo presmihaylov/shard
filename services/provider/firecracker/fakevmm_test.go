@@ -65,6 +65,9 @@ const (
 	// execInFreezeFile, once a test writes a sandbox id into it, has the next pause start an exec in the frozen guest first, and write how it ended to execResultFile.
 	execInFreezeFile = "exec-in-freeze"
 	execResultFile   = "exec-result"
+	// holdSnapshotFile, while it exists, has a snapshot create hold the API as a large memory write does, and write heldSnapshotFile once it holds.
+	holdSnapshotFile = "hold-snapshot"
+	heldSnapshotFile = "held-snapshot"
 	// fakeVersionEnv is the version the fake vmm names on --version, 1.17.0 when unset.
 	fakeVersionEnv = "SHARD_FAKE_FIRECRACKER_VERSION"
 )
@@ -414,6 +417,9 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if _, err := os.Stat(filepath.Join(f.dir, refuseSnapshotFile)); err == nil {
 		return "Cannot create snapshot: No space left on device", nil
 	}
+	if err := f.holdSnapshot(); err != nil {
+		return "", err
+	}
 	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock, Frozen: f.frozen})
 	if err != nil {
 		return "", err
@@ -444,6 +450,31 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	}
 
 	return "", f.reset()
+}
+
+// holdSnapshot keeps f.mu, and so every request, for as long as holdSnapshotFile stays.
+func (f *fake) holdSnapshot() error {
+	hold := filepath.Join(f.dir, holdSnapshotFile)
+	_, err := os.Stat(hold)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, heldSnapshotFile), []byte("held\n"), 0o600); err != nil {
+		return err
+	}
+	for {
+		_, err := os.Stat(hold)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // reset kills the guest end of every stream, as the TRANSPORT_RESET of a snapshot create does; f.mu is held.

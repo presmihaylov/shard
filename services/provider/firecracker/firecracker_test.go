@@ -1391,6 +1391,95 @@ func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
 	}
 }
 
+// While a fork holds the source, through the capture the vmm is busy with and the redial after it, the source reads running and an exec is refused by name, never unresponsive (SHARD-462).
+func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, pid := h.runLong(t)
+	watchControls(t, spec)
+	watchSnapshots(t, spec)
+	t.Cleanup(firecracker.SetRedialGrace(30 * time.Second))
+	for _, name := range []string{holdSnapshotFile, severOnResetFile} {
+		if err := os.WriteFile(filepath.Join(spec.StateDir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fork := h.forkSpec(t)
+	forked := make(chan error, 1)
+	go func() { forked <- h.provider.Fork(t.Context(), spec.ID, fork) }()
+
+	awaitFile(t, filepath.Join(spec.StateDir, heldSnapshotFile), forked)
+	h.requireHeld(t, spec.ID, pid, "the capture")
+	if err := os.Remove(filepath.Join(spec.StateDir, holdSnapshotFile)); err != nil {
+		t.Fatal(err)
+	}
+	awaitFile(t, filepath.Join(spec.StateDir, snapshotsFile), forked)
+	// The redial misses for as long as the transport stays severed, so the whole second is the redial window.
+	for end := time.Now().Add(time.Second); time.Now().Before(end); {
+		h.requireHeld(t, spec.ID, pid, "the redial")
+	}
+	select {
+	case err := <-forked:
+		t.Fatalf("Fork returned %v while the transport was severed, want it still redialing", err)
+	default:
+	}
+
+	if err := os.Remove(filepath.Join(spec.StateDir, severOnResetFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		t.Fatalf("let streams through the fake vmm again: %v", err)
+	}
+	if err := <-forked; err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the source after the fork = %+v, %v, want exit 0", exit, err)
+	}
+}
+
+// requireHeld proves a source a fork holds reads running at once, and refuses an exec by the fork's name.
+func (h *harness) requireHeld(t *testing.T, id string, pid int, window string) {
+	t.Helper()
+
+	began := time.Now()
+	status, err := h.provider.Status(t.Context(), id)
+	if took := time.Since(began); err != nil || status.State != models.StateRunning || status.PID != pid || took >= time.Second {
+		t.Fatalf("Status of the source in %s = %+v, %v after %s, want running as pid %d at once", window, status, err, took, pid)
+	}
+	_, err = h.provider.Exec(t.Context(), id, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again", id)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Exec on the source in %s = %v, want %q", window, err, want)
+	}
+}
+
+// awaitFile waits for the fake vmm to write a line into path, and fails at once if the fork ends first.
+func awaitFile(t *testing.T, path string, forked <-chan error) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		read, err := os.ReadFile(path)
+		if len(read) > 0 {
+			return
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-forked:
+			t.Fatalf("Fork returned %v before %s", err, filepath.Base(path))
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s within 10s", filepath.Base(path))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // severedFork forks a running source whose transport the capture's reset severs, so the redial runs out, and returns the source and its vmm pid.
 func (h *harness) severedFork(t *testing.T) (models.SandboxSpec, int) {
 	t.Helper()

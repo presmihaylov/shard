@@ -22,6 +22,10 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
+	// The guest gives the same answer, but the dial waits on a vmm busy with the snapshot or a stream still to be dialed again.
+	if verb := m.holder.Load(); verb != nil {
+		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", *verb), Code: models.CommandNotExecutableExitCode}
+	}
 
 	header, err := headerOf(r, spec)
 	if err != nil {
