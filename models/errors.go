@@ -42,6 +42,9 @@ func (e *CommandNotStartedError) Error() string {
 	return fmt.Sprintf("sandbox %s could not run %s: %s", e.Sandbox, command, e.Reason)
 }
 
+// Public answers the whole text, which names the caller's command and the kernel's or runtime's reason, never a host path.
+func (e *CommandNotStartedError) Public() string { return e.Error() }
+
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
 	VerbPause  = "pause"

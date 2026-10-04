@@ -372,9 +372,10 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 		return models.Sandbox{}, ctx.Err()
 	}
 
-	// Any other failure leaves the failed record, which the caller reads.
+	// A refusal answers the caller, and so does a removal that left its sandbox; any other failure leaves the failed record to read.
 	var refused *models.CommandNotStartedError
-	if errors.As(p.err, &refused) {
+	var notRemoved *sandbox.NotRemovedError
+	if errors.As(p.err, &refused) || errors.As(p.err, &notRemoved) {
 		return models.Sandbox{}, p.err
 	}
 

@@ -167,8 +167,9 @@ func TestCreateIsNoRefusalWhenTheSandboxStays(t *testing.T) {
 	_, err := svc.Create(t.Context(), alpine())
 
 	var refused *models.CommandNotStartedError
-	if err == nil || errors.As(err, &refused) || !strings.Contains(err.Error(), "was not removed") {
-		t.Errorf("create = %v, want a plain error that says the sandbox was not removed", err)
+	var notRemoved *sandbox.NotRemovedError
+	if !errors.As(err, &notRemoved) || errors.As(err, &refused) || !strings.Contains(err.Error(), "was not removed") {
+		t.Errorf("create = %v, want a NotRemovedError that says the sandbox was not removed", err)
 	}
 }
 

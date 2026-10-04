@@ -750,9 +750,21 @@ func (s *Service) Settle(ctx context.Context, id string, req CreateRequest) erro
 		return err
 	}
 
-	// The refusal promises no sandbox is left, so a sandbox that stays is a plain failure.
-	return fmt.Errorf("%s, and the sandbox was not removed: %w", err.Error(), removeErr)
+	return &NotRemovedError{Refusal: err, Err: removeErr}
 }
+
+// NotRemovedError is a refused app whose sandbox stayed: the refusal promises no sandbox is left, so this is a plain failure.
+type NotRemovedError struct {
+	Refusal error
+	Err     error
+}
+
+func (e *NotRemovedError) Error() string {
+	return fmt.Sprintf("%s, and the sandbox was not removed: %s", e.Refusal, e.Err)
+}
+
+// Unwrap reaches the removal only, so the refusal's code never answers for a sandbox that stayed.
+func (e *NotRemovedError) Unwrap() error { return e.Err }
 
 // nameCommand gives a refused start the program it was to run, which the provider does not know.
 func nameCommand(err error, argv []string) error {

@@ -458,13 +458,14 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   not come back as an error. With `?wait=true` the create holds until the record leaves `pending`,
   then answers the `running` or `failed` record it reached, so a caller reads the settled record
   without a poll. An app that never started is the exception: the wait answers 422
-  `command_not_started` with `exit_code` and leaves no sandbox, while a create with no wait keeps
-  the `failed` record. The plain create answers at once. A wait that sends `Accept:
-  application/x-ndjson` streams the pull instead: one `{"event"}` line per step as it lands, then
-  `{"sandbox"}` with the settled record, or a last `{"error"}` line for that refusal. The create is
-  a public route, so an `{"event"}` line carries no `path`. The create answers 400 when the body
-  does not decode, when a field does not validate, or when the body names a secret or a policy the
-  host does not hold. It answers 409 `name_taken` when another sandbox already holds the name.
+  `command_not_started` with `exit_code` and leaves no sandbox, or 500 when that sandbox could not
+  be removed, while a create with no wait keeps the `failed` record. The plain create answers at
+  once. A wait that sends `Accept: application/x-ndjson` streams the pull instead: one `{"event"}`
+  line per step as it lands, then `{"sandbox"}` with the settled record, or a last `{"error"}` line
+  for that refusal or that 500. The create is a public route, so an `{"event"}` line carries no
+  `path`. The create answers 400 when the body does not decode, when a field does not validate, or
+  when the body names a secret or a policy the host does not hold. It answers 409 `name_taken` when
+  another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
