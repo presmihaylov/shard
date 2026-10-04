@@ -304,35 +304,16 @@ rm -rf "${SHARD_ROOT}" "${DAEMON_LOG}"
 DAEMON_LOG=""
 
 echo
-echo "== start_daemon empties the log first, so a restart never reads a line the last daemon wrote"
-SHARD_ROOT=$(mktemp -d)
-DAEMON_LOG=$(mktemp)
-ECHO_DIR=$(mktemp -d)
-SAVED_PREFIX="${PREFIX}"
-PREFIX=$(mktemp -d)
-# What the last daemon logged, with its socket gone, as stop_daemon leaves a restart.
-printf 'api listening on %s\nproxy listening on 30080\nthe last daemon stopped\n' "${SHARD_ROOT}/shard.sock" >"${DAEMON_LOG}"
-# A daemon that binds 1 s after it starts, the way a cold daemon on a busy box does.
-cat >"${PREFIX}/shard" <<'EOF'
-#!/usr/bin/env bash
-root="$2"
-sleep 1
-python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "${root}/shard.sock"
-echo "api listening on ${root}/shard.sock"
-echo "proxy listening on 30080"
-exec sleep 30
-EOF
-chmod +x "${PREFIX}/shard"
-DAEMON_START_BOUND=20 start_daemon >/dev/null 2>&1
-check "the new daemon came up" "$?" "0"
-check "the wait ended with the new socket" "$([ -S "${SHARD_ROOT}/shard.sock" ] && echo bound || echo absent)" "bound"
-check "the log holds nothing the last daemon wrote" "$(grep -c 'the last daemon' "${DAEMON_LOG}")" "0"
-kill "${DAEMON_PID}" 2>/dev/null; wait "${DAEMON_PID}" 2>/dev/null
-DAEMON_PID=""
-rm -rf "${SHARD_ROOT}" "${DAEMON_LOG}" "${ECHO_DIR}" "${PREFIX}"
-PREFIX="${SAVED_PREFIX}"
-DAEMON_LOG=""
-ECHO_DIR=""
+echo "== start_daemon empties the log in the parent and the daemon only appends, so a restart never waits on the last daemon's lines"
+for script in e2e.sh e2e-fc.sh; do
+	# A truncation in the child's own redirect can lose the race to the wait, so only the line order proves this.
+	order=$(awk 'index($0, "start_daemon() {") == 1 {p = 1}
+		p && index($0, ": >\"${DAEMON_LOG}\"") {e = NR}
+		p && /daemon --provider .*&$/ {f = NR; a = (index($0, ">>\"${DAEMON_LOG}\" 2>&1 &") > 0)}
+		p && /^}/ {exit}
+		END {print (e && f && e < f ? "emptied first" : "not emptied first") ", " (a ? "appends" : "truncates")}' "${HERE}/${script}")
+	check "${script}: the parent empties the log, then the daemon appends" "${order}" "emptied first, appends"
+done
 
 echo
 echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
