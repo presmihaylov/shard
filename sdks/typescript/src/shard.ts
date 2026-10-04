@@ -16,7 +16,7 @@ export type SandboxRef = Sandbox | string;
 /** CreateOptions make a sandbox from an image or a snapshot, exactly one of them. */
 export interface CreateOptions {
   image?: string;
-  /** A snapshot id, id prefix or name; the sandbox starts from its disk and memory. */
+  /** A snapshot id, id prefix or name; the sandbox starts from its files. */
   snapshot?: string;
   name?: string;
   /** The environment every command in the sandbox starts with. */
@@ -189,7 +189,7 @@ export class Secrets {
 export class Snapshots {
   constructor(private readonly transport: Transport) {}
 
-  /** create takes a snapshot of a paused or stopped sandbox, which the snapshot outlives. */
+  /** create copies a stopped sandbox's files into a snapshot that outlives it. */
   async create(sandbox: SandboxRef, options: { name?: string } = {}): Promise<Snapshot> {
     const body = { sandbox: idOf(sandbox), name: options.name || undefined };
 

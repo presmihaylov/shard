@@ -138,6 +138,39 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	return a.print(fmt.Sprintf("revoked token %s", id))
 }
 
+// tokensScopes lists the scopes the server it speaks to accepts, so unlike mint, list and revoke it follows --remote.
+func (a App) tokensScopes(ctx context.Context, args []string) error {
+	flags := newFlags("tokens scopes")
+	format := addFormatFlag(flags, formatTable)
+
+	if err := parseVerb(flags, args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("tokens scopes takes no arguments, got %d", flags.NArg())
+	}
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	scopes, err := c.Scopes(ctx)
+	if err != nil {
+		return err
+	}
+	if *format == formatJSON {
+		return writeJSON(a.Out, scopes)
+	}
+
+	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "SCOPE\tDESCRIPTION")
+	for _, s := range scopes.Scopes {
+		fmt.Fprintf(w, "%s\t%s\n", s.Name, s.Description)
+	}
+
+	return w.Flush()
+}
+
 // ledgerPath is the ledger beside the signing key file, for list and revoke. It creates nothing.
 func (a App) ledgerPath(signingKeyFile string) (string, error) {
 	keyPath, err := serve.SigningKeyPath(a.Root, signingKeyFile)

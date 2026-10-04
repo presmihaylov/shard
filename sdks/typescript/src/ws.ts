@@ -106,7 +106,7 @@ export class WebSocket {
       if (this.closeSent) {
         return undefined;
       }
-      const message = this.inbox.shift();
+      const message = this.take();
       if (message && message.opcode === opClose) {
         this.peerClosed = true;
         this.closeFrame = message.payload;
@@ -114,10 +114,6 @@ export class WebSocket {
         return undefined;
       }
       if (message) {
-        if (this.inbox.length < highWater) {
-          this.socket.resume();
-        }
-
         return message;
       }
       if (this.failure) {
@@ -128,6 +124,16 @@ export class WebSocket {
       }
       await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
+  }
+
+  /** take removes the next message from the inbox, and lets the socket read again once the inbox is below the high water mark. */
+  private take(): Message | undefined {
+    const message = this.inbox.shift();
+    if (message && this.inbox.length < highWater) {
+      this.socket.resume();
+    }
+
+    return message;
   }
 
   /** close says goodbye, or answers the daemon's, waits a moment for its close, then lets go; a peer already gone is all a close asks for. */

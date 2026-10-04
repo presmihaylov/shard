@@ -153,16 +153,13 @@ type Scope string
 const (
 	// AnyToken is a route every valid token reaches whatever its scopes, so a client can learn what it speaks to before it acts.
 	AnyToken      Scope = "any"
-	SandboxRead   Scope = "sandbox:read"
-	SandboxWrite  Scope = "sandbox:write"
-	SandboxDelete Scope = "sandbox:delete"
-	Exec          Scope = "exec"
-	Secret        Scope = "secret:*"
-	Policy        Scope = "policy:*"
+	SandboxRead   Scope = models.ScopeSandboxRead
+	SandboxWrite  Scope = models.ScopeSandboxWrite
+	SandboxDelete Scope = models.ScopeSandboxDelete
+	Exec          Scope = models.ScopeExec
+	Secret        Scope = models.ScopeSecret
+	Policy        Scope = models.ScopePolicy
 )
-
-// Scopes are the six a token can carry besides "*", in the order docs/daemon.md lists them.
-var Scopes = []Scope{SandboxRead, SandboxWrite, SandboxDelete, Exec, Secret, Policy}
 
 // Route is one method and pattern the daemon serves, and the scope a public one needs; a local one needs none.
 type Route struct {
@@ -193,6 +190,7 @@ func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
 		public("GET", "/v0/version", AnyToken, operation("meta", "get-version", "Read the daemon and API versions", 0), typed(h.getVersion)),
 		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the lifecycle verbs and whether this server supports each", 0), typed(h.getCapabilities)),
+		public("GET", "/v0/scopes", AnyToken, operation("meta", "list-scopes", "List the scopes a token can carry", 0), typed(h.getScopes)),
 		local("GET", "/v0/daemon", h.getDaemon),
 		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List sandboxes", 0), typed(h.listSandboxes)),
 		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
@@ -279,6 +277,11 @@ type Capabilities struct {
 	Snapshot bool `json:"snapshot"`
 }
 
+// ScopesResponse lists every scope a token can carry, never the caller's own.
+type ScopesResponse struct {
+	Scopes []models.Scope `json:"scopes"`
+}
+
 // sandboxesResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
 type sandboxesResponse struct {
 	Sandboxes []Sandbox `json:"sandboxes"`
@@ -305,6 +308,10 @@ func (h *Handler) getCapabilities(context.Context, *struct{}) (*reply[Capabiliti
 	}
 
 	return answer(capabilitiesOf(d.Capabilities), nil)
+}
+
+func (h *Handler) getScopes(context.Context, *struct{}) (*reply[ScopesResponse], error) {
+	return answer(ScopesResponse{Scopes: models.Scopes}, nil)
 }
 
 // capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
@@ -594,7 +601,7 @@ func scopesCover(scopes []string, need Scope) bool {
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == string(need) {
+		if s == models.ScopeAll || s == string(need) {
 			return true
 		}
 	}

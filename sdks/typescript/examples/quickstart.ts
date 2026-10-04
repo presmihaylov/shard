@@ -1,5 +1,4 @@
 // Run commands in a fresh sandbox, put a file in it, and wait on an app.
-// Set SHARD_REMOTE and SHARD_API_KEY, then run: npx tsx examples/quickstart.ts
 import { Shard } from "useshards";
 
 const image = "docker.io/library/alpine:3";

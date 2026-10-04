@@ -623,9 +623,9 @@ func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
 	env := newTokenEnv(t)
 	address := front(t, up.root, env.secret)
 
-	tokens := map[string]string{"no scopes": mint(t, env, "root"), "star": mintScoped(t, env, "root", "*")}
-	for _, scope := range api.Scopes {
-		tokens[string(scope)] = mintScoped(t, env, "scoped", string(scope))
+	tokens := map[string]string{"no scopes": mint(t, env, "root")}
+	for _, scope := range models.Scopes {
+		tokens[scope.Name] = mintScoped(t, env, "scoped", scope.Name)
 	}
 
 	var locals []api.Route
@@ -667,14 +667,14 @@ func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals [
 	}
 }
 
-// The SDK handshake works for every token, so version and capabilities need no scope a token could lack.
-func TestVersionAndCapabilitiesAnswerAnyValidToken(t *testing.T) {
+// The SDK handshake and scope discovery work for every token, so they need no scope a token could lack.
+func TestDiscoveryAnswersAnyValidToken(t *testing.T) {
 	up := fakeDaemon(t)
 	env := newTokenEnv(t)
 	address := front(t, up.root, env.secret)
 	token := mintScoped(t, env, "secrets", "secret:*")
 
-	for _, path := range []string{"/v0/version", "/v0/capabilities"} {
+	for _, path := range []string{"/v0/version", "/v0/capabilities", "/v0/scopes"} {
 		if resp := askRoute(t, address, token, http.MethodGet, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
 			t.Errorf("a secret:* token got %d on GET %s, want 200", resp.StatusCode, path)
 		}
@@ -799,7 +799,7 @@ func TestEveryPublicRouteAndNoOtherNeedsAScopeATokenCanCarry(t *testing.T) {
 	covered := 0
 	for _, r := range api.Routes() {
 		covered++
-		if r.Class == api.Public && r.Scope != api.AnyToken && !slices.Contains(api.Scopes, r.Scope) {
+		if r.Class == api.Public && r.Scope != api.AnyToken && (r.Scope == models.ScopeAll || CheckScopes([]string{string(r.Scope)}) != nil) {
 			t.Errorf("public route %s %s needs %q, which mint refuses as a scope", r.Method, r.Pattern, r.Scope)
 		}
 		if r.Class == api.Local && r.Scope != "" {
@@ -1281,4 +1281,20 @@ func shortRoot(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(root) })
 
 	return root
+}
+
+// A listed scope that no public route needs would be an admin scope a remote token could carry and never use.
+func TestEveryListedScopeOpensAPublicRoute(t *testing.T) {
+	for _, scope := range models.Scopes {
+		if scope.Name == models.ScopeAll {
+			continue
+		}
+		opens := false
+		for _, r := range api.Routes() {
+			opens = opens || (r.Class == api.Public && string(r.Scope) == scope.Name)
+		}
+		if !opens {
+			t.Errorf("scope %s opens no public route", scope.Name)
+		}
+	}
 }

@@ -402,6 +402,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `snapshot`, the copy of a stopped sandbox's files; `pause`, `resume` and `fork` are the
   provider's own. The scopes of the token and the state of any sandbox never change the answer.
   `shard capabilities` prints it.
+- `GET /v0/scopes` answers `{"scopes": [{"name": "...", "description": "..."}]}`: every scope a
+  token can carry, from the one table `tokens mint` checks against. It lists the valid scopes, not
+  the scopes of the token that asked. `shard tokens scopes` prints it, and follows `--remote`.
 - `GET /v0/daemon` answers what the daemon knows about itself: `version`, `pid`, `started_at`,
   `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`),
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
@@ -832,8 +835,8 @@ lets the request through only when a scope covers it. A token with no scopes, or
 other route gets a `403` with the code `forbidden`, written before anything is dialed. The front
 maps the request line to the capability over the daemon's own route patterns, so the front and the
 daemon agree on what each request is. An unknown route gets a `403` too, and so does every local
-route, with the same body, for every token. `GET /v0/version` and `GET /v0/capabilities` answer any
-valid token. These are the six capabilities:
+route, with the same body, for every token. `GET /v0/version`, `GET /v0/capabilities` and
+`GET /v0/scopes` answer any valid token. These are the six capabilities:
 
 | capability | routes |
 | --- | --- |
@@ -884,11 +887,10 @@ It is a local verb, like `daemon` and `serve`. It never reaches the daemon, and 
 sees the signing key. `--name` is the subject the front logs. `--duration` defaults to 0, which
 mints a token with no `exp` that never expires. `--scopes` is a comma-separated list of the scopes
 the token carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scopes` for
-any token except an operator's. The verb refuses a scope that is neither `*` nor one of the eight
-capabilities above. The error lists the capabilities, and nothing is recorded. A client takes the
-`token` field in `SHARD_API_KEY`:
-`export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r .token)`. When an operator replaces the
-signing key, every token it signed stops verifying at once.
+any token except an operator's. The verb refuses a scope that `shard tokens scopes` does not
+list. The error lists the valid scopes, and nothing is recorded. A client takes the `token` field
+in `SHARD_API_KEY`: `export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r .token)`. When an
+operator replaces the signing key, every token it signed stops verifying at once.
 
 The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
 restart ends no connection that is already spliced.
