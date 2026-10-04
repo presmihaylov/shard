@@ -24,7 +24,7 @@ from .._frames import (
     parse_close,
 )
 from .._wire import connection_error
-from ..errors import ProtocolError, ShardConnectionError, api_error
+from ..errors import ProtocolError, ShardConnectionError
 from . import _backend
 
 _READ_SIZE = 64 * 1024
@@ -63,8 +63,10 @@ class AsyncWebSocket:
             response = await client.send(request, stream=True)
         except httpx.TransportError as e:
             raise connection_error(request, e) from e
+        # The client's response hook already raised every refusal, so what is left here is a 2xx.
         if response.status_code != 101:
-            raise await _refusal(response, request)
+            await response.aclose()
+            raise ProtocolError(f"{what}: the daemon answered {response.status_code} where a WebSocket upgrade belongs")
         stream = response.extensions.get("network_stream")
         if response.headers.get("sec-websocket-accept") != accept_for(key) or not isinstance(
             stream, httpcore.AsyncNetworkStream
@@ -163,13 +165,3 @@ def _shutdown(sock: socket.socket, what: str) -> None:
         if e.errno in (errno.ENOTCONN, errno.EBADF):
             return
         raise ShardConnectionError(f"{what}: shut the stream to the daemon: {e.strerror}") from e
-
-
-async def _refusal(response: httpx.Response, request: httpx.Request) -> Exception:
-    try:
-        body = await response.aread()
-    except httpx.TransportError as e:
-        return connection_error(request, e)
-    finally:
-        await response.aclose()
-    return api_error(response.status_code, body)

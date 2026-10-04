@@ -10,7 +10,7 @@ IMAGE = "docker.io/library/alpine:3"
 
 def main() -> None:
     with Shard() as shard:
-        print(f"daemon {shard.version().version} on {shard.capabilities().provider}")
+        print(f"daemon {shard.version().version}, fork supported: {shard.capabilities().fork}")
 
         sandbox = shard.create(IMAGE)
         try:

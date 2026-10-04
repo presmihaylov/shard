@@ -11,16 +11,16 @@ Python 3.11 or later. The runtime dependencies are HTTPX, attrs and typing-exten
 
 ## Connect
 
-The SDK talks to `shard serve` over HTTPS. Mint a key on the host with `shard tokens mint`, then:
+The SDK talks to `shard serve` over HTTPS, or over HTTP on localhost or a trusted encrypted network, where it
+warns once per client as the CLI does. Mint a key on the host with `shard tokens mint`, then:
 
 ```
 export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY=<the token>
 ```
 
-An argument beats the environment: `Shard(remote=..., api_key=...)`. `token_file=` (or
-`SHARD_TOKEN_FILE`) reads the key from a file that others cannot read, and `ca_file=` (or
-`SHARD_CA_FILE`) trusts a private CA.
+An argument beats the environment: `Shard(remote=..., api_key=...)`. `ca_file=` (or `SHARD_CA_FILE`) trusts a
+private CA, for an https remote only. A remote with no port takes 443 for https and 80 for http.
 
 ## Quickstart
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import json
+import asyncio
+import warnings
 from pathlib import Path
 
 import pytest
 
+from useshards import AsyncShard, Shard
 from useshards._capture import OutputCapture
-from useshards._config import resolve
+from useshards._config import PLAIN_WARNING, resolve
 from useshards._wire import STDERR, STDOUT
 from useshards.errors import (
     APIError,
@@ -24,7 +26,7 @@ ENV = {"SHARD_REMOTE": "https://shard.example.com", "SHARD_API_KEY": " shard_env
 
 
 def test_env_defaults() -> None:
-    settings = resolve(None, None, None, None, env=ENV)
+    settings = resolve(None, None, None, env=ENV)
     assert (settings.base_url, settings.api_key, settings.verify) == (
         "https://shard.example.com:443",
         "shard_env",
@@ -33,19 +35,19 @@ def test_env_defaults() -> None:
 
 
 def test_explicit_beats_env() -> None:
-    settings = resolve("https://[::1]:8443/", "shard_arg", None, None, env=ENV)
+    settings = resolve("https://[::1]:8443/", "shard_arg", None, env=ENV)
     assert (settings.base_url, settings.api_key) == ("https://[::1]:8443", "shard_arg")
 
 
 def test_repr_hides_the_key() -> None:
-    assert "shard_env" not in repr(resolve(None, None, None, None, env=ENV))
+    assert "shard_env" not in repr(resolve(None, None, None, env=ENV))
 
 
 @pytest.mark.parametrize(
     ("remote", "reason"),
     [
-        ("http://shard.example.com", "must be an https url"),
-        ("https://", "must be an https url"),
+        ("ftp://shard.example.com", "must be an http or https url"),
+        ("https://", "must be an http or https url"),
         ("https://shard.example.com/v0", "only a scheme, a host and a port"),
         ("https://user@shard.example.com", "only a scheme, a host and a port"),
         ("https://shard.example.com:99999", "not a number from 0 to 65535"),
@@ -53,54 +55,67 @@ def test_repr_hides_the_key() -> None:
 )
 def test_remote_refused(remote: str, reason: str) -> None:
     with pytest.raises(ConfigurationError, match=reason):
-        resolve(remote, "k", None, None, env={})
+        resolve(remote, "k", None, env={})
 
 
 def test_no_remote() -> None:
     with pytest.raises(ConfigurationError, match="no remote"):
-        resolve(None, "k", None, None, env={})
+        resolve(None, "k", None, env={})
 
 
-def token_file(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
-    path = tmp_path / "token"
-    path.write_text(text)
-    path.chmod(mode)
-    return path
+@pytest.mark.parametrize(
+    ("remote", "base_url"),
+    [
+        ("http://shard.example.com", "http://shard.example.com:80"),
+        ("http://127.0.0.1:8080/", "http://127.0.0.1:8080"),
+        ("https://shard.example.com", "https://shard.example.com:443"),
+    ],
+)
+def test_either_scheme_takes_its_port(remote: str, base_url: str) -> None:
+    settings = resolve(remote, "k", None, env={})
+    assert (settings.base_url, settings.plain, settings.verify) == (base_url, remote.startswith("http:"), True)
 
 
-def test_blank_key_falls_to_the_token_file(tmp_path: Path) -> None:
-    path = token_file(tmp_path, json.dumps({"token": "shard_file", "scopes": ["*"]}))
-    env = {**ENV, "SHARD_API_KEY": "  ", "SHARD_TOKEN_FILE": str(path)}
-    assert resolve(None, None, None, None, env=env).api_key == "shard_file"
+@pytest.mark.parametrize(
+    ("ca_file", "env", "source"), [("ca.pem", {}, "ca_file"), (None, {"SHARD_CA_FILE": "ca.pem"}, "SHARD_CA_FILE")]
+)
+def test_a_ca_with_http_is_refused(ca_file: str | None, env: dict[str, str], source: str) -> None:
+    remote = "http://shard.example.com:80"
+    reason = f"{source} is set, and the remote {remote} is http: a CA certificate verifies an https remote only"
+    with pytest.raises(ConfigurationError) as caught:
+        resolve("http://shard.example.com", "k", ca_file, env=env)
+    assert str(caught.value) == reason
 
 
-def test_token_file_others_can_read(tmp_path: Path) -> None:
-    path = token_file(tmp_path, "shard_file\n", 0o644)
-    with pytest.raises(ConfigurationError, match="mode 0644, which others can read") as caught:
-        resolve(None, None, path, None, env=ENV)
-    assert "shard_file" not in str(caught.value)
-
-
-@pytest.mark.parametrize(("text", "reason"), [("", "holds no token"), ('{"token": ""}', "record .* holds no token")])
-def test_token_file_without_a_token(tmp_path: Path, text: str, reason: str) -> None:
-    with pytest.raises(ConfigurationError, match=reason):
-        resolve(None, None, token_file(tmp_path, text), None, env=ENV)
+def test_http_warns_once_per_client_with_the_cli_text() -> None:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        clients = [Shard(remote, "k") for remote in ("http://127.0.0.1:1", "http://127.0.0.1:1", "https://127.0.0.1:1")]
+        async_client = AsyncShard("http://127.0.0.1:1", "k")
+    for client in clients:
+        client.close()
+    asyncio.run(async_client.aclose())
+    assert [str(w.message) for w in caught] == [PLAIN_WARNING] * 3
+    assert {w.filename for w in caught} == {__file__}
+    assert PLAIN_WARNING == (
+        "HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network."
+    )
 
 
 def test_no_key() -> None:
     with pytest.raises(ConfigurationError, match="no API key"):
-        resolve(None, None, None, None, env={"SHARD_REMOTE": "https://shard.example.com"})
+        resolve(None, None, None, env={"SHARD_REMOTE": "https://shard.example.com"})
 
 
 def test_key_with_a_control_character() -> None:
     with pytest.raises(ConfigurationError, match="control character") as caught:
-        resolve(None, "shard_\nsecret", None, None, env=ENV)
+        resolve(None, "shard_\nsecret", None, env=ENV)
     assert "secret" not in str(caught.value)
 
 
 def test_missing_ca_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="SHARD_CA_FILE: read the CA file"):
-        resolve(None, None, None, None, env={**ENV, "SHARD_CA_FILE": str(tmp_path / "missing.pem")})
+        resolve(None, None, None, env={**ENV, "SHARD_CA_FILE": str(tmp_path / "missing.pem")})
 
 
 def test_refusal_by_code_then_status() -> None:

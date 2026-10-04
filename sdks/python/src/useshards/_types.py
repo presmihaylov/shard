@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Callable
-from typing import Any, Literal
+from collections.abc import Callable, Mapping
+from typing import Any, Literal, TypeVar, get_args
 
 import attrs
 
+from ._generated import models
+from ._generated.types import Unset
 from .errors import ProtocolError
+
+T = TypeVar("T")
 
 OutputCallback = Callable[[bytes], None]
 Signal = Literal["TERM", "KILL"]
@@ -55,26 +59,18 @@ class CommandInfo:
     lost_bytes: int
 
 
-def command_info(record: Any) -> CommandInfo:
-    try:
-        exit_status = record["exit_status"]
-        exited_at = record["exited_at"]
-        state = record["state"]
-        if state not in ("running", "exited"):
-            raise ValueError(state)
-        return CommandInfo(
-            id=record["exec"],
-            sandbox=record["sandbox"],
-            command=tuple(record["command"]),
-            state=state,
-            exit_code=None if exit_status is None else int(exit_status["code"]),
-            signal=None if exit_status is None else int(exit_status["signal"]) or None,
-            started_at=datetime.datetime.fromisoformat(record["started_at"]),
-            exited_at=None if exited_at is None else datetime.datetime.fromisoformat(exited_at),
-            lost_bytes=int(record["lost_bytes"]),
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise ProtocolError(f"the daemon answered a command record the SDK cannot read: {e!r}") from None
+def command_info(record: models.Exec) -> CommandInfo:
+    return CommandInfo(
+        id=record.exec_,
+        sandbox=record.sandbox,
+        command=tuple(record.command),
+        state=_one_of(_COMMAND_STATES, record.state, "a command state"),
+        exit_code=None if record.exit_status is None else record.exit_status.code,
+        signal=None if record.exit_status is None else record.exit_status.signal or None,
+        started_at=record.started_at,
+        exited_at=record.exited_at,
+        lost_bytes=record.lost_bytes,
+    )
 
 
 FileType = Literal["file", "dir", "symlink", "other"]
@@ -106,32 +102,30 @@ class FileEntry:
 
 
 def file_info(record: Any) -> FileInfo:
-    return FileInfo(**_stat(record))
-
-
-def file_entry(record: Any) -> FileEntry:
+    """The X-Shard-Stat header, which no model in the spec describes."""
     try:
-        name = str(record["name"])
-    except (KeyError, TypeError) as e:
-        raise ProtocolError(f"the daemon answered a directory entry the SDK cannot read: {e!r}") from None
-    return FileEntry(name=name, **_stat(record))
-
-
-def _stat(record: Any) -> dict[str, Any]:
-    try:
-        kind = record["type"]
-        if kind not in ("file", "dir", "symlink", "other"):
-            raise ValueError(kind)
-        return {
-            "type": kind,
-            "size": int(record["size"]),
-            "mode": int(record["mode"]),
-            "uid": int(record["uid"]),
-            "gid": int(record["gid"]),
-            "mtime": datetime.datetime.fromisoformat(record["mtime"]),
-        }
+        return FileInfo(
+            type=_one_of(_FILE_TYPES, record["type"], "a file type"),
+            size=int(record["size"]),
+            mode=int(record["mode"]),
+            uid=int(record["uid"]),
+            gid=int(record["gid"]),
+            mtime=datetime.datetime.fromisoformat(record["mtime"]),
+        )
     except (KeyError, TypeError, ValueError) as e:
         raise ProtocolError(f"the daemon answered a file stat the SDK cannot read: {e!r}") from None
+
+
+def file_entry(record: models.FileEntry) -> FileEntry:
+    return FileEntry(
+        name=record.name,
+        type=_one_of(_FILE_TYPES, record.type_, "a file type"),
+        size=record.size,
+        mode=record.mode,
+        uid=record.uid,
+        gid=record.gid,
+        mtime=record.mtime,
+    )
 
 
 @attrs.frozen
@@ -142,10 +136,16 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """The daemon's provider, and every optional verb it refuses."""
+    """Whether the server runs each lifecycle verb; snapshot is creating a filesystem snapshot."""
 
-    provider: str
-    unsupported: tuple[str, ...]
+    create: bool
+    start: bool
+    stop: bool
+    remove: bool
+    pause: bool
+    resume: bool
+    fork: bool
+    snapshot: bool
 
 
 @attrs.frozen
@@ -282,172 +282,150 @@ class NetworkLogRecord:
     reason: str | None
 
 
-def version(record: Any) -> Version:
-    try:
-        return Version(version=str(record["version"]), api_version=str(record["api_version"]))
-    except (KeyError, TypeError) as e:
-        raise _unreadable("a version", e) from None
+_COMMAND_STATES: dict[str, Literal["running", "exited"]] = {"running": "running", "exited": "exited"}
+_FILE_TYPES: dict[str, FileType] = {kind: kind for kind in get_args(FileType)}
+_RESTART_POLICIES: dict[str, RestartPolicy] = {policy: policy for policy in get_args(RestartPolicy)}
+_ACTIONS: dict[str, Literal["allow", "deny"]] = {"allow": "allow", "deny": "deny"}
 
 
-def capabilities(record: Any) -> Capabilities:
-    try:
-        return Capabilities(
-            provider=str(record["provider"]), unsupported=tuple(str(verb) for verb in record["unsupported"])
-        )
-    except (KeyError, TypeError) as e:
-        raise _unreadable("the capabilities", e) from None
+def version(record: models.VersionResponse) -> Version:
+    return Version(version=record.version, api_version=record.api_version)
 
 
-def sandbox_info(record: Any) -> SandboxInfo:
-    try:
-        resources = record["resources"]
-        command = record.get("command")
-        app = None
-        if command:
-            app = AppInfo(
-                command=tuple(str(arg) for arg in command),
-                exit_status=_exit_status(record.get("exit_status")),
-                restart=_restart(record.get("restart")),
-            )
-        return SandboxInfo(
-            id=str(record["id"]),
-            name=record.get("name") or None,
-            image=str(record["image"]),
-            digest=record.get("digest") or None,
-            snapshot=record.get("snapshot") or None,
-            provider=str(record["provider"]),
-            kernel=record.get("kernel") or None,
-            state=str(record["state"]),
-            stopped_reason=record.get("stopped_reason") or None,
-            failed_reason=record.get("failed_reason") or None,
-            resources=Resources(
-                memory_mib=int(resources["memory_mib"]),
-                vcpus=int(resources["vcpus"]),
-                disk_mib=int(resources["disk_mib"]),
-            ),
-            app=app,
-            secrets=tuple(str(name) for name in record.get("secrets") or ()),
-            policy=record.get("policy") or None,
-            started_at=_time_or_none(record.get("started_at")),
-            created_at=datetime.datetime.fromisoformat(record["created_at"]),
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("a sandbox record", e) from None
-
-
-def app_exit(record: Any) -> AppExit:
-    try:
-        return AppExit(
-            exit_code=int(record["code"]), signal=int(record["signal"]) or None, restarts=int(record["restarts"])
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("an app exit", e) from None
-
-
-def policy(record: Any) -> Policy:
-    try:
-        return Policy(
-            name=str(record["name"]),
-            rules=tuple(_policy_rule(rule) for rule in record["rules"]),
-            holders=tuple(str(name) for name in record.get("holders") or ()) if "dns" in record else None,
-            dns=str(record["dns"]) if "dns" in record else None,
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("a policy", e) from None
-
-
-def secret_info(record: Any) -> SecretInfo:
-    try:
-        return SecretInfo(
-            name=str(record["name"]),
-            destinations=tuple(str(each) for each in record["destinations"]),
-            placeholder=str(record["placeholder"]),
-            updated_at=datetime.datetime.fromisoformat(record["updated_at"]),
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("a secret", e) from None
-
-
-def snapshot(record: Any) -> Snapshot:
-    try:
-        return Snapshot(
-            id=str(record["id"]),
-            name=record.get("name") or None,
-            source=str(record["source"]),
-            source_name=record.get("source_name") or None,
-            image=str(record["image"]),
-            digest=str(record["digest"]),
-            provider=str(record["provider"]),
-            disk_mib=int(record["disk_mib"]),
-            memory_mib=int(record["memory_mib"]),
-            size=int(record["size"]),
-            created_at=datetime.datetime.fromisoformat(record["created_at"]),
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("a snapshot", e) from None
-
-
-def network_log_record(record: Any) -> NetworkLogRecord:
-    try:
-        return NetworkLogRecord(
-            time=datetime.datetime.fromisoformat(record["time"]),
-            source=str(record["source"]),
-            verdict=str(record["verdict"]),
-            host=record.get("host") or None,
-            port=int(record.get("port") or 0) or None,
-            address=record.get("address") or None,
-            rule=str(record["rule"]),
-            rule_text=record.get("rule_text") or None,
-            reason=record.get("reason") or None,
-        )
-    except (KeyError, TypeError, ValueError) as e:
-        raise _unreadable("a network log record", e) from None
-
-
-def _exit_status(record: Any) -> ExitStatus | None:
-    if record is None:
-        return None
-    return ExitStatus(code=int(record["code"]), signal=int(record["signal"]) or None)
-
-
-def _restart(record: Any) -> RestartInfo | None:
-    if record is None:
-        return None
-    policy = record["policy"]
-    if policy not in ("no", "on-failure", "always"):
-        raise ValueError(policy)
-    return RestartInfo(
-        policy=policy,
-        retries=int(record.get("retries", 0)),
-        backoff=int(record["backoff"]),
-        count=int(record["count"]),
-        last_at=_time_or_none(record.get("last_at")),
-        gave_up=bool(record["gave_up"]),
-        ended=bool(record["ended"]),
+def capabilities(record: models.Capabilities) -> Capabilities:
+    return Capabilities(
+        create=record.create,
+        start=record.start,
+        stop=record.stop,
+        remove=record.remove,
+        pause=record.pause,
+        resume=record.resume,
+        fork=record.fork,
+        snapshot=record.snapshot,
     )
 
 
-def _policy_rule(record: Any) -> PolicyRule:
-    action = record["action"]
-    if action not in ("allow", "deny"):
-        raise ValueError(action)
-    destination = record["destination"]
+def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
+    app = None
+    if record.command:
+        app = AppInfo(
+            command=tuple(record.command),
+            exit_status=_exit_status(record.exit_status),
+            restart=_restart(record.restart),
+        )
+    return SandboxInfo(
+        id=record.id,
+        name=record.name or None,
+        image=record.image,
+        digest=record.digest or None,
+        snapshot=record.snapshot or None,
+        provider=record.provider,
+        kernel=record.kernel or None,
+        state=record.state,
+        stopped_reason=record.stopped_reason or None,
+        failed_reason=record.failed_reason or None,
+        resources=Resources(
+            memory_mib=record.resources.memory_mib, vcpus=record.resources.vcpus, disk_mib=record.resources.disk_mib
+        ),
+        app=app,
+        secrets=tuple(record.secrets or ()),
+        policy=record.policy or None,
+        started_at=_time_or_none(record.started_at),
+        created_at=record.created_at,
+    )
+
+
+def app_exit(record: models.AppExit) -> AppExit:
+    return AppExit(exit_code=record.code, signal=record.signal or None, restarts=record.restarts)
+
+
+def policy(record: models.Policy | models.PolicyView) -> Policy:
+    """A get answers holders and dns; a list row answers neither, so both stay None."""
+    return Policy(
+        name=record.name,
+        rules=tuple(_policy_rule(rule) for rule in record.rules),
+        holders=tuple(record.holders or ()) if isinstance(record, models.PolicyView) else None,
+        dns=record.dns if isinstance(record, models.PolicyView) else None,
+    )
+
+
+def secret_info(record: models.Secret) -> SecretInfo:
+    return SecretInfo(
+        name=record.name,
+        destinations=tuple(record.destinations),
+        placeholder=record.placeholder,
+        updated_at=record.updated_at,
+    )
+
+
+def snapshot(record: models.Snapshot) -> Snapshot:
+    return Snapshot(
+        id=record.id,
+        name=record.name or None,
+        source=record.source,
+        source_name=record.source_name or None,
+        image=record.image,
+        digest=record.digest,
+        provider=record.provider,
+        disk_mib=record.disk_mib,
+        memory_mib=record.memory_mib,
+        size=record.size,
+        created_at=record.created_at,
+    )
+
+
+def network_log_record(record: models.Record) -> NetworkLogRecord:
+    return NetworkLogRecord(
+        time=record.time,
+        source=record.source,
+        verdict=record.verdict,
+        host=record.host or None,
+        port=record.port or None,
+        address=record.address or None,
+        rule=record.rule,
+        rule_text=record.rule_text or None,
+        reason=record.reason or None,
+    )
+
+
+def _exit_status(record: models.ExitStatus | Unset) -> ExitStatus | None:
+    if isinstance(record, Unset):
+        return None
+    return ExitStatus(code=record.code, signal=record.signal or None)
+
+
+def _restart(record: models.Restart | Unset) -> RestartInfo | None:
+    if isinstance(record, Unset):
+        return None
+    return RestartInfo(
+        policy=_one_of(_RESTART_POLICIES, record.policy, "a restart policy"),
+        retries=record.retries or 0,
+        backoff=record.backoff or 0,
+        count=record.count,
+        last_at=_time_or_none(record.last_at),
+        gave_up=record.gave_up,
+        ended=record.ended,
+    )
+
+
+def _policy_rule(record: models.Rule) -> PolicyRule:
     # Spelled as the daemon's FormatRule spells it, less the action, so a set and its get compare equal.
-    text = str(destination["value"])
-    if destination["kind"] == "domain-suffix":
+    text = record.destination.value
+    if record.destination.kind == "domain-suffix":
         text = f"suffix:{text}"
-    protocol = record.get("protocol")
-    if protocol:
-        text += f" {protocol}"
-        ports = record.get("ports")
-        if ports:
-            text += ":" + ",".join(str(int(port)) for port in ports)
-    return PolicyRule(action=action, rule=text)
+    if record.protocol:
+        text += f" {record.protocol}"
+        if record.ports:
+            text += ":" + ",".join(str(port) for port in record.ports)
+    return PolicyRule(action=_one_of(_ACTIONS, record.action, "a rule action"), rule=text)
 
 
-def _time_or_none(value: Any) -> datetime.datetime | None:
-    return None if value is None else datetime.datetime.fromisoformat(value)
+def _time_or_none(value: datetime.datetime | Unset) -> datetime.datetime | None:
+    return None if isinstance(value, Unset) else value
 
 
-def _unreadable(what: str, e: Exception) -> ProtocolError:
-    return ProtocolError(f"the daemon answered {what} the SDK cannot read: {e!r}")
+def _one_of(table: Mapping[str, T], value: str, what: str) -> T:
+    try:
+        return table[value]
+    except KeyError:
+        raise ProtocolError(f"the daemon answered {what} the SDK does not know: {value!r}") from None

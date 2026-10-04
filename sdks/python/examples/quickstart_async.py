@@ -13,7 +13,7 @@ IMAGE = "docker.io/library/alpine:3"
 async def main() -> None:
     async with AsyncShard() as shard:
         version, capabilities = await asyncio.gather(shard.version(), shard.capabilities())
-        print(f"daemon {version.version} on {capabilities.provider}")
+        print(f"daemon {version.version}, fork supported: {capabilities.fork}")
 
         sandbox = await shard.create(IMAGE)
         try:

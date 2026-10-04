@@ -34,6 +34,8 @@ async def assign_clear(ctx: AsyncContext) -> None:
     await ctx.policy(name, RULES)
     sandbox = await ctx.create()
     equal(sandbox.info.policy, None)
+    await rejects(ConflictError, lambda: ctx.shard.policies.assign(sandbox, name))
+    await sandbox.stop()
     await ctx.shard.policies.assign(sandbox, name)
     equal((await sandbox.inspect()).policy, name)
     await rejects(ConflictError, lambda: ctx.shard.policies.remove(name))

@@ -23,7 +23,6 @@ from useshards import (
     Shard,
     ShardConnectionError,
 )
-from useshards._config import Settings
 from useshards._wire import EXIT, STDOUT
 
 SANDBOX: dict[str, Any] = {
@@ -60,21 +59,17 @@ def daemon() -> Iterator[FakeDaemon]:
     assert fake.errors == []
 
 
-def settings(daemon: FakeDaemon) -> Settings:
-    return Settings(base_url=daemon.url, api_key="k", verify=True)
-
-
 @pytest.fixture
-def shard(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> Iterator[Shard]:
-    # The fake speaks plain HTTP, which resolve() refuses.
-    monkeypatch.setattr("useshards._sync._shard.resolve", lambda *_: settings(daemon))
-    with Shard() as client:
+def shard(daemon: FakeDaemon) -> Iterator[Shard]:
+    with pytest.warns(UserWarning, match="HTTP does not encrypt"):
+        client = Shard(daemon.url, "k")
+    with client:
         yield client
 
 
-def async_shard(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> AsyncShard:
-    monkeypatch.setattr("useshards._async._shard.resolve", lambda *_: settings(daemon))
-    return AsyncShard()
+def async_shard(daemon: FakeDaemon) -> AsyncShard:
+    with pytest.warns(UserWarning, match="HTTP does not encrypt"):
+        return AsyncShard(daemon.url, "k")
 
 
 def sent(daemon: FakeDaemon, method: str, path: str) -> Any:
@@ -102,13 +97,23 @@ def test_a_policy_list_leaves_out_holders_and_dns(daemon: FakeDaemon, shard: Sha
 
 def test_a_page_without_next_is_refused(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("GET", "/v0/snapshots")] = (200, {"snapshots": []})
-    with pytest.raises(ProtocolError, match="no snapshots or next"):
+    with pytest.raises(ProtocolError, match="cannot read: KeyError..next"):
         shard.snapshots.list()
 
 
 def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
-    daemon.routes[("GET", "/v0/capabilities")] = (200, {"provider": "sysbox", "unsupported": ["pause", "fork"]})
-    assert shard.capabilities() == Capabilities(provider="sysbox", unsupported=("pause", "fork"))
+    verbs = {
+        "create": True,
+        "start": True,
+        "stop": True,
+        "remove": True,
+        "pause": False,
+        "resume": False,
+        "fork": False,
+        "snapshot": True,
+    }
+    daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
+    assert shard.capabilities() == Capabilities(**verbs)
 
 
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
@@ -279,7 +284,7 @@ def test_app_wait_timeout_leaves_the_app(daemon: FakeDaemon, shard: Shard) -> No
     assert app.wait() == AppExit(exit_code=0, signal=None, restarts=1)
 
 
-def test_async_follow_to_the_end(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_async_follow_to_the_end(daemon: FakeDaemon) -> None:
     def session(peer: Peer) -> str:
         peer.send(STDOUT, b"a")
         return log_end(peer)
@@ -287,7 +292,7 @@ def test_async_follow_to_the_end(daemon: FakeDaemon, monkeypatch: pytest.MonkeyP
     daemon.attaches = [session]
 
     async def run() -> list[bytes]:
-        async with async_shard(daemon, monkeypatch) as client:
+        async with async_shard(daemon) as client:
             sandbox = await client.get("sb")
             async with sandbox.follow_logs() as follow:
                 return [chunk async for chunk in follow]
@@ -296,7 +301,7 @@ def test_async_follow_to_the_end(daemon: FakeDaemon, monkeypatch: pytest.MonkeyP
     assert daemon.outcomes == ["close"]
 
 
-def test_async_cancel_lets_go_of_the_follow(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_async_cancel_lets_go_of_the_follow(daemon: FakeDaemon) -> None:
     def session(peer: Peer) -> str:
         peer.send(STDOUT, b"a")
         return peer.until_end()
@@ -304,7 +309,7 @@ def test_async_cancel_lets_go_of_the_follow(daemon: FakeDaemon, monkeypatch: pyt
     daemon.attaches = [session]
 
     async def run() -> list[bytes]:
-        async with async_shard(daemon, monkeypatch) as client:
+        async with async_shard(daemon) as client:
             follow = (await client.get("sb")).follow_logs()
             first = asyncio.Event()
 

@@ -28,8 +28,7 @@ Handler = Callable[[httpx.Request], httpx.Response]
 
 
 def files(handler: Handler) -> Files:
-    transport = Transport(Settings(base_url=BASE, api_key="k", verify=True), 5.0)
-    transport.http = httpx.Client(base_url=BASE, transport=httpx.MockTransport(handler))
+    transport = Transport(Settings(base_url=BASE, api_key="k", verify=True), 5.0, httpx.MockTransport(handler))
     return Files(transport, "sb")
 
 
@@ -295,8 +294,7 @@ def test_async_write_and_download(tmp_path: Path) -> None:
         return httpx.Response(200, headers={"X-Shard-Stat": json.dumps(STAT)}, stream=Chunks([b"by", b"tes"]))
 
     async def run() -> None:
-        transport = AsyncTransport(Settings(base_url=BASE, api_key="k", verify=True), 5.0)
-        transport.http = httpx.AsyncClient(base_url=BASE, transport=httpx.MockTransport(handler))
+        transport = AsyncTransport(Settings(base_url=BASE, api_key="k", verify=True), 5.0, httpx.MockTransport(handler))
         sandbox = AsyncFiles(transport, "sb")
         await sandbox.write("/tmp/a", io.BytesIO(b"async body"))
         await sandbox.download("/tmp/a", tmp_path / "down.bin")

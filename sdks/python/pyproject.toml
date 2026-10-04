@@ -24,6 +24,7 @@ dev = [
     "websockets==14.1",
     "ruff==0.8.4",
     "mypy==1.14.0",
+    "openapi-python-client==0.29.1",
 ]
 
 [build-system]

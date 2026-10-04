@@ -143,9 +143,12 @@ sdk-ts-check:
 
 check: fmt-check vet lint test e2e-test
 
-# The Python SDK's generated code: the sync client, which scripts/unasync.py writes from the async one.
+# The Python SDK's generated code: the private client from docs/openapi.json, then the sync twins of the async source.
 sdk-py:
-	cd sdks/python && uv run --locked python scripts/unasync.py
+	cd sdks/python && rm -rf src/useshards/_generated && \
+		uv run --locked openapi-python-client generate --path ../../docs/openapi.json --config openapi-python-client.yml \
+			--meta none --output-path src/useshards/_generated --fail-on-warning && \
+		uv run --locked python scripts/unasync.py
 
 # The Python SDK's gate. Its shared suite needs a daemon, so only the unit tests run here.
 sdk-py-check:

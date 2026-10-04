@@ -39,7 +39,7 @@ make vuln                    govulncheck
 make openapi                 write docs/openapi.json from the routes; make test fails while it differs (SHARD-489)
 make sdk-ts                  regenerate the TypeScript SDK's private types from docs/openapi.json
 make sdk-ts-check            the TypeScript SDK's drift check, typecheck, unit tests and build; needs Node 22
-make sdk-py                  regenerate the Python SDK's sync client from its async source (SHARD-492)
+make sdk-py                  generate the Python SDK's private client from docs/openapi.json, and its sync twins (SHARD-492)
 make sdk-py-check            the Python SDK's lint, types, generated-code check and unit tests; needs uv
 ```
 

@@ -10,12 +10,15 @@ import os
 import posixpath
 import stat
 import tempfile
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from typing import IO
 
 import httpx
 
 from .. import _archive
+from .._generated import models
+from .._generated.api.files import delete_file, list_dir, make_dir, read_file, stat_file
+from .._generated.types import UNSET, File
 from .._types import FileEntry, FileInfo, file_entry, file_info
 from .._wire import path as route
 from ..errors import APIError, ProtocolError, UnknownLengthError
@@ -36,8 +39,10 @@ class AsyncFiles:
 
     async def read(self, path: str) -> bytes:
         """The whole file at path, in memory; download() streams a large one to disk instead."""
-        response = await self._transport.call("GET", self._route("files"), params={"path": path})
-        return response.content
+        file = await self._transport.answer(
+            File, lambda: read_file.asyncio_detailed(self._sandbox, client=self._transport.api, path=path)
+        )
+        return file.payload.read()
 
     async def read_text(self, path: str, encoding: str = "utf-8") -> str:
         return (await self.read(path)).decode(encoding)
@@ -74,41 +79,45 @@ class AsyncFiles:
 
     async def stat(self, path: str) -> FileInfo:
         try:
-            response = await self._transport.call("HEAD", self._route("files"), params={"path": path})
+            response = await self._transport.send(
+                lambda: stat_file.asyncio_detailed(self._sandbox, client=self._transport.api, path=path)
+            )
         except APIError as e:
             # A HEAD refusal carries no body, so the SDK names the path the daemon could not.
             raise type(e)(e.status, e.code, f"the daemon answered {e.status} to a stat of {path}") from None
-        return _stat_of(response, f"stat {path}")
+        return _stat_of(response.headers, f"stat {path}")
 
     async def list(self, path: str) -> builtins.list[FileEntry]:
         """The entries of the directory at path, each with its own stat."""
-        response = await self._transport.call("GET", self._route("ls"), params={"path": path})
         try:
-            entries = json.loads(response.content)["entries"]
-        except (ValueError, KeyError, TypeError):
+            listing = await self._transport.answer(
+                models.EntriesResponse,
+                lambda: list_dir.asyncio_detailed(self._sandbox, client=self._transport.api, path=path),
+            )
+        except ProtocolError:
             # The daemon closes the JSON only once the guest sent every entry, so a cut listing never parses.
             raise ProtocolError(f"the daemon cut the listing of {path} short") from None
-        if not isinstance(entries, builtins.list):
-            raise ProtocolError(f"the daemon answered a listing of {path} whose entries are not a list")
-        return [file_entry(entry) for entry in entries]
+        return [file_entry(entry) for entry in listing.entries]
 
     async def mkdir(
         self, path: str, *, mode: int | None = None, parents: bool = False, user: str | None = None
     ) -> None:
-        request: dict[str, object] = {"path": path}
-        if mode is not None:
-            request["mode"] = format(mode, "o")
-        if parents:
-            request["parents"] = True
-        if user:
-            request["user"] = user
-        await self._transport.call("POST", self._route("mkdir"), json=request)
+        body = models.MkdirRequest(
+            path=path,
+            mode=UNSET if mode is None else format(mode, "o"),
+            parents=parents or UNSET,
+            user=user or UNSET,
+        )
+        await self._transport.send(
+            lambda: make_dir.asyncio_detailed(self._sandbox, client=self._transport.api, body=body)
+        )
 
     async def remove(self, path: str, *, recursive: bool = False) -> None:
-        params = {"path": path}
-        if recursive:
-            params["recursive"] = "true"
-        await self._transport.call("DELETE", self._route("files"), params=params)
+        await self._transport.send(
+            lambda: delete_file.asyncio_detailed(
+                self._sandbox, client=self._transport.api, path=path, recursive=recursive or UNSET
+            )
+        )
 
     async def upload(
         self,
@@ -135,8 +144,8 @@ class AsyncFiles:
         fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.useshards-", dir=os.path.dirname(target) or ".")
         try:
             with os.fdopen(fd, "wb") as out:
-                async with self._transport.stream("GET", self._route("files"), params={"path": remote}) as response:
-                    info = _stat_of(response, f"download {remote}")
+                async with self._transport.stream(self._route("files"), {"path": remote}) as response:
+                    info = _stat_of(response.headers, f"download {remote}")
                     await _spool(response, out)
                 await _backend.offload(functools.partial(os.fsync, out.fileno()))
             os.chmod(tmp, info.mode & 0o777)
@@ -160,9 +169,7 @@ class AsyncFiles:
             size = tar.tell()
             tar.seek(0)
             content = _exactly(tar, size, f"upload {source}", to_end=True)
-            await self._transport.call(
-                "PUT", self._route("archive"), params=params, content=content, headers={"Content-Length": str(size)}
-            )
+            await self._transport.put(self._route("archive"), params, content, size)
 
     async def download_dir(self, remote: str, local: LocalPath) -> None:
         """Land the directory at remote as local, which names the directory itself; nothing lands outside local."""
@@ -170,10 +177,8 @@ class AsyncFiles:
         target = os.path.abspath(local)
         # The whole tar is in before the unpack starts, so a cut never lands half a tree.
         with tempfile.TemporaryFile() as tar:
-            async with self._transport.stream(
-                "GET", self._route("archive"), params={"path": posixpath.normpath(remote)}
-            ) as response:
-                info = _stat_of(response, f"download {remote}")
+            async with self._transport.stream(self._route("archive"), {"path": posixpath.normpath(remote)}) as response:
+                info = _stat_of(response.headers, f"download {remote}")
                 if info.type != "dir":
                     raise NotADirectoryError(f"download {remote}: it is a {info.type}, not a directory")
                 await _spool(response, tar)
@@ -207,9 +212,7 @@ class AsyncFiles:
             params["parents"] = "true"
         if user:
             params["user"] = user
-        # An explicit length keeps HTTPX from sending the stream chunked, which the daemon refuses.
-        headers = {"Content-Length": str(size)}
-        await self._transport.call("PUT", self._route("files"), params=params, content=content, headers=headers)
+        await self._transport.put(self._route("files"), params, content, size)
 
     def _route(self, verb: str) -> str:
         return route("sandboxes", self._sandbox, verb)
@@ -240,8 +243,8 @@ async def _spool(response: httpx.Response, out: IO[bytes]) -> None:
         await _backend.offload(functools.partial(out.write, chunk))
 
 
-def _stat_of(response: httpx.Response, what: str) -> FileInfo:
-    raw = response.headers.get(STAT_HEADER)
+def _stat_of(headers: Mapping[str, str], what: str) -> FileInfo:
+    raw = headers.get(STAT_HEADER)
     if raw is None:
         raise ProtocolError(f"{what}: the daemon answered no {STAT_HEADER} header")
     try:

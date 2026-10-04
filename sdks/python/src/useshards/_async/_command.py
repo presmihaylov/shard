@@ -8,6 +8,8 @@ from typing import NoReturn
 
 from .._capture import OutputCapture
 from .._frames import OP_BINARY
+from .._generated import models
+from .._generated.api.exec_ import create_exec, get_exec, kill_exec, resize_exec
 from .._types import CommandInfo, CommandResult, OutputCallback, Signal, TerminalSize, command_info
 from .._wire import (
     EXIT,
@@ -19,7 +21,6 @@ from .._wire import (
     exec_body,
     exit_of,
     failure_of,
-    json_of,
     path,
 )
 from ..errors import ConflictError, ProtocolError, ShardConnectionError, ShardError
@@ -90,13 +91,22 @@ class AsyncCommand:
 
     async def kill(self, signal: Signal = "TERM") -> None:
         """Send the command one signal. This, not a disconnect or a cancellation, is what ends it."""
-        await self._transport.call("POST", f"{self._path}/kill", json={"signal": signal})
+        body = models.KillRequest(signal=signal)
+        await self._transport.send(
+            lambda: kill_exec.asyncio_detailed(self.sandbox, self.id, client=self._transport.api, body=body)
+        )
 
     async def inspect(self) -> CommandInfo:
-        return command_info(json_of(await self._transport.call("GET", self._path)))
+        record = await self._transport.answer(
+            models.Exec, lambda: get_exec.asyncio_detailed(self.sandbox, self.id, client=self._transport.api)
+        )
+        return command_info(record)
 
     async def resize(self, rows: int, cols: int) -> None:
-        await self._transport.call("POST", f"{self._path}/resize", json={"rows": rows, "cols": cols})
+        body = models.TerminalSize(rows=rows, cols=cols)
+        await self._transport.send(
+            lambda: resize_exec.asyncio_detailed(self.sandbox, self.id, client=self._transport.api, body=body)
+        )
 
     async def write_stdin(self, data: bytes | str) -> None:
         if self._stdin is False:
@@ -313,20 +323,23 @@ async def start_command(
 async def _start(
     transport: AsyncTransport,
     sandbox: str,
-    body: dict[str, object],
+    body: models.ExecRequest,
     output_limit_bytes: int,
     on_stdout: OutputCallback | None,
     on_stderr: OutputCallback | None,
 ) -> AsyncCommand:
     # Refused before anything starts, rather than after the command already runs.
     OutputCapture(output_limit_bytes)
-    response = await transport.call("POST", path("sandboxes", sandbox, "exec"), json=body)
-    record = command_info(json_of(response))
+    record = command_info(
+        await transport.answer(
+            models.Exec, lambda: create_exec.asyncio_detailed(sandbox, client=transport.api, body=body)
+        )
+    )
     return AsyncCommand(
         transport,
         record.sandbox,
         record.id,
-        stdin=bool(body["stdin"]),
+        stdin=body.stdin is True,
         output_limit_bytes=output_limit_bytes,
         on_stdout=on_stdout,
         on_stderr=on_stderr,

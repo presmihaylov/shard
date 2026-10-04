@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+import attrs
+
 from useshards import ConflictError, NotFoundError, Sandbox, UnsupportedError
 
 from .._shared import equal, matches, named, not_equal, ok, skip
@@ -122,6 +124,43 @@ def unsupported_named(ctx: Context) -> None:
         equal(err.code, "unsupported")
 
 
+def agrees(verb: str, supported: bool, run: Call) -> None:
+    """Run a verb, and prove the capabilities said whether the server would refuse it."""
+    try:
+        run()
+    except UnsupportedError as e:
+        equal(supported, False, f"capabilities say {verb}, but the server refused it: {e.message}")
+        matches(e.message, verb, f"the refusal names {verb}")
+        return
+    equal(supported, True, f"capabilities say no {verb}, but it ran")
+
+
+def capabilities(ctx: Context) -> None:
+    verbs = attrs.asdict(ctx.shard.capabilities())
+    equal(sorted(verbs), ["create", "fork", "pause", "remove", "resume", "snapshot", "start", "stop"])
+    ok(all(isinstance(value, bool) for value in verbs.values()), f"every verb is a boolean: {verbs}")
+    for verb in ("create", "start", "stop", "remove"):
+        equal(verbs[verb], True, f"every provider can {verb}")
+    equal(verbs["resume"], verbs["pause"], "pause and resume come as a pair")
+    sandbox = ctx.create()
+
+    def pause_then_resume() -> None:
+        sandbox.pause()
+        sandbox.resume()
+
+    def fork_then_remove() -> None:
+        forked = sandbox.fork(name=ctx.name("fork"))
+        forked.remove(force=True)
+
+    def snapshot() -> None:
+        ctx.snapshot(sandbox)
+
+    agrees("pause", verbs["pause"], pause_then_resume)
+    agrees("fork", verbs["fork"], fork_then_remove)
+    sandbox.stop()
+    agrees("snapshot", verbs["snapshot"], snapshot)
+
+
 CHECKS = [
     Check("lifecycle.create_no_app", create_no_app),
     Check("lifecycle.inspect_get_list", inspect_get_list),
@@ -130,4 +169,5 @@ CHECKS = [
     Check("lifecycle.fork", fork),
     Check("lifecycle.remove", remove),
     Check("lifecycle.unsupported_named", unsupported_named),
+    Check("lifecycle.capabilities", capabilities),
 ]

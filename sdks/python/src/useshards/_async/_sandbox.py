@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, overload
+from typing import Literal, overload
 
 import httpx
 
 from .._capture import DEFAULT_OUTPUT_LIMIT
+from .._generated import models
+from .._generated.api.app import attach_app, stop_app
+from .._generated.api.exec_ import get_exec, list_execs
+from .._generated.api.sandboxes import (
+    fork_sandbox,
+    get_sandbox,
+    get_sandbox_egress_log,
+    get_sandbox_logs,
+    pause_sandbox,
+    remove_sandbox,
+    resume_sandbox,
+    start_sandbox,
+    stop_sandbox,
+)
+from .._generated.types import UNSET
 from .._types import (
     AppExit,
     AppInfo,
@@ -23,7 +38,7 @@ from .._types import (
     network_log_record,
     sandbox_info,
 )
-from .._wire import json_of, path
+from .._wire import AsyncCall, path
 from ..errors import ProtocolError, ShardConnectionError
 from ._command import AsyncCommand, run_command, start_command
 from ._files import AsyncFiles
@@ -52,7 +67,10 @@ class AsyncSandbox:
         return self.info.name
 
     async def inspect(self) -> SandboxInfo:
-        self.info = sandbox_info(json_of(await self._transport.call("GET", path("sandboxes", self.id))))
+        record = await self._transport.answer(
+            models.Inspection, lambda: get_sandbox.asyncio_detailed(self.id, client=self._transport.api)
+        )
+        self.info = sandbox_info(record)
         return self.info
 
     @overload
@@ -139,40 +157,39 @@ class AsyncSandbox:
         )
 
     async def stop(self) -> None:
-        await self._verb("stop")
+        await self._verb(lambda: stop_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def start(self) -> None:
-        await self._verb("start")
+        await self._verb(lambda: start_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def pause(self) -> None:
-        await self._verb("pause")
+        await self._verb(lambda: pause_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def resume(self) -> None:
-        await self._verb("resume")
+        await self._verb(lambda: resume_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def fork(self, *, name: str | None = None) -> AsyncSandbox:
         """A running copy of this sandbox, memory and all; the source runs on."""
-        response = await self._transport.call(
-            "POST",
-            path("sandboxes", self.id, "fork"),
-            json={"name": name} if name else {},
-            timeout=self._transport.read_bound(None),
+        body = models.CopyRequest(name=name or UNSET)
+        record = await self._transport.answer(
+            models.Sandbox,
+            lambda: fork_sandbox.asyncio_detailed(self.id, client=self._transport.api, body=body),
+            self._transport.read_bound(None),
         )
-        return AsyncSandbox(self._transport, sandbox_info(json_of(response)))
+        return AsyncSandbox(self._transport, sandbox_info(record))
 
     async def remove(self, *, force: bool = False) -> None:
         """Remove a stopped sandbox; force stops a running one first."""
-        await self._transport.call(
-            "DELETE",
-            path("sandboxes", self.id),
-            params={"force": "true"} if force else None,
-            timeout=self._transport.read_bound(None),
+        await self._transport.send(
+            lambda: remove_sandbox.asyncio_detailed(self.id, client=self._transport.api, force=force or UNSET),
+            self._transport.read_bound(None),
         )
 
     async def logs(self) -> str:
         """The app's output so far, both streams as the daemon wrote them."""
-        response = await self._transport.call("GET", path("sandboxes", self.id, "logs"))
-        return response.content.decode("utf-8", "replace")
+        return await self._transport.answer(
+            str, lambda: get_sandbox_logs.asyncio_detailed(self.id, client=self._transport.api)
+        )
 
     def follow_logs(self) -> AsyncFollow[bytes]:
         """The app's output from the start of the log, then as it arrives, until the sandbox stops."""
@@ -182,9 +199,9 @@ class AsyncSandbox:
 
     async def network_logs(self) -> builtins.list[NetworkLogRecord]:
         """Every egress decision the daemon still holds, oldest first."""
-        records = json_of(await self._transport.call("GET", path("sandboxes", self.id, "egress-log")))
-        if not isinstance(records, builtins.list):
-            raise ProtocolError(f"the network log of sandbox {self.id} is not a list")
+        records = await self._transport.answer(
+            builtins.list, lambda: get_sandbox_egress_log.asyncio_detailed(self.id, client=self._transport.api)
+        )
         return [network_log_record(record) for record in records]
 
     def follow_network_logs(self) -> AsyncFollow[NetworkLogRecord]:
@@ -195,11 +212,8 @@ class AsyncSandbox:
             network_log_entry,
         )
 
-    async def _verb(self, verb: str) -> None:
-        response = await self._transport.call(
-            "POST", path("sandboxes", self.id, verb), timeout=self._transport.read_bound(None)
-        )
-        self.info = sandbox_info(json_of(response))
+    async def _verb(self, call: AsyncCall) -> None:
+        self.info = sandbox_info(await self._transport.answer(models.Sandbox, call, self._transport.read_bound(None)))
 
 
 class AsyncCommands:
@@ -210,7 +224,11 @@ class AsyncCommands:
         self._sandbox = sandbox
 
     async def list(self) -> builtins.list[CommandInfo]:
-        records = await listed(self._transport, path("sandboxes", self._sandbox, "exec"), "execs")
+        records = await self._transport.listed(
+            models.ExecsResponse,
+            lambda cursor: list_execs.asyncio_detailed(self._sandbox, client=self._transport.api, cursor=cursor),
+            lambda page: page.execs,
+        )
         return [command_info(record) for record in records]
 
     async def get(
@@ -222,8 +240,11 @@ class AsyncCommands:
         on_stderr: OutputCallback | None = None,
     ) -> AsyncCommand:
         """A handle on a command already started; its wait() attaches, so the callbacks see the replay."""
-        response = await self._transport.call("GET", path("sandboxes", self._sandbox, "exec", id))
-        record = command_info(json_of(response))
+        record = command_info(
+            await self._transport.answer(
+                models.Exec, lambda: get_exec.asyncio_detailed(self._sandbox, id, client=self._transport.api)
+            )
+        )
         return AsyncCommand(
             self._transport,
             record.sandbox,
@@ -251,41 +272,24 @@ class AsyncApp:
     async def wait(self, timeout: float | None = None) -> AppExit:
         """Block until the app ends with no start again left. A timeout ends the wait, never the app."""
         try:
-            response = await self._transport.call(
-                "GET", path("sandboxes", self.sandbox.id, "attach"), timeout=self._transport.read_bound(timeout)
+            record = await self._transport.answer(
+                models.AppExit,
+                lambda: attach_app.asyncio_detailed(self.sandbox.id, client=self._transport.api),
+                self._transport.read_bound(timeout),
             )
         except ShardConnectionError as e:
             if isinstance(e.__cause__, httpx.ReadTimeout):
                 raise TimeoutError(f"the app of sandbox {self.sandbox.id} did not end within {timeout}s") from None
             raise
-        return app_exit(json_of(response))
+        return app_exit(record)
 
     async def logs(self) -> str:
         return await self.sandbox.logs()
 
     async def stop(self, *, force: bool = False) -> None:
         """End the app with TERM, or KILL with force, and cancel its restart policy."""
-        await self._transport.call(
-            "POST",
-            path("sandboxes", self.sandbox.id, "app", "stop"),
-            json={"force": True} if force else None,
-            timeout=self._transport.read_bound(None),
+        body = models.AppStopRequest(force=force or UNSET)
+        await self._transport.send(
+            lambda: stop_app.asyncio_detailed(self.sandbox.id, client=self._transport.api, body=body),
+            self._transport.read_bound(None),
         )
-
-
-async def listed(
-    transport: AsyncTransport, route: str, key: str, params: Mapping[str, str] | None = None
-) -> builtins.list[Any]:
-    """Every row of a paged list, one page after another."""
-    query = dict(params or {})
-    rows: builtins.list[Any] = []
-    while True:
-        page = json_of(await transport.call("GET", route, params=query))
-        try:
-            rows.extend(page[key])
-            cursor = page["next"]
-        except (KeyError, TypeError):
-            raise ProtocolError(f"GET {route} answered a page with no {key} or next") from None
-        if not cursor:
-            return rows
-        query["cursor"] = str(cursor)
