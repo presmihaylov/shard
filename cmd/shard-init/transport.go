@@ -573,6 +573,8 @@ type logSink struct {
 	held []byte
 	from uint64
 	conn net.Conn
+	// stopped is a host whose log refused the output, so until the next host nothing waits for an ack.
+	stopped bool
 }
 
 func newLogSink() (*logSink, error) {
@@ -607,6 +609,7 @@ func (s *logSink) accept(l net.Listener) {
 			_ = s.conn.Close()
 		}
 		s.conn = conn
+		s.stopped = false
 		from, to := s.from, s.from+uint64(len(s.held))
 		s.cond.Broadcast()
 		s.mu.Unlock()
@@ -666,12 +669,12 @@ func (s *logSink) end() (uint64, error) {
 	return s.from + uint64(len(s.held)) + uint64(queued), nil //nolint:gosec // a byte count is never negative
 }
 
-// landed waits until a host acks the output before byte mark, which its log file then holds.
+// landed waits until a host acks the output before byte mark, which its log file then holds, or says its log stopped.
 func (s *logSink) landed(mark uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for s.from < mark {
+	for s.from < mark && !s.stopped {
 		s.cond.Wait()
 	}
 }
@@ -685,6 +688,11 @@ func (s *logSink) serve(conn net.Conn, from, to uint64) {
 	}
 	var at uint64
 	if err := binary.Read(conn, binary.BigEndian, &at); err != nil {
+		return
+	}
+	if at == supervisor.LogsStopped {
+		s.stop(conn)
+
 		return
 	}
 	if at < from || at > to {
@@ -737,6 +745,11 @@ func (s *logSink) acks(conn net.Conn) {
 		if err := binary.Read(conn, binary.BigEndian, &ack); err != nil {
 			return
 		}
+		if ack == supervisor.LogsStopped {
+			s.stop(conn)
+
+			return
+		}
 		if err := s.release(conn, ack); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init:", err)
 
@@ -761,6 +774,18 @@ func (s *logSink) release(conn net.Conn, ack uint64) error {
 	s.cond.Broadcast()
 
 	return nil
+}
+
+// stop lets the end go without the ack of a host whose log refused the output.
+func (s *logSink) stop(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return
+	}
+	s.stopped = true
+	s.cond.Broadcast()
 }
 
 // drop ends conn, unless a newer host already took its place.

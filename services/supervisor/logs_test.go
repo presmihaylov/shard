@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -140,15 +141,21 @@ func TestBoundLogLeavesALogWithinMax(t *testing.T) {
 	}
 }
 
-// pipeLog keeps what lands and the offsets each Resume was asked about, and signals a write.
+// pipeLog keeps what lands and the offsets each Resume was asked about, and signals a write; refuse fails the call it names.
 type pipeLog struct {
 	got     bytes.Buffer
 	resumes [][2]uint64
 	at      uint64
 	wrote   chan struct{}
+	refuse  string
 }
 
+var errRefused = errors.New("the log refuses it")
+
 func (l *pipeLog) Write(b []byte) (int, error) {
+	if l.refuse == "write" {
+		return 0, errRefused
+	}
 	n, err := l.got.Write(b)
 	select {
 	case l.wrote <- struct{}{}:
@@ -160,6 +167,9 @@ func (l *pipeLog) Write(b []byte) (int, error) {
 
 func (l *pipeLog) Resume(from, to uint64) (uint64, error) {
 	l.resumes = append(l.resumes, [2]uint64{from, to})
+	if l.refuse == "resume" {
+		return 0, errRefused
+	}
 
 	return l.at, nil
 }
@@ -253,5 +263,39 @@ func TestAnUnknownLogsVersionFailsTheStreamAndNamesIt(t *testing.T) {
 	}
 	if sink.got.Len() != 0 || len(sink.resumes) != 0 {
 		t.Fatalf("landed %q after resumes %v, want nothing", sink.got.String(), sink.resumes)
+	}
+}
+
+// A log that refuses the resume or a write ends the stream with the stop word in place of an answer, so the guest waits for no ack of it.
+func TestALogThatRefusesTheOutputTellsTheGuestItStopped(t *testing.T) {
+	for _, refuse := range []string{"resume", "write"} {
+		t.Run(refuse, func(t *testing.T) {
+			sink := &pipeLog{refuse: refuse}
+			err := followGuest(t, sink, supervisor.LogsVersion, func(g net.Conn) error {
+				if _, err := g.Write(supervisor.LogsHeader(0, 4)); err != nil {
+					return err
+				}
+				var answer uint64
+				if err := binary.Read(g, binary.BigEndian, &answer); err != nil {
+					return err
+				}
+				if refuse == "write" {
+					if _, err := g.Write([]byte("0123")); err != nil {
+						return err
+					}
+					if err := binary.Read(g, binary.BigEndian, &answer); err != nil {
+						return err
+					}
+				}
+				if answer != supervisor.LogsStopped {
+					return fmt.Errorf("the host answered %d, want the stop word", answer)
+				}
+
+				return nil
+			})
+			if !errors.Is(err, errRefused) {
+				t.Fatalf("Logs = %v, want the log's refusal", err)
+			}
+		})
 	}
 }

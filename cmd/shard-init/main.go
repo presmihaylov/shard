@@ -319,6 +319,8 @@ func (g *guest) collect() bool {
 		if g.stopping {
 			return true
 		}
+		// Neither the next run nor an ended app keeps what this run left in its group, so a child that ignored the TERM ends here.
+		killGroup(d.pid)
 		if g.cancelled {
 			g.end()
 
@@ -331,11 +333,7 @@ func (g *guest) collect() bool {
 		g.startAgain = g.restart.schedule(d.exit, &g.count)
 		if g.startAgain == nil {
 			g.end()
-
-			continue
 		}
-		// The next run never starts beside what the last one left behind.
-		killGroup(d.pid)
 	}
 	if !done {
 		return false

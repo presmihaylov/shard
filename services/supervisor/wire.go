@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -22,6 +23,9 @@ const (
 
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
 const LogsVersion = 1
+
+// LogsStopped is what a host sends in place of a resume or an ack once its log refuses the output, so the guest waits for no ack of it.
+const LogsStopped uint64 = math.MaxUint64
 
 // The kinds a control message carries. The host sends the first nine; the guest answers each with done or failure, and sends the rest on its own.
 const (

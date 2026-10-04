@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/logfile"
 	"github.com/presmihaylov/shard/pkg/store"
@@ -58,7 +59,7 @@ func followLogs(conn net.Conn, sink LogSink, version int) error {
 	}
 	at, err := sink.Resume(held[0], held[1])
 	if err != nil {
-		return fmt.Errorf("resume the guest logs: %w", err)
+		return errors.Join(fmt.Errorf("resume the guest logs: %w", err), stopLogs(conn))
 	}
 	if err := binary.Write(conn, binary.BigEndian, at); err != nil {
 		return fmt.Errorf("resume the guest logs: %w", err)
@@ -73,13 +74,13 @@ func LogsHeader(from, to uint64) []byte {
 }
 
 // pump lands what r carries in sink and, when ack is set, answers each write with the output offset after it.
-func pump(r io.Reader, sink io.Writer, ack io.Writer, at uint64) error {
+func pump(r io.Reader, sink io.Writer, ack net.Conn, at uint64) error {
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			if _, err := sink.Write(buf[:n]); err != nil {
-				return fmt.Errorf("follow the guest logs: %w", err)
+				return errors.Join(fmt.Errorf("follow the guest logs: %w", err), stopLogs(ack))
 			}
 			at += uint64(n)
 			if ack != nil {
@@ -95,6 +96,27 @@ func pump(r io.Reader, sink io.Writer, ack io.Writer, at uint64) error {
 			return fmt.Errorf("follow the guest logs: %w", err)
 		}
 	}
+}
+
+// stopGrace bounds the word to a guest that its log stopped, and the wait for its hang-up.
+const stopGrace = 2 * time.Second
+
+// stopLogs tells a guest that reads acks the log stopped, then waits for its hang-up, so the close cannot drop the word in flight.
+func stopLogs(conn net.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	if err := conn.SetDeadline(time.Now().Add(stopGrace)); err != nil {
+		return fmt.Errorf("tell the guest the log stopped: %w", err)
+	}
+	if err := binary.Write(conn, binary.BigEndian, LogsStopped); err != nil {
+		return fmt.Errorf("tell the guest the log stopped: %w", err)
+	}
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		return fmt.Errorf("wait for the guest to hang up the logs: %w", err)
+	}
+
+	return nil
 }
 
 // MaxLog is the most one log file holds before it is rotated, and one rotated file is kept behind it.
