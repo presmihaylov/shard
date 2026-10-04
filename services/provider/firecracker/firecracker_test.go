@@ -2252,9 +2252,7 @@ func TestAReadThatTimedOutEndsOnlyTheVMMItWaitedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(frozen.PID, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	freezeVMM(t, frozen.PID)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
