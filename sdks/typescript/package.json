@@ -24,7 +24,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
