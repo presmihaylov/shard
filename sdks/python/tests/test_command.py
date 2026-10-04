@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -10,6 +11,7 @@ from fakedaemon import IN_USE, NOT_STARTED, OP_PING, OP_PONG, RECORD, FakeDaemon
 
 from useshards._async import _command as async_command
 from useshards._async._transport import AsyncTransport
+from useshards._async._ws import AsyncWebSocket
 from useshards._config import Settings
 from useshards._sync import _command
 from useshards._sync._transport import Transport
@@ -222,6 +224,58 @@ def test_write_stdin_needs_stdin(daemon: FakeDaemon) -> None:
     handle.wait()
     with pytest.raises(ValueError, match="without stdin=True"):
         handle.write_stdin("x")
+
+
+def read_stdin(peer: Peer) -> list[bytes]:
+    pieces = peer.stdin()
+    peer.finish(0)
+    return pieces
+
+
+def test_concurrent_writes_land_whole(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+    send = WebSocket.send_binary
+
+    def slow(ws: WebSocket, payload: bytes) -> None:
+        # Room for the other writer to cut in between pieces.
+        time.sleep(0.01)
+        send(ws, payload)
+
+    monkeypatch.setattr(WebSocket, "send_binary", slow)
+    daemon.attaches = [read_stdin]
+    handle = _command.start_command(transport(daemon), "sb", "cat", stdin=True, output_limit_bytes=LIMIT)
+    a, b = b"a" * (2 * _command.STDIN_PIECE + 1), b"b" * (2 * _command.STDIN_PIECE + 1)
+    writers = [threading.Thread(target=handle.write_stdin, args=(data,)) for data in (a, b)]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join()
+    handle.close_stdin()
+    handle.wait()
+    (pieces,) = daemon.outcomes
+    assert b"".join(pieces) in (a + b, b + a)
+
+
+def test_async_writes_and_close_land_whole(daemon: FakeDaemon, monkeypatch: pytest.MonkeyPatch) -> None:
+    send = AsyncWebSocket.send_binary
+
+    async def yielding(ws: AsyncWebSocket, payload: bytes) -> None:
+        await asyncio.sleep(0)
+        await send(ws, payload)
+
+    monkeypatch.setattr(AsyncWebSocket, "send_binary", yielding)
+    daemon.attaches = [read_stdin]
+    a, b = b"a" * (2 * _command.STDIN_PIECE + 1), b"b" * (2 * _command.STDIN_PIECE + 1)
+
+    async def run() -> None:
+        client = AsyncTransport(Settings(base_url=daemon.url, api_key="k", verify=True), 5.0)
+        handle = await async_command.start_command(client, "sb", "cat", stdin=True, output_limit_bytes=LIMIT)
+        await asyncio.gather(handle.write_stdin(a), handle.write_stdin(b), handle.close_stdin())
+        await handle.wait()
+        await client.aclose()
+
+    asyncio.run(run())
+    (pieces,) = daemon.outcomes
+    assert b"".join(pieces) == a + b
 
 
 def test_write_stdin_on_a_terminal_needs_no_stdin(daemon: FakeDaemon) -> None:
