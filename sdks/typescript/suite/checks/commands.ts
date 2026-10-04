@@ -126,11 +126,15 @@ export const checks: Check[] = [
       const long = await sandbox.exec(["sleep", "300"], { background: true });
       assert.equal(await state(long), "running");
       await long.kill();
+      // Every provider reports a signal as the exit code 128 plus its number, and no signal (SHARD-432).
       const killed = await long.wait();
-      assert.equal(killed.signal, 15, "kill sends TERM by default");
+      assert.equal(killed.exitCode, 143, "kill sends TERM by default");
+      assert.equal(killed.signal, null);
       const hard = await sandbox.exec(["sleep", "300"], { background: true });
       await hard.kill("KILL");
-      assert.equal((await hard.wait()).signal, 9);
+      const hardKilled = await hard.wait();
+      assert.equal(hardKilled.exitCode, 137);
+      assert.equal(hardKilled.signal, null);
     },
   },
   {
@@ -149,7 +153,8 @@ export const checks: Check[] = [
       await got.kill();
       await waitFor("the killed command to end", 10_000, async () => (await state(command)) === "exited");
       const ended = (await sandbox.commands.list()).find((each) => each.id === command.id);
-      assert.equal(ended?.signal, 15);
+      assert.equal(ended?.exitCode, 143, "kill sends TERM by default");
+      assert.equal(ended?.signal, null);
     },
   },
   {
