@@ -220,10 +220,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider vz", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -245,7 +245,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
 	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
-	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+	if err == nil || !strings.Contains(err.Error(), "set resources.disk_mib to 128 MiB or 131 MiB") {
 		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }

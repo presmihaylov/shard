@@ -2725,7 +2725,7 @@
         },
         "responses": {
           "204": {
-            "description": "The file landed. A put needs a Content-Length."
+            "description": "The file is written. The upload sets Content-Length to its number of bytes."
           },
           "default": {
             "content": {
@@ -3443,12 +3443,12 @@
             }
           },
           {
-            "description": "Remove the secret while a sandbox record still names it.",
+            "description": "Remove the secret even when a sandbox still has a grant on it.",
             "explode": false,
             "in": "query",
             "name": "force",
             "schema": {
-              "description": "Remove the secret while a sandbox record still names it.",
+              "description": "Remove the secret even when a sandbox still has a grant on it.",
               "type": "boolean"
             }
           }

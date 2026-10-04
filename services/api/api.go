@@ -707,6 +707,8 @@ func classify(err error) (int, models.Code) {
 // maxBody caps a JSON body, which the decoder holds whole; no route needs more than a few KiB.
 const maxBody = 1 << 20
 
+var bodyTooLarge = fmt.Sprintf("the request body exceeds %d MiB; send a smaller JSON body", maxBody>>20)
+
 // decode reads a JSON body into out. An empty body is the zero value; a field no route knows is refused.
 func decode(w http.ResponseWriter, r *http.Request, out any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
@@ -847,6 +849,9 @@ func (h *Handler) message(r *http.Request, code models.Code, err error) string {
 
 // publicText is what err's type made public, else the fixed text its code answers.
 func publicText(code models.Code, err error) string {
+	if code == models.CodeBodyTooLarge {
+		return bodyTooLarge
+	}
 	if public, ok := sandbox.PublicText(err); ok {
 		return public
 	}

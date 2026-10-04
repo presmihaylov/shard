@@ -90,7 +90,7 @@ func TestCheckGrowBoundAgreesWithTheGrow(t *testing.T) {
 }
 
 func TestCheckGrowBoundNamesTheNearestBounds(t *testing.T) {
-	for mib, want := range map[int64]string{129: "use 128 or 131 MiB", 130: "use 128 or 131 MiB", 258: "use 256 or 259 MiB"} {
+	for mib, want := range map[int64]string{129: "set resources.disk_mib to 128 MiB or 131 MiB", 130: "set resources.disk_mib to 128 MiB or 131 MiB", 258: "set resources.disk_mib to 256 MiB or 259 MiB"} {
 		err := bundle.CheckGrowBound(mib)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("CheckGrowBound(%d) = %v, want %q", mib, err, want)

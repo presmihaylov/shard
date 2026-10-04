@@ -59,7 +59,7 @@ func newFront(accepted string) (*httptest.Server, chan string) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer "+accepted {
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}`))
+			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"the bearer token is missing or invalid; send a valid token in Authorization: Bearer TOKEN"}}`))
 
 			return
 		}
@@ -251,7 +251,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 				t.Fatalf("NewRemoteFromEnv: %v", err)
 			}
 			_, err = c.Version(t.Context())
-			if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "no valid bearer token") {
+			if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "the bearer token is missing or invalid") {
 				t.Errorf("Version with the wrong key returned %v, want the refusal of the front and never the key", err)
 			}
 

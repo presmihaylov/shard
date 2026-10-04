@@ -231,7 +231,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
 	if sb.Checkpoint == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "it has no saved state to resume; remove it and create another sandbox", Code: models.CodeNoCheckpoint}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.

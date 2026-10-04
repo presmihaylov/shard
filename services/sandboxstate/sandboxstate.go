@@ -584,7 +584,7 @@ func (e *UnreadableError) Error() string { return e.Err.Error() }
 func (e *UnreadableError) Unwrap() error { return e.Err }
 
 func (e *UnreadableError) Public() string {
-	return fmt.Sprintf("sandbox %s: its record cannot be read", e.ID)
+	return fmt.Sprintf("sandbox %s cannot be read; ask the server administrator to check the daemon log", e.ID)
 }
 
 // ValidationError is a refused id or name: the caller's spelling, never the state of the host.

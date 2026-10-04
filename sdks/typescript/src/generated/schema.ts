@@ -1683,7 +1683,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The file landed. A put needs a Content-Length. */
+            /** @description The file is written. The upload sets Content-Length to its number of bytes. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -2283,7 +2283,7 @@ export interface operations {
     "remove-secret": {
         parameters: {
             query?: {
-                /** @description Remove the secret while a sandbox record still names it. */
+                /** @description Remove the secret even when a sandbox still has a grant on it. */
                 force?: boolean;
             };
             header?: never;

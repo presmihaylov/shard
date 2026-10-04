@@ -100,17 +100,17 @@ func checkMemory(spec models.SandboxSpec) error {
 
 func checkResources(res models.Resources) error {
 	if res.MemoryMiB == 0 {
-		return fmt.Errorf("provider %s takes no --memory 0, a VM's memory is real memory on the host; set --memory %dMiB or more", Name, MinMemoryMiB)
+		return fmt.Errorf("provider %s needs resources.memory_mib, as a VM's memory is real memory on the host; set it to %d MiB or more", Name, MinMemoryMiB)
 	}
 	if res.MemoryMiB < MinMemoryMiB {
-		return fmt.Errorf("%s needs at least %d MiB of memory, got %d", Name, MinMemoryMiB, res.MemoryMiB)
+		return fmt.Errorf("resources.memory_mib is %d MiB, under the %d MiB provider %s needs; set it to %d MiB or more", res.MemoryMiB, MinMemoryMiB, Name, MinMemoryMiB)
 	}
 	if res.VCPUs > MaxVCPUs {
-		return fmt.Errorf("%s gives a guest at most %d vcpus, got %d", Name, MaxVCPUs, res.VCPUs)
+		return fmt.Errorf("resources.vcpus is %d, more than the %d vcpus provider %s gives a guest; set it to %d or less", res.VCPUs, MaxVCPUs, Name, MaxVCPUs)
 	}
 	disk := bundle.DiskBound(res)
 	if disk < bundle.MinOverlayDiskMiB {
-		return fmt.Errorf("%s needs at least %d MiB of disk, got %d", Name, bundle.MinOverlayDiskMiB, disk)
+		return fmt.Errorf("resources.disk_mib is %d MiB, under the %d MiB provider %s needs; set it to %d MiB or more", disk, bundle.MinOverlayDiskMiB, Name, bundle.MinOverlayDiskMiB)
 	}
 	if err := bundle.CheckGrowBound(disk); err != nil {
 		return fmt.Errorf("%s: %w", Name, err)

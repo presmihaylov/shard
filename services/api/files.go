@@ -73,7 +73,7 @@ func (b *idleBody) Read(p []byte) (int, error) {
 
 func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
 	if r.ContentLength < 0 {
-		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("a put needs a Content-Length: the guest lands exactly that many bytes")}
+		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("the upload has no Content-Length; set Content-Length to the number of upload bytes")}
 	}
 
 	mode := uint64(sandbox.DefaultFileMode)
@@ -228,7 +228,7 @@ type entriesResponse struct {
 
 func describeWriteFile(_ huma.Registry, op *huma.Operation) {
 	op.RequestBody = binaryBody("application/octet-stream")
-	op.Responses["204"] = &huma.Response{Description: "The file landed. A put needs a Content-Length."}
+	op.Responses["204"] = &huma.Response{Description: "The file is written. The upload sets Content-Length to its number of bytes."}
 }
 
 func describeReadFile(_ huma.Registry, op *huma.Operation) {
