@@ -437,24 +437,25 @@ func (a App) version(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("version takes no argument, got %d", len(rest))
 	}
-	if err := formatLanded("version", format, formatTable); err != nil {
-		return err
+	// One JSON value needs the daemon's answer, so with no daemon it writes nothing.
+	if format == formatJSON {
+		daemonVersion, err := a.daemonVersion(ctx)
+		if err != nil {
+			return err
+		}
+
+		return writeJSON(a.Out, versionView{Client: a.Version, Daemon: daemonVersion, Shim: shimState()})
 	}
 
 	if err := a.print("client " + a.Version); err != nil {
 		return err
 	}
 
-	c, err := a.client()
+	daemonVersion, err := a.daemonVersion(ctx)
 	if err != nil {
 		return err
 	}
-
-	d, err := c.Version(ctx)
-	if err != nil {
-		return err
-	}
-	if err := a.print("daemon " + d.Version); err != nil {
+	if err := a.print("daemon " + daemonVersion); err != nil {
 		return err
 	}
 	if line := shimLine(); line != "" {
@@ -462,6 +463,20 @@ func (a App) version(ctx context.Context, args []string) error {
 	}
 
 	return nil
+}
+
+func (a App) daemonVersion(ctx context.Context) (string, error) {
+	c, err := a.client()
+	if err != nil {
+		return "", err
+	}
+
+	d, err := c.Version(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return d.Version, nil
 }
 
 // warn reports something the operator should know that is not a reason to fail the command.

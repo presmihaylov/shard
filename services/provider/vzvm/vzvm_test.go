@@ -913,6 +913,9 @@ func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
 	if _, err := h.provider.Restarts(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
 		t.Fatalf("Restarts = %v, want the lost exit", err)
 	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("Stop = %v, want the lost exit", err)
+	}
 }
 
 // A log that cannot open fails the attach, so no verb reports a sandbox whose output has nowhere to go.

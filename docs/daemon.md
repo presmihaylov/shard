@@ -504,8 +504,8 @@ takes no `command` and no `restart`. The snapshot holds no secrets and no policy
 its own. The create never pulls, so it builds and starts the sandbox before it answers, and the
 record says `running` and names the snapshot's id in its `snapshot` key. It answers 400 when the
 snapshot was made on another provider, or when the host no longer holds its image at the digest the
-snapshot recorded. Firecracker and `vz` copy the disk as it is, so on them it also answers 400 for a
-`disk_mib` that differs from the snapshot's. A body with no `disk_mib` or no `memory_mib` takes the
+snapshot recorded. On Firecracker and `vz` a larger `disk_mib` grows the snapshot's disk, and a
+smaller one answers 400, as a disk only grows. A body with no `disk_mib` or no `memory_mib` takes the
 snapshot's, which is the bound the source ran under. A `memory_mib` of 0 is not an omitted one: it
 asks for no bound. A snapshot reference that nothing has is 404.
 An image that a snapshot names stays held: `DELETE /v0/images/{ref}` refuses it with 409 `in_use`,

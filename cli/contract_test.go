@@ -13,53 +13,8 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Every stub holds its final shape: it parses its flags, then exits 3 with its verb path and prints nothing to stdout.
-func TestEveryStubExitsThreeWithItsVerbAndNoStdout(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"snapshot", "list", "--format", "json"}, "snapshot list --format json"},
-		{[]string{"snapshot", "ls", "--format", "json"}, "snapshot list --format json"},
-		{[]string{"snapshot", "inspect", "--format", "table", "base"}, "snapshot inspect --format table"},
-		{[]string{"list", "--format", "json"}, "list --format json"},
-		{[]string{"ls", "--all", "--format", "json"}, "list --format json"},
-		{[]string{"inspect", "--format", "table", "web"}, "inspect --format table"},
-		{[]string{"image", "list", "--format", "json"}, "image list --format json"},
-		{[]string{"image", "ls", "--format", "json"}, "image list --format json"},
-		{[]string{"secret", "list", "--format", "json"}, "secret list --format json"},
-		{[]string{"policy", "list", "--format", "json"}, "policy list --format json"},
-		{[]string{"policy", "show", "--format", "table", "web-only"}, "policy show --format table"},
-		{[]string{"tokens", "list", "--format", "json"}, "tokens list --format json"},
-		{[]string{"tokens", "mint", "--name", "ci", "--format", "table"}, "tokens mint --format table"},
-		{[]string{"info", "--format", "json"}, "info --format json"},
-		{[]string{"daemon", "status", "--format", "json"}, "daemon status --format json"},
-		{[]string{"version", "--format", "json"}, "version --format json"},
-	}
-
-	for _, c := range cases {
-		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
-			var out bytes.Buffer
-			app := App{Version: "test", Root: t.TempDir(), Out: &out}
-
-			err := app.Run(t.Context(), c.args)
-
-			var exit *ExitError
-			if !errors.As(err, &exit) {
-				t.Fatalf("returned %v, want an exit of %d", err, NotImplementedExitCode)
-			}
-			if exit.Code != NotImplementedExitCode || exit.Message != c.want+": not implemented yet" {
-				t.Errorf("exit %d %q, want %d %q", exit.Code, exit.Message, NotImplementedExitCode, c.want+": not implemented yet")
-			}
-			if out.Len() != 0 {
-				t.Errorf("stdout holds %q, want nothing", out.String())
-			}
-		})
-	}
-}
-
-// A stub still refuses a usage it would refuse once it lands, with the exit of any other error.
-func TestAStubRefusesABadUsageBeforeItExitsThree(t *testing.T) {
+// A bad usage is a plain error, so it exits 1 and never an exit code of its own.
+func TestABadUsageExitsOne(t *testing.T) {
 	for _, args := range [][]string{
 		{"snapshot", "inspect", "--format", "table"},
 		{"snapshot", "create", "--name", "bad/name", "web"},

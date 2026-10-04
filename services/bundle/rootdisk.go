@@ -39,6 +39,35 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 	return shared, nil
 }
 
+// GrowSeed lays a snapshot's disk down at dst with copy, then grows it to the bound of r; the service refused a bound under the disk's own size.
+func GrowSeed(dst string, r models.Resources, copy func() error) error {
+	return admitDisk(dst, DiskBytes(r), func() error {
+		if err := copy(); err != nil {
+			return err
+		}
+		if err := ext4.Grow(dst, DiskBytes(r)); err != nil {
+			return errors.Join(seedRefusal(err, DiskBound(r)), os.Remove(dst))
+		}
+
+		return nil
+	})
+}
+
+// seedRefusal names the --disk that works when ext4 cannot grow a snapshot's disk.
+func seedRefusal(err error, mib int64) error {
+	if errors.Is(err, ext4.ErrNeedsRecovery) {
+		return fmt.Errorf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB: drop --disk, or start the sandbox it came from, stop it without --force and snapshot it again: %w", mib, err)
+	}
+	var taken *ext4.DescriptorTakenError
+	if errors.As(err, &taken) {
+		most := taken.Max / bytesPerMiB
+
+		return fmt.Errorf("the snapshot's disk grows to at most %d MiB, as a mount took the room a larger one needs: ask for --disk %dMiB or less: %w", most, most, err)
+	}
+
+	return fmt.Errorf("grow the snapshot's disk to the %d MiB bound: %w", mib, err)
+}
+
 // CloneFile copies base to dst as it is, sharing the blocks where the filesystem can; shared says it did.
 func CloneFile(base, dst string) (bool, error) {
 	err := clonefile(base, dst)

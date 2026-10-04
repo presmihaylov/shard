@@ -39,9 +39,6 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if err := serve.CheckScopes(scopeList); err != nil {
 		return fmt.Errorf("tokens mint: %w", err)
 	}
-	if err := formatLanded("tokens mint", *format, formatJSON); err != nil {
-		return err
-	}
 
 	signingKey, keyPath, err := serve.SigningKey(a.Root, *signingKeyFile)
 	if err != nil {
@@ -51,6 +48,9 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	minted, err := serve.IssueToken(signingKey, serve.TokensPath(keyPath, *tokensFile), *name, scopeList, *duration)
 	if err != nil {
 		return err
+	}
+	if *format == formatTable {
+		return writeSections(a.Out, mintSection(minted))
 	}
 
 	record, err := json.Marshal(minted)
@@ -74,10 +74,6 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
 	}
-	if err := formatLanded("tokens list", *format, formatTable); err != nil {
-		return err
-	}
-
 	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
 	if err != nil {
 		return fmt.Errorf("tokens list: %w", err)
@@ -86,6 +82,9 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	infos, err := serve.ListTokens(path)
 	if err != nil {
 		return err
+	}
+	if *format == formatJSON {
+		return writeJSON(a.Out, tokenViews(infos))
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)

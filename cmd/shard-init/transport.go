@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,6 +41,8 @@ type transport struct {
 	root *os.File
 	// endSent says the host heard the policy end, which waits for its ack of the app's last output; under controlMu.
 	endSent bool
+	// forced marks a stop the grace outran, whose disk is left as the kill left it.
+	forced atomic.Bool
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -102,6 +105,9 @@ func serveTransport(name string, boot guestBoot) error {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 
+	if err := t.seal(freezeRoot); err != nil {
+		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
+	}
 	// The stop is done, so the VM has nothing left to run; a guest that went is what the host waits for.
 	if err := powerOff(boot.Reboot); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
@@ -112,6 +118,33 @@ func serveTransport(name string, boot guestBoot) error {
 
 // A host that dials while the guest boots is at most this far from attaching, so a death waits this long for it.
 var failureGrace = 10 * time.Second
+
+// A freeze that outlasts this has a disk it cannot settle, and the stop goes on without it rather than hang.
+var sealGrace = 5 * time.Second
+
+// seal skips a forced stop, which never freezes, so its dirty disk is one a grow refuses by name (shard ruling 790da96b).
+func (t *transport) seal(freeze func(*os.File) error) error {
+	if t.forced.Load() {
+		return nil
+	}
+
+	return sealRoot(t.root, freeze)
+}
+
+// sealRoot flushes, then freezes the root last of all, so a clean stop leaves a disk with no journal to replay that a host can grow (SHARD-476).
+func sealRoot(root *os.File, freeze func(*os.File) error) error {
+	if err := syncDisk(); err != nil {
+		return err
+	}
+	frozen := make(chan error, 1)
+	go func() { frozen <- freeze(root) }()
+	select {
+	case err := <-frozen:
+		return err
+	case <-time.After(sealGrace):
+		return fmt.Errorf("freeze the root: no answer within %s", sealGrace)
+	}
+}
 
 // fail carries the supervisor's own death to the host before the exit 125 halts the VM, where runsc wait would read the code on gVisor.
 func (t *transport) fail(err error) error {
@@ -425,6 +458,9 @@ func (t *transport) handle(m supervisor.Message) error {
 
 		return t.rekey(m.Seed)
 	case supervisor.KindThaw:
+		// A host thaws a kill whose cut was lost, so the guest runs on and its next clean stop seals.
+		t.forced.Store(false)
+
 		return t.thaw()
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
@@ -433,6 +469,8 @@ func (t *transport) handle(m supervisor.Message) error {
 
 // stop answers before the guest acts on it: with nothing to forward to the guest goes at once, and the host would read only its EOF (SHARD-483).
 func (t *transport) stop(conn net.Conn, id int) {
+	// A kill an earlier stop's lost cut left behind is not this stop's, so only a kill within this one skips the seal.
+	t.forced.Store(false)
 	// A frozen root would hold the entrypoint's last writes.
 	t.answer(conn, id, t.thaw())
 	// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace.
@@ -454,6 +492,7 @@ func freezeGuest(bound, root *os.File) error {
 // forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest and flushes, so the host's cut loses nothing.
 // A host replaced before the answer may have read the guest unfrozen off its replay, so the freeze is undone, as a pause's is.
 func (t *transport) forceStop(conn net.Conn, id int) {
+	t.forced.Store(true)
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 

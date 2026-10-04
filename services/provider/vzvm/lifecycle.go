@@ -47,7 +47,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	return p.launch(ctx, spec.ID, spec.StateDir, r, false)
 }
 
-// writeDisk clones the image's root disk grown to the bound, or the seed's disk, which keeps the size the service checked against the bound.
+// writeDisk clones the image's root disk, or the seed's disk, grown to the bound.
 func writeDisk(spec models.SandboxSpec) error {
 	to := filepath.Join(spec.StateDir, diskFile)
 	if spec.Seed == "" {
@@ -56,7 +56,13 @@ func writeDisk(spec models.SandboxSpec) error {
 		return err
 	}
 
-	return cloneDisk(filepath.Join(spec.Seed, diskFile), to)
+	from := filepath.Join(spec.Seed, diskFile)
+
+	return bundle.GrowSeed(to, spec.Resources, func() error {
+		_, err := bundle.CloneFile(from, to)
+
+		return err
+	})
 }
 
 // launch records the sandbox, boots its VM, addresses the guest, and runs the entrypoint when asked.
@@ -305,10 +311,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 	if ended {
-		p.forget(m)
-		closeDown(m)
-
-		return nil
+		return p.settle(ctx, m)
 	}
 	// The grace outran the stop, so the guest flushes its disk before the cut (SHARD-344, shard ruling f4b0942e).
 	return p.endLive(ctx, m)

@@ -85,10 +85,6 @@ func (a App) imageList(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("image list takes no arguments, got %d", len(rest))
 	}
-	if err := formatLanded("image list", format, formatTable); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -97,6 +93,9 @@ func (a App) imageList(ctx context.Context, args []string) error {
 	images, err := c.ListImages(ctx)
 	if err != nil {
 		return err
+	}
+	if format == formatJSON {
+		return writeJSON(a.Out, imageViews(images))
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)

@@ -136,8 +136,8 @@ optional unique name, and it outlives its source, so `shard remove` of the sourc
 `shard create --snapshot` takes the place of an image, as the snapshot names its own, and the new
 sandbox runs shard-init alone under a new id and address. It never pulls: the image must still be on
 the host at the digest the snapshot recorded, and only the provider that made the snapshot starts
-it. Firecracker and `vz` copy the disk as it is, so they refuse a `--disk` that differs from the
-snapshot's. `shard snapshot list`, `inspect` and `remove` manage the rest.
+it. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and its filesystem, and a
+smaller one is refused, as a disk only grows. `shard snapshot list`, `inspect` and `remove` manage the rest.
 
 Measured on the devbox, a 2 vCPU Hetzner Cloud box with no `/dev/kvm`, with an idle Alpine sandbox
 of about 40 MiB resident: pause takes 0.19 to 0.24 s, and resume 0.46 to 0.48 s.

@@ -246,25 +246,31 @@ func TestCreateFromASnapshotTakesAnExplicitMemory(t *testing.T) {
 	}
 }
 
-// A microVM copies the snapshot's disk file as it is, so a create there cannot ask for another size.
-func TestCreateFromASnapshotOnAMicroVMRefusesAnotherDisk(t *testing.T) {
+// A microVM grows its copy of the snapshot's disk, so a create there takes a larger --disk and refuses a smaller one.
+func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 	r := &recorder{}
 	disks := &diskProvider{}
 	svc, l := newService(t, r, models.Sandbox{}, withDisks(disks))
 	storedSnapshot(t, l, baseSnapshot())
 
-	_, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 4096}})
+	_, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 1024}})
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "drop --disk") {
-		t.Fatalf("create returned %v, want a refusal that says to drop --disk", err)
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "a disk only grows") || !strings.Contains(err.Error(), "2048 MiB or more") {
+		t.Fatalf("create returned %v, want a refusal that names the disk that works", err)
 	}
 	if len(disks.admitted) != 0 || slices.Contains(r.calls, "repo.Create") {
 		t.Errorf("a refused create admitted %v and made the calls %v", disks.admitted, r.calls)
 	}
 
-	if _, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 2048}}); err != nil {
-		t.Errorf("a create that names the snapshot's own disk returned %v", err)
+	for _, mib := range []int64{2048, 4096} {
+		sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: mib}})
+		if err != nil {
+			t.Fatalf("a create with --disk %dMiB returned %v", mib, err)
+		}
+		if sb.Resources.DiskMiB != mib {
+			t.Errorf("the record holds disk %d, want %d", sb.Resources.DiskMiB, mib)
+		}
 	}
 }
 

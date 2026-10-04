@@ -114,7 +114,7 @@ var helps = map[string]verbHelp{
 		notes: []string{
 			"The flags go before the image. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
 			"create takes no command: shard-init runs alone and the sandbox stays up until shard stop. shard run starts a sandbox with an app. To give a sandbox a policy after create, use shard policy attach.",
-			"--snapshot takes the place of the image, as the snapshot names its own. create never pulls for it: the image must still be on this host at the digest the snapshot recorded. Only the provider that made the snapshot starts it, and firecracker and vz refuse a --disk that differs from its disk. With no --memory or --disk, the sandbox takes the bounds its source ran under.",
+			"--snapshot takes the place of the image, as the snapshot names its own. create never pulls for it: the image must still be on this host at the digest the snapshot recorded. Only the provider that made the snapshot starts it. On firecracker and vz a larger --disk grows the snapshot's disk, and a smaller one is refused, as a disk only grows. With no --memory or --disk, the sandbox takes the bounds its source ran under.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
 			sizeNote,
 		},

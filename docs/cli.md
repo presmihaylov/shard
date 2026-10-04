@@ -1,8 +1,6 @@
 # The CLI contract
 
-This is the final shape of every verb, flag and output of `shard`. The SDKs build against it. A verb,
-flag or format that holds its final shape before its work lands answers `not implemented yet`, and
-the ticket that fills it in is named beside it.
+This is the final shape of every verb, flag and output of `shard`. The SDKs build against it.
 
 ## Exit codes
 
@@ -10,7 +8,6 @@ the ticket that fills it in is named beside it.
 | --- | --- |
 | 0 | the verb did what it says |
 | 1 | any failure of shard, or of the request, with `shard: <reason>` on stderr |
-| 3 | the verb, flag or format is not implemented yet |
 | the command's code | `exec`, and `run` with the app's last code |
 | 126, 127 | `exec` of a command that is not executable, or not found |
 | 1 or more | `exec` whose output was lost, so a lost stream never reads as a pass |
@@ -19,21 +16,6 @@ the ticket that fills it in is named beside it.
 | 130 | `run` that Ctrl+C left; the sandbox stays running |
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
-
-## Not implemented yet
-
-A CLI stub parses its flags and arguments first, and a bad usage fails with 1 as it will once the
-work lands. A valid call then writes nothing to stdout, writes one line to stderr, and exits 3:
-
-```
-$ shard list --format json
-shard: list --format json: not implemented yet
-$ echo $?
-3
-```
-
-The line names the full verb path, and the flag and the format when they are what is missing. A
-stub never dials the daemon.
 
 ## Global flags
 
@@ -131,11 +113,6 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 `--format` takes `json` or `table`, and any other word is a usage error. Naming the default changes
 nothing: `list --format table` prints what `list` prints.
-
-The format each verb does not default to is not implemented yet (SHARD-467): `--format json` on
-`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version`, and `--format table` on `inspect`, `snapshot inspect`, `policy show` and
-`tokens mint`.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
 prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
@@ -305,19 +282,21 @@ null}` and the sandbox reaches nothing.
 }
 ```
 
-`version`. `shim` is the VM shim on a Mac, and absent elsewhere:
+`version`. `shim` is `embedded` or `absent` on a Mac, as the VM shim is in the binary, and absent
+elsewhere:
 
 ```json
 {"client": "v0.1.0", "daemon": "v0.1.0"}
 ```
 
-`inspect`, `policy show` and `tokens mint` print JSON today: the sandbox record, `{name, rules, dns,
-holders}`, and `{token, expires_at, scopes}` on one line.
+`inspect`, `snapshot inspect`, `policy show` and `tokens mint` print JSON by default: the sandbox
+record, the snapshot record, `{name, rules, dns, holders}`, and `{token, expires_at, scopes}` on one
+line.
 
 ### Tables
 
-`list`, `image list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon status` and
-`version` print tables today. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
+status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
 `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
 
 The tables of the JSON verbs:
@@ -346,7 +325,8 @@ shard snapshot remove web-base
 `snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
-bounds its source ran under, and Firecracker and `vz` refuse a `--disk` that differs.
+bounds its source ran under. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and
+its filesystem, and a smaller one is refused, as a disk only grows.
 
 | route | body | answer | scope |
 | --- | --- | --- | --- |
@@ -382,6 +362,3 @@ The snapshot record:
 `name` and `source_name` are absent when empty. `disk_mib` and `memory_mib` are the bounds the
 source ran under, and `size` is the bytes the copy holds on the host. The client methods are
 `CreateSnapshot`, `ListSnapshots`, `InspectSnapshot` and `RemoveSnapshot`.
-
-`shard clone` and `POST /v0/sandboxes/{id}/clone` are gone. A snapshot and `create --snapshot` take
-their place.

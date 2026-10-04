@@ -416,6 +416,24 @@ func (p *Provider) forget(m *machine) {
 	}
 }
 
+// settle waits for the last events of a guest that went, so a death it reported on the way down is on disk before the stop returns.
+func (p *Provider) settle(ctx context.Context, m *machine) error {
+	if m.events != nil {
+		select {
+		case <-m.events:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the last events of sandbox %s: %w", m.id, ctx.Err())
+		case <-time.After(killGrace):
+			return fmt.Errorf("the last events of sandbox %s still land %s after its guest went", m.id, killGrace)
+		}
+	}
+	lost := p.lost(m.id)
+	p.forget(m)
+	closeDown(m)
+
+	return lost
+}
+
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
 	// The next run must not answer a wait, or a restart count, with what the last one left.
@@ -640,6 +658,8 @@ func (p *Provider) record(m *machine, event supervisor.Message) error {
 		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
 	case supervisor.KindOOM:
 		return m.markOOM()
+	case supervisor.KindSupervisorFailed:
+		return m.markSupervisorFailed(event)
 	}
 
 	return nil
@@ -657,20 +677,25 @@ func (m *machine) markOOM() error {
 	return nil
 }
 
-// failedAtBoot lands a death from before the guest listened as the sandbox exit, and makes its reason the answer to the start (SHARD-418).
-func (m *machine) failedAtBoot(event supervisor.Message) error {
+// markSupervisorFailed lands shard-init's own death as the sandbox exit, with the reason it gave.
+func (m *machine) markSupervisorFailed(event supervisor.Message) error {
 	if event.Exit == nil {
-		return fmt.Errorf("sandbox %s: a supervisor-failed event carries no status", m.id)
+		return errors.New("a supervisor-failed event carries no status")
 	}
-	reason := supervisor.OneLine(event.Error)
-	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(reason), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(event.Error)), 0o600); err != nil {
 		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
 	}
-	if err := supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit); err != nil {
+
+	return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
+}
+
+// failedAtBoot lands a death from before the guest listened as the sandbox exit, and makes its reason the answer to the start (SHARD-418).
+func (m *machine) failedAtBoot(event supervisor.Message) error {
+	if err := m.markSupervisorFailed(event); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 
-	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, reason)
+	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
 // reconnect dials the control stream again after dropped ends, which a sleep of the host can cause, while the shim says the VM runs.

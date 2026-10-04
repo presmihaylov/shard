@@ -3,8 +3,10 @@ package bundle_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,5 +170,95 @@ func TestCloneRootDiskRefusesAnExistingTarget(t *testing.T) {
 
 	if _, err := bundle.CloneRootDisk(base, dst, models.Resources{DiskMiB: 64}); err == nil {
 		t.Fatal("the clone took an existing target")
+	}
+}
+
+// seedDisk is the disk of a snapshot, 64 MiB of ext4 as the writer left it.
+func seedDisk(t *testing.T) string {
+	t.Helper()
+	src := filepath.Join(t.TempDir(), bundle.OverlayDiskFile)
+	if err := bundle.WriteOverlayDisk(src, models.Resources{DiskMiB: 64}); err != nil {
+		t.Fatalf("write the seed: %v", err)
+	}
+
+	return src
+}
+
+// markDirty sets the bit a guest cut without an unmount or a freeze leaves on its disk.
+func markDirty(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var sb ext4.SuperBlock
+	raw := make([]byte, binary.Size(sb))
+	if _, err := f.ReadAt(raw, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &sb); err != nil {
+		t.Fatal(err)
+	}
+	sb.FeatureIncompat |= ext4.IncompatRecover
+	var out bytes.Buffer
+	if err := binary.Write(&out, binary.LittleEndian, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt(out.Bytes(), 1024); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func cloneFrom(src, dst string) func() error {
+	return func() error {
+		_, err := bundle.CloneFile(src, dst)
+		return err
+	}
+}
+
+func TestGrowSeedGrowsTheSnapshotsDiskToTheBound(t *testing.T) {
+	src := seedDisk(t)
+	dst := filepath.Join(t.TempDir(), bundle.OverlayDiskFile)
+
+	if err := bundle.GrowSeed(dst, models.Resources{DiskMiB: 128}, cloneFrom(src, dst)); err != nil {
+		t.Fatalf("GrowSeed: %v", err)
+	}
+
+	for path, want := range map[string]int64{dst: 128 << 20, src: 64 << 20} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != want {
+			t.Errorf("%s is %d bytes, want %d", filepath.Base(filepath.Dir(path)), info.Size(), want)
+		}
+	}
+	if _, err := exec.LookPath("e2fsck"); err != nil {
+		t.Logf("no e2fsck on PATH, the size stands alone")
+
+		return
+	}
+	if out, err := exec.Command("e2fsck", "-fn", dst).CombinedOutput(); err != nil {
+		t.Fatalf("e2fsck: %v\n%s", err, out)
+	}
+}
+
+func TestGrowSeedRefusesADiskAForceStopLeftDirty(t *testing.T) {
+	src := seedDisk(t)
+	markDirty(t, src)
+	dst := filepath.Join(t.TempDir(), bundle.OverlayDiskFile)
+
+	err := bundle.GrowSeed(dst, models.Resources{DiskMiB: 128}, cloneFrom(src, dst))
+	if !errors.Is(err, ext4.ErrNeedsRecovery) {
+		t.Fatalf("GrowSeed = %v, want ErrNeedsRecovery", err)
+	}
+	for _, want := range []string{"not stopped clean", "128 MiB", "drop --disk", "without --force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("the refused disk stayed behind: %v", err)
 	}
 }

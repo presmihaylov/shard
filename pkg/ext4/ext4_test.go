@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"math/bits"
 	"os"
 	"os/exec"
@@ -233,9 +234,59 @@ func TestGrowRefusesADescriptorBlockAMountTookOver(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(img)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = Grow(img, 17<<30)
-	if err == nil || !strings.Contains(err.Error(), "mounted since") {
-		t.Fatalf("got %v", err)
+	var taken *DescriptorTakenError
+	if !errors.As(err, &taken) || !strings.Contains(err.Error(), "mounted since") {
+		t.Fatalf("got %v, want the taken descriptor block", err)
+	}
+	// Block 1 still holds 128 groups of 128 MiB, so the image grows to 16 GiB and no further.
+	if taken.Block != 2 || taken.Max != 16<<30 {
+		t.Fatalf("got block %d and max %d, want block 2 and max %d", taken.Block, taken.Max, int64(16<<30))
+	}
+	after, err := os.Stat(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("the refused grow left the image at %d bytes, want %d", after.Size(), before.Size())
+	}
+	if err := Grow(img, 16<<30); err != nil {
+		t.Fatalf("grow to the max the refusal named: %v", err)
+	}
+}
+
+func TestGrowRefusesAJournalThatNeedsRecovery(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "rootfs.ext4")
+	writeImage(t, img)
+	if err := Grow(img, 64*mib); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(img, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb SuperBlock
+	if err := readAt(f, superBlockOffset, &sb); err != nil {
+		t.Fatal(err)
+	}
+	// A guest cut without an unmount or a freeze leaves this bit for the next mount to replay.
+	sb.FeatureIncompat |= IncompatRecover
+	if err := writeAt(f, superBlockOffset, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Grow(img, 64*mib); err != nil {
+		t.Fatalf("a grow to the same size changes nothing, so it takes a dirty journal: %v", err)
+	}
+	if err := Grow(img, 128*mib); !errors.Is(err, ErrNeedsRecovery) {
+		t.Fatalf("got %v, want ErrNeedsRecovery", err)
 	}
 }
 

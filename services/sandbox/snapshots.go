@@ -172,9 +172,9 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 	if req.Resources.MemoryMiB == nil {
 		req.Resources.MemoryMiB = new(snap.MemoryMiB)
 	}
-	// A microVM substrate copies the disk file as it is, so it cannot give the copy another size.
-	if _, keeps := s.cfg.Provider.(diskAdmitter); keeps && req.Resources.DiskMiB != snap.DiskMiB {
-		return seeded{}, &RequestError{Err: fmt.Errorf("--disk %dMiB differs from the %d MiB disk of snapshot %s, and %s copies that disk as it is: drop --disk", req.Resources.DiskMiB, snap.DiskMiB, id, s.cfg.Provider.Name())}
+	// A microVM substrate grows the copy of the disk file, and a shrink could cut off blocks the snapshot's files sit on.
+	if _, grows := s.cfg.Provider.(diskAdmitter); grows && req.Resources.DiskMiB < snap.DiskMiB {
+		return seeded{}, &RequestError{Err: fmt.Errorf("--disk %dMiB is smaller than the %d MiB disk of snapshot %s, and a disk only grows: drop --disk, or ask for %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
 	}
 
 	files, err := s.cfg.Snapshots.Files(id)

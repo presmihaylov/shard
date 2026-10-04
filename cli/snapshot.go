@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"text/tabwriter"
 
@@ -61,10 +60,6 @@ func (a App) snapshotList(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("snapshot list takes no arguments, got %d", len(rest))
 	}
-	if err := formatLanded("snapshot list", format, formatTable); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -73,6 +68,9 @@ func (a App) snapshotList(ctx context.Context, args []string) error {
 	snaps, err := c.ListSnapshots(ctx)
 	if err != nil {
 		return err
+	}
+	if format == formatJSON {
+		return writeJSON(a.Out, nonNil(snaps))
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
@@ -97,10 +95,6 @@ func (a App) snapshotInspect(ctx context.Context, args []string) error {
 	if len(rest) != 1 {
 		return fmt.Errorf("snapshot inspect takes one snapshot id, got %d", len(rest))
 	}
-	if err := formatLanded("snapshot inspect", format, formatJSON); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -111,12 +105,16 @@ func (a App) snapshotInspect(ctx context.Context, args []string) error {
 		return err
 	}
 
-	blob, err := json.MarshalIndent(snap, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode snapshot %s: %w", snap.ID, err)
+	if format == formatJSON {
+		return writeJSON(a.Out, snap)
 	}
 
-	return a.print(string(blob))
+	fields, err := fieldSection(snap)
+	if err != nil {
+		return err
+	}
+
+	return writeSections(a.Out, fields)
 }
 
 func (a App) snapshotRemove(ctx context.Context, args []string) error {

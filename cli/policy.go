@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -87,10 +86,6 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 	if len(rest) != 1 {
 		return fmt.Errorf("policy show takes one name, got %d", len(rest))
 	}
-	if err := formatLanded("policy show", format, formatJSON); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -100,13 +95,11 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	blob, err := json.MarshalIndent(policy, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode policy %s: %w", policy.Name, err)
+	if format == formatTable {
+		return writeSections(a.Out, policySections(policy)...)
 	}
 
-	return a.print(string(blob))
+	return writeJSON(a.Out, policy)
 }
 
 func (a App) policyList(ctx context.Context, args []string) error {
@@ -117,10 +110,6 @@ func (a App) policyList(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("policy list takes no arguments, got %d", len(rest))
 	}
-	if err := formatLanded("policy list", format, formatTable); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -129,6 +118,9 @@ func (a App) policyList(ctx context.Context, args []string) error {
 	all, err := c.ListPolicies(ctx)
 	if err != nil {
 		return err
+	}
+	if format == formatJSON {
+		return writeJSON(a.Out, policySummaries(all))
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)

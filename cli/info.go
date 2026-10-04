@@ -18,13 +18,12 @@ func (a App) info(_ context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("info takes no argument, got %s", strings.Join(rest, " "))
 	}
-	if err := formatLanded("info", format, formatTable); err != nil {
-		return err
-	}
-
 	selected, err := daemon.SelectProvider("", a.Root)
 	if err != nil {
 		return err
+	}
+	if format == formatJSON {
+		return writeJSON(a.Out, infoView{Provider: selected.Provider, Reason: selected.Reason, Unreadable: selected.Unreadable})
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)

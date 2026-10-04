@@ -9,6 +9,9 @@ import (
 	"github.com/presmihaylov/shard/pkg/vz"
 )
 
+// SupervisorFailedFile holds shard-init's reason for its own death, which a test turns into a fifo to hold the report's write.
+const SupervisorFailedFile = supervisorFailedFile
+
 // HoldRecovery runs hold after a reconnect chose to thaw a freeze whose answer was lost, and before that thaw goes out.
 func (p *Provider) HoldRecovery(hold func()) {
 	p.recovering = hold

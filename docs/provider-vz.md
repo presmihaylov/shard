@@ -131,7 +131,9 @@ Every sandbox gets an APFS clone of the base (`clonefile(2)`: instant, and the b
 until written). The clone is grown to the sandbox's `--disk` bound and attached as virtio-blk, and
 it is the writable layer. `bundle.CloneRootDisk` does both the clone and the grow, and it reports
 whether the blocks are shared. On a volume that is not APFS it falls back to a copy, and the
-provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218).
+provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218). A create
+from a snapshot clones the snapshot's disk the same way and grows it to a larger `--disk`, by the
+rules in `docs/provider.md` (SHARD-476).
 
 Rejected: a virtiofs share of an unpacked directory. It is the simplest to build, but it has no
 consistent point-in-time copy. A saved VM state and a directory that keeps changing under it cannot
@@ -177,8 +179,8 @@ provider records the 125 as the sandbox exit and the reason as its stopped reaso
 `list` show that as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot,
 before any listener exists, opens the control connection with the same message. A Firecracker start
 then answers with the reason and the 125 at once, instead of after the 30 second grace (SHARD-416).
-The vz provider records a failure at boot the same way (SHARD-418). After boot, it still ignores the
-event and reads the halt as the guest gone.
+The vz provider records a failure at boot the same way (SHARD-418). It records a death after boot as
+Firecracker does, and a stop returns only once that report has landed (SHARD-476).
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection that
