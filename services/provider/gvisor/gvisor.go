@@ -663,8 +663,7 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	return nil
 }
 
-// execFailure names what runsc reports as its internal 128: a refused start gets a shell's own exit
-// code, and a lost wait the sentinel a pause can claim.
+// execFailure splits runsc's internal 128: a refused start gets a shell's own exit code, a lost wait the sentinel a pause can claim.
 func execFailure(id string, err error) error {
 	if lost, ok := errors.AsType[*runsc.ExecLostError](err); ok {
 		return fmt.Errorf("sandbox %s: %w: %s", id, models.ErrExecLost, lost.Reason)

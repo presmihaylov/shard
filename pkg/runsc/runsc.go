@@ -230,9 +230,7 @@ type ExecOptions struct {
 	Report func(pid int)
 }
 
-// Exec runs a command in a running sandbox and returns the code it exited with, which is no failure
-// of this driver. On a tty runsc writes its own failures to the same stderr the guest gets, so an
-// exit code alone cannot tell the two apart there; the caller checks the sandbox is running first.
+// Exec returns a command's exit code; a tty shares runsc's stderr with the guest, so there the caller checks the sandbox runs first.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
 		return 0, errors.New("no command: runsc exec has nothing to run")
@@ -286,40 +284,43 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 			return 0, fmt.Errorf("runsc exec %s: %w", id, ctx.Err())
 		}
 
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			// A driver something else killed says nothing about the guest process, so it is not an exit code.
-			if !exit.Exited() {
-				return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, err)
-			}
-
-			// An exit code is the command's unless runsc logged a refusal: before the pid file, which lands
-			// as soon as the guest process forks, the command never ran; after it, runsc lost its wait.
-			_, perr := readPID(pidFile)
-			reason, rerr := logReason(logFile)
-			if perr != nil && rerr == nil {
-				return 0, fmt.Errorf("runsc exec %s: %w", id, startFailure(reason))
-			}
-			if rerr == nil {
-				return 0, fmt.Errorf("runsc exec %s: %w", id, &ExecLostError{Reason: reason})
-			}
-
-			said, err := ownWords(ownFile)
-			if err != nil {
-				return 0, fmt.Errorf("runsc exec %s exited %d: %w", id, exit.ExitCode(), err)
-			}
-			// runsc keeps its stderr for the guest's, so words there with none logged are a runsc that died first.
-			if said != "" {
-				return 0, fmt.Errorf("runsc exec %s exited %d: %s", id, exit.ExitCode(), said)
-			}
-
-			return exit.ExitCode(), nil
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			return classifyExit(id, exit, pidFile, logFile, ownFile)
 		}
 
 		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
 	}
 
 	return 0, nil
+}
+
+// classifyExit is the command's exit code, unless runsc refused it, lost its wait on it, or died first.
+func classifyExit(id string, exit *exec.ExitError, pidFile, logFile, ownFile string) (int, error) {
+	// A driver something else killed says nothing about the guest process, so it is not an exit code.
+	if !exit.Exited() {
+		return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, exit)
+	}
+
+	// The pid file separates a refused start from a lost wait because runsc writes it when the guest forks.
+	_, perr := readPID(pidFile)
+	reason, rerr := logReason(logFile)
+	if perr != nil && rerr == nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, startFailure(reason))
+	}
+	if rerr == nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, &ExecLostError{Reason: reason})
+	}
+
+	said, err := ownWords(ownFile)
+	if err != nil {
+		return 0, fmt.Errorf("runsc exec %s exited %d: %w", id, exit.ExitCode(), err)
+	}
+	// runsc keeps its stderr for the guest's, so words there with none logged are a runsc that died first.
+	if said != "" {
+		return 0, fmt.Errorf("runsc exec %s exited %d: %s", id, exit.ExitCode(), said)
+	}
+
+	return exit.ExitCode(), nil
 }
 
 // ExecStartError is an exec whose command never ran, which runsc reports as its own exit code 128.
@@ -350,8 +351,7 @@ func startFailure(reason string) error {
 	return &ExecStartError{Reason: reason, NotExecutable: strings.Contains(reason, notExecutableMessage)}
 }
 
-// logReason keeps the last error runsc logged, which is the refusal that ended the call. runsc writes
-// the same words to its stderr, which is the guest's on a tty, so this log is the copy shard reads back.
+// logReason keeps the last error runsc logged, a copy of the refusal that a tty mixes into the guest's stderr.
 func logReason(path string) (string, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
