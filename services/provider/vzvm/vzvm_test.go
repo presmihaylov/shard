@@ -503,6 +503,7 @@ func TestAnExecInsideAPauseIsRefusedByName(t *testing.T) {
 	if !errors.As(err, &notStarted) || notStarted.Code != models.CommandNotExecutableExitCode || !strings.Contains(notStarted.Reason, "a pause holds the sandbox frozen") {
 		t.Errorf("Exec inside a pause = %v, want the pause's refusal with code %d", err, models.CommandNotExecutableExitCode)
 	}
+	requireSendsRefused(t, h.provider, spec.ID, "pause", "the pause")
 	if err := os.Remove(hold); err != nil {
 		t.Fatal(err)
 	}
@@ -945,6 +946,55 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	if err := h.open(t).Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// guestGone has a daemon restart find the shim of a running sandbox answering and its guest out of reach, and returns the fresh provider and the shim's pid.
+func guestGone(t *testing.T) (models.SandboxSpec, *vzvm.Provider, int) {
+	t.Helper()
+	h, spec, shim := runningShim(t)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	control := filepath.Join(spec.StateDir, "guest", fmt.Sprintf("%d.sock", supervisor.ControlPort))
+	if err := os.Rename(control, control+".off"); err != nil {
+		t.Fatal(err)
+	}
+	// A failed test still lets the cleanup's stop reach the guest.
+	t.Cleanup(func() {
+		if err := os.Rename(control+".off", control); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("put the control socket back: %v", err)
+		}
+	})
+
+	return spec, h.open(t), shim
+}
+
+// An adopt whose guest does not attach ends the shim and puts why on file, so a start boots the sandbox again (SHARD-577).
+func TestAnAdoptWhoseGuestDoesNotAttachEndsTheShim(t *testing.T) {
+	spec, p, shim := guestGone(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || !strings.Contains(status.SupervisorFailed, "its guest does not attach") {
+		t.Fatalf("Status over a guest that does not attach = %+v, %v, want it stopped with the reason", status, err)
+	}
+	awaitExit(t, shim)
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Start after the adopt ended the shim: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.SupervisorFailed != "" {
+		t.Fatalf("Status after the start = %+v, %v, want it running with no failure", status, err)
+	}
+}
+
+// A rm over a restart that finds the guest out of reach ends the shim and removes the sandbox (SHARD-577).
+func TestRemoveEndsAnAdoptedShimWhoseGuestDoesNotAttach(t *testing.T) {
+	spec, p, shim := guestGone(t)
+
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove over a guest that does not attach: %v", err)
+	}
+	awaitExit(t, shim)
 }
 
 // A pause that cannot complete its checkpoint resumes the VM, keeps the last checkpoint and leaves no staging directory.
