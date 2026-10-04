@@ -432,6 +432,8 @@ func (t *transport) handle(m supervisor.Message) error {
 
 		return t.g.signal(m.PID, sig)
 	case supervisor.KindStop:
+		// A kill an earlier stop's lost cut left behind is not this stop's, so only a kill within this one skips the seal.
+		t.forced.Store(false)
 		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace; a frozen root would hold the entrypoint's last writes.
 		return errors.Join(t.thaw(), syscall.Kill(os.Getpid(), syscall.SIGTERM))
 	case supervisor.KindStopApp:
@@ -456,6 +458,9 @@ func (t *transport) handle(m supervisor.Message) error {
 
 		return t.rekey(m.Seed)
 	case supervisor.KindThaw:
+		// A host thaws a kill whose cut was lost, so the guest runs on and its next clean stop seals.
+		t.forced.Store(false)
+
 		return t.thaw()
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)

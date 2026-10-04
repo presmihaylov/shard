@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1273,6 +1274,34 @@ func TestSealSkipsTheFreezeOfAForcedStop(t *testing.T) {
 	tr.forced.Store(true)
 	if err := tr.seal(freeze); err != nil || froze != 1 {
 		t.Fatalf("a forced stop's seal returned %v after %d freezes, want nil and no new freeze", err, froze)
+	}
+}
+
+func TestARecoveredKillSealsALaterCleanStop(t *testing.T) {
+	froze := 0
+	freeze := func(*os.File) error { froze++; return nil }
+	tr := &transport{}
+	tr.g = newGuest(tr, restartPolicy{})
+
+	tr.forced.Store(true)
+	if err := tr.handle(supervisor.Message{Kind: supervisor.KindThaw}); err != nil {
+		t.Fatalf("thaw: %v", err)
+	}
+	if err := tr.seal(freeze); err != nil || froze != 1 {
+		t.Fatalf("a seal after a thawed kill returned %v after %d freezes, want nil after 1", err, froze)
+	}
+
+	// The stop signals this process, so the test takes the SIGTERM a guest's loop would.
+	terms := make(chan os.Signal, 1)
+	signal.Notify(terms, syscall.SIGTERM)
+	defer signal.Stop(terms)
+	tr.forced.Store(true)
+	if err := tr.handle(supervisor.Message{Kind: supervisor.KindStop}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	<-terms
+	if err := tr.seal(freeze); err != nil || froze != 2 {
+		t.Fatalf("a clean stop after an unheard kill returned %v after %d freezes, want nil after 2", err, froze)
 	}
 }
 
