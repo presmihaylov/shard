@@ -140,10 +140,8 @@ var (
 func flagError(flags *flag.FlagSet, err error) error {
 	msg := err.Error()
 	if m := undefinedFlag.FindStringSubmatch(msg); m != nil {
-		for _, f := range helps[""].flags {
-			if flagName(f.spell) == m[1] && helpKey(flags) != "" {
-				return fmt.Errorf("%s goes before the verb: shard %s %s", dashed(m[1]), f.spell, helpKey(flags))
-			}
+		if err := globalFlagHint(flags, m[1]); err != nil {
+			return err
 		}
 
 		return fmt.Errorf("unknown flag %s; run %s --help", dashed(m[1]), flags.Name())
@@ -166,6 +164,21 @@ func flagError(flags *flag.FlagSet, err error) error {
 	}
 
 	return err
+}
+
+// globalFlagHint says where a global flag typed after the verb belongs, and is nil for any other flag.
+func globalFlagHint(flags *flag.FlagSet, name string) error {
+	verb := helpKey(flags)
+	if verb == "" {
+		return nil
+	}
+	for _, f := range helps[""].flags {
+		if flagName(f.spell) == name {
+			return fmt.Errorf("%s goes before the verb: shard %s %s", dashed(name), f.spell, verb)
+		}
+	}
+
+	return nil
 }
 
 // wanted is what a flag's value must be: true or false for a bool, else what its placeholder in the help stands for.
