@@ -1883,7 +1883,7 @@ restart_policy_steps() {
 	step "refuse an unknown policy or retries with policy no"
 	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"sometimes\"}}"
 	[ "${REPLY_CODE}" = "400" ] || fail "an unknown restart policy answered ${REPLY_CODE}, want 400"
-	grep -q 'restart.policy is no, on-failure or always' <<<"${REPLY_BODY}" || fail "the refusal does not name the policies: ${REPLY_BODY}"
+	grep -q 'one of .*no, on-failure, always.* (body.restart.policy)' <<<"${REPLY_BODY}" || fail "the refusal does not name the policies: ${REPLY_BODY}"
 	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"no\",\"retries\":2}}"
 	[ "${REPLY_CODE}" = "400" ] || fail "retries under policy no answered ${REPLY_CODE}, want 400"
 	grep -q 'need a policy that starts again' <<<"${REPLY_BODY}" || fail "the refusal does not name the missing policy: ${REPLY_BODY}"
