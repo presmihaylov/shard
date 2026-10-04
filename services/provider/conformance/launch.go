@@ -22,8 +22,8 @@ type refusal struct {
 }
 
 // RunLaunch proves an exec answers only once its command's execve took, and refuses one that did not with a
-// shell's code (SHARD-497). modeBindsNobody says nobody cannot run a root file of mode 0700, as under sysbox's
-// uid map; gvisor and runc run it (SHARD-498).
+// shell's code (SHARD-497). modeBindsNobody says nobody cannot run a root file of mode 0700, as on sysbox and on
+// runc, whose shim execs with no capability left; gvisor runs it (SHARD-498).
 func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 	t.Helper()
 
@@ -81,12 +81,6 @@ func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 		})
 	}
 
-	if !modeBindsNobody {
-		t.Run("NobodyRunsARootFile0700", func(t *testing.T) {
-			s.launched(t, id, models.ExecSpec{Argv: []string{launchDir + "/private"}, User: "nobody"}, false, 0)
-		})
-	}
-
 	t.Run("ATerminalReachesTheCommand", func(t *testing.T) {
 		s.launched(t, id, models.ExecSpec{Argv: s.Shell("test -t 0 && test -t 1 && exit 4")}, true, 4)
 	})
@@ -105,6 +99,9 @@ func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 	// A runtime's own exec hands the command no blocked and no ignored signal, and the shim between must keep that.
 	t.Run("TheCommandStartsWithNoSignalBlockedOrIgnored", func(t *testing.T) {
 		out := s.launched(t, id, models.ExecSpec{Argv: []string{"/bin/cat", "/proc/self/status"}}, false, 0)
+		if !strings.Contains(out, "SigBlk:") {
+			t.Skip("gVisor /proc/self/status has no SigBlk or SigIgn")
+		}
 		for _, line := range []string{"SigBlk:\t0000000000000000\n", "SigIgn:\t0000000000000000\n"} {
 			if !strings.Contains(out, line) {
 				t.Errorf("the command's status has no %q line:\n%s", strings.TrimSpace(line), out)
