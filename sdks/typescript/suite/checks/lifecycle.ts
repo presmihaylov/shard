@@ -66,7 +66,7 @@ export const checks: Check[] = [
       assert.ok(sandbox.name, "the harness names every sandbox");
       assert.equal((await ctx.shard.get(sandbox.name)).id, sandbox.id);
       const listed = await ctx.shard.list();
-      assert.ok(listed.some((each) => each.id === sandbox.id), "list holds the sandbox");
+      assert.ok(listed.sandboxes.some((each) => each.id === sandbox.id), "list holds the sandbox");
       await rejects(NotFoundError, () => ctx.shard.get(`${ctx.prefix}-no-such-sandbox`));
     },
   },

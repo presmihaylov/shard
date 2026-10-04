@@ -26,7 +26,18 @@ from .._generated.api.sandboxes import (
 from .._generated.api.secrets import list_secrets, put_secret, remove_secret
 from .._generated.api.snapshots import create_snapshot, get_snapshot, list_snapshots, remove_snapshot
 from .._generated.types import UNSET
-from .._types import Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version
+from .._types import (
+    Capabilities,
+    Policy,
+    PolicyRule,
+    Restart,
+    SandboxInfo,
+    SandboxList,
+    SecretInfo,
+    SecretList,
+    Snapshot,
+    Version,
+)
 from .._wire import Call, create_body
 from ._sandbox import App, Sandbox
 from ._transport import DEFAULT_TIMEOUT, Transport
@@ -138,14 +149,17 @@ class Shard:
         )
         return Sandbox(self._transport, _types.sandbox_info(record))
 
-    def list(self, *, all: bool = False) -> builtins.list[Sandbox]:
-        """The running sandboxes, or with all every sandbox the daemon holds a record of."""
-        records = self._transport.listed(
+    def list(self, *, all: bool = False) -> SandboxList[Sandbox]:
+        """The sandboxes and the warnings for entries the daemon could not read."""
+        sandboxes: builtins.list[Sandbox] = []
+        warnings: builtins.list[str] = []
+        for page in self._transport.pages(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.sync_detailed(client=self._transport.api, all_=all or UNSET, cursor=cursor),
-            lambda page: page.sandboxes,
-        )
-        return [Sandbox(self._transport, _types.sandbox_info(record)) for record in records]
+        ):
+            sandboxes.extend(Sandbox(self._transport, _types.sandbox_info(record)) for record in page.sandboxes)
+            warnings.extend(_types.warning_lines(page.warnings))
+        return SandboxList(sandboxes, warnings)
 
     def version(self) -> Version:
         return _types.version(
@@ -244,13 +258,16 @@ class Secrets:
         )
         return _types.secret_info(record)
 
-    def list(self) -> builtins.list[SecretInfo]:
-        records = self._transport.listed(
+    def list(self) -> SecretList:
+        secrets: builtins.list[SecretInfo] = []
+        warnings: builtins.list[str] = []
+        for page in self._transport.pages(
             models.SecretsResponse,
             lambda cursor: list_secrets.sync_detailed(client=self._transport.api, cursor=cursor),
-            lambda page: page.secrets,
-        )
-        return [_types.secret_info(record) for record in records]
+        ):
+            secrets.extend(_types.secret_info(record) for record in page.secrets)
+            warnings.extend(_types.warning_lines(page.warnings))
+        return SecretList(secrets, warnings)
 
     def remove(self, name: str, *, force: bool = False) -> None:
         """Remove a secret no sandbox is granted; force ungrants it from each first."""

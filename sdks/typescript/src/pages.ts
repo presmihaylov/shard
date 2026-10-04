@@ -2,8 +2,9 @@
 import { ProtocolError, isObject } from "./errors.js";
 
 /** listed answers every row of a paged list; page fetches one page from the cursor, undefined for the first. */
-export async function listed(route: string, key: string, page: (cursor: string | undefined) => Promise<{ data?: unknown }>): Promise<unknown[]> {
+export async function listed(route: string, key: string, page: (cursor: string | undefined) => Promise<{ data?: unknown }>): Promise<{ rows: unknown[]; warnings: string[] }> {
   const rows: unknown[] = [];
+  const warnings: string[] = [];
   let cursor: string | undefined;
   do {
     const { data } = await page(cursor);
@@ -12,9 +13,14 @@ export async function listed(route: string, key: string, page: (cursor: string |
     if (!Array.isArray(found) || (next !== null && typeof next !== "string")) {
       throw new ProtocolError(`GET ${route} answered a page with no ${key} or next`);
     }
+    const lines: unknown = isObject(data) && data.warnings !== undefined ? data.warnings : [];
+    if (!Array.isArray(lines) || !lines.every((line: unknown): line is string => typeof line === "string")) {
+      throw new ProtocolError(`GET ${route} answered list warnings that are not strings`);
+    }
     rows.push(...found);
+    warnings.push(...lines);
     cursor = next || undefined;
   } while (cursor);
 
-  return rows;
+  return { rows, warnings };
 }
