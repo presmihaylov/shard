@@ -145,7 +145,7 @@ class Command:
         except BaseException as e:
             _abandon(ws, sender, e)
             raise
-        # The exit is the outcome even when a write failed: the daemon stops reading input once the command ends.
+        # @shard 2026-10-04: a write fails once the command ends and its stdin closes, so the exit is the outcome.
         if sender is not None and not sender.task.join(0):
             # A daemon that stopped reading leaves the unsent input's write blocked, so only a release frees it.
             sender.task.cancel()
