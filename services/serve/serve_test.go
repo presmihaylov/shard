@@ -717,7 +717,7 @@ func realDaemon(t *testing.T) (string, countingProcess, chan string) {
 
 	process := countingProcess{calls: &atomic.Int64{}}
 	dispatched := make(chan string, 8)
-	mux := api.NewHandler("v-test", process, nil, nil, nil, nil, nil, io.Discard)
+	mux := api.NewHandler("v-test", process, nil, nil, nil, nil, nil, nil, io.Discard)
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

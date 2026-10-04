@@ -16,14 +16,14 @@ type snapshotsResponse struct {
 func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.SnapshotRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	snap, err := h.lifecycle.CreateSnapshot(r.Context(), req)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -34,14 +34,14 @@ func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	q, err := pageOf(r, sandboxstate.ValidSnapshotID)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	snapshots, err := h.lifecycle.ListSnapshots(r.Context())
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -54,7 +54,7 @@ func (h *Handler) listSnapshots(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, err := h.lifecycle.InspectSnapshot(r.Context(), r.PathValue("ref"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -64,7 +64,7 @@ func (h *Handler) getSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) removeSnapshot(w http.ResponseWriter, r *http.Request) {
 	if err := h.lifecycle.RemoveSnapshot(r.Context(), r.PathValue("ref")); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}

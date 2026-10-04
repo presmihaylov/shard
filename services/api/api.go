@@ -115,10 +115,12 @@ type Handler struct {
 	stores    Stores
 	egressLog EgressLog
 	log       *log.Logger
+	// redact puts a secret's name in place of its value in a line the log keeps; nil keeps the line, which only a test does.
+	redact func(string) string
 }
 
-// NewHandler builds the mux; out takes the one thing a handler cannot return, a write the client hung up on.
-func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, out io.Writer) http.Handler {
+// NewHandler builds the mux; out takes what a handler cannot return: a write the client hung up on, and the cause behind a public text.
+func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, redact func(string) string, out io.Writer) http.Handler {
 	h := &Handler{
 		version:   version,
 		process:   process,
@@ -128,11 +130,12 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 		stores:    stores,
 		egressLog: egressLog,
 		log:       log.New(out, "", log.LstdFlags),
+		redact:    redact,
 	}
 
 	mux := http.NewServeMux()
 	for _, e := range h.routeTable() {
-		mux.HandleFunc(e.Method+" "+e.Pattern, e.handler)
+		mux.HandleFunc(e.Method+" "+e.Pattern, classed(e.Class, e.handler))
 	}
 	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +158,22 @@ type Route struct {
 	Method  string
 	Pattern string
 	Class   Class
+}
+
+type classKey struct{}
+
+// classed puts the route's class where an error text is chosen, so a local route answers the whole cause and a public one only its public part.
+func classed(class Class, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(context.WithValue(r.Context(), classKey{}, class)))
+	}
+}
+
+// local says r came in on a local route; a request with no class is public, so a path without one leaks nothing.
+func local(r *http.Request) bool {
+	class, ok := r.Context().Value(classKey{}).(Class)
+
+	return ok && class == Local
 }
 
 // routeEntry binds a route to its handler; routeTable is the one list NewHandler registers and Routes reports.
@@ -274,10 +293,10 @@ func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, versionResponse{Version: h.version, APIVersion: APIVersion})
 }
 
-func (h *Handler) getCapabilities(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) getCapabilities(w http.ResponseWriter, r *http.Request) {
 	d, err := h.process.Daemon()
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -300,10 +319,10 @@ func unsupported(c models.Capabilities) []string {
 	return verbs
 }
 
-func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
 	d, err := h.process.Daemon()
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -317,23 +336,23 @@ func listSandboxes[S any](h *Handler, project func(models.Sandbox) S) http.Handl
 	return func(w http.ResponseWriter, r *http.Request) {
 		all, err := boolQuery(r, "all")
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
 
 		q, err := pageOf(r, sandboxstate.ValidID)
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
 
 		sandboxes, unreadable := sandbox.List(h.repo, all)
 
-		warnings, err := partial(unreadable)
+		warnings, err := partial[*sandboxstate.UnreadableError](h, r, unreadable)
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
@@ -354,7 +373,7 @@ func getSandbox[I any](h *Handler, project func(sandbox.Inspection) I) http.Hand
 	return func(w http.ResponseWriter, r *http.Request) {
 		wait, err := boolQuery(r, "wait")
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
@@ -362,7 +381,7 @@ func getSandbox[I any](h *Handler, project func(sandbox.Inspection) I) http.Hand
 		ref := r.PathValue("id")
 		if wait {
 			if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
-				h.writeError(w, err)
+				h.writeError(w, r, err)
 
 				return
 			}
@@ -370,7 +389,7 @@ func getSandbox[I any](h *Handler, project func(sandbox.Inspection) I) http.Hand
 
 		insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
@@ -385,28 +404,28 @@ func same[T any](v T) T { return v }
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	id, err := h.repo.Resolve(r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	sb, err := h.repo.Get(id)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	// This handler reads the log around the Service, so it repeats the guard the lifecycle verbs get for free.
 	if err := sandbox.FailedGuard(id, sb); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -419,7 +438,7 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 
 	records, cut, err := h.egressLog.Read(sb)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -433,7 +452,7 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.GrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -444,7 +463,7 @@ func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.UngrantSecret(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -455,14 +474,14 @@ func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyAttachRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.AttachPolicy(r.Context(), r.PathValue("id"), req.Policy)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -473,7 +492,7 @@ func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.DetachPolicy(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -485,20 +504,20 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	wait, err := boolQuery(r, "wait")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	var req sandbox.CreateRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := checkCreateScopes(r.Header, req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -525,21 +544,21 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 
 	sb, err := h.lifecycle.Create(r.Context(), req)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if wait {
 		if err := h.lifecycle.WaitState(r.Context(), sb.ID); err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
 
 		sb, err = sandbox.Get(h.repo, sb.ID)
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
@@ -560,6 +579,8 @@ type scopeError struct {
 func (e *scopeError) Error() string {
 	return fmt.Sprintf("the token does not carry the %q scope, which a create that names a %s needs", e.scope, e.named)
 }
+
+func (e *scopeError) Public() string { return e.Error() }
 
 // checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(header http.Header, req sandbox.CreateRequest) error {
@@ -619,7 +640,7 @@ func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 		if status, _ := classify(err); status >= http.StatusInternalServerError {
 			h.log.Printf("api: start sandbox %s: %v", r.PathValue("id"), err)
 		}
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -633,14 +654,14 @@ type stopRequest struct{}
 func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	var req stopRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.Stop(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -651,13 +672,13 @@ func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.lifecycle.Remove(r.Context(), r.PathValue("id"), force); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -668,7 +689,7 @@ func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Pause(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -679,7 +700,7 @@ func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 	sb, err := h.lifecycle.Resume(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -690,14 +711,14 @@ func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.CopyRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	sb, err := h.lifecycle.Fork(r.Context(), r.PathValue("id"), req)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -720,13 +741,14 @@ func classify(err error) (int, models.Code) {
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
+	var fileInvalid *sandbox.FileInvalidError
 
 	switch {
 	case errors.As(err, &scope):
 		return http.StatusForbidden, models.CodeForbidden
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
-	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
+	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
@@ -795,8 +817,8 @@ func boolQuery(r *http.Request, name string) (bool, error) {
 	return value, nil
 }
 
-// partial turns List's joined error into one warning per unreadable record; anything else failed the list itself.
-func partial(err error) ([]string, error) {
+// partial turns a list's joined error into one warning per record of type U it could not read; anything else failed the list itself.
+func partial[U error](h *Handler, r *http.Request, err error) ([]string, error) {
 	if err == nil {
 		return nil, nil
 	}
@@ -808,26 +830,25 @@ func partial(err error) ([]string, error) {
 
 	warnings := make([]string, 0, len(errs))
 	for _, e := range errs {
-		var unreadable *sandboxstate.UnreadableError
-		if !errors.As(e, &unreadable) {
+		if _, ok := errors.AsType[U](e); !ok {
 			return nil, err
 		}
-		warnings = append(warnings, e.Error())
+		warnings = append(warnings, h.message(r, models.CodeInternal, e))
 	}
 
 	return warnings, nil
 }
 
 // writeError answers err with the status and the code its type says, and the holders when a store entry is held.
-func (h *Handler) writeError(w http.ResponseWriter, err error) {
-	status, body := errorBody(err)
+func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	status, body := h.errorBody(r, err)
 	h.writeJSON(w, status, body)
 }
 
 // errorBody is the status and the object err answers; a stream that already sent its status writes only the object.
-func errorBody(err error) (int, errorResponse) {
+func (h *Handler) errorBody(r *http.Request, err error) (int, errorResponse) {
 	status, code := classify(err)
-	body := errorResponse{Error: ErrorObject{Code: code, Message: err.Error()}}
+	body := errorResponse{Error: ErrorObject{Code: code, Message: h.message(r, code, err)}}
 
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
@@ -837,11 +858,53 @@ func errorBody(err error) (int, errorResponse) {
 	return status, body
 }
 
+// internalText is what a public route answers for a failure no error type made public.
+const internalText = "the daemon could not complete the request; its log has the cause"
+
+// genericText answers a refusal whose error made nothing public; a code it lacks answers internalText.
+var genericText = map[models.Code]string{
+	models.CodeInvalidRequest: "the request is not valid",
+	models.CodeBodyTooLarge:   "the request body is larger than the route accepts",
+	models.CodeNotFound:       "what the request names does not exist",
+	models.CodeForbidden:      "the token does not cover this request",
+	models.CodeUnsupported:    "the provider does not support this verb",
+}
+
+// message is what the caller reads about err: the whole of it on a local route, else only what its type made public.
+func (h *Handler) message(r *http.Request, code models.Code, err error) string {
+	raw := err.Error()
+	if local(r) {
+		return raw
+	}
+
+	public, ok := sandbox.PublicText(err)
+	if !ok {
+		public, ok = genericText[code]
+	}
+	if !ok {
+		public = internalText
+	}
+	if public != raw {
+		h.log.Printf("api: %s %s: %s", r.Method, r.URL.Path, h.redacted(raw))
+	}
+
+	return public
+}
+
+func (h *Handler) redacted(text string) string {
+	if h.redact == nil {
+		return text
+	}
+
+	return h.redact(text)
+}
+
 // writeJSON encodes first, so a value that cannot be encoded never leaves a 200 with half a body.
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {
 	body, err := json.Marshal(value)
 	if err != nil {
-		body = fmt.Appendf(nil, `{"error":{"code":%q,"message":%q}}`, models.CodeInternal, "encode the response: "+err.Error())
+		h.log.Printf("api: encode the response: %v", err)
+		body = fmt.Appendf(nil, `{"error":{"code":%q,"message":%q}}`, models.CodeInternal, internalText)
 		status = http.StatusInternalServerError
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/runspec"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -17,7 +18,7 @@ func SecretHolders(repo Reader, name string) ([]string, error) {
 	sandboxes, unreadable := repo.List()
 	// A record that does not read back may name the secret, so nothing can say it is free.
 	if unreadable != nil {
-		return nil, fmt.Errorf("cannot tell which sandboxes hold the secret: %w", unreadable)
+		return nil, &CauseError{Text: "cannot tell which sandboxes hold the secret", Err: unreadable}
 	}
 
 	var holders []string
@@ -67,7 +68,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: the proxy sets that variable to the trust store", id, name)}
 	}
 	if err := b.CanSetEnv(name); err != nil {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: %w", id, name, err)}
+		return models.Sandbox{}, grantRefused(id, name, err)
 	}
 
 	if err := b.TrustProxy(proxyCA); err != nil {
@@ -184,4 +185,14 @@ func (s *Service) holdCreatedOrStopped(ctx context.Context, ref, fix string) (st
 // environment opens the guest environment of a sandbox that is already built, wherever its provider keeps it.
 func (s *Service) environment(id string) (models.Environment, error) {
 	return s.cfg.Environments.Environment(id)
+}
+
+// grantRefused makes the request's fault only a variable the guest environment refuses; an environment it could not read broke the grant.
+func grantRefused(id, name string, err error) error {
+	wrapped := fmt.Errorf("sandbox %s cannot be granted secret %s: %w", id, name, err)
+	if _, ok := errors.AsType[*runspec.UnsettableError](err); ok {
+		return &RequestError{Err: wrapped}
+	}
+
+	return wrapped
 }

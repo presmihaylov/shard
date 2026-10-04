@@ -62,7 +62,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		State:         sb.State,
 		ExitStatus:    sb.ExitStatus,
 		StoppedReason: sb.StoppedReason,
-		FailedReason:  sb.FailedReason,
+		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
 		Command:       sb.Command,
 		Restart:       sb.Restart,

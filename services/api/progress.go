@@ -85,12 +85,12 @@ func streamProgress[L any](h *Handler, w http.ResponseWriter, r *http.Request, s
 	}
 
 	if res.err != nil && !out.wrote {
-		h.writeError(w, res.err)
+		h.writeError(w, r, res.err)
 
 		return
 	}
 	if res.err != nil {
-		_, body := errorBody(res.err)
+		_, body := h.errorBody(r, res.err)
 		res.line = l.failed(body.Error)
 	}
 

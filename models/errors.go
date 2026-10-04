@@ -58,6 +58,19 @@ func (e *UnsupportedError) Error() string {
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
 
+func (e *UnsupportedError) Public() string { return e.Error() }
+
+// NotFoundError marks a lookup miss whose text names only what the caller asked for, so a public route may answer it.
+type NotFoundError struct {
+	Err error
+}
+
+func (e *NotFoundError) Error() string { return e.Err.Error() }
+
+func (e *NotFoundError) Unwrap() error { return e.Err }
+
+func (e *NotFoundError) Public() string { return e.Err.Error() }
+
 // UnresponsiveError is a verb the substrate refused because the process behind the sandbox missed its probe bound.
 type UnresponsiveError struct {
 	Sandbox  string
@@ -82,3 +95,5 @@ func (e *LostError) Error() string {
 }
 
 func (e *LostError) Unwrap() error { return e.Err }
+
+func (e *LostError) Public() string { return fmt.Sprintf("sandbox %s is lost", e.Sandbox) }

@@ -124,6 +124,8 @@ type Config struct {
 	Report func(string)
 	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.
 	PutCleanupGrace time.Duration
+	// Redact hides every secret value in a failed reason before the record keeps it; nil keeps the text, which only a test does.
+	Redact func(string) string
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -192,6 +194,9 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 
 func (e *RequestError) Unwrap() error { return e.Err }
 
+// Public answers the whole text: every site wraps only what the caller sent, or a typed refusal of it.
+func (e *RequestError) Public() string { return e.Err.Error() }
+
 // StateError is a verb refused for the state the sandbox is in. Fix says what the operator does instead.
 type StateError struct {
 	ID    string
@@ -199,17 +204,30 @@ type StateError struct {
 	Fix   string
 	// Code names the state the verb wanted, for the program that reads the API body.
 	Code models.Code
+	// Detail is host context, such as the pid that missed its probe, which only the local text carries.
+	Detail string
 }
 
-func (e *StateError) Error() string { return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix) }
+func (e *StateError) Error() string {
+	if e.Detail == "" {
+		return e.Public()
+	}
+
+	return fmt.Sprintf("sandbox %s is %s: %s: %s", e.ID, e.State, e.Detail, e.Fix)
+}
+
+func (e *StateError) Public() string {
+	return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix)
+}
 
 // wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
+	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
 	if sb.State == models.StateUnresponsive {
-		fix = sb.UnresponsiveReason + ": " + fix
+		refused.Detail = sb.UnresponsiveReason
 	}
 
-	return &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
+	return refused
 }
 
 // FailedGuard refuses every verb but get and rm on a failed sandbox, with the one code that names it.
@@ -219,7 +237,13 @@ func FailedGuard(id string, sb models.Sandbox) error {
 		return nil
 	}
 
-	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
+	public := PublicReason(sb)
+	refused := &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s", public, id), Code: models.CodeSandboxFailed}
+	if sb.FailedReason != public {
+		refused.Detail = sb.FailedReason
+	}
+
+	return refused
 }
 
 // SubstrateTimeoutError is our own deadline on a Provider.Status the substrate never answered, so a verb
@@ -233,6 +257,8 @@ type SubstrateTimeoutError struct {
 func (e *SubstrateTimeoutError) Error() string {
 	return fmt.Sprintf("the provider did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
+
+func (e *SubstrateTimeoutError) Public() string { return e.Error() }
 
 // sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
 type sandboxLock struct {
@@ -335,8 +361,25 @@ func (s *Service) cancelPull(id, verb string) {
 	}
 }
 
-func cancelled(verb string) error {
-	return fmt.Errorf("%w by %s", errCreateCancelled, verb)
+func cancelled(verb string) error { return &cancelledError{verb: verb} }
+
+// cancelledError is a create that rm or stop ended, named by the verb.
+type cancelledError struct {
+	verb string
+}
+
+func (e *cancelledError) Error() string { return fmt.Sprintf("%s by %s", errCreateCancelled, e.verb) }
+
+func (e *cancelledError) Unwrap() error { return errCreateCancelled }
+
+func (e *cancelledError) Public() string { return e.Error() }
+
+func (s *Service) redact(text string) string {
+	if s.cfg.Redact == nil {
+		return text
+	}
+
+	return s.cfg.Redact(text)
 }
 
 // report logs a transition a verb recorded, where the daemon logs the ones its loops record.
@@ -437,7 +480,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	if req.Policy != "" {
 		if _, err := s.cfg.Policies.Get(req.Policy); err != nil {
-			return models.Sandbox{}, &RequestError{Err: err}
+			return models.Sandbox{}, policyRefused(req.Policy, err)
 		}
 	}
 	if req.fronted() {
@@ -453,7 +496,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		admit = append(admit, func(dir string) error {
 			// A disk the root has no room for is the request's fault, refused before the record a later failure would leave.
 			if err := disks.AdmitDisk(dir, res); err != nil {
-				return &RequestError{Err: err}
+				return diskRefused(err)
 			}
 			reserved = dir
 
@@ -484,6 +527,24 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 
 	return sb, nil
+}
+
+// policyRefused makes the request's fault only a policy name that is malformed or names none; a store it could not read broke the verb.
+func policyRefused(name string, err error) error {
+	if errors.Is(err, egress.ErrNotFound) || egress.ValidName(name) != nil {
+		return &RequestError{Err: err}
+	}
+
+	return err
+}
+
+// diskRefused makes the request's fault only a disk that does not fit; a root it could not read broke the create.
+func diskRefused(err error) error {
+	if _, ok := errors.AsType[*bundle.NoRoomError](err); ok {
+		return &RequestError{Err: err}
+	}
+
+	return err
 }
 
 // diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
@@ -672,18 +733,24 @@ func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
 // fail records why a create never reached running. It keeps the record so a get reads the reason and rm
 // frees it, and it returns the cause so the synchronous caller still sees the failure.
 func (s *Service) fail(ctx context.Context, id string, cause error) error {
-	if err := s.cfg.Repo.Update(id, failed(cause)); err != nil {
+	if err := s.cfg.Repo.Update(id, s.failed(cause)); err != nil {
 		return errors.Join(cause, fmt.Errorf("sandbox %s failed but its record was not updated: %w", id, err))
 	}
 
 	return cause
 }
 
-// failed is the record of a create that ended in cause.
-func failed(cause error) func(*models.Sandbox) error {
+// failed is the record of a create that ended in cause, with the raw text and the part a public route may answer.
+func (s *Service) failed(cause error) func(*models.Sandbox) error {
+	public, ok := PublicText(cause)
+	if !ok {
+		public = FailedGeneric
+	}
+
 	return func(sb *models.Sandbox) error {
 		sb.State = models.StateFailed
-		sb.FailedReason = cause.Error()
+		sb.FailedReason = s.redact(cause.Error())
+		sb.FailedPublic = s.redact(public)
 		sb.PID = 0
 		sb.Pausing = false
 
@@ -953,7 +1020,7 @@ func (s *Service) Stop(ctx context.Context, ref string) (models.Sandbox, error) 
 
 	// A create that has not taken the lock yet builds nothing once its record is failed, not stopped.
 	if sb.State == models.StatePending {
-		if err := s.cfg.Repo.Update(id, failed(cancelled("shard stop"))); err != nil {
+		if err := s.cfg.Repo.Update(id, s.failed(cancelled("shard stop"))); err != nil {
 			return models.Sandbox{}, err
 		}
 		if sb, err = s.cfg.Repo.Get(id); err != nil {

@@ -20,13 +20,13 @@ const StatHeader = "X-Shard-Stat"
 func (h *Handler) putFile(w http.ResponseWriter, r *http.Request) {
 	req, err := fileWriteOf(r)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.lifecycle.WriteFile(r.Context(), r.PathValue("id"), req, idleBounded(w, r)); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -96,13 +96,13 @@ func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
 func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 	stat, body, err := h.lifecycle.ReadFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := setStat(w, stat); err != nil {
-		h.writeError(w, errors.Join(err, body.Close()))
+		h.writeError(w, r, errors.Join(err, body.Close()))
 
 		return
 	}
@@ -123,13 +123,13 @@ func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) statFile(w http.ResponseWriter, r *http.Request) {
 	stat, err := h.lifecycle.StatFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := setStat(w, stat); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -150,7 +150,7 @@ func setStat(w http.ResponseWriter, stat models.FileStat) error {
 func (h *Handler) listDir(w http.ResponseWriter, r *http.Request) {
 	listing, err := h.lifecycle.ListDir(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -198,13 +198,13 @@ func writeEntries(w io.Writer, listing sandbox.Listing) error {
 func (h *Handler) makeDir(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.MkdirRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.lifecycle.MakeDir(r.Context(), r.PathValue("id"), req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -216,13 +216,13 @@ func (h *Handler) makeDir(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteFile(w http.ResponseWriter, r *http.Request) {
 	recursive, err := boolQuery(r, "recursive")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.lifecycle.DeleteFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"), recursive); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}

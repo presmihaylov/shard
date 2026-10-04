@@ -60,14 +60,14 @@ type pruneResponse struct {
 func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
 	q, err := pageOf(r, egress.ValidName)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	policies, err := h.stores.Policies()
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	policy, err := h.stores.Policy(r.PathValue("name"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -91,14 +91,14 @@ func (h *Handler) getPolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.PolicyRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	policy, err := h.stores.SetPolicy(r.Context(), r.PathValue("name"), req)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -108,7 +108,7 @@ func (h *Handler) putPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
 	if err := h.stores.RemovePolicy(r.PathValue("name")); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -120,16 +120,18 @@ func (h *Handler) removePolicy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 	q, err := pageOf(r, secret.ValidName)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	secrets, unreadable := h.stores.Secrets()
 
-	var warnings []string
-	if unreadable != nil {
-		warnings = []string{unreadable.Error()}
+	warnings, err := partial[*secret.UnreadableError](h, r, unreadable)
+	if err != nil {
+		h.writeError(w, r, err)
+
+		return
 	}
 
 	secrets, next := page(secrets, q, func(s secret.Secret) string { return s.Name })
@@ -140,14 +142,14 @@ func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
 	var req sandbox.SecretRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	sec, err := h.stores.SetSecret(r.PathValue("name"), req)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -158,13 +160,13 @@ func (h *Handler) putSecret(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeSecret(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.stores.RemoveSecret(r.PathValue("name"), force); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -182,14 +184,14 @@ func imageShape(cursor string) error {
 func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 	q, err := pageOf(r, imageShape)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	images, err := h.stores.Images()
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -202,7 +204,7 @@ func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 	var req pullRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -219,7 +221,7 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 
 	img, err := h.stores.PullImage(r.Context(), req.Ref)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -230,14 +232,14 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	warnings, err := h.stores.RemoveImage(r.Context(), r.PathValue("ref"), force)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -248,7 +250,7 @@ func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pruneImages(w http.ResponseWriter, r *http.Request) {
 	removed, warnings, err := h.stores.PruneImages(r.Context())
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}

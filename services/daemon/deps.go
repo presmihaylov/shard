@@ -95,6 +95,36 @@ func (d *deps) logger() *log.Logger {
 	return log.New(out, "", log.LstdFlags)
 }
 
+// withheld stands in for a line the secret store could not check, since that line may carry a value.
+const withheld = "the line is withheld: the secret store could not be read to redact it"
+
+// redactor puts each secret's name in place of its value in a line the daemon keeps; one the store cannot check is withheld, never kept.
+func redactor(secrets *secret.Store, logger *log.Logger) func(string) string {
+	return func(text string) string {
+		redacted, err := secrets.Redact(text)
+		if err != nil {
+			logger.Printf("redact a line: %v", err)
+
+			return withheld
+		}
+
+		return redacted
+	}
+}
+
+// redact is redactor over the daemon's own store, for a caller that holds none and runs outside d.mu.
+func (d *deps) redact(text string) string {
+	logger := d.logger()
+	secrets, err := d.secrets()
+	if err != nil {
+		logger.Printf("redact a line: %v", err)
+
+		return withheld
+	}
+
+	return redactor(secrets, logger)(text)
+}
+
 // unreadableLog is the shared dedup for the "record cannot be read" line, so one bad record logs once per daemon life across every task (SHARD-403).
 func (d *deps) unreadableLog() *sandboxstate.UnreadableLog {
 	d.mu.Lock()
@@ -744,6 +774,7 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		HostMemoryMiB: hostMemory >> 20,
 		HostCPUs:      runtime.NumCPU(),
 		Report:        func(line string) { logger.Print(line) },
+		Redact:        redactor(secrets, logger),
 	}), nil
 }
 

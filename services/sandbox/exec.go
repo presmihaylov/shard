@@ -78,9 +78,19 @@ type UnavailableError struct {
 	// Why is what became of the sandbox, and Fix what the operator does about it.
 	Why string
 	Fix string
+	// Detail is host context, such as the pid that missed its probe, which only the local text carries.
+	Detail string
 }
 
 func (e *UnavailableError) Error() string {
+	if e.Detail == "" {
+		return e.Public()
+	}
+
+	return fmt.Sprintf("sandbox %s %s: %s: %s", e.ID, e.Why, e.Detail, e.Fix)
+}
+
+func (e *UnavailableError) Public() string {
 	return fmt.Sprintf("sandbox %s %s: %s", e.ID, e.Why, e.Fix)
 }
 
@@ -93,6 +103,8 @@ func (e *AttachedError) Error() string {
 	return fmt.Sprintf("exec %s is already attached: wait for that client to leave", e.ID)
 }
 
+func (e *AttachedError) Public() string { return e.Error() }
+
 // StalledError is an attach the daemon detached because its client took no output for ExecStallBound.
 type StalledError struct {
 	ID string
@@ -101,6 +113,8 @@ type StalledError struct {
 func (e *StalledError) Error() string {
 	return fmt.Sprintf("exec %s: the client took no output for %s, so the daemon detached it and the command runs on", e.ID, ExecStallBound)
 }
+
+func (e *StalledError) Public() string { return e.Error() }
 
 // errStalled is the stream's word for a follower the buffer detached, which Attach names with the exec id.
 var errStalled = errors.New("the client stalled")
@@ -114,6 +128,8 @@ func (e *ExecExitedError) Error() string {
 	return fmt.Sprintf("exec %s has exited: nothing left to signal", e.ID)
 }
 
+func (e *ExecExitedError) Public() string { return e.Error() }
+
 // ExecRunningError is a delete of an exec still under way, whose buffer the daemon must keep.
 type ExecRunningError struct {
 	ID string
@@ -122,6 +138,8 @@ type ExecRunningError struct {
 func (e *ExecRunningError) Error() string {
 	return fmt.Sprintf("exec %s is still running: kill it or wait for it before you delete it", e.ID)
 }
+
+func (e *ExecRunningError) Public() string { return e.Error() }
 
 // chunk is one write the guest made, tagged with the stream it came on so a replay keeps them apart.
 type chunk struct {
@@ -1008,11 +1026,11 @@ func (s *Service) ResizeExec(_ context.Context, ref, execID string, size Termina
 
 	// An exec that ended, or one that runs on pipes, has no terminal to resize.
 	if session.pair == nil {
-		return fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
+		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
 	}
 	select {
 	case <-session.done:
-		return fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
+		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
 	default:
 	}
 
@@ -1070,7 +1088,7 @@ func (s *Service) execOf(id, execID string) (*execSession, error) {
 
 	session := s.execs[execID]
 	if session == nil || session.sandboxID != id {
-		return nil, fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
+		return nil, &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
 	}
 
 	return session, nil
@@ -1191,7 +1209,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 			return "", err
 		}
 
-		return "", &UnavailableError{ID: id, Why: "is unresponsive: " + status.Reason, Fix: "wait for it to answer, or end it with shard stop " + id}
+		return "", &UnavailableError{ID: id, Why: "is unresponsive", Detail: status.Reason, Fix: "wait for it to answer, or end it with shard stop " + id}
 	}
 	if status.Alive() {
 		return id, nil
