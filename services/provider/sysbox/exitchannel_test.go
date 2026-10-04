@@ -147,6 +147,43 @@ func inodeOf(t *testing.T, path string) uint64 {
 	return st.Ino
 }
 
+// unopenable is a file this test may not open to read. Root opens any 0200 file but a sysfs one, whose kernfs refuses it to everyone.
+func unopenable(t *testing.T) string {
+	t.Helper()
+
+	if os.Geteuid() == 0 {
+		found, err := filepath.Glob("/sys/bus/*/uevent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(found) == 0 {
+			t.Skip("root opens any write-only file but a sysfs one, and this host has no /sys/bus/*/uevent")
+		}
+
+		return found[0]
+	}
+
+	path := filepath.Join(t.TempDir(), "write-only")
+	if err := os.WriteFile(path, nil, 0o200); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// Guest root can dup2 a write-only sysfs file onto fd 0, which passes the stat and fails the open (SHARD-614).
+func TestAReopenNamesAFileTheDaemonCannotOpenReplaced(t *testing.T) {
+	lab := newChannelLab(t)
+	path := unopenable(t)
+	lab.pointFd0(t, path)
+	lab.record(t, inodeOf(t, path))
+
+	_, err := lab.exitStatus(t)
+	if !errors.Is(err, models.ErrExitChannelReplaced) {
+		t.Errorf("ExitStatus over a file the daemon cannot open returned %v, want %v", err, models.ErrExitChannelReplaced)
+	}
+}
+
 // Guest root can ptrace PID 1 and dup2 a FIFO onto fd 0; a reopen names it and never opens it (SHARD-419).
 func TestAReopenNamesAFifoOnFdZeroReplacedWithoutOpeningIt(t *testing.T) {
 	lab := newChannelLab(t)

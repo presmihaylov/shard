@@ -206,8 +206,9 @@ func openPage(path string, inode uint64) (*os.File, error) {
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 		return nil, nil
 	}
+	// Guest root can point fd 0 at a file the daemon may not even stat or open, such as a write-only sysfs file (SHARD-614).
 	if err != nil {
-		return nil, fmt.Errorf("stat the exit channel: %w", err)
+		return nil, unreadable(err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, replaced("is not a regular file")
@@ -218,7 +219,7 @@ func openPage(path string, inode uint64) (*os.File, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open the exit channel: %w", err)
+		return nil, unreadable(err)
 	}
 	if err := samePage(f, inode); err != nil {
 		return nil, errors.Join(err, f.Close())
@@ -231,7 +232,7 @@ func openPage(path string, inode uint64) (*os.File, error) {
 func samePage(f *os.File, inode uint64) error {
 	info, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("stat the open exit channel: %w", err)
+		return unreadable(err)
 	}
 	if !info.Mode().IsRegular() {
 		return replaced("is not a regular file")
@@ -246,7 +247,7 @@ func samePage(f *os.File, inode uint64) error {
 
 	fixed, err := memfd.Fixed(f)
 	if err != nil {
-		return fmt.Errorf("read the seals of the exit channel: %w", err)
+		return unreadable(err)
 	}
 	if !fixed {
 		return replaced("does not carry the seals create added")
@@ -257,6 +258,10 @@ func samePage(f *os.File, inode uint64) error {
 
 func replaced(why string) error {
 	return fmt.Errorf("fd 0 of PID 1 %s: %w", why, models.ErrExitChannelReplaced)
+}
+
+func unreadable(err error) error {
+	return replaced(fmt.Sprintf("does not read as the page (%v)", err))
 }
 
 // readPage reads the exit record off a stable page.
