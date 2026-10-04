@@ -268,6 +268,9 @@ const dialsFile = "control-dials"
 // freezesFile in the state directory, once a test creates it, takes the verb of each freeze the guest reads.
 const freezesFile = "freeze-verbs"
 
+// thawedFile in the state directory, once a test creates it, takes one line per thaw the guest answered, after which it admits commands again.
+const thawedFile = "thawed"
+
 // resetOnSaveFile in the state directory resets every stream under each save, as a save that resets the guest's vsock would.
 const resetOnSaveFile = "reset-on-save"
 
@@ -631,7 +634,7 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 
 		return nil, errors.Join(err, conn.Close())
 	}
-	s := &stream{Conn: conn, machine: m}
+	s := &stream{Conn: conn, machine: m, control: true}
 	if flood {
 		return &flooded{stream: s}, nil
 	}
@@ -655,6 +658,12 @@ type stream struct {
 	machine *fakeMachine
 	// cut loses the next answer the guest sends and resets every stream, once a freeze asked for it.
 	cut atomic.Bool
+	// control frames the guest's output in lines, which only the control stream is.
+	control bool
+	// thaw is the id of the thaw the host sent last, until the guest's done answers it.
+	thaw atomic.Int64
+	// partial is the guest's output past its last newline, which a later read completes.
+	partial []byte
 }
 
 func (s *stream) Write(p []byte) (int, error) {
@@ -671,6 +680,12 @@ func (s *stream) Write(p []byte) (int, error) {
 			return 0, err
 		}
 		if !frozen {
+			var thaw supervisor.Message
+			if err := json.Unmarshal(bytes.TrimSpace(p), &thaw); err != nil {
+				return 0, fmt.Errorf("read the thaw the host sent: %w", err)
+			}
+			s.thaw.Store(int64(thaw.ID))
+
 			continue
 		}
 		var freeze supervisor.Message
@@ -697,8 +712,43 @@ func (s *stream) Read(p []byte) (int, error) {
 
 		return 0, net.ErrClosed
 	}
+	if !s.control {
+		return n, err
+	}
+	// A join with nothing would still hide an io.EOF from the reader's == check.
+	if noted := s.noteThawed(p[:n]); noted != nil {
+		return n, errors.Join(err, noted)
+	}
 
 	return n, err
+}
+
+// noteThawed takes one line in thawedFile once the guest's done answers the host's thaw, since the order file has the thaw as the host sent it.
+func (s *stream) noteThawed(read []byte) error {
+	s.partial = append(s.partial, read...)
+	for {
+		end := bytes.IndexByte(s.partial, '\n')
+		if end < 0 {
+			return nil
+		}
+		line := s.partial[:end]
+		s.partial = s.partial[end+1:]
+		thaw := s.thaw.Load()
+		if thaw == 0 {
+			continue
+		}
+		var answer supervisor.Message
+		if err := json.Unmarshal(line, &answer); err != nil {
+			return fmt.Errorf("read the guest's answer to the thaw: %w", err)
+		}
+		if answer.ID != int(thaw) || answer.Kind != supervisor.KindDone {
+			continue
+		}
+		s.thaw.Store(0)
+		if err := s.machine.appendTo(thawedFile, supervisor.KindThaw); err != nil {
+			return err
+		}
+	}
 }
 
 // flooded passes the guest's state line, then reads as one line that never ends.

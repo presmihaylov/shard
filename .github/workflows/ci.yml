@@ -36,6 +36,10 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      # A file behind the integration tag exists only under it, so the plain vet never sees one break.
+      - name: vet the integration tests
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet -tags integration ./...
+
       # A firecracker snapshot shares blocks or is refused, and the runner's ext4 shares none: the tests get an xfs root.
       - name: reflink root for the snapshot tests
         run: |

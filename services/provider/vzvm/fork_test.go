@@ -205,14 +205,18 @@ func TestAForkWhoseSourceTakesNoStreamAgainSaysItIsFrozen(t *testing.T) {
 func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
 	h, spec, _, pid := severedFork(t)
 
+	mark(t, spec.StateDir, thawedFile)
 	unmark(t, spec.StateDir, holdDialsFile)
-	want := []string{supervisor.KindFreeze, supervisor.KindThaw}
+	// The order file has the thaw as the host sent it, and the guest refuses a command until it answers, so the exec waits for the answer.
 	deadline := time.Now().Add(10 * time.Second)
-	for got := lines(t, spec.StateDir, orderFile); !slices.Equal(got, want); got = lines(t, spec.StateDir, orderFile) {
+	for len(lines(t, spec.StateDir, thawedFile)) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the guest of the source read %q, want the fork's freeze and a thaw on a later stream", got)
+			t.Fatalf("the guest of the source answered no thaw within 10s, and read %q", lines(t, spec.StateDir, orderFile))
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if got, want := lines(t, spec.StateDir, orderFile), []string{supervisor.KindFreeze, supervisor.KindThaw}; !slices.Equal(got, want) {
+		t.Fatalf("the guest of the source read %q, want the fork's freeze and a thaw on a later stream", got)
 	}
 	requireRunning(t, h.provider, spec.ID, pid, "the thaw")
 	execOK(t, h.provider, spec.ID, "the thaw")
