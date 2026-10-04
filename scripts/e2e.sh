@@ -615,8 +615,13 @@ front_curl() {
 
 # shard_front drives a verb through socat and the front rather than over the socket, which is what --remote is for.
 shard_front() {
-	"${PREFIX}/shard" --remote "https://127.0.0.1:${FRONT_TLS_PORT}" --token-file "${SERVE_TOKEN}" \
-		--ca-file "${SERVE_DIR}/serve.crt" "$@"
+	SHARD_API_KEY="${TOKEN}" SHARD_CA_FILE="${SERVE_DIR}/serve.crt" \
+		"${PREFIX}/shard" --remote "https://127.0.0.1:${FRONT_TLS_PORT}" "$@"
+}
+
+# shard_plain drives a verb straight to the front over plain http, with no proxy; an exported SHARD_CA_FILE would refuse it.
+shard_plain() {
+	SHARD_API_KEY="${TOKEN}" SHARD_CA_FILE="" "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" "$@"
 }
 
 # recorded_sandboxes prints the id of every sandbox the root still records, whether a step tracked it or not.
@@ -1131,7 +1136,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
 	fail "openssl did not make a self-signed pair"
 openssl rand -hex 32 >"${SIGNING_KEY}"
 chmod 0600 "${SIGNING_KEY}"
-# The front verifies a JWT; tokens mint writes the JSON record to SERVE_TOKEN, read whole by --token-file.
+# The front verifies a JWT; tokens mint writes the JSON record to SERVE_TOKEN, whose token field is SHARD_API_KEY.
 "${PREFIX}/shard" tokens mint --name shard-e2e --signing-key-file "${SIGNING_KEY}" >"${SERVE_TOKEN}" ||
 	fail "tokens mint did not print a token"
 chmod 0600 "${SERVE_TOKEN}"
@@ -1146,7 +1151,7 @@ say "socat terminates TLS on 127.0.0.1:${FRONT_TLS_PORT} in front of it"
 curl -sSk "https://127.0.0.1:${SERVE_PORT}/v0/sandboxes" >/dev/null 2>&1 && fail "the front answered a TLS handshake"
 say "the front itself speaks plain http, and no TLS"
 
-# The bearer header and the log check need the bare jwt, so pull it from the record with jq.
+# The bearer header, SHARD_API_KEY and the log check need the bare jwt, so pull it from the record with jq.
 TOKEN=$(jq -r .token "${SERVE_TOKEN}")
 OVER_TCP=$(front_curl "${SERVE_PORT}" "${TOKEN}" /v0/sandboxes)
 OVER_SOCKET=$(curl -sS --unix-socket "${SHARD_ROOT}/shard.sock" http://shard/v0/sandboxes)
@@ -1205,6 +1210,17 @@ GOT=$(shard_front exec "${ID}" /bin/cat /tmp/marker) || fail "exec over the fron
 expect "${GOT}" "shard-e2e" "exec over the front read what the first exec wrote"
 GOT=$(printf 'over-tls\n' | shard_front exec -i "${ID}" /bin/cat) || fail "exec with stdin over the front failed"
 expect "${GOT}" "over-tls" "the websocket of an exec passes through the front both ways"
+
+step "drive a verb and an exec over plain http, straight to the front"
+PLAIN_ERR="${SERVE_DIR}/plain.err"
+GOT=$(shard_plain list --all --format json 2>"${PLAIN_ERR}") || fail "list over plain http failed: $(cat "${PLAIN_ERR}")"
+jq -e --arg id "${ID}" 'any(.[]; .id == $id)' <<<"${GOT}" >/dev/null ||
+	fail "list --format json over plain http printed no clean JSON that holds the sandbox: ${GOT}"
+expect "$(cat "${PLAIN_ERR}")" \
+	"Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network." \
+	"the http warning goes to stderr, once, and stdout stays JSON"
+GOT=$(printf 'over-http\n' | shard_plain exec -i "${ID}" /bin/cat 2>/dev/null) || fail "exec with stdin over plain http failed"
+expect "${GOT}" "over-http" "the websocket of an exec passes over plain http both ways"
 
 step "a read-only token reads through the front but is refused a write"
 # The front maps the request line to a capability and refuses a write the token's scopes do not reach.

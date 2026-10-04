@@ -882,11 +882,10 @@ sees the signing key. `--name` is the subject the front logs. `--duration` defau
 mints a token with no `exp` that never expires. `--scopes` is a comma-separated list of the scopes
 the token carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scopes` for
 any token except an operator's. The verb refuses a scope that is neither `*` nor one of the eight
-capabilities above. The error lists the capabilities, and nothing is recorded. The client's
-`--token-file` takes this object whole or the bare token, so `shard tokens mint ... > ci.token`
-needs no extra step. `SHARD_API_KEY` takes the bare token, the `token` field, as `jq -r .token
-ci.token` prints it. When an operator replaces the signing key, every token it signed stops
-verifying at once.
+capabilities above. The error lists the capabilities, and nothing is recorded. A client takes the
+`token` field in `SHARD_API_KEY`:
+`export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r .token)`. When an operator replaces the
+signing key, every token it signed stops verifying at once.
 
 The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
 restart ends no connection that is already spliced.
@@ -954,39 +953,36 @@ export SHARD_API_KEY=<the token field of a shard tokens mint record>
 shard list
 ```
 
-`SHARD_API_KEY` is the raw credential, the `token` field of the record that `shard tokens mint`
-prints. The client sends it as the same bearer token a token file holds, so its scopes, its expiry
-and its revocation apply unchanged. The client trims the whitespace around it, and an empty or blank
-value is unset. It refuses only a value with a control character inside, such as a newline, because
-no HTTP header carries one, and that error names `SHARD_API_KEY`. A wrong, revoked or expired key
-reaches the front, which answers `401` with "no valid bearer token". No error or log line on either
-side holds a token.
+`SHARD_API_KEY` is the one credential, the `token` field of the record that `shard tokens mint`
+prints. The client sends it as the bearer token, so its scopes, its expiry and its revocation apply
+unchanged. The client trims the whitespace around it, and an empty or blank value is unset. With a
+remote and no key, the client refuses before it dials, and the error names `SHARD_API_KEY`. It
+refuses a value with a control character inside, such as a newline, because no HTTP header carries
+one. A wrong, revoked or expired key reaches the front, which answers `401` with "no valid bearer
+token". No error or log line on either side holds a token.
 
-The client takes the token from the first of three sources that is set:
-
-1. `--token-file <path>`, a token file named on the command line.
-2. `SHARD_API_KEY`, the raw token.
-3. `SHARD_TOKEN_FILE`, a token file named in the environment.
-
-A token file is the alternative. It holds the mint record whole or the bare token, and the client
-refuses one that everyone on the host can read:
+`--remote`, or `SHARD_REMOTE`, is an `http` or an `https` url, and `--remote` wins when both are
+set. An `https` url dials TLS, on port 443 when it names no port, and verifies the certificate. Use
+it for anything that crosses a public network. Without `SHARD_CA_FILE` the host's own trust store
+decides. A private CA or a self-signed certificate needs `SHARD_CA_FILE`, the certificate that
+signed the proxy's own:
 
 ```
-shard --remote https://shard.example.com --token-file ~/.shard/token --ca-file ~/.shard/ca.pem list
-SHARD_REMOTE=https://shard.example.com SHARD_TOKEN_FILE=~/.shard/token shard list
+SHARD_CA_FILE=./company-ca.pem shard --remote https://shard.internal list
 ```
 
-An empty `SHARD_TOKEN_FILE` is unset too. With `--remote` and none of the three, the client refuses
-before it dials, and the error names all three in that order. A Go program gets the same order from
-`client.NewRemoteFromEnv` in `services/client`, which reads `SHARD_REMOTE`, `SHARD_API_KEY`,
-`SHARD_TOKEN_FILE` and `SHARD_CA_FILE`. `client.NewRemote` still takes a host and a raw token.
+An `http` url dials plain TCP, on port 80 when it names no port, and nothing encrypts the bytes, the
+bearer token among them. It suits `shard serve` on localhost, which speaks plain HTTP itself, or a
+front reached through an encrypted VPN. Every command over it prints one warning to stderr, never
+to stdout, so `--format json` stays clean. `SHARD_CA_FILE` with an `http` url is refused before the
+client dials, and the error names both.
 
-`--remote` and `--ca-file` can also come from `SHARD_REMOTE` and `SHARD_CA_FILE`. `--remote` must
-be the `https` url of the proxy, and its port defaults to 443. `--ca-file` names the certificate that
-signed the proxy's own. A private CA or a self-signed certificate needs it. Without it, the host's own trust
-store decides. The switch is one transport change inside `services/client`, and nothing else
-changes. The typed calls, the messages and the errors stay the same. It is also the one way a client
-off Linux drives sandboxes, because the daemon itself runs on Linux alone.
+A Go program gets the same rules from `client.NewRemoteFromEnv` in `services/client`, which reads
+`SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`. `client.NewRemote` takes a host, a raw token
+and the CA bytes. The warning is the CLI's own. The switch is one transport change inside
+`services/client`, and nothing else changes. The typed calls, the messages and the errors stay the
+same. It is also the one way a client off Linux drives sandboxes, because the daemon itself runs on
+Linux alone.
 
 ### A proxy in front
 
@@ -1006,7 +1002,7 @@ shard.example.com {
 
 Caddy passes a WebSocket upgrade through by itself, and `flush_interval -1` sends each chunk of a
 `?follow=true` body on at once. On a host with no public name, `tls internal` inside the site block
-gives Caddy a CA of its own. The client then names that CA's root with `--ca-file`. A Debian
+gives Caddy a CA of its own. The client then names that CA's root in `SHARD_CA_FILE`. A Debian
 package keeps it at `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
 `docs/https-devbox.md` runs this setup on a devbox, for the SDK tests.
 
