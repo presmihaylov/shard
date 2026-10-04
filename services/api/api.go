@@ -452,14 +452,14 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 // describeEgressLog names the three answers of sandboxEgressLog: the decisions, a line each with follow, or a message each over a WebSocket.
 func describeEgressLog(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = &huma.Response{
-		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops.",
+		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed.",
 		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older decisions the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
 		Content: map[string]*huma.MediaType{
 			"application/json":     {Schema: schemaOf[[]egress.Record](registry)},
 			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
 		},
 	}
-	op.Responses["101"] = upgrade("A WebSocket follow: one egress decision per text message, until the sandbox stops.", nil)
+	op.Responses["101"] = upgrade("A WebSocket follow: one egress decision per text message, until the sandbox stops, fails or is removed.", nil)
 }
 
 type grantInput struct {

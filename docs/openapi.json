@@ -2085,7 +2085,7 @@
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow: one egress decision per text message, until the sandbox stops."
+            "description": "A WebSocket follow: one egress decision per text message, until the sandbox stops, fails or is removed."
           },
           "200": {
             "content": {
@@ -2103,7 +2103,7 @@
                 }
               }
             },
-            "description": "The egress decisions, oldest first; with follow one decision per line until the sandbox stops.",
+            "description": "The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed.",
             "headers": {
               "Shard-Egress-Cut": {
                 "description": "The older decisions the read left out; absent when it left out none.",

@@ -609,10 +609,12 @@ and `image prune` leaves it.
   the route left out, and is absent when it left out none. Errors: 404. `shard policy logs` prints
   one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake answers in text messages, one
-  JSON record each, live. A stopped or removed sandbox ends the stream with close 1000 and the reason
-  as the close text. A failure of the follow is close 1011 with the error. Without the handshake the
+  JSON record each, live. A stopped, failed or removed sandbox ends the stream with close 1000 and
+  the reason as the close text. A failed sandbox says `the sandbox failed`. A read failure ends the
+  follow with close 1011 and the public error. Without the handshake the
   route answers 200 with chunked `application/x-ndjson`, one record per line as it lands, and the
-  body ends on the same stop or remove. Either way, a 404 comes before anything is on the wire.
+  body ends when the sandbox stops, fails or is removed. A new follow on a failed sandbox answers
+  409 `sandbox_failed` before the stream opens. Either way, a 404 comes before anything is on the wire.
 - `PUT /v0/sandboxes/{id}/files?path=&mode=&user=&parents=` streams the body into the running guest,
   and answers 204 once the body sits at `path` as one file. The guest writes to a temp name beside
   the file, syncs it and renames it over the old one, so a put that dies midway leaves the old file
