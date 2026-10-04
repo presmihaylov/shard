@@ -5,7 +5,7 @@ import re
 
 from useshards import ConflictError, NotFoundError, Sandbox, UnsupportedError
 
-from .._shared import equal, matches, not_equal, ok, skip
+from .._shared import equal, matches, named, not_equal, ok, skip
 from .harness import Check, Context, rejects
 from .mode import Call
 
@@ -40,7 +40,7 @@ def inspect_get_list(ctx: Context) -> None:
     equal(info.state, "running")
     ok(info.image.endswith(ctx.image), f"image {info.image}")
     equal((ctx.shard.get(sandbox.id)).id, sandbox.id)
-    equal((ctx.shard.get(sandbox.name)).id, sandbox.id)
+    equal((ctx.shard.get(named(sandbox.name, "the sandbox"))).id, sandbox.id)
     ok(any(each.id == sandbox.id for each in ctx.shard.list()), "list holds the sandbox")
     rejects(NotFoundError, lambda: ctx.shard.get(f"{ctx.prefix}-no-such-sandbox"))
 

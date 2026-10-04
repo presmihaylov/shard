@@ -1,4 +1,4 @@
-"""A daemon that speaks just enough HTTP and WebSocket for the command layer, on a real socket."""
+"""A daemon that speaks just enough HTTP and WebSocket for the client, on a real socket."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from useshards._frames import OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, accept_for
+from useshards._frames import OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT, accept_for
 from useshards._wire import EXIT, FAILURE, STDIN, STDIN_CLOSE
 
 RECORD: dict[str, Any] = {
@@ -37,6 +37,14 @@ class Peer:
 
     def send(self, stream: int, payload: bytes = b"") -> None:
         self.frame(OP_BINARY, bytes([stream]) + payload)
+
+    def text(self, record: dict[str, Any]) -> None:
+        self.frame(OP_TEXT, json.dumps(record).encode())
+
+    def close(self, code: int, reason: str = "") -> str:
+        """Close first, as the daemon does at the end of a follow, and read the client's answer."""
+        self.frame(OP_CLOSE, struct.pack("!H", code) + reason.encode())
+        return self.until_end()
 
     def frame(self, opcode: int, payload: bytes) -> None:
         n = len(payload)
@@ -94,6 +102,7 @@ class Peer:
 
 
 Session = Callable[[Peer], Any]
+Answer = tuple[int, Any]
 
 
 class Conn:
@@ -137,6 +146,8 @@ class FakeDaemon:
         self.create: tuple[int, dict[str, Any]] = (201, RECORD)
         self.record: tuple[int, dict[str, Any]] = (200, RECORD)
         self.requests: list[tuple[str, str, bytes]] = []
+        self.targets: list[str] = []
+        self.routes: dict[tuple[str, str], Answer | Callable[[], Answer | None]] = {}
         self.outcomes: list[Any] = []
         self.errors: list[BaseException] = []
         self._threads: list[threading.Thread] = []
@@ -176,8 +187,15 @@ class FakeDaemon:
         body = conn.need(int(headers.get("content-length", "0"))) if headers.get("content-length") else b""
         path = target.split("?", 1)[0]
         self.requests.append((method, path, body))
+        self.targets.append(target)
         if headers.get("upgrade") == "websocket":
             return self._attach(conn, headers["sec-websocket-key"])
+        route = self.routes.get((method, target)) or self.routes.get((method, path))
+        if route is not None:
+            answer = route() if callable(route) else route
+            if answer is not None:
+                _answer(conn, *answer)
+            return None
         if method == "POST" and path == "/v0/sandboxes/sb/exec":
             return _answer(conn, *self.create)
         if method == "GET" and path == "/v0/sandboxes/sb/exec/e1":
@@ -201,9 +219,12 @@ class FakeDaemon:
         self.outcomes.append(entry(Peer(conn)))
 
 
-def _answer(conn: Conn, status: int, body: dict[str, Any] | None) -> None:
-    data = b"" if body is None else json.dumps(body).encode()
-    kind = "" if body is None else "Content-Type: application/json\r\n"
+def _answer(conn: Conn, status: int, body: Any) -> None:
+    data, kind = b"", ""
+    if isinstance(body, bytes):
+        data, kind = body, "Content-Type: text/plain\r\n"
+    if body is not None and not isinstance(body, bytes):
+        data, kind = json.dumps(body).encode(), "Content-Type: application/json\r\n"
     conn.sock.sendall(
         f"HTTP/1.1 {status} X\r\n{kind}Content-Length: {len(data)}\r\nConnection: close\r\n\r\n".encode() + data
     )

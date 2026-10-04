@@ -10,7 +10,7 @@ from typing import Any
 import attrs
 import httpx
 
-from ._types import TerminalSize
+from ._types import Restart, TerminalSize
 from .errors import APIError, CommandNotStartedError, ProtocolError, ShardConnectionError, failure_error
 
 # The stream a command message carries in its first byte: the client sends stdin and stdin closed, the daemon the rest.
@@ -50,20 +50,73 @@ def exec_body(
     stdin: bool,
     tty: bool | TerminalSize,
 ) -> dict[str, Any]:
-    """The body of a command start. A string runs under /bin/sh -c, a sequence as the argv itself."""
-    argv = ["/bin/sh", "-c", command] if isinstance(command, str) else list(command)
-    if not argv:
-        raise ValueError("command must name a program")
-    body: dict[str, Any] = {"command": argv, "stdin": stdin, "tty": tty is not False, "attach": True}
-    if env:
-        body["env"] = [f"{key}={value}" for key, value in env.items()]
-    if workdir:
-        body["workdir"] = workdir
-    if user:
-        body["user"] = user
+    """The body of a command start."""
+    body: dict[str, Any] = {"command": argv(command), "stdin": stdin, "tty": tty is not False, "attach": True}
+    body.update(_process(env, workdir, user))
     if isinstance(tty, TerminalSize):
         body["size"] = {"rows": tty.rows, "cols": tty.cols}
     return body
+
+
+def create_body(
+    image: str | None,
+    command: str | Sequence[str] | None,
+    *,
+    snapshot: str | None,
+    name: str | None,
+    env: Mapping[str, str] | None,
+    workdir: str | None,
+    user: str | None,
+    secrets: Sequence[str] | None,
+    policy: str | None,
+    memory_mib: int | None,
+    vcpus: int | None,
+    disk_mib: int | None,
+    restart: Restart | None,
+) -> dict[str, Any]:
+    """The body of a create. A None memory takes the snapshot's bound or none, a None vcpus or disk the default."""
+    if (image is None) == (snapshot is None):
+        raise ValueError("a sandbox is made from an image or a snapshot, exactly one of them")
+    resources: dict[str, Any] = {"vcpus": vcpus or 0, "disk_mib": disk_mib or 0}
+    if memory_mib is not None:
+        resources["memory_mib"] = memory_mib
+    body: dict[str, Any] = {"resources": resources, **_process(env, workdir, user)}
+    if image is not None:
+        body["image"] = image
+    if snapshot is not None:
+        body["snapshot"] = snapshot
+    if name:
+        body["name"] = name
+    if command is not None:
+        body["command"] = argv(command)
+    if secrets:
+        body["secrets"] = list(secrets)
+    if policy:
+        body["policy"] = policy
+    if restart is not None:
+        body["restart"] = {"policy": restart.policy, "backoff": restart.backoff}
+        if restart.retries:
+            body["restart"]["retries"] = restart.retries
+    return body
+
+
+def argv(command: str | Sequence[str]) -> list[str]:
+    """A string runs under /bin/sh -c, a sequence as the argv itself."""
+    args = ["/bin/sh", "-c", command] if isinstance(command, str) else list(command)
+    if not args:
+        raise ValueError("command must name a program")
+    return args
+
+
+def _process(env: Mapping[str, str] | None, workdir: str | None, user: str | None) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if env:
+        fields["env"] = [f"{key}={value}" for key, value in env.items()]
+    if workdir:
+        fields["workdir"] = workdir
+    if user:
+        fields["user"] = user
+    return fields
 
 
 @attrs.frozen

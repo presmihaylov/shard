@@ -4,7 +4,7 @@ import re
 
 from useshards import AsyncSandbox, ConflictError, NotFoundError, UnsupportedError
 
-from .._shared import equal, matches, not_equal, ok, skip
+from .._shared import equal, matches, named, not_equal, ok, skip
 from .harness import AsyncContext, Check, rejects
 from .mode import Call
 
@@ -39,7 +39,7 @@ async def inspect_get_list(ctx: AsyncContext) -> None:
     equal(info.state, "running")
     ok(info.image.endswith(ctx.image), f"image {info.image}")
     equal((await ctx.shard.get(sandbox.id)).id, sandbox.id)
-    equal((await ctx.shard.get(sandbox.name)).id, sandbox.id)
+    equal((await ctx.shard.get(named(sandbox.name, "the sandbox"))).id, sandbox.id)
     ok(any(each.id == sandbox.id for each in await ctx.shard.list()), "list holds the sandbox")
     await rejects(NotFoundError, lambda: ctx.shard.get(f"{ctx.prefix}-no-such-sandbox"))
 

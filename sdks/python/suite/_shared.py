@@ -57,6 +57,13 @@ def ok(condition: bool, what: str) -> None:
         raise AssertionError(what)
 
 
+def named(name: str | None, what: str) -> str:
+    """The name the suite gave, which the record must hold."""
+    if name is None:
+        raise AssertionError(f"{what} came back with no name")
+    return name
+
+
 def matches(text: str, pattern: str, what: str = "") -> None:
     if re.search(pattern, text) is None:
         raise AssertionError(f"{what + ': ' if what else ''}{_shown(text)} does not match {pattern!r}")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from useshards import ConflictError, NotFoundError
 
-from .._shared import equal, ok
+from .._shared import equal, named, ok
 from .harness import AsyncContext, Check, rejects
 
 
@@ -15,10 +15,11 @@ async def create_list_inspect(ctx: AsyncContext) -> None:
     source = await ctx.snapshot_source()
     snapshot = await ctx.snapshot(source)
     equal(snapshot.source, source.id)
-    ok(snapshot.name.startswith(ctx.prefix), f"snapshot name {snapshot.name}")
+    name = named(snapshot.name, "the snapshot")
+    ok(name.startswith(ctx.prefix), f"snapshot name {name}")
     ok(any(each.id == snapshot.id for each in await ctx.shard.snapshots.list()), "list holds the snapshot")
     equal((await ctx.shard.snapshots.inspect(snapshot.id)).name, snapshot.name)
-    equal((await ctx.shard.snapshots.inspect(snapshot.name)).id, snapshot.id)
+    equal((await ctx.shard.snapshots.inspect(name)).id, snapshot.id)
 
 
 async def create_from(ctx: AsyncContext) -> None:

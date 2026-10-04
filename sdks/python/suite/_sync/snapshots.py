@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from useshards import ConflictError, NotFoundError
 
-from .._shared import equal, ok
+from .._shared import equal, named, ok
 from .harness import Check, Context, rejects
 
 
@@ -16,10 +16,11 @@ def create_list_inspect(ctx: Context) -> None:
     source = ctx.snapshot_source()
     snapshot = ctx.snapshot(source)
     equal(snapshot.source, source.id)
-    ok(snapshot.name.startswith(ctx.prefix), f"snapshot name {snapshot.name}")
+    name = named(snapshot.name, "the snapshot")
+    ok(name.startswith(ctx.prefix), f"snapshot name {name}")
     ok(any(each.id == snapshot.id for each in ctx.shard.snapshots.list()), "list holds the snapshot")
     equal((ctx.shard.snapshots.inspect(snapshot.id)).name, snapshot.name)
-    equal((ctx.shard.snapshots.inspect(snapshot.name)).id, snapshot.id)
+    equal((ctx.shard.snapshots.inspect(name)).id, snapshot.id)
 
 
 def create_from(ctx: Context) -> None:
