@@ -134,12 +134,14 @@ func New(cfg Config) *Service {
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	Image   string   `json:"image"`
-	Name    string   `json:"name,omitempty"`
-	Command []string `json:"command,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	WorkDir string   `json:"workdir,omitempty"`
-	User    string   `json:"user,omitempty"`
+	// Image and Snapshot are exclusive, and a create names one of them.
+	Image    string   `json:"image,omitempty"`
+	Snapshot string   `json:"snapshot,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Command  []string `json:"command,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	WorkDir  string   `json:"workdir,omitempty"`
+	User     string   `json:"user,omitempty"`
 	// Secrets is what the guest gets a placeholder for, each under its own name.
 	Secrets []string `json:"secrets,omitempty"`
 	// Policy is what the host enforces for the sandbox.
@@ -188,7 +190,7 @@ func FailedGuard(id string, sb models.Sandbox) error {
 		return nil
 	}
 
-	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard rm %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
+	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
 }
 
 // SubstrateTimeoutError is our own deadline on a Provider.Status the substrate never answered, so a verb
@@ -1041,7 +1043,7 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool) error {
 	}
 
 	// A pending sandbox runs nothing yet, so rm ends its pull rather than wait for it to come up.
-	s.cancelPull(id, "shard rm")
+	s.cancelPull(id, "shard remove")
 
 	unlock, err := s.lock(ctx, id)
 	if err != nil {
@@ -1085,7 +1087,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 		return s.refuseOrStop(ctx, id, state, force)
 	}
 
-	status, err := s.status(ctx, id, "rm")
+	status, err := s.status(ctx, id, "remove")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
 		if err := s.reclaim(ctx, id, err); err != nil {

@@ -65,17 +65,17 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
-func TestImageLsOnAnEmptyRoot(t *testing.T) {
+func TestImageListOnAnEmptyRoot(t *testing.T) {
 	var out bytes.Buffer
 
 	app, _ := newStoreApp(t, &out)
 
-	if err := app.Run(t.Context(), []string{"image", "ls"}); err != nil {
-		t.Fatalf("image ls: %v", err)
+	if err := app.Run(t.Context(), []string{"image", "list"}); err != nil {
+		t.Fatalf("image list: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "REFERENCE") {
-		t.Errorf("image ls printed %q, want the header", out.String())
+		t.Errorf("image list printed %q, want the header", out.String())
 	}
 }
 
@@ -92,15 +92,19 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 		{"resume", "one", "two"},
 		{"fork"},
 		{"fork", "one", "two"},
-		{"clone"},
-		{"clone", "one", "two"},
+		{"snapshot"},
+		{"snapshot", "create"},
+		{"snapshot", "create", "one", "two"},
+		{"snapshot", "list", "extra"},
+		{"snapshot", "inspect"},
+		{"snapshot", "remove", "one", "two"},
 		{"cp"},
 		{"cp", "one", "two"},
 		{"image"},
-		{"image", "rm"},
+		{"image", "remove"},
 		{"image", "prune", "extra"},
 		{"image", "grow"},
-		{"image", "ls", "extra"},
+		{"image", "list", "extra"},
 	}
 
 	for _, args := range commands {
@@ -118,8 +122,8 @@ func TestRootFlagPrecedesTheCommand(t *testing.T) {
 	_, root := newStoreApp(t, &out)
 
 	// The daemon answers on the socket under that root, and the default root has none.
-	if err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "ls"}); err != nil {
-		t.Fatalf("image ls: %v", err)
+	if err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "list"}); err != nil {
+		t.Fatalf("image list: %v", err)
 	}
 }
 
@@ -138,7 +142,7 @@ func TestRootMustBeAbsolute(t *testing.T) {
 	for _, root := range []string{"", "images", "./images"} {
 		var out bytes.Buffer
 
-		err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "ls"})
+		err := (App{Version: "test", Out: &out}).Run(t.Context(), []string{"--root", root, "image", "list"})
 		if err == nil || !strings.Contains(err.Error(), "absolute") {
 			t.Errorf("--root %q: got %v, want a rejected relative root", root, err)
 		}
@@ -148,8 +152,8 @@ func TestRootMustBeAbsolute(t *testing.T) {
 // The three daemon flags once came before the verb; there they are refused, by name, with the command that takes them.
 func TestDaemonFlagsBeforeTheVerbNameWhereTheyGo(t *testing.T) {
 	cases := map[string][]string{
-		"--timeout is a shard daemon flag: shard daemon --timeout 5m":                            {"--timeout", "5m", "image", "ls"},
-		"--insecure-registry is a shard daemon flag: shard daemon --insecure-registry r.example": {"--insecure-registry", "r.example", "ls"},
+		"--timeout is a shard daemon flag: shard daemon --timeout 5m":                            {"--timeout", "5m", "image", "list"},
+		"--insecure-registry is a shard daemon flag: shard daemon --insecure-registry r.example": {"--insecure-registry", "r.example", "list"},
 		"--provider is a shard daemon flag: shard daemon --provider gvisor":                      {"--provider", "gvisor", "daemon"},
 	}
 
@@ -181,11 +185,11 @@ func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 		`--memory needs a value: a whole size with a unit, such as 512MiB or 2GiB; only 0 goes without one`: {"create", "--memory"},
 		`invalid value "5" for --restart-backoff: want a duration such as 10s`:                              {"run", "--restart-backoff", "5", "alpine", "true"},
 		`invalid value "x" for --restart-retries: want a whole number`:                                      {"run", "--restart-retries", "x", "alpine", "true"},
-		`invalid value "maybe" for --all: want true or false`:                                               {"ls", "--all=maybe"},
+		`invalid value "maybe" for --all: want true or false`:                                               {"list", "--all=maybe"},
 		`--restart-backoff needs a value: a duration such as 10s`:                                           {"run", "--restart-backoff"},
 		`unknown flag --bogus; run shard create --help`:                                                     {"create", "--bogus", "alpine"},
 		`unknown flag -x; run shard pause --help`:                                                           {"pause", "-x"},
-		`unknown flag --bogus; run shard --help`:                                                            {"--bogus", "ls"},
+		`unknown flag --bogus; run shard --help`:                                                            {"--bogus", "list"},
 	}
 
 	for want, args := range cases {

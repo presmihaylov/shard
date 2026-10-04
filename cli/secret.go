@@ -157,12 +157,15 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 }
 
 func (a App) secretList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("secret ls", args)
+	rest, format, err := parseFormatArgs("secret list", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("secret ls takes no arguments, got %d", len(rest))
+		return fmt.Errorf("secret list takes no arguments, got %d", len(rest))
+	}
+	if err := formatLanded("secret list", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -194,7 +197,7 @@ func (a App) secretList(ctx context.Context, args []string) error {
 	return nil
 }
 
-// secretRemoveOptions is one parsed shard secret rm invocation.
+// secretRemoveOptions is one parsed shard secret remove invocation.
 type secretRemoveOptions struct {
 	name  string
 	force bool
@@ -221,7 +224,7 @@ func (a App) secretRemove(ctx context.Context, args []string) error {
 func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 	var opts secretRemoveOptions
 
-	flags := newFlags("secret rm")
+	flags := newFlags("secret remove")
 	flags.BoolVar(&opts.force, "force", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -230,10 +233,10 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 
 	rest := flags.Args()
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return secretRemoveOptions{}, errors.New("secret rm takes its flags before the name: shard secret rm --force <NAME>")
+		return secretRemoveOptions{}, errors.New("secret remove takes its flags before the name: shard secret remove --force <NAME>")
 	}
 	if len(rest) != 1 {
-		return secretRemoveOptions{}, fmt.Errorf("secret rm takes one name, got %d", len(rest))
+		return secretRemoveOptions{}, fmt.Errorf("secret remove takes one name, got %d", len(rest))
 	}
 
 	opts.name = rest[0]

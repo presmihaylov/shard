@@ -370,8 +370,8 @@ func TestCreateNamesLsWhenNoAddressIsFree(t *testing.T) {
 	l.net.allocateErr = network.ErrNoFreeAddress
 
 	_, err := svc.Create(t.Context(), alpine())
-	if !errors.Is(err, network.ErrNoFreeAddress) || !strings.Contains(err.Error(), "shard ls --all") {
-		t.Errorf("create failed with %v, want the pool's refusal naming shard ls --all", err)
+	if !errors.Is(err, network.ErrNoFreeAddress) || !strings.Contains(err.Error(), "shard list --all") {
+		t.Errorf("create failed with %v, want the pool's refusal naming shard list --all", err)
 	}
 }
 
@@ -899,8 +899,8 @@ func TestRemoveEndsTheCreateStillPulling(t *testing.T) {
 		t.Fatalf("rm: %v", err)
 	}
 
-	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard rm") {
-		t.Errorf("create = %v, want it cancelled by shard rm", err)
+	if err := <-created; err == nil || !strings.Contains(err.Error(), "cancelled by shard remove") {
+		t.Errorf("create = %v, want it cancelled by shard remove", err)
 	}
 	if !l.repo.deleted {
 		t.Error("rm left the record of the create it ended")

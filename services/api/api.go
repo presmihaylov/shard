@@ -32,7 +32,6 @@ type Lifecycle interface {
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
 	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
 	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error)
 	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
@@ -165,7 +164,6 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"POST", "/v0/sandboxes/{id}/pause"}, h.pauseSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/resume"}, h.resumeSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/fork"}, h.forkSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/clone"}, h.cloneSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/exec"}, h.createExec},
 		{Route{"GET", "/v0/sandboxes/{id}/exec"}, h.listExecs},
 		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}"}, h.getExec},
@@ -189,6 +187,10 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}"}, h.ungrantSecret},
 		{Route{"PUT", "/v0/sandboxes/{id}/policy"}, h.attachPolicy},
 		{Route{"DELETE", "/v0/sandboxes/{id}/policy"}, h.detachPolicy},
+		{Route{"POST", "/v0/snapshots"}, h.createSnapshot},
+		{Route{"GET", "/v0/snapshots"}, h.listSnapshots},
+		{Route{"GET", "/v0/snapshots/{ref}"}, h.getSnapshot},
+		{Route{"DELETE", "/v0/snapshots/{ref}"}, h.removeSnapshot},
 		{Route{"GET", "/v0/policies"}, h.listPolicies},
 		{Route{"GET", "/v0/policies/{name}"}, h.getPolicy},
 		{Route{"PUT", "/v0/policies/{name}"}, h.putPolicy},
@@ -435,6 +437,12 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Snapshot != "" {
+		h.writeError(w, &notImplementedError{what: "create --snapshot", ticket: snapshotsTicket})
+
+		return
+	}
+
 	if wait && streamed(r) {
 		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
@@ -619,15 +627,6 @@ func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
-	h.copySandbox(w, r, h.lifecycle.Fork)
-}
-
-func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
-	h.copySandbox(w, r, h.lifecycle.Clone)
-}
-
-// copySandbox is the body a fork and a clone share: both name the new sandbox and answer its record.
-func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
 	var req sandbox.CopyRequest
 	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
@@ -635,7 +634,7 @@ func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(
 		return
 	}
 
-	sb, err := verb(r.Context(), r.PathValue("id"), req)
+	sb, err := h.lifecycle.Fork(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -660,8 +659,11 @@ func classify(err error) (int, models.Code) {
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
+	var notImplemented *notImplementedError
 
 	switch {
+	case errors.As(err, &notImplemented):
+		return http.StatusNotImplemented, models.CodeNotImplemented
 	case errors.As(err, &scope):
 		return http.StatusForbidden, models.CodeForbidden
 	case errors.As(err, &tooLarge):

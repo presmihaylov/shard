@@ -21,6 +21,9 @@ func (a App) create(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if req.Snapshot != "" {
+		return notImplemented("create --snapshot")
+	}
 
 	c, err := a.client()
 	if err != nil {
@@ -54,6 +57,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 
 	flags := newFlags("create")
 	sandboxFlags(flags, &req)
+	flags.StringVar(&req.Snapshot, "snapshot", "", "")
 	var refused error
 	runFlags(flags, &refused)
 
@@ -68,11 +72,17 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	}
 
 	rest := flags.Args()
-	if len(rest) == 0 {
-		return sandbox.CreateRequest{}, errors.New("create takes one image reference, got none")
-	}
 	if len(rest) > 1 {
 		return sandbox.CreateRequest{}, errors.New("create takes no command: shard run [flags] <image> <command> [args...]")
+	}
+	if req.Snapshot != "" && len(rest) == 1 {
+		return sandbox.CreateRequest{}, fmt.Errorf("create takes an image or --snapshot, never both: snapshot %s already names its image", req.Snapshot)
+	}
+	if req.Snapshot != "" {
+		return req, nil
+	}
+	if len(rest) == 0 {
+		return sandbox.CreateRequest{}, errors.New("create takes one image reference or --snapshot <id|name>, got neither")
 	}
 
 	req.Image = rest[0]

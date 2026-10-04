@@ -125,11 +125,9 @@ capture, never from an older snapshot. Each fork takes a capture of its own, so 
 nothing, and the capture is never a snapshot you can name. gVisor and Firecracker fork today
 (SHARD-457, SHARD-462).
 
-`shard clone` takes no memory image at all. It copies every file that a stopped or paused sandbox
-kept, `/tmp` included, and runs the entrypoint again from the beginning under a new id and address,
-as `shard start` would under the old ones. Two clones of one source share nothing, and the source
-stays as it was. Clone refuses a running source, because a running sandbox is still writing the layer
-that clone would copy.
+`shard snapshot create|list|inspect|remove` and `shard create --snapshot` hold their final shape
+and answer `not implemented yet` with exit 3 until SHARD-457a lands. [docs/cli.md](docs/cli.md) is
+the contract.
 
 Measured on the devbox, a 2 vCPU Hetzner Cloud box with no `/dev/kvm`, with an idle Alpine sandbox
 of about 40 MiB resident: pause takes 0.19 to 0.24 s, and resume 0.46 to 0.48 s.
@@ -142,12 +140,12 @@ trip that these do not, so they compare the mechanism rather than the product.
 
 ```
 printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN
-shard secret ls
-shard secret rm API_TOKEN
+shard secret list
+shard secret remove API_TOKEN
 ```
 
 A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
-of mode 0600. `secret ls` never prints the value, and `secret rm` refuses while a sandbox still holds
+of mode 0600. `secret list` never prints the value, and `secret remove` refuses while a sandbox still holds
 the placeholder. `docs/secrets.md` says what this protects against and what it does not.
 
 ## Egress
@@ -156,7 +154,7 @@ the placeholder. `docs/secrets.md` says what this protects against and what it d
 shard policy create --allow api.example.com --deny any locked
 shard run --policy locked python:3.12 python agent.py
 shard policy show locked
-shard policy rm locked
+shard policy remove locked
 ```
 
 A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names. Traffic
@@ -168,14 +166,14 @@ daemon's own userspace netstack enforces it and writes every drop to the sandbox
 ## Images
 
 ```
-shard pull python:3.12       pull an image and unpack its rootfs
-shard image ls               list the pulled images
-shard image rm python:3.12   remove one, with the rootfs no other tag needs
+shard pull python:3.12           pull an image and unpack its rootfs
+shard image list                 list the pulled images
+shard image remove python:3.12   remove one, with the rootfs no other tag needs
 ```
 
 Everything lands under `/var/lib/shard`, and `--root` overrides that. shard unpacks an image once
 per digest, into a read-only rootfs that every sandbox built from it layers over. shard never
-re-resolves a tag it already holds. To get a newer image for that tag, run `shard image rm` and pull
+re-resolves a tag it already holds. To get a newer image for that tag, run `shard image remove` and pull
 again.
 
 ## Development

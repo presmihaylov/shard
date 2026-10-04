@@ -58,6 +58,33 @@ func TestParseCreateRefusesACommand(t *testing.T) {
 	}
 }
 
+// A snapshot names its own image, so create takes one or the other, and a refusal of neither names both ways.
+func TestParseCreateTakesAnImageOrASnapshot(t *testing.T) {
+	req, err := parseCreate([]string{"--snapshot", "web-base", "--memory", "512MiB"})
+	if err != nil {
+		t.Fatalf("parseCreate --snapshot: %v", err)
+	}
+	if req.Snapshot != "web-base" || req.Image != "" {
+		t.Errorf("parseCreate --snapshot = %+v, want the snapshot and no image", req)
+	}
+
+	for args, want := range map[string]string{
+		"--snapshot web-base alpine:3.20": "create takes an image or --snapshot, never both: snapshot web-base already names its image",
+		"":                                "create takes one image reference or --snapshot <id|name>, got neither",
+	} {
+		if _, err := parseCreate(strings.Fields(args)); err == nil || err.Error() != want {
+			t.Errorf("parseCreate(%q) = %v, want %q", args, err, want)
+		}
+	}
+}
+
+// run starts an app over an image, so --snapshot is create's alone.
+func TestParseRunRefusesASnapshot(t *testing.T) {
+	if _, err := parseRun([]string{"--snapshot", "web-base", "alpine:3.20", "sleep", "600"}); err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Errorf("parseRun --snapshot = %v, want a refusal of the flag", err)
+	}
+}
+
 func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",

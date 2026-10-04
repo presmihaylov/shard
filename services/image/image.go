@@ -193,7 +193,7 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 }
 
 // cached answers with the image the store already holds unpacked. A tag we hold is not re-resolved:
-// shard image rm is how you ask for the newer one.
+// shard image remove is how you ask for the newer one.
 func (s *Service) cached(ref string) (Image, bool, error) {
 	held, err := s.store.Get(ref)
 	if errors.Is(err, registry.ErrNotCached) {
@@ -287,7 +287,7 @@ func (s *Service) Remove(ctx context.Context, ref string, free func() error) err
 		return removed
 	}
 
-	// The staged trees go after the removal lock, so a big image rm never stalls a cached create.
+	// The staged trees go after the removal lock, so a big image remove never stalls a cached create.
 	if err := s.sweepStaging(); err != nil {
 		return errors.Join(removed, fmt.Errorf("%w: %w", ErrNotReclaimed, err))
 	}

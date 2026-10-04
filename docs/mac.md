@@ -97,7 +97,7 @@ sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/sha
 sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
 ```
 
-`launchctl print system/shard.daemon` shows it running, and `shard ls` answers in the same terminal.
+`launchctl print system/shard.daemon` shows it running, and `shard list` answers in the same terminal.
 Stop any daemon that runs in a terminal first, because two daemons on one root refuse each other over
 `daemon.lock`. To remove it:
 
@@ -260,7 +260,7 @@ export SHARD_REMOTE=https://localhost:8443
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
 shard run -d alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>
-shard ls
+shard list
 ```
 
 The client refuses a token file that everyone can read, which is why the `umask` is there. A script

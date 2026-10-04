@@ -23,5 +23,6 @@ const (
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
 	CodeSubstrateTimeout  Code = "substrate_timeout"
+	CodeNotImplemented    Code = "not_implemented"
 	CodeInternal          Code = "internal"
 )

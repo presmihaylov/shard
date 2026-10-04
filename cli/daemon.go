@@ -41,12 +41,15 @@ func (a App) daemon(ctx context.Context, args []string) error {
 
 // daemonStatus prints what the daemon on the socket says about itself, one field per line.
 func (a App) daemonStatus(ctx context.Context, args []string) error {
-	rest, err := parseArgs("daemon status", args)
+	rest, format, err := parseFormatArgs("daemon status", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("daemon status takes no argument, got %d", len(rest))
+	}
+	if err := formatLanded("daemon status", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()

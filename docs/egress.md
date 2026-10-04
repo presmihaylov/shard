@@ -3,7 +3,7 @@
 The host decides what a sandbox may reach, in netfilter, and the guest never does. A sandbox holds no
 rules of its own, because gVisor's netstack forgets its iptables across a checkpoint and restore, and
 whatever runs in the guest could rewrite them anyway. The host table is the policy of record. The
-host writes it again, in one transaction, on every create, start, resume, fork, clone and policy
+host writes it again, in one transaction, on every create, start, resume, fork and policy
 change.
 
 ## Without a policy
@@ -75,7 +75,7 @@ and never brokers it, so a secret sent on such a port leaves as the placeholder.
 `docs/secrets.md`.
 
 The proxy runs only in `shard daemon`, as its `proxy` task. Every verb goes over the daemon socket,
-so only the process that runs the proxy ever creates, starts, forks or clones a fronted sandbox. No
+so only the process that runs the proxy ever creates, starts or forks a fronted sandbox. No
 path can front a sandbox and leave the DNAT pointing at nothing.
 
 The proxy terminates TLS with its own CA. The CA is minted once per root under `${root}/proxy/`, with
@@ -107,12 +107,12 @@ The proxy also counts connections by source and refuses any past 1024, with a da
 names the cap.
 
 The rules for a fronted sandbox follow its record, as its chain does. A stopped sandbox keeps them,
-`rm` removes them, and `start` writes them again.
+`remove` removes them, and `start` writes them again.
 
-`shard policy ls` lists the names. `shard policy rm` refuses while a sandbox record names the policy,
+`shard policy list` lists the names. `shard policy remove` refuses while a sandbox record names the policy,
 so remove the sandbox first. `shard policy show` prints `holders`, the sandboxes whose record names
-the policy, and omits the field when no record does. `shard ls` prints a `POLICY` column, which
-shows a dash when the sandbox holds no policy. Both read the records the way `rm` does, so they agree.
+the policy, and omits the field when no record does. `shard list` prints a `POLICY` column, which
+shows a dash when the sandbox holds no policy. Both read the records the way `remove` does, so they agree.
 
 A policy that does not exist drops everything, so no flag overrides the refusal. The same rule holds
 throughout: an error fails closed and never opens access.
@@ -199,7 +199,7 @@ own lookups changes nothing. As a result:
   daemon restart the sandbox gets the closed chain. Every other sandbox carries on, and so do the
   daemon start, the proxy and the resolver. The daemon log names each held sandbox and the name.
 - A held sandbox comes back on the first apply after the name resolves again. An apply is a create,
-  start, rm or policy edit of any sandbox, or a daemon restart. Nothing retries on a timer.
+  start, remove or policy edit of any sandbox, or a daemon restart. Nothing retries on a timer.
 - Policy create and update resolve every name first, even when no sandbox holds the policy, and
   refuse a name that does not resolve. A failed sandbox never runs, so the apply skips its policy.
 - When many hosts share a CDN address, the host table allows that address for all of them. For 80

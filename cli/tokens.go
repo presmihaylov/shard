@@ -20,6 +20,7 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 	scopes := flags.String("scopes", "", "")
+	format := addFormatFlag(flags, formatJSON)
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
@@ -37,6 +38,9 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	scopeList := parseScopes(*scopes)
 	if err := serve.CheckScopes(scopeList); err != nil {
 		return fmt.Errorf("tokens mint: %w", err)
+	}
+	if err := formatLanded("tokens mint", *format, formatJSON); err != nil {
+		return err
 	}
 
 	signingKey, keyPath, err := serve.SigningKey(a.Root, *signingKeyFile)
@@ -59,20 +63,24 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 
 // tokensList lists every token the ledger records, with the status a request would see now.
 func (a App) tokensList(_ context.Context, args []string) error {
-	flags := newFlags("tokens ls")
+	flags := newFlags("tokens list")
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
+	format := addFormatFlag(flags, formatTable)
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens ls takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
+	}
+	if err := formatLanded("tokens list", *format, formatTable); err != nil {
+		return err
 	}
 
 	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
 	if err != nil {
-		return fmt.Errorf("tokens ls: %w", err)
+		return fmt.Errorf("tokens list: %w", err)
 	}
 
 	infos, err := serve.ListTokens(path)
@@ -134,7 +142,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	return a.print(fmt.Sprintf("revoked token %s", id))
 }
 
-// ledgerPath is the ledger ls and revoke use: --tokens-file, else the one beside the signing key file. It creates nothing.
+// ledgerPath is the ledger list and revoke use: --tokens-file, else the one beside the signing key file. It creates nothing.
 func (a App) ledgerPath(signingKeyFile, tokensFile string) (string, error) {
 	keyPath, err := serve.SigningKeyPath(a.Root, signingKeyFile)
 	if err != nil {

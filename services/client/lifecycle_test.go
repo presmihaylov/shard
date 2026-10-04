@@ -153,32 +153,21 @@ func TestPauseAndResumePostToTheReference(t *testing.T) {
 	}
 }
 
-func TestForkAndClonePostTheNameAndDecodeTheNewRecord(t *testing.T) {
-	calls := map[string]func(*client.Client) (models.Sandbox, error){
-		"fork": func(c *client.Client) (models.Sandbox, error) {
-			return c.ForkSandbox(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-		},
-		"clone": func(c *client.Client) (models.Sandbox, error) {
-			return c.CloneSandbox(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-		},
+func TestForkPostsTheNameAndDecodesTheNewRecord(t *testing.T) {
+	var saw seen
+	cl := serve(t, shortRoot(t), echo(http.StatusCreated, `{"id":"sandbox2","name":"web-2","state":"running"}`, &saw))
+
+	sb, err := cl.ForkSandbox(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+	if err != nil || sb.ID != "sandbox2" || sb.Name != "web-2" {
+		t.Fatalf("fork = %+v, %v; want sandbox2 named web-2", sb, err)
 	}
-
-	for verb, call := range calls {
-		var saw seen
-		cl := serve(t, shortRoot(t), echo(http.StatusCreated, `{"id":"sandbox2","name":"web-2","state":"running"}`, &saw))
-
-		sb, err := call(cl)
-		if err != nil || sb.ID != "sandbox2" || sb.Name != "web-2" {
-			t.Fatalf("%s = %+v, %v; want sandbox2 named web-2", verb, sb, err)
-		}
-		if saw.uri != "/v0/sandboxes/web/"+verb || string(saw.body) != `{"name":"web-2"}` {
-			t.Errorf("the request was %s with %q, want the %s route with the name", saw.uri, saw.body, verb)
-		}
+	if saw.uri != "/v0/sandboxes/web/fork" || string(saw.body) != `{"name":"web-2"}` {
+		t.Errorf("the request was %s with %q, want the fork route with the name", saw.uri, saw.body)
 	}
 }
 
-// A snapshot takes as long as the memory and the disk it writes, so no per-request deadline bounds it.
-func TestTheSnapshotVerbsOutliveTheClientTimeout(t *testing.T) {
+// A checkpoint takes as long as the memory and the disk it writes, and a snapshot as long as its files, so no per-request deadline bounds either.
+func TestTheCopyVerbsOutliveTheClientTimeout(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		answer(http.StatusOK, `{"id":"sandbox1"}`)(w, r)
@@ -189,12 +178,16 @@ func TestTheSnapshotVerbsOutliveTheClientTimeout(t *testing.T) {
 		"pause":  func() error { _, err := c.PauseSandbox(t.Context(), "sandbox1"); return err },
 		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "sandbox1"); return err },
 		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "sandbox1", sandbox.CopyRequest{}); return err },
-		"clone":  func() error { _, err := c.CloneSandbox(t.Context(), "sandbox1", sandbox.CopyRequest{}); return err },
+		"snapshot create": func() error {
+			_, err := c.CreateSnapshot(t.Context(), sandbox.SnapshotRequest{Sandbox: "sandbox1"})
+			return err
+		},
+		"snapshot remove": func() error { return c.RemoveSnapshot(t.Context(), "base") },
 	}
 
 	for verb, call := range calls {
 		if err := call(); err != nil {
-			t.Errorf("%s = %v, want the record however long the snapshot took", verb, err)
+			t.Errorf("%s = %v, want the answer however long the copy took", verb, err)
 		}
 	}
 }
@@ -209,7 +202,6 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 		"pause":  func() error { _, err := c.PauseSandbox(t.Context(), "ghost"); return err },
 		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "ghost"); return err },
 		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "ghost", sandbox.CopyRequest{}); return err },
-		"clone":  func() error { _, err := c.CloneSandbox(t.Context(), "ghost", sandbox.CopyRequest{}); return err },
 	}
 
 	for verb, call := range calls {

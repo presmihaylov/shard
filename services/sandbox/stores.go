@@ -298,7 +298,7 @@ func (s *Stores) Images() ([]image.Image, error) {
 // RemoveImage frees the image and its rootfs. Warnings carry the blobs the removal could not reclaim.
 func (s *Stores) RemoveImage(ctx context.Context, ref string, force bool) ([]string, error) {
 	if ref == "" {
-		return nil, &RequestError{Err: errors.New("image rm takes one image reference")}
+		return nil, &RequestError{Err: errors.New("image remove takes one image reference")}
 	}
 
 	free := func() error { return s.unreferenced(ref) }

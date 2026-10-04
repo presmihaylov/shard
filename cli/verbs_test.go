@@ -67,63 +67,63 @@ func TestCreatePrintsTheDaemonsRefusalAsItCame(t *testing.T) {
 }
 
 // A refusal for the state is a 409, and the operator reads the state and the fix, not the status.
-func TestRmPrintsTheStateAndTheFix(t *testing.T) {
+func TestRemovePrintsTheStateAndTheFix(t *testing.T) {
 	var out bytes.Buffer
 
 	app, _ := newClientApp(t, &out, running())
 
-	err := app.Run(t.Context(), []string{"rm", "sandbox1"})
+	err := app.Run(t.Context(), []string{"remove", "sandbox1"})
 	if err == nil || err.Error() != "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force" {
-		t.Errorf("rm = %v, want the state and the fix", err)
+		t.Errorf("remove = %v, want the state and the fix", err)
 	}
 }
 
-func TestRmForceStopsThenRemovesThroughTheDaemon(t *testing.T) {
+func TestRemoveForceStopsThenRemovesThroughTheDaemon(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", "sandbox1"}); err != nil {
-		t.Fatalf("rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", "sandbox1"}); err != nil {
+		t.Fatalf("remove --force: %v", err)
 	}
 
 	provider := d.providerSvc.(*fakeLifecycleProvider)
 	if !provider.stopped || !provider.removed || provider.grace != models.StopGrace {
-		t.Errorf("rm --force stopped=%v removed=%v grace=%s, want both with the fixed %s", provider.stopped, provider.removed, provider.grace, models.StopGrace)
+		t.Errorf("remove --force stopped=%v removed=%v grace=%s, want both with the fixed %s", provider.stopped, provider.removed, provider.grace, models.StopGrace)
 	}
 	if got := strings.TrimSpace(out.String()); got != "sandbox1" {
-		t.Errorf("rm printed %q, want the bare id", out.String())
+		t.Errorf("remove printed %q, want the bare id", out.String())
 	}
 }
 
-// A plain rm of an id with no record fails like every other verb (SHARD-282).
-func TestRmOfAMissingSandboxFails(t *testing.T) {
+// A plain remove of an id with no record fails like every other verb (SHARD-282).
+func TestRemoveOfAMissingSandboxFails(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
-	err := app.Run(t.Context(), []string{"rm", "ghost"})
+	err := app.Run(t.Context(), []string{"remove", "ghost"})
 	if err == nil || err.Error() != "no sandbox ghost" {
-		t.Errorf("rm returned %v, want 'no sandbox ghost'", err)
+		t.Errorf("remove returned %v, want 'no sandbox ghost'", err)
 	}
 	if out.Len() != 0 {
-		t.Errorf("rm printed %q, want nothing", out.String())
+		t.Errorf("remove printed %q, want nothing", out.String())
 	}
 }
 
-// The record dies last, so an id with no record has nothing else left either: rm --force of it is a warning, as rm -f is.
-func TestRmForceOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
+// The record dies last, so an id with no record has nothing else left either: remove --force of it is a warning, as rm -f is.
+func TestRemoveForceOfAMissingSandboxWarnsAndExitsZero(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d := newClientApp(t, &out, running())
 	d.repoSvc.(*fakeLifecycleRepo).missing = true
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", "ghost"}); err != nil {
-		t.Fatalf("rm --force of an id that is already gone: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", "ghost"}); err != nil {
+		t.Fatalf("remove --force of an id that is already gone: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != "shard: warning: sandbox ghost does not exist, so there is nothing to remove" {
-		t.Errorf("rm --force printed %q, want the warning alone", out.String())
+		t.Errorf("remove --force printed %q, want the warning alone", out.String())
 	}
 }
 
@@ -186,23 +186,21 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	}
 }
 
-func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
-	// A fork captures a running source (SHARD-457), and a clone copies one that holds still.
-	for verb, source := range map[string]models.Sandbox{"fork": running(), "clone": paused()} {
-		var out bytes.Buffer
+func TestForkPrintsTheNewIDTheDaemonAnswered(t *testing.T) {
+	var out bytes.Buffer
 
-		app, d := newClientApp(t, &out, source)
+	source := running()
+	app, d := newClientApp(t, &out, source)
 
-		if err := app.Run(t.Context(), []string{verb, "--name", "web-2", "web"}); err != nil {
-			t.Fatalf("%s: %v", verb, err)
-		}
+	if err := app.Run(t.Context(), []string{"fork", "--name", "web-2", "sandbox1"}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
 
-		if got := strings.TrimSpace(out.String()); got != "sandbox2" {
-			t.Errorf("%s printed %q, want the new id", verb, got)
-		}
-		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
-			t.Errorf("%s created %+v, want the source's image under the new name", verb, got)
-		}
+	if got := strings.TrimSpace(out.String()); got != "sandbox2" {
+		t.Errorf("fork printed %q, want the new id", got)
+	}
+	if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
+		t.Errorf("fork created %+v, want the source's image under the new name", got)
 	}
 }
 
@@ -239,11 +237,10 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"create", "alpine:3.20"},
 		{"start", "sandbox1"},
 		{"stop", "sandbox1"},
-		{"rm", "sandbox1"},
+		{"remove", "sandbox1"},
 		{"pause", "sandbox1"},
 		{"resume", "sandbox1"},
 		{"fork", "sandbox1"},
-		{"clone", "sandbox1"},
 		{"cp", "sandbox1:/srv/app", "/tmp/app"},
 	} {
 		var out bytes.Buffer

@@ -61,9 +61,6 @@ FORK_LINK=""
 # The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
 RECONCILE_ID=""
 RECONCILE_LINK=""
-# The clones are space separated lists: two come off one stopped source, and both must go on teardown.
-CLONE_IDS=""
-CLONE_LINKS=""
 # The sandbox that is created unfronted and granted a secret later (SHARD-114).
 GRANT_ID=""
 GRANT_LINK=""
@@ -72,7 +69,7 @@ DIND_ID=""
 DIND_LINK=""
 # The sandboxes the stack-feature steps hold right now, so a step that fails mid-flight still gives them back.
 FEATURE_IDS=""
-# The daemon this run started, which ls, inspect and version speak to; the trap stops it by pid.
+# The daemon this run started, which list, inspect and version speak to; the trap stops it by pid.
 DAEMON_PID=""
 DAEMON_LOG=""
 # The TCP fronts and the socat in front of one, by pid, and the directory holding the certificate, signing key and token.
@@ -177,8 +174,8 @@ has_line() {
 # nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
 nap_alive() { shard exec "${ID}" /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
 
-# listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
-listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
+# listed_state reads the STATE column of shard list for one sandbox, so the check never matches the image.
+listed_state() { shard list --all | awk -v id="$1" '$1 == id { print $4 }'; }
 
 # id_of reads the id of a named sandbox through $(...), so the grep's early exit never SIGPIPEs inspect.
 id_of() {
@@ -337,7 +334,6 @@ timed() {
 pause_it() { shard pause "${ID}" >/dev/null; }
 resume_it() { shard resume "${ID}" >/dev/null; }
 fork_it() { FORK_ID=$(shard fork --name e2e-fork "${ID}"); }
-clone_it() { CLONE_IDS="${CLONE_IDS} $(shard clone --name "$1" "${ID}")"; }
 
 # rss_kib reads the resident set of a host process, which for a sandbox is the sentry and its guest memory.
 rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' ' || true; }
@@ -626,12 +622,12 @@ recorded_sandboxes() {
 	done
 }
 
-# free_sandbox gives back a sandbox rm did not, before wipe_root removes the runtime state that names it.
+# free_sandbox gives back a sandbox remove did not, before wipe_root removes the runtime state that names it.
 free_sandbox() {
 	local id="$1" link
-	shard rm --force "${id}" >/dev/null 2>&1 && return 0
+	shard remove --force "${id}" >/dev/null 2>&1 && return 0
 
-	echo "teardown: rm could not free sandbox ${id}, so the runtime and the host are asked directly" >&2
+	echo "teardown: remove could not free sandbox ${id}, so the runtime and the host are asked directly" >&2
 	[ -z "${RUNTIME:-}" ] || "${RUNTIME}" --root "${SHARD_ROOT}/${RUNTIME}" delete --force "${id}" >/dev/null 2>&1 || true
 	rmdir "/sys/fs/cgroup/shard/${id}" >/dev/null 2>&1 || true
 	ip netns delete "${id}" >/dev/null 2>&1 || true
@@ -645,25 +641,24 @@ free_sandbox() {
 # record is the only handle by which its mount, its namespace, its cgroup and its process can be found again.
 teardown() {
 	local id link
-	# rm speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${CLONE_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}$(recorded_sandboxes)" ]; then
-		start_daemon || echo "teardown: no daemon came up, so rm cannot run: $(cat "${DAEMON_LOG}")" >&2
+	# remove speaks to the daemon, so a run that broke while the daemon was down gets one back first.
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}$(recorded_sandboxes)" ]; then
+		start_daemon || echo "teardown: no daemon came up, so remove cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
-	# shellcheck disable=SC2086 # the clone lists are meant to split
-	for id in ${CLONE_IDS} ${FEATURE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
+	# shellcheck disable=SC2086 # the feature list is meant to split
+	for id in ${FEATURE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
-		shard rm --force "${id}" >/dev/null 2>&1 || true
+		shard remove --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
 		# sysbox pins the userns next to the netns; a bind mount survives the rm of its file.
 		umount "${USERNS_DIR}/${id}" >/dev/null 2>&1 || true
 		rm -f "${USERNS_DIR}/${id}"
 	done
-	# shellcheck disable=SC2086
-	for link in ${CLONE_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
+	for link in "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
-	# What the loops above did not free still has a record: a sandbox no step tracked, or one rm refused.
+	# What the loops above did not free still has a record: a sandbox no step tracked, or one remove refused.
 	for id in $(recorded_sandboxes); do
 		free_sandbox "${id}"
 	done
@@ -729,12 +724,12 @@ snapshot_steps() {
 	# The whole point of a pause: the memory goes back to the host, so the sandbox process is gone.
 	absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
 	case "${PROVIDER}" in
-	# A Firecracker sandbox keeps its cgroup, empty, until rm, so the start that brings it back boots into it (SHARD-267).
+	# A Firecracker sandbox keeps its cgroup, empty, until remove, so the start that brings it back boots into it (SHARD-267).
 	firecracker) absent "a process in the cgroup of the paused sandbox" "$(cat "/sys/fs/cgroup/shard/${ID}/cgroup.procs" 2>/dev/null || true)" ;;
 	*) absent "the cgroup of the paused sandbox" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)" ;;
 	esac
 	absent "the rootfs mount of the paused sandbox" "$(mount | grep "${SHARD_ROOT}/sandboxes/${ID}" || true)"
-	[ "$(listed_state "${ID}")" = "paused" ] || fail "shard ls --all does not list the sandbox as paused"
+	[ "$(listed_state "${ID}")" = "paused" ] || fail "shard list --all does not list the sandbox as paused"
 
 	CODE=0
 	REFUSAL=$(shard exec "${ID}" /bin/true 2>&1) || CODE=$?
@@ -784,11 +779,11 @@ fork_steps() {
 	[ "${FORK_ADDRESS}" != "${ADDRESS}" ] || fail "the fork got the source's address ${ADDRESS}"
 	say "the fork is ${FORK_ID} on its own address ${FORK_ADDRESS} and link ${FORK_LINK}"
 
-	[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard ls does not list the fork running"
+	[ "$(listed_state "${FORK_ID}")" = "running" ] || fail "shard list does not list the fork running"
 	[ "$(listed_state "${ID}")" = "running" ] || fail "the fork moved the source off running"
 	grep -Eq "\"pid\": *${SOURCE_PID}([^0-9]|$)" "${RECORD}" || fail "the source is no longer host pid ${SOURCE_PID} after the fork"
 	expect "$(entrypoint_clock "${ID}")" "${CLOCK_BEFORE_FORK}" "the source's entrypoint is the same process with the same start time, so the source ran on"
-	say "ls shows the fork running beside the source, which runs on as host pid ${SOURCE_PID}"
+	say "list shows the fork running beside the source, which runs on as host pid ${SOURCE_PID}"
 
 	holds '"E2E_TOKEN"' shard inspect "${FORK_ID}" || fail "the fork did not carry the grant"
 	holds '"policy": "e2e-policy"' shard inspect "${FORK_ID}" || fail "the fork did not carry the policy"
@@ -810,7 +805,7 @@ fork_steps() {
 
 	step "stop and remove the fork"
 	shard stop "${FORK_ID}" >/dev/null
-	shard rm "${FORK_ID}" >/dev/null
+	shard remove "${FORK_ID}" >/dev/null
 	absent "the fork's record" "$([ -e "${SHARD_ROOT}/sandboxes/${FORK_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${FORK_ID}" || true)"
 	absent "the fork's link" "$(ip link show "${FORK_LINK}" 2>/dev/null || true)"
 	FORK_ID=""
@@ -868,9 +863,9 @@ mkdir -p "${SHARD_ROOT}"
 step "refuse every read with no daemon up"
 SOCKET="${SHARD_ROOT}/shard.sock"
 CODE=0
-REFUSAL=$(shard ls 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "shard ls answered with no daemon up"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "ls names the socket and this root's daemon, and nothing else"
+REFUSAL=$(shard list 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "shard list answered with no daemon up"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list names the socket and this root's daemon, and nothing else"
 
 step "start the echo the fronted sandbox talks to"
 start_echo
@@ -956,13 +951,13 @@ REFUSED_CAUTION=$(shard secret set --to no-dot E2E_REFUSED "${SHAPED_VALUE}" 2>&
 [ "${CODE}" != "0" ] || fail "secret set took a destination with no dot"
 grep -q "caution" <<<"${REFUSED_CAUTION}" || fail "a refused set printed no caution: '${REFUSED_CAUTION}'"
 say "a refused set still cautions about the value on the command line"
-SHAPED_LS=$(shard secret ls)
-grep -q "${SHAPED_PLACEHOLDER}" <<<"${SHAPED_LS}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
-say "secret ls prints the chosen placeholder"
-SECRET_LS=$(shard secret ls)
-grep -q "E2E_TOKEN" <<<"${SECRET_LS}" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
-grep -q "${SECRET_VALUE}" <<<"${SECRET_LS}" && fail "shard secret ls printed the value"
-say "secret ls lists the name and the destination, and not the value"
+SHAPED_LS=$(shard secret list)
+grep -q "${SHAPED_PLACEHOLDER}" <<<"${SHAPED_LS}" || fail "shard secret list does not print the chosen placeholder: ${SHAPED_LS}"
+say "secret list prints the chosen placeholder"
+SECRET_LS=$(shard secret list)
+grep -q "E2E_TOKEN" <<<"${SECRET_LS}" || fail "shard secret list does not list E2E_TOKEN: ${SECRET_LS}"
+grep -q "${SECRET_VALUE}" <<<"${SECRET_LS}" && fail "shard secret list printed the value"
+say "secret list lists the name and the destination, and not the value"
 SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 [ "${SECRET_MODE}" = "600" ] || fail "the secret file is mode ${SECRET_MODE}, want 600"
 say "the secret file is mode 0600"
@@ -972,12 +967,12 @@ step "store an egress policy"
 # other echo name is allowed by rule and not granted, so a request to it must keep the placeholder.
 shard policy create --deny any e2e-deny-all >/dev/null
 shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
-POLICY_LS=$(shard policy ls)
-grep -q "e2e-policy" <<<"${POLICY_LS}" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
+POLICY_LS=$(shard policy list)
+grep -q "e2e-policy" <<<"${POLICY_LS}" || fail "shard policy list does not list e2e-policy: ${POLICY_LS}"
 holds '"kind": "cidr"' shard policy show e2e-policy || fail "shard policy show does not print the rules"
-say "policy ls lists the policies and policy show prints the rules"
+say "policy list lists the policies and policy show prints the rules"
 shard policy create --allow suffix:example.com --allow '*.example.com' e2e-web >/dev/null
-shard policy rm e2e-web >/dev/null
+shard policy remove e2e-web >/dev/null
 say "policy create accepts a suffix rule and a wildcard rule, which the proxy matches"
 CODE=0
 shard policy create --allow 'api.example.com tcp:22' e2e-bad >/dev/null 2>&1 || CODE=$?
@@ -1010,11 +1005,11 @@ ip link show "${LINK}" >/dev/null || fail "there is no link named ${LINK}"
 say "the namespace and the link are up"
 
 step "list the sandbox"
-LISTED=$(shard ls | grep "^${ID}" || true)
-[ -n "${LISTED}" ] || fail "shard ls does not list ${ID}"
-grep -q "${ADDRESS%%/*}" <<<"${LISTED}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
-[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
-say "ls shows the sandbox running on its address"
+LISTED=$(shard list | grep "^${ID}" || true)
+[ -n "${LISTED}" ] || fail "shard list does not list ${ID}"
+grep -q "${ADDRESS%%/*}" <<<"${LISTED}" || fail "shard list listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard list listed '${LISTED}', want it running"
+say "list shows the sandbox running on its address"
 
 # SHARD-46: a root that holds records keeps what made them, so an upgrade on a KVM host switches nothing.
 expect "$(FIELD=provider info_field)" "${PROVIDER}" "the root now keeps ${PROVIDER}, which made its records"
@@ -1037,7 +1032,7 @@ stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 kill -0 "${SANDBOX_PID}" 2>/dev/null || fail "the sandbox process ${SANDBOX_PID} died with the daemon"
 say "the daemon is down and the sandbox process ${SANDBOX_PID} is still up"
 start_daemon || fail "the daemon did not come up"
-[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls does not list ${ID} running after the daemon restart"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard list does not list ${ID} running after the daemon restart"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
 expect "$(find /tmp -maxdepth 1 -name 'shard-exec-*' | wc -l)" "${TMP_EXECS_BEFORE}" "the restart left no shard-exec directory under /tmp"
 expect "$(find "${SHARD_ROOT}/exec" -mindepth 1 -maxdepth 1 | wc -l)" "0" "the new daemon swept the exec scratch under its root"
@@ -1081,8 +1076,8 @@ kill -0 "${RECONCILE_PID}" 2>/dev/null && fail "the sandbox process ${RECONCILE_
 say "the sandbox process ${RECONCILE_PID} is gone and the record still says running"
 start_daemon || fail "the daemon did not come up"
 expect "$(listed_state "${RECONCILE_ID}")" "stopped" "the daemon corrected the record of the sandbox it lost"
-holds "^${RECONCILE_ID}.*daemon restarted and found no process" shard ls --all || fail "shard ls gives no reason for ${RECONCILE_ID}"
-say "ls gives the reason: daemon restarted and found no process"
+holds "^${RECONCILE_ID}.*daemon restarted and found no process" shard list --all || fail "shard list gives no reason for ${RECONCILE_ID}"
+say "list gives the reason: daemon restarted and found no process"
 grep -q "${RECONCILE_ID}" "${DAEMON_LOG}" || fail "the daemon logged no line for the record it corrected"
 say "the daemon logged the record it corrected"
 # Two records exist here, one running and one stopped, which is enough to page the list over the socket.
@@ -1095,11 +1090,11 @@ expect "$(echo "${PAGE}" | grep -o '"id": *"[^"]*"' | wc -l | tr -d ' ')" "1" "t
 expect "$(echo "${PAGE}" | grep -c '"next": *null')" "1" "the last page carries a null next"
 CODE=$(curl -sS -o /dev/null -w '%{http_code}' --unix-socket "${SOCKET}" 'http://shard/v0/sandboxes?cursor=not/an-id')
 expect "${CODE}" "400" "a malformed cursor is refused"
-shard rm --force "${RECONCILE_ID}" >/dev/null || fail "rm did not free the sandbox the host lost"
+shard remove --force "${RECONCILE_ID}" >/dev/null || fail "remove did not free the sandbox the host lost"
 ip link delete "${RECONCILE_LINK}" >/dev/null 2>&1 || true
 RECONCILE_ID=""
 RECONCILE_LINK=""
-say "rm freed what it left on the host"
+say "remove freed what it left on the host"
 
 step "read the output of the entrypoint"
 # The line lands when the guest gets to it, which is after create returned.
@@ -1196,8 +1191,8 @@ grep -q "${TOKEN}" "${SERVE_LOG}" "${LONE_LOG}" "${DAEMON_LOG}" && fail "a log h
 say "no log holds the token value"
 
 step "drive a verb and an exec through the front"
-holds "${ID}" shard_front ls --all || fail "ls over the front does not list the sandbox"
-say "ls over the front lists the sandbox"
+holds "${ID}" shard_front list --all || fail "list over the front does not list the sandbox"
+say "list over the front lists the sandbox"
 holds "daemon" shard_front version || fail "version over the front does not name the daemon"
 say "version over the front reaches the daemon"
 GOT=$(shard_front exec "${ID}" /bin/cat /tmp/marker) || fail "exec over the front failed"
@@ -1223,8 +1218,8 @@ REVOKE_TOKEN=$("${PREFIX}/shard" tokens mint --name shard-e2e-revoke --signing-k
 	fail "tokens mint did not print a token to revoke"
 CODE=$(front_curl "${SERVE_PORT}" "${REVOKE_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "200" "the token reads before it is revoked"
-JTI=$("${PREFIX}/shard" tokens ls --signing-key-file "${SIGNING_KEY}" | awk '$2=="shard-e2e-revoke"{print $1}')
-[ -n "${JTI}" ] || fail "tokens ls did not list the minted token"
+JTI=$("${PREFIX}/shard" tokens list --signing-key-file "${SIGNING_KEY}" | awk '$2=="shard-e2e-revoke"{print $1}')
+[ -n "${JTI}" ] || fail "tokens list did not list the minted token"
 "${PREFIX}/shard" tokens revoke --signing-key-file "${SIGNING_KEY}" "${JTI}" || fail "tokens revoke failed"
 CODE=$(front_curl "${SERVE_PORT}" "${REVOKE_TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "the revoked token is refused on the next request"
@@ -1248,9 +1243,9 @@ SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${DEFAU
 	fail "the front with no key flag did not come up: $(cat "${DEFAULT_LOG}")"
 CODE=$(front_curl "${SERVE_PORT}" "$(jq -r .token "${DEFAULT_TOKEN}")" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "200" "the front with no key flag accepts the token minted with no key flag"
-DEFAULT_JTI=$(shard tokens ls | awk '$2=="shard-e2e-default"{print $1}')
-[ -n "${DEFAULT_JTI}" ] || fail "tokens ls with no flags did not list the token minted with no flags"
-say "tokens ls with no flags reads the ledger beside the default signing key"
+DEFAULT_JTI=$(shard tokens list | awk '$2=="shard-e2e-default"{print $1}')
+[ -n "${DEFAULT_JTI}" ] || fail "tokens list with no flags did not list the token minted with no flags"
+say "tokens list with no flags reads the ledger beside the default signing key"
 stop_serve
 say "the front over the default signing key is down"
 
@@ -1264,8 +1259,8 @@ say "secret set refuses to move a placeholder the sandbox holds, and names it"
 absent "the value outside the store" "$(grep -rl --exclude-dir=secrets "${SECRET_VALUE}" "${SHARD_ROOT}" 2>/dev/null || true)"
 holds '"E2E_TOKEN"' shard inspect "${ID}" || fail "inspect does not name the grant"
 say "inspect names the secret and holds no value"
-shard secret rm E2E_TOKEN >/dev/null 2>&1 && fail "secret rm removed a secret a sandbox holds"
-say "secret rm refuses while the sandbox holds the secret"
+shard secret remove E2E_TOKEN >/dev/null 2>&1 && fail "secret remove removed a secret a sandbox holds"
+say "secret remove refuses while the sandbox holds the secret"
 
 step "front the sandbox through the proxy"
 # grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
@@ -1307,7 +1302,7 @@ expect_exec "unresolved" "a policy of addresses only leaves the granted host unr
 
 NOTE=$(shard policy create --allow 1.0.0.1 --deny any e2e-note 2>&1 >/dev/null)
 grep -q "this policy opens no DNS" <<<"${NOTE}" || fail "policy create said '${NOTE}' over a policy that opens no DNS"
-shard policy rm e2e-note >/dev/null
+shard policy remove e2e-note >/dev/null
 say "policy create notes a policy that opens no DNS, and exits 0"
 
 # The lookup the address-only policy refused is in the log, as a dns deny for the name the guest asked.
@@ -1404,10 +1399,10 @@ shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST
 expect_network "after the policy was put back"
 
 CODE=0
-REFUSAL=$(shard policy rm e2e-policy 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "policy rm removed a policy a sandbox holds"
-grep -q "${ID}" <<<"${REFUSAL}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
-say "policy rm refused it and named the sandbox"
+REFUSAL=$(shard policy remove e2e-policy 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy remove removed a policy a sandbox holds"
+grep -q "${ID}" <<<"${REFUSAL}" || fail "policy remove said '${REFUSAL}', want it to name the sandbox"
+say "policy remove refused it and named the sandbox"
 
 step "read the egress decision log"
 # The daemon tails the host's half out of the kernel ring, so the drop is a moment behind the probe.
@@ -1533,7 +1528,7 @@ untrack_sandbox() {
 
 # drop_sandbox removes a sandbox a step made and stops tracking it, so the next step starts from a clean host.
 drop_sandbox() {
-	shard rm --force "$1" >/dev/null 2>&1 || fail "rm did not free the feature sandbox $1"
+	shard remove --force "$1" >/dev/null 2>&1 || fail "remove did not free the feature sandbox $1"
 	untrack_sandbox "$1"
 }
 
@@ -1607,10 +1602,10 @@ pending_and_failed_steps() {
 	say "a failed sandbox refuses start, exec and a follow log with 409 sandbox_failed"
 
 	step "remove a failed sandbox"
-	shard rm "${id}" >/dev/null || fail "rm did not remove the failed sandbox ${id}"
+	shard remove "${id}" >/dev/null || fail "remove did not remove the failed sandbox ${id}"
 	untrack_sandbox "${id}"
-	[ ! -e "${SHARD_ROOT}/sandboxes/${id}" ] || fail "the failed sandbox's record survived the rm"
-	say "rm removes a failed sandbox and its record is gone"
+	[ ! -e "${SHARD_ROOT}/sandboxes/${id}" ] || fail "the failed sandbox's record survived the remove"
+	say "remove removes a failed sandbox and its record is gone"
 }
 
 # alone_in proves the guest runs shard-init as PID 1 with nothing after its --, and no other process but the exec that looks.
@@ -1631,12 +1626,12 @@ alone_in() {
 
 # no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
 no_command_steps() {
-	local id clone code refusal policy started took
+	local id code refusal policy started took
 
 	step "create with no command runs only shard-init and stays up"
 	id=$(shard create "${IMAGE}")
 	track_sandbox "${id}"
-	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running: $(shard ls --all)"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running: $(shard list --all)"
 	say "a create with no command reaches running"
 	expect_exec_in "${id}" "alive" "an exec answers in a sandbox with no command" /bin/echo alive
 	alone_in "${id}" "after the create"
@@ -1647,21 +1642,15 @@ no_command_steps() {
 	took=$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
 	# Nothing runs under shard-init, so the stop never spends the 30 s grace (SHARD-460).
 	awk -v t="${took}" 'BEGIN { exit !(t < 10) }' || fail "the stop of a sandbox with no command took ${took} s"
-	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard ls --all does not list the sandbox with no command stopped"
+	[ "$(listed_state "${id}")" = "stopped" ] || fail "shard list --all does not list the sandbox with no command stopped"
 	# The image's CMD would have exited by now and its status would land at the stop, so none proves it never ran.
 	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
 	say "the stop ends shard-init alone and records no exit status"
 
-	step "start and clone a sandbox with no command, and still run nothing"
+	step "start a sandbox with no command, and still run nothing"
 	shard start "${id}" >/dev/null
 	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running after the start"
 	alone_in "${id}" "after a start"
-	shard stop "${id}" >/dev/null
-	clone=$(shard clone "${id}")
-	track_sandbox "${clone}"
-	[ "$(listed_state "${clone}")" = "running" ] || fail "the clone of the sandbox with no command is not running"
-	alone_in "${clone}" "in the clone"
-	drop_sandbox "${clone}"
 	drop_sandbox "${id}"
 
 	step "create refuses a command, and the API refuses restart.policy with no command"
@@ -1686,7 +1675,7 @@ run_steps() {
 	track_sandbox "${id}"
 	expect "${code}" "3" "run exits with the app's code"
 	expect "${out}" "e2e-run-out" "run prints the app output once"
-	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox did not outlive the app of the run: $(shard ls --all)"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox did not outlive the app of the run: $(shard list --all)"
 	drop_sandbox "${id}"
 
 	step "run under on-failure exits with the last code once the policy gives up"
@@ -1705,7 +1694,7 @@ run_steps() {
 	step "run -d returns the id once the sandbox is up"
 	id=$(shard run -d "${IMAGE}" /bin/sleep 600)
 	track_sandbox "${id}"
-	[ "$(listed_state "${id}")" = "running" ] || fail "run -d returned before the sandbox was running: $(shard ls --all)"
+	[ "$(listed_state "${id}")" = "running" ] || fail "run -d returned before the sandbox was running: $(shard list --all)"
 	say "run -d printed ${id}, and the sandbox is running"
 	drop_sandbox "${id}"
 
@@ -1761,7 +1750,7 @@ run_steps() {
 	before=$(shard logs "${id}" | grep -c e2e-tick || true)
 	sleep 3
 	expect "$(shard logs "${id}" | grep -c e2e-tick || true)" "${before}" "the ticks stopped: no restart followed the stop"
-	[ "$(listed_state "${id}")" = "running" ] || fail "the Ctrl+C stopped the sandbox, want it running: $(shard ls --all)"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the Ctrl+C stopped the sandbox, want it running: $(shard list --all)"
 	expect_exec_in "${id}" "1 /.shard/init" "after the Ctrl+C, the guest holds shard-init alone" /bin/sh -c '
 		for p in /proc/[0-9]*; do
 			p=${p#/proc/}
@@ -1989,7 +1978,7 @@ oom_stop_steps() {
 
 # disk_bound_steps prove SHARD-173: a guest write past --disk fails with ENOSPC and the host holds no more than the bound.
 disk_bound_steps() {
-	local id clone rec image_mib state_mib disk_mount
+	local id rec image_mib state_mib disk_mount
 	# Each fill asks for three times the bound. A full disk takes no status file, so the count goes through a pipe and the fill is freed after.
 	local fill_tmp='dd if=/dev/zero of=/tmp/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /tmp/fill'
 	local fill_root='dd if=/dev/zero of=/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /fill'
@@ -2027,16 +2016,6 @@ disk_bound_steps() {
 	esac
 	shard start "${id}" >/dev/null
 	expect_exec_in "${id}" "before-the-stop" "the marker survives the stop and start" /bin/cat /root/marker
-
-	step "a clone is bounded the way its source was"
-	shard stop "${id}" >/dev/null
-	clone=$(shard clone --name e2e-disk-clone "${id}")
-	track_sandbox "${clone}"
-	grep -q '"disk_mib": *64' "$(rec_of "${clone}")" || fail "the clone record does not carry the disk bound: $(cat "$(rec_of "${clone}")")"
-	expect_exec_in "${clone}" "before-the-stop" "the clone holds the source's layer" /bin/cat /root/marker
-	expect_exec_in "${clone}" "1" "a fill past the bound fails in the clone too" /bin/sh -c "${fill_root}"
-	say "the clone carries disk_mib 64 and its own disk bounds it"
-	drop_sandbox "${clone}"
 	drop_sandbox "${id}"
 }
 
@@ -2054,11 +2033,11 @@ stop_grace_steps() {
 	grep -q '"signal": *15' "$(rec_of "${id}")" || fail "the record holds no SIGTERM exit: $(cat "$(rec_of "${id}")")"
 	say "on ${PROVIDER} the stop took ${took} s of the 30 s grace, and the record holds the SIGTERM exit"
 
-	step "rm --force stops a running sandbox, then deletes it"
+	step "remove --force stops a running sandbox, then deletes it"
 	shard start "${id}" >/dev/null
-	shard rm --force "${id}" >/dev/null
+	shard remove --force "${id}" >/dev/null
 	untrack_sandbox "${id}"
-	absent "the record of the sandbox rm --force stopped" "$([ -e "${SHARD_ROOT}/sandboxes/${id}" ] && echo "${SHARD_ROOT}/sandboxes/${id}" || true)"
+	absent "the record of the sandbox remove --force stopped" "$([ -e "${SHARD_ROOT}/sandboxes/${id}" ] && echo "${SHARD_ROOT}/sandboxes/${id}" || true)"
 
 	# The kill costs the full 30 s, so gvisor proves it end to end and the provider unit tests cover the rest.
 	[ "${PROVIDER}" = "gvisor" ] || return 0
@@ -2106,7 +2085,7 @@ snapshot_refusals() {
 	refusal=$(shard fork --name e2e-fork "${ID}" 2>&1) || code=$?
 	[ "${code}" != "0" ] || fail "shard fork exited 0 on ${PROVIDER}, which holds no snapshots"
 	expect "${refusal}" "shard: provider ${PROVIDER} does not support fork on this host" "fork names the provider and the verb"
-	absent "a sandbox named e2e-fork" "$(shard ls --all | grep e2e-fork || true)"
+	absent "a sandbox named e2e-fork" "$(shard list --all | grep e2e-fork || true)"
 	expect_exec "still-running" "the source runs on after the refusals" /bin/echo still-running
 }
 
@@ -2133,12 +2112,12 @@ docker_steps() {
 	expect_exec_in "${DIND_ID}" "built-inside" "an image built by the nested dockerd runs and reads its own layer" \
 		/bin/sh -c 'mkdir -p /tmp/e2e && printf "FROM alpine:3.20\nRUN echo built-inside > /built\n" > /tmp/e2e/Dockerfile && docker build -q -t e2e-nested /tmp/e2e >/dev/null && docker run --rm e2e-nested cat /built'
 	# The nested image lives in the sandbox's layer, so the host's image store never sees it.
-	absent "the nested image in the host store" "$(shard image ls | grep e2e-nested || true)"
+	absent "the nested image in the host store" "$(shard image list | grep e2e-nested || true)"
 
 	step "stop and remove the dockerd sandbox"
 	shard stop "${DIND_ID}" >/dev/null
-	[ "$(listed_state "${DIND_ID}")" = "stopped" ] || fail "shard ls --all does not list the dockerd sandbox stopped"
-	shard rm "${DIND_ID}" >/dev/null
+	[ "$(listed_state "${DIND_ID}")" = "stopped" ] || fail "shard list --all does not list the dockerd sandbox stopped"
+	shard remove "${DIND_ID}" >/dev/null
 	absent "the dockerd sandbox's record" "$([ -e "${SHARD_ROOT}/sandboxes/${DIND_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${DIND_ID}" || true)"
 	absent "the dockerd sandbox's link" "$(ip link show "${DIND_LINK}" 2>/dev/null || true)"
 	absent "the dockerd sandbox's cgroup" "$([ -e "/sys/fs/cgroup/shard/${DIND_ID}" ] && echo "/sys/fs/cgroup/shard/${DIND_ID}" || true)"
@@ -2156,10 +2135,10 @@ esac
 
 step "refuse to remove a sandbox that is still up"
 CODE=0
-REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "rm removed a running sandbox"
-grep -q "shard stop ${ID}" <<<"${REFUSAL}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
-say "rm refused it and named the stop"
+REFUSAL=$(shard remove "${ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "remove removed a running sandbox"
+grep -q "shard stop ${ID}" <<<"${REFUSAL}" || fail "remove said '${REFUSAL}', want it to say to stop it first"
+say "remove refused it and named the stop"
 
 # curl -N holds the log open through the stop, and the body must end on its own once the sandbox is stopped.
 PLAIN_LOG=$(mktemp)
@@ -2195,9 +2174,9 @@ LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
 grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record, the address, the lease, the namespace and the link all survived the stop"
 
-holds "^${ID}" shard ls && fail "shard ls still lists the stopped sandbox"
-[ "$(listed_state "${ID}")" = "stopped" ] || fail "shard ls --all does not list the sandbox as stopped"
-say "ls hides the stopped sandbox and ls --all shows it stopped"
+holds "^${ID}" shard list && fail "shard list still lists the stopped sandbox"
+[ "$(listed_state "${ID}")" = "stopped" ] || fail "shard list --all does not list the sandbox as stopped"
+say "list hides the stopped sandbox and list --all shows it stopped"
 
 # -f ends on its own once the sandbox is stopped, so a hang here is a failure, not a wait.
 holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" || fail "shard logs -f on a stopped sandbox did not print its output and end"
@@ -2223,70 +2202,13 @@ REFUSAL=$(shard inspect no-such-sandbox 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "inspect answered for a sandbox nothing holds"
 expect "${REFUSAL}" "shard: no sandbox no-such-sandbox" "inspect of a name nothing holds is one line"
 
-step "clone the stopped sandbox twice"
-# A clone copies the files a stop kept and runs the entrypoint again under a new id: no memory, no snapshot.
-timed "clone" clone_it e2e-clone-1
-timed "clone" clone_it e2e-clone-2
-# shellcheck disable=SC2086 # the clone list is meant to split
-set -- ${CLONE_IDS}
-[ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "clone printed '${CLONE_IDS}', want two new ids"
-N=0
-for CLONE_ID in "$@"; do
-	N=$((N + 1))
-	CLONE_RECORD="${SHARD_ROOT}/sandboxes/${CLONE_ID}/sandbox.json"
-	CLONE_ADDRESS=$(grep -o '"address": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)
-	CLONE_LINKS="${CLONE_LINKS} $(grep -o '"host_interface": *"[^"]*"' "${CLONE_RECORD}" | cut -d'"' -f4)"
-	[ "${CLONE_ADDRESS}" != "${ADDRESS}" ] || fail "clone ${CLONE_ID} got the source's address ${ADDRESS}"
-	[ "$(listed_state "${CLONE_ID}")" = "running" ] || fail "shard ls does not list clone ${CLONE_ID} running"
-	grep -q '"exit_status"' "${CLONE_RECORD}" && fail "clone ${CLONE_ID} carries the source's exit status"
-	grep -q '"snapshot": *"[^"]' "${CLONE_RECORD}" && fail "clone ${CLONE_ID} names a snapshot"
-	# A fresh run prints the banner once in the clone's own log, and never the source's earlier lines.
-	for _ in $(seq 1 50); do
-		[ "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" -ge 1 ] && break
-		sleep 0.2
-	done
-	[ "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" = "1" ] || fail "clone ${CLONE_ID} printed the banner $(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint") times, want once"
-	expect_exec_in "${CLONE_ID}" "kept" "clone ${CLONE_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
-	expect_exec_in "${CLONE_ID}" "${CLONE_ADDRESS}" "clone ${CLONE_ID} holds its own address" \
-		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${CLONE_ADDRESS}'"
-	expect_exec_in "${CLONE_ID}" "reachable" "clone ${CLONE_ID} gets out through the NAT" \
-		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
-	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
-	expect_exec_in "${CLONE_ID}" "mock-E2E_TOKEN" "clone ${CLONE_ID} holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
-	expect_blocked "${CLONE_ID}" "the policy holds on clone ${CLONE_ID}"
-	expect_fronted "${CLONE_ID}" "the proxy fronts clone ${CLONE_ID}"
-	[ -d "/sys/fs/cgroup/shard/${CLONE_ID}" ] || fail "clone ${CLONE_ID} has no cgroup under the shard parent"
-done
-say "both clones run the entrypoint again over the source's files, each on its own address"
-
-shard exec "$1" /bin/sh -c 'echo clone-only > /root/clone-only' >/dev/null
-CODE=0
-shard exec "$2" /bin/cat /root/clone-only >/dev/null 2>&1 || CODE=$?
-[ "${CODE}" != "0" ] || fail "clone $2 sees the file clone $1 wrote"
-[ ! -e "${SHARD_ROOT}/sandboxes/${ID}/overlay/upper/root/clone-only" ] || fail "the source's layer holds what a clone wrote"
-grep -q '"state": *"stopped"' "${RECORD}" || fail "the clones changed the source's state"
-say "the clones share nothing with each other or with the source, which is still stopped"
-
-step "stop and remove the clones"
-for CLONE_ID in "$@"; do
-	shard stop "${CLONE_ID}" >/dev/null
-	shard rm "${CLONE_ID}" >/dev/null
-	absent "the record of clone ${CLONE_ID}" "$([ -e "${SHARD_ROOT}/sandboxes/${CLONE_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${CLONE_ID}" || true)"
-done
-for CLONE_LINK in ${CLONE_LINKS}; do
-	absent "the link ${CLONE_LINK} of a clone" "$(ip link show "${CLONE_LINK}" 2>/dev/null || true)"
-done
-CLONE_IDS=""
-CLONE_LINKS=""
-set --
-
 step "refuse to remove the image a stopped sandbox references"
 CODE=0
-REFUSAL=$(shard image rm "${IMAGE}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "image rm removed the image under a stopped sandbox"
-grep -q "${ID}" <<<"${REFUSAL}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
-holds "${IMAGE%%:*}" shard image ls || fail "image ls no longer lists the image"
-say "image rm refused it and named the sandbox"
+REFUSAL=$(shard image remove "${IMAGE}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "image remove removed the image under a stopped sandbox"
+grep -q "${ID}" <<<"${REFUSAL}" || fail "image remove said '${REFUSAL}', want it to name the sandbox"
+holds "${IMAGE%%:*}" shard image list || fail "image list no longer lists the image"
+say "image remove refused it and named the sandbox"
 
 step "start the sandbox again"
 shard start "${ID}" >/dev/null
@@ -2316,8 +2238,8 @@ grep -q '"state": *"stopped"' "${RECORD}" || fail "the record does not say stopp
 say "the record says stopped"
 
 step "remove the sandbox"
-shard rm "${ID}" >/dev/null
-say "rm returned"
+shard remove "${ID}" >/dev/null
+say "remove returned"
 
 step "grant a secret to a sandbox that was created without one"
 # This sandbox is created unfronted, so the grant is what plants the placeholder, the CA and the dnat.
@@ -2377,21 +2299,21 @@ PROXY_DECISIONS=$(grep '"source":"proxy"' <<<"${DECISIONS}" || true)
 grep -q '"verdict":"deny"' <<<"${PROXY_DECISIONS}" || fail "the egress log holds no proxy deny for ${GRANT_ID}"
 say "the deny is in the egress decision log with source proxy"
 
-[ "$(shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "e2e-attach" ] || fail "shard ls does not show the attached policy"
-say "shard ls shows the attached policy"
+[ "$(shard list --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "e2e-attach" ] || fail "shard list does not show the attached policy"
+say "shard list shows the attached policy"
 
 CODE=0
-REFUSAL=$(shard policy rm e2e-attach 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "policy rm removed a policy an attach put on a sandbox"
-grep -q "${GRANT_ID}" <<<"${REFUSAL}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
-say "policy rm refuses the attached policy and names the sandbox"
+REFUSAL=$(shard policy remove e2e-attach 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "policy remove removed a policy an attach put on a sandbox"
+grep -q "${GRANT_ID}" <<<"${REFUSAL}" || fail "policy remove said '${REFUSAL}', want it to name the sandbox"
+say "policy remove refuses the attached policy and names the sandbox"
 
 step "detach the policy and prove the sandbox is not fronted any more"
 shard stop "${GRANT_ID}" >/dev/null
 shard policy detach "${GRANT_ID}" >/dev/null
 shard start "${GRANT_ID}" >/dev/null
 fronted "${GRANT_ID}" && fail "the detached sandbox still holds a dnat to the proxy"
-[ "$(shard ls --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "-" ] || fail "shard ls still shows a policy after the detach"
+[ "$(shard list --all | awk -v id="${GRANT_ID}" '$1 == id { print $NF }')" = "-" ] || fail "shard list still shows a policy after the detach"
 expect_exec_in "${GRANT_ID}" "reachable" "the detached guest still gets out through the NAT" \
 	/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
 say "detach leaves the sandbox with no policy and takes the fronting with it"
@@ -2406,33 +2328,33 @@ say "policy attach refuses a policy the host does not hold and writes nothing"
 shard stop "${GRANT_ID}" >/dev/null
 GRANT_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
 GRANT_ADDRESS="${GRANT_ADDRESS%%/*}"
-shard rm "${GRANT_ID}" >/dev/null
+shard remove "${GRANT_ID}" >/dev/null
 # The rules are keyed by the address, so rules left here would front whoever takes that address next.
 for _ in $(seq 1 10); do
 	RULES=$(nft list ruleset)
 	grep -q "${GRANT_ADDRESS}" <<<"${RULES}" || break
 	sleep 0.1
 done
-grep -q "${GRANT_ADDRESS}" <<<"${RULES}" && fail "rm left the host rules of ${GRANT_ADDRESS}: $(echo "${RULES}" | grep "${GRANT_ADDRESS}")"
-grep -q "chain egress_${GRANT_LINK}" <<<"${RULES}" && fail "rm left the egress chain of ${GRANT_LINK}"
-say "rm took the host rules of the sandbox with it"
+grep -q "${GRANT_ADDRESS}" <<<"${RULES}" && fail "remove left the host rules of ${GRANT_ADDRESS}: $(echo "${RULES}" | grep "${GRANT_ADDRESS}")"
+grep -q "chain egress_${GRANT_LINK}" <<<"${RULES}" && fail "remove left the egress chain of ${GRANT_LINK}"
+say "remove took the host rules of the sandbox with it"
 ip link delete "${GRANT_LINK}" >/dev/null 2>&1 || true
 GRANT_ID=""
 GRANT_LINK=""
 say "the granted sandbox is gone"
 
 step "remove the secret nothing holds any more"
-shard secret rm E2E_TOKEN >/dev/null
-shard secret rm E2E_SHAPED >/dev/null
+shard secret remove E2E_TOKEN >/dev/null
+shard secret remove E2E_SHAPED >/dev/null
 absent "the secret file" "$([ -e "${SHARD_ROOT}/secrets/E2E_TOKEN" ] && echo "${SHARD_ROOT}/secrets/E2E_TOKEN" || true)"
-say "secret rm removed the secret"
+say "secret remove removed the secret"
 
 step "remove the policies nothing holds any more"
-shard policy rm e2e-policy >/dev/null
-shard policy rm e2e-deny-all >/dev/null
-shard policy rm e2e-attach >/dev/null
+shard policy remove e2e-policy >/dev/null
+shard policy remove e2e-deny-all >/dev/null
+shard policy remove e2e-attach >/dev/null
 absent "the policy file" "$([ -e "${SHARD_ROOT}/policies/e2e-policy.json" ] && echo "${SHARD_ROOT}/policies/e2e-policy.json" || true)"
-say "policy rm removed the policies"
+say "policy remove removed the policies"
 
 step "prove the host holds nothing the sandbox left"
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"
@@ -2443,28 +2365,28 @@ absent "the link" "$(ip link show "${LINK}" 2>/dev/null || true)"
 absent "the address" "$(ip -o addr | grep "${ADDRESS%%/*}" || true)"
 absent "the rootfs mount" "$(mount | grep "${SHARD_ROOT}/sandboxes" || true)"
 absent "the runsc container" "$(ls "${SHARD_ROOT}/runsc" 2>/dev/null | grep "^${ID}" || true)"
-absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
+absent "the list --all line" "$(shard list --all | grep "^${ID}" || true)"
 absent "the cgroup" "$([ -e "/sys/fs/cgroup/shard/${ID}" ] && echo "/sys/fs/cgroup/shard/${ID}" || true)"
 
 step "prune the image nothing references any more"
 holds "${IMAGE%%:*}" shard image prune || fail "image prune did not remove the image"
-holds "${IMAGE%%:*}" shard image ls && fail "image ls still lists the pruned image"
+holds "${IMAGE%%:*}" shard image list && fail "image list still lists the pruned image"
 say "image prune removed the image once no sandbox referenced it"
 
 step "remove the sandbox a second time"
 CODE=0
-REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "a second rm exited 0 on an id that does not exist"
-expect "${REFUSAL}" "shard: no sandbox ${ID}" "a second rm fails on the id it no longer finds"
-expect "$(shard rm --force "${ID}" 2>&1)" "shard: warning: sandbox ${ID} does not exist, so there is nothing to remove" "a second rm --force only warns, so a teardown stays idempotent"
+REFUSAL=$(shard remove "${ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "a second remove exited 0 on an id that does not exist"
+expect "${REFUSAL}" "shard: no sandbox ${ID}" "a second remove fails on the id it no longer finds"
+expect "$(shard remove --force "${ID}" 2>&1)" "shard: warning: sandbox ${ID} does not exist, so there is nothing to remove" "a second remove --force only warns, so a teardown stays idempotent"
 
 step "stop the daemon and prove the socket is gone"
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
 say "the socket is gone"
 CODE=0
-REFUSAL=$(shard ls 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "shard ls answered with the daemon stopped"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "ls fails fast once the daemon is gone"
+REFUSAL=$(shard list 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "shard list answered with the daemon stopped"
+expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list fails fast once the daemon is gone"
 
 step "clean up"
 teardown
@@ -2481,4 +2403,4 @@ gvisor) SNAPSHOT_STEPS="pause, fork, resume" ;;
 sysbox) SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside" ;;
 runc) SNAPSHOT_STEPS="refused pause, resume and fork" ;;
 esac
-echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, what the host picks, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
+echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, what the host picks, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, remove, attach, detach, prune, daemon down, and a clean host"

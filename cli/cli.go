@@ -123,7 +123,7 @@ func parseArgs(verb string, args []string) ([]string, error) {
 	return flags.Args(), nil
 }
 
-// helpKey is the key in helps of the verb a flag set parses: shard image rm is image rm, and shard alone the top level.
+// helpKey is the key in helps of the verb a flag set parses: shard image remove is image remove, and shard alone the top level.
 func helpKey(flags *flag.FlagSet) string {
 	return strings.TrimPrefix(strings.TrimPrefix(flags.Name(), "shard"), " ")
 }
@@ -192,35 +192,40 @@ func commands() []command {
 		{name: "create", run: App.create},
 		{name: "run", run: App.launch},
 		{name: "exec", run: App.exec},
-		{name: "ls", run: App.ls},
+		{name: "list", aliases: []string{"ls"}, run: App.list},
 		{name: "logs", run: App.logs},
 		{name: "inspect", run: App.inspect},
 		{name: "stop", run: App.stop},
 		{name: "start", run: App.start},
-		{name: "rm", run: App.remove},
+		{name: "remove", aliases: []string{"rm"}, run: App.remove},
 		{name: "pause", run: App.pause},
 		{name: "resume", run: App.resume},
 		{name: "fork", run: App.fork},
-		{name: "clone", run: App.clone},
 		{name: "cp", run: App.cp},
+		{name: "snapshot", subs: []command{
+			{name: "create", run: App.snapshotCreate},
+			{name: "list", aliases: []string{"ls"}, run: App.snapshotList},
+			{name: "inspect", run: App.snapshotInspect},
+			{name: "remove", aliases: []string{"rm"}, run: App.snapshotRemove},
+		}},
 		{name: "pull", run: App.pull},
 		{name: "image", subs: []command{
-			{name: "ls", aliases: []string{"list"}, run: App.imageList},
-			{name: "rm", aliases: []string{"remove"}, run: App.imageRemove},
+			{name: "list", aliases: []string{"ls"}, run: App.imageList},
+			{name: "remove", aliases: []string{"rm"}, run: App.imageRemove},
 			{name: "prune", run: App.imagePrune},
 		}},
 		{name: "secret", subs: []command{
 			{name: "set", run: App.secretSet},
-			{name: "ls", aliases: []string{"list"}, run: App.secretList},
-			{name: "rm", aliases: []string{"remove"}, run: App.secretRemove},
+			{name: "list", aliases: []string{"ls"}, run: App.secretList},
+			{name: "remove", aliases: []string{"rm"}, run: App.secretRemove},
 			{name: "grant", run: App.secretGrant},
 			{name: "ungrant", run: App.secretUngrant},
 		}},
 		{name: "policy", subs: []command{
 			{name: "create", run: App.policyCreate},
 			{name: "show", run: App.policyShow},
-			{name: "ls", aliases: []string{"list"}, run: App.policyList},
-			{name: "rm", aliases: []string{"remove"}, run: App.policyRemove},
+			{name: "list", aliases: []string{"ls"}, run: App.policyList},
+			{name: "remove", aliases: []string{"rm"}, run: App.policyRemove},
 			{name: "attach", run: App.policyAttach},
 			{name: "detach", run: App.policyDetach},
 		}},
@@ -229,7 +234,7 @@ func commands() []command {
 		{name: "serve", run: App.serve},
 		{name: "tokens", subs: []command{
 			{name: "mint", run: App.tokensMint},
-			{name: "ls", aliases: []string{"list"}, run: App.tokensList},
+			{name: "list", aliases: []string{"ls"}, run: App.tokensList},
 			{name: "revoke", run: App.tokensRevoke},
 		}},
 		{name: "version", run: App.version},
@@ -247,7 +252,7 @@ func find(cmds []command, word string) (command, bool) {
 	return command{}, false
 }
 
-// lookup answers the command a help key such as image ls names, and false for the top level.
+// lookup answers the command a help key such as image list names, and false for the top level.
 func lookup(key string) (command, bool) {
 	var found command
 	cmds := commands()
@@ -425,12 +430,15 @@ func (a App) client() (*client.Client, error) {
 
 // version prints this binary's line first, so it is on the screen even when no daemon answers.
 func (a App) version(ctx context.Context, args []string) error {
-	rest, err := parseArgs("version", args)
+	rest, format, err := parseFormatArgs("version", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("version takes no argument, got %d", len(rest))
+	}
+	if err := formatLanded("version", format, formatTable); err != nil {
+		return err
 	}
 
 	if err := a.print("client " + a.Version); err != nil {

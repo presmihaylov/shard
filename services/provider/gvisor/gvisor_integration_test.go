@@ -257,7 +257,7 @@ func TestCreateRefusesASandboxRunscLostThatIsStillMounted(t *testing.T) {
 }
 
 // Hand-deleted runsc metadata over a live mount is the one case where an unmount drops a running
-// sandbox's rootfs. Remove must refuse instead, and shard rm --force is SHARD-24's answer.
+// sandbox's rootfs. Remove must refuse instead, and shard remove --force is SHARD-24's answer.
 func TestRemoveRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")

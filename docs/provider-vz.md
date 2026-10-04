@@ -174,7 +174,7 @@ On gVisor, a supervisor that fails its own bookkeeping exits 125, and the host r
 `supervisor-failed` on the control connection, with the reason and the exit code 125. If no host is
 attached, it waits up to ten seconds for one to attach, then exits (SHARD-42). The Firecracker
 provider records the 125 as the sandbox exit and the reason as its stopped reason. `inspect` and
-`ls` show that as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot,
+`list` show that as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot,
 before any listener exists, opens the control connection with the same message. A Firecracker start
 then answers with the reason and the 125 at once, instead of after the 30 second grace (SHARD-416).
 The vz provider records a failure at boot the same way (SHARD-418). After boot, it still ignores the
@@ -315,7 +315,7 @@ verb means one thing on every substrate: a snapshot on disk and the memory given
 
 | Verb | macOS 14+ | macOS 13 |
 |---|---|---|
-| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes |
+| `create`, `start`, `stop`, `remove`, `exec`, `logs`, `inspect` | yes | yes |
 | `pause` | yes | **no** |
 | `resume` | yes | **no** |
 | `fork` | yes | **no** |

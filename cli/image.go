@@ -78,12 +78,15 @@ func layerCount(n int) string {
 }
 
 func (a App) imageList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("image ls", args)
+	rest, format, err := parseFormatArgs("image list", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("image ls takes no arguments, got %d", len(rest))
+		return fmt.Errorf("image list takes no arguments, got %d", len(rest))
+	}
+	if err := formatLanded("image list", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -116,7 +119,7 @@ func (a App) imageList(ctx context.Context, args []string) error {
 	return nil
 }
 
-// imageRemoveOptions is one parsed shard image rm invocation.
+// imageRemoveOptions is one parsed shard image remove invocation.
 type imageRemoveOptions struct {
 	ref   string
 	force bool
@@ -180,7 +183,7 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	var opts imageRemoveOptions
 
-	flags := newFlags("image rm")
+	flags := newFlags("image remove")
 	flags.BoolVar(&opts.force, "force", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -190,10 +193,10 @@ func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	rest := flags.Args()
 	// flag stops at the first argument, so a flag after the image would count as a second image.
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return imageRemoveOptions{}, fmt.Errorf("image rm takes its flags before the image: shard image rm --force <image>")
+		return imageRemoveOptions{}, fmt.Errorf("image remove takes its flags before the image: shard image remove --force <image>")
 	}
 	if len(rest) != 1 {
-		return imageRemoveOptions{}, fmt.Errorf("image rm takes one image reference, got %d", len(rest))
+		return imageRemoveOptions{}, fmt.Errorf("image remove takes one image reference, got %d", len(rest))
 	}
 
 	opts.ref = rest[0]
