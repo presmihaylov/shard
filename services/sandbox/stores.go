@@ -443,16 +443,20 @@ func (s *Stores) unreferenced(ref string) error {
 	return nil
 }
 
-// resolveDigest is the record's own digest, else the one its by-digest reference names, else the index's for its tag.
+// resolveDigest is the record's own digest, else the cache digest for its reference, else the digest its by-digest reference names.
 func resolveDigest(u imageUser, byReference map[string]string) string {
 	if u.digest != "" {
 		return u.digest
+	}
+	// A manifest-list reference names the list digest, but the cache keys the platform image under a child digest, so the cache wins over the literal parse (SHARD-573).
+	if digest, ok := byReference[u.reference]; ok {
+		return digest
 	}
 	if digest, ok := image.DigestOf(u.reference); ok {
 		return digest
 	}
 
-	return byReference[u.reference]
+	return ""
 }
 
 // heldImages lists the sandboxes whose records name an image, each with the digest it resolved to.

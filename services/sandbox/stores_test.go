@@ -302,3 +302,30 @@ func TestImageRemoveIgnoresARecordThatHoldsAnotherDigest(t *testing.T) {
 		t.Errorf("the image was not removed; removed = %q", images.removed)
 	}
 }
+
+// A pending create by a manifest-list digest holds a platform image the cache keys under a different digest, so rm by that child digest must match it through the cache, not the list digest the reference names (SHARD-573).
+func TestImageRemoveRefusesAPendingManifestListHolderByCacheDigest(t *testing.T) {
+	const (
+		listDigest  = "sha256:" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+		childDigest = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		listRef     = "registry.example.com/app@" + listDigest
+		childRef    = "registry.example.com/app@" + childDigest
+	)
+
+	images := &refImages{
+		images:   []image.Image{{Reference: listRef, Digest: childDigest}},
+		orphaned: []string{childDigest},
+	}
+	repo := &fakeRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb-1", Image: listRef}}}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Images: images, Snapshots: refSnapshots{}})
+
+	_, err := stores.RemoveImage(t.Context(), childRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || !slices.Equal(held.Users, []string{"sb-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming sb-1", err)
+	}
+	if images.removed != "" {
+		t.Errorf("the refusal still removed %q", images.removed)
+	}
+}
