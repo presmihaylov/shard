@@ -2,12 +2,21 @@
 
 The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
 
-`useshards` is not on npm yet, so build it from the repository:
+`useshards` is not on npm. Until its GitHub release is published, build it from a checkout of this
+repository:
 
 ```sh
 git clone https://github.com/presmihaylov/shard.git
 cd shard/sdks/typescript
 npm install && npm run build
+```
+
+To use that build in another project, run `npm install /path/to/shard/sdks/typescript` there.
+
+Once the GitHub release is published, install its tarball:
+
+```sh
+npm install https://github.com/presmihaylov/shard/releases/download/sdk-typescript-v0.1.0/useshards-0.1.0.tgz
 ```
 
 Node 20.3 or later. The one runtime dependency is `openapi-fetch`.

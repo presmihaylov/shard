@@ -88,3 +88,6 @@ func SetRedialGrace(grace time.Duration) (restore func()) {
 
 	return func() { redialGrace = was }
 }
+
+// RestoreFiles swaps the checkpoint's overlay under the sandbox, which a test drives directly to prove a failed copy keeps the live overlay.
+func RestoreFiles(dir, stateDir string) error { return restoreFiles(dir, stateDir) }

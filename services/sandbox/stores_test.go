@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
@@ -279,5 +280,146 @@ func TestPolicyViewSaysWhetherDNSIsOpen(t *testing.T) {
 		if view.DNS != tc.want {
 			t.Errorf("the view of %+v says dns is %q, want %q", tc.rule, view.DNS, tc.want)
 		}
+	}
+}
+
+// heldDigest is the digest the one image is pinned at, long enough to parse as a real by-digest reference.
+const heldDigest = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+const (
+	// tagRef is its own canonical form, so a holder by tag compares equal without the docker.io expansion.
+	tagRef    = "registry.example.com/app:v1"
+	digestRef = "registry.example.com/app@" + heldDigest
+)
+
+// refImages is the image store the rm verb drives: it lists the index, names the orphaned digests, and runs free.
+type refImages struct {
+	images   []image.Image
+	orphaned []string
+	removed  string
+}
+
+func (f *refImages) Pull(context.Context, string) (image.Image, error) { return image.Image{}, nil }
+func (f *refImages) List() ([]image.Image, error)                      { return f.images, nil }
+func (f *refImages) Orphaned(string) ([]string, error)                 { return f.orphaned, nil }
+
+func (f *refImages) Remove(_ context.Context, ref string, free func() error) error {
+	if err := free(); err != nil {
+		return err
+	}
+	f.removed = ref
+
+	return nil
+}
+
+// refSnapshots is the snapshot lister the rm verb reads to find a layer that sits over the image.
+type refSnapshots struct{ snaps []models.Snapshot }
+
+func (f refSnapshots) List() ([]models.Snapshot, error) { return f.snaps, nil }
+
+// imageHeldBy wires the rm verb over one image whose rootfs the tag names, held by the given sandboxes and snapshots.
+func imageHeldBy(t *testing.T, sandboxes []models.Sandbox, snaps []models.Snapshot) (*sandbox.Stores, *refImages) {
+	t.Helper()
+
+	images := &refImages{
+		images:   []image.Image{{Reference: tagRef, Digest: heldDigest}},
+		orphaned: []string{heldDigest},
+	}
+	repo := &fakeRepo{r: &recorder{}, left: sandboxes}
+
+	return sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Images: images, Snapshots: refSnapshots{snaps: snaps}}), images
+}
+
+// A sandbox created by digest holds the rootfs that an rm of the tag would delete, so rm refuses it (SHARD-573).
+func TestImageRemoveRefusesASandboxThatHoldsItByDigest(t *testing.T) {
+	stores, images := imageHeldBy(t, []models.Sandbox{{ID: "sb-1", Image: digestRef, Digest: heldDigest}}, nil)
+
+	_, err := stores.RemoveImage(t.Context(), tagRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || !slices.Equal(held.Users, []string{"sb-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming sb-1", err)
+	}
+	if images.removed != "" {
+		t.Errorf("the refusal still removed %q", images.removed)
+	}
+}
+
+// A snapshot created by digest holds the same rootfs, so rm refuses it too (SHARD-573).
+func TestImageRemoveRefusesASnapshotThatHoldsItByDigest(t *testing.T) {
+	stores, images := imageHeldBy(t, nil, []models.Snapshot{{ID: "snap-1", Image: digestRef, Digest: heldDigest}})
+
+	_, err := stores.RemoveImage(t.Context(), tagRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || held.Noun != "snapshot" || !slices.Equal(held.Users, []string{"snap-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming snapshot snap-1", err)
+	}
+	if images.removed != "" {
+		t.Errorf("the refusal still removed %q", images.removed)
+	}
+}
+
+// A create still mid-flight has no resolved digest yet, so the by-digest reference it holds is what rm reads (SHARD-573).
+func TestImageRemoveRefusesAPendingByDigestCreate(t *testing.T) {
+	stores, _ := imageHeldBy(t, []models.Sandbox{{ID: "sb-1", Image: digestRef}}, nil)
+
+	_, err := stores.RemoveImage(t.Context(), tagRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || !slices.Equal(held.Users, []string{"sb-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming sb-1", err)
+	}
+}
+
+// The tag holder matched before the fix still matches: a by-reference record refuses the rm as it always did.
+func TestImageRemoveRefusesASandboxThatHoldsItByTag(t *testing.T) {
+	stores, _ := imageHeldBy(t, []models.Sandbox{{ID: "sb-1", Image: tagRef}}, nil)
+
+	_, err := stores.RemoveImage(t.Context(), tagRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || !slices.Equal(held.Users, []string{"sb-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming sb-1", err)
+	}
+}
+
+// A record that holds a different digest is no holder, so rm does not refuse over it (SHARD-573).
+func TestImageRemoveIgnoresARecordThatHoldsAnotherDigest(t *testing.T) {
+	otherDigest := "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	stores, images := imageHeldBy(t, []models.Sandbox{{ID: "sb-1", Image: "registry.example.com/other@" + otherDigest, Digest: otherDigest}}, nil)
+
+	if _, err := stores.RemoveImage(t.Context(), tagRef, false); err != nil {
+		t.Fatalf("RemoveImage = %v, want it to remove the unheld image", err)
+	}
+	if images.removed != tagRef {
+		t.Errorf("the image was not removed; removed = %q", images.removed)
+	}
+}
+
+// A pending create by a manifest-list digest holds a platform image the cache keys under a different digest, so rm by that child digest must match it through the cache, not the list digest the reference names (SHARD-573).
+func TestImageRemoveRefusesAPendingManifestListHolderByCacheDigest(t *testing.T) {
+	const (
+		listDigest  = "sha256:" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+		childDigest = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		listRef     = "registry.example.com/app@" + listDigest
+		childRef    = "registry.example.com/app@" + childDigest
+	)
+
+	images := &refImages{
+		images:   []image.Image{{Reference: listRef, Digest: childDigest}},
+		orphaned: []string{childDigest},
+	}
+	repo := &fakeRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb-1", Image: listRef}}}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Images: images, Snapshots: refSnapshots{}})
+
+	_, err := stores.RemoveImage(t.Context(), childRef, false)
+
+	held, ok := errors.AsType[*sandbox.HeldError](err)
+	if !ok || !slices.Equal(held.Users, []string{"sb-1"}) {
+		t.Fatalf("RemoveImage = %v, want a refusal naming sb-1", err)
+	}
+	if images.removed != "" {
+		t.Errorf("the refusal still removed %q", images.removed)
 	}
 }

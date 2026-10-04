@@ -246,6 +246,11 @@ func Canonical(ref string) (string, error) {
 	return registry.Canonical(ref)
 }
 
+// DigestOf is the digest a by-digest reference names, empty when the reference names a tag.
+func DigestOf(ref string) (string, bool) {
+	return registry.DigestOf(ref)
+}
+
 // List returns every pulled image, ordered by reference.
 func (s *Service) List() ([]Image, error) {
 	cached, err := s.store.List()
