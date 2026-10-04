@@ -17,17 +17,27 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
 
-## Global flags
+## Global options
 
 They go before the verb.
 
 | flag | what |
 | --- | --- |
 | `--root <dir>` | where shard keeps its state (default `/var/lib/shard`) |
-| `--remote <url>` | the https URL of the proxy in front of `shard serve`; also `SHARD_REMOTE` |
-| `--token-file <path>` | a token file for `--remote`; the token comes from it, then `SHARD_API_KEY`, then `SHARD_TOKEN_FILE` |
-| `--ca-file <pem>` | the CA that signed the proxy's certificate; also `SHARD_CA_FILE` |
+| `--remote <url>` | the URL of the Shard API server, `shard serve` or the proxy in front of it; `http` or `https`, and `https` is recommended |
 | `--version` | print the client version; it never fails |
+
+A remote client reads three environment variables.
+
+| variable | what |
+| --- | --- |
+| `SHARD_REMOTE` | the API server URL; `--remote` overrides it |
+| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record |
+| `SHARD_CA_FILE` | a custom CA certificate file, for `https` only; unset, the host's trust store decides |
+
+An `http` remote encrypts nothing, so every command over one prints one warning to stderr and never
+to stdout. Use it only on localhost or through a trusted encrypted network. `SHARD_CA_FILE` with an
+`http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
 because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
@@ -105,13 +115,15 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
+| `capabilities` | `--format` | table | the eight lifecycle verbs and whether the server supports each |
 | `daemon` | `--provider --timeout --insecure-registry --log` | - | its log; `--log` on a Mac sends stdout and stderr to that file |
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
-| `serve` | `--listen --signing-key-file --tokens-file` | - | its log |
-| `tokens mint` | `--name --signing-key-file --duration --scopes --tokens-file --format` | json | the token record |
-| `tokens list` | `--signing-key-file --tokens-file --format` | table | the ledger |
-| `tokens revoke <id>` | `--name --signing-key-file --tokens-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
+| `serve` | `--listen --signing-key-file` | - | its log |
+| `tokens mint` | `--name --signing-key-file --duration --scopes --format` | json | the token record |
+| `tokens list` | `--signing-key-file --format` | table | the ledger |
+| `tokens revoke <id>` | `--name --signing-key-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
+| `tokens scopes` | `--format` | table | every scope a token can carry on the server it asks |
 | `version` | `--format` | table | the client and daemon versions |
 
 ## Output formats
@@ -275,6 +287,12 @@ null}` and the sandbox reaches nothing.
 }
 ```
 
+`capabilities` is the body of `GET /v0/capabilities`, the same eight keys for every provider:
+
+```json
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+```
+
 `version`. `shim` is `embedded` or `absent` on a Mac, as the VM shim is in the binary, and absent
 elsewhere:
 
@@ -288,9 +306,10 @@ line.
 
 ### Tables
 
-`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME RESTART POLICY`, and
-`snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `tokens scopes`,
+`info`, `capabilities`, `daemon status` and `version` print tables by default. `list` prints `ID NAME
+IMAGE STATE UPTIME RESTART POLICY`, `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`, and
+`capabilities` prints `CAPABILITY SUPPORTED`.
 
 The tables of the JSON verbs:
 
@@ -300,6 +319,8 @@ The tables of the JSON verbs:
 - `snapshot inspect` prints `FIELD VALUE` rows.
 - `policy show` prints `name`, `dns` and `holders`, then a `RULE` section. `holders` has no default.
 - `tokens mint` prints `TOKEN EXPIRES SCOPES`.
+
+`tokens scopes` prints `SCOPE DESCRIPTION`, and its JSON is the body of `GET /v0/scopes`.
 
 ## Snapshots
 

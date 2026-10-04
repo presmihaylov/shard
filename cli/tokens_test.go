@@ -8,16 +8,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/serve"
 )
 
 func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags, secret := newFrontApp(t, &out)
+	app, f, secret := newFrontApp(t, &out)
 
 	// Mint over the front's own signing key, so the record lands in the ledger the front reads and the front accepts it.
 	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret}); err != nil {
@@ -43,19 +46,28 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 		t.Errorf("the record carries scopes %v, want [\"*\"] by default", record.Scopes)
 	}
 
-	// The client's --token-file takes the whole record; the bare-token form is covered by the other front tests.
-	tokenPath := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenPath, []byte(printed+"\n"), 0o600); err != nil {
-		t.Fatalf("write the token file: %v", err)
-	}
-	flags[3] = tokenPath
+	// SHARD_API_KEY takes the token field of the record.
+	f.key = record.Token
 
 	out.Reset()
-	if err := app.Run(t.Context(), append(flags, "list")); err != nil {
+	if err := app.Run(t.Context(), append(f.use(t), "list")); err != nil {
 		t.Fatalf("list with the minted record: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
 		t.Errorf("list with the minted record printed %q, want the sandbox the daemon holds", out.String())
+	}
+}
+
+// A custom registry can make mint and revoke disagree with the front.
+func TestTokensFileIsGone(t *testing.T) {
+	for _, verb := range [][]string{{"serve"}, {"tokens", "mint", "--name", "ci"}, {"tokens", "list"}, {"tokens", "revoke", "--name", "ci"}} {
+		var out bytes.Buffer
+
+		args := append(slices.Clone(verb), "--tokens-file", filepath.Join(t.TempDir(), "serve.tokens"))
+		err := newApp(t, &out).Run(t.Context(), args)
+		if err == nil || !strings.HasPrefix(err.Error(), "unknown flag --tokens-file") {
+			t.Errorf("%v returned %v, want unknown flag --tokens-file", args, err)
+		}
 	}
 }
 
@@ -128,15 +140,16 @@ func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(app.Root, "auth", "signing-key")); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("mint left no 0600 key at the default path: %v", err)
 	}
-	tokenPath := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenPath, out.Bytes(), 0o600); err != nil {
-		t.Fatalf("write the token file: %v", err)
+	var record serve.Token
+	if err := json.Unmarshal(out.Bytes(), &record); err != nil {
+		t.Fatalf("mint printed %q, not one JSON object: %v", out.String(), err)
 	}
 
-	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard})
+	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard}, true)
+	f := front{url: "https://" + address, key: record.Token, ca: cert}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "list"}); err != nil {
+	if err := app.Run(t.Context(), append(f.use(t), "list")); err != nil {
 		t.Fatalf("list through the front with the minted token: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
@@ -263,7 +276,7 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 			t.Errorf("the refusal is %q, and it must name %s", err, want)
 		}
 	}
-	if _, err := os.Stat(serve.TokensPath(secret, "")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(serve.TokensPath(secret)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("mint left a ledger for a token it refused: %v", err)
 	}
 }
@@ -323,3 +336,66 @@ func TestTokensMintRefusesTheRetiredScopes(t *testing.T) {
 
 // everyScope is "*" and the six scopes docs/daemon.md names.
 var everyScope = []string{"*", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "secret:*", "policy:*"}
+
+// Mint and discovery read one table, so mint takes every scope tokens scopes lists and refuses any other.
+func TestMintTakesEveryListedScopeAndNoOther(t *testing.T) {
+	var out bytes.Buffer
+	app := newApp(t, &out)
+
+	for _, scope := range models.Scopes {
+		if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", scope.Name}); err != nil {
+			t.Errorf("mint --scopes %s: %v", scope.Name, err)
+		}
+	}
+
+	err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", "tokens:admin"})
+	if err == nil || !strings.Contains(err.Error(), `unknown scope "tokens:admin"`) {
+		t.Errorf("mint --scopes tokens:admin returned %v, want the unknown scope refused", err)
+	}
+}
+
+func TestTokensScopesPrintsTheServerTable(t *testing.T) {
+	var out bytes.Buffer
+	app, _ := newClientApp(t, &out, models.Sandbox{})
+
+	if err := app.Run(t.Context(), []string{"tokens", "scopes"}); err != nil {
+		t.Fatalf("tokens scopes: %v", err)
+	}
+
+	want := strings.Join([]string{
+		"SCOPE            DESCRIPTION",
+		"sandbox:read     View sandboxes, logs and snapshots",
+		"sandbox:write    Create sandboxes, change their state and create snapshots",
+		"sandbox:delete   Remove sandboxes and snapshots",
+		"exec             Run commands and access sandbox files",
+		"secret:*         Manage secrets and secret grants",
+		"policy:*         Manage policies and their sandbox assignments",
+		"*                All available permissions",
+		"",
+	}, "\n")
+	if got := out.String(); got != want {
+		t.Errorf("tokens scopes printed\n%s\nwant\n%s", got, want)
+	}
+}
+
+// The CLI prints the body the route answers, so a script reads one shape from either.
+func TestTokensScopesJSONIsTheRouteBody(t *testing.T) {
+	var out bytes.Buffer
+	app, _ := newClientApp(t, &out, models.Sandbox{})
+
+	if err := app.Run(t.Context(), []string{"tokens", "scopes", "--format", "json"}); err != nil {
+		t.Fatalf("tokens scopes --format json: %v", err)
+	}
+
+	var got map[string][]map[string]string
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	want := map[string][]map[string]string{"scopes": {}}
+	for _, scope := range models.Scopes {
+		want["scopes"] = append(want["scopes"], map[string]string{"name": scope.Name, "description": scope.Description})
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tokens scopes --format json printed %v, want %v", got, want)
+	}
+}

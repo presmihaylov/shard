@@ -110,6 +110,24 @@ func TestPullStreamEndsInAnErrorLineAfterTheFirstEvent(t *testing.T) {
 	}
 }
 
+// The create route is public, so its last line after the 201 says the generic text and the log keeps the cause.
+func TestCreateWaitStreamEndsInThePublicTextAfterTheFirstEvent(t *testing.T) {
+	s := seed(t)
+	s.verbs.pulled = []image.Event{{Status: image.StatusCached, Reference: "docker.io/library/alpine:3.20", Path: "/images/alpine"}}
+	s.verbs.err = errors.New("runsc create /var/lib/shard/sandboxes/sb1 pid 4242: boom")
+
+	_, _, lines := sendStreamed(t, s.server, "/v0/sandboxes?wait=true", `{"image":"alpine:3.20"}`)
+	if len(lines) != 2 {
+		t.Fatalf("the create streamed %v, want the event and the error", lines)
+	}
+	if got := errorOf(t, lines[1]); got.code != "internal" || got.message != internalText {
+		t.Errorf("the last line is %+v, want internal with only the generic text", got)
+	}
+	if !strings.Contains(s.log.String(), "sb1 pid 4242: boom") {
+		t.Errorf("the daemon log %q lacks the cause", s.log.String())
+	}
+}
+
 func TestCreateWaitStreamsThePullThenTheRecord(t *testing.T) {
 	s := seed(t)
 	s.verbs.createdID = s.running.ID

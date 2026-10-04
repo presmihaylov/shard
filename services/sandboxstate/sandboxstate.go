@@ -325,7 +325,7 @@ func (r *Repository) Get(id string) (models.Sandbox, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.Sandbox{}, fmt.Errorf("sandbox %s: %w", id, ErrNotFound)
+		return models.Sandbox{}, &models.NotFoundError{Err: fmt.Errorf("sandbox %s: %w", id, ErrNotFound)}
 	}
 	if err != nil {
 		return models.Sandbox{}, fmt.Errorf("read %s: %w", path, err)
@@ -569,12 +569,18 @@ func (e *UnreadableError) Error() string { return e.Err.Error() }
 
 func (e *UnreadableError) Unwrap() error { return e.Err }
 
+func (e *UnreadableError) Public() string {
+	return fmt.Sprintf("sandbox %s: its record cannot be read", e.ID)
+}
+
 // ValidationError is a refused id or name: the caller's spelling, never the state of the host.
 type ValidationError struct {
 	Reason string
 }
 
 func (e *ValidationError) Error() string { return e.Reason }
+
+func (e *ValidationError) Public() string { return e.Reason }
 
 // NameTakenError is a create whose name another sandbox or snapshot already holds: the caller's input, not a host fault.
 type NameTakenError struct {
@@ -587,6 +593,8 @@ type NameTakenError struct {
 func (e *NameTakenError) Error() string {
 	return fmt.Sprintf("the name %q is taken by %s %s", e.Name, e.Noun, e.Holder)
 }
+
+func (e *NameTakenError) Public() string { return e.Error() }
 
 // plainComponent carries the noun and the kind, so a refused name never reads as a refused id.
 func plainComponent(noun, kind, s string) error {

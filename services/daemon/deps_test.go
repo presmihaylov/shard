@@ -258,3 +258,41 @@ func TestADepsWithNoOutLogsNowhere(t *testing.T) {
 		t.Fatalf("log = %q, want the line", out.String())
 	}
 }
+
+// The redactor reads the store at each line, so a secret set or rotated after the daemon came up is covered.
+func TestTheRedactorCoversASetAndARotationAfterTheStart(t *testing.T) {
+	d := &deps{cfg: Config{Root: t.TempDir()}}
+	secrets, err := d.secrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := secrets.Set("API_KEY", "sk_live_synthetic_0001", []string{"api.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.redact("start failed: API_KEY=sk_live_synthetic_0001"); got != "start failed: API_KEY=<secret API_KEY>" {
+		t.Errorf("redact after a set = %q, want the name in place of the value", got)
+	}
+
+	if _, err := secrets.Set("API_KEY", "sk_live_synthetic_0002", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.redact("start failed: API_KEY=sk_live_synthetic_0002"); got != "start failed: API_KEY=<secret API_KEY>" {
+		t.Errorf("redact after a rotation = %q, want the name in place of the new value", got)
+	}
+}
+
+func TestTheRedactorWithholdsALineItCannotCheck(t *testing.T) {
+	root := t.TempDir()
+	d := &deps{cfg: Config{Root: root}}
+	if _, err := d.secrets(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secrets", "BROKEN"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := d.redact("start failed: BROKEN=sk_live_synthetic_0003"); got != withheld {
+		t.Errorf("redact over an unreadable record = %q, want the line withheld", got)
+	}
+}

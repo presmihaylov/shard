@@ -232,7 +232,9 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 	err := s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
 		rec.State = models.StateFailed
 		rec.PID = 0
+		// The reason is one of shard's own constants, so the public text is the whole of it.
 		rec.FailedReason = reason
+		rec.FailedPublic = reason
 
 		return nil
 	})

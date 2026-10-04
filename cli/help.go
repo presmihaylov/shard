@@ -28,6 +28,8 @@ type verbHelp struct {
 	about string
 	args  []row
 	flags []flagHelp
+	// env is the variables it reads, which only the top level lists.
+	env   []row
 	notes []note
 	// examples print as written, one call per line, so each pastes whole however wide it is.
 	examples []string
@@ -84,7 +86,7 @@ var verbGroups = []struct {
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
-	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
+	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "tokens", "version"}},
 }
 
 // sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
@@ -105,10 +107,8 @@ var (
 	formatTableHelp = flagHelp{"--format <format>", "output format: json or table", string(formatTable)}
 	formatJSONHelp  = flagHelp{"--format <format>", "output format: json or table", string(formatJSON)}
 	signingKeyHelp  = flagHelp{"--signing-key-file <path>", "token signing key", signingKeyDefault}
-	tokensFileHelp  = flagHelp{"--tokens-file <path>", "token registry file; defaults beside the signing key", ""}
 	// The read-only tokens verbs find the registry through the key and never create one.
-	registryKeyHelp  = flagHelp{"--signing-key-file <path>", "locate the token registry beside this key", signingKeyDefault}
-	registryFileHelp = flagHelp{"--tokens-file <path>", "token registry file; overrides the default location", ""}
+	registryKeyHelp = flagHelp{"--signing-key-file <path>", "locate the token registry beside this key", signingKeyDefault}
 )
 
 // The notes more than one verb prints.
@@ -137,14 +137,16 @@ var helps = map[string]verbHelp{
 		about: "A runtime for isolated sandboxes on your own infrastructure. (pre-alpha)",
 		flags: []flagHelp{
 			{"--root <dir>", "directory for local Shard data", DefaultRoot},
-			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
-			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
-			{"--ca-file <pem>", "the CA certificate that signed the certificate of the proxy in front of serve", ""},
+			{"--remote <url>", "URL of the Shard API server; HTTP/HTTPS supported,\nHTTPS recommended", ""},
 			{"--version", "show the client version", ""},
 		},
+		env: []row{
+			{client.RemoteEnv, "API server URL; --remote overrides it"},
+			{client.APIKeyEnv, "API token from shard tokens mint"},
+			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
+		},
 		notes: []note{
-			para(fmt.Sprintf("Scripts and CI export %s and %s, the token field of a shard tokens mint record, and every verb goes to shard serve.", client.RemoteEnv, client.APIKeyEnv)),
-			para(fmt.Sprintf("The token comes from --token-file, then %s, then %s; an empty variable is unset. --remote and --ca-file can also come from %s and %s.", client.APIKeyEnv, client.TokenFileEnv, client.RemoteEnv, client.CAFileEnv)),
+			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL, Shard connects to the local daemon."),
 		},
 	},
 	"create": {
@@ -557,6 +559,17 @@ var helps = map[string]verbHelp{
 		notes:    []note{para("Shows the version, provider, process details and background tasks.")},
 		examples: []string{"shard daemon status", "shard daemon status --format json"},
 	},
+	"capabilities": {
+		usage:   []string{"capabilities [OPTIONS]"},
+		summary: "show the lifecycle verbs the server supports",
+		about:   "Show sandbox lifecycle capabilities supported by the connected Shard server.",
+		flags:   []flagHelp{formatTableHelp},
+		notes: []note{para(
+			"Lists all eight verbs, each true or false for the server's provider.",
+			"Token scopes and sandbox states never change the answer.",
+		)},
+		examples: []string{"shard capabilities", "shard capabilities --format json"},
+	},
 	"info": {
 		usage:   []string{"info [OPTIONS]"},
 		summary: "show available providers and the default for this host",
@@ -573,7 +586,6 @@ var helps = map[string]verbHelp{
 		flags: []flagHelp{
 			{"--listen <address>", "listen address", serve.DefaultListen},
 			signingKeyHelp,
-			tokensFileHelp,
 		},
 		notes: []note{
 			para("The local daemon must be active.", "Use 'shard tokens mint' to create API tokens."),
@@ -585,7 +597,7 @@ var helps = map[string]verbHelp{
 	"tokens": {
 		usage:   []string{"tokens COMMAND [OPTIONS] [ARGS...]"},
 		summary: "create, list and revoke API tokens",
-		notes:   []note{para("These commands run locally.")},
+		notes:   []note{para("mint, list and revoke run locally.")},
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint [OPTIONS]"},
@@ -595,10 +607,10 @@ var helps = map[string]verbHelp{
 			{"--duration <duration>", "token lifetime; default no expiry", ""},
 			{"--scopes <list>", "permissions, separated by commas; default all permissions", ""},
 			signingKeyHelp,
-			tokensFileHelp,
 			formatJSONHelp,
 		},
 		notes: []note{
+			para("Run shard tokens scopes to list available scopes."),
 			signingKeyNote,
 			para("The response includes the API token.", "Use its 'token' value as "+client.APIKeyEnv+"."),
 		},
@@ -610,7 +622,7 @@ var helps = map[string]verbHelp{
 	"tokens list": {
 		usage:   []string{"tokens list [OPTIONS]"},
 		summary: "list API tokens and their status",
-		flags:   []flagHelp{registryKeyHelp, registryFileHelp, formatTableHelp},
+		flags:   []flagHelp{registryKeyHelp, formatTableHelp},
 		notes: []note{para(
 			"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
 			"Does not create a signing key.",
@@ -624,10 +636,14 @@ var helps = map[string]verbHelp{
 		flags: []flagHelp{
 			{"--name <name>", "revoke all tokens with this name", ""},
 			registryKeyHelp,
-			registryFileHelp,
 		},
 		notes:    []note{para("Revoked tokens are rejected on subsequent requests.")},
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},
+	},
+	"tokens scopes": {
+		usage:   []string{"tokens scopes [OPTIONS]"},
+		summary: "list available token scopes",
+		flags:   []flagHelp{formatTableHelp},
 	},
 	"version": {
 		usage:    []string{"version [OPTIONS]"},
@@ -668,6 +684,9 @@ func helpText(key string) string {
 			heading = "Global options:\n"
 		}
 		sections = append(sections, heading+columns(flagRows(h.flags)))
+	}
+	if len(h.env) > 0 {
+		sections = append(sections, "Environment variables:\n"+columns(h.env))
 	}
 	for _, n := range h.notes {
 		sections = append(sections, n.render())
@@ -780,8 +799,21 @@ func widest(rows []row) int {
 	return width
 }
 
-// wrap appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+// wrap wraps each line of text on its own, so a newline in it starts a line indented by indent.
 func wrap(lead string, indent int, text string) string {
+	var lines []string
+	for i, part := range strings.Split(text, "\n") {
+		if i > 0 {
+			lead = strings.Repeat(" ", indent)
+		}
+		lines = append(lines, wrapLine(lead, indent, part))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// wrapLine appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+func wrapLine(lead string, indent int, text string) string {
 	var lines []string
 	line, empty := lead, true
 	for word := range strings.FieldsSeq(text) {

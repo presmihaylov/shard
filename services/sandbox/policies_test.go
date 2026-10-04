@@ -2,6 +2,8 @@ package sandbox_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -155,6 +157,42 @@ func TestAttachPolicyRefusesAPolicyThatDoesNotExistAndWritesNothing(t *testing.T
 	}
 	if _, err := os.Stat(filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); !os.IsNotExist(err) {
 		t.Errorf("the refused attach wrote the writable layer: %v", err)
+	}
+}
+
+// brokenPolicies is a policy store whose read fails on the host, which is no fault of the request.
+type brokenPolicies struct{}
+
+func (brokenPolicies) Get(name string) (models.Policy, error) {
+	return models.Policy{}, fmt.Errorf("read policy %s: open /var/lib/shard/policies/%s.json: permission denied", name, name)
+}
+
+func TestAPolicyStoreThatCannotBeReadIsNoBadRequest(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{}, func(c *sandbox.Config) { c.Policies = brokenPolicies{} })
+	req := alpine()
+	req.Policy = "locked"
+
+	_, err := svc.Create(t.Context(), req)
+	var request *sandbox.RequestError
+	if err == nil || errors.As(err, &request) {
+		t.Fatalf("create = %v, want a failure that is not the request's fault", err)
+	}
+	if public, ok := sandbox.PublicText(err); ok {
+		t.Errorf("public text = %q, want none for a host failure", public)
+	}
+}
+
+func TestAPolicyTheStoreDoesNotHoldIsABadRequest(t *testing.T) {
+	svc, _ := newService(t, &recorder{}, models.Sandbox{})
+	req := alpine()
+	req.Policy = "missing"
+
+	_, err := svc.Create(t.Context(), req)
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("create = %v, want a request error", err)
+	}
+	if public, ok := sandbox.PublicText(err); !ok || !strings.Contains(public, "missing") {
+		t.Errorf("public text = %q, %v, want the name the request sent", public, ok)
 	}
 }
 

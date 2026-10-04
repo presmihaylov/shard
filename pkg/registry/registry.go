@@ -22,6 +22,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/presmihaylov/shard/pkg/store"
 )
@@ -126,7 +127,16 @@ func (t httpsOnly) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.next.RoundTrip(req) //nolint:wrapcheck // a RoundTripper returns the transport's error as it is
 	}
 
-	return nil, fmt.Errorf("refusing plaintext http to %s: start shard daemon with --insecure-registry %s to allow it", req.URL.Host, req.URL.Host)
+	return nil, &PlaintextError{Host: req.URL.Host}
+}
+
+// PlaintextError is a registry reached over plain http without the opt-in; its text names only the host the ref named.
+type PlaintextError struct {
+	Host string
+}
+
+func (e *PlaintextError) Error() string {
+	return fmt.Sprintf("refusing plaintext http to %s: start shard daemon with --insecure-registry %s to allow it", e.Host, e.Host)
 }
 
 // Image is one cached image. It carries no layer bytes; ask Layers for those.
@@ -189,11 +199,11 @@ func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Image,
 		remote.WithPlatform(s.platform),
 	)
 	if err != nil {
-		return Image{}, fmt.Errorf("fetch %s: %w", parsed.Name(), err)
+		return Image{}, &FetchError{Ref: parsed.Name(), Err: err}
 	}
 
 	if err := announce(parsed.Name(), img, progress); err != nil {
-		return Image{}, fmt.Errorf("fetch %s: %w", parsed.Name(), err)
+		return Image{}, &FetchError{Ref: parsed.Name(), Err: err}
 	}
 
 	if err := s.write(parsed.Name(), img, progress); err != nil {
@@ -202,6 +212,40 @@ func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Image,
 
 	// Read back off the layout rather than off the wire, so a pull that reports success is a pull you can use.
 	return s.Get(parsed.Name())
+}
+
+// FetchError is a manifest the registry did not hand over; its public text keeps only the registry's answer, since a credential helper's failure can name a host path.
+type FetchError struct {
+	Ref string
+	Err error
+}
+
+func (e *FetchError) Error() string { return fmt.Sprintf("fetch %s: %v", e.Ref, e.Err) }
+
+func (e *FetchError) Unwrap() error { return e.Err }
+
+func (e *FetchError) Public() string {
+	if plaintext, ok := errors.AsType[*PlaintextError](e.Err); ok {
+		return fmt.Sprintf("fetch %s: %v", e.Ref, plaintext)
+	}
+
+	answer, ok := errors.AsType[*transport.Error](e.Err)
+	if !ok {
+		return e.Ref + " could not be fetched from its registry"
+	}
+
+	switch {
+	case answer.StatusCode == http.StatusUnauthorized, answer.StatusCode == http.StatusForbidden:
+		return "the registry refused access to " + e.Ref
+	case answer.StatusCode == http.StatusNotFound, slices.ContainsFunc(answer.Errors, unknown):
+		return e.Ref + " is not in its registry"
+	}
+
+	return e.Ref + " could not be fetched from its registry"
+}
+
+func unknown(d transport.Diagnostic) bool {
+	return d.Code == transport.ManifestUnknownErrorCode || d.Code == transport.NameUnknownErrorCode
 }
 
 // Get returns a cached image and never touches the network.

@@ -89,8 +89,9 @@ func TestRunExitsWith125WhenShardFails(t *testing.T) {
 	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "true"})
 
 	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "forced failure at images.Pull") {
-		t.Fatalf("run returned %v, want 125 with the daemon's reason", err)
+	// The create route is public, so the cause stays in the daemon log.
+	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "its log has the cause") || strings.Contains(exit.Message, "forced failure") {
+		t.Fatalf("run returned %v, want 125 with the public text", err)
 	}
 }
 
@@ -157,6 +158,8 @@ func TestRunStopsTheAppOnTheFirstInterruptAndExitsWithItsCode(t *testing.T) {
 	provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
 
 	signals, done := startRun(t, app, "--restart", "always", "alpine:3.20", "sleep", "60")
+	// An interrupt during the create takes cancelApp's path, which exits 130, so the press waits for the attach.
+	waitFor(t, "the attach", func() bool { return slices.Contains(r.seen(), "provider.LogPath") })
 	signals <- syscall.SIGINT
 
 	err := <-done

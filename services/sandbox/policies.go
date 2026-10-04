@@ -33,7 +33,7 @@ func (s *Service) AttachPolicy(ctx context.Context, ref, name string) (models.Sa
 	}
 
 	if _, err := s.cfg.Policies.Get(name); err != nil {
-		return models.Sandbox{}, &RequestError{Err: err}
+		return models.Sandbox{}, policyRefused(name, err)
 	}
 
 	// An attach on a sandbox that held neither policy nor secret is what fronts it, so the CA goes first.

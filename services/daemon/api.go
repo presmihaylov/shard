@@ -242,7 +242,7 @@ func (t apiTask) Run(ctx context.Context) error {
 	}
 	log.New(cfg.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, cfg.Out)
+	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, t.deps.redact, cfg.Out)
 
 	return api.Serve(ctx, listener, handler)
 }
@@ -358,7 +358,7 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 		close(p.done)
 
 		if p.err != nil {
-			log.New(l.deps.cfg.Out, "", log.LstdFlags).Printf("create %s failed: %v", sb.ID, p.err)
+			l.deps.logger().Printf("create %s failed: %s", sb.ID, l.deps.redact(p.err.Error()))
 		}
 	})
 

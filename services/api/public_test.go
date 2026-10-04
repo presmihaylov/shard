@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"maps"
 	"net/http"
 	"slices"
 	"testing"
@@ -103,17 +104,31 @@ func TestVersionNamesTheAPIVersion(t *testing.T) {
 	}
 }
 
-// A client reads an empty list as a provider that refuses nothing, so the list is never null.
-func TestCapabilitiesNameEveryVerbTheProviderRefuses(t *testing.T) {
+// Every provider answers the same eight keys, and sysbox claims none of the optional verbs.
+func TestCapabilitiesAnswerEveryLifecycleVerb(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/capabilities")
-	unsupported, ok := body["unsupported"].([]any)
-	if status != http.StatusOK || body["provider"] != "sysbox" || !ok {
-		t.Fatalf("GET /v0/capabilities answered %d %v, want sysbox and a list", status, body)
+	want := map[string]any{"create": true, "start": true, "stop": true, "remove": true, "pause": false, "resume": false, "fork": false, "snapshot": true}
+	if status != http.StatusOK || !maps.Equal(body, want) {
+		t.Errorf("GET /v0/capabilities answered %d %v, want %v", status, body, want)
 	}
-	if got := []any{models.VerbPause, models.VerbResume, models.VerbFork}; !slices.Equal(unsupported, got) {
-		t.Errorf("sysbox refuses %v, want %v", unsupported, got)
+}
+
+// Discovery answers the table mint checks against, name and description, so the two never disagree.
+func TestScopesAnswerTheTableMintChecks(t *testing.T) {
+	s := seed(t)
+
+	status, body := get(t, s.server, "/v0/scopes")
+	listed, ok := body["scopes"].([]any)
+	if status != http.StatusOK || len(body) != 1 || !ok || len(listed) != len(models.Scopes) {
+		t.Fatalf("GET /v0/scopes answered %d %v, want only the %d scopes", status, body, len(models.Scopes))
+	}
+	for i, want := range models.Scopes {
+		got, _ := listed[i].(map[string]any)
+		if len(got) != 2 || got["name"] != want.Name || got["description"] != want.Description {
+			t.Errorf("scope %d reads %v, want name %q and description %q", i, got, want.Name, want.Description)
+		}
 	}
 }
 

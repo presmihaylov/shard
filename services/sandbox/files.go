@@ -57,6 +57,15 @@ func (e *FileNotFoundError) Error() string { return e.Err.Error() }
 
 func (e *FileNotFoundError) Unwrap() error { return e.Err }
 
+// FileInvalidError is a guest path or mode the guest refused, which the API answers 400 for; its public text is the guest's refusal alone.
+type FileInvalidError struct {
+	Err error
+}
+
+func (e *FileInvalidError) Error() string { return e.Err.Error() }
+
+func (e *FileInvalidError) Unwrap() error { return e.Err }
+
 // StatFile answers the shape of one guest path, never following a final symlink.
 func (s *Service) StatFile(ctx context.Context, ref, guestPath string) (models.FileStat, error) {
 	if err := checkGuestPath(guestPath); err != nil {
@@ -308,7 +317,7 @@ func fileError(err error) error {
 	case supervisor.FileNotFound:
 		return &FileNotFoundError{Err: err}
 	case supervisor.FileInvalid:
-		return &RequestError{Err: err}
+		return &FileInvalidError{Err: err}
 	}
 
 	return err

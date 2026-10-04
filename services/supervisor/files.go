@@ -63,6 +63,8 @@ func (e *FileError) Error() string {
 	return fmt.Sprintf("%s %s: %s", e.Op, e.Path, e.Message)
 }
 
+func (e *FileError) Public() string { return e.Error() }
+
 // Stat asks the guest for the shape of one path. It never follows a final symlink.
 func Stat(conn io.ReadWriter, path string) (models.FileStat, error) {
 	r, err := open(conn, FileHeader{Op: OpStat, Path: path})

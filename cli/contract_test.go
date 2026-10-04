@@ -107,6 +107,7 @@ func TestTheNamedFormatIsTheOutputTheVerbAlreadyWrites(t *testing.T) {
 		{inspects, []string{"inspect", "web"}, []string{"inspect", "--format", "json", "web"}},
 		{images, []string{"image", "list"}, []string{"image", "list", "--format", "table"}},
 		{images, []string{"version"}, []string{"version", "--format", "table"}},
+		{images, []string{"tokens", "scopes"}, []string{"tokens", "scopes", "--format", "table"}},
 		{secrets, []string{"secret", "list"}, []string{"secret", "list", "--format", "table"}},
 		{local, []string{"tokens", "list"}, []string{"tokens", "list", "--format", "table"}},
 		{local, []string{"info"}, []string{"info", "--format", "table"}},
