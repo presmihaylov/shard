@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ type guardStream struct {
 	delayed bool
 }
 
-func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardStream) (io.Reader, <-chan struct{}) {
+func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardStream) (io.Reader, <-chan struct{}, func() error) {
 	t.Helper()
 	root := shortRoot(t)
 	listener, err := net.Listen("unix", filepath.Join(root, "shard.sock"))
@@ -33,72 +34,7 @@ func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardSt
 	ended := make(chan struct{})
 	go func() {
 		defer close(ended)
-		conn, err := listener.Accept()
-		if err != nil {
-			t.Errorf("accept the stream: %v", err)
-
-			return
-		}
-		defer func() {
-			if err := conn.Close(); !quiet(err) {
-				t.Errorf("close the stream: %v", err)
-			}
-		}()
-		reader := bufio.NewReader(conn)
-		req, err := http.ReadRequest(reader)
-		if err != nil {
-			t.Errorf("read the stream request: %v", err)
-
-			return
-		}
-		if err := req.Body.Close(); err != nil {
-			t.Errorf("close the request body: %v", err)
-
-			return
-		}
-		hungUp := make(chan struct{})
-		go func() {
-			if _, err := io.Copy(io.Discard, reader); !quiet(err) {
-				t.Errorf("read the stream: %v", err)
-			}
-			close(hungUp)
-		}()
-		if mode.delayed {
-			<-hungUp
-
-			return
-		}
-		head := "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-		if mode.upgrade {
-			head = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
-		}
-		if _, err := io.WriteString(conn, head); err != nil {
-			t.Errorf("write the stream response: %v", err)
-
-			return
-		}
-		if !mode.active {
-			<-hungUp
-
-			return
-		}
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-hungUp:
-				return
-			case <-ticker.C:
-				if _, err := io.WriteString(conn, "\x81\x01x"); err != nil {
-					if !quiet(err) {
-						t.Errorf("write stream output: %v", err)
-					}
-					<-hungUp
-
-					return
-				}
-			}
-		}
+		serveGuardPeer(t, listener, mode)
 	}()
 	t.Cleanup(func() {
 		if err := listener.Close(); !quiet(err) {
@@ -110,7 +46,7 @@ func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardSt
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := front(t, root, env.secret)
+	address, stop := openGuardFront(t, root, env.secret)
 	client, err := net.Dial("tcp", address)
 	if err != nil {
 		t.Fatal(err)
@@ -131,30 +67,148 @@ func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardSt
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(client)
-	var output io.Reader = reader
-	if !mode.delayed {
-		response, err := http.ReadResponse(reader, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := response.Body.Close(); err != nil {
-				t.Error(err)
-			}
-		})
-		if !mode.upgrade {
-			output = response.Body
-		}
-		want := http.StatusOK
-		if mode.upgrade {
-			want = http.StatusSwitchingProtocols
-		}
-		if response.StatusCode != want {
-			t.Fatalf("the stream answered %d, want %d", response.StatusCode, want)
-		}
+	if mode.delayed {
+		return reader, ended, stop
 	}
 
-	return output, ended
+	return readGuardResponse(t, reader, mode.upgrade), ended, stop
+}
+
+func serveGuardPeer(t *testing.T, listener net.Listener, mode guardStream) {
+	t.Helper()
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Errorf("accept the stream: %v", err)
+
+		return
+	}
+	defer func() {
+		if err := conn.Close(); !quiet(err) {
+			t.Errorf("close the stream: %v", err)
+		}
+	}()
+	reader := bufio.NewReader(conn)
+	req, err := http.ReadRequest(reader)
+	if err != nil {
+		t.Errorf("read the stream request: %v", err)
+
+		return
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Errorf("close the request body: %v", err)
+
+		return
+	}
+	hungUp := make(chan struct{})
+	go func() {
+		if _, err := io.Copy(io.Discard, reader); !quiet(err) {
+			t.Errorf("read the stream: %v", err)
+		}
+		close(hungUp)
+	}()
+	if mode.delayed {
+		<-hungUp
+
+		return
+	}
+	head := "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
+	if mode.upgrade {
+		head = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+	}
+	if _, err := io.WriteString(conn, head); err != nil {
+		t.Errorf("write the stream response: %v", err)
+
+		return
+	}
+	if !mode.active {
+		<-hungUp
+
+		return
+	}
+	writeGuardOutput(t, conn, hungUp)
+}
+
+func writeGuardOutput(t *testing.T, conn net.Conn, hungUp <-chan struct{}) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-hungUp:
+			return
+		case <-ticker.C:
+		}
+		_, err := io.WriteString(conn, "\x81\x01x")
+		if err == nil {
+			continue
+		}
+		if !quiet(err) {
+			t.Errorf("write stream output: %v", err)
+		}
+		<-hungUp
+
+		return
+	}
+}
+
+func readGuardResponse(t *testing.T, reader *bufio.Reader, upgrade bool) io.Reader {
+	t.Helper()
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := response.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	want := http.StatusOK
+	if upgrade {
+		want = http.StatusSwitchingProtocols
+	}
+	if response.StatusCode != want {
+		t.Fatalf("the stream answered %d, want %d", response.StatusCode, want)
+	}
+	if upgrade {
+		return reader
+	}
+
+	return response.Body
+}
+
+func openGuardFront(t *testing.T, root, secret string) (string, func() error) {
+	t.Helper()
+	server, err := New(Config{Listen: "127.0.0.1:0", SigningKeyFile: secret, Root: root, Out: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := server.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	ended := make(chan struct{})
+	var serveErr error
+	go func() {
+		serveErr = server.Serve(ctx, listener)
+		close(ended)
+	}()
+	stop := func() error {
+		cancel()
+		select {
+		case <-ended:
+			return serveErr
+		case <-time.After(2 * time.Second):
+			return errors.New("the front did not stop")
+		}
+	}
+	t.Cleanup(func() {
+		if err := stop(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	return listener.Addr().String(), stop
 }
 
 func TestTokenExpiryEndsSilentActiveAndDelayedStreams(t *testing.T) {
@@ -167,7 +221,7 @@ func TestTokenExpiryEndsSilentActiveAndDelayedStreams(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			env := newTokenEnv(t)
-			reader, ended := openGuardStream(t, env, 2*time.Second, mode)
+			reader, ended, _ := openGuardStream(t, env, 2*time.Second, mode)
 			body, err := io.ReadAll(reader)
 			if err != nil {
 				t.Fatalf("the expired stream stayed open: %v", err)
@@ -192,7 +246,7 @@ func TestLedgerChangesEndAnActiveConnection(t *testing.T) {
 			if change == "no-exp revoke" {
 				ttl = 0
 			}
-			reader, ended := openGuardStream(t, env, ttl, guardStream{upgrade: change != "revoke", active: change == "revoke"})
+			reader, ended, _ := openGuardStream(t, env, ttl, guardStream{upgrade: change != "revoke", active: change == "revoke"})
 			var err error
 			switch change {
 			case "revoke", "no-exp revoke":
@@ -262,5 +316,35 @@ func TestNormalTeardownStopsTheTokenGuard(t *testing.T) {
 	await(t, stopped, "the guard did not stop with the proxy")
 	if !errors.Is(context.Cause(ctx), context.Canceled) {
 		t.Fatalf("normal teardown ended for %v", context.Cause(ctx))
+	}
+}
+
+func TestFIFOLedgerDoesNotBlockServerShutdown(t *testing.T) {
+	env := newTokenEnv(t)
+	reader, ended, stop := openGuardStream(t, env, 2*time.Second, guardStream{upgrade: true})
+	if err := os.Remove(env.tokens); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(env.tokens, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Release a blocked reader if this regression fails against the old code.
+		f, err := os.OpenFile(env.tokens, os.O_RDWR|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			t.Error(err)
+
+			return
+		}
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatalf("the FIFO ledger left the connection open: %v", err)
+	}
+	await(t, ended, "the FIFO ledger did not close the daemon peer")
+	if err := stop(); err != nil {
+		t.Fatal(err)
 	}
 }

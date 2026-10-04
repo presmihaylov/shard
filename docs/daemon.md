@@ -939,7 +939,8 @@ ledger holds no such token. `revoke` marks one token by its id, or every token o
 `mint`, and they never reach the daemon.
 
 The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
-effect on the next request without a restart. The front also checks the ledger once per second for
+effect on the next request without a restart. The ledger must be a regular file.
+The front also checks the ledger once per second for
 every active proxy connection, including WebSocket streams and plain HTTP follows. A revoked token,
 an absent token id, or a ledger read error closes both sides of that connection. A token with an
 `exp` ends the connection at its expiry, independently of the ledger check. A token without an
