@@ -472,8 +472,10 @@ start_daemon() {
 		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
 		trust="${ECHO_DIR}/trust.pem"
 	fi
+	# Emptied before the fork, so a restart never waits on the last daemon's lines; the child only appends.
+	: >"${DAEMON_LOG}"
 	# The daemon binds the supervisor by this path into every sandbox, so a PREFIX run tests the shard-init it installed.
-	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider "${PROVIDER}" >"${DAEMON_LOG}" 2>&1 &
+	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" "${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider "${PROVIDER}" >>"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }

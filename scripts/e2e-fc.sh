@@ -37,9 +37,11 @@ start_daemon() {
 		cat /etc/ssl/certs/ca-certificates.crt "${ECHO_DIR}/cert.pem" >"${ECHO_DIR}/trust.pem"
 		trust="${ECHO_DIR}/trust.pem"
 	fi
+	# Emptied before the fork, so a restart never waits on the last daemon's lines; the child only appends.
+	: >"${DAEMON_LOG}"
 	SHARD_INIT_PATH="${PREFIX}/shard-init" SSL_CERT_FILE="${trust}" \
 		SHARD_KERNEL="${SHARD_KERNEL:-}" SHARD_KERNEL_SHA256="${SHARD_KERNEL_SHA256:-}" \
-		"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider firecracker >"${DAEMON_LOG}" 2>&1 &
+		"${PREFIX}/shard" --root "${SHARD_ROOT}" daemon --provider firecracker >>"${DAEMON_LOG}" 2>&1 &
 	DAEMON_PID=$!
 	wait_for_daemon
 }
