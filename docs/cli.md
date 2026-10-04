@@ -346,7 +346,8 @@ shard snapshot remove web-base
 `snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
-bounds its source ran under, and Firecracker and `vz` refuse a `--disk` that differs.
+bounds its source ran under. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and
+its filesystem, and a smaller one is refused, as a disk only grows.
 
 | route | body | answer | scope |
 | --- | --- | --- | --- |
