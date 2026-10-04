@@ -61,6 +61,9 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := note(harnessesFile, sessions); err != nil {
+		t.Fatal(err)
+	}
 	// Registered after the RemoveAll, so it runs before it and after every spec's stop.
 	t.Cleanup(func() { endSessions(t, sessions) })
 
