@@ -59,7 +59,7 @@ HOST_PATHS = (
     "serve.tokens",
 )
 # A host field may appear only in an object every key of which one of these schemas declares.
-PUBLIC_USES = {"address": ("Record",), "path": ("MkdirRequest",)}
+PUBLIC_USES = {"address": ("EgressDecision",), "path": ("MkdirRequest",)}
 NDJSON = "application/x-ndjson"
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}
@@ -477,6 +477,8 @@ class Gate:
         spec = json.loads(text)
         found = [f"the spec holds {path}" for path in self.host_paths if path in text]
         found += [f"the spec has the property {name}" for name in properties(spec) if DENIED_KEY.search(name)]
+        # A renamed schema must fail here by name, not as a KeyError in leak.responses.
+        found += [f"PUBLIC_USES names {schema}, which the spec does not declare" for uses in PUBLIC_USES.values() for schema in uses if schema not in spec["components"]["schemas"]]
         found += [
             f"the spec has the host field {name} in {owner or 'an inline schema'}"
             for owner, name in owned_properties(spec)
