@@ -255,6 +255,64 @@ func killAll(pids []int) error {
 	return nil
 }
 
+// requireProcessTable skips t only where this host refuses to read a live child in the process table, as a seatbelt sandbox refuses ps; any other failure to read it fails t.
+func requireProcessTable(t *testing.T) {
+	t.Helper()
+	refusal, err := tableRefusal()
+	if err != nil {
+		t.Fatalf("read a live child in the process table: %v", err)
+	}
+	if refusal != "" {
+		t.Skip(refusal)
+	}
+}
+
+// tableRefusal is why this host refuses to read a live child in the process table, or "" where it reads one; a run asks once, as every harness would pay a full scan.
+var tableRefusal = sync.OnceValues(func() (string, error) {
+	child := exec.Command("sleep", "60")
+	// A session of its own, so the child alone is in it.
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := child.Start(); err != nil {
+		return "", err
+	}
+	refusal, err := readLiveChild(child.Process.Pid)
+	if kill := child.Process.Kill(); kill != nil {
+		return "", errors.Join(err, kill)
+	}
+	var exit *exec.ExitError
+	if wait := child.Wait(); wait != nil && !errors.As(wait, &exit) {
+		return "", errors.Join(err, wait)
+	}
+
+	return refusal, err
+})
+
+// readLiveChild lists the session of a live child and reads its state the way endSessions and freezeVMM do, and names a refusal of either.
+func readLiveChild(pid int) (string, error) {
+	left, err := inSessions(map[int]bool{pid: true})
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Sprintf("this host refuses to list the session of a live child, so no test can end what its vmm sessions leave: %v", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("list the session of live child %d: %w", pid, err)
+	}
+	if !slices.Equal(left, []int{pid}) {
+		return "", fmt.Errorf("the session of live child %d lists %v", pid, left)
+	}
+	done, err := stopped(pid)
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Sprintf("this host refuses to read the state of a live child, so no test can see a vmm stop: %v", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the state of live child %d: %w", pid, err)
+	}
+	if done {
+		return "", fmt.Errorf("live child %d reads as stopped", pid)
+	}
+
+	return "", nil
+}
+
 // inJail is where a path the fake vmm is told lives on the host, the way a chroot resolves it.
 func inJail(path string) string {
 	return filepath.Join(os.Getenv(fakeJailEnv), path)

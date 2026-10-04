@@ -29,21 +29,21 @@ async def set_get_list_remove(ctx: AsyncContext) -> None:
     await rejects(NotFoundError, lambda: ctx.shard.policies.get(name))
 
 
-async def assign_clear(ctx: AsyncContext) -> None:
+async def attach_detach(ctx: AsyncContext) -> None:
     name = ctx.name("policy")
     await ctx.policy(name, RULES)
     sandbox = await ctx.create()
     equal(sandbox.info.policy, None)
-    await rejects(ConflictError, lambda: ctx.shard.policies.assign(sandbox, name))
+    await rejects(ConflictError, lambda: ctx.shard.policies.attach(sandbox, name))
     await sandbox.stop()
-    await ctx.shard.policies.assign(sandbox, name)
+    await ctx.shard.policies.attach(sandbox, name)
     equal((await sandbox.inspect()).policy, name)
     await rejects(ConflictError, lambda: ctx.shard.policies.remove(name))
-    await ctx.shard.policies.clear(sandbox)
+    await ctx.shard.policies.detach(sandbox)
     equal((await sandbox.inspect()).policy, None)
 
 
 CHECKS = [
     Check("policies.set_get_list_remove", set_get_list_remove),
-    Check("policies.assign_clear", assign_clear),
+    Check("policies.attach_detach", attach_detach),
 ]

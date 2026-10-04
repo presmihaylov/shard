@@ -35,7 +35,7 @@ def set_list_remove(ctx: Context) -> None:
     rejects(NotFoundError, lambda: ctx.shard.secrets.remove(name))
 
 
-def grant_revoke(ctx: Context) -> None:
+def grant_ungrant(ctx: Context) -> None:
     name = ctx.variable("grant")
     secret = value()
     ctx.secret(name, secret, DESTINATIONS)
@@ -50,15 +50,15 @@ def grant_revoke(ctx: Context) -> None:
     ok(secret not in printed.stdout, "the guest never holds the value")
     rejects(ConflictError, lambda: ctx.shard.secrets.remove(name))
     sandbox.stop()
-    ctx.shard.secrets.revoke(sandbox, name)
+    ctx.shard.secrets.ungrant(sandbox, name)
     equal((sandbox.inspect()).secrets, ())
     sandbox.start()
-    equal((sandbox.exec(f"printenv {name}")).exit_code, 1, "a revoke takes the placeholder back")
+    equal((sandbox.exec(f"printenv {name}")).exit_code, 1, "an ungrant takes the placeholder back")
     holder = ctx.create(secrets=[name])
     equal((holder.exec(f"printenv {name}")).stdout, f"mock-{name}\n", "a create grants it too")
 
 
 CHECKS = [
     Check("secrets.set_list_remove", set_list_remove),
-    Check("secrets.grant_revoke", grant_revoke),
+    Check("secrets.grant_ungrant", grant_ungrant),
 ]

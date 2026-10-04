@@ -35,7 +35,14 @@ jobs:
           cache: true
 
       - name: build
-        run: make build-linux build-shard-init-linux VERSION=${{ github.ref_name }}
+        run: make build-linux build-shard-init-linux VERSION=${{ github.ref_name }} RELEASE=1
+
+      # file(1) reads the ELF itself, so this proves RELEASE=1 reached both links.
+      - name: check the binaries
+        run: |
+          for b in bin/shard-linux-amd64 bin/shard-init-linux-amd64; do
+            file "$b" | grep -q ', stripped' || { echo "$b is not stripped"; exit 1; }
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -56,10 +63,10 @@ jobs:
 
       # One arch at a time: the shim and the guest init land at one embed path, so the second build replaces the first's.
       - name: build arm64
-        run: make build-darwin DARWIN_ARCH=arm64 VERSION=${{ github.ref_name }}
+        run: make build-darwin DARWIN_ARCH=arm64 VERSION=${{ github.ref_name }} RELEASE=1
 
       - name: build amd64
-        run: make build-darwin DARWIN_ARCH=amd64 VERSION=${{ github.ref_name }}
+        run: make build-darwin DARWIN_ARCH=amd64 VERSION=${{ github.ref_name }} RELEASE=1
 
       # The runner has no Rosetta, so the amd64 binary is checked by its arch alone.
       - name: check the binaries
@@ -80,10 +87,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      # The units and the plist ship beside the binaries, so an install takes all of them from one tag.
+      - name: add the service files
+        run: cp packaging/systemd/shard.service packaging/systemd/shard-serve.service packaging/launchd/shard.daemon.plist packaging/launchd/shard.newsyslog.conf dist/
 
       # A draft: the VM proof runs by hand (docs/release.md), and its record is what publishes the release.
       - name: publish a draft
