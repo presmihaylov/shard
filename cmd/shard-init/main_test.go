@@ -112,7 +112,7 @@ func runChild(spec string) int {
 		time.Sleep(time.Minute)
 		return 0
 	case "sleep":
-		time.Sleep(time.Duration(atoi(arg)) * time.Millisecond)
+		sleepWhileParented(time.Duration(atoi(arg)) * time.Millisecond)
 		return 0
 	case "run":
 		// A run of MS milliseconds then exit CODE, so a test can make a run outlast the reset window.
@@ -143,6 +143,22 @@ func runChild(spec string) int {
 
 	fmt.Fprintln(os.Stderr, "unknown child role:", spec)
 	return 2
+}
+
+// sleepWhileParented ends early once the supervisor is gone, because a test's cleanup SIGKILLs it and would leave the sleep behind (SHARD-485).
+func sleepWhileParented(d time.Duration) {
+	// A supervisor killed before this ran already left pid 1 as the parent, and no test runs one as pid 1.
+	parent := os.Getppid()
+	deadline := time.After(d)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for parent != 1 && os.Getppid() == parent {
+		select {
+		case <-deadline:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func atoi(s string) int {

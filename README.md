@@ -133,7 +133,7 @@ shard create --name web-2 --snapshot web-base
 
 `shard snapshot create` copies every file that a stopped sandbox kept, `/tmp` included, and no
 memory image. It refuses a running or paused source: stop it first. A snapshot has an id and an
-optional unique name, and it outlives its source, so `shard rm` of the source leaves it in place.
+optional unique name, and it outlives its source, so `shard remove` of the source leaves it in place.
 `shard create --snapshot` takes the place of an image, as the snapshot names its own, and the new
 sandbox runs shard-init alone under a new id and address. It never pulls: the image must still be on
 the host at the digest the snapshot recorded, and only the provider that made the snapshot starts
@@ -151,12 +151,12 @@ trip that these do not, so they compare the mechanism rather than the product.
 
 ```
 printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN
-shard secret ls
-shard secret rm API_TOKEN
+shard secret list
+shard secret remove API_TOKEN
 ```
 
 A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
-of mode 0600. `secret ls` never prints the value, and `secret rm` refuses while a sandbox still holds
+of mode 0600. `secret list` never prints the value, and `secret remove` refuses while a sandbox still holds
 the placeholder. `docs/secrets.md` says what this protects against and what it does not.
 
 ## Egress
@@ -165,7 +165,7 @@ the placeholder. `docs/secrets.md` says what this protects against and what it d
 shard policy create --allow api.example.com --deny any locked
 shard run --policy locked python:3.12 python agent.py
 shard policy show locked
-shard policy rm locked
+shard policy remove locked
 ```
 
 A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names. Traffic
@@ -177,14 +177,14 @@ daemon's own userspace netstack enforces it and writes every drop to the sandbox
 ## Images
 
 ```
-shard pull python:3.12       pull an image and unpack its rootfs
-shard image ls               list the pulled images
-shard image rm python:3.12   remove one, with the rootfs no other tag needs
+shard pull python:3.12           pull an image and unpack its rootfs
+shard image list                 list the pulled images
+shard image remove python:3.12   remove one, with the rootfs no other tag needs
 ```
 
 Everything lands under `/var/lib/shard`, and `--root` overrides that. shard unpacks an image once
 per digest, into a read-only rootfs that every sandbox built from it layers over. shard never
-re-resolves a tag it already holds. To get a newer image for that tag, run `shard image rm` and pull
+re-resolves a tag it already holds. To get a newer image for that tag, run `shard image remove` and pull
 again.
 
 ## Development

@@ -13,10 +13,10 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-func TestParseLsFlags(t *testing.T) {
-	opts, err := parseLs([]string{"--all"})
+func TestParseListFlags(t *testing.T) {
+	opts, err := parseList([]string{"--all"})
 	if err != nil {
-		t.Fatalf("parseLs: %v", err)
+		t.Fatalf("parseList: %v", err)
 	}
 	if !opts.all {
 		t.Error("--all was not read")
@@ -26,14 +26,14 @@ func TestParseLsFlags(t *testing.T) {
 		"an argument":     {"sandbox1"},
 		"an unknown flag": {"--quiet"},
 	} {
-		if _, err := parseLs(args); err == nil {
-			t.Errorf("parseLs(%s) returned no error", name)
+		if _, err := parseList(args); err == nil {
+			t.Errorf("parseList(%s) returned no error", name)
 		}
 	}
 }
 
-// newLsApp puts a daemon over a repository that answers List with left, and with unreadable beside it.
-func newLsApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadable error) App {
+// newListApp puts a daemon over a repository that answers List with left, and with unreadable beside it.
+func newListApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadable error) App {
 	t.Helper()
 
 	app, deps := newLifecycleApp(t, out, &recorder{}, models.Sandbox{})
@@ -50,18 +50,18 @@ func listed() []models.Sandbox {
 	}
 }
 
-func TestLsShowsWhatIsUp(t *testing.T) {
+func TestListShowsWhatIsUp(t *testing.T) {
 	var out bytes.Buffer
 
-	app := newLsApp(t, &out, listed(), nil)
+	app := newListApp(t, &out, listed(), nil)
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("ls printed %d lines, want the header and the one sandbox that is up:\n%s", len(lines), out.String())
+		t.Fatalf("list printed %d lines, want the header and the one sandbox that is up:\n%s", len(lines), out.String())
 	}
 	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "UPTIME") || !strings.Contains(lines[0], "IP") {
 		t.Errorf("the header is %q", lines[0])
@@ -76,18 +76,18 @@ func TestLsShowsWhatIsUp(t *testing.T) {
 	}
 }
 
-func TestLsAllShowsTheStoppedOnesToo(t *testing.T) {
+func TestListAllShowsTheStoppedOnesToo(t *testing.T) {
 	var out bytes.Buffer
 
-	app := newLsApp(t, &out, listed(), nil)
+	app := newListApp(t, &out, listed(), nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	if len(lines) != 3 {
-		t.Fatalf("ls --all printed %d lines, want the header and both sandboxes:\n%s", len(lines), out.String())
+		t.Fatalf("list --all printed %d lines, want the header and both sandboxes:\n%s", len(lines), out.String())
 	}
 	for _, want := range []string{"down-2", "stopped"} {
 		if !strings.Contains(lines[2], want) {
@@ -96,33 +96,48 @@ func TestLsAllShowsTheStoppedOnesToo(t *testing.T) {
 	}
 }
 
-func TestLsOnAnEmptyRootPrintsTheHeader(t *testing.T) {
+// ls is an alias, so it runs list itself and prints the same table.
+func TestLsPrintsWhatListPrints(t *testing.T) {
+	var list, ls bytes.Buffer
+	if err := newListApp(t, &list, listed(), nil).Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
+	}
+	if err := newListApp(t, &ls, listed(), nil).Run(t.Context(), []string{"ls", "--all"}); err != nil {
+		t.Fatalf("ls --all: %v", err)
+	}
+
+	if ls.String() != list.String() {
+		t.Errorf("ls --all printed\n%s\nand list --all printed\n%s", ls.String(), list.String())
+	}
+}
+
+func TestListOnAnEmptyRootPrintsTheHeader(t *testing.T) {
 	var out bytes.Buffer
 
-	app := newLsApp(t, &out, nil, nil)
+	app := newListApp(t, &out, nil, nil)
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 
 	if got := strings.TrimSpace(out.String()); !strings.HasPrefix(got, "ID") || strings.Contains(got, "\n") {
-		t.Errorf("ls printed %q, want the header alone", got)
+		t.Errorf("list printed %q, want the header alone", got)
 	}
 }
 
 // One unreadable record must not hide the others: their sandboxes still hold a process and an address.
-func TestLsPrintsTheReadableOnesAndReportsTheRest(t *testing.T) {
+func TestListPrintsTheReadableOnesAndReportsTheRest(t *testing.T) {
 	var out bytes.Buffer
 
 	unreadable := &sandboxstate.UnreadableError{ID: "bad-3", Err: errors.New("decode sandbox.json of bad-3: unexpected end of JSON input")}
-	app := newLsApp(t, &out, listed(), unreadable)
+	app := newListApp(t, &out, listed(), unreadable)
 
-	err := app.Run(t.Context(), []string{"ls"})
+	err := app.Run(t.Context(), []string{"list"})
 	if err == nil || !strings.Contains(err.Error(), "bad-3") {
-		t.Errorf("ls returned %v, want the unreadable record named", err)
+		t.Errorf("list returned %v, want the unreadable record named", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls hid the readable sandbox:\n%s", out.String())
+		t.Errorf("list hid the readable sandbox:\n%s", out.String())
 	}
 }
 
@@ -153,58 +168,58 @@ func TestUptime(t *testing.T) {
 	}
 }
 
-func TestLsGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
+func TestListGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	var out bytes.Buffer
 
 	left := []models.Sandbox{{ID: "down-2", Image: "alpine:3.20", State: models.StateStopped,
 		StoppedReason: "daemon restarted and found no process", CreatedAt: time.Now()}}
 
-	app := newLsApp(t, &out, left, nil)
+	app := newListApp(t, &out, left, nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "stopped (daemon restarted and found no process)") {
-		t.Errorf("ls printed %q, want the state and the reason beside it", out.String())
+		t.Errorf("list printed %q, want the state and the reason beside it", out.String())
 	}
 }
 
-func TestLsGivesTheReasonASandboxIsUnresponsive(t *testing.T) {
+func TestListGivesTheReasonASandboxIsUnresponsive(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := []models.Sandbox{{ID: "silent-1", Image: "alpine:3.20", State: models.StateUnresponsive,
 		UnresponsiveReason: "its shim (pid 42) did not answer within 5s", CreatedAt: time.Now()}}
 
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newListApp(t, &out, sandboxes, nil)
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "unresponsive (its shim (pid 42) did not answer within 5s)") {
-		t.Errorf("ls printed %q, want the state and the reason beside it", out.String())
+		t.Errorf("list printed %q, want the state and the reason beside it", out.String())
 	}
 }
 
-func TestLsShowsTheEntrypointExitOfAStillRunningSandbox(t *testing.T) {
+func TestListShowsTheEntrypointExitOfAStillRunningSandbox(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := []models.Sandbox{{ID: "up-7", Image: "alpine:3.20", State: models.StateRunning,
 		ExitStatus: &models.ExitStatus{Code: 7}, CreatedAt: time.Now()}}
 
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newListApp(t, &out, sandboxes, nil)
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "running (exited 7)") {
-		t.Errorf("ls printed %q, want the running state and the entrypoint exit beside it", out.String())
+		t.Errorf("list printed %q, want the running state and the entrypoint exit beside it", out.String())
 	}
 }
 
-func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
+func TestListPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
@@ -213,10 +228,10 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 		RestartCount: models.RestartCount{Count: 2},
 	}
 
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newListApp(t, &out, sandboxes, nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -232,7 +247,7 @@ func TestLsPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 }
 
 // An unlimited policy shows the count with no limit beside it.
-func TestLsPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
+func TestListPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
@@ -241,10 +256,10 @@ func TestLsPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
 		RestartCount: models.RestartCount{Count: 3},
 	}
 
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newListApp(t, &out, sandboxes, nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -253,7 +268,7 @@ func TestLsPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
 	}
 }
 
-func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
+func TestListPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
@@ -263,10 +278,10 @@ func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 	}
 	sandboxes[1].Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1}}
 
-	app := newLsApp(t, &out, sandboxes, nil)
+	app := newListApp(t, &out, sandboxes, nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -279,12 +294,12 @@ func TestLsPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
 }
 
 // The daemon runs no probe of its own, so the table has no column for one (SHARD-455).
-func TestLsPrintsNoHealthColumn(t *testing.T) {
+func TestListPrintsNoHealthColumn(t *testing.T) {
 	var out bytes.Buffer
-	app := newLsApp(t, &out, listed(), nil)
+	app := newListApp(t, &out, listed(), nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	header := strings.Fields(strings.SplitN(out.String(), "\n", 2)[0])
@@ -294,16 +309,16 @@ func TestLsPrintsNoHealthColumn(t *testing.T) {
 	}
 }
 
-func TestLsPrintsThePolicyEachSandboxHolds(t *testing.T) {
+func TestListPrintsThePolicyEachSandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
 	fronted := listed()
 	fronted[0].Policy = "web"
 
-	app := newLsApp(t, &out, fronted, nil)
+	app := newListApp(t, &out, fronted, nil)
 
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls --all: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list --all: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")

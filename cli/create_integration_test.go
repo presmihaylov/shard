@@ -109,7 +109,7 @@ func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 }
 
 // TestCreateThatFailsLeavesOnlyAFailedRecord: a failure at any claim gives back the lease, the
-// namespace, the link and the mount, and leaves one failed record that rm then frees.
+// namespace, the link and the mount, and leaves one failed record that remove then frees.
 func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	// A supervisor that is not there fails the bind mount, the last claim before the start.
 	absent := filepath.Join(t.TempDir(), "absent")
@@ -144,10 +144,10 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 		t.Errorf("the leftover record is %q, want failed", got.State)
 	}
 
-	// rm frees the failed record: it holds no live process, so the record and everything under it goes.
+	// remove frees the failed record: it holds no live process, so the record and everything under it goes.
 	cleanUp(t, app, id)
 	if held := holdings(t, app); len(held) != 0 {
-		t.Errorf("after rm the host holds %v, want nothing", held)
+		t.Errorf("after remove the host holds %v, want nothing", held)
 	}
 }
 
@@ -182,10 +182,10 @@ func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) 
 		t.Errorf("the leftover record is %q, want failed", got.State)
 	}
 
-	// rm frees the failed record and the host is back to what it held before the create.
+	// remove frees the failed record and the host is back to what it held before the create.
 	cleanUp(t, app, id)
 	if got := holdings(t, app); !slices.Equal(got, before) {
-		t.Errorf("after rm the host holds %v, want the %v it held before", got, before)
+		t.Errorf("after remove the host holds %v, want the %v it held before", got, before)
 	}
 }
 

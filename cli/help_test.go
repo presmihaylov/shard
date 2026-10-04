@@ -104,9 +104,9 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 func TestAVerbUnderABadRemoteFailsOnTheTokenFile(t *testing.T) {
 	app := badRemote(t)
 
-	err := app.Run(t.Context(), []string{"ls"})
+	err := app.Run(t.Context(), []string{"list"})
 	if want := "read the token file " + app.TokenFile; err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("ls under a missing token file returned %v, want %q", err, want)
+		t.Errorf("list under a missing token file returned %v, want %q", err, want)
 	}
 	if top := helpUnder(t, badRemote(t), "--help").text; !strings.HasPrefix(top, "Usage: shard ") {
 		t.Errorf("shard --help under a missing token file printed %q", top)
@@ -190,10 +190,10 @@ func TestNoHelpLinePassesEightyColumns(t *testing.T) {
 // A noun with no subcommand, or one it does not take, names the ones it does, the same way for all four.
 func TestANounNamesItsSubcommands(t *testing.T) {
 	cases := map[string]string{
-		"image":  "ls, rm or prune",
-		"secret": "set, ls, rm, grant or ungrant",
-		"policy": "create, show, ls, rm, attach or detach",
-		"tokens": "mint, ls or revoke",
+		"image":  "list, remove or prune",
+		"secret": "set, list, remove, grant or ungrant",
+		"policy": "create, show, list, remove, attach or detach",
+		"tokens": "mint, list or revoke",
 	}
 
 	for noun, subs := range cases {

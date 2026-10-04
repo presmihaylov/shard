@@ -56,11 +56,11 @@ func TestPolicyCreateStoresTheRulesInOrder(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"policy", "ls"}); err != nil {
-		t.Fatalf("policy ls: %v", err)
+	if err := app.Run(t.Context(), []string{"policy", "list"}); err != nil {
+		t.Fatalf("policy list: %v", err)
 	}
 	if !strings.Contains(out.String(), "NAME") || !strings.Contains(out.String(), "web") {
-		t.Errorf("policy ls printed %q", out.String())
+		t.Errorf("policy list printed %q", out.String())
 	}
 }
 
@@ -119,26 +119,26 @@ func TestPolicyRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := app.Run(t.Context(), []string{"policy", "rm", "web"})
+	err := app.Run(t.Context(), []string{"policy", "remove", "web"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") || strings.Contains(err.Error(), "sandbox2") {
-		t.Errorf("policy rm = %v, want a refusal that names sandbox1 only", err)
+		t.Errorf("policy remove = %v, want a refusal that names sandbox1 only", err)
 	}
 
-	if err := app.Run(t.Context(), []string{"policy", "rm", "--force", "web"}); err == nil {
-		t.Error("policy rm --force accepted, want a refusal: the flag is gone")
+	if err := app.Run(t.Context(), []string{"policy", "remove", "--force", "web"}); err == nil {
+		t.Error("policy remove --force accepted, want a refusal: the flag is gone")
 	}
 
 	d.repoSvc.(*fakeLifecycleRepo).left = []models.Sandbox{{ID: "sandbox2"}}
 	r.forget()
-	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err != nil {
-		t.Fatalf("policy rm with no holder: %v", err)
+	if err := app.Run(t.Context(), []string{"policy", "remove", "web"}); err != nil {
+		t.Fatalf("policy remove with no holder: %v", err)
 	}
 	if slices.Contains(r.seen(), "net.ReapplyAll") {
-		t.Errorf("rm of an unheld policy touched the host: %v", r.seen())
+		t.Errorf("remove of an unheld policy touched the host: %v", r.seen())
 	}
 
-	if err := app.Run(t.Context(), []string{"policy", "rm", "web"}); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("rm of a missing policy = %v", err)
+	if err := app.Run(t.Context(), []string{"policy", "remove", "web"}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("remove of a missing policy = %v", err)
 	}
 }
 
@@ -222,19 +222,19 @@ func TestPolicyAttachAndDetachRoundTrip(t *testing.T) {
 		t.Errorf("the record holds %q, want the policy", repo.sb.Policy)
 	}
 
-	// policy rm and the POLICY column read the record, so both follow the attach without a change of their own.
+	// policy remove and the POLICY column read the record, so both follow the attach without a change of their own.
 	repo.left = []models.Sandbox{repo.sb}
-	err := app.Run(t.Context(), []string{"policy", "rm", "locked"})
+	err := app.Run(t.Context(), []string{"policy", "remove", "locked"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
-		t.Errorf("policy rm of an attached policy = %v", err)
+		t.Errorf("policy remove of an attached policy = %v", err)
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"ls", "--all"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 	if !strings.Contains(out.String(), "locked") {
-		t.Errorf("ls printed %q, want the policy", out.String())
+		t.Errorf("list printed %q, want the policy", out.String())
 	}
 
 	out.Reset()

@@ -21,10 +21,10 @@ stateDiagram-v2
     paused --> running: resume (the checkpoint survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
-    stopped --> [*]: rm
-    paused --> [*]: rm --force
-    created --> [*]: rm
-    failed --> [*]: rm
+    stopped --> [*]: remove
+    paused --> [*]: remove --force
+    created --> [*]: remove
+    failed --> [*]: remove
 ```
 
 | From | To | Verb | Reachable today |
@@ -61,8 +61,8 @@ sandbox it holds but has not started. No verb parks a sandbox in `created`, beca
 its copy on to `running` with no point in between where an operator can stop it. That is why
 `created --> stopped` is in the machine but nothing reaches it.
 
-**`failed` is terminal, and only `rm` frees it.** A create that never reached `running` refuses every
-verb except `get` and `rm`. The refusal is `409 sandbox_failed` with the reason, so an operator can
+**`failed` is terminal, and only `remove` frees it.** A create that never reached `running` refuses every
+verb except `get` and `remove`. The refusal is `409 sandbox_failed` with the reason, so an operator can
 read why the create failed and then remove the sandbox. A gVisor `pause` that broke off after its
 checkpoint began also lands here. The sentry exits after any checkpoint, so nothing is left to thaw.
 When the daemon restarts while a create is still in flight, it finds the `pending` record with
@@ -77,7 +77,7 @@ with no command runs only `shard-init`, because the image's own ENTRYPOINT and C
 its `exit_status` stays empty. When the entrypoint finishes, the sandbox stays `running` and
 you can still `exec`, `pause` or `fork` it. E2B, Modal, Vercel and Daytona all
 work this way. There is no eighth state for an exited entrypoint. Instead, the liveness task writes
-the exit into `exit_status` on the record, which stays `running`, so `shard ls` prints
+the exit into `exit_status` on the record, which stays `running`, so `shard list` prints
 `running (exited 0)`. `stop` is the only thing that ends a sandbox.
 
 **`unresponsive` is a running sandbox whose substrate process went silent, and only `stop` ends
@@ -85,7 +85,7 @@ it.** On vz the daemon probes each shim within 5 s, both a shim it holds and one
 by its socket after a restart. A shim that is silent for the whole bound makes the record
 `unresponsive`. A `SIGSTOP` can freeze a shim that way, and so can a host under load. The record
 keeps its pid and its run, and `unresponsive_reason` names the shim's pid. Nothing kills the shim,
-because a thawed shim gives back the same VM. `shard ls` prints `unresponsive (its shim (pid N) did
+because a thawed shim gives back the same VM. `shard list` prints `unresponsive (its shim (pid N) did
 not answer within 5s)`, and `shard inspect` holds the state and the reason. `exec`, `start` and
 `pause` refuse the sandbox with the reason, and `exec` adds `wait for it to answer, or end it with
 shard stop <id>`. An `exec` or a `pause` that finds the shim silent writes `unresponsive` at once,
@@ -95,7 +95,7 @@ checkpoint, and the pause mark then stays on the record. If the next daemon find
 the record turns `unresponsive` and keeps the mark. When that shim dies, the liveness tick or a
 restart makes the record `paused` with that checkpoint (SHARD-442). If the shim answers instead and
 its guest runs, the record drops the mark in the same write, because the guest ran past that
-checkpoint. `stop` and `rm --force` give the shim one more probe of 1 s, then kill it with no grace
+checkpoint. `stop` and `remove --force` give the shim one more probe of 1 s, then kill it with no grace
 (SHARD-421). The kill goes through a pin that the kernel holds on the process, never through a bare
 pid, so a process that took the pid since is never hit. On Firecracker the same holds, with a bound
 of 4 s and a reason that names the vmm's pid, both for a vmm that the daemon holds and for one that
@@ -103,13 +103,13 @@ a restart meets only by its socket (SHARD-392, SHARD-439). There the pin is a pi
 or the adopt took on a connection that the vmm answered, or never answered.
 
 **`stop` gives the entrypoint a fixed 30 s grace.** The stop sends SIGTERM and ends as soon as the
-entrypoint exits. An entrypoint that is still running after 30 s is killed. `rm --force` stops a live
+entrypoint exits. An entrypoint that is still running after 30 s is killed. `remove --force` stops a live
 sandbox the same way before it deletes it. Nothing sets the grace.
 
 **`stop` returns once the sandbox has stopped.** After a clean stop, the substrate can still report
 the sandbox alive for a moment. So `stop` waits for the sandbox to be gone before it writes the
 record. If the sandbox is not gone within 5 seconds of the substrate returning, the verb fails and
-leaves the record unchanged. Because of this wait, a `rm` right after a `stop` is never refused with
+leaves the record unchanged. Because of this wait, a `remove` right after a `stop` is never refused with
 `stop it first`.
 
 **`stopped` is not terminal, and the move out of it is not a provider verb.** Every sandbox has its
@@ -132,7 +132,7 @@ paused: resume it with shard resume <id>`, the text a paused record gives.
 paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the
 state, and the record's `checkpoint` key names the directory that a `resume` reads.
 
-**`rm` is not a state.** It removes the record and everything under it. `Provider.Remove` force-ends
+**`remove` is not a state.** It removes the record and everything under it. `Provider.Remove` force-ends
 a running sandbox instead of refusing it, because nothing else drops the rootfs mount.
 
 **`fork` is not a transition.** It takes a `running` source only and refuses any other state
@@ -146,8 +146,8 @@ gives back everything it claimed, and one cut later keeps a copy that the runtim
 
 **`snapshot create` is not a transition either.** It reads a `stopped` sandbox under that sandbox's
 lock, copies the files that the stop kept, and leaves the sandbox `stopped`. A `start`, `stop` or
-`rm` of the source waits for the copy, because a start under it would write the layer it reads. Any
-other state is `409 sandbox_not_stopped`, because a running or paused sandbox holds memory that a
+`remove` of the source waits for the copy, because a start under it would write the layer it reads.
+Any other state is `409 sandbox_not_stopped`, because a running or paused sandbox holds memory that a
 copy of its files would miss. The snapshot is not a sandbox and has no state. A create from it is a
 plain create: the record begins `pending`, runs `shard-init` alone and lands in `running` or
 `failed`. It takes no memory, so `Snapshot` is a required verb on every provider.

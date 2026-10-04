@@ -219,7 +219,7 @@ func FailedGuard(id string, sb models.Sandbox) error {
 		return nil
 	}
 
-	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard rm %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
+	return &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s", sb.FailedReason, id), Code: models.CodeSandboxFailed}
 }
 
 // SubstrateTimeoutError is our own deadline on a Provider.Status the substrate never answered, so a verb
@@ -1105,7 +1105,7 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool) error {
 	}
 
 	// A pending sandbox runs nothing yet, so rm ends its pull rather than wait for it to come up.
-	s.cancelPull(id, "shard rm")
+	s.cancelPull(id, "shard remove")
 
 	unlock, err := s.lock(ctx, id)
 	if err != nil {
@@ -1149,7 +1149,7 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 		return s.refuseOrStop(ctx, id, state, force)
 	}
 
-	status, err := s.status(ctx, id, "rm")
+	status, err := s.status(ctx, id, "remove")
 	var timeout *SubstrateTimeoutError
 	if force && errors.As(err, &timeout) {
 		if err := s.reclaim(ctx, id, err); err != nil {

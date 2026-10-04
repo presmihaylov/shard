@@ -64,7 +64,7 @@ const alpine = "index.docker.io/library/alpine:3.20"
 // alpineDigest is what the alpine entry hashes to, in the length the reference parser insists on.
 const alpineDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-// newImageApp wires image rm and prune onto two pulled images and the sandboxes in left.
+// newImageApp wires image remove and prune onto two pulled images and the sandboxes in left.
 func newImageApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox) (App, *fakeImageStore, *fakeDaemon) {
 	t.Helper()
 
@@ -80,46 +80,46 @@ func newImageApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox) (App, *
 	return app, store, f
 }
 
-func TestImageRmRefusesAnImageASandboxReferences(t *testing.T) {
+func TestImageRemoveRefusesAnImageASandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "down-2", Image: alpine, State: models.StateStopped}}
 	app, store, _ := newImageApp(t, &out, held)
 
-	err := app.Run(t.Context(), []string{"image", "rm", "alpine:3.20"})
+	err := app.Run(t.Context(), []string{"image", "remove", "alpine:3.20"})
 	if err == nil || !strings.Contains(err.Error(), "down-2") || !strings.Contains(err.Error(), "--force") {
-		t.Errorf("image rm returned %v, want a refusal that names the sandbox and --force", err)
+		t.Errorf("image remove returned %v, want a refusal that names the sandbox and --force", err)
 	}
 	if len(store.removed) != 0 {
-		t.Errorf("image rm removed %v under a sandbox", store.removed)
+		t.Errorf("image remove removed %v under a sandbox", store.removed)
 	}
 }
 
-func TestImageRmForceRemovesAnImageASandboxReferences(t *testing.T) {
+func TestImageRemoveForceRemovesAnImageASandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: alpine, State: models.StateRunning}}
 	app, store, _ := newImageApp(t, &out, held)
 
-	if err := app.Run(t.Context(), []string{"image", "rm", "--force", "alpine:3.20"}); err != nil {
-		t.Fatalf("image rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"image", "remove", "--force", "alpine:3.20"}); err != nil {
+		t.Fatalf("image remove --force: %v", err)
 	}
 	if len(store.removed) != 1 || store.removed[0] != "alpine:3.20" {
-		t.Errorf("image rm --force removed %v", store.removed)
+		t.Errorf("image remove --force removed %v", store.removed)
 	}
 }
 
-func TestImageRmRemovesAnImageNoSandboxReferences(t *testing.T) {
+func TestImageRemoveRemovesAnImageNoSandboxReferences(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: "index.docker.io/library/python:3.12-alpine", State: models.StateRunning}}
 	app, store, _ := newImageApp(t, &out, held)
 
-	if err := app.Run(t.Context(), []string{"image", "rm", "alpine:3.20"}); err != nil {
-		t.Fatalf("image rm: %v", err)
+	if err := app.Run(t.Context(), []string{"image", "remove", "alpine:3.20"}); err != nil {
+		t.Fatalf("image remove: %v", err)
 	}
 	if len(store.removed) != 1 {
-		t.Errorf("image rm removed %v", store.removed)
+		t.Errorf("image remove removed %v", store.removed)
 	}
 }
 
@@ -155,18 +155,18 @@ func TestImagePruneRefusesToGuessOverAnUnreadableRecord(t *testing.T) {
 }
 
 // A digest reference names every tag of that digest, so the name check alone would let it through.
-func TestImageRmRefusesADigestASandboxHoldsByTag(t *testing.T) {
+func TestImageRemoveRefusesADigestASandboxHoldsByTag(t *testing.T) {
 	var out bytes.Buffer
 
 	held := []models.Sandbox{{ID: "up-1", Image: alpine, State: models.StateRunning}}
 	app, store, _ := newImageApp(t, &out, held)
 
-	err := app.Run(t.Context(), []string{"image", "rm", "alpine@" + alpineDigest})
+	err := app.Run(t.Context(), []string{"image", "remove", "alpine@" + alpineDigest})
 	if err == nil || !strings.Contains(err.Error(), "up-1") {
-		t.Fatalf("image rm by digest returned %v, want a refusal that names the sandbox", err)
+		t.Fatalf("image remove by digest returned %v, want a refusal that names the sandbox", err)
 	}
 	if len(store.removed) != 0 {
-		t.Errorf("image rm removed %v under a running sandbox", store.removed)
+		t.Errorf("image remove removed %v under a running sandbox", store.removed)
 	}
 }
 
@@ -186,7 +186,7 @@ func TestImagePruneKeepsADigestEntryATagStillHolds(t *testing.T) {
 	}
 }
 
-func TestImageRmNamesTheFlagOrder(t *testing.T) {
+func TestImageRemoveNamesTheFlagOrder(t *testing.T) {
 	_, err := parseImageRemove([]string{"alpine:3.20", "--force"})
 	if err == nil || !strings.Contains(err.Error(), "before the image") {
 		t.Errorf("parseImageRemove returned %v, want the flag order named", err)

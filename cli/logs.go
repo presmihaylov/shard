@@ -40,6 +40,7 @@ func parseLogs(args []string) (logsOptions, error) {
 
 	flags := newFlags("logs")
 	flags.BoolVar(&opts.follow, "f", false, "")
+	flags.BoolVar(&opts.follow, "follow", false, "")
 	flags.BoolVar(&opts.egress, "egress", false, "")
 
 	if err := parseVerb(flags, args); err != nil {

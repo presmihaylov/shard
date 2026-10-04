@@ -8,12 +8,15 @@ import (
 
 // inspect prints the record the daemon decoded, so a script reads one field with jq.
 func (a App) inspect(ctx context.Context, args []string) error {
-	rest, err := parseArgs("inspect", args)
+	rest, format, err := parseFormatArgs("inspect", args, formatJSON)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 1 {
 		return fmt.Errorf("inspect takes one sandbox id, got %d", len(rest))
+	}
+	if err := formatLanded("inspect", format, formatJSON); err != nil {
+		return err
 	}
 
 	c, err := a.client()

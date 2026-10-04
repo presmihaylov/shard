@@ -471,7 +471,7 @@ func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 		t.Fatalf("Exec returned %v, want the memory named", err)
 	}
 	// The sandbox keeps its files after an OOM, so the way back is a start, never an rm (SHARD-461).
-	if !strings.Contains(err.Error(), "shard start sandbox1") || strings.Contains(err.Error(), "shard rm") {
+	if !strings.Contains(err.Error(), "shard start sandbox1") || strings.Contains(err.Error(), "shard remove") {
 		t.Errorf("the refusal is %q, want the start hint and no rm", err)
 	}
 }

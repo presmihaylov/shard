@@ -37,8 +37,8 @@ func TestListPagesPastASandboxRemovedBetweenTwoPages(t *testing.T) {
 		t.Fatalf("the first page is %v with next %q, want %v ending at %s", page, next, whole[:at+1], mine[0])
 	}
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", mine[0]}); err != nil {
-		t.Fatalf("rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", mine[0]}); err != nil {
+		t.Fatalf("remove --force: %v", err)
 	}
 
 	page, next = c.page("/v0/sandboxes?all=true&cursor=" + mine[0])
