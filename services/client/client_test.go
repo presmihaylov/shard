@@ -94,14 +94,14 @@ func TestListSandboxesAsksForAllOnlyWhenTold(t *testing.T) {
 		t.Fatalf("ListSandboxes with all: %v", err)
 	}
 
-	if want := []string{"/v0/local/sandboxes", "/v0/local/sandboxes?all=true"}; strings.Join(asked, " ") != strings.Join(want, " ") {
+	if want := []string{"/v0/sandboxes", "/v0/sandboxes?all=true"}; strings.Join(asked, " ") != strings.Join(want, " ") {
 		t.Errorf("the client asked %v, want %v", asked, want)
 	}
 }
 
 func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v0/local/sandboxes/web" {
+		if r.URL.Path != "/v0/sandboxes/web" {
 			answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"no route"}}`)(w, r)
 
 			return
@@ -118,7 +118,7 @@ func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	}
 }
 
-// A front refuses the local routes, so a remote client reads the public ones, and the socket client the full record.
+// A remote client reads the same public routes through the front, the wait included.
 func TestARemoteClientReadsThePublicSandboxRoutes(t *testing.T) {
 	asked := make(chan string, 3)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +214,7 @@ func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("ListSandboxes took %s to give up, want the deadline", took)
 	}
-	want := "GET /v0/local/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
+	want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
 	if err == nil || err.Error() != want {
 		t.Errorf("ListSandboxes = %v, want %q", err, want)
 	}

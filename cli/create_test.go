@@ -53,7 +53,7 @@ func TestParseRunNeedsACommand(t *testing.T) {
 func TestParseCreateRefusesACommand(t *testing.T) {
 	for _, args := range [][]string{{"alpine:3.20", "sleep", "600"}, {"alpine:3.20", "--", "sleep", "600"}} {
 		_, err := parseCreate(args)
-		if want := "create takes no command: shard run [flags] <image> <command> [args...]"; err == nil || err.Error() != want {
+		if want := "create takes no command: shard run [OPTIONS] IMAGE COMMAND [ARGS...]"; err == nil || err.Error() != want {
 			t.Errorf("parseCreate(%v) = %v, want %q", args, err, want)
 		}
 	}

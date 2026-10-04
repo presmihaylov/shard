@@ -634,8 +634,8 @@ func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
 			locals = append(locals, r)
 		}
 	}
-	if len(locals) < 7 {
-		t.Fatalf("the walk found %d local routes, want the daemon status, the four image routes and the two local sandbox reads", len(locals))
+	if len(locals) < 5 {
+		t.Fatalf("the walk found %d local routes, want the daemon status and the four image routes", len(locals))
 	}
 
 	for name, token := range tokens {
