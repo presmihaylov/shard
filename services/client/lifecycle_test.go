@@ -132,11 +132,11 @@ func TestRemoveSandboxDeletesWithForceOnlyWhenForced(t *testing.T) {
 
 func TestPauseAndResumePostToTheReference(t *testing.T) {
 	cases := map[string]struct {
-		call  func(*client.Client) (models.Sandbox, error)
+		call  func(*client.Client) (client.Sandbox, error)
 		state models.State
 	}{
-		"pause":  {func(c *client.Client) (models.Sandbox, error) { return c.PauseSandbox(t.Context(), "web") }, models.StatePaused},
-		"resume": {func(c *client.Client) (models.Sandbox, error) { return c.ResumeSandbox(t.Context(), "web") }, models.StateRunning},
+		"pause":  {func(c *client.Client) (client.Sandbox, error) { return c.PauseSandbox(t.Context(), "web") }, models.StatePaused},
+		"resume": {func(c *client.Client) (client.Sandbox, error) { return c.ResumeSandbox(t.Context(), "web") }, models.StateRunning},
 	}
 
 	for verb, c := range cases {

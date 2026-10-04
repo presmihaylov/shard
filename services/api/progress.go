@@ -7,16 +7,41 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/image"
 )
 
-// ProgressLine is one line of a streamed pull or create: an event, then the result or the error as the last line.
+// ProgressLine is one line of a streamed pull: an event, then the image or the error as the last line.
 type ProgressLine struct {
-	Event   *image.Event    `json:"event,omitempty"`
-	Image   *image.Image    `json:"image,omitempty"`
-	Sandbox *models.Sandbox `json:"sandbox,omitempty"`
-	Error   *ErrorObject    `json:"error,omitempty"`
+	Event *image.Event `json:"event,omitempty"`
+	Image *image.Image `json:"image,omitempty"`
+	Error *ErrorObject `json:"error,omitempty"`
+}
+
+// CreateLine is one line of a streamed create: a public event, then the sandbox or the error as the last line.
+type CreateLine struct {
+	Event   *Event       `json:"event,omitempty"`
+	Sandbox *Sandbox     `json:"sandbox,omitempty"`
+	Error   *ErrorObject `json:"error,omitempty"`
+}
+
+// lines builds the lines of one streamed verb: each event as it lands, and the error that ends it after the first.
+type lines[L any] struct {
+	event  func(image.Event) L
+	failed func(ErrorObject) L
+}
+
+var pullLines = lines[ProgressLine]{
+	event:  func(e image.Event) ProgressLine { return ProgressLine{Event: &e} },
+	failed: func(e ErrorObject) ProgressLine { return ProgressLine{Error: &e} },
+}
+
+var createLines = lines[CreateLine]{
+	event: func(e image.Event) CreateLine {
+		pe := publicEvent(e)
+
+		return CreateLine{Event: &pe}
+	},
+	failed: func(e ErrorObject) CreateLine { return CreateLine{Error: &e} },
 }
 
 // streamed says the client asked for the pull's progress as it happens, which only it can print.
@@ -25,12 +50,12 @@ func streamed(r *http.Request) bool {
 }
 
 // streamProgress writes each event of work as it lands, then its result; an error before the first event keeps its status.
-func (h *Handler) streamProgress(w http.ResponseWriter, r *http.Request, status int, what string, work func(ctx context.Context) (ProgressLine, error)) {
+func streamProgress[L any](h *Handler, w http.ResponseWriter, r *http.Request, status int, what string, l lines[L], work func(ctx context.Context) (L, error)) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	type result struct {
-		line ProgressLine
+		line L
 		err  error
 	}
 	progress := image.NewProgress()
@@ -43,7 +68,7 @@ func (h *Handler) streamProgress(w http.ResponseWriter, r *http.Request, status 
 
 	out := &logWriter{w: w, contentType: ndjson, status: status}
 	followErr := progress.Follow(ctx, func(e image.Event) error {
-		return writeLine(out, ProgressLine{Event: &e})
+		return writeLine(out, l.event(e))
 	})
 	// A client that cannot take the events is gone, so the work stops the way it does when one hangs up.
 	if followErr != nil {
@@ -66,7 +91,7 @@ func (h *Handler) streamProgress(w http.ResponseWriter, r *http.Request, status 
 	}
 	if res.err != nil {
 		_, body := errorBody(res.err)
-		res.line = ProgressLine{Error: &body.Error}
+		res.line = l.failed(body.Error)
 	}
 
 	if err := writeLine(out, res.line); err != nil {
@@ -74,7 +99,7 @@ func (h *Handler) streamProgress(w http.ResponseWriter, r *http.Request, status 
 	}
 }
 
-func writeLine(out *logWriter, line ProgressLine) error {
+func writeLine(out *logWriter, line any) error {
 	encoded, err := json.Marshal(line)
 	if err != nil {
 		return fmt.Errorf("encode a progress line: %w", err)

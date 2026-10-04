@@ -47,9 +47,26 @@ type Client struct {
 	Timeout time.Duration
 }
 
-// Version is what the daemon reports for itself.
+// Version is what the daemon reports for itself, and the API it speaks.
 type Version struct {
-	Version string `json:"version"`
+	Version    string `json:"version"`
+	APIVersion string `json:"api_version"`
+}
+
+// Sandbox is the public record a write verb answers, and all a remote front ever answers: the host side stays on the daemon host.
+type Sandbox = api.Sandbox
+
+// Inspection is the public record beside the egress rules the host enforces for it.
+type Inspection = api.Inspection
+
+// Public is the record a remote front would answer for sb.
+func Public(sb models.Sandbox) Sandbox {
+	return api.PublicSandbox(sb)
+}
+
+// PublicInspection is the inspection a remote front would answer for insp.
+func PublicInspection(insp sandbox.Inspection) Inspection {
+	return api.PublicInspection(insp)
 }
 
 // ListResult is what ls prints: the sandboxes the daemon read, beside the records it could not.
@@ -225,8 +242,18 @@ func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	return out, nil
 }
 
+// sandboxes is where the records are read: the whole record over the socket, the public one through a front, which refuses the local route.
+func (c *Client) sandboxes() string {
+	if c.token != "" {
+		return "/v0/sandboxes"
+	}
+
+	return "/v0/local/sandboxes"
+}
+
+// ListSandboxes answers whole records over the socket; through a front the host fields are zero.
 func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error) {
-	path := "/v0/sandboxes"
+	path := c.sandboxes()
 	if all {
 		path += "?all=true"
 	}
@@ -239,10 +266,10 @@ func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error
 	return out, nil
 }
 
-// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy.
+// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy; through a front the host fields are zero.
 func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
 	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
+	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
 		return sandbox.Inspection{}, missing(ref, err)
 	}
 
@@ -250,10 +277,10 @@ func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection
 }
 
 // CreateSandbox records the sandbox pending and answers at once; the daemon pulls and starts it in the background.
-func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes", req, &out, c.Timeout); err != nil {
-		return models.Sandbox{}, err
+		return Sandbox{}, err
 	}
 
 	return out, nil
@@ -262,69 +289,69 @@ func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (
 // WaitSandbox blocks until the sandbox leaves pending, then answers its record. The pull runs in the daemon, so it has no bound of its own.
 func (c *Client) WaitSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
 	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
+	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
 		return sandbox.Inspection{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
-func (c *Client) StartSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) StartSandbox(ctx context.Context, ref string) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/start", nil, &out, c.Timeout); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
 // StopSandbox waits the grace on top of the usual bound, because the daemon may spend it before it answers.
-func (c *Client) StopSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) StopSandbox(ctx context.Context, ref string) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/stop", nil, &out, c.plus(models.StopGrace)); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
 // GrantSecret hands a created or stopped sandbox the placeholder of a stored secret.
-func (c *Client) GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+func (c *Client) GrantSecret(ctx context.Context, ref, name string) (Sandbox, error) {
 	return c.grant(ctx, http.MethodPost, ref, name)
 }
 
 // UngrantSecret takes the placeholder back, and leaves the proxy CA the grant planted.
-func (c *Client) UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error) {
+func (c *Client) UngrantSecret(ctx context.Context, ref, name string) (Sandbox, error) {
 	return c.grant(ctx, http.MethodDelete, ref, name)
 }
 
 // AttachPolicy gives a created or stopped sandbox the policy the host enforces from its next start.
-func (c *Client) AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error) {
+func (c *Client) AttachPolicy(ctx context.Context, ref, name string) (Sandbox, error) {
 	return c.policy(ctx, http.MethodPut, ref, sandbox.PolicyAttachRequest{Policy: name})
 }
 
 // DetachPolicy leaves the sandbox with no policy, and with the secrets it holds untouched.
-func (c *Client) DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error) {
+func (c *Client) DetachPolicy(ctx context.Context, ref string) (Sandbox, error) {
 	return c.policy(ctx, http.MethodDelete, ref, nil)
 }
 
-func (c *Client) policy(ctx context.Context, method, ref string, body any) (models.Sandbox, error) {
+func (c *Client) policy(ctx context.Context, method, ref string, body any) (Sandbox, error) {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/policy"
 
-	var out models.Sandbox
+	var out Sandbox
 	if err := c.call(ctx, method, path, body, &out, c.Timeout); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
-func (c *Client) grant(ctx context.Context, method, ref, name string) (models.Sandbox, error) {
+func (c *Client) grant(ctx context.Context, method, ref, name string) (Sandbox, error) {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/secrets/" + url.PathEscape(name)
 
-	var out models.Sandbox
+	var out Sandbox
 	if err := c.call(ctx, method, path, nil, &out, c.Timeout); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
@@ -345,30 +372,30 @@ func (c *Client) RemoveSandbox(ctx context.Context, ref string, force bool) erro
 }
 
 // PauseSandbox has no bound of its own: a checkpoint takes as long as the memory and the disk it writes.
-func (c *Client) PauseSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) PauseSandbox(ctx context.Context, ref string) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/pause", nil, &out, 0); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
 // ResumeSandbox reads back what the pause wrote, so it takes no bound either.
-func (c *Client) ResumeSandbox(ctx context.Context, ref string) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) ResumeSandbox(ctx context.Context, ref string) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/resume", nil, &out, 0); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil
 }
 
 // ForkSandbox starts a second sandbox from the source's checkpoint.
-func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
-	var out models.Sandbox
+func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (Sandbox, error) {
+	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/fork", req, &out, 0); err != nil {
-		return models.Sandbox{}, missing(ref, err)
+		return Sandbox{}, missing(ref, err)
 	}
 
 	return out, nil

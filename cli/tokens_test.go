@@ -305,5 +305,21 @@ func TestTokensMintTakesEveryScopeTheFrontKnows(t *testing.T) {
 	}
 }
 
-// everyScope is "*" and the eight capabilities docs/daemon.md names.
-var everyScope = []string{"*", "daemon:read", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "image:*", "secret:*", "policy:*"}
+// No public route needs daemon:read or image:*, so mint refuses both.
+func TestTokensMintRefusesTheRetiredScopes(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte(frontSecret), 0o600); err != nil {
+		t.Fatalf("write the secret file: %v", err)
+	}
+
+	for _, scope := range []string{"daemon:read", "image:*"} {
+		app := App{Version: "test", Root: dir, Out: io.Discard}
+		if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--scopes", scope, "--signing-key-file", secret}); err == nil {
+			t.Errorf("mint signed a token with the retired scope %s", scope)
+		}
+	}
+}
+
+// everyScope is "*" and the six capabilities docs/daemon.md names.
+var everyScope = []string{"*", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "secret:*", "policy:*"}
