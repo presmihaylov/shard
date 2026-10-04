@@ -577,10 +577,11 @@ func (e *execSession) setResult(exit models.ExitStatus, err error) {
 	close(e.done)
 }
 
-// settleBuffer opens the buffer on a command that ran, or discards a start-failure's held output.
+// settleBuffer opens the buffer on a command that ran, or discards a start-failure's or a pause refusal's held output.
 func (e *execSession) settleBuffer(err error) {
-	var notStarted *models.CommandNotStartedError
-	if errors.As(err, &notStarted) {
+	_, notStarted := errors.AsType[*models.CommandNotStartedError](err)
+	refused, ok := errors.AsType[*StateError](err)
+	if notStarted || ok && refused.State == models.StatePaused {
 		e.buf.discard()
 		e.buf.close()
 		return
@@ -1181,7 +1182,8 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 
 	status, err := s.cfg.Provider.Status(ctx, id)
 	if err != nil {
-		return "", err
+		// A pause removes the substrate's state before its record says paused, so its question fails mid-pause.
+		return "", s.pauseOutranks(id, err)
 	}
 	// The substrate is asked even for an unresponsive record, so an exec works as soon as the process answers again.
 	if status.State == models.StateUnresponsive {
@@ -1241,10 +1243,16 @@ func pausedRefusal(id string) *StateError {
 
 // refusedByPause names a command that never started inside a pause by that pause, whatever the substrate or the guest said.
 func (s *Service) refusedByPause(id string, session *execSession, err error) error {
-	if err == nil || session.reported() {
+	// A command that ran keeps its own words, unless the substrate lost its wait, which a pause's teardown causes.
+	if err == nil || session.reported() && !errors.Is(err, models.ErrExecLost) {
 		return err
 	}
 
+	return s.pauseOutranks(id, err)
+}
+
+// pauseOutranks swaps err for the one pause text while a pause holds the sandbox.
+func (s *Service) pauseOutranks(id string, err error) error {
 	sb, getErr := s.cfg.Repo.Get(id)
 	if getErr != nil {
 		return errors.Join(err, getErr)
