@@ -151,6 +151,10 @@ and a kernel that Sysbox supports. There is no fallback to gVisor. On a host wit
 the daemon answers the reads and refuses every sandbox verb, as it does on a gVisor host without
 `runsc`.
 
+**Known issue, seen on host kernel 6.12.107 with Sysbox 0.7.1:** Docker in the sandbox starts, but
+every container it runs fails with `error mounting "cgroup" to rootfs at "/sys/fs/cgroup": ...
+permission denied`. Kernel 6.12.101 runs them (SHARD-538).
+
 ### What runc does not do
 
 **runc isolates nothing.** The guest shares the host kernel, with only namespaces and cgroups
