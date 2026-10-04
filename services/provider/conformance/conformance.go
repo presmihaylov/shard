@@ -778,13 +778,18 @@ func requireLinkNotTarget(t *testing.T, dir, host string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
 	linked := false
-	err = filepath.WalkDir(dir, func(name string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
-			target, err := os.Readlink(name)
+			target, err := root.Readlink(name)
 			linked = linked || (err == nil && target == host)
 
 			return err
@@ -792,9 +797,9 @@ func requireLinkNotTarget(t *testing.T, dir, host string) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		got, err := os.ReadFile(name)
+		got, err := root.ReadFile(name)
 		if err == nil && string(got) == string(want) {
-			t.Errorf("the snapshot holds %s, a copy of the host file %s", name, host)
+			t.Errorf("the snapshot holds %s, a copy of the host file %s", filepath.Join(dir, name), host)
 		}
 
 		return err
