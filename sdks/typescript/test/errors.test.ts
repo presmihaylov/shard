@@ -79,6 +79,7 @@ test("a stream failure takes the status its code answers with", () => {
   const cases: Array<[string, number, new (...args: never[]) => APIError]> = [
     ["not_found", 404, NotFoundError],
     ["exec_exited", 409, ConflictError],
+    ["exec_limit", 429, APIError],
     ["unsupported", 409, UnsupportedError],
     ["timeout", 504, ServerError],
     ["body_too_large", 413, InvalidRequestError],
