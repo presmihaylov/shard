@@ -126,6 +126,7 @@ var (
 	}}
 	limitsNote     = note{title: "Resource limits", lines: []string{"Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs."}}
 	signingKeyNote = para("The default signing key is created automatically on first use.", "A custom signing key file must already exist.")
+	hostOnlyNote   = para("Runs only on the daemon host and refuses --remote and " + client.RemoteEnv + ".")
 )
 
 const noPolicyLine = "Without a policy, the sandbox can access the internet but not private networks."
@@ -324,7 +325,7 @@ var helps = map[string]verbHelp{
 		usage:    []string{"pull IMAGE"},
 		summary:  "download an image",
 		args:     []row{{"IMAGE", "image reference, such as python:3.12"}},
-		notes:    []note{para("Prints the image reference and digest when the download finishes.")},
+		notes:    []note{para("Prints the image reference and digest when the download finishes."), hostOnlyNote},
 		examples: []string{"shard pull python:3.12"},
 	},
 	"image": {
@@ -335,6 +336,7 @@ var helps = map[string]verbHelp{
 		usage:    []string{"image list [OPTIONS]"},
 		summary:  "list downloaded images",
 		flags:    []flagHelp{formatTableHelp},
+		notes:    []note{hostOnlyNote},
 		examples: []string{"shard image list", "shard image list --format json"},
 	},
 	"image remove": {
@@ -342,13 +344,14 @@ var helps = map[string]verbHelp{
 		summary:  "delete a downloaded image",
 		args:     []row{{"IMAGE", "image reference"}},
 		flags:    []flagHelp{{"--force", "delete the image even if a sandbox or snapshot uses it", ""}},
+		notes:    []note{hostOnlyNote},
 		examples: []string{"shard image remove python:3.12"},
 	},
 	"image prune": {
 		usage:    []string{"image prune"},
 		summary:  "delete unused images",
 		about:    "Delete images that no sandbox or snapshot uses.",
-		notes:    []note{para("Images used by stopped sandboxes are also kept.")},
+		notes:    []note{para("Images used by stopped sandboxes are also kept."), hostOnlyNote},
 		examples: []string{"shard image prune"},
 	},
 	"snapshot": {
@@ -545,18 +548,21 @@ var helps = map[string]verbHelp{
 			{"--insecure-registry <host>", "allow HTTP for a registry; repeatable", ""},
 			{"--log <path>", "daemon log file (macOS only)", ""},
 		},
-		notes: []note{para(
-			"The daemon manages local sandboxes and stays active until stopped.",
-			"An existing data directory must use its original provider.",
-			"Use 'shard info' to see the default provider for this host.",
-		)},
+		notes: []note{
+			para(
+				"The daemon manages local sandboxes and stays active until stopped.",
+				"An existing data directory must use its original provider.",
+				"Use 'shard info' to see the default provider for this host.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard daemon", "shard daemon --provider gvisor"},
 	},
 	"daemon status": {
 		usage:    []string{"daemon status [OPTIONS]"},
 		summary:  "show daemon status",
 		flags:    []flagHelp{formatTableHelp},
-		notes:    []note{para("Shows the version, provider, process details and background tasks.")},
+		notes:    []note{para("Shows the version, provider, process details and background tasks."), hostOnlyNote},
 		examples: []string{"shard daemon status", "shard daemon status --format json"},
 	},
 	"capabilities": {
@@ -574,10 +580,13 @@ var helps = map[string]verbHelp{
 		usage:   []string{"info [OPTIONS]"},
 		summary: "show available providers and the default for this host",
 		flags:   []flagHelp{formatTableHelp},
-		notes: []note{para(
-			"Works without an active daemon.",
-			"Use 'shard daemon status' to see the provider the current daemon uses.",
-		)},
+		notes: []note{
+			para(
+				"Works without an active daemon.",
+				"Use 'shard daemon status' to see the provider the current daemon uses.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard info", "shard info --format json"},
 	},
 	"serve": {
@@ -591,13 +600,17 @@ var helps = map[string]verbHelp{
 			para("The local daemon must be active.", "Use 'shard tokens mint' to create API tokens."),
 			para("Use an HTTPS proxy or tunnel for public access.", "HTTP is suitable for local access or an encrypted VPN."),
 			signingKeyNote,
+			hostOnlyNote,
 		},
 		examples: []string{"shard serve"},
 	},
 	"tokens": {
 		usage:   []string{"tokens COMMAND [OPTIONS] [ARGS...]"},
 		summary: "create, list and revoke API tokens",
-		notes:   []note{para("mint, list and revoke run locally.")},
+		notes: []note{para(
+			"mint, list and revoke run only on the daemon host and refuse --remote.",
+			"scopes follows --remote and "+client.RemoteEnv+".",
+		)},
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint [OPTIONS]"},
@@ -613,6 +626,7 @@ var helps = map[string]verbHelp{
 			para("Run shard tokens scopes to list available scopes."),
 			signingKeyNote,
 			para("The response includes the API token.", "Use its 'token' value as "+client.APIKeyEnv+"."),
+			hostOnlyNote,
 		},
 		examples: []string{
 			"shard tokens mint --name build-agent --duration 24h",
@@ -623,10 +637,13 @@ var helps = map[string]verbHelp{
 		usage:   []string{"tokens list [OPTIONS]"},
 		summary: "list API tokens and their status",
 		flags:   []flagHelp{registryKeyHelp, formatTableHelp},
-		notes: []note{para(
-			"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
-			"Does not create a signing key.",
-		)},
+		notes: []note{
+			para(
+				"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
+				"Does not create a signing key.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard tokens list", "shard tokens list --format json"},
 	},
 	"tokens revoke": {
@@ -637,7 +654,7 @@ var helps = map[string]verbHelp{
 			{"--name <name>", "revoke all tokens with this name", ""},
 			registryKeyHelp,
 		},
-		notes:    []note{para("Revoked tokens are rejected on subsequent requests.")},
+		notes:    []note{para("Revoked tokens are rejected on subsequent requests."), hostOnlyNote},
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},
 	},
 	"tokens scopes": {

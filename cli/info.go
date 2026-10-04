@@ -16,6 +16,9 @@ func (a App) info(_ context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("info takes no arguments, got %s", gotArgs(rest))
 	}
+	if err := a.hostOnly("info"); err != nil {
+		return err
+	}
 	selected, err := daemon.SelectProvider("", a.Root)
 	if err != nil {
 		return err
