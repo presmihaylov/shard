@@ -26,8 +26,7 @@ const memoryHeadroom int64 = 32 << 20
 // initCgroup is PID 1's own, beside the sandbox cgroup: a freeze of the guest's processes leaves the supervisor running to answer.
 const initCgroup = "init"
 
-// boundMemory makes the sandbox cgroup and moves PID 1 into it, so the cgroup namespace confine makes is rooted there.
-// The kernel never picks the global init, so a group kill takes the guest's processes and leaves the supervisor to report it.
+// The kernel spares global init, so children need no inherited OOM exemption.
 func boundMemory() error {
 	if err := cgroup.Delegate(cgroupRoot, "memory"); err != nil {
 		return fmt.Errorf("enable the memory controller: %w", err)
