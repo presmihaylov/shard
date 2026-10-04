@@ -64,7 +64,7 @@ func TestLaunch(t *testing.T) {
 		Provider: h.provider,
 		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
-	}, false)
+	})
 }
 
 // TestTheEntrypointExitCodePropagates is half the SHARD-12 acceptance criterion.

@@ -17,8 +17,7 @@ type Snapshot struct {
 	// DiskMiB is the bound the source ran under, which a microVM disk copy keeps.
 	DiskMiB int64 `json:"disk_mib"`
 	// MemoryMiB is the source's memory bound, which a microVM provider needs and a create may change.
-	MemoryMiB int64 `json:"memory_mib"`
-	// Size is the bytes the copy holds on the host.
-	Size      int64     `json:"size"`
+	MemoryMiB int64     `json:"memory_mib"`
+	Size      int64     `json:"size" doc:"The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files."`
 	CreatedAt time.Time `json:"created_at"`
 }
