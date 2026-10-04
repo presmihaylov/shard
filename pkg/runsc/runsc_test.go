@@ -719,7 +719,7 @@ func TestExecReportsThePIDOfACommandThatEndsAtOnce(t *testing.T) {
 
 	var got []int
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
-		Argv: []string{"/bin/true"}, Report: func(pid int) { got = append(got, pid) },
+		Bundle: bundle(t), Argv: []string{"/bin/true"}, Report: func(pid int) { got = append(got, pid) },
 	}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
